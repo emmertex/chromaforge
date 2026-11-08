@@ -446,6 +446,18 @@ pub(crate) trait MoveFs {
             Err(_) => true,
         }
     }
+    /// The names in folder `dir`, or `None` when it can't be listed or holds more than `budget`
+    /// entries (it stops reading at that many, so a huge folder is never collected).
+    fn list_dir(&self, dir: &Path, budget: usize) -> Option<Vec<std::ffi::OsString>> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()? {
+            if names.len() >= budget {
+                return None;
+            }
+            names.push(entry.ok()?.file_name());
+        }
+        Some(names)
+    }
     /// Content observed in a packet, independent of its pathname or inode. Model volumes
     /// override this; disk implementations stream a bounded buffer without retaining the XML.
     fn packet_version(&self, path: &Path) -> std::io::Result<PacketVersion> {
@@ -997,9 +1009,134 @@ pub(crate) struct BatchMoveError {
     pub pending_sidecars: Vec<SidecarMove>,
 }
 
+/// A folder with this many photos leaving it is listed once, and its photos' sidecars are looked
+/// for in that listing: asking the disk for four names per photo costs a round trip each on a
+/// network share, found or not. Fewer photos are probed one by one.
+const LIST_FOLDER_AT: usize = 8;
+
+/// Directory entries the folder listings of one move may collect in all; a folder past what is
+/// left of it isn't listed, and its photos are probed one by one.
+const LIST_ENTRIES_AT_MOST: usize = 1_000_000;
+
+/// `inner`, with the question "is this sidecar a file?" answered from one listing of each folder
+/// that many photos leave ([`LIST_FOLDER_AT`]), where the listing can vouch for a "no": the folder
+/// was listed whole, its names are all ASCII, and the name is a plain one
+/// ([`crate::sync::plain_name`], no device names). A name the listing holds (in any case), a folder
+/// not listed whole, and every other question go to `inner` as before. A sidecar a move or copy
+/// brings into a listed folder is added to its names.
+pub(crate) struct ListedSources<'a> {
+    inner: &'a dyn MoveFs,
+    /// folder → the `.xmp` names in it, lower-cased.
+    folders: std::cell::RefCell<HashMap<PathBuf, HashSet<String>>>,
+}
+
+impl<'a> ListedSources<'a> {
+    pub(crate) fn new(inner: &'a dyn MoveFs, moves: &[(String, String)]) -> Self {
+        let mut leaving: HashMap<&Path, usize> = HashMap::new();
+        for (from, _) in moves {
+            if let Some(dir) = Path::new(from).parent().filter(|d| !d.as_os_str().is_empty()) {
+                let n = leaving.entry(dir).or_default();
+                *n = n.saturating_add(1);
+            }
+        }
+        let mut budget = LIST_ENTRIES_AT_MOST;
+        let mut folders = HashMap::new();
+        for (dir, n) in leaving {
+            if n < LIST_FOLDER_AT {
+                continue;
+            }
+            let Some(names) = inner.list_dir(dir, budget) else { continue };
+            // (an override that lists more than the budget it was given breaks the contract: not trusted)
+            let Some(left) = budget.checked_sub(names.len()) else { continue };
+            budget = left;
+            // (any name that is no ASCII text: the listing can't say what another name's other case is)
+            let xmp: Option<HashSet<String>> = names
+                .iter()
+                .map(|n| n.to_str().filter(|n| n.is_ascii()).map(str::to_ascii_lowercase))
+                .collect::<Option<Vec<_>>>()
+                .map(|v| v.into_iter().filter(|n| n.ends_with(".xmp")).collect());
+            if let Some(xmp) = xmp {
+                folders.insert(dir.to_path_buf(), xmp);
+            }
+        }
+        ListedSources { inner, folders: std::cell::RefCell::new(folders) }
+    }
+
+    /// Whether the listing shows `p`, a sidecar name, is not there.
+    fn surely_absent(&self, p: &Path) -> bool {
+        let Ok(folders) = self.folders.try_borrow() else { return false };
+        let (Some(xmp), Some(name)) = (p.parent().and_then(|d| folders.get(d)), p.file_name().and_then(|n| n.to_str())) else { return false };
+        p.to_str().is_some_and(|s| s.ends_with(name))
+            && name.len() > ".xmp".len()
+            && name.to_ascii_lowercase().ends_with(".xmp")
+            && crate::sync::plain_name(name)
+            && !crate::sync::asks_the_disk(name)
+            && !xmp.contains(&name.to_ascii_lowercase())
+    }
+
+    /// A file arrived at `p`: a `.xmp` joins its folder's names.
+    fn arrived(&self, p: &Path) {
+        let Some(dir) = p.parent() else { return };
+        let Ok(mut folders) = self.folders.try_borrow_mut() else { return };
+        let Some(xmp) = folders.get_mut(dir) else { return };
+        match p.file_name().and_then(|n| n.to_str()).filter(|n| n.is_ascii()) {
+            Some(name) if name.to_ascii_lowercase().ends_with(".xmp") => {
+                xmp.insert(name.to_ascii_lowercase());
+            }
+            Some(_) => {}
+            None => {
+                folders.remove(dir);
+            }
+        }
+    }
+}
+
+impl MoveFs for ListedSources<'_> {
+    fn exists(&self, p: &Path) -> bool {
+        self.inner.exists(p)
+    }
+    fn is_file(&self, p: &Path) -> bool {
+        !self.surely_absent(p) && self.inner.is_file(p)
+    }
+    fn same_file(&self, a: &Path, b: &Path) -> bool {
+        self.inner.same_file(a, b)
+    }
+    fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        let moved = self.inner.rename_no_replace(a, b);
+        if moved.is_ok() {
+            self.arrived(b);
+        }
+        moved
+    }
+    fn copy_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        let copied = self.inner.copy_no_replace(a, b);
+        if copied.is_ok() {
+            self.arrived(b);
+        }
+        copied
+    }
+    fn remove_file(&self, p: &Path) -> std::io::Result<()> {
+        self.inner.remove_file(p)
+    }
+    fn stem_sibling(&self, sidecar: &Path) -> Option<String> {
+        self.inner.stem_sibling(sidecar)
+    }
+    fn listed(&self, p: &Path) -> bool {
+        self.inner.listed(p)
+    }
+    fn list_dir(&self, dir: &Path, budget: usize) -> Option<Vec<std::ffi::OsString>> {
+        self.inner.list_dir(dir, budget)
+    }
+    fn packet_version(&self, path: &Path) -> std::io::Result<PacketVersion> {
+        self.inner.packet_version(path)
+    }
+}
+
 /// Move the files `moves` names, all or nothing: after a failure the earlier moves are undone.
 /// Moves that can't be undone (e.g. the network share went away) are reported, not ignored.
 pub(crate) fn move_all(fs: &dyn MoveFs, moves: &[(String, String)]) -> std::result::Result<(), BatchMoveError> {
+    let listed = ListedSources::new(fs, moves);
+    let fs: &dyn MoveFs = &listed;
     let mut done: Vec<&(String, String)> = Vec::new();
     for m in moves {
         let Err(e) = move_file_with(fs, &m.0, &m.1) else {
@@ -1333,6 +1470,68 @@ impl Session {
                 (Path::new(from) != Path::new(to) && seen.insert(from)).then(|| (from.clone(), to.clone()))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests_listed {
+    use super::*;
+    use std::cell::Cell;
+
+    /// The real disk, counting the questions about `.xmp` names.
+    struct Counting {
+        asked: Cell<usize>,
+    }
+    impl MoveFs for Counting {
+        fn exists(&self, p: &Path) -> bool {
+            RealFs.exists(p)
+        }
+        fn is_file(&self, p: &Path) -> bool {
+            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmp")) {
+                self.asked.set(self.asked.get().saturating_add(1));
+            }
+            RealFs.is_file(p)
+        }
+        fn same_file(&self, a: &Path, b: &Path) -> bool {
+            RealFs.same_file(a, b)
+        }
+        fn rename_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+            RealFs.rename_no_replace(a, b)
+        }
+        fn copy_no_replace(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+            RealFs.copy_no_replace(a, b)
+        }
+        fn remove_file(&self, p: &Path) -> std::io::Result<()> {
+            RealFs.remove_file(p)
+        }
+        fn stem_sibling(&self, sidecar: &Path) -> Option<String> {
+            RealFs.stem_sibling(sidecar)
+        }
+    }
+
+    /// Moving many photos out of a folder asks the disk about the sidecars the folder lists only:
+    /// the photo with a sidecar still takes it along, the others cost no question.
+    #[test]
+    fn a_big_move_asks_only_for_the_sidecars_the_folder_lists() {
+        let dir = std::env::temp_dir().join(format!("lc-listed-sources-{}", std::process::id()));
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        let n = LIST_FOLDER_AT * 2;
+        for i in 0..n {
+            std::fs::write(src.join(format!("p{i}.jpg")), b"x").unwrap();
+        }
+        std::fs::write(src.join("p3.xmp"), b"<x/>").unwrap();
+        let moves: Vec<(String, String)> = (0..n)
+            .map(|i| (src.join(format!("p{i}.jpg")).to_string_lossy().into(), dst.join(format!("p{i}.jpg")).to_string_lossy().into()))
+            .collect();
+        let fs = Counting { asked: Cell::new(0) };
+        move_all(&fs, &moves).unwrap();
+        assert!(dst.join("p3.xmp").is_file(), "the listed sidecar moved with its photo");
+        assert!(!src.join("p3.xmp").exists());
+        assert!(fs.asked.get() < n, "the disk was asked {} times for {n} photos", fs.asked.get());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

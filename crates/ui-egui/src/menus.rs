@@ -106,7 +106,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.beforeAfterSplit", "Before/After Split", Some("Shift+Y"), "View>Before/After"),
     ("view.beforeAfterTopBottom", "Before/After Top/Bottom", Some("Alt+Y"), "View>Before/After"),
     ("view.beforeAfterSplitTopBottom", "Before/After Split Top/Bottom", Some("Alt+Shift+Y"), "View>Before/After"),
-    ("view.showOriginal", "Show Original", Some("\\"), "View>Before/After"),
+    ("view.showOriginal", "Show Before", Some("\\"), "View>Before/After"),
     ("view.zoomFit", "Zoom to Fit", Some("Cmd+0"), "View>Zoom"),
     ("view.zoom100", "Zoom 100%", Some("Cmd+Alt+0"), "View>Zoom"),
     ("view.zoomToggle", "Toggle Zoom", Some("Z"), "View>Zoom"),
@@ -155,12 +155,23 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("crop.lockAspect", "Lock Aspect Ratio", Some("A"), ""),
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View>Tool Overlay"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View>Tool Overlay"),
+    ("view.cropMaskOpacity", "Crop Mask Opacity", None, ""),
+    ("photo.rate0", "Clear Rating", Some("0"), ""),
+    ("photo.rate1", "Rate ★", Some("1"), ""),
+    ("photo.rate2", "Rate ★★", Some("2"), ""),
+    ("photo.rate3", "Rate ★★★", Some("3"), ""),
+    ("photo.rate4", "Rate ★★★★", Some("4"), ""),
+    ("photo.rate5", "Rate ★★★★★", Some("5"), ""),
+    ("photo.labelRed", "Red Label", Some("6"), ""),
+    ("photo.labelYellow", "Yellow Label", Some("7"), ""),
+    ("photo.labelGreen", "Green Label", Some("8"), ""),
+    ("photo.labelBlue", "Blue Label", Some("9"), ""),
     ("view.back", "Back to Grid", Some("Escape"), ""),
     ("tool.done", "Done", Some("Enter"), ""),
     ("view.filterBar", "Filter Bar", Some("Shift+F"), "Library>Filters"),
-    ("local.addRoot", "Add Folder to Local", None, ""),
-    ("local.hide", "Remove from Local", None, ""),
-    ("local.restoreHidden", "Show Hidden Local Locations", None, ""),
+    ("local.addRoot", "Add Folder to Favorites", None, ""),
+    ("local.hide", "Remove from Favorites", None, ""),
+    ("local.restoreHidden", "Show Hidden Favorites", None, ""),
     ("view.fullScreenPreview", "Full Screen Preview", Some("F"), "Window>Screen Mode"),
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
@@ -362,16 +373,17 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
     ("app.newLibrary", "New Library…", None, "File>Libraries"),
     ("app.openLibrary", "Open Library…", Some("Cmd+O"), "File>Libraries"),
-    // catalogs (crate::catalog_ui)
-    ("catalog.new", "New Catalog…", None, ""),
-    ("catalog.open", "Open Catalog…", None, ""),
-    ("catalog.openRecent", "Open Recent Catalog", None, ""),
-    ("catalog.chooser", "Choose Catalog…", None, ""),
+    // libraries (crate::catalog_ui; the ids keep their older catalog name)
+    ("catalog.new", "New Library…", None, ""),
+    ("catalog.open", "Open Library…", None, ""),
+    ("catalog.openRecent", "Open Recent Library", None, ""),
+    ("catalog.chooser", "Choose Library…", None, ""),
     ("catalog.welcome", "Welcome…", None, ""),
-    ("catalog.promptAtStartup", "Show the Catalog Chooser at Startup", None, ""),
-    ("dialog.catalogSettings", "Catalog Settings…", None, "Edit"),
-    ("dialog.exportCatalog", "Export as Catalog…", None, "File>Libraries"),
-    ("dialog.importCatalog", "Import from Another Catalog…", None, "File>More Imports"),
+    ("catalog.promptAtStartup", "Ask Which Library to Open at Launch", None, ""),
+    ("dialog.catalogSettings", "Library Settings…", None, "Edit"),
+    ("dialog.exportCatalog", "Export as Library…", None, "File>Libraries"),
+    ("dialog.importCatalog", "Import from Another Library…", None, "File>More Imports"),
+    crate::legacy::IMPORT_LIBRARY,
     ("app.recentLibraries", "Recent Libraries", None, ""),
     ("app.clearRecentLibraries", "Clear Recent Libraries", None, ""),
     // Settings ▸ Display
@@ -1530,7 +1542,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 None => cur.next(),
             };
             app.ui.mask_overlay_mode = next.name().into();
-            app.ui.mask_overlay = true;
+            // ⇧O shows the overlay in its new look; the overlay menu's choice of look (`show: false`) leaves it as it
+            // was, so picking a look never latches the overlay on (OneSlips 0c58de7ad: how it got stuck on)
+            if p.get("show").and_then(Value::as_bool) != Some(false) {
+                app.ui.mask_overlay = true;
+            }
             app.toast(&ctx, next.label());
             Ok(json!({"mode": next.name()}))
         }
@@ -1638,6 +1654,26 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 None => Thirds,
             };
             Ok(json!({"overlay": app.ui.crop_overlay}))
+        }
+        "view.cropMaskOpacity" => {
+            let level = p
+                .get("opacity")
+                .and_then(Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| crate::state::CROP_MASK_OPACITY_LEVELS.contains(v));
+            let Some(opacity) = level else {
+                return Some(Err("view.cropMaskOpacity: opacity must be 0, 20, 50, 60, 80 or 100".into()));
+            };
+            app.ui.crop_mask_opacity = opacity;
+            Ok(json!({"opacity": opacity}))
+        }
+        "photo.rate0" | "photo.rate1" | "photo.rate2" | "photo.rate3" | "photo.rate4" | "photo.rate5" => {
+            let rating = id.strip_prefix("photo.rate").and_then(|n| n.parse::<u8>().ok()).unwrap_or(0);
+            return Some(app.run("photo.rate", json!({"rating": rating})));
+        }
+        "photo.labelRed" | "photo.labelYellow" | "photo.labelGreen" | "photo.labelBlue" => {
+            let label = id.strip_prefix("photo.label").unwrap_or("").to_lowercase();
+            return Some(app.run("photo.label", json!({"label": label, "toggle": true})));
         }
         "view.cropOverlayOrientation" => {
             app.ui.crop_overlay_orient = (app.ui.crop_overlay_orient + 1) % 4;

@@ -91,7 +91,8 @@ fn sdr_rendition_rolls_highlights_off_instead_of_clipping() {
         }
     }
     let req = RenderRequest::fit(w, w);
-    let mut sdr = DevelopSettings::default();
+    // process V7, whose SDR raw curve clips at white (V8 rolls it off into white instead)
+    let mut sdr = DevelopSettings { process: lcc_develop::Process::V7.version(), ..DevelopSettings::default() };
     sdr.light.exposure = 1.5;
     let mut hdr = sdr.clone();
     hdr.hdr.enabled = true;

@@ -43,12 +43,71 @@ fn the_second_device_renders_alike_and_its_loss_leaves_the_editing_card() {
     assert!(on_second.image.data == on_editing.image.data, "both devices render the same pixels");
     assert_eq!(on_second.histogram, on_editing.histogram);
     // AI models go to the second card (here the same one)
-    assert_eq!(lcc_gpu::ai_card(), lcc_gpu::adapters().iter().find(|e| e.usable).map(|e| e.name.clone()));
+    // (the editing card's name: with the adapter variable naming another card than the first
+    // listed, the first listed is not the one in use)
+    assert_eq!(lcc_gpu::ai_card(), lcc_gpu::adapter_name().map(|n| n.rsplit_once(" (").map_or(n.clone(), |(name, _)| name.to_string())));
     // a photo's turn on the second device: its renders run there
     let turn = lcc_gpu::as_batch(|| lcc_gpu::try_batch_turn(900 * 600, 900 * 600)).expect("a free turn");
     assert_eq!(lcc_gpu::helper_usage().0, 1, "the turn is the second device's");
     drop(turn);
     assert_eq!(lcc_gpu::helper_usage().0, 0);
+    // a turn asked for on one card (an export set to one card) is that card's, and its renders run there
+    assert!(lcc_gpu::helper_ready());
+    for helper in [false, true] {
+        lcc_gpu::as_batch(|| {
+            let turn = lcc_gpu::try_batch_turn_on(helper, 900 * 600, 900 * 600).expect("a free turn on that card");
+            assert_eq!(turn.on_helper(), helper);
+            let before = lcc_gpu::thread_render_counts();
+            lcc_gpu::try_render(&src, &raw, &s, &req, None).expect("renders on its card");
+            let after = lcc_gpu::thread_render_counts();
+            let (b, a) = if helper { (before.helper_batch, after.helper_batch) } else { (before.editing_batch, after.editing_batch) };
+            assert_eq!(a, b + 1, "the photo rendered on the card it asked for (second card: {helper})");
+        });
+    }
+
+    // both devices take batch photos: two cards take work, a photo at a time goes to each, and
+    // each photo's renders run on its turn's card
+    assert_eq!(lcc_gpu::batch_cards(), 2);
+    assert_eq!(lcc_gpu::batch_lanes_hint(2), 4, "two photos per card");
+    let (taken_tx, taken_rx) = std::sync::mpsc::channel::<bool>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let go_rx = Arc::new(std::sync::Mutex::new(go_rx));
+    let photo = |taken: std::sync::mpsc::Sender<bool>, go: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>| {
+        let (src, raw, s, req) = (src.clone(), raw.clone(), s.clone(), req);
+        std::thread::spawn(move || {
+            lcc_gpu::as_batch(|| {
+                let turn = lcc_gpu::wait_batch_turn_any(900 * 600, 900 * 600, &|| false).expect("a card has room");
+                let on_helper = turn.on_helper();
+                assert!(turn.card_name().is_some());
+                let before = lcc_gpu::thread_render_counts();
+                let r = lcc_gpu::try_render(&src, &raw, &s, &req, None).expect("renders on its card");
+                let after = lcc_gpu::thread_render_counts();
+                if on_helper {
+                    assert_eq!(after.helper_batch, before.helper_batch + 1, "the photo rendered on the second device");
+                } else {
+                    assert_eq!(after.editing_batch, before.editing_batch + 1, "the photo rendered on the editing card");
+                }
+                taken.send(on_helper).unwrap();
+                // (held until both photos have their turns)
+                go.lock().unwrap().recv().unwrap();
+                drop(turn);
+                r
+            })
+        })
+    };
+    let a = photo(taken_tx.clone(), go_rx.clone());
+    let first = taken_rx.recv().unwrap();
+    let b = photo(taken_tx, go_rx);
+    let second = taken_rx.recv().unwrap();
+    assert_ne!(first, second, "one photo on each card");
+    go_tx.send(()).unwrap();
+    go_tx.send(()).unwrap();
+    for h in [a, b] {
+        let r = h.join().unwrap();
+        assert!(r.image.data == on_editing.image.data, "both cards render the same pixels");
+    }
+    assert_eq!((lcc_gpu::helper_usage().0, lcc_gpu::batch_usage().jobs), (0, 0), "the turns were given back");
+    assert!(lcc_gpu::batch_rate_of(true).is_some() && lcc_gpu::batch_rate_of(false).is_some(), "each card's speed is measured");
 
     // the second device fails: batch work goes back to the editing card, which is untouched
     assert!(lcc_gpu::simulate_helper_loss("test: the second card stopped"));

@@ -342,6 +342,23 @@ pub fn has_import_look(p: &Photo) -> bool {
     *p.develop == p.camera_defaults()
 }
 
+/// [`has_import_look`], or the only change is the camera profile (colour calibration), such as the
+/// body's default profile picked for a photo browsed before import: the camera's JPEG then shows
+/// the photo as framed and exposed, a fair stand-in until the render arrives (labelled "Camera
+/// preview" in the loupe). Any other edit is never shown as the camera JPEG.
+pub fn looks_as_shot(p: &Photo) -> bool {
+    if has_import_look(p) {
+        return true;
+    }
+    let neutral = |d: &lcc_develop::DevelopSettings| {
+        let mut d = d.clone();
+        d.profile.camera.clear();
+        d.profile.id = lcc_develop::Profile::default().id;
+        d
+    };
+    neutral(&p.develop) == neutral(&p.camera_defaults())
+}
+
 /// The name `library.setImportDefault` saves its preset under when the caller doesn't name one
 /// (Develop ▸ Optics ▸ Save as… pre-fills it).
 pub const NEW_PHOTO_DEFAULT: &str = "Optics for new photos";
@@ -1170,6 +1187,9 @@ pub struct ImportJob {
 #[derive(Debug, Default)]
 pub struct Prepared {
     pub scanned: usize,
+    /// A Cancel left files of the batch undone (they have no item): the batch is not the whole of
+    /// what was asked. A Cancel that came after the last file was prepared leaves this `false`.
+    pub cut_short: bool,
     items: Vec<PreparedItem>,
 }
 
@@ -1380,7 +1400,7 @@ impl ImportJob {
         let library = self.look_up_library();
         let opts = self.opts.clone();
         let mode = self.mode;
-        let mut out = Prepared { scanned: files.len(), items: Vec::new() };
+        let mut out = Prepared { scanned: files.len(), cut_short: false, items: Vec::new() };
         let mut todo = Vec::new();
         // browsed (Local) records whose files are copied or moved: the record follows its file
         let mut follow: HashMap<String, PhotoId> = HashMap::new();
@@ -1449,6 +1469,7 @@ impl ImportJob {
         let mut listing = crate::sidecar::FolderListing::default();
         for (path, info) in todo.into_iter().zip(probed) {
             if cancel.load(Relaxed) {
+                out.cut_short = true;
                 break;
             }
             let mut info = match info {
@@ -1474,6 +1495,7 @@ impl ImportJob {
             {
                 self.run_plan(&mut plan, &mut out, cancel);
                 if cancel.load(Relaxed) {
+                    out.cut_short = true;
                     break;
                 }
             }
@@ -1552,6 +1574,7 @@ impl ImportJob {
                     if plan.transfers.iter().any(|t| t.family == family) {
                         self.run_plan(&mut plan, &mut out, cancel);
                         if cancel.load(Relaxed) {
+                            out.cut_short = true;
                             break;
                         }
                     }
@@ -1590,6 +1613,8 @@ impl ImportJob {
             }));
         }
         self.run_plan(&mut plan, &mut out, cancel);
+        // (`cut_short` says whether a Cancel stopped a file from being prepared: the flag itself may
+        // have been set after the last one was)
         out
     }
 
@@ -1602,7 +1627,10 @@ impl ImportJob {
                 Slot::Item(it) => it,
                 Slot::Transfer => match done.next().flatten() {
                     Some(it) => it,
-                    None => continue,
+                    None => {
+                        out.cut_short = true;
+                        continue;
+                    }
                 },
             };
             if let PreparedItem::Ready(r) = &item
@@ -1917,7 +1945,10 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 let sidecar = sidecar.map(|sc| sc.resolve_label(&s.catalog)).filter(|sc| *sc != crate::sidecar::SidecarData::default());
                 // the photo is upright as the file's own orientation turns it, when the file states one
-                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData { orientation: info.orientation.or(sc.orientation), ..sc });
+                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData {
+                    orientation: info.orientation.or(sc.orientation),
+                    ..sc.turn_from(info.orientation).crop_from(info.orientation, (info.width, info.height))
+                });
                 // a copy is catalogued under its new name
                 let name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let mut p = Photo::new(id, Source::File { path: stored }, &name, &info.format, info.width, info.height, &now);
@@ -2209,6 +2240,8 @@ impl Session {
             display_fit: None,
             hdr_texels: None,
             superseded: None,
+            latest: None,
+            placement: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {
             (Some(l), MediaKind::Raw) => Some((c.path.clone(), l.clone(), edge)),
@@ -2223,6 +2256,10 @@ impl Session {
             embedded_cache: None,
             embedded_on_disk: false,
             small: Some(Box::new(small)),
+            latest: Vec::new(),
+            fit: None,
+            draft: None,
+            want: None,
         })
     }
 
@@ -2304,6 +2341,7 @@ mod prepared_tests {
         };
         let mut prepared = Prepared {
             scanned: 2,
+            cut_short: false,
             items: vec![PreparedItem::Ready(Box::new(ready(&existing_path))), PreparedItem::Ready(Box::new(ready(&other_path)))],
         };
         prepared.revalidate_add(&s);

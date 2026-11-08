@@ -771,6 +771,40 @@ fn find_missing_matches_renamed_files_by_content() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A renamed file whose size is unknown (0) but whose content hash is known is still found by
+/// content: the hash alone is enough to confirm it is the same photo.
+#[test]
+fn find_missing_matches_renamed_file_by_content_without_size() {
+    use lcc_catalog::{Op, Photo, Source};
+    let dir = temp_dir("missing-no-size");
+    std::fs::create_dir_all(dir.join("found")).unwrap();
+    let content = b"same pixels as the original";
+    let renamed = dir.join("found").join("Trip-001.png");
+    std::fs::write(&renamed, content).unwrap();
+    let hash = lcc_preview::hash_bytes(content).to_string();
+    let mut s = Session::new();
+    let id = s.catalog.alloc_photo_id();
+    let mut p = Photo::new(
+        id,
+        Source::File { path: dir.join("gone").join("orig.png").to_string_lossy().into_owned() },
+        "orig.png",
+        "PNG",
+        48,
+        32,
+        "2026-01-01T10:00:00",
+    );
+    p.file_size = 0;
+    p.content_hash = Some(hash);
+    s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    let r = s.execute("library.findMissing", &json!({"folder": dir.join("found").to_string_lossy()})).unwrap();
+    let found = r["found"].as_array().map(Vec::len);
+    assert_eq!(found, Some(1), "renamed file matched by content without a recorded size: {r}");
+    assert_eq!(r["found"][0]["to"], json!(renamed.to_string_lossy().to_string()), "{r}");
+    assert_eq!(r["found"][0]["by"], json!("content"), "{r}");
+    assert_eq!(r["missing"], 0, "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Issue #104: the app plans Find Missing on a worker thread (no session) and relinks the plan
 /// afterwards; that gives exactly what the synchronous command gives — renamed files by content,
 /// impostors and look-alikes skipped (`ambiguous`).
@@ -3259,10 +3293,15 @@ fn raw_with_lightroom_sidecar_imports_rating_label_crop_and_develop() {
         let d = p.develop.to_json();
         assert_eq!(d["light"]["exposure"], 0.75, "{d}");
         assert_eq!(d["light"]["contrast"], 20.0, "{d}");
+        // Lightroom's corners (.2, .1) and (.8, .9) on the stored 3:2 image at a 2° straighten: the app's rect about the
+        // same centre, its sides those of the turned rectangle, the angle the other way (`catalog_crop`)
         let c = &d["crop"]["geometry"];
-        assert!((c["rect"]["x0"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{c}");
-        assert!((c["rect"]["y1"].as_f64().unwrap() - 0.9).abs() < 1e-6, "{c}");
-        assert!((c["angle"].as_f64().unwrap() - 2.0).abs() < 1e-6, "{c}");
+        let r = |k: &str| c["rect"][k].as_f64().unwrap();
+        assert!(((r("x0") + r("x1")) / 2.0 - 0.5).abs() < 1e-6 && ((r("y0") + r("y1")) / 2.0 - 0.5).abs() < 1e-6, "{c}");
+        let (t, dx, dy) = (2f64.to_radians(), 0.6 * 1.5, 0.8);
+        let want = (dx * t.cos() + dy * t.sin()) / (dy * t.cos() - dx * t.sin());
+        assert!(((r("x1") - r("x0")) * 1.5 / (r("y1") - r("y0")) - want).abs() < 1e-6, "{c}");
+        assert!((c["angle"].as_f64().unwrap() + 2.0).abs() < 1e-6, "{c}");
     }
     // the user's own later edits survive a folder sync: the sidecar is older than them, so it is
     // not read again over them
@@ -3304,6 +3343,91 @@ fn raw_with_lightroom_sidecar_imports_rating_label_crop_and_develop() {
     }
 }
 
+/// A photo turned in Lightroom comes in turned: Lightroom writes the whole orientation as the sidecar's
+/// `tiff:Orientation`, and the photo takes what it adds to the file's own (none here, so a half turn for 3).
+#[test]
+fn a_raw_turned_in_lightroom_imports_turned() {
+    use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+    let px: Vec<u8> = (0..60 * 40).flat_map(|i| [(i % 251) as u8, 90, 200]).collect();
+    let j = encode_jpeg(&EncodeImage::new(60, 40, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+    let off = 8 + 2 + 24 + 4;
+    let mut nef = b"II*\0\x08\0\0\0\x02\0".to_vec();
+    for (tag, v) in [(513u16, off as u32), (514, j.len() as u32)] {
+        nef.extend_from_slice(&tag.to_le_bytes());
+        nef.extend_from_slice(&[4, 0, 1, 0, 0, 0]);
+        nef.extend_from_slice(&v.to_le_bytes());
+    }
+    nef.extend_from_slice(&[0, 0, 0, 0]);
+    nef.extend_from_slice(&j);
+    for (exif, settings, want) in [
+        ("3", true, lcc_geom::Orientation::Rotate180),
+        ("8", true, lcc_geom::Orientation::Rotate270),
+        ("1", true, lcc_geom::Orientation::Normal),
+        // a packet without develop settings (a metadata-only writer) doesn't turn the photo
+        ("3", false, lcc_geom::Orientation::Normal),
+    ] {
+        let src = temp_dir("lr-turned");
+        std::fs::write(src.join("DSC_0002.NEF"), &nef).unwrap();
+        let crs = if settings { r#"crs:Version="17.0" crs:ProcessVersion="15.4" crs:Exposure2012="+0.50" crs:HasSettings="True""# } else { "" };
+        let xmp = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmp:Rating="2" tiff:Orientation="{exif}" {crs}/></rdf:RDF></x:xmpmeta>"#
+        );
+        std::fs::write(src.join("DSC_0002.xmp"), xmp).unwrap();
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        assert_eq!(ids(&r, "imported"), 1, "{r}");
+        let p = s.catalog.photos().next().unwrap();
+        assert_eq!(p.rating, 2);
+        assert_eq!(p.develop.orientation, want, "tiff:Orientation {exif}, settings {settings}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
+/// A straightened crop from a Lightroom sidecar has the shape Lightroom exports: its four edges are two opposite
+/// corners of the turned crop on the stored image, as in a catalog. Crop values and the sizes Lightroom Classic
+/// exported, from real wedding frames (3:2 bodies; the last one shot upright, turned by the sidecar).
+#[test]
+fn a_straightened_lightroom_crop_keeps_the_shape_lightroom_exports() {
+    use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+    let px: Vec<u8> = (0..60 * 40).flat_map(|i| [(i % 251) as u8, 90, 200]).collect();
+    let j = encode_jpeg(&EncodeImage::new(60, 40, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+    let off = 8 + 2 + 24 + 4;
+    let mut nef = b"II*\0\x08\0\0\0\x02\0".to_vec();
+    for (tag, v) in [(513u16, off as u32), (514, j.len() as u32)] {
+        nef.extend_from_slice(&tag.to_le_bytes());
+        nef.extend_from_slice(&[4, 0, 1, 0, 0, 0]);
+        nef.extend_from_slice(&v.to_le_bytes());
+    }
+    nef.extend_from_slice(&[0, 0, 0, 0]);
+    nef.extend_from_slice(&j);
+    // (left, top, right, bottom, angle, sidecar orientation, Lightroom's export width × height)
+    for (l, t, r, b, angle, orientation, export) in [
+        (0.018036, 0.06095, 0.981964, 0.93905, -2.42, 1, (7687.0, 5127.0)),
+        (0.042377, 0.0, 0.957623, 1.0, 2.38, 1, (7718.0, 5148.0)),
+        (0.078904, 0.100632, 0.917008, 0.800023, -4.602, 1, (4596.0, 3064.0)),
+        (0.026218, 0.09446, 0.973782, 0.90554, -3.98, 8, (4960.0, 7436.0)),
+    ] {
+        let src = temp_dir("lr-straightened");
+        std::fs::write(src.join("DSC_0003.NEF"), &nef).unwrap();
+        let xmp = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" tiff:Orientation="{orientation}" crs:Version="17.0" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:HasCrop="True" crs:CropLeft="{l}" crs:CropTop="{t}" crs:CropRight="{r}" crs:CropBottom="{b}" crs:CropAngle="{angle}"/></rdf:RDF></x:xmpmeta>"#
+        );
+        std::fs::write(src.join("DSC_0003.xmp"), xmp).unwrap();
+        let mut s = Session::new().with_fs();
+        let res = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        assert_eq!(ids(&res, "imported"), 1, "{res}");
+        let d = &s.catalog.photos().next().unwrap().develop;
+        let g = d.crop.geometry;
+        // the crop's width / height on the photo as shown (turned by its orientation)
+        let (ow, oh) = if d.orientation.swaps_axes() { (40.0, 60.0) } else { (60.0, 40.0) };
+        let aspect = g.rect.width() * ow / (g.rect.height() * oh);
+        let want = export.0 / export.1;
+        assert!((aspect - want).abs() / want < 0.002, "angle {angle}: aspect {aspect:.4}, Lightroom exported {want:.4}");
+        assert!((g.angle + angle).abs() < 1e-9, "{g:?}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
 /// Sidecars are found and read whatever their name's case, header or byte-order mark, so a
 /// raw's rating and crop never silently stay behind while the file's own IPTC comes in (issue #43).
 #[test]
@@ -3337,7 +3461,9 @@ fn raw_sidecar_rating_and_crop_survive_naming_and_encoding_variants() {
         let p = s.catalog.photos().next().unwrap();
         assert_eq!(p.rating, 3, "{name}");
         let c = p.develop.to_json()["crop"]["geometry"].clone();
-        assert!((c["rect"]["x0"].as_f64().unwrap_or(0.0) - 0.2).abs() < 1e-6, "{name}: {c}");
+        // (Lightroom's 1.5° straighten turns the app's crop the other way: `catalog_crop`)
+        assert!((c["angle"].as_f64().unwrap_or(0.0) + 1.5).abs() < 1e-6, "{name}: {c}");
+        assert!((c["rect"]["x0"].as_f64().unwrap_or(0.0) - 0.2).abs() < 0.05, "{name}: {c}");
         if name == "lower-full" {
             // a move takes that sidecar along
             let dest = temp_dir("sc-variant-dest");
@@ -4059,7 +4185,8 @@ fn new_photos_start_with_constrain_crop_on() {
     assert!(crate::import::has_import_look(&new), "the camera preview still stands in for it");
     let lr = by_name(&s, "lr.png");
     assert!(!lr.develop.geometry.constrain_crop, "a Lightroom sidecar without the flag: off, as it always read");
-    assert!((lr.develop.crop.geometry.angle - 3.0).abs() < 1e-9, "its crop came along");
+    // (Lightroom's 3° straighten turns the app's crop the other way: `catalog_crop`)
+    assert!((lr.develop.crop.geometry.angle + 3.0).abs() < 1e-9, "its crop came along");
     // the preference off: new photos start unconstrained
     let p = s.execute("library.preferences", &json!({"import": {"constrainCrop": false}})).unwrap();
     assert_eq!(p["import"]["cropUnconstrained"], true, "{p}");

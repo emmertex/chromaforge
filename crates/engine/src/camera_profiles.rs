@@ -137,6 +137,8 @@ pub fn save(profile: &CameraProfile, dir: &Path) -> Result<PathBuf, String> {
     // a fresh temp file renamed over the profile: never a fixed `.tmp` name, which a planted link
     // would have written through
     lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Drop any cached lookup for this model: an earlier miss must not hide the profile just saved (upstream #3938).
+    cache().lock().unwrap_or_else(PoisonError::into_inner).remove(profile.model.trim());
     Ok(path)
 }
 
@@ -242,8 +244,12 @@ pub fn load_dcp(path: &Path) -> Result<lcc_raw::dcp::Dcp, String> {
 
 /// The active `.dcp` files in [`dir`] and what they are (damaged ones skipped with a warning).
 pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dir().map(|d| active_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`active_dcps`] of camera-profiles folder `d`.
+pub fn active_dcps_in(d: &Path) -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
@@ -261,8 +267,12 @@ pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
 
 /// The imported `.dcp` files in [`dcp_library_dir`]: `(id, profile)`, the id being `dcp:<file stem>`.
 pub fn library_dcps() -> Vec<(String, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dcp_library_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dcp_library_dir().map(|d| library_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`library_dcps`] of library folder `d`.
+pub fn library_dcps_in(d: &Path) -> Vec<(String, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
@@ -614,6 +624,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
 
         assert_ne!(before_key, after_key, "a changed profile must not reuse the previous render cache");
+    }
+
+    #[test]
+    fn saved_profile_is_found_after_earlier_miss() {
+        let model = format!(
+            "TESTMISS-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default()
+        );
+        let mut saved = profile();
+        saved.model = model.clone();
+
+        // A lookup before anything is saved caches the miss.
+        assert!(get(&model).is_none(), "no profile saved yet");
+
+        // Saving replaces the on-disk file that `get` reads.
+        let saved_path = dir().map(|d| save(&saved, &d).unwrap());
+
+        assert_eq!(get(&model).as_deref(), Some(&saved), "a profile saved after the first lookup must be returned");
+        if let Some(path) = saved_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

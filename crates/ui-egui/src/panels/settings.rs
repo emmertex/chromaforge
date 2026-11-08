@@ -572,6 +572,19 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             };
         }
     });
+    // the Edit panel's colour tools: Lightroom Classic's panels, or the colourist's Witchcraft
+    // layout (Window ▸ Grading Mode and Ctrl+Shift+G switch it too)
+    row(ui, t, crate::i18n::tr("Grading Mode"), |ui| {
+        let mut mode = app.ui.settings.grading_mode;
+        if choices(
+            ui,
+            "settingsGradingMode",
+            &[(crate::state::GradingMode::Eboda, "Eboda"), (crate::state::GradingMode::Witchcraft, "Witchcraft")],
+            &mut mode,
+        ) {
+            let _ = app.run("view.gradingMode", json!({"mode": mode.id()}));
+        }
+    });
     row(ui, t, crate::i18n::tr("Language"), |ui| {
         // a list, not a row of buttons: there are too many languages for one line
         let current = language_label(ui.ctx(), app.ui.language);
@@ -1360,13 +1373,19 @@ fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     row(ui, t, crate::i18n::tr("Second graphics card"), |ui| {
         let off = crate::i18n::tr("Off").to_string();
+        // Automatic names the card it uses once that card is set up (short: the hint below says
+        // what it does, so the choice fits a small Settings window)
+        let auto_now = match gpu::helper_status() {
+            ("ready", Some(name)) => format!("{auto} ({name})"),
+            _ => auto.clone(),
+        };
         let current = match app.ui.settings.gpu_helper.as_str() {
-            "" => auto.clone(),
+            "" => auto_now.clone(),
             "off" => off.clone(),
             k => name_of(k).unwrap_or_else(|| auto.clone()),
         };
         let combo = crate::widgets::combo_box("settingsGpuHelper").selected_text(current).width(260.0).show_ui(ui, |ui| {
-            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto.as_str());
+            let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, String::new(), auto_now.as_str());
             register(ui.ctx(), "button:settingsGpuHelper-auto", r.rect);
             let r = ui.selectable_value(&mut app.ui.settings.gpu_helper, "off".to_string(), off.as_str());
             register(ui.ctx(), "button:settingsGpuHelper-off", r.rect);
@@ -1387,6 +1406,33 @@ fn gpu_card_rows(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     crate::dialog_frame::in_control_column(ui, |ui| {
         ui.add(egui::Label::new(RichText::new(&status).size(11.0).color(t.text_dim)).truncate()).on_hover_text(&status);
     });
+}
+
+/// Settings ▸ Performance ▸ Exports: which graphics cards exports use, shown when the computer has
+/// a second one (or the choice isn't the default): both, the card for editing only, or the second
+/// card only (to measure its speed).
+#[cfg(not(target_arch = "wasm32"))]
+fn export_cards_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+    use lcc_engine::export::ExportCards;
+    let two = lcc_engine::gpu::adapters().iter().filter(|e| e.usable).count() >= 2;
+    let st = &mut app.ui.settings;
+    if st.export_cpu_only || (!two && st.export_cards == ExportCards::Both) {
+        return;
+    }
+    let opts = [
+        (ExportCards::Both, crate::i18n::tr("Both cards")),
+        (ExportCards::Editing, crate::i18n::tr("Card for editing only")),
+        (ExportCards::Second, crate::i18n::tr("Second card only")),
+    ];
+    row(ui, t, crate::i18n::tr("Graphics cards for exports"), |ui| {
+        choices(ui, "settingsExportCards", &opts, &mut st.export_cards);
+    });
+    let why = match st.export_cards {
+        ExportCards::Both => "Each photo goes to the card that will finish it sooner.",
+        ExportCards::Editing => "The second graphics card is left free for previews and thumbnails.",
+        ExportCards::Second => "To measure the second card's speed. If it stops, the card for editing takes over.",
+    };
+    hint(ui, t, crate::i18n::tr(why));
 }
 
 /// The largest thumbnail cache Custom… offers (1 TB).
@@ -1435,6 +1481,8 @@ fn exports_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if check(ui, "settings.exportGpu", &mut gpu_exports, "Use the GPU for exports") {
         app.ui.settings.export_cpu_only = !gpu_exports;
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    export_cards_row(app, ui, t);
     row(ui, t, crate::i18n::tr("Test my machine"), |ui| {
         let running = crate::machine_test::running(app);
         let label = if running { crate::i18n::tr("Testing…") } else { crate::i18n::tr("Test my machine") };
@@ -1922,6 +1970,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     row(ui, t, crate::i18n::tr("Wheel scroll speed"), |ui| {
         choices(ui, "settingsWheelSpeed", &[(1.0, "Normal"), (2.0, "Fast"), (3.0, "Fastest")], &mut app.ui.settings.wheel_scroll_speed);
     });
+    check(ui, "settings.reduceMotion", &mut app.ui.settings.reduce_motion, "Reduce motion");
+    hint(ui, t, crate::i18n::tr("Turns off zoom and spinner animations. Fades stay."));
     check(ui, "settings.wheelResizesBrush", &mut app.ui.settings.wheel_resizes_brush, "Wheel resizes brush instead of zooming");
     heading(ui, t, crate::i18n::tr("Keywords"));
     row(ui, t, crate::i18n::tr("Keywords of the selection"), |ui| {

@@ -24,6 +24,7 @@ mod command_error;
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
+pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
 pub mod docking;
@@ -47,10 +48,12 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -65,6 +68,7 @@ mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
+pub mod motion;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -124,6 +128,8 @@ mod tests_background_prep;
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
+#[cfg(test)]
+mod tests_bottom_bar_compact;
 #[cfg(test)]
 mod tests_breadcrumb_more;
 #[cfg(test)]
@@ -213,6 +219,8 @@ mod tests_folder_poll;
 #[cfg(test)]
 mod tests_grading;
 #[cfg(test)]
+mod tests_grading_mode;
+#[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
 mod tests_grid_style;
@@ -224,6 +232,8 @@ mod tests_hdr_zoom_cache;
 mod tests_histogram_drag;
 #[cfg(test)]
 mod tests_histogram_modes;
+#[cfg(test)]
+mod tests_hover_pointer;
 #[cfg(test)]
 mod tests_i18n_coverage;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -287,6 +297,8 @@ mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
+mod tests_mask_tree;
+#[cfg(test)]
 mod tests_masking;
 #[cfg(test)]
 mod tests_masking_layout;
@@ -309,11 +321,15 @@ mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
 #[cfg(test)]
+mod tests_overlay_on;
+#[cfg(test)]
 mod tests_panel_restore;
 #[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_pickers;
+#[cfg(test)]
+mod tests_plugin_jobs;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
@@ -375,6 +391,8 @@ mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
 #[cfg(test)]
+mod tests_stand_in_crop;
+#[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
 mod tests_switch_library;
@@ -402,6 +420,8 @@ mod tests_update;
 mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
+#[cfg(test)]
+mod tests_witchcraft;
 #[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]
@@ -680,7 +700,7 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
-    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    /// A library backup is due (Library Settings ▸ Back up library): Back Up and Quit, or Skip This Time.
     Backup(String),
 }
 
@@ -816,6 +836,14 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// How the loupe drew its picture last frame ([`panels::detail::LoupeDrawn`]): where the
+    /// picture's corners went and the rect it fills (tests check that no part of it is empty).
+    pub loupe_drawn: Option<panels::detail::LoupeDrawn>,
+    /// What the loupe's look-ahead was made for last (photo, stepping back, catalog revision,
+    /// edge), so it is worked out again only when one of them changes ([`panels::detail`]).
+    pub(crate) look_ahead_made_for: Option<(lcc_catalog::PhotoId, bool, u64, usize)>,
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
@@ -929,7 +957,7 @@ pub struct LccApp {
     /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
     last_screen: egui::Vec2,
     /// The export lanes, processor-only switch and GPU share last applied (install settings).
-    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    export_tuning_applied: Option<(u32, bool, u32, u32, lcc_engine::export::ExportCards)>,
     /// "Test my machine" while it runs (Settings ▸ Performance).
     pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
@@ -947,6 +975,8 @@ pub struct LccApp {
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
+    /// Files that waited for a library and wait for the running import or Synchronize Folder too.
+    pub waiting_import: Vec<String>,
     /// Immich: Connections settings, the Import dialog's Immich source, background pump state.
     #[cfg(not(target_arch = "wasm32"))]
     pub immich: panels::connections::ImmichUi,
@@ -1138,6 +1168,9 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            loupe_drawn: None,
+            look_ahead_made_for: None,
             pictures_missing_pass: None,
             prep_at: None,
             prep_backward: false,
@@ -1199,6 +1232,7 @@ impl LccApp {
             screen_profile: None,
             screen_profile_read: None,
             library_problem: None,
+            waiting_import: Vec::new(),
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,
@@ -1415,7 +1449,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                // from File ▸ Libraries or Library Settings
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
+                    Some(i18n::tr("The library passed the integrity test").to_string())
+                }
+                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1440,9 +1481,21 @@ impl LccApp {
                 }
                 None => i18n::tr("Color label cleared").into(),
             };
+            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
             // Native menu clicks can arrive before logic() updates last_time after an idle gap.
             let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
             self.ui.show_toast((text, now + TOAST_SECONDS, label));
+        }
+        if r.is_ok()
+            && cull_toast::confirms(id)
+            && !matches!(id, "photo.label" | "photo.clearLabel")
+            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
+        {
+            // every rating and flag change confirms, with the count when several photos changed
+            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
+                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+            }
         }
         match &r {
             Err(e) => {
@@ -2131,6 +2184,11 @@ impl LccApp {
             surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
+        // input this frame: batch work leaves the editing card to the interface for a moment
+        // (only where the app tracks it: `gpu::track_interaction`)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+            lcc_engine::gpu::note_interaction();
+        }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
@@ -2412,7 +2470,7 @@ impl LccApp {
         self.memory_applied = Some(mb);
         // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
         let st = &self.ui.settings;
-        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs, st.export_cards);
         if self.export_tuning_applied != Some(tuning) {
             crate::machine_test::apply(st);
             self.export_tuning_applied = Some(tuning);
@@ -2692,6 +2750,23 @@ impl LccApp {
             let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
             self.toast(ctx, msg);
         }
+        // an older install's presets (the app under an earlier name, on this computer) join too, once
+        // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
+        // asks again
+        // (its camera profiles too, bound to the bodies the older install started with them)
+        if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
+            let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
+            let (n, m) = (sum("presets"), sum("cameraProfiles"));
+            let msg = match (n, m) {
+                (0, 0) => None,
+                (n, 0) => Some(crate::i18n::tr_format!("{n} presets from an older install were added.", n = n)),
+                (0, m) => Some(crate::i18n::tr_format!("{m} camera profiles from an older install were added.", m = m)),
+                (n, m) => Some(crate::i18n::tr_format!("{n} presets and {m} camera profiles from an older install were added.", n = n, m = m)),
+            };
+            if let Some(msg) = msg {
+                self.toast(ctx, msg);
+            }
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
@@ -2720,6 +2795,7 @@ impl LccApp {
         let ctx = ui.ctx().clone();
         widgets::sync_section_folds(&ctx, &mut self.ui.section_open);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        motion::set(&ctx, self.ui.settings.reduce_motion);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
@@ -3776,6 +3852,8 @@ mod cache_tests {
     }
 }
 
+#[cfg(test)]
+mod tests_display_truth;
 #[cfg(test)]
 mod tests_docking_acceptance;
 #[cfg(test)]

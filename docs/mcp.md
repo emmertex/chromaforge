@@ -161,6 +161,8 @@ Generated `cmd_*` tools and nested command params remain free-form: the registry
 parameter docs, not machine-readable schemas. Existing command validation (including strict
 export options) is preserved. Escaped tool panics return `isError: true`, and the session keeps
 serving; backend panics during resource reads or tool listing return an internal error.
+`prefs.setBackgroundPrep` rejects unknown setting names and rejects `settings` when `reset` is true.
+Reset requires an open library.
 The headless backend owns its session directly, without a session mutex.
 
 `<scheme>://document` and `<scheme>://commands` contain JSON matching `doc_inspect` and
@@ -378,3 +380,21 @@ an input error, even when output fails.
 
 Connect mode and exports inside `command_batch` remain synchronous and do not report MCP
 progress or cancellation. Use a direct headless export call for this behavior.
+
+## Limiting what an agent may do
+
+The MCP server can refuse tools and commands at call time. Nothing is refused unless one of these
+environment variables is set; put them in the `env` block of the MCP client's configuration.
+
+| Variable | Effect |
+|---|---|
+| `<PREFIX>_MCP_SAFE=1` | Refuses `export.addToPhotos`, `ui.clipboard`, `ui.dropFiles`, `app.quit` and `folder.move`, the `clipboard` tool, an import in `move` mode, and `addToPhotos` in an export |
+| `<PREFIX>_MCP_DENY=a.b,c.*` | Refuses these command ids (exact, or `prefix.*`) and tool names |
+| `<PREFIX>_MCP_ALLOW_TOOLS=x,y` | When set, only these tools are listed and callable |
+| `<PREFIX>_MCP_EXPORT_ROOT=DIR` | Every export `path` / `dir` must resolve inside DIR (no `..`, no symlink out, no `sameAsOriginal`) |
+
+The check runs on every `tools/call`, so `run_command`, `command_run`, `command_batch` and the
+`cmd_*` tools cannot get around it; `tools/list` leaves out what a call would be refused. A refusal
+comes back as a tool error that says why. The paths are checked just before the export runs, not
+held open: this limits a helpful agent's mistakes and a prompt-injected one's reach, it is not a
+sandbox against a process that can race the filesystem.

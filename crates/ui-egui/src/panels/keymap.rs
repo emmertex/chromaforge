@@ -142,6 +142,7 @@ pub(crate) fn in_module(module: crate::module::ModuleId, id: &str) -> bool {
     ];
     const DEVELOP: &[&str] = &[
         "develop.",
+        "pluginFilter.",
         "panel.",
         "tool.",
         "brush.",

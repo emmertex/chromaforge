@@ -518,6 +518,8 @@ fn quit_with_a_running_task_asks_and_quit_anyway_cancels() {
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Tasks(_))), "{:?}", h.app.quit_prompt);
     h.step();
     assert!(!has(&h, "button:quitRetry"));
+    let text = h.painted_text().join("\n");
+    assert!(!text.contains("Disable backups"), "only the backup prompt points at the backup setting:\n{text}");
     click(&mut h, "button:quitAnyway");
     assert!(g.is_cancelled() && h.quit_requested());
 }
@@ -878,11 +880,9 @@ fn immediate_library_commands_and_auto_sync_show_completion() {
     assert!(h.app.ui.toast().is_none());
 }
 
-/// A catalog backup due at quit asks first, as Lightroom Classic does: Skip This Time quits without
-/// one (ported from OneSlips' LR-BACKUP).
-#[test]
-fn quitting_with_a_backup_due_asks_and_skip_quits() {
-    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-{}", std::process::id()));
+/// An app on a library (in a temp folder named after `name`) with a backup due on every exit.
+fn backup_due(name: &str) -> (Headless, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("lcc-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -895,12 +895,43 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
+    (h, dir)
+}
+
+/// A catalog backup due at quit asks first, as Lightroom Classic does, and says where the schedule
+/// is set: Cancel keeps the app open, Skip This Time quits without one (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_a_backup_due_asks_and_skip_quits() {
+    let (mut h, dir) = backup_due("quit-backup");
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    h.step();
+    let text = h.painted_text().join("\n");
+    assert!(text.lines().any(|l| l == "Back up the library?"), "the prompt is titled for the library:\n{text}");
+    assert!(text.contains("Disable backups in Edit ▸ Library Settings…"), "the prompt says where the schedule is set:\n{text}");
+    click(&mut h, "button:quitCancel");
+    assert!(h.app.quit_prompt.is_none() && !h.quit_requested(), "Cancel keeps the app open");
+    assert!(!crate::panels::notices::may_close(&mut h.app), "and the next quit asks again");
     click(&mut h, "button:quitSkipBackup");
     assert_eq!(h.app.exit_backup, Some(false));
     assert!(h.quit_requested());
     assert!(crate::panels::notices::may_close(&mut h.app), "asked once");
+    let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The backup prompt's title and hint are translated, the menu path in the hint too.
+#[test]
+fn the_backup_prompt_is_translated_with_its_menu_path() {
+    let (mut h, dir) = backup_due("quit-backup-de");
+    h.app.ui.language = crate::i18n::Locale::De;
+    crate::i18n::set_language(crate::i18n::Locale::De);
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    h.step();
+    let text = h.painted_text().join("\n");
+    crate::i18n::set_language(crate::i18n::Locale::En);
+    assert!(text.lines().any(|l| l == "Bibliothek sichern?"), "the title is translated:\n{text}");
+    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Bibliothekseinstellungen… abschalten"), "{text}");
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }

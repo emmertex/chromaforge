@@ -61,8 +61,8 @@ Overrides (read once at launch):
 - Both `<PREFIX>_GPU=0` and `<PREFIX>_GPU_BACKEND=off` also keep AI Denoise, the face models
   and the AI mask model (SAM 3 on Metal) on the CPU.
 - `<PREFIX>_GPU_INIT_TIMEOUT=<seconds>` (whole seconds, 1–3600; default 30): how long creating a
-  compute device (rendering, AI Denoise, faces) and compiling its kernels may take. See *Device
-  creation time limit* below.
+  compute device (rendering, AI Denoise, faces) and compiling its kernels may go without building a
+  kernel (ten times that in all). See *Device creation time limit* below.
 
 **DX12 shader compiler (issue #471).** Every instance (window and compute) compiles DX12 shaders with
 FXC (`d3dcompiler_47.dll`, part of Windows; `lcc_gpu::backend::backend_options`). wgpu's
@@ -101,8 +101,13 @@ connection and never answers (a crash-looping WSLg compositor, a stale `WAYLAND_
 calls never returned, and every render waiting for the device, and every test that creates one, hung
 for good. wgpu's native calls are synchronous, so each compute device (rendering, denoise, faces) is
 now created, kernels included, on a thread of its own (`lc-gpu-device`, `crates/gpu/src/init.rs`), and
-the caller waits at most `<PREFIX>_GPU_INIT_TIMEOUT` seconds (default 30: a first run that compiles
-every kernel with FXC takes seconds). Past it that device is unavailable for the process, with the
+the caller waits until `<PREFIX>_GPU_INIT_TIMEOUT` seconds (default 30) pass with no progress. Each
+module prepared and each kernel built is progress (`init::Progress`, ticked by `ctx::build_kernels`),
+so a first start after an install or a driver update, when the driver's shader cache is empty and
+compiling every kernel takes 30 s on an RTX 4070 SUPER and an RTX 5070 under DX12, still ends on the
+GPU instead of falling back to the CPU; a creation is given up on at ten times the limit in all
+(`did not finish in 300 s (10 times …)`), or a limit after its last kernel (`stopped making progress
+for 30 s … after N kernels`). Past it that device is unavailable for the process, with the
 reason `GPU device creation did not finish in 30 s (<PREFIX>_GPU_INIT_TIMEOUT): …` reported like any
 other creation failure (`perf.gpuReason`, the no-GPU notice, the log), and the blocked thread is left
 behind. That thread, not the caller, holds what must last as long as the driver work does: its share
@@ -148,7 +153,8 @@ device and every kernel build; a crash while the window's renderer starts is avo
 or worked around with `<PREFIX>_GPU_BACKEND`.
 
 **The window's renderer and its fallback (Windows).** Before the window opens, each renderer is probed in
-order: DX12, Vulkan, GL, then eframe's OpenGL renderer (glow). A probe creates a device and builds egui's
+order: DX12, GL, then eframe's OpenGL renderer (glow); Vulkan only when `<PREFIX>_GPU_BACKEND=vulkan` asks for it,
+since a broken Vulkan driver can crash the process before any window. A probe creates a device and builds egui's
 pipeline inside wgpu error scopes, so a driver that cannot compile egui's shaders ("The parameter is
 incorrect. (0x80070057)" in `egui_pipeline`) is logged and skipped instead of killing the app; no pop-up
 unless that renderer was forced (#1624). The renderer
@@ -489,11 +495,62 @@ always its own. A headless `ui.screenshot` reads a GPU-drawn view back (`lcc_gpu
   own included) are logged and replace the render device (one of its own) instead of wgpu's
   default panic.
 
-AI models (the denoise network and AI masks' kernels in `nn.rs`, the face models in `faces.rs`)
+AI models (the denoise network in `nn.rs` and `bm3d.rs`, the face models in `faces.rs`)
 make their device on the second graphics card when one is chosen or found, else on the editing
-card (`lcc_gpu::ai_adapter`; `ai_card()` says which). Each AI device is made once and given up on
-alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their device
-through `ai_adapter` too. Not ported from OneSlips' DUAL-GPU-5: one denoise photo per card at once.
+card (`lcc_gpu::ai_adapter_on`; `ai_card()` says which card the first goes to), and keep a device
+of their own on each card (`lcc_gpu::ai::Card`; below). Each AI device is made once and given up
+on alone. Models that arrive later (SAM 2.1 / EoMT masks, MediaPipe people) should make their
+devices per card the same way. (The AI masks and the MediaPipe face finder run through candle or
+on the processor, with no wgpu device.)
+
+## Two graphics cards: who renders batch work
+
+Settings ▸ Performance ▸ Second graphics card (`app.gpu {helper}`; `<PREFIX>_GPU_HELPER` wins) sets
+up a device on another card (`helper.rs`). Thumbnails sent there (`lcc_gpu::prefer_helper`) and AI
+models (`ai_adapter`) use it whenever it is ready. Batch photos (exports, Build Previews, the
+background preparation, the import's previews) take a **turn per photo** on either card
+(`lcc_gpu::batch_turn_any` / `wait_batch_turn_any`), and the photo's renders run on that card:
+
+- Each card's gate (`gate.rs`) measures its batch speed (bytes of finished turns per busy second,
+  the recent past first), and a photo goes to the card whose running photos plus this one would
+  finish soonest, so both cards work in proportion to their speed (the second card on a tie).
+  Before this, every batch render went to the second card while it was ready and the editing card
+  sat idle.
+- The editing card yields to the interface once the desktop app tracks it
+  (`lcc_gpu::track_interaction`, `note_interaction` on every frame with input): batch turns there
+  only after ~1 s with no input and no view render, one job at a time while the second card
+  works, and a batch render already running there pauses between its submissions the moment a
+  slider, brush, pan or photo change starts (`batch.pauses` in `app.gpu`). The second card draws no
+  window: it never waits for the interface, and its default batch budget is 80 % of its memory
+  (55 % on the editing card).
+- 1:1 Build Previews runs two photos per card (`batch_lanes_hint(2)`); exports' automatic lanes
+  grow by the second card's jobs, and a lanes setting made on one card is raised to both cards'
+  turns plus one (`<PREFIX>_EXPORT_LANES` still means exactly that many). The CLI, MCP and tests
+  don't track the interface: there both cards simply share photos by speed.
+- `app.gpu` → `batch.cards`, `batch.rate {editing, helper}`, `batch.renders` (GPU renders so far by
+  card and kind of work) and `batch.interfaceBusy` show it working.
+- Exports follow Settings ▸ Performance ▸ Exports ▸ Graphics cards for exports
+  (`lcc_engine::export::ExportCards`, `app.exportTuning {cards}`): both cards (above), the card for
+  editing only (`try_batch_turn_on(false, …)`), or the second card only, to measure it (the card
+  for editing takes the photo when the second card isn't ready or is lost).
+- AI Denoise keeps a denoise device on each card (`nn::Card`: `Second`, `Editing`; `nn::dev_on`,
+  `nn::runner_on`, `bm3d::Bm3dGpu::new_on`), each set up, checked against the processor and given
+  up on alone (`nn::broken_reason_on`). A batch makes one photo on each card at once, the second
+  card first (`Model::lanes`; one photo at a light pace), and one photo's tiles stay on its card.
+  While the second card works too, a tile for the editing card waits for an idle interface
+  (`nn::background_turn`); with one card nothing waits. The second card's set-up marker is
+  `gpu-setup-helper.marker` beside the editing card's.
+- The face recognition models keep a face device on each card too (`faces.rs`; `ai::Card`, shared
+  with denoise). A new model goes to the second card when there is one that works, else to the
+  card for editing (`faces::accelerator`; `accelerator_on` names a card), and keeps one copy of its
+  weights there: a face scan is mostly the processor's work (decoding, finding faces with the CPU
+  MediaPipe model), so a copy on each card would gain little. Each card is given up on alone
+  (`faces::broken_reason_on`); when the card a model ran on stops working, the scan offers the
+  model to the other card (checked against the CPU there as at first), else it stays on the CPU
+  (`face_detect::move_off_lost_card`; `faces.gpu` names the card as `recognition.card`). The
+  scan's pace holds the second card back only at a light pace (`faces::set_pace` gives it its own
+  share: all of its time at a normal or full pace); a model on the card for editing doesn't wait
+  for the interface, since the second card never has the same model's work.
 
 ## Open items
 - WebGPU in the browser build (async init, single device per canvas).

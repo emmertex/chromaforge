@@ -160,8 +160,8 @@ mod ai {
         }
     }
     impl Model for Repeat4 {
-        fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
-            (self, threads)
+        fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+            (Box::new(crate::denoise::Lent(self)), threads)
         }
 
         fn self_test(&self, _: RunOn) -> Result<Value, String> {

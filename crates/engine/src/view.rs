@@ -194,8 +194,9 @@ pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
         let label = if f.rating == 0 { "Unrated".to_string() } else { format!("Rating {op} {}★", f.rating) };
         add(label, json!({"rating": 0, "ratingOp": "atLeast"}));
     }
-    if let Some(fl) = f.flag {
-        add(format!("Flag: {}", format!("{fl:?}").to_lowercase()), json!({"flag": Null}));
+    if let Some(shown) = f.flags_shown() {
+        let names = shown.iter().map(|fl| format!("{fl:?}").to_lowercase()).collect::<Vec<_>>().join(" or ");
+        add(format!("Flag: {names}"), json!({"flag": Null, "flags": []}));
     }
     if let Some(shown) = f.labels_shown() {
         let or = |ls: &[lcc_catalog::ColorLabel]| ls.iter().map(|l| cat.label_name(*l)).collect::<Vec<_>>().join(" or ");

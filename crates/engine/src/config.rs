@@ -39,8 +39,9 @@ pub fn config_dir() -> Option<PathBuf> {
     config_dir_with(lcc_brand::env_os("CONFIG_DIR"), portable_dir, lcc_brand::settings_dir)
 }
 
-/// The recent-catalogs list (File ▸ Open Recent Catalog, the startup default) in [`config_dir`], like every
-/// other settings file: `<PREFIX>_CONFIG_DIR` and portable mode apply; an empty override keeps no list.
+/// The old recent-catalogs list in [`config_dir`], like every other settings file: `<PREFIX>_CONFIG_DIR` and
+/// portable mode apply; an empty override keeps no list. The desktop app reads it once, to carry its libraries
+/// over into the settings' recent list (issue #871).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn recent_catalogs_file() -> Option<PathBuf> {
     config_dir().map(|d| crate::catalog::library::RecentCatalogs::file_in(&d))

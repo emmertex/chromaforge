@@ -41,6 +41,14 @@ pub const HOST_FEATURES: &[&str] = &[
     // `libraryAdd` in the permissions and the `library.add` host call; `source` in the `command`
     // and `command.prepare` requests
     "libraryAdd",
+    // `job` on a command and the `job.*` host calls (progress, cancel, `{continue: state}`)
+    "jobs",
+    // `pixels` in the permissions and the `photo.pixels` host call
+    "pixels",
+    // `crop` in the permissions and the `develop.setCrop` host call
+    "crop",
+    // `virtualCopy` in the permissions and the `photo.virtualCopy` host call
+    "virtualCopy",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.
@@ -136,6 +144,10 @@ pub struct CommandDecl {
     /// and defaults of its own, runs the command without it, or explains why it can't run.
     #[serde(default, skip_serializing_if = "is_false")]
     pub prepare: bool,
+    /// Runs as a job (host feature `jobs`): on a worker, with a row in the activity stack, its
+    /// progress reported through the `job.*` host calls, and continued with `{continue: state}`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub job: bool,
 }
 
 /// Which hooks the plug-in implements.
@@ -278,6 +290,9 @@ impl Manifest {
             }
             if c.dialog.len() > MAX_FIELDS {
                 return bad(format!("command {:?}: at most {MAX_FIELDS} dialog fields", c.id));
+            }
+            if c.job && !self.requires.iter().any(|r| r == "jobs") {
+                return bad(format!("command {:?}: a job needs \"jobs\" in `requires`", c.id));
             }
             for f in &c.dialog {
                 f.validate(c.prepare).map_err(|e| Error::Manifest(format!("command {:?}: {e}", c.id)))?;

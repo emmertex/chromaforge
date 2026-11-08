@@ -33,6 +33,39 @@ pub fn photo_summary(p: &Photo) -> Value {
     })
 }
 
+/// Current catalog values, which can differ from embedded file metadata until explicitly written.
+fn catalog_metadata(photo: &Photo) -> Vec<Value> {
+    let m = &photo.meta;
+    let mut rows: Vec<Value> = [
+        ("Title", &m.title),
+        ("Caption", &m.caption),
+        ("Alt Text", &m.alt_text),
+        ("Extended Description", &m.extended_description),
+        ("Creator", &m.creator),
+        ("Copyright", &m.copyright),
+        ("Rights Usage Terms", &m.usage_terms),
+        ("Copyright Info URL", &m.copyright_url),
+        ("Location", &m.location),
+        ("City", &m.city),
+        ("State / Province", &m.state),
+        ("Country", &m.country),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(name, value)| json!({"name": name, "value": value}))
+    .collect();
+    if let Some((lat, lon)) = m.gps {
+        rows.push(json!({"name": "GPS", "value": format!("{lat:.6}, {lon:.6}")}));
+    }
+    if m.copyright_status != lcc_catalog::CopyrightStatus::Unknown {
+        rows.push(json!({"name": "Copyright Status", "value": m.copyright_status.label()}));
+    }
+    if !m.keywords.is_empty() {
+        rows.push(json!({"name": "Keywords", "value": m.keywords.join("; ")}));
+    }
+    rows
+}
+
 /// How deep [`album_json`] lists folders inside folders: a catalog that loops (an album inside
 /// itself, which [`lcc_catalog::Catalog::repair`] puts right on load) lists no further
 /// instead of overflowing the stack.
@@ -128,17 +161,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 "clipboard": s.clipboard.is_some(),
             }))
         }),
-        cmd!(query "photo.allMetadata", "All Metadata", [], None, "{id?} → {exif: [{group, tag, name, value}], xmp: [{name, value}]} — every EXIF / TIFF / GPS tag of the file and its XMP properties", always, |s, p| {
+        cmd!(query "photo.allMetadata", "All Metadata", [], None, "{id?} → {catalog: [{name, value}], exif: [{group, tag, name, value}], xmp: [{name, value}], note?} — the values saved in the catalog, every EXIF / TIFF / GPS tag of the file and its XMP properties; a file that can't be read gives the catalog values and a note", always, |s, p| {
             let id = photo_arg(s, p, "photo.allMetadata")?;
             let ph = s.catalog.photo(id).ok_or_else(|| super::bad("photo.allMetadata", "no such photo"))?.clone();
+            let catalog = catalog_metadata(&ph);
             let lcc_catalog::Source::File { path } = &ph.source else {
-                return Ok(json!({"exif": [], "xmp": [], "note": "a generated demo photo has no file"}));
+                return Ok(json!({"catalog": catalog, "exif": [], "xmp": [], "note": "a generated demo photo has no file"}));
             };
-            let bytes = match &s.media.file_bytes {
+            let read = match &s.media.file_bytes {
                 Some(r) => r(path),
                 None => std::fs::read(path).map_err(|e| format!("{path}: {e}")),
-            }
-            .map_err(|e| super::bad("photo.allMetadata", e))?;
+            };
+            let bytes = match read {
+                Ok(bytes) => bytes,
+                // what was saved in the catalog is still worth showing when the original is offline or gone
+                Err(e) => return Ok(json!({"catalog": catalog, "exif": [], "xmp": [], "note": format!("the file can't be read: {e}")})),
+            };
             let exif: Vec<Value> = lcc_meta::file_tag_rows(&bytes)
                 .into_iter()
                 .map(|r| json!({"group": r.group, "tag": r.tag, "name": r.name, "value": r.value}))
@@ -160,7 +198,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             let xmp: Vec<Value> =
                 properties.into_iter().filter(|(k, _)| !k.starts_with("lc:")).map(|(k, v)| json!({"name": k, "value": v.join("; ")})).collect();
-            Ok(json!({"exif": exif, "xmp": xmp}))
+            Ok(json!({"catalog": catalog, "exif": exif, "xmp": xmp}))
         }),
         cmd!(query "photo.fujiRecipe", "Fujifilm Recipe", [], None, "{id?} → {present, text, lines: [{tag, label, value}]} — in-camera film settings from a Fujifilm MakerNote, or present: false", always, |s, p| {
             let id = photo_arg(s, p, "photo.fujiRecipe")?;
@@ -301,7 +339,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"groups": groups, "cursor": ph.history_index(), "latest": ph.history_cursor.is_none()}))
         }),
-        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs} (exports' turns at the GPU), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
+        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs, pauses, pausedMs (running batch renders that paused for the interface), cards (cards taking batch work now), rate {editing, helper} (each card's measured batch speed, bytes/s, null before any), renders {editingInteractive, editingBatch, helperInteractive, helperBatch} (GPU renders so far by card), interfaceBusy} (exports' and preview builds' turns at the cards), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
             if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
                 lcc_gpu::set_enabled(on);
             }
@@ -332,6 +370,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 "batch": {
                     "jobs": b.jobs, "bytes": b.bytes, "waiting": b.waiting, "limitBytes": b.limit_bytes,
                     "limitJobs": b.limit_jobs, "waits": b.waits, "waitedMs": b.waited_ms,
+                    "pauses": b.pauses, "pausedMs": b.paused_ms, "cards": lcc_gpu::batch_cards(),
+                    "rate": {"editing": lcc_gpu::batch_rate_of(false), "helper": lcc_gpu::batch_rate_of(true)},
+                    "renders": gpu_render_counts(), "interfaceBusy": lcc_gpu::interface_busy(),
                 },
                 "card": gpu_card(),
                 "helper": gpu_helper(),
@@ -363,6 +404,15 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Array(s.journal[start..].iter().map(|(c, p)| json!({"command": c, "params": p})).collect()))
         }),
     ]
+}
+
+/// GPU renders so far by card, for `app.gpu`.
+fn gpu_render_counts() -> Value {
+    let r = lcc_gpu::render_counts();
+    json!({
+        "editingInteractive": r.editing_interactive, "editingBatch": r.editing_batch,
+        "helperInteractive": r.helper_interactive, "helperBatch": r.helper_batch,
+    })
 }
 
 /// The graphics card for editing, for `app.gpu`.

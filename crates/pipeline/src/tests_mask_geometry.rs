@@ -22,10 +22,18 @@ fn shot(src: &Rgb32f, s: &DevelopSettings) -> Rgba8 {
     render(src, &SourceInfo::default(), s, &RenderRequest::fit(W, H)).image
 }
 
-/// Where the red dot is drawn (the reddest pixel), normalized.
+/// Where the red dot is drawn, normalized: the centre of its reddest pixels (within a few levels of
+/// the reddest, as 8-bit output is dithered from process V8).
 fn dot(img: &Rgba8) -> Point {
-    let i = (0..img.data.len()).max_by_key(|&i| i32::from(img.data[i][0]) - i32::from(img.data[i][1])).unwrap();
-    Point::new((i % img.width) as f64 / img.width as f64, (i / img.width) as f64 / img.height as f64)
+    let red: Vec<i32> = img.data.iter().map(|p| i32::from(p[0]) - i32::from(p[1])).collect();
+    let top = *red.iter().max().unwrap();
+    let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
+    for (i, v) in red.iter().enumerate() {
+        if *v >= top - 3 {
+            (sx, sy, n) = (sx + (i % img.width) as f64, sy + (i / img.width) as f64, n + 1.0);
+        }
+    }
+    Point::new(sx / n / img.width as f64, sy / n / img.height as f64)
 }
 
 /// Where the mask brightens the most (`with` against `without`), normalized: the centre of the
@@ -60,18 +68,19 @@ fn spot(p: Point) -> Mask {
 
 #[test]
 fn a_mask_on_the_photo_follows_its_content_through_transform_and_lens_corrections() {
-    let p = Point::new(0.3, 0.35);
-    let src = scene(p);
-    for (name, edit) in [
+    // (lens distortion moves the content most toward the corners)
+    for (name, p, edit) in [
         (
             "vertical + rotate",
+            Point::new(0.3, 0.35),
             (|s: &mut DevelopSettings| {
                 s.geometry.vertical = 40.0;
                 s.geometry.rotate = 6.0;
             }) as fn(&mut DevelopSettings),
         ),
-        ("distortion", |s: &mut DevelopSettings| s.optics.distortion = 60.0),
+        ("distortion", Point::new(0.15, 0.2), |s: &mut DevelopSettings| s.optics.distortion = 60.0),
     ] {
+        let src = scene(p);
         let mut plain = DevelopSettings::default();
         edit(&mut plain);
         let mut masked = plain.clone();

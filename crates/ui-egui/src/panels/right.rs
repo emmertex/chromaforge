@@ -274,7 +274,14 @@ pub(crate) fn aspect_label(aspect: Option<(u32, u32)>, original: Option<f64>, cu
     if original.is_some_and(is) {
         return "Original".into();
     }
-    if let Some(a) = custom.iter().find(|a| is(a.aspect[0] / a.aspect[1])) {
+    // the lock is the rounded pair (`crop.aspect` stores hundredths): a saved ratio that rounds to it, in either
+    // orientation, before one that is only close
+    let hundredths = |v: f64| (v * 100.0).round();
+    let exact = custom.iter().find(|a| {
+        let (x, y) = (hundredths(a.aspect[0]), hundredths(a.aspect[1]));
+        (x, y) == (f64::from(w), f64::from(h)) || (x, y) == (f64::from(h), f64::from(w))
+    });
+    if let Some(a) = exact.or_else(|| custom.iter().find(|a| is(a.aspect[0] / a.aspect[1]))) {
         return a.name.clone();
     }
     for (label, key) in BUILTIN_ASPECTS {
@@ -308,23 +315,35 @@ fn custom_aspect(app: &mut LccApp, ui: &mut egui::Ui) {
         let go = text_button(ui, "cropCustomSave", "Save", false);
         save = go.clicked() || n.ending == Some(Ending::Return);
     });
-    // Accept `3`, `2.5` and `3,5`; anything else (zero, negative, text, too wide) is ignored.
+    // Accept `3`, `2.5` and `3,5`. A ratio `crop.aspect` can't take (zero, negative, text, too
+    // wide, too small) or a Save the engine refuses says why and leaves the menu open.
+    let save = save && !name.trim().is_empty();
+    if !(save || apply) {
+        ui.data_mut(|d| d.insert_temp(key, (w, h, name)));
+        return;
+    }
     let num = |t: &str| t.trim().replace(',', ".").parse::<f64>().ok();
-    let ratio = match (num(&w), num(&h)) {
-        (Some(x), Some(y)) if lcc_engine::cmd::crop_aspects::valid_ratio(x, y) => Some((x, y)),
-        _ => None,
-    };
-    if let Some((x, y)) = ratio {
-        if save && !name.trim().is_empty() {
-            if app.run("crop.saveAspect", json!({"name": name.trim(), "aspect": [x, y]})).is_ok() {
-                let _ = app.run("crop.aspect", json!({"aspect": [x, y]}));
-                name.clear();
-                ui.close();
+    let done = match (num(&w), num(&h)) {
+        (Some(x), Some(y)) if lcc_engine::cmd::crop_aspects::valid_ratio(x, y) => {
+            let saved = if save { app.run("crop.saveAspect", json!({"name": name.trim(), "aspect": [x, y]})) } else { Ok(json!(null)) };
+            match saved.and_then(|_| app.run("crop.aspect", json!({"aspect": [x, y]}))) {
+                Ok(_) => true,
+                Err(e) => {
+                    app.toast_error(ui.ctx(), e);
+                    false
+                }
             }
-        } else if apply {
-            let _ = app.run("crop.aspect", json!({"aspect": [x, y]}));
-            ui.close();
         }
+        _ => {
+            app.toast_error(ui.ctx(), crate::i18n::tr("The aspect needs two positive numbers with a ratio between 1:20 and 20:1"));
+            false
+        }
+    };
+    if done {
+        if save {
+            name.clear();
+        }
+        ui.close();
     }
     ui.data_mut(|d| d.insert_temp(key, (w, h, name)));
 }
@@ -342,59 +361,73 @@ fn aspect_menu(app: &mut LccApp, ui: &mut egui::Ui) {
         // room for a name beside its ↑ ↓ Delete buttons
         ui.set_min_width(260.0);
     }
-    for (label, key) in BUILTIN_ASPECTS {
-        let hidden = app.session.crop_aspects.is_hidden(key);
-        if editing {
-            if matches!(key, "free" | "original") {
-                // always in the menu: shown ticked, and not to be unticked
-                ui.add_enabled(false, egui::Checkbox::new(&mut true, crate::i18n::tr(label)));
-                continue;
-            }
-            let mut shown = !hidden;
-            let r = ui.checkbox(&mut shown, crate::i18n::tr(label));
-            register(ui.ctx(), format!("check:cropAspectShow:{key}"), r.rect);
-            if r.changed() {
-                let _ = app.run("crop.hideAspect", json!({"aspect": key, "hidden": !shown}));
-            }
-        } else if !hidden {
-            let r = ui.button(crate::i18n::tr(label));
-            register(ui.ctx(), format!("cropAspectPreset:{key}"), r.rect);
-            if r.clicked() {
-                let _ = app.run("crop.aspect", json!({"aspect": key}));
-                ui.close();
+    // many saved ratios scroll rather than run off the window; Custom and Edit List stay below them
+    let max = (ui.ctx().content_rect().bottom() - ui.max_rect().top() - 160.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(max).auto_shrink([true, true]).show(ui, |ui| {
+        for (label, key) in BUILTIN_ASPECTS {
+            let hidden = app.session.crop_aspects.is_hidden(key);
+            if editing {
+                if matches!(key, "free" | "original") {
+                    // always in the menu: shown ticked, and not to be unticked
+                    ui.add_enabled(false, egui::Checkbox::new(&mut true, crate::i18n::tr(label)));
+                    continue;
+                }
+                let mut shown = !hidden;
+                let r = ui.checkbox(&mut shown, crate::i18n::tr(label));
+                register(ui.ctx(), format!("check:cropAspectShow:{key}"), r.rect);
+                if r.changed()
+                    && let Err(e) = app.run("crop.hideAspect", json!({"aspect": key, "hidden": !shown}))
+                {
+                    app.toast_error(ui.ctx(), e);
+                }
+            } else if !hidden {
+                let r = ui.button(crate::i18n::tr(label));
+                register(ui.ctx(), format!("cropAspectPreset:{key}"), r.rect);
+                if r.clicked() {
+                    let _ = app.run("crop.aspect", json!({"aspect": key}));
+                    ui.close();
+                }
             }
         }
-    }
-    let custom = app.session.crop_aspects.custom.clone();
-    if !custom.is_empty() {
-        ui.separator();
-    }
-    let last = custom.len().saturating_sub(1);
-    for (i, a) in custom.iter().enumerate() {
-        if editing {
-            ui.horizontal(|ui| {
-                ui.label(&a.name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if text_button(ui, &format!("cropAspectDelete-{i}"), "Delete", false).clicked() {
-                        let _ = app.run("crop.deleteAspect", json!({"name": a.name}));
-                    }
-                    if i < last && text_button(ui, &format!("cropAspectDown-{i}"), "↓", false).clicked() {
-                        let _ = app.run("crop.moveAspect", json!({"name": a.name, "to": i + 1}));
-                    }
-                    if i > 0 && text_button(ui, &format!("cropAspectUp-{i}"), "↑", false).clicked() {
-                        let _ = app.run("crop.moveAspect", json!({"name": a.name, "to": i - 1}));
-                    }
+        let custom = app.session.crop_aspects.custom.clone();
+        if !custom.is_empty() {
+            ui.separator();
+        }
+        let last = custom.len().saturating_sub(1);
+        for (i, a) in custom.iter().enumerate() {
+            if editing {
+                ui.horizontal(|ui| {
+                    ui.label(&a.name);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if text_button(ui, &format!("cropAspectDelete-{i}"), "Delete", false).clicked()
+                            && let Err(e) = app.run("crop.deleteAspect", json!({"name": a.name}))
+                        {
+                            app.toast_error(ui.ctx(), e);
+                        }
+                        if i < last
+                            && text_button(ui, &format!("cropAspectDown-{i}"), "↓", false).clicked()
+                            && let Err(e) = app.run("crop.moveAspect", json!({"name": a.name, "to": i + 1}))
+                        {
+                            app.toast_error(ui.ctx(), e);
+                        }
+                        if i > 0
+                            && text_button(ui, &format!("cropAspectUp-{i}"), "↑", false).clicked()
+                            && let Err(e) = app.run("crop.moveAspect", json!({"name": a.name, "to": i - 1}))
+                        {
+                            app.toast_error(ui.ctx(), e);
+                        }
+                    });
                 });
-            });
-        } else {
-            let r = ui.button(&a.name);
-            register(ui.ctx(), format!("cropAspectSaved:{i}"), r.rect);
-            if r.clicked() {
-                let _ = app.run("crop.aspect", json!({"aspect": a.aspect}));
-                ui.close();
+            } else {
+                let r = ui.button(&a.name);
+                register(ui.ctx(), format!("cropAspectSaved:{i}"), r.rect);
+                if r.clicked() {
+                    let _ = app.run("crop.aspect", json!({"aspect": a.aspect}));
+                    ui.close();
+                }
             }
         }
-    }
+    });
     ui.separator();
     if !editing {
         custom_aspect(app, ui);
@@ -545,13 +578,24 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     });
+    padded(ui, |ui| {
+        ui.label(crate::i18n::tr("Crop Mask"));
+        let levels = crate::state::CROP_MASK_OPACITY_LEVELS;
+        let labels: Vec<String> = levels.iter().map(|v| if *v == 0 { crate::i18n::tr("Off").to_string() } else { format!("{v}%") }).collect();
+        let items: Vec<(&str, String)> = labels.iter().map(|l| (l.as_str(), format!("cropMask{l}"))).collect();
+        let items: Vec<(&str, &str)> = items.iter().map(|(l, k)| (*l, k.as_str())).collect();
+        let active = levels.iter().position(|v| *v == app.ui.crop_mask_opacity);
+        if let Some(level) = crate::widgets::segmented(ui, "cropMask", &items, active, 6).and_then(|i| levels.get(i)) {
+            let _ = app.run("view.cropMaskOpacity", json!({"opacity": level}));
+        }
+    });
     divider(ui);
     header(ui, "Geometry");
     // a clip takes the crop, straighten and flips only: Upright and the transform sliders are photo-only
     let video = crate::video_ui::photo_is_video(app, id);
     crate::video_ui::video_gate(ui, video, |ui| {
         padded(ui, |ui| {
-            ui.label(crate::i18n::tr("Upright"));
+            crate::widgets::row_caption(ui, "upright", "Upright");
             {
                 use lcc_develop::Upright;
                 let modes = [

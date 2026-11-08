@@ -333,7 +333,52 @@ fn gpu_probe() -> Result<String, String> {
     if !lcc_gpu::enabled() {
         return Err("disabled by the GPU rendering preference (app.gpu)".into());
     }
+    // the device CLIP's wgpu kernels run on (Vulkan, DX12 or Metal: the same on every OS)
+    #[cfg(not(target_arch = "wasm32"))]
+    return lcc_gpu::clip::adapter();
+    #[cfg(target_arch = "wasm32")]
     lcc_gpu::adapter_name().ok_or_else(|| lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()))
+}
+
+/// CLIP's transformer blocks on the GPU through `lcc-gpu`'s wgpu kernels (`lcc_ml` checks them against the CPU first).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn clip_accelerator() -> lcc_ml::AccelFactory {
+    struct Tower(lcc_gpu::clip::ClipTower);
+    impl lcc_ml::Accelerator for Tower {
+        fn device(&self) -> String {
+            self.0.device()
+        }
+        fn run_blocks(&self, x: &[f32], batch: usize, seq: usize) -> Result<Vec<f32>, String> {
+            self.0.run(x, batch, seq)
+        }
+    }
+    Arc::new(|w: &lcc_ml::TowerWeights| {
+        let spec = lcc_gpu::clip::TowerSpec { hidden: w.hidden, intermediate: w.intermediate, heads: w.heads, causal: w.causal, eps: w.eps };
+        let blocks: Vec<lcc_gpu::clip::BlockRef<'_>> = w
+            .blocks
+            .iter()
+            .map(|b| lcc_gpu::clip::BlockRef {
+                ln1_w: &b.ln1_w,
+                ln1_b: &b.ln1_b,
+                q_w: &b.q_w,
+                q_b: &b.q_b,
+                k_w: &b.k_w,
+                k_b: &b.k_b,
+                v_w: &b.v_w,
+                v_b: &b.v_b,
+                o_w: &b.o_w,
+                o_b: &b.o_b,
+                ln2_w: &b.ln2_w,
+                ln2_b: &b.ln2_b,
+                fc1_w: &b.fc1_w,
+                fc1_b: &b.fc1_b,
+                fc2_w: &b.fc2_w,
+                fc2_b: &b.fc2_b,
+            })
+            .collect();
+        let tower = lcc_gpu::clip::tower(spec, &blocks)?;
+        Ok(Arc::new(Tower(tower)) as Arc<dyn lcc_ml::Accelerator>)
+    })
 }
 
 struct ActivityRows(Activity);
@@ -887,7 +932,7 @@ impl Session {
             return Ok(enc);
         }
 
-        let clip = lcc_ml::Clip::load_lazy(&model_dir).map_err(|e| e.to_string())?;
+        let clip = lcc_ml::Clip::load_lazy(&model_dir).map_err(|e| e.to_string())?.with_accelerator(clip_accelerator());
         let enc: Arc<dyn Encoder> = Arc::new(clip);
         self.ml.save_store_now();
         self.ml.encoder = Some((tag.clone(), Arc::clone(&enc)));

@@ -195,6 +195,38 @@ fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
     return oklab_inv(vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z)));
 }
 
+// `PrimariesK::apply` (the colourist wheels). The Color wheels are ASC CDL's SOP per channel —
+// lift's affine `x·(1−l)+l` pivots at white, gain's multiply at black, gamma a power, offset adds
+// last — then the Log wheels refine over their narrow zones between PRIM_LOW and PRIM_HIGH.
+fn primaries(rgb: vec3<f32>) -> vec3<f32> {
+    if (pu(F_PRIMARIES) == 0u) {
+        return rgb;
+    }
+    let t = clamp(lum2020(rgb), 0.0, 1.0);
+    let lm = clamp(pf(F_PRIM_LOW), 0.02, 0.9);
+    let hm = clamp(pf(F_PRIM_HIGH), lm + 0.05, 0.98);
+    let lws = 1.0 - sstep(lm - 0.10, lm + 0.10, t);
+    let lwh = sstep(hm - 0.10, hm + 0.10, t);
+    let lwm = max(1.0 - lws - lwh, 0.0);
+    var o = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let l = pf(F_PRIM_LIFT + k) + pf(F_PRIM_LIFT + 3u);
+        let g = pf(F_PRIM_GAIN + k) + pf(F_PRIM_GAIN + 3u);
+        let p = pf(F_PRIM_GAMMA + k) + pf(F_PRIM_GAMMA + 3u);
+        var x = rgb[k] * (1.0 - l) + l;
+        x = max(x * (1.0 + g), 0.0);
+        let e = clamp(1.0 / (1.0 + p), 0.25, 4.0);
+        x = pow(max(x, 0.0), e);
+        x += pf(F_PRIM_OFFSET + k) + pf(F_PRIM_OFFSET + 3u);
+        x += (pf(F_PRIM_SHADOW + k) + pf(F_PRIM_SHADOW + 3u)) * lws;
+        x += (pf(F_PRIM_MIDTONE + k) + pf(F_PRIM_MIDTONE + 3u)) * lwm;
+        x *= 1.0 + (pf(F_PRIM_HIGHLIGHT + k) + pf(F_PRIM_HIGHLIGHT + 3u)) * lwh;
+        x += pf(F_PRIM_LOG_OFFSET + k) + pf(F_PRIM_LOG_OFFSET + 3u);
+        o[k] = max(x, 0.0);
+    }
+    return o;
+}
+
 // `ColorOps::apply`.
 fn color_ops(rgb: vec3<f32>, local_sat: f32, local_hue: f32) -> vec3<f32> {
     if (pu(F_OPS_IDENTITY) != 0u && local_sat == 0.0 && local_hue == 0.0) {
@@ -216,6 +248,24 @@ fn color_ops(rgb: vec3<f32>, local_sat: f32, local_hue: f32) -> vec3<f32> {
             ds += w[i] * pf(F_MIX_SAT + i);
             dl += w[i] * pf(F_MIX_LUM + i);
         }
+        let chroma_w = min(c / 0.12, 1.0);
+        h += dh * chroma_w;
+        c *= max(1.0 + ds, 0.0);
+        l += dl * chroma_w * sqrt(max(l, 0.05));
+    }
+    // `HslK` (the HSL curves): the hue picks the place on each LUT — hue[128], sat[128], lum[128]
+    // in that order (HSL_WORDS in `lcc_pipeline::colorops`) — and the mixer's own scales apply the
+    // deltas, fading hue and luminance towards neutrals as the mixer does
+    if (pu(F_HSL) != 0u) {
+        let n = 128u;
+        let x = rem_euclid(h / TAU, 1.0);
+        let f = clamp(x, 0.0, 0.999999) * f32(n - 1u);
+        let i0 = u32(f);
+        let i1 = min(i0 + 1u, n - 1u);
+        let t = f - f32(i0);
+        let dh = mix(pf(F_HSL_LUT + i0), pf(F_HSL_LUT + i1), t);
+        let ds = mix(pf(F_HSL_LUT + n + i0), pf(F_HSL_LUT + n + i1), t);
+        let dl = mix(pf(F_HSL_LUT + 2u * n + i0), pf(F_HSL_LUT + 2u * n + i1), t);
         let chroma_w = min(c / 0.12, 1.0);
         h += dh * chroma_w;
         c *= max(1.0 + ds, 0.0);
@@ -628,8 +678,21 @@ fn grain_apply(gx: f32, gy: f32, lum: f32) -> vec3<f32> {
     return vec3<f32>(m + rr, m + gg, m + bb);
 }
 
-fn enc8(v: f32) -> u32 {
-    return u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+// `finish::enc`: 8 bits, adding `d` (0 to 1; a half rounds) before truncating; white stays white.
+fn enc8(v: f32, d: f32) -> u32 {
+    let y = clamp(v, 0.0, 1.0) * 255.0;
+    if (y >= 254.9) {
+        return 255u;
+    }
+    return u32(clamp(y + d, 0.0, 255.0));
+}
+
+// `finish::bayer_dither_offset` at output pixel (`x`, `y`) of the whole output: the 8×8 Bayer
+// threshold is the bits of `x ^ y` and `y` interleaved, lowest first, read in reverse.
+fn bayer_dither(x: u32, y: u32) -> f32 {
+    let a = x ^ y;
+    let t = ((a & 1u) << 5u) | ((y & 1u) << 4u) | ((a & 2u) << 2u) | ((y & 2u) << 1u) | ((a & 4u) >> 1u) | ((y & 4u) >> 2u);
+    return (f32(t) + 0.5) / 64.0;
 }
 
 // sRGB-curve-encoded value → the output space's own curve (`OutputTrc`: 0 sRGB, 1 gamma, 2 Rec.709).
@@ -917,6 +980,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
+    // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)
+    d = primaries(d);
     // --- colour
     d = color_ops(d, lt[11], lt[12]);
     if (pu(F_LPOINTS) != 0u) {
@@ -1097,7 +1162,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         e = vec3<f32>(lin_to_srgb(sdr.x), lin_to_srgb(sdr.y), lin_to_srgb(sdr.z));
     }
     e = vec3<f32>(out_encode(e.x), out_encode(e.y), out_encode(e.z));
-    out[i] = enc8(e.x) | (enc8(e.y) << 8u) | (enc8(e.z) << 16u) | (255u << 24u);
+    var dither8 = 0.5;
+    if (pu(F_DITHER) != 0u) {
+        let ox = u32(max(floor(pf(F_VIG_VIEW)), 0.0));
+        let oy = u32(max(floor(pf(F_VIG_VIEW + 1u)), 0.0));
+        dither8 = bayer_dither(ox + x, oy + y);
+    }
+    out[i] = enc8(e.x, dither8) | (enc8(e.y, dither8) << 8u) | (enc8(e.z, dither8) << 16u) | (255u << 24u);
 }
 
 // `Lut3d::apply` (trilinear) on the LUT profile's table in `aux` (red fastest).
