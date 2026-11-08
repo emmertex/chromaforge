@@ -1191,6 +1191,13 @@ pub struct Geometry {
     /// homography lens-corrected → transformed in centred coordinates (`(p − centre) / (long edge / 2)`).
     /// Stored so previews and exports use the identical transform; recomputed by `geometry.upright`.
     pub upright_transform: Option<Homography>,
+    /// Lightroom Classic's own solved Upright correction for `upright`, read from its XMP
+    /// (`crs:UprightTransform_<mode>`), in Lightroom's convention: lens-corrected → transformed in normalized
+    /// coordinates of the oriented image (`x / width`, `y / height`), with the crop in the transformed frame.
+    /// Used (converted to centred coordinates) when `upright_transform` is empty, so the photo's geometry and
+    /// crop match Lightroom's instead of being detected afresh. Any Upright edit made here clears it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lrc_upright: Option<Homography>,
     pub vertical: f64,
     pub horizontal: f64,
     pub rotate: f64,
@@ -1207,6 +1214,7 @@ impl Default for Geometry {
             upright: Upright::Off,
             guides: Vec::new(),
             upright_transform: None,
+            lrc_upright: None,
             vertical: 0.0,
             horizontal: 0.0,
             rotate: 0.0,
