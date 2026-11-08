@@ -157,7 +157,14 @@ pub fn ui_command_ids(menus_rs: &str) -> Vec<String> {
         let Some(start) = menus_rs.find(table) else { continue };
         let body = &menus_rs[start..];
         let body = &body[..body.find("];").unwrap_or(body.len())];
-        ids.extend(body.lines().filter_map(|l| l.trim().strip_prefix("(\"")).filter_map(|l| l.split_once('"').map(|(id, _)| id.to_string())));
+        // the tuple anywhere in the table's body (rustfmt may set the one-entry tables on a
+        // single line), not just at a line's start — but only a real tuple, not `Some("D")`
+        for (at, _) in body.match_indices("(\"") {
+            let element_start = at > 0 && !body[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.');
+            if element_start && let Some((id, _)) = body[at + 2..].split_once('"') {
+                ids.push(id.to_string());
+            }
+        }
     }
     ids
 }

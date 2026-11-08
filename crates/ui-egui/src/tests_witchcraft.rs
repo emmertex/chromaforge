@@ -73,23 +73,6 @@ fn the_log_variant_shows_the_range_boundaries() {
 }
 
 #[test]
-fn the_scope_switch_drives_the_histograms_mode() {
-    let mut h = demo();
-    assert!(has(&h, "button:witchScopes-parade"), "the scope switch leads the panels");
-    let r = h.request("ui.clickWidget", json!({"id": "button:witchScopes-parade"}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    assert_eq!(h.app.ui.histogram_mode, "parade");
-    assert!(h.app.ui.histogram, "the histogram shows for the scope to be seen");
-    let r = h.request("ui.clickWidget", json!({"id": "button:witchScopes-vectorscope"}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    assert_eq!(h.app.ui.histogram_mode, "vectorscope");
-}
-
-#[test]
 fn the_hsl_curves_write_the_mixer_bands() {
     let mut h = demo();
     h.app.ui.solo_section("hsl");

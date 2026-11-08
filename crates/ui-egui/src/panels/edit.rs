@@ -189,13 +189,12 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         header_rows(app, ui, id, &d, preview_only.as_deref());
     }
 
-    // Witchcraft's palettes lead the panel (Resolve's: the node strip of stages, the scope switch,
-    // the Primaries wheels, the HSL curves) before Lightroom's own panels — in Eboda all four are
-    // away and the histogram's own mode menu is Lightroom's way
+    // Witchcraft's palettes lead the panel (Resolve's: the node strip of stages, the Primaries
+    // wheels, the HSL curves) before Lightroom's own panels — in Eboda all three are away; the
+    // histogram's own mode menu (its scopes included) stays Lightroom's way
     if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
         if only.is_none() {
             super::witchcraft::node_strip(app, ui, &d);
-            super::witchcraft::scopes_row(app, ui);
         }
         if shows("primaries") {
             section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
