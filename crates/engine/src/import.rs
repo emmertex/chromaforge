@@ -1034,7 +1034,7 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
-    // probes from a preceding `scan` are reused when the file is unchanged (same size)
+    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time)
     let cached: Vec<Option<ProbeInfo>> = todo
         .iter()
         .map(|f| {
@@ -1044,8 +1044,9 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
             if progress.cancel.load(Relaxed) {
                 return None;
             }
-            let size = std::fs::metadata(f).map(|m| m.len()).ok();
-            (size.is_none() || size == Some(info.file_size)).then_some(info)
+            // (a file that can't be looked at counts as unchanged; one that can is reused only as it was,
+            // size and modification time)
+            (std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, &info)).then_some(info)
         })
         .collect();
     let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
@@ -1443,7 +1444,7 @@ impl ImportJob {
                 // (the web's files are not std::fs files: kept as probed)
                 self.cache
                     .remove(f)
-                    .filter(|info| cfg!(target_arch = "wasm32") || std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.len() == info.file_size))
+                    .filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
             })
             .collect();
         let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
