@@ -6259,6 +6259,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let _ = app.run("map.reveal", json!({"force": true}));
                 }
                 // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
+                super::compare::activate_on_right_click(app, &resp, *id);
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
         });

@@ -696,7 +696,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 Some(lcc_catalog::Flag::None) => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
                 None => {}
             }
-        } else if matches!(f.as_str(), "photo.pick" | "photo.reject" | "photo.unflag") && app.ui.right != crate::state::RightPanel::Crop {
+        } else if (matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && app.ui.right != crate::state::RightPanel::Crop)) {
+            // P and U flag with Crop open too; X there swaps the crop aspect (#1866)
             cull(app, &f, json!({}), false);
             match f.as_str() {
                 "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
