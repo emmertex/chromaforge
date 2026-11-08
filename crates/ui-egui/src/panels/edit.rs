@@ -265,6 +265,14 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             ui.add_space(8.0);
         });
     }
+    // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its own
+    // panel), between the wheels and the tone curve
+    if shows("hsl") && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft && !crate::is_bw(&d) {
+        section_with(app, ui, &d, "hsl", "HSL Curves", true, |app, ui, d| {
+            super::witchcraft::hsl_curves(app, ui, d);
+            ui.add_space(8.0);
+        });
+    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {

@@ -90,6 +90,26 @@ fn the_scope_switch_drives_the_histograms_mode() {
 }
 
 #[test]
+fn the_hsl_curves_write_the_mixer_bands() {
+    let mut h = demo();
+    h.app.ui.solo_section("hsl");
+    h.settle(SETTLE);
+    assert!(has(&h, "curve:hsl"), "the curves plot");
+    assert!(has(&h, "button:hslCurves-sat"), "the Hue vs Sat tab");
+    let r = h.request("ui.clickWidget", json!({"id": "button:hslCurves-sat"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.mixer_group, "sat");
+    run(&mut h, "develop.set", json!({"control": "mixer.blue.sat", "value": -55.0}));
+    let id = h.app.session.active().unwrap();
+    let bands = h.app.session.develop_of(id).unwrap_or_default().mixer.bands();
+    assert_eq!(bands[5].sat, -55.0, "the curves sit on the mixer's own controls");
+    // the tabs are the mixer's own choice, so the Color Mixer panel follows
+    assert_eq!(h.app.ui.mixer_group, "sat");
+}
+
+#[test]
 fn the_wheels_write_the_primaries_controls_and_the_eye_switches_the_palette_off() {
     let mut h = demo();
     run(&mut h, "develop.set", json!({"control": "primaries.lift.hue", "value": 220.0}));

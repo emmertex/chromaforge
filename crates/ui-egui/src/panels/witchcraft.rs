@@ -168,3 +168,87 @@ fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, key: &str, c:
         let _ = app.run("develop.set", json!({"values": {format!("primaries.{key}.hue"): 0, format!("primaries.{key}.sat"): 0}}));
     }
 }
+
+/// Resolve's HSL curves — "the first word prompts the selection, and the second word affects the
+/// change" — over the colour mixer's own 8 bands (colour photos; the B&W mix has its own panel):
+/// the curve drawn is the smooth response the mixer's bands give between their centres, a drag
+/// writes the band under the pointer, a double-click puts that band back, and the tabs are the
+/// mixer's own hue / saturation / luminance choice.
+pub(crate) fn hsl_curves(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let t = Tokens::get(ui.ctx());
+    const CURVES: [(&str, &str); 3] = [("Hue vs Hue", "hue"), ("Hue vs Sat", "sat"), ("Hue vs Lum", "lum")];
+    let group = if CURVES.iter().any(|(_, k)| *k == app.ui.mixer_group) { app.ui.mixer_group.clone() } else { "hue".into() };
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let active = CURVES.iter().position(|(_, k)| *k == group);
+            if let Some((_, k)) = crate::widgets::segmented(ui, "hslCurves", &CURVES, active, 3).and_then(|i| CURVES.get(i)) {
+                app.ui.mixer_group = k.to_string();
+            }
+        });
+    });
+    let bands = d.mixer.bands();
+    let val = |i: usize| match group.as_str() {
+        "sat" => bands[i].sat,
+        "lum" => bands[i].lum,
+        _ => bands[i].hue,
+    } as f32;
+    // the plot: x across the 8 band centres, y −100..100; the curve eases between bands as the
+    // mixer's own raised-cosine weights do
+    let w = ui.available_width();
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 116.0), Sense::click_and_drag());
+    crate::widgets::announce(&resp, crate::i18n::tr("HSL Curves"));
+    register(ui.ctx(), "curve:hsl", r);
+    let p = ui.painter();
+    let plot = Rect::from_min_max(r.min + vec2(4.0, 4.0), r.max - vec2(4.0, 16.0));
+    p.rect_filled(plot, 4.0, t.button);
+    let y_of = |v: f32| plot.bottom() - (v.clamp(-100.0, 100.0) + 100.0) / 200.0 * plot.height();
+    let x_of = |i: f32| plot.left() + (i + 0.5) / 8.0 * plot.width();
+    // the neutral line and ±50 guides
+    for (v, strong) in [(0.0, true), (50.0, false), (-50.0, false)] {
+        let y = y_of(v);
+        let color = if strong { Color32::from_white_alpha(60) } else { Color32::from_white_alpha(22) };
+        p.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], egui::Stroke::new(1.0, color));
+    }
+    // the curve: raised-cosine ease between adjacent band values
+    let mut pts: Vec<Pos2> = Vec::new();
+    let n = 64;
+    for k in 0..=n {
+        let x01 = k as f32 / n as f32;
+        let t8 = (x01 * 8.0 - 0.5).clamp(0.0, 7.0);
+        let i = t8.floor() as usize;
+        let f = 0.5 - 0.5 * (std::f32::consts::PI * (t8 - i as f32)).cos();
+        let v = val(i) + (val((i + 1).min(7)) - val(i)) * f;
+        pts.push(pos2(plot.left() + x01 * plot.width(), y_of(v)));
+    }
+    p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.5, t.text_label)));
+    // each band as a dot on its centre, in its colour, with its value readable by position
+    for (i, color) in crate::widgets::BAND_COLORS.iter().enumerate() {
+        let c = pos2(x_of(i as f32), y_of(val(i)));
+        p.circle_filled(c, 3.5, crate::widgets::hex(color));
+        // the hue strip under the axis
+        let left = plot.left() + i as f32 / 8.0 * plot.width();
+        let right = plot.left() + (i + 1) as f32 / 8.0 * plot.width();
+        p.rect_filled(Rect::from_min_max(pos2(left, plot.bottom() + 2.0), pos2(right, r.bottom())), 0.0, crate::widgets::hex(color));
+    }
+    // a drag writes the band under the pointer (the mixer's own control); double-click resets it
+    let band_of = |q: Pos2| (((q.x - plot.left()) / plot.width() * 8.0).round() as i64).clamp(0, 7) as usize;
+    let value_of = |q: Pos2| ((plot.bottom() - q.y).clamp(0.0, plot.height()) / plot.height() * 200.0 - 100.0).round();
+    if resp.drag_started() {
+        let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr("HSL Curves")}));
+    }
+    if (resp.dragged() || resp.clicked())
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let band = lcc_develop::MIXER_BANDS[band_of(q)];
+        let _ = app.run("develop.set", json!({"values": {format!("mixer.{band}.{group}"): value_of(q)}}));
+    }
+    if resp.drag_stopped() || resp.clicked() {
+        let _ = app.run("develop.endInteraction", json!({}));
+    }
+    if resp.double_clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let band = lcc_develop::MIXER_BANDS[band_of(q)];
+        let _ = app.run("develop.set", json!({"values": {format!("mixer.{band}.{group}"): 0}}));
+    }
+}
