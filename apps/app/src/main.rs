@@ -1367,11 +1367,14 @@ fn main() -> eframe::Result {
         lcc_ui_egui::i18n::set_language(ui.language);
     }
     // --library (or <PREFIX>_LIBRARY), else the list of recent libraries if Settings say Ask me,
-    // else the startup catalog, else the library last opened from Settings, else the default
-    // location if a catalog of this app is there; otherwise (a first start) the welcome dialog
-    // asks. Another app's library (e.g. the upstream app's, named by settings copied from it) is
-    // never opened as this app's own.
+    // else the library last opened from Settings, else the default location if a library of this
+    // app is there; otherwise (a first start) the welcome dialog asks. Another app's library (e.g.
+    // the upstream app's, named by settings copied from it) is never opened as this app's own.
     let mut prefs = prefs;
+    // the recent list of older versions joins the settings' before Ask me is read (issue #871)
+    catalog_hooks::carry_over_recent(prefs.as_mut(), !in_memory && !keep_prefs_file, |ui| {
+        PrefsWriter { path: prefs_path(), ..Default::default() }.save_ui(ui, false)
+    });
     let explicit = library_dir.or_else(|| lcc_brand::env_os("LIBRARY").filter(|p| !p.is_empty()).map(Into::into));
     // only a library named on the command line or in the environment may be created at launch
     let explicit_given = explicit.is_some();
@@ -1380,7 +1383,7 @@ fn main() -> eframe::Result {
         (explicit, None)
     } else {
         let from_prefs = prefs.as_ref().map(|u| u.settings.library_path.clone()).filter(|p| !p.is_empty() && !lcc_brand::env_is_set("LIBRARY"));
-        let remembered = [catalog_hooks::startup_catalog(), from_prefs.map(Into::into)];
+        let remembered = [from_prefs.map(Into::into)];
         match catalog_hooks::decide(explicit, &remembered, lcc_engine::library::default_dir()) {
             catalog_hooks::Startup::Open(d) => (Some(d), None),
             catalog_hooks::Startup::Welcome { foreign } => {
@@ -1506,7 +1509,6 @@ fn main() -> eframe::Result {
                     // Auto Sync is the app's, remembered across libraries and restarts
                     app.session.auto_sync = app.ui.settings.auto_sync;
                 }
-                catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown
                 if launch == Launch::Ask {
                     problem = Some(LibraryProblem::choose_later(&app.ui.settings));

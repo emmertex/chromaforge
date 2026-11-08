@@ -9,7 +9,7 @@
 | App settings, keymap, window layout | `<settings_dir>` in your configuration folder: `~/.config/<settings_dir>` (Linux, or `$XDG_CONFIG_HOME`), `~/Library/Application Support/<settings_dir>` (macOS), `%APPDATA%\<settings_dir>` (Windows) |
 | Log file | `logs/<binary>.log` in that folder; the two previous runs are kept as `<binary>.1.log` and `.2.log`, so a crashed run's log survives the next start |
 | Your library | the folder shown by `<cli> run --library DIR catalog.info` (default `<library_default>` under Pictures) |
-| Catalog backups | `backups/` in the library, or the folder set in Edit → Catalog Settings… |
+| Catalog backups | `backups/` in the library, or the folder set in Edit → Library Settings… |
 
 Attach the log to a bug report. Set `<PREFIX>_LOG=debug` for more detail, or `RUST_LOG` for per-module levels
 (`warn,lcc_pipeline=trace`).

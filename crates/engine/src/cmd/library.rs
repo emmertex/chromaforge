@@ -2307,7 +2307,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 },
             }))
         }),
-        cmd!("library.compact", "Optimize Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
+        cmd!("library.compact", "Compact Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
             s.compact_library()?;
             ok()
         }),

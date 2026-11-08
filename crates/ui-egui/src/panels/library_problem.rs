@@ -188,14 +188,14 @@ impl ProblemKind {
     pub fn advice(self) -> &'static str {
         match self {
             ProblemKind::Damaged => {
-                "The catalog failed its integrity check. Restore it from a backup (the message above says where the newest one is), or open or create another catalog."
+                "The catalog failed its integrity check. Restore it from a backup (the message above says where the newest one is), or open or create another library."
             }
             ProblemKind::InUse => "Close {app} or the other program that has it open, then try again.",
             ProblemKind::Newer => "It was saved by a newer version of {app}. Update {app} to open it; it was left unchanged.",
             ProblemKind::Foreign => {
-                "It was made by another app, whose catalog format {app} can't open. It was left unchanged. Create a new catalog, or open another one."
+                "It was made by another app, whose catalog format {app} can't open. It was left unchanged. Create a new library, or open another one."
             }
-            ProblemKind::Missing => "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.",
+            ProblemKind::Missing => "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another library.",
             ProblemKind::Permission => "{app} isn't allowed to read or write its folder. Check the folder's permissions, then try again.",
             ProblemKind::NoLocation | ProblemKind::Other => {
                 "Your photos and edits in it are untouched. You can try again (e.g. after closing another program that has it open or reconnecting its drive), open a different library or create a new one, or continue without a library — then nothing you do is saved."
@@ -582,7 +582,7 @@ enum Choice {
     New,
     /// The launch list over a library already open: close the window and keep it.
     Keep,
-    /// The problem window: the New Catalog dialog.
+    /// The problem window: the New Library dialog.
     NewCatalog,
 }
 
@@ -737,15 +737,29 @@ fn alt_at_launch(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     app.alt_asks_for_library = false;
-    if crate::panels::settings::can_switch_library(app).is_err() {
-        return;
+    if offer_list(app).is_ok() {
+        ctx.request_repaint();
+    }
+}
+
+/// The launch list over the library open now (Alt/Option held at launch, `catalog.chooser`): Esc
+/// keeps that library. Refused while an import runs (as every switch is), while a library that
+/// couldn't be opened still waits for an answer, and over a temporary session (Continue Without
+/// Saving), which must keep saving nothing; nothing changes when the list is already up (a dialog
+/// it opened may be over it).
+pub fn offer_list(app: &mut LccApp) -> Result<(), String> {
+    crate::panels::settings::can_switch_library(app)?;
+    match &app.library_problem {
+        None => {}
+        Some(p) if p.chooser.is_some() => return Ok(()),
+        Some(_) => return Err("the library that couldn't be opened comes first: open or create a library from its window or File ▸ Libraries".into()),
     }
     let mut p = LibraryProblem::choose_later(&app.ui.settings);
     if let Some(c) = p.chooser.as_mut() {
         c.over = app.session.library.as_ref().map(|_| app.session.library_generation());
     }
     app.library_problem = Some(p);
-    ctx.request_repaint();
+    Ok(())
 }
 
 /// The launch list on screen (no dialog over it, e.g. New Library's name).
@@ -953,7 +967,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                     button(ui, "libraryChoose", "Choose Another Library…", app.services.pick_folder.is_some(), Kind::Secondary, Choice::Choose);
-                    button(ui, "libraryNew", "New Catalog…", true, Kind::Secondary, Choice::NewCatalog);
+                    button(ui, "libraryNew", "New Library…", true, Kind::Secondary, Choice::NewCatalog);
                     button(ui, "libraryTemporary", "Continue Without Saving", true, Kind::Secondary, Choice::Temporary);
                 });
                 ui.add_space(4.0);
@@ -1015,7 +1029,7 @@ fn act(app: &mut LccApp, choice: Choice) {
             }
         }
         Choice::NewCatalog => {
-            // the New Catalog dialog (it opens the catalog it creates, which ends the problem)
+            // the New Library dialog (it opens the library it creates, which ends the problem)
             if let Some(p) = app.library_problem.as_mut() {
                 p.dismissed = true;
             }
@@ -1038,12 +1052,12 @@ fn act(app: &mut LccApp, choice: Choice) {
     }
 }
 
-/// New Catalog… from the problem window: the catalog dialog, under the Pictures folder by default.
+/// New Library… from the problem window: the New Library dialog, under the Pictures folder by default.
 fn new_catalog_dialog(app: &mut LccApp) {
     let parent = lcc_engine::library::default_dir().and_then(|d| d.parent().map(std::path::Path::to_path_buf));
     let params = json!({"parent": parent.map(|d| d.to_string_lossy().into_owned())});
     if let Err(e) = app.run("catalog.new", params) {
-        log::warn!("new catalog: {e}");
+        log::warn!("new library: {e}");
     }
 }
 

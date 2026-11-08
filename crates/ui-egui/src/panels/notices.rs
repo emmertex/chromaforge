@@ -61,7 +61,7 @@ pub fn may_close(app: &mut LccApp) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if app.exit_backup.is_none() && app.session.catalog_backup_wanted() {
         app.quit_prompt =
-            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the catalog is due. Back it up now, before {app} quits?").to_string()));
+            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the library is due. Back it up now, before {app} quits?").to_string()));
         return false;
     }
     if app.session.unsaved().is_none() {
