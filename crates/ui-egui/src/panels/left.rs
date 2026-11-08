@@ -258,6 +258,61 @@ pub(crate) fn set_tree_open(app: &mut LccApp, ui: &egui::Ui, key: &str, open_id:
     ui.data_mut(|d| d.insert_temp(open_id, open));
 }
 
+/// An Option / Alt-click on a triangle, being applied to the rows drawn after it that sit deeper
+/// than it (the rows inside it). Rows that only appear once their parent opens are reached on the
+/// next pass; the sweep ends after a pass that changed nothing. Folding keeps the clicked row open
+/// until then, so the rows inside it are still drawn to fold.
+#[derive(Clone, Default)]
+struct BranchSweep {
+    root: String,
+    indent: f32,
+    open: bool,
+    pass: u64,
+    changed: bool,
+    active: bool,
+}
+
+fn sweep_id() -> egui::Id {
+    egui::Id::new("lc-branch-sweep")
+}
+
+fn branch_sweep(app: &mut LccApp, ui: &egui::Ui, key: &str, indent: f32, open_id: egui::Id, open: &mut bool) {
+    let Some(mut s) = ui.data(|d| d.get_temp::<BranchSweep>(sweep_id())) else { return };
+    let pass = ui.ctx().cumulative_pass_nr();
+    if s.pass != pass {
+        if !s.changed {
+            // nothing moved in the last pass: the sweep is done (a folded branch closes its root now)
+            ui.data_mut(|d| d.remove_temp::<BranchSweep>(sweep_id()));
+            if !s.open {
+                app.ui.set_tree_open(&s.root, false);
+                if s.root == key {
+                    *open = false;
+                    ui.data_mut(|d| d.insert_temp(open_id, false));
+                }
+            }
+            return;
+        }
+        s.pass = pass;
+        s.changed = false;
+        s.active = false;
+    }
+    if s.root == key {
+        s.active = true;
+    } else if s.active {
+        if indent > s.indent {
+            if *open != s.open {
+                *open = s.open;
+                set_tree_open(app, ui, key, open_id, s.open);
+                s.changed = true;
+            }
+        } else {
+            s.active = false;
+        }
+    }
+    ui.ctx().request_repaint();
+    ui.data_mut(|d| d.insert_temp(sweep_id(), s));
+}
+
 /// The chevron of a tree row that has rows inside it (Albums' folders, Local, By Date, Folders,
 /// Keywords): a click flips `open` and remembers it under `key`. Returns the chevron's response
 /// (it sits on the row and takes its clicks, so a row's context menu is attached to it too).
@@ -272,9 +327,24 @@ fn tree_toggle(
     widget: String,
 ) -> egui::Response {
     let tri = disclosure_chevron(ui, row, indent, *open, open_id.with("triangle"), widget);
+    branch_sweep(app, ui, key, indent, open_id, open);
     if tri.clicked() {
-        *open = !*open;
-        set_tree_open(app, ui, key, open_id, *open);
+        if ui.input(|i| i.modifiers.alt) {
+            // Option / Alt-click: the row and everything inside it open, or all fold
+            let open_all = !*open;
+            let pass = ui.ctx().cumulative_pass_nr();
+            ui.data_mut(|d| {
+                d.insert_temp(sweep_id(), BranchSweep { root: key.to_string(), indent, open: open_all, pass, changed: true, active: true })
+            });
+            if open_all {
+                *open = true;
+                set_tree_open(app, ui, key, open_id, true);
+            }
+            ui.ctx().request_repaint();
+        } else {
+            *open = !*open;
+            set_tree_open(app, ui, key, open_id, *open);
+        }
     }
     let label = if *open { crate::i18n::tr("Collapse") } else { crate::i18n::tr("Expand") };
     tri.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));

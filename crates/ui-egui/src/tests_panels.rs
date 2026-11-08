@@ -1121,6 +1121,35 @@ fn album_folders_have_a_disclosure_triangle() {
     assert!(has(&h, &format!("albumToggle:{empty}")), "it gets one with its first child");
 }
 
+/// Alt-click on a triangle folds or opens the folder and everything inside it; a plain click still
+/// flips only that row.
+#[test]
+fn alt_click_on_a_triangle_opens_or_folds_the_whole_branch() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let europe = make(&mut h, json!({"name": "Europe", "folder": true, "parent": trips}));
+    let best = make(&mut h, json!({"name": "Best", "parent": europe}));
+    h.step();
+    h.step();
+    let has = |h: &Headless, id: &str| h.app.widgets.iter().any(|(w, _)| w == id);
+    let click = |h: &mut Headless, id: u64, alt: bool| {
+        let r = h.request("ui.clickWidget", json!({"id": format!("albumToggle:{id}"), "alt": alt}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        for _ in 0..6 {
+            h.step();
+        }
+    };
+    assert!(has(&h, &format!("source:album:{best}")));
+    click(&mut h, trips, true);
+    assert!(!has(&h, &format!("source:folder:{europe}")), "the whole branch is folded");
+    click(&mut h, trips, false);
+    assert!(has(&h, &format!("source:folder:{europe}")) && !has(&h, &format!("source:album:{best}")), "the inner folder was folded too");
+    click(&mut h, trips, true);
+    click(&mut h, trips, true);
+    assert!(has(&h, &format!("source:album:{best}")), "Alt-click on a folded folder opens everything inside it");
+}
+
 /// A dialog that cannot do its job (here: the chosen parent is a plain album, as when the folder
 /// was deleted or turned out not to be one) stays open with the error shown, the typed name kept.
 #[test]
