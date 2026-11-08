@@ -2,7 +2,7 @@
 //! flyout rows, bordered buttons. Every interactive widget registers an automation id + rect
 //! ([`register`]) so the control channel can find and click it by name.
 
-use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use lcc_develop::{ControlSpec, Shade, Track};
 
 use crate::icons::{Icon, paint};
@@ -1269,9 +1269,9 @@ pub fn nudged(spec: &ControlSpec, value: f64, steps: f64) -> f64 {
 /// Collapsible section header ("› Light"). Returns the response (click toggles). In the Compact
 /// layout it is a loud band ([`paint_section_band`]) that the sub-tool rows under it stay quieter
 /// than.
-pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>) -> (Response, Option<bool>) {
+pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>, badge: Option<&str>) -> (Response, Option<bool>) {
     if crate::theme::compact(ui.ctx()) {
-        return dense_section_header(ui, id, title, open, enabled);
+        return dense_section_header(ui, id, title, open, enabled, badge);
     }
     let title = crate::i18n::tr(title);
     let t = Tokens::get(ui.ctx());
@@ -1287,7 +1287,11 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
     }
     let chev = Rect::from_center_size(pos2(r.left() + 18.0, r.center().y), vec2(16.0, 16.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_label);
-    p.text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(14.0), t.text);
+    let galley = p.layout_no_wrap(title.to_string(), t.semibold(14.0), t.text);
+    p.galley(pos2(r.left() + 32.0, r.center().y - galley.size().y / 2.0), galley.clone(), t.text);
+    if let Some(b) = badge {
+        section_badge(ui, id, pos2(r.left() + 32.0 + galley.size().x + 8.0, r.center().y), b, &t);
+    }
     let mut toggled = None;
     // shown while the pointer is anywhere on the header: `resp.hovered()` turns false as soon as the
     // pointer is over the eye itself (the eye is on top), which hid the eye before it could be
@@ -1299,6 +1303,18 @@ pub fn section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: O
         toggled = section_eye(ui, id, eye, on);
     }
     (resp, toggled)
+}
+
+/// A section title's small pill (`badge`, e.g. "Witchcraft"): the grading mode the section
+/// belongs to, beside the title. Registered as `sectionBadge:{id}` for the control channel.
+fn section_badge(ui: &Ui, id: &str, at: Pos2, text: &str, t: &Tokens) {
+    let p = ui.painter();
+    let galley = p.layout_no_wrap(crate::i18n::tr(text).to_string(), t.font(9.5), t.accent);
+    let (h, pad) = (15.0, 7.0);
+    let r = Rect::from_min_size(pos2(at.x, at.y - h / 2.0), vec2(galley.size().x + 2.0 * pad, h));
+    p.rect(r, h / 2.0, t.accent.gamma_multiply(0.13), Stroke::new(1.0, t.accent.gamma_multiply(0.55)), egui::StrokeKind::Inside);
+    p.galley(pos2(r.left() + pad, r.center().y - galley.size().y / 2.0), galley, t.accent);
+    register(ui.ctx(), format!("sectionBadge:{id}"), r);
 }
 
 /// A section's eye (show the photo without the section), drawn at `eye`; the new state when clicked.
@@ -1364,7 +1380,7 @@ pub(crate) fn paint_section_band(p: &egui::Painter, r: Rect, t: &Tokens, hovered
 
 /// The Compact layout's section header: one banded bar ([`crate::theme::COMPACT_SECTION_H`]), the
 /// chevron and name at the left on the rows' margin, the eye at the right.
-fn dense_section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>) -> (Response, Option<bool>) {
+fn dense_section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled: Option<bool>, badge: Option<&str>) -> (Response, Option<bool>) {
     let title = crate::i18n::tr(title);
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
@@ -1379,7 +1395,11 @@ fn dense_section_header(ui: &mut Ui, id: &str, title: &str, open: bool, enabled:
     }
     let chev = Rect::from_center_size(pos2(r.left() + PAD_L + 5.0, r.center().y), vec2(12.0, 12.0));
     paint(p, chev, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text);
-    p.text(pos2(r.left() + PAD_L + 16.0, r.center().y), Align2::LEFT_CENTER, title, t.semibold(SECTION_TITLE), t.text);
+    let galley = p.layout_no_wrap(title.to_string(), t.semibold(SECTION_TITLE), t.text);
+    p.galley(pos2(r.left() + PAD_L + 16.0, r.center().y - galley.size().y / 2.0), galley.clone(), t.text);
+    if let Some(b) = badge {
+        section_badge(ui, id, pos2(r.left() + PAD_L + 16.0 + galley.size().x + 7.0, r.center().y), b, &t);
+    }
     let mut toggled = None;
     if let Some(on) = enabled
         && (ui.rect_contains_pointer(r) || !on)

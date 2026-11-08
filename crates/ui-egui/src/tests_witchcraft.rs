@@ -122,39 +122,28 @@ fn the_hsl_curves_hold_points_anywhere() {
 }
 
 #[test]
-fn the_node_strip_lists_the_stages_and_its_badges_bypass_them() {
+fn the_witchcraft_sections_carry_the_modes_pill_and_follow_basic() {
     let mut h = demo();
-    for id in ["light", "primaries", "hsl", "curve", "mixer", "grading", "effects", "output"] {
-        assert!(has(&h, &format!("node:{id}")), "node {id}");
-    }
-    let r = h.request("ui.clickWidget", json!({"id": "nodeBadge:grading"}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    let id = h.app.session.active().unwrap();
-    let d = h.app.session.develop_of(id).unwrap_or_default();
-    assert!(!d.section_enabled("grading"), "the badge is the section's eye");
-    assert!(d.effective().grading.is_neutral(), "a bypassed stage renders neutral");
-    let r = h.request("ui.clickWidget", json!({"id": "node:curve"}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    assert!(h.app.ui.section_open("curve"), "a node click opens its panel");
-}
-
-#[test]
-fn the_node_strip_lists_the_photo_masks() {
-    let mut h = demo();
-    run(&mut h, "mask.add", json!({"kind": "radial", "center": {"x": 0.2, "y": 0.7}}));
-    h.step();
-    assert!(has(&h, "node:mask1"), "a radial mask is a node");
-    let r = h.request("ui.clickWidget", json!({"id": "nodeBadge:mask1"}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    let id = h.app.session.active().unwrap();
-    let d = h.app.session.develop_of(id).unwrap_or_default();
-    assert!(!d.masks.first().is_none_or(|m| m.visible), "the mask's badge hides the mask");
+    // out of solo: the panel runs Basic, then the two Witchcraft sections (their titles pill-marked)
+    run(&mut h, "view.soloSections", json!({"on": false}));
+    h.settle(SETTLE);
+    assert!(has(&h, "sectionBadge:primaries") && has(&h, "sectionBadge:hsl"), "the Witchcraft pills");
+    let sections: Vec<&(String, egui::Rect)> = h
+        .app
+        .widgets
+        .iter()
+        .filter(|(w, _)| w.starts_with("section:"))
+        .filter(|(w, _)| ["section:light", "section:primaries", "section:hsl", "section:curve"].contains(&w.as_str()))
+        .collect();
+    assert_eq!(sections.len(), 4, "the four sections: {:?}", sections.iter().map(|(w, _)| w).collect::<Vec<_>>());
+    let at = |id: &str| sections.iter().find(|(w, _)| w == id).map(|(_, r)| r.top()).unwrap();
+    assert!(at("section:light") < at("section:primaries"), "Basic first");
+    assert!(at("section:primaries") < at("section:hsl"), "then Primaries");
+    assert!(at("section:hsl") < at("section:curve"), "then HSL Curves");
+    // in Eboda the pills are away with their sections
+    run(&mut h, "view.gradingMode", json!({"mode": "eboda"}));
+    h.settle(SETTLE);
+    assert!(!has(&h, "sectionBadge:primaries"));
 }
 
 #[test]

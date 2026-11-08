@@ -189,34 +189,12 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         header_rows(app, ui, id, &d, preview_only.as_deref());
     }
 
-    // Witchcraft's palettes lead the panel (Resolve's: the node strip of stages, the Primaries
-    // wheels, the HSL curves) before Lightroom's own panels — in Eboda all three are away; the
-    // histogram's own mode menu (its scopes included) stays Lightroom's way
-    if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
-        if only.is_none() {
-            super::witchcraft::node_strip(app, ui, &d);
-        }
-        if shows("primaries") {
-            section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
-                super::witchcraft::primaries(app, ui, d);
-                ui.add_space(8.0);
-            });
-        }
-        // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its
-        // own panel)
-        if shows("hsl") && !crate::is_bw(&d) {
-            section_with(app, ui, &d, "hsl", "HSL Curves", true, |app, ui, d| {
-                super::witchcraft::hsl_curves(app, ui, d);
-                ui.add_space(8.0);
-            });
-        }
-    }
     let video = crate::video_ui::photo_is_video(app, id);
     // Lightroom Classic's Basic panel: white balance, then Tone (with Auto), then Presence
     // (Lightroom Classic's Basic has no on/off switch: it shows only while an older edit has Basic or Color switched off,
     // so that edit can be switched back on)
     let basic_switch = !d.section_enabled("light") || !d.section_enabled("color");
-    section_with(app, ui, &d, "light", "Basic", basic_switch, |app, ui, d| {
+    section_with(app, ui, &d, "light", "Basic", basic_switch, None, |app, ui, d| {
         if dense {
             header_rows(app, ui, id, d, preview_only.as_deref());
         }
@@ -274,6 +252,26 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Witchcraft's palettes follow Basic (the grade continues where every photo starts: Basic,
+    // then the colourist's Primaries wheels and HSL curves) before Lightroom's own panels — in
+    // Eboda all three are away; the histogram's own mode menu (its scopes included) stays
+    // Lightroom's way, and the two Witchcraft sections carry the mode's pill beside their titles
+    if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        if shows("primaries") {
+            section_with(app, ui, &d, "primaries", "Primaries", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::primaries(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+        // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its
+        // own panel)
+        if shows("hsl") && !crate::is_bw(&d) {
+            section_with(app, ui, &d, "hsl", "HSL Curves", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::hsl_curves(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {
@@ -884,10 +882,11 @@ pub(crate) fn section(
     title: &str,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
-    section_with(app, ui, d, id, title, true, body);
+    section_with(app, ui, d, id, title, true, None, body);
 }
 
-/// [`section`], with its on/off switch (`switch`) or without.
+/// [`section`], with its on/off switch (`switch`) or without, and optionally a small pill
+/// (`badge`, e.g. "Witchcraft") beside the title saying which mode the section belongs to.
 pub(crate) fn section_with(
     app: &mut LccApp,
     ui: &mut egui::Ui,
@@ -895,6 +894,7 @@ pub(crate) fn section_with(
     id: &str,
     title: &str,
     switch: bool,
+    badge: Option<&str>,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
     // one section alone (the Modern layout's card): open, no header
@@ -906,7 +906,7 @@ pub(crate) fn section_with(
         return;
     }
     let open = app.ui.section_open(id);
-    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)));
+    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)), badge);
     // video takes the global Light and Color controls only: the rest show greyed out
     let blocked = !crate::video_ui::section_allowed(id) && app.session.active().is_some_and(|p| crate::video_ui::photo_is_video(app, p));
     let resp = if blocked { resp.on_hover_text(crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO)) } else { resp };
