@@ -66,6 +66,8 @@ pub struct Filter {
     source: Option<String>,
     /// The module exports the optional `pc_analyze` (ABI v1.1 proposal).
     analyze: bool,
+    /// The module exports the optional `pc_merge` (ABI v1.1 proposal): one measurement from several.
+    merge: bool,
 }
 
 impl std::fmt::Debug for Filter {
@@ -76,6 +78,7 @@ impl std::fmt::Debug for Filter {
             .field("module_hash", &self.module_hash)
             .field("source", &self.source)
             .field("analyze", &self.analyze)
+            .field("merge", &self.merge)
             .finish()
     }
 }
@@ -156,7 +159,17 @@ impl Filter {
             )));
         }
         let module_hash = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
-        let mut p = Filter { manifest: placeholder_manifest(), engine, module, limits, size: bytes.len(), module_hash, source: None, analyze: false };
+        let mut p = Filter {
+            manifest: placeholder_manifest(),
+            engine,
+            module,
+            limits,
+            size: bytes.len(),
+            module_hash,
+            source: None,
+            analyze: false,
+            merge: false,
+        };
         let deadline = Deadline::new(&p.limits, None);
         let mut live = p.instantiate(&deadline)?;
         let version: TypedFunc<(), i32> = live.func("pc_abi_version")?;
@@ -180,6 +193,13 @@ impl Filter {
             None => false,
             Some(_) => {
                 live.func::<FilterArgs, i64>("pc_analyze")?;
+                true
+            }
+        };
+        p.merge = match live.instance.get_export(&live.store, "pc_merge") {
+            None => false,
+            Some(_) => {
+                live.func::<FilterArgs, i64>("pc_merge")?;
                 true
             }
         };
@@ -210,6 +230,10 @@ impl Filter {
     /// The module exports `pc_analyze` (a whole-image measurement, ABI v1.1 proposal).
     pub fn has_analyze(&self) -> bool {
         self.analyze
+    }
+    /// The module exports `pc_merge` (one measurement from several photos', ABI v1.1 proposal).
+    pub fn has_merge(&self) -> bool {
+        self.merge
     }
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
@@ -308,21 +332,38 @@ impl Filter {
             return Err(Error::Abi("the module does not export `pc_analyze`".into()));
         }
         let (mut live, _, _, args) = self.stage_call(data, w, h, channels, format, params, deadline)?;
-        let f: TypedFunc<FilterArgs, i64> = live.func("pc_analyze")?;
         let fuel = self.limits.fuel_base.saturating_add((data.len() as u64).saturating_mul(self.limits.fuel_per_sample));
-        let packed = self.call(&mut live, &f, args, fuel, deadline)? as u64;
+        self.json_call(&mut live, "pc_analyze", args, fuel, deadline)
+    }
+
+    /// Runs `pc_merge` on `text` (UTF-8 JSON: a list of `count` measurements) in a fresh instance:
+    /// the module's merged measurement (`None` when it returns 0 = nothing to report).
+    pub(crate) fn merge_buffer(&self, text: &[u8], count: u32, params: &[u8], deadline: &Deadline<'_>) -> Result<Option<serde_json::Value>> {
+        if !self.merge {
+            return Err(Error::Abi("the module does not export `pc_merge`".into()));
+        }
+        let (mut live, _, _, args) = self.stage_bytes(text.len(), |dst| dst.copy_from_slice(text), count, 0, 0, FORMAT_JSON, params, deadline)?;
+        // a few bytes of fuel per byte of text: a merge reads its input a few times at most
+        let fuel = self.limits.fuel_base.saturating_add((text.len() as u64).saturating_mul(self.limits.fuel_per_sample));
+        self.json_call(&mut live, "pc_merge", args, fuel, deadline)
+    }
+
+    /// Calls `name` (a `pc_analyze`-shaped export) and reads the JSON object it points at.
+    fn json_call(&self, live: &mut Live, name: &str, args: FilterArgs, fuel: u64, deadline: &Deadline<'_>) -> Result<Option<serde_json::Value>> {
+        let f: TypedFunc<FilterArgs, i64> = live.func(name)?;
+        let packed = self.call(live, &f, args, fuel, deadline)? as u64;
         if packed == 0 {
             return Ok(None);
         }
         let (ptr, len) = ((packed & 0xffff_ffff) as usize, (packed >> 32) as usize);
         if len > MAX_ANALYSIS_BYTES {
-            return Err(Error::Failed(format!("pc_analyze returned {len} bytes (limit {MAX_ANALYSIS_BYTES})")));
+            return Err(Error::Failed(format!("{name} returned {len} bytes (limit {MAX_ANALYSIS_BYTES})")));
         }
         let text =
-            live.memory.data(&live.store).get(ptr..ptr.saturating_add(len)).ok_or_else(|| Error::Abi("pc_analyze points outside memory".into()))?;
-        let v: serde_json::Value = serde_json::from_slice(text).map_err(|e| Error::Failed(format!("pc_analyze result is not JSON: {e}")))?;
+            live.memory.data(&live.store).get(ptr..ptr.saturating_add(len)).ok_or_else(|| Error::Abi(format!("{name} points outside memory")))?;
+        let v: serde_json::Value = serde_json::from_slice(text).map_err(|e| Error::Failed(format!("{name} result is not JSON: {e}")))?;
         if !v.is_object() {
-            return Err(Error::Failed("pc_analyze must return a JSON object".into()));
+            return Err(Error::Failed(format!("{name} must return a JSON object")));
         }
         Ok(Some(v))
     }
@@ -340,13 +381,37 @@ impl Filter {
         params: &[u8],
         deadline: &Deadline<'_>,
     ) -> Result<(Live, usize, usize, FilterArgs)> {
-        let bytes = data.len().checked_mul(4).filter(|b| {
-            *b <= i32::MAX as usize && params.len() < i32::MAX as usize && b.saturating_add(params.len()) <= self.limits.max_memory_bytes
-        });
-        let bytes = bytes.ok_or_else(|| Error::Limit("memory budget (band too large)".into()))?;
+        let bytes = data.len().checked_mul(4).ok_or_else(|| Error::Limit("memory budget (band too large)".into()))?;
+        let fill = |dst: &mut [u8]| {
+            for (d, v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(data.iter()) {
+                *d = v.to_le_bytes();
+            }
+        };
+        self.stage_bytes(bytes, fill, w, h, channels, format, params, deadline)
+    }
+
+    /// A fresh instance with a `bytes`-byte block (filled by `fill`) and `params` copied into blocks
+    /// from `pc_alloc`: the live instance, the block's bounds and the call's arguments.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_bytes(
+        &self,
+        bytes: usize,
+        fill: impl FnOnce(&mut [u8]),
+        w: u32,
+        h: u32,
+        channels: u32,
+        format: u32,
+        params: &[u8],
+        deadline: &Deadline<'_>,
+    ) -> Result<(Live, usize, usize, FilterArgs)> {
+        let fits =
+            bytes <= i32::MAX as usize && params.len() < i32::MAX as usize && bytes.saturating_add(params.len()) <= self.limits.max_memory_bytes;
+        if !fits {
+            return Err(Error::Limit("memory budget (band too large)".into()));
+        }
         let mut live = self.instantiate(deadline)?;
         let alloc: TypedFunc<i32, i32> = live.func("pc_alloc")?;
-        let ptr = self.call(&mut live, &alloc, bytes as i32, self.limits.fuel_base, deadline)? as u32 as usize;
+        let ptr = self.call(&mut live, &alloc, bytes.max(1) as i32, self.limits.fuel_base, deadline)? as u32 as usize;
         let pptr = self.call(&mut live, &alloc, params.len().max(1) as i32, self.limits.fuel_base, deadline)? as u32 as usize;
         if ptr == 0 || pptr == 0 {
             return Err(Error::Failed("pc_alloc returned 0 (out of memory)".into()));
@@ -357,9 +422,7 @@ impl Filter {
         {
             let mem = live.memory.data_mut(&mut live.store);
             let dst = mem.get_mut(ptr..end).ok_or_else(outside)?;
-            for (d, v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(data.iter()) {
-                *d = v.to_le_bytes();
-            }
+            fill(dst);
             let pdst = mem.get_mut(pptr..pend).ok_or_else(outside)?;
             pdst.copy_from_slice(params);
         }
@@ -368,8 +431,10 @@ impl Filter {
     }
 }
 
-/// Largest `pc_analyze` result accepted.
+/// Largest `pc_analyze` (and `pc_merge`) result accepted.
 pub const MAX_ANALYSIS_BYTES: usize = 64 * 1024;
+/// `format` of a `pc_merge` buffer: UTF-8 JSON text, not pixels.
+pub(crate) const FORMAT_JSON: u32 = 0;
 
 /// `pc_filter(buf_ptr, buf_len, width, height, channels, format, params_ptr, params_len)`.
 type FilterArgs = (i32, i32, i32, i32, i32, i32, i32, i32);
@@ -398,5 +463,7 @@ fn placeholder_manifest() -> Manifest {
         groups: Vec::new(),
         header: None,
         icon: None,
+        sections: Vec::new(),
+        shortcut: None,
     }
 }

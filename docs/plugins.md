@@ -650,7 +650,7 @@ Besides the plug-ins above, <app> runs **pixel filters** written for PhotoCraft'
 `memory`, `pc_abi_version`, `pc_manifest`, `pc_alloc` and `pc_filter`. They install the same way
 (File ▸ Plug-ins ▸ Plug-in Manager…, or `<cli> commands plugin.install '{"path": "film.wasm"}'`): the host
 sniffs the exports and keeps filter modules in the same folder, in a registry of their own.
-`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, icon, header}`
+`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, merge, sections, shortcut, icon, header}`
 (`params` is the manifest's spec); `plugin.uninstall` removes one. Filters ask for no permissions.
 
 A photo's filter stack is part of its develop settings (`develop.pluginFilter.add {plugin,
@@ -678,6 +678,26 @@ with the photo (`setAnalysis`). It runs in the background as an activity row (ki
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
+With `ids: [photo, …]` it measures every photo named, one after the other, each getting its own
+measurement; the entry is `uid` on the active photo and the first entry of the same plug-in on
+the others, and a photo without one first gets a copy of the active entry (parameters, stage,
+on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
+{uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
+false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
+the selection, and *Apply to N Selected* the copy.
+
+**A roll (ABI v1.1 proposal).** A module may also export
+`pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of
+UTF-8 JSON: a list of `count` objects its `pc_analyze` returned, one per photo. It returns, like
+`pc_analyze`, one JSON object: the measurement of all of them together (a film converter takes
+the roll's thinnest and densest points, say, so every frame is converted alike and keeps its own
+exposure). `develop.pluginFilter.analyze {uid, ids, roll: true}` measures each photo, hands the
+list to `pc_merge`, and stores the result on every photo with `_roll`: how many it came from
+(the panel's *Measure N Selected as a Roll*; "Measured as part of a roll of N" under the tools).
+A roll with one photo unmeasured has no measurement: the error is reported for all of them.
+Modules without `pc_merge` give an "unsupported" error for `roll`; `plugin.list` shows the
+export as `merge`. At most 1024 photos and 16 MiB of measurements go in one call.
+
 A manifest may set `"analyzeArea": "crop"` (default `"frame"`; other values mean the frame) to be
 measured on the photo as its develop geometry frames it instead: orientation, crop, straighten,
 flips, lens profile and perspective, what the Source stage sees (a negative converter measuring
@@ -693,6 +713,27 @@ options without a group stay at the top level, in place. A list of another lengt
 that isn't 1-64 printable characters, is ignored (a flat menu), as hosts without the field do.
 `plugin.list` gives each grouped parameter's `groups`. The dropdown is widget
 `pluginFilterChoice:<uid>:<param>`.
+**Sections (ABI v1.1 proposal).** A manifest may group its parameters under headings:
+`"sections": [{"label": "Tone", "params": ["exposure", "contrast"], "collapsed": false}, …]`.
+Develop ▸ Plug-in Filters shows each as a heading with a fold arrow (widget
+`pluginFilterSection:<uid>:<label>`; the fold is remembered for the session), the parameters
+under it in the section's order; parameters in no section come first, in the manifest's order.
+A section without a printable 1-64 character label or without a parameter of the manifest is
+dropped, a parameter named twice stays in the first section, and at most 16 sections are read.
+Hosts without the field show a flat list. `plugin.list` gives them as `sections`.
+
+**A key to add the filter (ABI v1.1 proposal).** A manifest may name a shortcut, `"shortcut":
+"Ctrl+Alt+N"` (`Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined with `+`; `Cmd` is ⌘ on macOS and
+Ctrl elsewhere, `Ctrl` the Control key everywhere). Every installed filter is a command *Add
+<name>* in Help ▸ Keyboard Shortcuts (id `pluginFilter.add:<plug-in id>`), with the manifest's
+key as its default when the key is free on this platform's keyboard, else none (on Windows and
+Linux `Ctrl` is `Cmd`, so a key another command has as `Cmd+…` is taken there); the user binds or
+changes it like any other, and giving the filter a taken key moves the key to it.
+The key runs `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of the plug-in (its
+defaults, its stage) on every selected photo that has none, in one History step, then opens
+Develop ▸ Plug-in Filters and says what it did. `plugin.list` shows the manifest's key as
+`shortcut`.
+
 **Base tone (ABI v1.1 proposal).** A raw is toned after the Source stage: by its camera's own
 curve when the file has one, else by the default raw curve. A Source filter whose output is
 already a finished picture (a negative conversion with its own tone curve) may set

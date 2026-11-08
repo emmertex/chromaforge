@@ -32,10 +32,14 @@ pub struct Bindable {
     pub default: Option<&'static str>,
 }
 
-/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id).
+/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id),
+/// then one *Add <filter>* per installed filter plug-in ([`PLUGIN_ADD`]; its manifest's `shortcut`
+/// is the declared key). The list is rebuilt when the installed filters change (a plug-in
+/// installed or removed), and stays `'static` for the callers that keep references into it.
 pub fn bindable() -> &'static [Bindable] {
-    static ALL: OnceLock<Vec<Bindable>> = OnceLock::new();
-    ALL.get_or_init(|| {
+    static FIXED: OnceLock<Vec<Bindable>> = OnceLock::new();
+    static ALL: std::sync::Mutex<Option<(u64, &'static [Bindable])>> = std::sync::Mutex::new(None);
+    let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
             if !v.iter().any(|b| b.id == *id) {
@@ -51,7 +55,68 @@ pub fn bindable() -> &'static [Bindable] {
             v.push(Bindable { id: c.id, label: c.label, default });
         }
         v
-    })
+    });
+    // rebuilt when the set of installed filters changes (the registry counts its changes)
+    let registry = lcc_engine::filter_plugins::registry();
+    let generation = registry.generation();
+    let mut all = ALL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((g, list)) = all.as_ref()
+        && *g == generation
+    {
+        return list;
+    }
+    let filters: Vec<(String, String, Option<String>)> =
+        registry.list().iter().map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone())).collect();
+    let mut v = fixed.clone();
+    let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).map(same_key).collect();
+    for (id, name, sc) in &filters {
+        let bid = intern(&format!("{PLUGIN_ADD}{id}"));
+        if v.iter().any(|b| b.id == bid) {
+            continue;
+        }
+        // a declared key another command declares too, on this platform's keyboard (Ctrl+Alt+N is
+        // Cmd+Alt+N on Windows and Linux), stays with that command: the user may still give it to
+        // the filter in Keyboard Shortcuts, which takes it from the other command
+        let default = sc.as_deref().filter(|sc| parse(sc).is_some_and(|k| !fixed_keys.contains(&same_key(k)))).map(intern);
+        v.push(Bindable { id: bid, label: intern(&format!("Add {name}")), default });
+    }
+    // rebuilt only when a filter is installed or removed: a few leaked strings per change
+    let list: &'static [Bindable] = Box::leak(v.into_boxed_slice());
+    *all = Some((generation, list));
+    list
+}
+
+/// A key as the platform's keyboard presses it: on Windows and Linux `Ctrl` and `Cmd` are the one
+/// Control key, so `Ctrl+Alt+N` and `Cmd+Alt+N` are the same press there (on macOS they differ).
+/// Conflicts between shortcuts are judged on this, so giving one command `Ctrl+Alt+N` there takes
+/// `Cmd+Alt+N` from another.
+fn same_key((m, k): (Modifiers, Key)) -> (Modifiers, Key) {
+    if cfg!(target_os = "macos") || !m.ctrl {
+        return (m, k);
+    }
+    (Modifiers { ctrl: false, command: true, ..m }, k)
+}
+
+/// The id family of the *Add <filter>* shortcuts: `pluginFilter.add:<plug-in id>`, which runs
+/// `develop.pluginFilter.addTo {plugin}` on the selection.
+pub const PLUGIN_ADD: &str = "pluginFilter.add:";
+
+/// A `'static` copy of `s`, shared with every earlier request for the same text (the filter
+/// bindables' ids and labels; at most [`MAX_INTERNED`] distinct strings, then the text leaks).
+fn intern(s: &str) -> &'static str {
+    use std::collections::HashMap;
+    const MAX_INTERNED: usize = 4096;
+    static POOL: std::sync::Mutex<Option<HashMap<String, &'static str>>> = std::sync::Mutex::new(None);
+    let mut g = POOL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pool = g.get_or_insert_with(HashMap::new);
+    if let Some(t) = pool.get(s) {
+        return t;
+    }
+    let t: &'static str = Box::leak(s.to_string().into_boxed_str());
+    if pool.len() < MAX_INTERNED {
+        pool.insert(s.to_string(), t);
+    }
+    t
 }
 
 pub fn find_bindable(id: &str) -> Option<&'static Bindable> {
@@ -73,9 +138,10 @@ pub fn binding<'a>(keymap: &'a Keymap, id: &str, default: Option<&'a str>) -> Op
 /// Whether the keymap gives the key `sc` to a known command other than `id` and its contextual
 /// partner.
 fn assigned_elsewhere(keymap: &Keymap, id: &str, sc: &str) -> bool {
-    let Some(key) = parse(sc) else { return false };
-    saved_keys(keymap)
-        .any(|(other, k)| other != id && k == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other)))
+    let Some(key) = parse(sc).map(same_key) else { return false };
+    saved_keys(keymap).any(|(other, k)| {
+        other != id && same_key(k) == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other))
+    })
 }
 
 /// The keys the keymap gives to known commands, with each command's id. Entries for commands this
@@ -96,11 +162,11 @@ pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"),
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
-    let Some(key) = parse(sc) else { return vec![] };
+    let Some(key) = parse(sc).map(same_key) else { return vec![] };
     bindable()
         .iter()
         .filter(|b| b.id != id && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == b.id) || (*y == id && *x == b.id)))
-        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse) == Some(key))
+        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse).map(same_key) == Some(key))
         .map(|b| b.id)
         .collect()
 }
@@ -667,7 +733,25 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let _ = app.run(if f == "library.next" { "slideshow.next" } else { "slideshow.previous" }, json!({}));
             continue;
         }
-        if let Some(rest) = f.strip_prefix("rate:") {
+        if let Some(plugin) = f.strip_prefix(PLUGIN_ADD) {
+            // Add <filter>: on every selected photo that has none; the Develop panel's section opens
+            match app.run("develop.pluginFilter.addTo", json!({"plugin": plugin})) {
+                Ok(r) => {
+                    let (added, had) = (r["added"].as_u64().unwrap_or(0), r["had"].as_u64().unwrap_or(0));
+                    let name = find_bindable(&f).map_or(plugin, |b| b.label.strip_prefix("Add ").unwrap_or(b.label));
+                    let text = match (added, had) {
+                        (0, _) => crate::i18n::tr_format!("{name} is already on the selected photos", name = name),
+                        (1, 0) => crate::i18n::tr_format!("{name} added", name = name),
+                        (n, _) => crate::i18n::tr_format!("{name} added to {n} photos", name = name, n = n),
+                    };
+                    app.toast(ctx, text);
+                    if !app.ui.section_open(lcc_develop::PLUGIN_FILTERS_SECTION) {
+                        app.ui.toggle_section(lcc_develop::PLUGIN_FILTERS_SECTION);
+                    }
+                }
+                Err(e) => app.toast(ctx, e),
+            }
+        } else if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
             cull(app, "photo.rate", json!({"rating": n.parse::<u8>().unwrap_or(0)}), adv == "1");
         } else if matches!(f.as_str(), "photo.decreaseRating" | "photo.increaseRating" | "photo.clearLabel") {

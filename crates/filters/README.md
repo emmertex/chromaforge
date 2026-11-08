@@ -16,6 +16,8 @@ A WebAssembly module with **no imports** that exports:
 | `pc_manifest` | `() -> i64` | `len << 32 \| ptr` of the UTF-8 JSON manifest |
 | `pc_alloc` | `(i32) -> i32` | a block of `n` bytes (0 = out of memory) |
 | `pc_filter` | `(buf, len, w, h, channels, format, params_ptr, params_len) -> i32` | filters `buf` in place; 0 = success |
+| `pc_analyze` (optional) | the same arguments `-> i64` | measures the whole image once: `len << 32 \| ptr` of a JSON object, 0 = nothing (ABI v1.1 proposal) |
+| `pc_merge` (optional) | `(buf, len, count, 0, 0, 0, params_ptr, params_len) -> i64` | one measurement from `count` of them (`buf`: their JSON list), as `pc_analyze` returns it (ABI v1.1 proposal) |
 
 The manifest: `{"id", "name", "version", "kind": "filter", "description", "author", "params":
 {name: spec}, "overlap", "area"}`, where a spec is `number {min,max,default}`, `int`, `bool` or
@@ -32,6 +34,9 @@ band's top-left in the full image, overlap included), `width`, `height`, `overla
   `module_hash()` is the SHA-256 of the bytes.
 - `Manifest::resolve_params(&Value) -> Result<Map>`: defaults, clamping, type errors.
 - `Filter::apply_rgb(&mut [f32], w, h, FrameInfo, &Value, &AtomicBool) -> Result<()>`.
+- `Filter::analyze_rgb(&[f32], w, h, &Value, &AtomicBool) -> Result<Option<Value>>` and
+  `Filter::merge_analyses(&[Value], &Value, &AtomicBool) -> Result<Option<Value>>` (`has_analyze()`,
+  `has_merge()` say whether the module exports them).
 - `is_filter_module(bytes) -> bool`: a cheap export-section sniff, so the general plug-in
   manager can route PhotoCraft-ABI modules here.
 - `Registry`: install from bytes or a path, remove, list, get by id, load a folder of `*.wasm`.
