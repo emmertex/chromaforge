@@ -945,6 +945,7 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
     }
     // never less than the photo has or is getting: a smaller ask (the filmstrip beside a larger view) moving the
     // job up would otherwise swap it for a smaller one, and the larger view swap it back
+    retry_found_original(app, id);
     let size = app.session.catalog.photo(id).and_then(|p| app.renderer.thumb_bucket_kept(p)).map_or(size, |kept| kept.max(size));
     let bucket = lcc_engine::media::thumb_bucket(size);
     if let Some(photo) = app.session.catalog.photo(id)
@@ -997,6 +998,24 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
             }
         }
         None => app.renderer.request(Slot::Thumb(id), job, priority),
+    }
+}
+
+/// A cell that shows photo `id`'s kept thumbnail ([`lcc_engine::media::QuickSource::Kept`]) or a failure asks
+/// whether its original is there (a cached answer, checked off the UI thread), and asks for its thumbnail again
+/// once the original is back: a drive mounted while the app runs ([`crate::render::Renderer::retry_found_original`]).
+/// Other cells ask nothing.
+fn retry_found_original(app: &mut LccApp, id: PhotoId) {
+    let kept = app.renderer.thumb(id).is_some_and(|t| t.quick == Some(lcc_engine::media::QuickSource::Kept));
+    if !kept && app.renderer.thumb_failure(id).is_none() {
+        return;
+    }
+    let Some(lcc_catalog::Source::File { path }) = app.session.catalog.photo(id).map(|p| &p.source) else { return };
+    let availability = &app.session.media.availability;
+    match availability.exists(path) {
+        Some(false) => app.renderer.note_missing_original(id),
+        Some(true) => app.renderer.retry_found_original(id, kept, availability.gone_generation()),
+        None => {}
     }
 }
 

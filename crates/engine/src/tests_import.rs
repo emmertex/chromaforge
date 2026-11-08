@@ -1401,6 +1401,250 @@ fn smart_previews_stand_in_for_offline_originals() {
     let _ = std::fs::remove_dir_all(&lib);
 }
 
+/// The long edge the grid asks thumbnails for in the tests of missing photos below.
+const CELL: usize = 256;
+
+/// Waits for `s`'s thumbnail cache to finish its disk writes (as quitting does).
+fn drain_thumbnail_writes(s: &Session) {
+    let t = std::time::Instant::now();
+    while s.media.rendered.queued_bytes() > 0 && t.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(s.media.rendered.queued_bytes(), 0, "the thumbnail cache's writes are done");
+}
+
+/// The mean difference per channel value of two pictures of one size.
+fn mean_diff(a: &lcc_raster::Rgba8, b: &lcc_raster::Rgba8) -> f64 {
+    assert_eq!((a.width, a.height), (b.width, b.height), "one size");
+    let sum: f64 = a.data.iter().zip(&b.data).map(|(p, q)| (0..3).map(|i| (f64::from(p[i]) - f64::from(q[i])).abs()).sum::<f64>()).sum();
+    sum / (a.data.len() * 3).max(1) as f64
+}
+
+fn import_png(s: &mut Session, path: &Path) -> lcc_catalog::PhotoId {
+    let r = s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap())
+}
+
+/// A photo whose original is missing (a drive that isn't mounted) keeps its last grid thumbnail through an update
+/// that changes the thumbnails' keys, as Lightroom keeps a missing photo's preview; once the original is back, its
+/// thumbnail renders afresh. A missing photo with nothing cached still fails, and a file that is there but can't be
+/// read shows its error, never an old thumbnail.
+#[test]
+fn a_missing_photo_keeps_its_thumbnail_through_an_update() {
+    let src = temp_dir("keptsrc");
+    let lib = temp_dir("keptlib");
+    for (name, seed) in [("a.png", 7), ("b.png", 9), ("c.png", 11)] {
+        write_png(&src.join(name), seed);
+    }
+    // seen online: a and c get their grid thumbnails, b is never shown
+    let (a, b, c, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let (a, b, c) = (import_png(&mut s, &src.join("a.png")), import_png(&mut s, &src.join("b.png")), import_png(&mut s, &src.join("c.png")));
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("a renders online").image;
+        s.thumb_job(c, CELL).unwrap().run().rendered.expect("c renders online");
+        drain_thumbnail_writes(&s);
+        (a, b, c, before)
+    };
+    // the drive goes away; c turns up elsewhere as a file that can't be read
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("c.png"), b"not a picture").unwrap();
+    // the next start comes after more updates than earlier versions' thumbnails are looked for under: only the
+    // thumbnail the photo kept can show
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let offline = s.thumb_job(a, CELL).unwrap().run();
+    assert_eq!(offline.quick, Some(crate::media::QuickSource::Kept), "says it is the kept thumbnail");
+    assert!(offline.placement.is_none(), "made with the look and crop the photo had then: it claims neither");
+    let shown = offline.rendered.expect("the missing photo shows its kept thumbnail").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had before the update: {diff}");
+    assert!(s.thumb_job(b, CELL).unwrap().run().rendered.is_err(), "a missing photo with nothing cached has no picture");
+    assert!(s.thumb_job(c, CELL).unwrap().run().rendered.is_err(), "a file that is there but can't be read shows its error");
+    // the drive is back, and a's pixels changed meanwhile: its thumbnail renders afresh from the file
+    std::fs::remove_dir_all(&src).unwrap();
+    std::fs::rename(src.with_extension("offline"), &src).unwrap();
+    write_png(&src.join("a.png"), 200);
+    let online = s.thumb_job(a, CELL).unwrap().run();
+    assert!(online.loaded.is_some(), "decoded from the original, not taken from a cache");
+    let diff = mean_diff(&online.rendered.expect("a renders online again").image, &before);
+    assert!(diff > 30.0, "the file's new pixels, not the kept thumbnail: {diff}");
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// A thumbnail cached by an earlier version of the app, before photos kept one whatever made it, still shows for a
+/// missing photo: it is looked for under the renderer versions before this one.
+#[test]
+fn a_missing_photo_finds_a_thumbnail_an_earlier_version_cached() {
+    let src = temp_dir("oldsrc");
+    let lib = temp_dir("oldlib");
+    write_png(&src.join("a.png"), 7);
+    let (a, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        // an app three versions back, which kept no thumbnail of its own
+        s.media.thumb_version -= 3;
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders online").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)), "this version keeps one");
+        (a, before)
+    };
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the earlier version's thumbnail").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had: {diff}");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// A thumbnail cached before photos kept one is kept the next time it is shown from the cache, so the photo keeps
+/// it through any number of later updates.
+#[test]
+fn a_thumbnail_cached_before_photos_kept_one_is_kept_once_shown() {
+    let src = temp_dir("backsrc");
+    let lib = temp_dir("backlib");
+    write_png(&src.join("a.png"), 7);
+    let (a, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders online").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        s.media.rendered.remove(crate::media::kept_thumb_key(&p));
+        (a, before)
+    };
+    // the next start shows it from the cache (the original still there)
+    {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let r = s.thumb_job(a, CELL).unwrap().run();
+        assert!(r.rendered.is_ok() && r.loaded.is_none(), "shown from the cache");
+        drain_thumbnail_writes(&s);
+    }
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the thumbnail kept when it was last shown").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had: {diff}");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The kept thumbnail is the look the photo had when it was last shown: an undo back to a look whose thumbnail was
+/// cached already replaces the kept thumbnail of the edit undone.
+#[test]
+fn a_missing_photo_keeps_the_look_an_undo_went_back_to() {
+    let src = temp_dir("undosrc");
+    let lib = temp_dir("undolib");
+    write_png(&src.join("a.png"), 7);
+    // cached by a version that kept none
+    let (a, plain) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        let plain = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)));
+        (a, plain)
+    };
+    // the next start: an edit is rendered (the first kept thumbnail), then undone back to the cached look
+    let edited = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let as_shot = (*s.catalog.photo(a).unwrap().develop).clone();
+        let mut bright = as_shot.clone();
+        bright.light.exposure = 2.0;
+        s.set_develop(a, bright, "Exposure").unwrap();
+        let edited = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders the edit").image;
+        assert!(mean_diff(&plain, &edited) > 20.0, "the edit shows");
+        s.set_develop(a, as_shot, "Undo").unwrap();
+        let back = s.thumb_job(a, CELL).unwrap().run();
+        assert!(back.rendered.is_ok() && back.loaded.is_none(), "shown from the cache");
+        drain_thumbnail_writes(&s);
+        edited
+    };
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the kept thumbnail").image;
+    assert!(mean_diff(&shown, &plain) < 6.0, "the look it went back to");
+    assert!(mean_diff(&shown, &edited) > 20.0, "not the edit undone");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The loupe's stand-in shows the photo's cached view: that is no grid thumbnail, and is never kept as one (a
+/// view-sized or full-size copy for every photo seen in the loupe).
+#[test]
+fn the_loupes_stand_in_keeps_no_thumbnail() {
+    let src = temp_dir("loupesrc");
+    let lib = temp_dir("loupelib");
+    write_png(&src.join("a.png"), 7);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let a = import_png(&mut s, &src.join("a.png"));
+    s.thumb_job(a, CELL).unwrap().run().rendered.expect("the grid thumbnail renders");
+    s.loupe_job(a, 1600, 1600, true).unwrap().run().rendered.expect("the view renders");
+    let r = s.quick_view_job(a, 1600, true).unwrap().run();
+    assert_eq!(r.quick, Some(crate::media::QuickSource::Cached), "the cached view stands in");
+    drain_thumbnail_writes(&s);
+    let p = s.catalog.photo(a).unwrap().clone();
+    let kept = s.media.rendered.get_latest(crate::media::kept_thumb_key(&p)).expect("the grid thumbnail is kept");
+    assert!(kept.width.max(kept.height) <= CELL, "the kept thumbnail is the grid's, not the view: {}x{}", kept.width, kept.height);
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The grid's stand-in for an edited photo shows its cached thumbnail before the render job does: what it shows is
+/// kept, as when the render job shows it from the cache.
+#[test]
+fn the_grids_stand_in_keeps_the_edited_thumbnail_it_shows() {
+    let src = temp_dir("standinsrc");
+    let lib = temp_dir("standinlib");
+    write_png(&src.join("a.png"), 7);
+    let bright = |s: &Session, a| {
+        let mut bright = (*s.catalog.photo(a).unwrap().develop).clone();
+        bright.light.exposure = 2.0;
+        bright
+    };
+    // cached by a version that kept none
+    let a = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        s.set_develop(a, bright(&s, a), "Exposure").unwrap();
+        s.thumb_job(a, CELL).unwrap().run().rendered.expect("the edit renders");
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)), "kept when rendered");
+        a
+    };
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    // (the same edit again: one look, one cached thumbnail)
+    s.set_develop(a, bright(&s, a), "Exposure").unwrap();
+    let p = s.catalog.photo(a).unwrap().clone();
+    let job = s.thumb_job(a, CELL).unwrap();
+    let r = s.quick_thumb_job(&job).expect("the grid's stand-in").run();
+    assert_eq!(r.quick, Some(crate::media::QuickSource::Cached), "the cached thumbnail stands in");
+    drain_thumbnail_writes(&s);
+    assert!(s.media.rendered.get_latest(crate::media::kept_thumb_key(&p)).is_some(), "what the stand-in showed is kept");
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
 /// Issue #1534: the decoder facts a render interprets its settings against (a camera colour model,
 /// the file's local tone map, its semantic mattes) must be stored with the smart preview, so an
 /// edit made while the original is offline renders the same picture as the online source instead
