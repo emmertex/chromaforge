@@ -7,15 +7,8 @@ use crate::{Result, Session};
 fn session() -> Result<Session> {
     let mut s = Session::new();
     for (id, rating) in [(1, 5), (2, 1), (3, 0), (4, 0)] {
-        let mut photo = Photo::new(
-            PhotoId(id),
-            Source::File { path: format!("/next-unrated/{id}.jpg") },
-            &format!("{id}.jpg"),
-            "JPEG",
-            40,
-            30,
-            "2026-10-09",
-        );
+        let mut photo =
+            Photo::new(PhotoId(id), Source::File { path: format!("/next-unrated/{id}.jpg") }, &format!("{id}.jpg"), "JPEG", 40, 30, "2026-10-09");
         photo.rating = rating;
         s.catalog.apply(Op::AddPhoto { photo: Box::new(photo) })?;
     }
