@@ -36,6 +36,8 @@ use std::path::{Path, PathBuf};
 pub const LOCK: &str = "catalog.lock";
 /// Who holds the lock (JSON, see [`LockOwner`]).
 pub const OWNER: &str = "catalog.lock.owner";
+/// Most bytes of the owner note read (a note is a few hundred).
+const MAX_OWNER_BYTES: u64 = 64 << 10;
 
 /// Who has the library open (as written in [`OWNER`]).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -118,7 +120,9 @@ impl LibraryLock {
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
-                let owner = crate::safe_file::read_no_follow(&dir.join(OWNER)).ok().and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
+                let owner = crate::safe_file::read_no_follow_max(&dir.join(OWNER), MAX_OWNER_BYTES)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<LockOwner>(&b).ok());
                 return Err(LockError::InUse(owner));
             }
             Err(TryLockError::Error(e)) => return Ok(unlocked(e)),

@@ -142,6 +142,9 @@ pub(crate) fn create_staging(tmp: &std::path::Path) -> io::Result<std::fs::File>
     std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)
 }
 
+/// Most bytes of one catalog file read into memory.
+const MAX_READ: u64 = 8 << 30;
+
 impl Store for FsStore {
     /// Never through a link at the name, nor from a FIFO or a device (issue #2552): a `prefs.json`
     /// linked to a private file would be read as damaged and copied into the library.
@@ -154,7 +157,10 @@ impl Store for FsStore {
         }
         let Some(mut f) = crate::safe_file::open_regular(&self.path(name), std::fs::OpenOptions::new().read(true))? else { return Ok(None) };
         let mut b = Vec::new();
-        f.read_to_end(&mut b)?;
+        (&mut f).take(MAX_READ.saturating_add(1)).read_to_end(&mut b)?;
+        if b.len() as u64 > MAX_READ {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{name} is more than the {MAX_READ} bytes allowed")));
+        }
         Ok(Some(b))
     }
 

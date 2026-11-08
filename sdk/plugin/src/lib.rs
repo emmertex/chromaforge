@@ -145,6 +145,11 @@ impl Request {
     pub fn get(&self, key: &str) -> &Value {
         self.0.get(key).unwrap_or(&Value::Null)
     }
+    /// A job's state from its last reply (`hook == "command"` of a job, see [`job::continue_with`]):
+    /// null on its first call.
+    pub fn state(&self) -> &Value {
+        self.get("state")
+    }
     /// The run a `program.start` returned (`hook == "program.end"`).
     pub fn run(&self) -> &str {
         self.0.get("run").and_then(Value::as_str).unwrap_or("")
@@ -194,9 +199,30 @@ impl Request {
     }
 }
 
+/// A photo's pixels from [`host::photo_pixels`]: `width × height`, 8-bit sRGB, interleaved RGB
+/// rows top to bottom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pixels {
+    pub width: usize,
+    pub height: usize,
+    pub rgb: Vec<u8>,
+}
+
 /// Standard base64 (with padding), as `fs.readBytes` / `fs.writeBytes` / `bodyBase64` use.
 pub mod base64 {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const INVALID: u8 = 0xff;
+    /// Each byte's value in [`ALPHABET`] ([`INVALID`] for others): a table, not a search, as
+    /// plug-ins decode megabytes (`photo.pixels`, `fs.readBytes`) in an interpreter.
+    const DECODE: [u8; 256] = {
+        let mut t = [INVALID; 256];
+        let mut i = 0;
+        while i < 64 {
+            t[ALPHABET[i] as usize] = i as u8;
+            i += 1;
+        }
+        t
+    };
 
     pub fn encode(bytes: &[u8]) -> String {
         let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -211,24 +237,43 @@ pub mod base64 {
     }
 
     pub fn decode(text: &str) -> Result<Vec<u8>, String> {
-        let s = text.as_bytes();
+        decode_bytes(text.as_bytes())
+    }
+
+    /// [`decode`] of base64 bytes, a whole group of four at a time.
+    pub fn decode_bytes(s: &[u8]) -> Result<Vec<u8>, String> {
         if !s.len().is_multiple_of(4) {
             return Err("base64 length must be a multiple of 4".into());
         }
+        let Some((body, last)) = s.len().checked_sub(4).map(|n| s.split_at(n)) else {
+            return Ok(Vec::new());
+        };
         let mut out = Vec::with_capacity(s.len() / 4 * 3);
-        for (i, c) in s.chunks(4).enumerate() {
-            let pad = c.iter().rev().take_while(|&&b| b == b'=').count();
-            if pad > 2 || (pad > 0 && i + 1 != s.len() / 4) {
-                return Err("bad base64 padding".into());
+        for c in body.as_chunks::<4>().0 {
+            let (a, b, x, y) = (DECODE[usize::from(c[0])], DECODE[usize::from(c[1])], DECODE[usize::from(c[2])], DECODE[usize::from(c[3])]);
+            // every valid value fits in 6 bits; INVALID (also `=` before the end) doesn't
+            if (a | b | x | y) & 0xc0 != 0 {
+                return Err(if c.contains(&b'=') { "bad base64 padding" } else { "bad base64 character" }.into());
             }
-            let mut n = 0u32;
-            for &b in &c[..4 - pad] {
-                let v = ALPHABET.iter().position(|&a| a == b).ok_or("bad base64 character")? as u32;
-                n = (n << 6) | v;
-            }
-            n <<= 6 * pad as u32;
-            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8][..3 - pad]);
+            let n = (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(x) << 6) | u32::from(y);
+            out.push((n >> 16) as u8);
+            out.push((n >> 8) as u8);
+            out.push(n as u8);
         }
+        let pad = last.iter().rev().take_while(|&&b| b == b'=').count();
+        if pad > 2 {
+            return Err("bad base64 padding".into());
+        }
+        let mut n = 0u32;
+        for &b in &last[..4 - pad] {
+            let v = DECODE[usize::from(b)];
+            if v == INVALID {
+                return Err("bad base64 character".into());
+            }
+            n = (n << 6) | u32::from(v);
+        }
+        n <<= 6 * pad as u32;
+        out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8][..3 - pad]);
         Ok(out)
     }
 }
@@ -239,6 +284,11 @@ pub mod host {
 
     /// Sends `{method, params}`; the host's reply or its error message.
     pub fn call(method: &str, params: Value) -> Result<Value, String> {
+        parse_reply(&call_raw(method, params)?)
+    }
+
+    /// Sends `{method, params}`; the host's reply as it came, unparsed.
+    fn call_raw(method: &str, params: Value) -> Result<Vec<u8>, String> {
         let req = serde_json::to_vec(&json!({"method": method, "params": params})).map_err(|e| e.to_string())?;
         let n = host_call(addr(&req), req.len() as i32);
         if n < 0 {
@@ -247,8 +297,12 @@ pub mod host {
         let mut buf = vec![0u8; n as usize];
         host_response(buf.as_mut_ptr() as usize as i32);
         // the host wrote the reply into `buf`; read it through a black box so it isn't assumed zero
-        let buf = std::hint::black_box(buf);
-        let mut reply: Value = serde_json::from_slice(&buf).map_err(|e| format!("bad host reply: {e}"))?;
+        Ok(std::hint::black_box(buf))
+    }
+
+    /// A host reply's value, or its error message.
+    fn parse_reply(buf: &[u8]) -> Result<Value, String> {
+        let mut reply: Value = serde_json::from_slice(buf).map_err(|e| format!("bad host reply: {e}"))?;
         if let Some(e) = reply.get("error") {
             return Err(e.as_str().map_or_else(|| e.to_string(), str::to_string));
         }
@@ -351,10 +405,127 @@ pub mod host {
         call("library.add", json!({"path": path, "from": from, "stack": stack, "album": album}))
     }
 
+    /// A downsized copy of photo `photo` (`pixels` permission): the whole frame as the crop tool
+    /// shows it before cropping (orientation, flips, lens and perspective; no crop, no
+    /// straighten), long edge at most `long_edge` (the host keeps it within 64..=1536), 8-bit sRGB.
+    /// A point's position in it, normalized, is where [`set_crop`] puts that point.
+    pub fn photo_pixels(photo: &str, long_edge: u32) -> Result<crate::Pixels, String> {
+        let mut buf = call_raw("photo.pixels", json!({"photo": photo, "longEdge": long_edge}))?;
+        // the base64 is decoded straight from the reply and cut out of it before the rest is
+        // parsed: parsing a megabyte into a JSON string first would double the work, which an
+        // interpreted plug-in feels (base64 never needs escaping, so its string ends at a quote)
+        const KEY: &[u8] = b"\"data\":\"";
+        let data = buf
+            .windows(KEY.len())
+            .position(|w| w == KEY)
+            .map(|i| i + KEY.len())
+            .and_then(|start| buf[start..].iter().position(|&b| b == b'"').map(|len| start..start + len));
+        let rgb = match data {
+            Some(r) => {
+                let rgb = crate::base64::decode_bytes(&buf[r.clone()])?;
+                buf.drain(r);
+                Some(rgb)
+            }
+            None => None,
+        };
+        let v = parse_reply(&buf)?;
+        let dim = |k: &str| v[k].as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| format!("photo.pixels: no `{k}`"));
+        let (width, height) = (dim("width")?, dim("height")?);
+        let rgb = match rgb {
+            Some(rgb) => rgb,
+            None => crate::base64::decode(v["data"].as_str().unwrap_or_default())?,
+        };
+        // checked: on wasm32 a usize product of two reply numbers can overflow
+        if width.checked_mul(height).and_then(|n| n.checked_mul(3)) != Some(rgb.len()) {
+            return Err(format!("photo.pixels: {} bytes for {width} × {height}", rgb.len()));
+        }
+        Ok(crate::Pixels { width, height, rgb })
+    }
+
+    /// Makes a virtual copy of photo `photo` (`virtualCopy` permission): a new catalog entry
+    /// sharing its file, with a copy of its settings, stacked after it, named `name` or "Copy N".
+    /// → the copy's id. One History step; the selection stays as it was.
+    pub fn virtual_copy(photo: &str, name: Option<&str>) -> Result<String, String> {
+        let v = call("photo.virtualCopy", json!({"photo": photo, "name": name}))?;
+        v["photo"].as_str().map(str::to_string).ok_or_else(|| "photo.virtualCopy: no `photo` in the reply".into())
+    }
+
+    /// Sets photo `photo`'s crop (`crop` permission): `rect` `[x0, y0, x1, y1]`, normalized (0..1)
+    /// in the frame [`photo_pixels`] gives turned by `angle` (degrees, clockwise; `None` is 0) about
+    /// its centre, so a box found in those pixels, turned to level them, is set as found. One
+    /// History step; the user adjusts it in the crop tool like any crop. → `{rect, angle}` as set
+    /// (the host fits it inside the photo).
+    pub fn set_crop(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        call("develop.setCrop", json!({"photo": photo, "rect": rect, "angle": angle}))
+    }
+
     /// An HTTP request (needs the URL's host in the `network` permission) →
     /// `{status, contentType, location, body}`.
     pub fn http(method: &str, url: &str, headers: Value, body: Option<&str>) -> Result<Value, String> {
         call("http.request", json!({"method": method, "url": url, "headers": headers, "body": body}))
+    }
+}
+
+/// A job's calls (a command with `"job": true`; needs `"jobs"` in `requires`): its row in the
+/// activity stack and its cancel. Outside a job they fail (`cancelled()` is then false).
+///
+/// A job keeps each call short and goes on with [`continue_with`]:
+///
+/// ```ignore
+/// fn handle(req: &Request) -> Result<Value, String> {
+///     let photos = req.selection();
+///     let mut next = req.state().as_u64().unwrap_or(0) as usize;
+///     for photo in photos.iter().skip(next).take(20) {
+///         if job::cancelled() {
+///             return Ok(json!({"message": format!("Stopped after {next} photos")}));
+///         }
+///         job::detail(photo);
+///         // … work on the photo …
+///         job::item_done();
+///         next += 1;
+///     }
+///     job::progress(next as u64, photos.len() as u64);
+///     if next < photos.len() { Ok(job::continue_with(json!(next))) } else { Ok(json!({"message": "Done"})) }
+/// }
+/// ```
+pub mod job {
+    use super::*;
+
+    /// `done` of `total` things (0 total: not known, the bar sweeps).
+    pub fn progress(done: u64, total: u64) {
+        let _ = host::call("job.progress", json!({"done": done, "total": total}));
+    }
+
+    /// [`progress`] in `unit`: `"count"`, `"bytes"` ("12 of 340 MB") or `"percent"`.
+    pub fn progress_in(done: u64, total: u64, unit: &str) -> Result<(), String> {
+        host::call("job.progress", json!({"done": done, "total": total, "unit": unit})).map(|_| ())
+    }
+
+    /// What the job is working on: a name (a file, a photo), not a sentence.
+    pub fn detail(text: &str) {
+        let _ = host::call("job.detail", json!({"text": text}));
+    }
+
+    /// One photo done: the row counts photos from now on, with the time left and a summary at the end.
+    pub fn item_done() {
+        let _ = host::call("job.itemDone", json!({}));
+    }
+
+    /// One photo failed; `why` names it and gives the reason (kept for the summary).
+    pub fn item_failed(why: &str) {
+        let _ = host::call("job.itemFailed", json!({"why": why}));
+    }
+
+    /// Whether the user stopped the job (✕). From then on every other host call fails with
+    /// "cancelled", and a reply asking to continue is not called again: stop, and say how far it got.
+    pub fn cancelled() -> bool {
+        host::call("job.cancelled", json!({})).ok().and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
+    /// The reply that calls the job again, in a fresh instance with a fresh budget, with `state` as
+    /// [`Request::state`](crate::Request::state). The next request must still fit in a message.
+    pub fn continue_with(state: Value) -> Value {
+        json!({"continue": state})
     }
 }
 
@@ -380,4 +551,24 @@ macro_rules! export_plugin {
             $crate::__handle(ptr, len, $handler)
         }
     };
+}
+
+#[cfg(test)]
+mod tests_base64 {
+    use super::base64::{decode, encode};
+
+    #[test]
+    fn base64_round_trips_and_refuses_what_is_not_base64() {
+        for len in 0..40 {
+            let bytes: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(decode(&encode(&bytes)).unwrap(), bytes, "length {len}");
+        }
+        let all: Vec<u8> = (0..=255).collect();
+        assert_eq!(decode(&encode(&all)).unwrap(), all);
+        assert_eq!(decode("TWFu").unwrap(), b"Man");
+        assert_eq!(decode("TWE=").unwrap(), b"Ma");
+        for bad in ["TWF", "TW!u", "T===", "TQ==TWFu", "TWFu\n"] {
+            assert!(decode(bad).is_err(), "{bad:?}");
+        }
+    }
 }

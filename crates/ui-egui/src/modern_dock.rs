@@ -469,7 +469,19 @@ pub(crate) fn card(app: &mut LccApp, ui: &egui::Ui, area: Rect, dock: Rect) {
             egui::ScrollArea::vertical().id_salt(("modern-card-scroll", g.label(), side, more.clone())).max_height(max_h - 60.0).show(ui, |ui| {
                 ui.set_width(max_w - 24.0);
                 if let (Some(key), Some(photo)) = (&more, photo) {
-                    crate::panels::edit::show_section(app, ui, photo, key);
+                    // the Colour Grading card matches the grading mode (Settings ▸ General):
+                    // Witchcraft shows the colourist's own Primaries palette and HSL curves where
+                    // Eboda shows the 3-way wheels
+                    if *key == "grading" && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+                        edit::show_section(app, ui, photo, "primaries");
+                        ui.add_space(10.0);
+                        // a black-and-white photo has no HSL curves (the B&W mix has its own card)
+                        if !crate::is_bw(&app.session.develop_of(photo).unwrap_or_default()) {
+                            edit::show_section(app, ui, photo, "hsl");
+                        }
+                    } else {
+                        edit::show_section(app, ui, photo, key);
+                    }
                 } else if sliders {
                     let all = specs(app, g);
                     if columns {

@@ -4367,7 +4367,9 @@ mod tests {
     /// keeps them, only its brighter highlights come down. Both keep the colour fitted to their
     /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit. Each is compared with its fit as the
     /// app has it before the DRO step: compared with the unsmoothed fit, the ILCE-7M4's curve was
-    /// 0.0002 brighter near its first knot, where the smoothing lifts it, and the test failed.
+    /// 0.0002 brighter near its first knot, where the smoothing lifts it, and the test failed. The
+    /// points where a DRO curve must be well below take the fit before smoothing, the curve closest to
+    /// the JPEG's lifted shadows, which they were measured against.
     #[test]
     fn corpus_arw_with_dro_is_lowered_to_the_dro_off_tone() {
         let dir = lcc_brand::env_os("CORPUS")
@@ -4400,7 +4402,8 @@ mod tests {
             let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
             let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
             let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
-            let fitted = with_smooth_tone(fit_look(&sensor, &reference, &clipped, colour).unwrap());
+            let unsmoothed = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let fitted = with_smooth_tone(unsmoothed.clone());
             let fitted = match profile.as_ref().and_then(|p| p.tone) {
                 Some(pooled) => CameraLook { tone: extend_tone(&fitted.tone, &pooled), ..fitted },
                 None => fitted,
@@ -4409,8 +4412,11 @@ mod tests {
                 assert_lowered(&fitted, &look, name);
                 // the Sony DRO samples' lowered curves stay below their fitted ones under V8 as well
                 assert!(v8_below(&look.tone, &fitted.tone), "{name}: brighter than the fitted curve under V8");
+                // the shadows the camera JPEG lifts are gone: measured against the fit before smoothing, the curve
+                // closest to the JPEG (smoothing alone lowers the ILCE-7RM2's by about 7 % at 0.1)
                 for x in lowered {
-                    assert!(look.tone.apply(x) < 0.95 * fitted.tone.apply(x), "{name} at {x}: {} vs {}", look.tone.apply(x), fitted.tone.apply(x));
+                    let (got, jpeg) = (look.tone.apply(x), unsmoothed.tone.apply(x));
+                    assert!(got < 0.95 * jpeg, "{name} at {x}: {got} vs {jpeg} before smoothing");
                 }
             } else {
                 assert_eq!((look.matrix, &look.hue_sat, look.tone), (fitted.matrix, &fitted.hue_sat, fitted.tone), "{name}");

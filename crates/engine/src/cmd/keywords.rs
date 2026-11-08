@@ -632,9 +632,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Keyword",
             [],
             None,
-            "{keyword} — removes it (and the keywords below it) from every photo",
+            "{keyword} — removes it (and the keywords below it) from every photo. Several at once: {keywords: [keyword]}, still one undo step; an empty one refuses the whole call",
             always,
             |s, p| {
+                if p.get("keywords").is_some_and(|v| !v.is_null()) {
+                    let ks = strs(p, "keywords");
+                    let op = s.catalog.delete_keywords_ops(&ks).map_err(|e| bad("keyword.delete", e.to_string()))?;
+                    let cleaned: Vec<String> = ks.iter().map(|k| clean(k)).collect();
+                    return commit_keywords(s, "Delete Keywords", op, |f| (!cleaned.iter().any(|c| is_under(f, c))).then(|| f.to_string()));
+                }
                 let k = str_param(p, "keyword").ok_or_else(|| bad("keyword.delete", "missing `keyword`"))?.to_string();
                 let op = s.catalog.delete_keyword_ops(&k).map_err(|e| bad("keyword.delete", e.to_string()))?;
                 let c = clean(&k);

@@ -902,6 +902,14 @@ fn read_settings(p: &str) -> Result<SettingsFile, String> {
     }
 }
 
+/// Why `library.import` (its result `r`) brought in nothing from `input`.
+fn not_imported(input: &str, r: &Value) -> String {
+    if r["still_copying"].as_array().is_some_and(|a| !a.is_empty()) {
+        return format!("{input}: still being copied, try again shortly");
+    }
+    format!("{input}: not a readable photo")
+}
+
 fn render(args: &[String]) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
@@ -954,7 +962,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let abs = expand_paths(std::slice::from_ref(&input));
     let r = s.execute("library.import", &json!({"paths": abs})).map_err(|e| e.to_string())?;
-    let id = r["imported"][0].as_u64().ok_or_else(|| format!("{input}: not a readable photo"))?;
+    let id = r["imported"][0].as_u64().ok_or_else(|| not_imported(&input, &r))?;
     let run = |s: &mut Session, cmd: &str, p: Value| s.execute(cmd, &p).map(|_| ()).map_err(|e| e.to_string());
     run(&mut s, "library.select", json!({"ids": [id], "active": id}))?;
     if let Some(p) = preset {

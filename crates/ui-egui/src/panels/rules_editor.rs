@@ -77,6 +77,7 @@ fn number_value(ui: &mut egui::Ui, v: &mut Value, field: &str) {
         "rating" => (0.0, 5.0, 0.05),
         "iso" => (0.0, 409_600.0, 10.0),
         "aperture" => (0.0, 64.0, 0.05),
+        "exposureBias" => (-20.0, 20.0, 0.05),
         "keywordCount" | "personCount" => (0.0, 1000.0, 0.05),
         "longEdge" | "shortEdge" => (0.0, 100_000.0, 10.0),
         _ => (0.0, 100_000.0, 0.5),
@@ -325,6 +326,53 @@ fn problem_note(ui: &mut egui::Ui, problem: Option<&Problem>, salt: &str) {
     register(ui.ctx(), format!("ruleProblem:{salt}"), r.rect);
 }
 
+/// The row whose move handle is focused and the arrow key pressed on it, kept for the top of the editor to apply.
+const MOVE_KEY: &str = "rule-move-key";
+/// Where the moved row landed: its handle takes the keyboard focus on the next frame.
+const MOVE_FOCUS: &str = "rule-move-focus";
+
+/// A row's move handle: focus it (Tab or a click) and ↑ ↓ move the row, ← takes it out of its group,
+/// → into the group next to it (`super::rules_move`). Records the key for [`apply_move`].
+fn move_handle(ui: &mut egui::Ui, salt: &str, here: &[usize]) {
+    use super::rules_move::Dir;
+    let ctx = ui.ctx().clone();
+    let handle = ui.small_button("↕").on_hover_text(crate::i18n::tr("Move this row: ↑ ↓ reorder, ← out of the group, → into the group next to it"));
+    register(&ctx, format!("button:ruleMove-{salt}"), handle.rect);
+    if ctx.data(|d| d.get_temp::<Vec<usize>>(egui::Id::new(MOVE_FOCUS))).is_some_and(|p| p == here) {
+        ctx.data_mut(|d| d.remove::<Vec<usize>>(egui::Id::new(MOVE_FOCUS)));
+        handle.request_focus();
+    }
+    if handle.clicked() {
+        handle.request_focus();
+    }
+    if handle.has_focus() {
+        // the arrows are this handle's while it has the focus, not focus navigation's
+        ctx.memory_mut(|m| {
+            m.set_focus_lock_filter(handle.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
+        });
+        let dir = ui.input_mut(|i| {
+            [(egui::Key::ArrowUp, Dir::Up), (egui::Key::ArrowDown, Dir::Down), (egui::Key::ArrowLeft, Dir::Out), (egui::Key::ArrowRight, Dir::In)]
+                .into_iter()
+                .find(|(k, _)| i.consume_key(egui::Modifiers::NONE, *k))
+                .map(|(_, d)| d)
+        });
+        if let Some(dir) = dir {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new(MOVE_KEY), (here.to_vec(), dir)));
+        }
+    }
+}
+
+/// Apply the move recorded this frame to the whole rule set; a refused or pointless one changes nothing.
+/// Returns where the row landed.
+pub fn apply_move(rs: &mut RuleSet, from: &[usize], dir: super::rules_move::Dir) -> Option<Vec<usize>> {
+    use super::rules_move::{Verdict, judge, key_dest, move_node};
+    let dest = key_dest(rs, from, dir)?;
+    if judge(rs, from, &dest) != Verdict::Moves {
+        return None;
+    }
+    move_node(rs, from, &dest)
+}
+
 /// Edit `rs` in place; `salt` keeps widget ids apart between groups, `path` is where `rs` sits
 /// (empty at the top) so each row finds its own problem in `env`.
 pub fn edit(ui: &mut egui::Ui, rs: &mut RuleSet, salt: &str, depth: usize, path: &[usize], env: &Env) {
@@ -344,6 +392,7 @@ pub fn edit(ui: &mut egui::Ui, rs: &mut RuleSet, salt: &str, depth: usize, path:
             Rule::Group { group } => {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        move_handle(ui, &rsalt, &here);
                         if ui.small_button("−").on_hover_text(crate::i18n::tr("Remove this group")).clicked() {
                             remove = Some(i);
                         }
@@ -354,6 +403,7 @@ pub fn edit(ui: &mut egui::Ui, rs: &mut RuleSet, salt: &str, depth: usize, path:
             }
             Rule::Field { field, op, value } => {
                 ui.horizontal(|ui| {
+                    move_handle(ui, &rsalt, &here);
                     field_menu(ui, &rsalt, field, op, value);
                     let kind = field_kind(field).unwrap_or(Kind::Text);
                     let op_label = ops_for(kind).iter().find(|o| o.0 == op.as_str()).map_or(op.as_str(), |o| o.1).to_string();
@@ -392,6 +442,17 @@ pub fn edit(ui: &mut egui::Ui, rs: &mut RuleSet, salt: &str, depth: usize, path:
                 problem_note(ui, problem, &rsalt);
             }
         }
+    }
+    if depth == 0
+        && let Some((from, dir)) = ui.ctx().data_mut(|d| {
+            let key = d.get_temp::<(Vec<usize>, super::rules_move::Dir)>(egui::Id::new(MOVE_KEY));
+            d.remove::<(Vec<usize>, super::rules_move::Dir)>(egui::Id::new(MOVE_KEY));
+            key
+        })
+        && let Some(at) = apply_move(rs, &from, dir)
+    {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(MOVE_FOCUS), at));
+        ui.ctx().request_repaint();
     }
     if let Some(i) = remove {
         rs.rules.remove(i);

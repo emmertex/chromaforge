@@ -578,6 +578,17 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     });
+    padded(ui, |ui| {
+        ui.label(crate::i18n::tr("Crop Mask"));
+        let levels = crate::state::CROP_MASK_OPACITY_LEVELS;
+        let labels: Vec<String> = levels.iter().map(|v| if *v == 0 { crate::i18n::tr("Off").to_string() } else { format!("{v}%") }).collect();
+        let items: Vec<(&str, String)> = labels.iter().map(|l| (l.as_str(), format!("cropMask{l}"))).collect();
+        let items: Vec<(&str, &str)> = items.iter().map(|(l, k)| (*l, k.as_str())).collect();
+        let active = levels.iter().position(|v| *v == app.ui.crop_mask_opacity);
+        if let Some(level) = crate::widgets::segmented(ui, "cropMask", &items, active, 6).and_then(|i| levels.get(i)) {
+            let _ = app.run("view.cropMaskOpacity", json!({"opacity": level}));
+        }
+    });
     divider(ui);
     header(ui, "Geometry");
     // a clip takes the crop, straighten and flips only: Upright and the transform sliders are photo-only
