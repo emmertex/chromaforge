@@ -11,9 +11,11 @@
   overlap) and the **Log** wheels (Shadows, Midtones, Highlights, Offset — narrow ranges you place with
   **Low Range** and **High Range**). Both sets render at once, complimentary as in Resolve — the Color
   wheels establish the range, the Log wheels refine it; the palette's Color | Log tabs just pick which
-  set you are editing, and nothing resets when you switch.
+  set you are editing, and nothing resets when you switch. The Color wheels follow the published ASC CDL
+  shapes — lift pivots at white, gain at black, gamma is a power curve — so each has real pull.
 - **HSL Curves**: Hue vs Hue, Hue vs Sat and Hue vs Lum, each a curve you draw yourself — click anywhere to
-  add a point, drag it where the edit belongs, double-click a point to remove it. The smooth curve through
+  add a point, drag it where the edit belongs, double-click a point to remove it, or use the eyedropper
+  to pick a colour from the photo and drop its hue onto the curve. The smooth curve through
   your points (neutral at the hue axis's ends) is exactly what renders, on CPU and GPU alike.
 - Everything works in Eboda too: the wheels, curves and scopes are ordinary develop controls (`primaries.*`,
   `develop.hslCurves`), so presets, history, XMP sidecars, the CLI and agents see one edit like any other.
