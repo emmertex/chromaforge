@@ -1,4 +1,4 @@
-//! JPEG XL container metadata (ISO/IEC 18181-2): the `Exif` and `xml ` boxes, which Chromaforge's export
+//! JPEG XL container metadata (ISO/IEC 18181-2): the `Exif` and `xml ` boxes, which our export
 //! writes and which import used to leave unread.
 //!
 //! A JPEG XL file is either a bare codestream (`FF 0A`, no metadata) or an ISO base media file
