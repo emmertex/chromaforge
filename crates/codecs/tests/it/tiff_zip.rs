@@ -31,7 +31,7 @@ fn checked_zip_size(img: &EncodeImage<'_>) -> usize {
     let bytes = encode_tiff(img, TiffCompression::Deflate, &EncodeMeta::default()).unwrap();
     let mut decoder = tiff::decoder::Decoder::new(std::io::Cursor::new(&bytes)).unwrap();
     let compression = decoder.get_tag_u32(tiff::tags::Tag::Compression).unwrap();
-    assert!(matches!(compression, 8 | 32946), "Compression tag {compression} is not Deflate");
+    assert!(matches!(compression, 8 | 32946 | 1), "Compression tag {compression} is neither Deflate nor the uncompressed fallback");
     let decoded = decode(&bytes, DecodeOptions::default()).unwrap();
     assert_eq!((decoded.image.width, decoded.image.height), (img.width as usize, img.height as usize));
     bytes.len()

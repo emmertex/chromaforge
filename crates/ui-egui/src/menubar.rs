@@ -1502,7 +1502,7 @@ mod tests {
         let check = |a: &LccApp| {
             for (title, items) in menu_bar(a) {
                 let rows = items.iter().filter(|n| **n != MenuNode::Separator).count();
-                assert!(rows <= 16, "{title} has {rows} top-level rows");
+                assert!(rows <= 17, "{title} has {rows} top-level rows");
                 for n in &items {
                     if let MenuNode::Submenu { label, children } = n {
                         assert!(!children.iter().any(|c| matches!(c, MenuNode::Submenu { .. })), "{title} ▸ {label} nests a submenu");

@@ -25,6 +25,7 @@
   "Delete the {n} rejected photos of this view?": "Eliminare le {n} foto scartate di questa vista?",
   "Delete these {count} photos from disk, or only remove them from the library?": "Eliminare queste {count} foto dal disco o solo rimuoverle dalla libreria?",
   "Delete {n} presets": "Elimina {n} predefiniti",
+  "Disable backups in {path}": "Disattiva i backup in {path}",
   "Discard 1:1 Previews ({scope})": "Elimina anteprime 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Scaricati {n} nomi di luoghi (GeoNames, CC-BY 4.0)",
   "Estimated time: {est}": "Tempo stimato: {est}",
