@@ -2716,7 +2716,7 @@ impl crate::Session {
     }
 
     /// Accept a finished job's loaded source into the cache. What the decode learnt about the file that the catalog
-    /// has wrong is corrected too ([`Self::learn_as_shot_wb`]).
+    /// has wrong is corrected too ([`Self::learn_as_shot_wb`], [`Self::learn_file_lens`]).
     pub fn accept(&mut self, r: &RenderResult) {
         if let Some(src) = &r.loaded
             && r.source_key.is_none_or(|key| self.catalog.photo(r.photo).is_some_and(|p| Hasher128::new().str(&pixels_key(p)).finish() == key))
@@ -2725,6 +2725,7 @@ impl crate::Session {
         {
             if let Some(info) = &src.info {
                 self.learn_as_shot_wb(r.photo, info);
+                self.learn_file_lens(r.photo, info);
             }
             self.media.insert_source(r.photo, r.level, src.clone());
         }
@@ -2768,6 +2769,22 @@ impl crate::Session {
         }
         if let Err(e) = self.apply_system(Op::SetAsShotWb { id, wb: Some(read) }) {
             log::warn!("photo {}: as-shot white balance not recorded: {e}", id.0);
+        }
+    }
+
+    /// Record the file's own lens correction a decode of photo `id` read (`info`) when the catalog holds another: a raw
+    /// imported before its camera's in-file correction was read renders with the decode's lens, while the Optics panel
+    /// and the crop read the catalog's copy and said there was no profile until Reload. Bookkeeping, not an undo step.
+    /// A decode without a file correction (none, or a database profile matched by name) changes nothing, and a lens the
+    /// user picked keeps the copy their pick resolved to ([`crate::lens_profiles::resolve_picked`]).
+    fn learn_file_lens(&mut self, id: PhotoId, info: &SourceInfo) {
+        let Some(lens) = info.lens.filter(|_| info.lens_from_file) else { return };
+        let Some(p) = self.catalog.photo(id) else { return };
+        if p.embedded_lens.as_deref() == Some(&lens) || p.develop.optics.lens.is_some() {
+            return;
+        }
+        if let Err(e) = self.apply_system(Op::SetEmbeddedLens { id, lens: Some(Box::new(lens)) }) {
+            log::warn!("photo {}: lens correction not recorded: {e}", id.0);
         }
     }
 
@@ -2867,6 +2884,7 @@ impl crate::Session {
         let image = r.image.clone();
         if let Some(info) = &r.info {
             self.learn_as_shot_wb(id, info);
+            self.learn_file_lens(id, info);
         }
         self.media.insert_source(id, level, r);
         Ok(image)
@@ -2890,6 +2908,7 @@ impl crate::Session {
                     let image = r.image.clone();
                     if let Some(info) = &r.info {
                         self.learn_as_shot_wb(id, info);
+                        self.learn_file_lens(id, info);
                     }
                     // read before the insert: the cache's budget may evict this very entry, and
                     // the header facts alone lack the decoder's camera colour
@@ -3234,6 +3253,31 @@ mod thumbnail_hash_tests {
                 assert_eq!(decodes, [""], "no mosaic: the cached source is kept");
             }
         }
+    }
+
+    /// A raw catalogued before its camera's in-file lens correction was read renders with the correction its decode
+    /// reads, so the decode records it in the catalog (the Optics panel and the crop read that copy). Bookkeeping, not
+    /// an undo step; a decode without a file correction (a database profile by name) leaves the catalog's copy alone.
+    #[test]
+    fn a_decode_records_the_files_own_lens_correction() {
+        let corr = |k: f64| lcc_develop::EmbeddedLens {
+            vignette: Some(lcc_develop::EmbeddedVignette { k: [k, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point { x: 0.5, y: 0.5 }, radius: 1.0 }),
+            ..Default::default()
+        };
+        let decode = |from_file: bool| {
+            let mut s = session();
+            s.media.file_loader = Some(Arc::new(move |_, _, _| {
+                Ok((Rgb32f::new(8, 8), SourceInfo { raw: true, lens: Some(corr(0.2)), lens_from_file: from_file, ..SourceInfo::default() }))
+            }));
+            let r = s.render_job(PhotoId(1), 64, 64, false, true).unwrap().run();
+            s.accept(&r);
+            s
+        };
+        let s = decode(true);
+        assert_eq!(s.catalog.photo(PhotoId(1)).unwrap().embedded_lens.as_deref(), Some(&corr(0.2)), "the file's correction is recorded");
+        assert!(s.undo.is_empty(), "bookkeeping, not an undo step");
+        let s = decode(false);
+        assert_eq!(s.catalog.photo(PhotoId(1)).unwrap().embedded_lens, None, "a database profile is not the file's own");
     }
 
     /// The photo's Camera colour option is part of the decode: a source decoded with another option is decoded again
