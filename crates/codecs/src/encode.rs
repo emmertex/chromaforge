@@ -279,6 +279,24 @@ pub fn encode_tiff_associated(img: &EncodeImage, compression: TiffCompression, m
 /// The TIFF writer of [`encode_tiff`]: `extra_samples` is the `ExtraSamples` value of an alpha
 /// channel (1 associated, 2 unassociated). `img` is validated.
 fn write_tiff(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra_samples: u16) -> Result<Vec<u8>> {
+    let out = write_tiff_with(img, compression, meta, extra_samples)?;
+    // Noisy pixels can deflate or LZW to more than they started as; such a file is stored uncompressed instead, so a
+    // compressed export is never larger than an uncompressed one.
+    let payload = match img.samples {
+        Samples::U8(s) => s.len(),
+        Samples::U16(s) => s.len().saturating_mul(2),
+        Samples::F32(s) => s.len().saturating_mul(4),
+    };
+    if matches!(compression, TiffCompression::Deflate | TiffCompression::Lzw) && out.len() > payload {
+        let raw = write_tiff_with(img, TiffCompression::None, meta, extra_samples)?;
+        if raw.len() < out.len() {
+            return Ok(raw);
+        }
+    }
+    Ok(out)
+}
+
+fn write_tiff_with(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra_samples: u16) -> Result<Vec<u8>> {
     use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
     use tiff::tags::Predictor;
     let e = |e: tiff::TiffError| Error::Encode(e.to_string());

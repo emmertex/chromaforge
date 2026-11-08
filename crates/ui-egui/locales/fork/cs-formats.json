@@ -25,6 +25,7 @@
   "Delete the {n} rejected photos of this view?": "Smazat {n} odmítnutých fotek tohoto zobrazení?",
   "Delete these {count} photos from disk, or only remove them from the library?": "Smazat těchto {count} fotek z disku, nebo je jen odebrat z katalogu?",
   "Delete {n} presets": "Smazat předvolby ({n})",
+  "Disable backups in {path}": "Zakažte zálohy v {path}",
   "Discard 1:1 Previews ({scope})": "Zahodit náhledy 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Staženo {n} názvů míst (GeoNames, CC-BY 4.0)",
   "Estimated time: {est}": "Odhadovaný čas: {est}",
