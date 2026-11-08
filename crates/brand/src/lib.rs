@@ -183,9 +183,11 @@ pub fn library_default_names() -> Vec<String> {
     v
 }
 
-/// Replaces the `{app}` placeholder (localisation catalogs, templates) with [`DISPLAY_NAME`].
+/// Replaces the `{app}` placeholder (localisation catalogs, templates) with [`DISPLAY_NAME`], and `{upstream}` (the
+/// few texts that name the project this one is forked from, such as its library format) with [`UPSTREAM_NAME`]. A brand
+/// with no `[upstream]` has an empty name, so those texts read without it.
 pub fn fill(text: &str) -> String {
-    text.replace("{app}", DISPLAY_NAME)
+    text.replace("{app}", DISPLAY_NAME).replace("{upstream}", UPSTREAM_NAME)
 }
 
 #[cfg(test)]

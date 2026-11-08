@@ -265,7 +265,8 @@ fn tr_in(language: Locale, source: &str) -> &str {
 }
 
 /// Fills the brand placeholders of catalog and source text: `{app}` (the display name, via
-/// [`lcc_brand::fill`]), `{cli}` (the command-line binary) and `{env}` (the environment variable prefix).
+/// [`lcc_brand::fill`], which also fills `{upstream}`), `{cli}` (the command-line binary) and `{env}` (the
+/// environment variable prefix).
 pub fn brand_fill(text: &str) -> String {
     if !text.contains('{') {
         return text.to_string();
@@ -277,7 +278,7 @@ pub fn brand_fill(text: &str) -> String {
 /// filled text is interned (the set of built-in messages is bounded), so it can be handed out like
 /// the source.
 fn filled_source(source: &str) -> &str {
-    if !(source.contains("{app}") || source.contains("{cli}") || source.contains("{env}")) {
+    if !["{app}", "{cli}", "{env}", "{upstream}"].iter().any(|placeholder| source.contains(placeholder)) {
         return source;
     }
     thread_local! {
@@ -761,7 +762,7 @@ mod tests {
                 let Some(end) = rest[start..].find('}') else { break };
                 let name = rest[start + 1..start + end].split(':').next().unwrap_or("").to_string();
                 // brand placeholders are filled in at load time, so only the key still has them
-                if !matches!(name.as_str(), "app" | "cli" | "env") {
+                if !matches!(name.as_str(), "app" | "cli" | "env" | "upstream") {
                     out.push(name);
                 }
                 rest = &rest[start + end + 1..];
@@ -1635,11 +1636,8 @@ mod tests {
             notes.len()
         );
         for language in Locale::ALL.iter().filter(|language| **language != Locale::En) {
-            let catalog = language.catalog();
-            let own_formats = formats_catalog(language.code());
-            let missing: Vec<&str> = messages.iter().map(String::as_str).filter(|m| !catalog.contains_key(*m)).collect();
-            let missing_formats: Vec<&str> = formats.iter().map(String::as_str).filter(|m| !own_formats.contains_key(*m)).collect();
-            let missing_notes = notes.iter().filter(|line| !catalog.contains_key(**line)).count();
+            let (missing, missing_formats) = gaps(*language, &messages, &formats);
+            let missing_notes = notes.iter().filter(|line| !language.catalog().contains_key(**line)).count();
             out.push_str(&format!(
                 "{}: {} messages, {} formats, {} What's New lines\n",
                 language.code(),
@@ -1655,6 +1653,36 @@ mod tests {
             }
         }
         println!("{out}");
+    }
+
+    /// The plain messages and formats `language` lacks, out of `messages` and `formats`.
+    fn gaps<'a>(
+        language: Locale,
+        messages: &'a std::collections::BTreeSet<String>,
+        formats: &'a std::collections::BTreeSet<String>,
+    ) -> (Vec<&'a str>, Vec<&'a str>) {
+        let (catalog, own_formats) = (language.catalog(), formats_catalog(language.code()));
+        (
+            messages.iter().map(String::as_str).filter(|m| !catalog.contains_key(*m)).collect(),
+            formats.iter().map(String::as_str).filter(|m| !own_formats.contains_key(*m)).collect(),
+        )
+    }
+
+    /// A language outside `tests_i18n_coverage::PARTIAL` lacks none of the messages and formats the
+    /// gaps report knows (Help ▸ What's New's lines aside, upstream's release notes): a gap would show
+    /// English text.
+    #[test]
+    fn complete_languages_have_no_translation_gaps() {
+        let notes = whats_new_lines();
+        let messages: std::collections::BTreeSet<String> = plain_messages().into_iter().filter(|m| !notes.contains(&m.as_str())).collect();
+        let formats = format_messages();
+        let mut missing = Vec::new();
+        for language in Locale::ALL.iter().filter(|language| **language != Locale::En && !crate::tests_i18n_coverage::PARTIAL.contains(language)) {
+            let (plain, format) = gaps(*language, &messages, &formats);
+            missing.extend(plain.iter().map(|m| format!("{} lacks {m:?}", language.code())));
+            missing.extend(format.iter().map(|m| format!("{} lacks the format {m:?}", language.code())));
+        }
+        assert!(missing.is_empty(), "{} translation(s) missing, shown in English:\n{}", missing.len(), missing.join("\n"));
     }
 
     /// Every plain message: the keys of every catalog (but contextual entries, which a language adds
@@ -1719,41 +1747,29 @@ mod tests {
             .collect()
     }
 
-    /// `locales/<code>-formats.json` (the catalog `build.rs` compiles into `tr_format!`), without
-    /// empty translations.
+    /// `locales/<code>-formats.json` with the fork's rows (`locales/fork/`) over it, as `build.rs`
+    /// compiles them into `tr_format!`, without empty translations.
     fn formats_catalog(code: &str) -> BTreeMap<String, String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("locales/{code}-formats.json"));
-        let mut messages: BTreeMap<String, String> =
-            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let read = |path: std::path::PathBuf| -> BTreeMap<String, String> {
+            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        };
+        let mut messages = read(dir.join(format!("{code}-formats.json")));
+        messages.extend(read(dir.join("fork").join(format!("{code}-formats.json"))));
         messages.retain(|_, text| !text.is_empty());
         messages
     }
 
     /// Every format message: the keys of every formats catalog and the message of every
-    /// `tr_format!` call in `src/` outside its test modules.
+    /// `tr_format!` call in the app's source (`i18n_scan::sources`: no test files or modules).
     fn format_messages() -> std::collections::BTreeSet<String> {
         let mut all: std::collections::BTreeSet<String> = Locale::ALL
             .iter()
             .filter(|language| **language != Locale::En)
             .flat_map(|language| formats_catalog(language.code()).into_keys())
             .collect();
-        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
-        while let Some(dir) = dirs.pop() {
-            for path in std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()) {
-                if path.is_dir() {
-                    dirs.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let source = std::fs::read_to_string(&path).unwrap();
-                    let app = source
-                        .split(
-                            "#[cfg(test)]
-mod ",
-                        )
-                        .next()
-                        .unwrap_or_default();
-                    all.extend(tr_format_messages(app));
-                }
-            }
+        for source in crate::i18n_scan::sources() {
+            all.extend(tr_format_messages(&source.code));
         }
         all
     }

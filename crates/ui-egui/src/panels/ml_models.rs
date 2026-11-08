@@ -48,7 +48,12 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if enabled && list["selected"].is_string() {
         let indexed = status["indexedPhotos"].as_u64().unwrap_or(0);
         let unindexed = status["unindexedPhotos"].as_u64().unwrap_or(0);
-        let text = if unindexed == 0 { tr_format!("{indexed} indexed") } else { tr_format!("{indexed} indexed, {unindexed} remaining") };
+        // named as arguments: a translated arm can't capture the caller's variables
+        let text = if unindexed == 0 {
+            tr_format!("{indexed} indexed", indexed = indexed)
+        } else {
+            tr_format!("{indexed} indexed, {unindexed} remaining", indexed = indexed, unindexed = unindexed)
+        };
         ui.label(RichText::new(text).font(t.font(11.5)).color(t.text_dim));
     }
     for m in &models {
