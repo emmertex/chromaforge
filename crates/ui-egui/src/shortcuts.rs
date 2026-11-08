@@ -734,19 +734,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
             // `, ⌘↑, ⌘↓: step the flag; the toast is the command's own (`cull_toast`, shown by `run`)
             cull(app, &f, json!({}), false);
-<<<<<<< HEAD
-        } else if matches!(f.as_str(), "photo.pick" | "photo.reject" | "photo.unflag") && app.ui.right != crate::state::RightPanel::Crop {
-=======
-            let flag = active.and_then(|id| app.session.catalog.photo(id)).map(|p| p.flag);
-            match flag {
-                Some(lcc_catalog::Flag::Pick) => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                Some(lcc_catalog::Flag::Reject) => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                Some(lcc_catalog::Flag::None) => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
-                None => {}
-            }
-        } else if (matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && app.ui.right != crate::state::RightPanel::Crop)) {
+        } else if matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && app.ui.right != crate::state::RightPanel::Crop) {
             // P and U flag with Crop open too; X there swaps the crop aspect (#1866)
->>>>>>> upstream-port-j
             cull(app, &f, json!({}), false);
         } else {
             // in the full-screen preview (no panels) I cycles the info overlay instead
