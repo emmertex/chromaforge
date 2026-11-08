@@ -200,10 +200,17 @@ pub(crate) fn window_id(dialog: &Dialog) -> egui::Id {
 pub(crate) fn prepare(app: &LccApp, ui: &mut egui::Ui) {
     let Some(dialog) = &app.ui.dialog else { return };
     ui.disable();
-    let layer = egui::LayerId::new(egui::Order::Middle, window_id(dialog));
+    let layer = egui::LayerId::new(order(app), window_id(dialog));
     if ui.ctx().memory(|m| m.top_modal_layer()) != Some(layer) {
         egui::Popup::close_all(ui.ctx());
     }
+}
+
+/// The layer the dialog and its backdrop are drawn on. Over the welcome dialog, which is drawn in
+/// front of everything until a library is open, they go in front of it too: Help ▸ Check for
+/// Updates… opened behind it, where nothing in it could be clicked (issue #929).
+fn order(app: &LccApp) -> egui::Order {
+    if crate::catalog_ui::welcoming(app) { egui::Order::Foreground } else { egui::Order::Middle }
 }
 
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
@@ -212,6 +219,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let Some(mut dlg) = app.ui.dialog.clone() else { return };
+    let order = order(app);
     let at_start = dlg.clone();
     // Esc with a popup open in the dialog (a dropdown, a date picker's calendar) closes the popup
     // only: claimed before the dialog is drawn, since the popup is gone once it has handled the key
@@ -222,7 +230,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let screen = ctx.content_rect();
     // The backdrop is an area below the dialog window (a bare `Middle` layer painter would be
     // painted after every area — i.e. over the dialog too).
-    egui::Area::new(egui::Id::new("dialog-dim")).order(egui::Order::Middle).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+    egui::Area::new(egui::Id::new("dialog-dim")).order(order).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
         ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
     });
     let mut close = false;
@@ -356,6 +364,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let popup_was_open = egui::Popup::is_any_open(ctx);
     let heading = crate::i18n::tr(&title).to_string();
     let shown = egui::Window::new(heading.clone()).id(window_id)
+        .order(order)
         .title_bar(false)
         .collapsible(false)
         .resizable([import || export || presets, import || presets])

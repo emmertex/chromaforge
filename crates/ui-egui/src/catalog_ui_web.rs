@@ -24,3 +24,8 @@ pub fn enabled(_: &LccApp, id: &str) -> Option<bool> {
 }
 
 pub fn show(_: &mut LccApp, _: &egui::Context) {}
+
+/// The web app has no welcome dialog.
+pub fn welcoming(_: &LccApp) -> bool {
+    false
+}

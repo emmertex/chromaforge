@@ -340,6 +340,12 @@ fn picking_catalog(app: &LccApp) -> bool {
     app.pending_picks.iter().any(|p| p.command == "catalog.open")
 }
 
+/// Whether the welcome dialog is up: no library is open yet, and it is drawn in front of everything
+/// (a dialog opened over it, such as Check for Updates, goes in front of it in turn).
+pub fn welcoming(app: &LccApp) -> bool {
+    matches!(app.catalog_ui.dialog, Some(CatalogDialog::Welcome { .. }))
+}
+
 /// Each frame: the dialog, if any. (Alt held as the window appears is the launch list's:
 /// `panels::library_problem`.)
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {

@@ -483,6 +483,27 @@ fn welcome_is_up(h: &Headless) -> bool {
     matches!(h.app.catalog_ui.dialog, Some(crate::catalog_ui::CatalogDialog::Welcome { .. }))
 }
 
+/// Issue #929: Help ▸ Check for Updates… from the welcome dialog opened behind it, where its
+/// buttons couldn't be clicked. It opens in front of the welcome dialog, and its Close works.
+#[test]
+fn check_for_updates_opens_in_front_of_the_welcome_dialog() {
+    let (dir, root) = (Scratch::new("welcome-update"), Scratch::new("welcome-update-lib"));
+    let mut h = welcome(&dir, &root);
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.dialog, Some(Dialog::Update), "the dialog is up");
+    assert!(welcome_is_up(&h), "over the welcome dialog");
+    // both are centred: the layer at the screen's centre is the one in front
+    let centre = h.view.ctx.content_rect().center();
+    let front = h.view.ctx.layer_id_at(centre).map(|l| l.id);
+    assert_eq!(front, Some(crate::panels::dialogs::window_id(&Dialog::Update)), "Check for Updates is in front");
+    ask(&mut h, "ui.clickWidget", json!({"id": "button:dialogOk"}));
+    h.step();
+    assert_eq!(h.app.ui.dialog, None, "its Close button can be clicked");
+    assert!(welcome_is_up(&h), "the welcome dialog is still there");
+}
+
 #[test]
 fn cancelling_open_catalog_returns_to_the_welcome_dialog() {
     let (dir, root) = (Scratch::new("welcome-back"), Scratch::new("welcome-back-lib"));
