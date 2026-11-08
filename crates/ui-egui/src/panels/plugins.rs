@@ -840,6 +840,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     let entries = entries(&list);
     own_icons(app, ctx, &entries);
+    own_headers(app, ctx, &entries);
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     if s.open {
         // a page on screen: the first entry's when none (or one just removed) was selected
@@ -1241,6 +1242,11 @@ fn dialog_ui(ctx: &egui::Context, s: &mut State, actions: &mut Vec<(&'static str
     egui::Window::new(d.label.clone()).id(key().with("dialog")).title_bar(false).frame(crate::dialog_frame::card_frame(ctx)).collapsible(false).show(
         ctx,
         |ui| {
+            // the plug-in's own header picture above the command's title
+            if let Some(tex) = header_of(ctx, &d.plugin) {
+                ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width()));
+                ui.add_space(4.0);
+            }
             crate::dialog_frame::card_header(ui, &d.label, None);
             if let Some(e) = &d.error {
                 ui.colored_label(ui.visuals().warn_fg_color, e);
@@ -1273,10 +1279,10 @@ fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), egui::Layout::right_to_left(egui::Align::Center), add);
 }
 
-/// Loads the own icon of every filter whose manifest carries one (`plugin.picture`), once per
-/// module: the rows and pages then draw it in place of the identicon.
+/// Loads the own icon of every plug-in and filter whose manifest carries one (`plugin.picture`),
+/// once per module: the rows and pages then draw it in place of the identicon.
 fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
-    for e in entries.iter().filter(|e| e.filter && e.info["icon"].as_bool() == Some(true)) {
+    for e in entries.iter().filter(|e| e.info["icon"].as_bool() == Some(true)) {
         let hash = e.info["moduleHash"].as_str().unwrap_or("");
         if super::plugin_icon::custom_is_current(ctx, &e.id, hash) {
             continue;
@@ -1290,6 +1296,44 @@ fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
             .map(|img| ctx.load_texture("plugin-own-icon", img, egui::TextureOptions::LINEAR));
         super::plugin_icon::keep_custom(ctx, &e.id, hash, tex);
     }
+}
+
+/// The box a header picture is rasterised into (pixels: about twice what it's shown at, for sharp
+/// HiDPI) and its height on screen (points).
+const HEADER_PIXELS: (u32, u32) = (640, 96);
+const HEADER_HEIGHT: f32 = 40.0;
+
+/// The key a plug-in's header picture is kept under for an interface theme.
+fn header_key(id: &str, dark: bool) -> egui::Id {
+    egui::Id::new(("plugin-own-header", id, dark))
+}
+
+/// Loads the header picture of every plug-in whose manifest carries one (`plugin.picture`), once
+/// per module and interface theme: its page and its command dialogs draw it in place of its name.
+fn own_headers(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    for e in entries.iter().filter(|e| !e.filter && e.info["header"].as_bool() == Some(true)) {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("").to_string();
+        let key = header_key(&e.id, dark);
+        if ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(key)).is_some_and(|(h, _)| h == hash) {
+            continue;
+        }
+        let theme = if dark { "dark" } else { "light" };
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "header", "theme": theme}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, HEADER_PIXELS.0, HEADER_PIXELS.1).ok())
+            .map(|img| ctx.load_texture("plugin-own-header", img, egui::TextureOptions::LINEAR));
+        ctx.data_mut(|d| d.insert_temp(key, (hash, tex)));
+    }
+}
+
+/// Plug-in `id`'s header picture for the current interface theme, once [`own_headers`] loaded it.
+fn header_of(ctx: &egui::Context, id: &str) -> Option<egui::TextureHandle> {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(header_key(id, dark))).and_then(|(_, t)| t)
 }
 
 /// The list: plug-ins, then pixel filters, each under its heading.
@@ -1371,7 +1415,15 @@ fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>,
         super::plugin_icon::show(ui, &e.id, 52.0);
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                match header_of(ui.ctx(), &e.id).filter(|_| !e.filter) {
+                    // the plug-in's own header picture stands for its name
+                    Some(tex) => {
+                        ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width() - 60.0)).on_hover_text(&e.name);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                    }
+                }
                 if !e.version.is_empty() {
                     ui.weak(&e.version);
                 }

@@ -962,6 +962,7 @@ We only talk to Immich over its HTTP API with our own client; concepts, endpoint
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-08 | patch | LRC-SHELL-PLUGINS (G19): plug-ins carry their own icon and header picture, as pixel filters do (Plug-in Manager list and page, command dialogs; `plugin.picture`); status unchanged (🟡) |
 | 2026-11-07 | minor | LRC-SHELL-PLUGINS (G19): plug-ins look at a photo's pixels, set its crop and straighten angle, and make virtual copies (`pixels`, `crop`, `virtualCopy` permissions and host features; #891); status unchanged (🟡) |
 | 2026-11-02 | patch | LR-EDIT-DETAIL-DENOISE: the RawNIND weights are offered under CC BY 4.0, one of the two licences their author grants (with GPL-3.0, upstream #1760); the terms credit the author. The download stays opt-in (`rawnind-model`). Status unchanged (🟡) |
 | 2026-11-01 | patch | LRC-WEB-UPLOAD: an upload logs in to the server before it renders anything. |

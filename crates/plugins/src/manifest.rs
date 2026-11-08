@@ -92,6 +92,53 @@ pub struct Manifest {
     /// with `prepare` has its options filled by the `settings.prepare` hook.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<Field>,
+    /// A square icon the host may show for the plug-in (`"icon": "<svg…>"`, drawn on the host's
+    /// own background, so it suits dark and light themes), as a pixel filter's. Read by
+    /// [`Manifest::parse`]; a picture that isn't an SVG document of at most [`MAX_PICTURE_BYTES`]
+    /// is dropped (the host draws its own icon).
+    #[serde(skip)]
+    pub icon: Option<String>,
+    /// A header picture the host may show in place of the plug-in's name (`"header": "<svg…>"`, or
+    /// `{"dark": "<svg…>", "light": "<svg…>"}` for dark and light interface themes), as a pixel
+    /// filter's. Read by [`Manifest::parse`]; a picture that isn't an SVG document of at most
+    /// [`MAX_PICTURE_BYTES`] is dropped (no header).
+    #[serde(skip)]
+    pub header: Option<Header>,
+}
+
+/// The largest picture (`icon`, each `header` theme) a manifest may carry: a logo drawn as paths
+/// is a few kilobytes. The manifest as a whole stays within [`MAX_MANIFEST_BYTES`].
+pub const MAX_PICTURE_BYTES: usize = 24 * 1024;
+
+/// A plug-in's header picture (see [`Manifest::header`]): SVG documents for dark and light
+/// interface themes, at least one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    pub dark: Option<String>,
+    pub light: Option<String>,
+}
+
+/// `v` as an SVG document of at most [`MAX_PICTURE_BYTES`], or `None`.
+fn svg_document(v: Option<&serde_json::Value>) -> Option<String> {
+    let t = v?.as_str()?.trim();
+    (t.len() <= MAX_PICTURE_BYTES && (t.starts_with("<svg") || t.starts_with("<?xml")) && t.contains("</svg>")).then(|| t.to_string())
+}
+
+impl Header {
+    fn parse(v: &serde_json::Value) -> Option<Header> {
+        let h = match v {
+            serde_json::Value::String(_) => Header { dark: svg_document(Some(v)), light: None },
+            _ => Header { dark: svg_document(v.get("dark")), light: svg_document(v.get("light")) },
+        };
+        (h.dark.is_some() || h.light.is_some()).then_some(h)
+    }
+
+    /// The picture for a dark (`true`) or light interface theme, or the other one when the
+    /// plug-in gives only one.
+    pub fn for_theme(&self, dark: bool) -> &str {
+        let (want, other) = if dark { (&self.dark, &self.light) } else { (&self.light, &self.dark) };
+        want.as_deref().or(other.as_deref()).unwrap_or_default()
+    }
 }
 
 /// An export destination ("Upload to my server").
@@ -254,7 +301,11 @@ impl Manifest {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Manifest(format!("{} bytes (limit {MAX_MANIFEST_BYTES})", bytes.len())));
         }
-        let m: Manifest = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        let mut m: Manifest = serde_json::from_value(raw.clone()).map_err(|e| Error::Manifest(e.to_string()))?;
+        // pictures are optional: one the host can't use is dropped, never an error
+        m.icon = svg_document(raw.get("icon"));
+        m.header = raw.get("header").and_then(Header::parse);
         m.validate()?;
         Ok(m)
     }
@@ -520,6 +571,32 @@ pub fn dialog_args(fields: &[Field], args: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// An icon and a header (one picture, or one per interface theme) are kept; a picture that
+    /// isn't an SVG document, or is too large, is dropped without failing the manifest.
+    #[test]
+    fn pictures_are_kept_or_dropped() {
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg'><rect width='1' height='1'/></svg>";
+        let with = |extra: serde_json::Value| {
+            let mut m = json!({"id": "org.example.pic", "name": "Pic", "version": "1.0.0"});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            Manifest::parse(m.to_string().as_bytes()).unwrap()
+        };
+        let none = with(json!({}));
+        assert!(none.icon.is_none() && none.header.is_none());
+        let m = with(json!({"icon": svg, "header": svg}));
+        assert_eq!(m.icon.as_deref(), Some(svg));
+        let h = m.header.unwrap();
+        assert_eq!((h.for_theme(true), h.for_theme(false)), (svg, svg), "one picture serves both themes");
+        let m = with(json!({"header": {"light": svg}}));
+        assert_eq!(m.header.as_ref().map(|h| h.for_theme(true)), Some(svg));
+        for bad in [json!({"icon": "<html></html>"}), json!({"icon": 7}), json!({"header": {"dark": "png bytes"}}), json!({"header": [svg]})] {
+            let m = with(bad.clone());
+            assert!(m.icon.is_none() && m.header.is_none(), "{bad}");
+        }
+        let huge = format!("<svg>{}</svg>", "x".repeat(MAX_PICTURE_BYTES));
+        assert!(with(json!({"icon": huge})).icon.is_none());
+    }
 
     #[test]
     fn parses_a_full_manifest() {
