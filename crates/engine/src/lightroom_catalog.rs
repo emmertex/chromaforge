@@ -2519,6 +2519,20 @@ mod tests {
     }
 
     #[test]
+    fn catalog_with_profile_corrections_off_turns_off_the_embedded_ones() {
+        // Lightroom Classic renders such a photo without the raw's built-in lens corrections
+        for target in [crate::crs::Target::RawAbsolute, crate::crs::Target::RawRelative] {
+            let (partial, _) = mapped_settings("s = { LensProfileEnable = 0 }", target, 1.5, Orientation::Normal, 1.5).unwrap();
+            assert_eq!(partial["optics"]["lens_profile"], json!(false), "{target:?}: {partial}");
+            let (partial, _) = mapped_settings("s = { LensProfileEnable = 1 }", target, 1.5, Orientation::Normal, 1.5).unwrap();
+            assert_eq!(partial["optics"]["lens_profile"], json!(true), "{target:?}: {partial}");
+        }
+        // a catalog entry without the switch leaves the photo's own default alone
+        let (partial, _) = mapped_settings("s = { Exposure2012 = 0.5 }", crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+        assert!(partial.pointer("/optics/lens_profile").is_none(), "{partial}");
+    }
+
+    #[test]
     fn lightroom_orientation_codes() {
         // the three seen in a real catalog, checked against each file's EXIF orientation (1, 6, 8)
         assert_eq!(lightroom_orientation("AB"), Some(Orientation::Normal));
