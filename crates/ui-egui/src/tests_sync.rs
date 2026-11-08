@@ -350,19 +350,19 @@ fn a_scan_gone_stale_in_the_dialog_is_made_again_in_the_background() {
     let mut h = changed_folder(&dir);
     open_and_scan(&mut h, &dir.path("trip"));
     tick_remove_missing(&mut h);
-    // a photo of the folder changes while the dialog is open
+    // a photo of the folder goes to Recently Deleted while the dialog is open (a rating would not stale the scan)
     let a = h.app.session.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
-    let r = h.request("engine.execute", json!({"command": "photo.rate", "params": {"ids": [a.0], "rating": 3}}), T);
+    let r = h.request("engine.execute", json!({"command": "photo.delete", "params": {"ids": [a.0]}}), T);
     assert_eq!(r["ok"], true, "{r}");
     let r = h.request("ui.dialog.confirm", json!({}), T);
     assert_eq!(r["ok"], false, "not done on a stale scan: {r}");
-    assert_eq!(in_library(&h), vec!["a.png", "b.png"]);
+    assert_eq!(in_library(&h), vec!["b.png"]);
     assert!(matches!(h.app.ui.dialog, Some(Dialog::SynchronizeFolder { .. })), "the dialog stays open");
     let rescanned = h.step_until(T, |h| matches!(&h.app.ui.dialog, Some(Dialog::SynchronizeFolder { counts: Some(_), .. })));
     assert!(rescanned, "and scans again");
     assert!(matches!(h.app.ui.dialog, Some(Dialog::SynchronizeFolder { remove_missing: true, .. })), "keeping what was ticked");
     synchronize(&mut h);
-    assert_eq!(in_library(&h), vec!["a.png", "c.png"], "c came in, the missing b went");
+    assert_eq!(in_library(&h), vec!["c.png"], "c came in, the missing b went, the deleted a stayed out");
 }
 
 /// Scan the changed folder and confirm the synchronize with its worker held where it reads the new
