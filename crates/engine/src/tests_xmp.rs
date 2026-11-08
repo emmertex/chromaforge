@@ -2362,3 +2362,20 @@ fn embedded_jpeg_develop_settings_apply_on_import() {
     assert_eq!(by_name("both.jpg").develop.light.contrast, -20.0, "the sidecar wins over the embedded packet");
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// All Metadata shows what the catalog holds, and still answers when the original can't be read.
+#[test]
+fn all_metadata_gives_the_catalog_values_even_without_the_file() {
+    let mut s = Session::with_demo();
+    s.execute("photo.setMeta", &json!({"title": "A title", "city": "Paris", "addKeywords": ["alps"]})).unwrap();
+    let id = s.catalog.photos().next().unwrap().id;
+    let rows =
+        |r: &serde_json::Value| r["catalog"].as_array().unwrap().iter().map(|x| (x["name"].to_string(), x["value"].to_string())).collect::<Vec<_>>();
+    let r = s.execute("photo.allMetadata", &json!({"id": id.0})).unwrap();
+    assert!(rows(&r).contains(&("\"Title\"".into(), "\"A title\"".into())) && rows(&r).iter().any(|(n, _)| n == "\"Keywords\""), "{r}");
+    let gone = lcc_catalog::Source::File { path: "/definitely/not/there.jpg".into() };
+    s.catalog.apply(lcc_catalog::Op::SetFile { id, file_name: "there.jpg".into(), source: gone }).unwrap();
+    let r = s.execute("photo.allMetadata", &json!({"id": id.0})).unwrap();
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("can't be read")), "{r}");
+    assert!(rows(&r).iter().any(|(n, v)| n == "\"City\"" && v == "\"Paris\""), "{r}");
+}
