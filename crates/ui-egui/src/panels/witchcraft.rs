@@ -314,30 +314,53 @@ pub(crate) fn hsl_curves(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSetting
         let _ = app.run("develop.hslCurves", json!({"channel": channel, "points": pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>()}));
     };
     let pointer = resp.interact_pointer_pos();
+    // right-click on a point: Delete Control Point, as the Tone Curve's editor (the point under
+    // the pointer read when the menu opens and kept while it is open)
+    let menu_point_id = egui::Id::new(("hslMenuPoint", channel.as_str()));
+    if resp.secondary_clicked() {
+        let hit = pointer.and_then(nearest).map(|(i, _)| i);
+        ui.data_mut(|m| m.insert_temp(menu_point_id, hit));
+    }
+    let menu_point: Option<usize> = ui.data(|m| m.get_temp::<Option<usize>>(menu_point_id)).flatten().filter(|i| *i < points.len());
+    crate::widgets::context_menu(&resp, |ui| {
+        if let Some(i) = menu_point {
+            let r = ui.button(crate::i18n::tr("Delete Control Point"));
+            register(ui.ctx(), "hslMenu:deletePoint", r.rect);
+            if r.clicked() {
+                let pts: Vec<lcc_geom::Point> = points.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, q)| *q).collect();
+                write(app, &pts);
+                ui.close();
+            }
+        }
+    });
     if resp.drag_started() {
-        // an empty spot grows a point; an existing one is grabbed
+        // an empty spot grows a point (never within the Tone Curve's POINT_GAP of another); an
+        // existing one is grabbed
         let mut pts = points.clone();
         let held = match pointer.map(nearest) {
             Some(Some((i, _))) => Some(i),
             Some(None) => {
                 let at = to_point(pointer.unwrap_or(plot.left_top()));
-                pts.push(lcc_geom::Point::new(at.x, at.y));
-                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
-                pts.iter().position(|q| q.x == at.x)
+                super::edit::with_point(&pts, at.x, at.y).map(|(i, v)| {
+                    pts = v;
+                    i
+                })
             }
             None => None,
         };
-        ui.data_mut(|m| m.insert_temp(grab_id, (held, true)));
-        write(app, &pts);
-        let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr("HSL Curves")}));
+        ui.data_mut(|m| m.insert_temp(grab_id, (held, held.is_some())));
+        if held.is_some() {
+            write(app, &pts);
+            let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr("HSL Curves")}));
+        }
     }
     if resp.dragged()
         && let Some(held) = ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).and_then(|(h, _)| h)
         && held < points.len()
     {
         let mut pts = points.clone();
-        let prev = if held > 0 { pts[held - 1].x + 0.003 } else { 0.0 };
-        let next = if held + 1 < pts.len() { pts[held + 1].x - 0.003 } else { 1.0 };
+        let prev = if held > 0 { pts[held - 1].x + super::edit::POINT_GAP } else { 0.0 };
+        let next = if held + 1 < pts.len() { pts[held + 1].x - super::edit::POINT_GAP } else { 1.0 };
         let to = to_point(pointer.unwrap_or(pos_of(&pts[held])));
         pts[held].x = to.x.clamp(prev.min(next), prev.max(next));
         pts[held].y = to.y;
@@ -350,12 +373,12 @@ pub(crate) fn hsl_curves(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSetting
         ui.data_mut(|m| m.remove::<(Option<usize>, bool)>(grab_id));
     }
     // a click on an empty spot plants one point (one undo step of its own); a click on a point
-    // does nothing — drags and double-clicks are the point's tools
-    if resp.clicked() && pointer.is_some_and(|q| nearest(q).is_none()) && ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).is_none() {
-        let mut pts = points.clone();
-        let at = to_point(pointer.unwrap_or(plot.left_top()));
-        pts.push(lcc_geom::Point::new(at.x, at.y));
-        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+    // does nothing — drags, double-clicks and the right-click menu are the point's tools
+    if resp.clicked()
+        && pointer.is_some_and(|q| nearest(q).is_none())
+        && ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).is_none()
+        && let Some((_, pts)) = pointer.map(to_point).and_then(|at| super::edit::with_point(&points, at.x, at.y))
+    {
         write(app, &pts);
     }
     if resp.double_clicked()

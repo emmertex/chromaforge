@@ -1761,11 +1761,11 @@ impl CurveTarget {
 
 /// The Tone Curve editor (`CurveTarget::Photo`) or a mask's local Curve editor.
 /// The closest two points of a point curve may be in x (a fraction of the graph's width).
-const POINT_GAP: f64 = 0.01;
+pub(crate) const POINT_GAP: f64 = 0.01;
 
 /// `pts` with a point added at (`x`, `y`), and where it went; `None` when a point is already
 /// within [`POINT_GAP`] of `x` (the curve would fall off a cliff between the two).
-fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
+pub(crate) fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
     if pts.iter().any(|p| (p.x - x).abs() < POINT_GAP) {
         return None;
     }
