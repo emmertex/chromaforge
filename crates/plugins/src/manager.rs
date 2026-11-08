@@ -80,6 +80,8 @@ impl Installed {
             "commands": m.commands, "hooks": m.hooks, "publish": m.publish,
             "exportDestinations": m.export_destinations, "metadataFields": m.metadata_fields,
             "settings": m.settings,
+            // its own pictures (`plugin.picture` gives them)
+            "icon": m.icon.is_some(), "header": m.header.is_some(),
             // a page showing the settings is out of date when either changes (an update, or a
             // value set by the plug-in or another window)
             "moduleHash": self.plugin.module_hash(), "settingsRevision": self.settings().revision(),

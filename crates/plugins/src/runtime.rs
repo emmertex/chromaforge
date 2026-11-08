@@ -404,5 +404,7 @@ fn placeholder_manifest() -> Manifest {
         export_destinations: Vec::new(),
         metadata_fields: Vec::new(),
         settings: Vec::new(),
+        icon: None,
+        header: None,
     }
 }

@@ -41,7 +41,9 @@ mod store;
 
 pub use context::{HostApi, JobReporter, JobUnit, NoHost, Unwatched};
 pub use manager::{Begun, Failed, Installed, Manager, PendingCall, Prepared, SettingsView};
-pub use manifest::{CommandDecl, DestinationDecl, Field, FieldKind, HOST_FEATURES, Hooks, Manifest, MetadataField, PublishDecl};
+pub use manifest::{
+    CommandDecl, DestinationDecl, Field, FieldKind, HOST_FEATURES, Header, Hooks, MAX_PICTURE_BYTES, Manifest, MetadataField, PublishDecl,
+};
 pub use permissions::{FsRoot, Permissions};
 pub use programs::{EndStatus, Exit, Found, ProgramDecl, Reservation, RunDir, Running, StartRequest};
 pub use runtime::{ABI_VERSION, Limits, Outcome, Plugin};

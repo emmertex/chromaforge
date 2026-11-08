@@ -17,6 +17,15 @@ plug-ins are not supported.
 | Programs it starts (an installed tool, such as a raw converter) | `permissions.programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `{"hook":"program.end","run","program","status","code","tmpDir"}` when a run ends (see [Programs](#programs)) |
 | Custom metadata fields (Metadata panel ▸ Plug-in fields) | `metadataFields: [{key, label, type, …, readOnly?}]` | none: the values are the plug-in's namespace entries under each field's `key` (`ns.set {photo, key, value}`); the user edits them in the panel on every selected photo (`plugin.setField {ids}`; differing values read `< mixed >`), read-only ones only the plug-in sets. The plug-in's data stays the source; the app keeps an in-memory index of it (`Photo.plugin_fields`, never saved with the catalog, so its format is unchanged: rebuilt when a library opens and after every plug-in command and export hook): Library filter text search finds the values (`key:value` for one field), smart-album and filter rules test them as `plugin:<id>/<key>` (Rules ▸ Plug-in Fields; text operators, number fields compare as numbers: is ≥, is between, …), and XMP sidecars carry them as `lcpf:fields` (a bag of `{lcpf:plugin, lcpf:key, lcpf:value}`, namespace `<homepage>/ns/plugin-fields/1.0/`, from `homepage` in `brand.toml`) when metadata is saved, and give them back to the plug-in's data on import, Synchronize Folder and Read Metadata from File (installed, enabled plug-ins only; read-only fields included; values the field doesn't take are skipped) |
 
+**Its own pictures.** A plug-in's manifest may carry an `"icon"` and a `"header"`, as a pixel
+filter's does ([A filter's own pictures](#pixel-filters-photocraft-abi)): the icon, a square SVG,
+in place of the one the Plug-in Manager draws from the id; the header (`"<svg…>"`, or `{"dark":
+"<svg…>", "light": "<svg…>"}`) in place of the plug-in's name on its page in the Plug-in Manager,
+and above the title of its command dialogs. The same rules apply: at most 24 KiB each, within the
+manifest's 64 KiB, drawn as untrusted documents (their own shapes only), and a picture that isn't
+an SVG document is dropped. `plugin.list` shows `icon` and `header` as booleans, and
+`plugin.picture {id, picture?, theme?}` gives the SVG text, for plug-ins and pixel filters alike.
+
 Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?, wait?}`. The UI, CLI,
 control channel and MCP all use this command. `plugin.commands` lists the commands so front
 ends can build menus and dialogs. Dialog fields are `{key, label, type}`, where `type` is one of
@@ -541,8 +550,8 @@ only removed.
 
 File ▸ Plug-ins ▸ Plug-in Manager… (Cmd+Alt+Shift+, on macOS, Ctrl+Alt+Shift+, elsewhere; it can
 be rebound in Keyboard Shortcuts) lists the plug-ins on the left, in two sections, Plug-ins and
-Pixel Filters, each with an icon drawn from its id (the same id always gets the same icon), its
-name, version and a mark: enabled, disabled or didn't load. The selected entry's page is on the
+Pixel Filters, each with an icon drawn from its id (the same id always gets the same icon; the
+plug-in's own icon when its manifest carries one), its name, version and a mark: enabled, disabled or didn't load. The selected entry's page is on the
 right:
 
 - **A plug-in:** Enabled, Remove, and tabs: Settings (when it declares settings), Permissions (each
