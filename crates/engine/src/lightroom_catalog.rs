@@ -22,7 +22,7 @@ use lcc_geom::{Affine, Orientation, Point, Rect};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-type Row = BTreeMap<String, Value>;
+pub(crate) type Row = BTreeMap<String, Value>;
 const COMMAND: &str = "library.importLightroom";
 
 fn error(why: impl Into<String>) -> crate::EngineError {
@@ -31,6 +31,26 @@ fn error(why: impl Into<String>) -> crate::EngineError {
 
 fn text<'a>(r: &'a Row, k: &str) -> &'a str {
     r.get(k).and_then(Value::as_str).unwrap_or("")
+}
+/// Whether a collection row is a smart collection: its `creationId` names one (`com.adobe.ag.library.smart_collection`).
+/// The import's smart albums and the collections a Collection rule can match both go by this one test.
+fn is_smart_collection(r: &Row) -> bool {
+    text(r, "creationId").contains("smart")
+}
+/// Whether a collection row is a collection set: its `creationId` names one (`com.adobe.ag.library.group`). The
+/// import's folders and the collections a Collection rule can match both go by this one test.
+fn is_collection_set(r: &Row) -> bool {
+    text(r, "creationId").contains("group")
+}
+/// Seconds from the Unix epoch to 2001-01-01T00:00:00Z, where Lightroom's times start.
+const LIGHTROOM_EPOCH: i64 = 978_307_200;
+/// When Lightroom last changed the image (`Adobe_images.touchTime`: seconds since 2001-01-01T00:00:00Z, also for
+/// metadata changes), as the library writes times. `None` when it is missing, not a number, not after 2001 or past
+/// the years a date holds.
+fn touch_time(image: &Row) -> Option<String> {
+    let secs = image.get("touchTime").and_then(Value::as_f64).filter(|t| t.is_finite() && *t > 0.0)?;
+    // (a cast saturates: a huge time fails the checked add or the year check)
+    lcc_catalog::dates::local((secs.floor() as i64).checked_add(LIGHTROOM_EPOCH)?)
 }
 fn number(r: &Row, k: &str) -> i64 {
     r.get(k).and_then(Value::as_f64).filter(|n| n.is_finite()).unwrap_or(0.0) as i64
@@ -50,7 +70,7 @@ fn source_path(p: &Photo) -> Option<&str> {
     }
 }
 
-struct Reader {
+pub(crate) struct Reader {
     db: Database,
 }
 /// Expanded XMP packets kept from one catalog, all rows together (each is bounded on its own).
@@ -121,7 +141,7 @@ impl Reader {
         walked.map_err(|e| format!("{name}: {e}"))
     }
 
-    fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
+    pub(crate) fn table(&self, name: &str, required: bool, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
         let mut out = Vec::new();
         self.each_row(name, required, true, cancel, |row, _| {
             out.try_reserve(1).map_err(|_| format!("{name}: unable to reserve bounded rows"))?;
@@ -560,7 +580,7 @@ impl GuardedFile {
     }
 }
 
-struct SourceGuard {
+pub(crate) struct SourceGuard {
     main: GuardedFile,
     wal_path: PathBuf,
     wal: Option<GuardedFile>,
@@ -586,7 +606,7 @@ impl SourceGuard {
         self.wal.as_ref().map(|file| file.initial.stamp.len)
     }
 
-    fn verify(&self) -> Result<(), String> {
+    pub(crate) fn verify(&self) -> Result<(), String> {
         self.main.verify()?;
         match (&self.wal, optional_path_stamp(&self.wal_path)?) {
             (Some(file), Some(_)) => file.verify(),
@@ -672,9 +692,20 @@ pub fn read(path: &Path) -> Result<CatalogImport, String> {
 /// stopping when `cancel` is set. Images whose catalog records are incomplete are left out and
 /// listed in [`CatalogImport::skipped`] instead of failing the read.
 pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize, done: &AtomicUsize) -> Result<CatalogImport, String> {
+    // A Capture One catalog takes the same road from here on (the same model, job and report).
+    if crate::capture_one_catalog::is_capture_one(path) {
+        return crate::capture_one_catalog::read_with_progress(path, cancel, total, done);
+    }
     // 14 catalog tables plus one validation stage; ImportJob adds one unit per original path.
     total.store(15, Ordering::Relaxed);
     done.store(0, Ordering::Relaxed);
+    let (reader, source_guard) = open_catalog(path, cancel)?;
+    read_lightroom(path, reader, source_guard, cancel, done)
+}
+
+/// Open a catalog's SQLite file (and its committed `-wal` pages) read-only, with a guard that tells
+/// whether either file changed while it was read.
+pub(crate) fn open_catalog(path: &Path, cancel: &AtomicBool) -> Result<(Reader, SourceGuard), String> {
     ensure_read_active(cancel)?;
     let wal_path = PathBuf::from(format!("{}-wal", path.display()));
     let main_file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -701,7 +732,10 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
             hook(path);
         }
     }
-    let reader = Reader { db };
+    Ok((Reader { db }, source_guard))
+}
+
+fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel: &AtomicBool, done: &AtomicUsize) -> Result<CatalogImport, String> {
     let mut warnings = Vec::new();
     let table = |name: &str, required: bool| -> Result<Vec<Row>, String> {
         ensure_read_active(cancel)?;
@@ -959,7 +993,7 @@ pub(crate) fn refuse_non_media(data: &mut CatalogImport) {
     data.warnings.extend(warnings);
 }
 
-fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn ensure_read_active(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) { Err("Lightroom import cancelled".into()) } else { Ok(()) }
 }
 
@@ -1084,7 +1118,7 @@ fn lightroom_orientation(code: &str) -> Option<Orientation> {
 /// then the rotation; `stored_aspect` (width / height of the stored image) matters once the
 /// rectangle turns. On a real catalog this reproduced the frame aspect of all 223 straightened crops
 /// in Lightroom's exports within 1%.
-fn catalog_crop(partial: &mut Value, orientation: Orientation, stored_aspect: f64) {
+pub(crate) fn catalog_crop(partial: &mut Value, orientation: Orientation, stored_aspect: f64) {
     let Some(geometry) = partial.pointer_mut("/crop/geometry").and_then(Value::as_object_mut) else { return };
     let edge = |k: &str| geometry.get("rect").and_then(|r| r.get(k)).and_then(Value::as_f64);
     let (Some(x0), Some(y0), Some(x1), Some(y1)) = (edge("x0"), edge("y0"), edge("x1"), edge("y1")) else { return };
@@ -1257,6 +1291,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     let mut preserved = 0;
     let mut history_imported = 0usize;
     let mut snapshots_imported = 0usize;
+    // images dated at the import, or left undated, because their Lightroom edit time can't be read
+    let mut untimed = Vec::new();
     // Masters precede their virtual copies.
     let mut photos: Vec<_> = data.photos.iter().collect();
     photos.sort_by_key(|p| number(&p.image, "masterImage") != 0);
@@ -1291,7 +1327,6 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 .ok_or_else(|| error("virtual copy master is unavailable"))?;
             p.id = s.catalog.alloc_photo_id();
             p.copy_of = Some(master_id);
-            p.copy_name = Some(text(&src.image, "copyName").to_string());
             p
         } else if let Some(duplicate) = duplicates.get(&key(&src.path)).and_then(|id| s.catalog.photo(*id)) {
             // Catalogs can contain distinct originals with identical bytes and independent edits.
@@ -1317,6 +1352,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             }
             p
         };
+        // Lightroom gives any photo a Copy Name, not only a virtual copy (some use it as a short title).
+        let copy_name = text(&src.image, "copyName");
+        p.copy_name = if master != 0 { Some(copy_name.to_string()) } else { Some(copy_name.to_string()).filter(|n| !n.is_empty()) };
         // Offline videos bypass file probing; Lightroom's format still identifies their kind.
         if text(&src.image, "fileFormat").eq_ignore_ascii_case("VIDEO") {
             p.kind = lcc_catalog::MediaKind::Video;
@@ -1326,7 +1364,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         // A record this import added, or a Local one untouched since browsing (an offline original
         // never reaches the add step, so it is judged here), holds no edits of the library's own.
         let fresh = existing_id.is_some_and(|id| added.contains(&id) || s.catalog.photo(id).is_some_and(|q| q.untouched_local()));
-        let keep_develop = existing_id.is_some() && !fresh && p.edited.is_some() && !update_existing;
+        // Every photo Lightroom has carries its edit date (below), so a date alone doesn't say the library edited it:
+        // its settings or its History do.
+        let library_edits = existing_id.is_some() && !fresh && p.edited.is_some() && (p.is_edited() || !p.history.is_empty());
+        let keep_develop = library_edits && !update_existing;
+        let touched = touch_time(&src.image);
+        // dated from the catalog's develop settings (below); otherwise from `touched` alone
+        let mut dated = false;
         let previous_develop = (p.develop.clone(), p.edited.clone());
         if keep_develop {
             preserved += 1;
@@ -1368,6 +1412,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             _ => Flag::None,
         };
         p.label = s.catalog.label_from_name(text(&src.image, "colorLabels"));
+        fill_camera(&mut p.meta, &src.image);
         // A capture time the library can't hold would fail the whole batch at `SetCaptured`, and an
         // impossible date (2026-02-30) would roll over to another day in date grouping: it is left
         // out with a warning (the catalog's value stays in the import archive). A year or a month
@@ -1397,7 +1442,11 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                     let mut develop = lcc_develop::apply_partial(&base, &partial, 1.0);
                     crate::crs::keep_chosen_dcp(&base, &mut develop);
                     p.develop = Arc::new(develop);
-                    p.edited = Some(now.clone());
+                    if touched.is_none() {
+                        untimed.push(src.source_id);
+                    }
+                    p.edited = Some(touched.clone().unwrap_or_else(|| now.clone()));
+                    dated = true;
                     if !unknown.is_empty() {
                         unmapped.insert(src.source_id, unknown);
                     }
@@ -1422,6 +1471,14 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 p.versions = versions;
             }
         }
+        // Lightroom dates every photo at its last edit, settings or not (or settings that can't be read); one edited
+        // in the library keeps its own date.
+        if !dated && !library_edits {
+            match &touched {
+                Some(t) => p.edited = Some(t.clone()),
+                None => untimed.push(src.source_id),
+            }
+        }
         if keep_develop {
             (p.develop, p.edited) = previous_develop;
         }
@@ -1436,11 +1493,13 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             planned.insert(photo_id, p.clone());
         }
         if let Some(old) = s.catalog.photo(p.id) {
-            if old.kind != p.kind {
-                // Repair older imports with existing reversible operations. Removing just the
-                // record leaves album/stack membership intact; the enclosing batch is atomic.
+            if old.kind != p.kind || old.copy_name != p.copy_name {
+                // Repair older imports, and bring a changed Copy Name across (no op sets one), with existing
+                // reversible operations. Removing just the record leaves album/stack membership intact; the
+                // enclosing batch is atomic. The record's cached previews go with it, so they render again.
                 let mut repaired = (**old).clone();
                 repaired.kind = p.kind;
+                repaired.copy_name = p.copy_name.clone();
                 ops.extend([Op::RemovePhoto { id: p.id }, Op::AddPhoto { photo: Box::new(repaired) }]);
             }
             if was_local && promoted.insert(p.id) {
@@ -1478,6 +1537,15 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             ops.push(Op::AddPhoto { photo: Box::new(p) });
         }
         by_path.entry(key(&src.path)).or_insert(photo_id);
+    }
+    if let Some(first) = untimed.first() {
+        let named: Vec<String> = untimed.iter().take(LEFT_OUT_NAMED).map(i64::to_string).collect();
+        let more = untimed.len() - named.len();
+        let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+        let which = if untimed.len() == 1 { format!("image {first}") } else { format!("images {}{more}", named.join(", ")) };
+        warnings.push(format!(
+            "{which}: Lightroom's last edit time is missing or not a date; photos with develop settings are dated at the import, the others keep any edit date they already had"
+        ));
     }
     let rows = first_of_each_collection(&data, &mut warnings);
     let mut albums = HashMap::new();
@@ -1519,7 +1587,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .iter()
         .filter(|(lr, id)| match s.catalog.album(**id) {
             Some(album) => album.folder,
-            None => collections.get(*lr).is_some_and(|r| text(r, "creationId").contains("group")),
+            None => collections.get(*lr).is_some_and(|r| is_collection_set(r)),
         })
         .map(|(lr, _)| *lr)
         .collect();
@@ -1537,13 +1605,17 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .filter(|r| text(r, "owningModule") == "ag.library.smart_collection")
         .map(|r| (number(r, "collection"), text(r, "content")))
         .collect();
+    // Lightroom's Collection rule matches ordinary collections only: never a set, nor a smart collection (so a smart
+    // collection never matches itself, nor one whose rules match it back).
     let named_collections: Vec<(&str, lcc_catalog::AlbumId)> = data
         .collections
         .iter()
-        .filter(|r| !text(r, "creationId").contains("group"))
+        .filter(|r| !is_collection_set(r) && !is_smart_collection(r))
         .filter_map(|r| Some((text(r, "name"), albums.get(&number(r, "id_local")).copied()?)))
         .collect();
     let (mut smart_albums, mut static_smart, mut smart_kept) = (0usize, 0usize, 0usize);
+    // the albums each smart album added in this batch tests, which the library doesn't know yet
+    let mut queued_smart: HashMap<lcc_catalog::AlbumId, Vec<lcc_catalog::AlbumId>> = HashMap::new();
     let mut ordered = rows.clone();
     ordered.sort_by_key(|r| {
         let mut depth = 0;
@@ -1557,8 +1629,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     for collection in ordered {
         let Some(id) = albums.get(&number(collection, "id_local")).copied() else { continue };
         let mut album = Album::new(id, text(collection, "name"));
-        album.folder = text(collection, "creationId").contains("group");
-        let is_smart = text(collection, "creationId").contains("smart");
+        album.folder = is_collection_set(collection);
+        let is_smart = is_smart_collection(collection);
         let rules = if is_smart {
             Some(match smart_content.get(&number(collection, "id_local")) {
                 Some(c) => crate::lightroom_smart::smart_rules(c, &named_collections),
@@ -1605,6 +1677,20 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 ops.push(Op::SetAlbumPhotos { id, photos });
             }
             None => {
+                // `Catalog::apply_new` refuses an album that would include itself, and that would roll back the whole
+                // batch: such a collection keeps its current membership instead. The rules test ordinary collections
+                // only, so only a library album that already tests this new id (a damaged library) can close a loop.
+                let rules = rules.map(|r| {
+                    r.and_then(|rules| {
+                        let tested = rules.albums_tested();
+                        if leads_to(s, &queued_smart, tested.clone(), id) {
+                            Err("its rules would make it include itself through the albums they test".into())
+                        } else {
+                            queued_smart.insert(id, tested);
+                            Ok(rules)
+                        }
+                    })
+                });
                 match rules {
                     Some(Ok(rules)) => {
                         album.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
@@ -1640,7 +1726,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                         None => "its parent collection isn't in the catalog".to_string(),
                         Some(r) => match albums.get(&lr_parent).and_then(|id| s.catalog.album(*id)) {
                             // a set imported earlier whose album is no longer a folder
-                            Some(a) if text(r, "creationId").contains("group") => {
+                            Some(a) if is_collection_set(r) => {
                                 format!("its collection set “{}” is the album “{}” in this library, which isn't a folder", text(r, "name"), a.name)
                             }
                             _ => format!("Lightroom keeps it inside “{}”, which isn't a collection set", text(r, "name")),
@@ -1663,14 +1749,59 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         }
     }
     let stacks = stack_ops(s, &data, &ids, &mut ops, &mut warnings);
+    // the undo step names the program the catalog comes from
+    let step =
+        if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Import Capture One Catalog" } else { "Import Lightroom Catalog" };
     if !ops.is_empty() {
-        s.commit("Import Lightroom Catalog", Op::Batch { ops })?;
+        s.commit(step, Op::Batch { ops })?;
     }
-    s.merge_undo(s.undo.len().saturating_sub(undo0), "Import Lightroom Catalog");
+    s.merge_undo(s.undo.len().saturating_sub(undo0), step);
     Ok(AppliedImport {
         report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
     })
+}
+
+/// The camera and lens a catalog row names (`cameraMake`, `cameraModel`, `lens`: the Capture One
+/// read has them; Lightroom's rows don't), for what the photo's file didn't give: an offline
+/// original is never read, a file that was read keeps its own.
+fn fill_camera(m: &mut lcc_catalog::Meta, row: &Row) {
+    let mut filled = false;
+    for (key, field) in [("cameraMake", &mut m.camera_make), ("cameraModel", &mut m.camera_model), ("lens", &mut m.lens)] {
+        let value = text(row, key).trim();
+        if field.is_empty() && !value.is_empty() {
+            *field = value.to_string();
+            filled |= key != "lens";
+        }
+    }
+    if filled && m.camera.is_empty() {
+        m.camera = lcc_catalog::camera_label(&m.camera_make, &m.camera_model);
+    }
+}
+
+/// Whether albums `from` test album `to`, directly or through the smart albums they test: those of the library, and
+/// `queued`, the smart albums this import adds (each with the albums it tests). Loops already there end the search.
+fn leads_to(
+    s: &crate::Session,
+    queued: &HashMap<lcc_catalog::AlbumId, Vec<lcc_catalog::AlbumId>>,
+    from: Vec<lcc_catalog::AlbumId>,
+    to: lcc_catalog::AlbumId,
+) -> bool {
+    let mut seen = HashSet::new();
+    let mut next = from;
+    while let Some(a) = next.pop() {
+        if a == to {
+            return true;
+        }
+        if !seen.insert(a) {
+            continue;
+        }
+        match queued.get(&a) {
+            Some(tested) => next.extend(tested.iter().copied()),
+            None => next.extend(s.catalog.album(a).and_then(|al| al.smart.as_deref()).map(lcc_catalog::Filter::albums_tested).unwrap_or_default()),
+        }
+    }
+    false
 }
 
 /// Lightroom folder stacks → stacks, top (position 1) first. Photos already stacked in the library
@@ -1721,8 +1852,35 @@ fn collection_parent(collection: &Row, collections: &HashMap<i64, &Row>, sets: &
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A catalog's camera and lens fill only what the file left empty, and a Lightroom row (which
+    /// names none) changes nothing.
+    #[test]
+    fn a_catalogs_camera_fills_only_what_the_file_left_empty() {
+        let row: Row = serde_json::from_value(json!({"cameraMake": "EXAMPLE CORP", "cameraModel": " EXAMPLE X1 ", "lens": "EXAMPLE 50mm"})).unwrap();
+        let mut offline = lcc_catalog::Meta::default();
+        fill_camera(&mut offline, &row);
+        assert_eq!(
+            (offline.camera_make.as_str(), offline.camera_model.as_str(), offline.lens.as_str()),
+            ("EXAMPLE CORP", "EXAMPLE X1", "EXAMPLE 50mm")
+        );
+        assert_eq!(offline.camera, lcc_catalog::camera_label("EXAMPLE CORP", "EXAMPLE X1"));
+        let mut read = lcc_catalog::Meta {
+            camera: "OTHER OT-2".into(),
+            camera_make: "OTHER".into(),
+            camera_model: "OT-2".into(),
+            lens: "Other 35mm".into(),
+            ..Default::default()
+        };
+        let before = read.clone();
+        fill_camera(&mut read, &row);
+        assert_eq!(read, before, "the file's own camera wins");
+        let mut lightroom = lcc_catalog::Meta::default();
+        fill_camera(&mut lightroom, &Row::new());
+        assert_eq!(lightroom, lcc_catalog::Meta::default());
+    }
     use lcc_geom::CropGeometry;
 
     static CANCEL_DURING_PAGE_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1746,7 +1904,7 @@ mod tests {
             source_id: 1,
             uuid: "test-master".into(),
             path: "/missing/test.ARW".into(),
-            image: row(json!({"id_local":1,"rating":5,"pick":1,"fileFormat":"ARW","fileWidth":20,"fileHeight":10})),
+            image: row(json!({"id_local":1,"rating":5,"pick":1,"fileFormat":"ARW","fileWidth":20,"fileHeight":10,"touchTime":814_504_925.0})),
             settings: "s = { Exposure2012 = 1.25, Contrast2012 = 17, CameraProfile = \"Example\" }".into(),
             xmp: String::new(),
             keywords: vec!["Travel|Goa".into()],
@@ -1757,7 +1915,7 @@ mod tests {
         let mut copy = photo.clone();
         copy.source_id = 2;
         copy.uuid = "test-copy".into();
-        copy.image = row(json!({"id_local":2,"masterImage":1,"copyName":"Mono","rating":2,"pick":-1}));
+        copy.image = row(json!({"id_local":2,"masterImage":1,"copyName":"Mono","rating":2,"pick":-1,"touchTime":814_504_925.0}));
         copy.settings = "s = { ConvertToGrayscale = true, Exposure2012 = -0.5 }".into();
         photo.image.insert("captureTime".into(), json!("2024-01-16T12:34:56"));
         CatalogImport {
@@ -2765,6 +2923,137 @@ mod tests {
         s.close_library().unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
+    /// A smart collection with a Collection rule, as Lightroom stores it.
+    fn smart_collection(data: &mut CatalogImport, id: i64, name: &str, op: &str, value: &str) {
+        data.collections.push(row(json!({"id_local":id,"name":name,"creationId":"com.adobe.ag.library.smart_collection"})));
+        let content = format!("s = {{ {{ criteria = \"collection\", operation = \"{op}\", value = \"{value}\" }}, combine = \"intersect\" }}");
+        data.collection_content.push(row(json!({"collection":id,"owningModule":"ag.library.smart_collection","content":content})));
+    }
+    #[test]
+    fn collection_rules_match_ordinary_collections_only() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":13,"name":"Trip 2024","creationId":"com.adobe.ag.library.collection"})));
+        data.members.push(row(json!({"collection":13,"image":1})));
+        // Each matches its own name and the other's ("collection" holds both letters); of the ordinary collections,
+        // "e" matches Keepers and "i" Trip 2024 (Travel is a set).
+        smart_collection(&mut data, 20, "In a collection 'e'", "all", "e");
+        smart_collection(&mut data, 21, "In a collection 'i'", "all", "i");
+        // matches Trip 2024 and its own name
+        smart_collection(&mut data, 22, "Trip picks", "beginsWith", "trip");
+        let r = apply(&mut s, data, false).expect("the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(3), Some(0)), "{}", r["warnings"]);
+        assert_eq!(s.catalog.photos().count(), 2);
+        let (keepers, trip) = (album_named(&s, "Keepers").id, album_named(&s, "Trip 2024").id);
+        for (name, tests) in [("In a collection 'e'", keepers), ("In a collection 'i'", trip), ("Trip picks", trip)] {
+            let album = album_named(&s, name);
+            let tested = album.smart.as_deref().map(lcc_catalog::Filter::albums_tested);
+            assert_eq!(tested, Some(vec![tests]), "“{name}” is a smart album testing only the ordinary collection its rule matches");
+        }
+        // Trip picks finds Trip 2024's photo, as in Lightroom
+        let picks = album_named(&s, "Trip picks").id;
+        assert_eq!(s.catalog.album_photos(picks), s.catalog.album_photos(trip));
+        assert_eq!(s.catalog.album_photos(trip).len(), 1);
+    }
+    #[test]
+    fn a_collection_rule_matching_only_smart_collections_matches_nothing() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        smart_collection(&mut data, 20, "In a collection 'e'", "all", "e");
+        smart_collection(&mut data, 21, "Smart ones", "beginsWith", "in a");
+        data.members.push(row(json!({"collection":21,"image":1})));
+        let r = apply(&mut s, data, false).expect("the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(1), Some(1)), "{}", r["warnings"]);
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Smart ones:")
+                && w.contains("matches no imported collection")
+                && w.contains("imported current membership"))),
+            "{}",
+            r["warnings"]
+        );
+        let smart_ones = album_named(&s, "Smart ones");
+        assert!(!smart_ones.is_smart() && smart_ones.photos.len() == 1, "falls back to a static album with its current members");
+    }
+    #[test]
+    fn a_smart_collection_that_would_include_itself_falls_back_alone() {
+        let dir = std::env::temp_dir().join(format!("app-lrcat-a_smart_collection_that-{}", std::process::id()));
+        let mut s = crate::Session::new();
+        s.open_library(&dir, false).unwrap();
+        let mut data = sample();
+        smart_collection(&mut data, 11, "Best", "beginsWith", "keep");
+        data.members.push(row(json!({"collection":11,"image":1})));
+        let r = apply(&mut s, data.clone(), false).unwrap();
+        assert_eq!(r["smartAlbums"], 1);
+        // A damaged library: Best's album is deleted, and Keepers' album is a smart album testing the id the reimport
+        // gives Best, which tests Keepers.
+        let best = album_named(&s, "Best").id;
+        s.commit("Delete", Op::RemoveAlbum { id: best }).unwrap();
+        let next = lcc_catalog::AlbumId(s.catalog.alloc_album_id().0 + 1);
+        let mut keepers = album_named(&s, "Keepers").clone();
+        let rules = lcc_catalog::RuleSet {
+            mode: lcc_catalog::Match::All,
+            rules: vec![lcc_catalog::Rule::Field { field: "album".into(), op: "is".into(), value: json!(next) }],
+        };
+        keepers.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
+        keepers.photos.clear();
+        s.catalog.apply(Op::RemoveAlbum { id: keepers.id }).unwrap();
+        s.catalog.apply(Op::AddAlbum { album: keepers }).unwrap();
+        let albums = s.catalog.albums().count();
+        let r = apply(&mut s, data, false).expect("the rest of the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(0), Some(1)), "{}", r["warnings"]);
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Best:") && w.contains("include itself"))),
+            "{}",
+            r["warnings"]
+        );
+        let best = album_named(&s, "Best");
+        assert_eq!(best.id, next);
+        assert!(!best.is_smart() && best.photos.len() == 1, "Best keeps its members as a static album");
+        assert_eq!(s.catalog.albums().count(), albums + 1);
+        assert_eq!(s.catalog.photos().count(), 2);
+        s.close_library().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn a_loop_through_a_smart_collection_of_the_same_import_falls_back_alone() {
+        let dir = std::env::temp_dir().join(format!("app-lrcat-a_loop_through_a_smart-{}", std::process::id()));
+        let mut s = crate::Session::new();
+        s.open_library(&dir, false).unwrap();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":13,"name":"Trip 2024","creationId":"com.adobe.ag.library.collection"})));
+        apply(&mut s, data.clone(), false).unwrap();
+        // A damaged library: the albums of Keepers and Trip 2024 are smart albums testing the ids the next import gives
+        // Best and Picks. Best tests Keepers (→ Picks), and Picks tests Trip 2024 (→ Best), added just before it.
+        smart_collection(&mut data, 11, "Best", "beginsWith", "keep");
+        smart_collection(&mut data, 12, "Picks", "beginsWith", "trip");
+        data.members.push(row(json!({"collection":12,"image":1})));
+        let first = s.catalog.alloc_album_id().0 + 1;
+        let (best, picks) = (lcc_catalog::AlbumId(first), lcc_catalog::AlbumId(first + 1));
+        for (name, tests) in [("Keepers", picks), ("Trip 2024", best)] {
+            let mut album = album_named(&s, name).clone();
+            let rules = lcc_catalog::RuleSet {
+                mode: lcc_catalog::Match::All,
+                rules: vec![lcc_catalog::Rule::Field { field: "album".into(), op: "is".into(), value: json!(tests) }],
+            };
+            album.smart = Some(Box::new(lcc_catalog::Filter { rule_set: Some(rules), ..Default::default() }));
+            album.photos.clear();
+            s.catalog.apply(Op::RemoveAlbum { id: album.id }).unwrap();
+            s.catalog.apply(Op::AddAlbum { album }).unwrap();
+        }
+        let r = apply(&mut s, data, false).expect("the rest of the catalog imports");
+        assert_eq!((r["smartAlbums"].as_u64(), r["smartAsStatic"].as_u64()), (Some(1), Some(1)), "{}", r["warnings"]);
+        assert_eq!((album_named(&s, "Best").id, album_named(&s, "Picks").id), (best, picks));
+        assert!(album_named(&s, "Best").is_smart());
+        let picks = album_named(&s, "Picks");
+        assert!(!picks.is_smart() && picks.photos.len() == 1, "Picks keeps its members as a static album");
+        assert!(
+            r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("Picks:") && w.contains("include itself"))),
+            "{}",
+            r["warnings"]
+        );
+        s.close_library().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn persistent_reimport_keeps_copy_and_collection_ids_and_capture_time() {
         let dir = std::env::temp_dir().join(format!("app-lrcat-reimport-{}", std::process::id()));
@@ -2815,6 +3104,10 @@ mod tests {
                     body.extend(s.as_bytes());
                     13 + 2 * s.len() as u64
                 }
+                SqlValue::Real(n) => {
+                    body.extend(n.to_be_bytes());
+                    7
+                }
                 _ => panic!("unexpected SqlValue in a test record: {value:?}"),
             };
             header.extend(varint(serial));
@@ -2864,7 +3157,7 @@ mod tests {
     }
     /// A SQLite file with one leaf page per table: `(name, columns, rows)` each. `last_page` overrides the last
     /// table's root page.
-    fn native_catalog_rows(tables: &[(&str, &str, Vec<Vec<SqlValue>>)], last_page: Option<i64>) -> Vec<u8> {
+    pub(crate) fn native_catalog_rows(tables: &[(&str, &str, Vec<Vec<SqlValue>>)], last_page: Option<i64>) -> Vec<u8> {
         use SqlValue::{Integer as I, Text as T};
         let pages = tables.len() + 1;
         let mut bytes = vec![0u8; pages * 2048];
@@ -2966,14 +3259,14 @@ mod tests {
                 .output()
                 .expect("run fsutil sparse setflag on new synthetic fixture");
             assert!(set_sparse.status.success(), "fsutil sparse setflag failed: {}", String::from_utf8_lossy(&set_sparse.stderr));
-            let query_sparse = std::process::Command::new("C:/Windows/System32/fsutil.exe")
-                .args(["sparse", "queryflag"])
-                .arg(&path)
-                .output()
-                .expect("verify sparse flag on synthetic fixture");
-            assert!(query_sparse.status.success(), "fsutil sparse queryflag failed: {}", String::from_utf8_lossy(&query_sparse.stderr));
-            let query = format!("{}{}", String::from_utf8_lossy(&query_sparse.stdout), String::from_utf8_lossy(&query_sparse.stderr));
-            assert!(query.to_ascii_lowercase().contains("sparse"), "fsutil did not confirm a sparse fixture: {query}");
+            // fsutil's own answer is in the system's language; the file attribute isn't
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+                let attributes = std::fs::metadata(&path).expect("read synthetic fixture attributes").file_attributes();
+                assert!(attributes & FILE_ATTRIBUTE_SPARSE_FILE != 0, "synthetic fixture is not sparse (attributes {attributes:#x})");
+            }
         }
 
         let mut file = std::fs::OpenOptions::new().write(true).open(&path).expect("open synthetic catalog");
@@ -4481,5 +4774,169 @@ mod tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    /// 2026-09-29T12:00:00Z and 2020-05-01T08:00:00Z, as Lightroom's `touchTime` (seconds since 2001-01-01T00:00:00Z)
+    /// and as Unix seconds. Smart albums are judged a day after `RECENT` ([`smart_album_photos`]).
+    const RECENT: (f64, i64) = (812_376_000.0, 1_790_683_200);
+    const OLD: (f64, i64) = (610_012_800.0, 1_588_320_000);
+    /// An imported photo's edit date, as Unix seconds.
+    fn edit_instant(s: &crate::Session, id: PhotoId) -> Option<i64> {
+        s.catalog.photo(id).unwrap().edited.as_deref().and_then(lcc_catalog::dates::instant)
+    }
+    /// A photo Lightroom holds no develop settings for.
+    fn plain_photo(source_id: i64, image: Value) -> CatalogPhoto {
+        let mut row = row(json!({"id_local":source_id,"fileFormat":"JPEG","fileWidth":20,"fileHeight":10}));
+        if let Value::Object(extra) = image {
+            row.extend(extra);
+        }
+        CatalogPhoto {
+            source_id,
+            uuid: format!("plain-{source_id}"),
+            path: format!("/missing/plain-{source_id}.jpg"),
+            image: row,
+            settings: String::new(),
+            xmp: String::new(),
+            keywords: Vec::new(),
+            history: Vec::new(),
+            snapshots: Vec::new(),
+            original: Original::Local,
+        }
+    }
+    /// `sample()` (a virtual copy, then its master) with a Copy Name on the master, Lightroom's edit times, a photo
+    /// with no develop settings (image 3), and smart collections that test both.
+    fn copy_name_and_edit_date_sample() -> CatalogImport {
+        let mut data = sample();
+        data.photos[0].image.insert("touchTime".into(), json!(OLD.0));
+        data.photos[1].image.insert("copyName".into(), json!("Web title"));
+        data.photos[1].image.insert("touchTime".into(), json!(RECENT.0));
+        data.photos.push(plain_photo(3, json!({"touchTime": RECENT.0})));
+        data.collections.push(row(json!({"id_local":11,"name":"Has Copy Name","creationId":"com.adobe.ag.library.smart_collection"})));
+        data.collections.push(row(json!({"id_local":12,"name":"Recently modified","creationId":"com.adobe.ag.library.smart_collection"})));
+        data.collection_content = vec![
+            row(json!({"collection":11,"owningModule":"ag.library.smart_collection",
+                "content":"s = { { criteria = \"copyname\", operation = \"notEmpty\" } }"})),
+            row(json!({"collection":12,"owningModule":"ag.library.smart_collection",
+                "content":"s = { { criteria = \"touchTime\", operation = \"inLast\", value = 2, value_units = \"days\" } }"})),
+        ];
+        data
+    }
+    /// A smart album's photos, judged a day after `RECENT`.
+    fn smart_album_photos(s: &crate::Session, name: &str) -> Vec<PhotoId> {
+        let album = s.catalog.albums().find(|a| a.name == name).unwrap();
+        assert!(album.is_smart(), "{name} is a smart album");
+        lcc_catalog::rules::set_now(lcc_catalog::dates::local(RECENT.1 + 86_400));
+        let photos = s.catalog.album_photos(album.id);
+        lcc_catalog::rules::set_now(None);
+        photos
+    }
+
+    #[test]
+    fn copy_names_come_across_for_every_photo() {
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, copy_name_and_edit_date_sample(), false).unwrap();
+        let master = PhotoId(r["mapping"]["1"].as_u64().unwrap());
+        let copy = PhotoId(r["mapping"]["2"].as_u64().unwrap());
+        let plain = PhotoId(r["mapping"]["3"].as_u64().unwrap());
+        let m = s.catalog.photo(master).unwrap();
+        assert_eq!((m.copy_of, m.copy_name.as_deref()), (None, Some("Web title")), "a photo that isn't a virtual copy keeps its Copy Name");
+        let c = s.catalog.photo(copy).unwrap();
+        assert_eq!((c.copy_of, c.copy_name.as_deref()), (Some(master), Some("Mono")), "a virtual copy keeps its Copy Name");
+        assert_eq!(s.catalog.photo(plain).unwrap().copy_name, None, "a photo with no Copy Name gets none");
+        let named = smart_album_photos(&s, "Has Copy Name");
+        assert!(named.contains(&master) && named.contains(&copy) && !named.contains(&plain), "{named:?}");
+        assert_eq!(s.execute("photo.inspect", &json!({"id": master.0})).unwrap()["copy_name"], "Web title");
+    }
+
+    #[test]
+    fn each_photo_is_dated_at_its_last_edit_in_lightroom() {
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, copy_name_and_edit_date_sample(), false).unwrap();
+        let id = |n: &str| PhotoId(r["mapping"][n].as_u64().unwrap());
+        let (master, copy, plain) = (id("1"), id("2"), id("3"));
+        assert_eq!(edit_instant(&s, master), Some(RECENT.1), "a photo with develop settings: Lightroom's edit time, not the import's");
+        assert_eq!(edit_instant(&s, copy), Some(OLD.1));
+        assert_eq!(edit_instant(&s, plain), Some(RECENT.1), "a photo with no develop settings is dated too");
+        assert!(!s.catalog.photo(plain).unwrap().is_edited(), "a date doesn't make a photo edited");
+        let recent = smart_album_photos(&s, "Recently modified");
+        assert!(recent.contains(&master) && recent.contains(&plain) && !recent.contains(&copy), "{recent:?}");
+        // an edit in the app dates the photo again (the test clock)
+        let mut settings = (*s.catalog.photo(plain).unwrap().develop).clone();
+        settings.light.exposure = 0.5;
+        s.set_develop(plain, settings, "Personal edit").unwrap();
+        assert_eq!(s.catalog.photo(plain).unwrap().edited.as_deref(), Some("2026-09-30T12:00:00"));
+    }
+
+    #[test]
+    fn a_missing_or_broken_lightroom_edit_time_never_fails_the_import() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        // the master has develop settings and no `touchTime`; the plain photos have none and a broken one
+        let broken = [json!(0), json!(-5.0), json!("yesterday"), json!(1e15), json!(1e300), Value::Null];
+        for (n, t) in broken.iter().enumerate() {
+            data.photos.push(plain_photo(3 + n as i64, json!({"touchTime": t})));
+        }
+        data.photos.push(plain_photo(20, json!({})));
+        data.photos[0].image.insert("touchTime".into(), json!(OLD.0));
+        data.photos[1].image.remove("touchTime");
+        let r = apply(&mut s, data, false).unwrap();
+        let id = |n: i64| PhotoId(r["mapping"][n.to_string()].as_u64().unwrap());
+        assert_eq!(s.catalog.photo(id(1)).unwrap().edited.as_deref(), Some("2026-09-30T12:00:00"), "with settings: dated at the import");
+        for n in (3..3 + broken.len() as i64).chain([20]) {
+            assert_eq!(s.catalog.photo(id(n)).unwrap().edited, None, "image {n} without settings: no edit date");
+        }
+        assert_eq!(edit_instant(&s, id(2)), Some(OLD.1));
+        let warnings: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.contains("edit time")).collect();
+        assert_eq!(warnings.len(), 1, "one warning: {warnings:?}");
+        let named = warnings[0].strip_prefix("images ").and_then(|w| w.split(':').next()).unwrap_or_default();
+        assert_eq!(named, "1, 3, 4, 5, 6, 7, 8, 20", "the warning names each image whose time can't be read: {}", warnings[0]);
+    }
+
+    #[test]
+    fn a_photo_whose_settings_cant_be_read_is_still_dated_from_lightroom() {
+        let mut s = crate::Session::new();
+        let mut data = copy_name_and_edit_date_sample();
+        data.photos[2].settings = format!("{}0{}", "{".repeat(1000), "}".repeat(1000));
+        let r = apply(&mut s, data, false).unwrap();
+        let plain = PhotoId(r["mapping"]["3"].as_u64().unwrap());
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("image 3 settings"))), "{r}");
+        assert_eq!(edit_instant(&s, plain), Some(RECENT.1));
+    }
+
+    #[test]
+    fn reimporting_brings_a_changed_copy_name_and_edit_time_across() {
+        let mut s = crate::Session::new();
+        let mut data = copy_name_and_edit_date_sample();
+        data.photos[1].image.insert("copyName".into(), json!("Old title"));
+        data.photos[1].image.insert("touchTime".into(), json!(OLD.0));
+        let r = apply(&mut s, data, false).unwrap();
+        let master = PhotoId(r["mapping"]["1"].as_u64().unwrap());
+        let album = s.catalog.albums().find(|a| a.name == "Keepers").unwrap().id;
+        assert!(s.catalog.album_photos(album).contains(&master));
+        let before = (**s.catalog.photo(master).unwrap()).clone();
+        let r = apply(&mut s, copy_name_and_edit_date_sample(), true).unwrap();
+        assert_eq!(r["mapping"]["1"], master.0, "the same record");
+        assert_eq!(s.catalog.photo(master).unwrap().copy_name.as_deref(), Some("Web title"));
+        assert_eq!(edit_instant(&s, master), Some(RECENT.1));
+        assert!(s.catalog.album_photos(album).contains(&master), "the photo stays in its album");
+        s.undo_step().unwrap();
+        assert_eq!(s.catalog.photo(master).unwrap().as_ref(), &before, "one undo step puts the earlier name and date back");
+        assert!(s.catalog.album_photos(album).contains(&master));
+    }
+
+    #[test]
+    fn a_photo_imported_without_settings_takes_lightrooms_later_ones() {
+        let mut s = crate::Session::new();
+        let data = copy_name_and_edit_date_sample();
+        let r = apply(&mut s, data.clone(), false).unwrap();
+        let plain = PhotoId(r["mapping"]["3"].as_u64().unwrap());
+        assert!(s.catalog.photo(plain).unwrap().edited.is_some(), "dated, though unedited");
+        // edited in Lightroom since, imported again without updating existing photos
+        let mut later = data;
+        later.photos[2].settings = "s = { Exposure2012 = 1.5 }".into();
+        let r = apply(&mut s, later, false).unwrap();
+        assert_eq!(s.catalog.photo(plain).unwrap().develop.light.exposure, 1.5, "Lightroom's settings apply");
+        // (this test's imports keep no index, so the virtual copy comes in again as a new photo)
+        assert_eq!(r["preservedExistingEdits"], 1, "only the master, imported with settings, keeps them: {r}");
     }
 }

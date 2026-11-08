@@ -74,6 +74,8 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     // a fixed height, so the dialog doesn't jump around while the search narrows the list
     // (shorter on a short window, so the dialog fits it)
     let h = crate::panels::dialogs::list_height(ui, 400.0);
+    // in the Classic Settings window, the rest of its page: a tall window shows more of the list
+    let h = if crate::dialog_frame::plain(ui) { (ui.clip_rect().bottom() - ui.cursor().top() - 8.0).max(h) } else { h };
     egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h).auto_shrink([false, false]).id_salt("shortcuts-list").show(ui, |ui| {
         module_keys(app, ui, t, mac, &needle);
         egui::Grid::new("shortcuts").striped(true).num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
@@ -140,6 +142,7 @@ pub(crate) fn in_module(module: crate::module::ModuleId, id: &str) -> bool {
     ];
     const DEVELOP: &[&str] = &[
         "develop.",
+        "pluginFilter.",
         "panel.",
         "tool.",
         "brush.",

@@ -12,8 +12,6 @@
 //! missing model is a [`crate::EngineError::ModelMissing`] the frontends answer with the AI Models
 //! dialog; nothing is downloaded on its own.
 
-use std::sync::Arc;
-
 use lcc_catalog::{Op, PhotoId};
 use lcc_develop::{DevelopSettings, PartRequest, RetouchAnalysis, RetouchMask};
 use lcc_geom::Orientation;
@@ -220,13 +218,19 @@ impl Session {
         }
     }
 
-    /// Give photo `id` the parts found (`a`) when its settings are for the same orientation. Saved
-    /// like any change, without an undo step: the app found them, not the user.
+    /// Give photo `id` the parts found (`a`) when its settings are for the same orientation: in its settings, every
+    /// undo and redo step, an interaction's starting points and the History steps ([`Session::merge_background`]:
+    /// edits made while it ran are kept). Saved like any change, without an undo step: the app found them, not the
+    /// user.
     pub(crate) fn store_retouch_analysis(&mut self, id: PhotoId, a: &RetouchAnalysis) -> crate::Result<()> {
-        let Some(photo) = self.catalog.photo(id) else { return Ok(()) };
-        let Some(d) = with(&photo.develop, a) else { return Ok(()) };
-        let op = Op::SetDevelop { id, settings: Arc::new(d), label: "Find Teeth".into(), edited: photo.edited.clone() };
-        self.apply_unrecorded(op)
+        let give = |d: &mut DevelopSettings| match with(d, a) {
+            Some(n) => {
+                *d = n;
+                true
+            }
+            None => false,
+        };
+        self.merge_background(id, "Find Teeth", false, &give).map(|_| ())
     }
 
     /// The parts photo `id`'s retouch sections want and its settings don't hold (`None`: none).

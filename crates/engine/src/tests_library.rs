@@ -985,3 +985,23 @@ fn an_upgraded_library_says_where_its_older_copy_is() {
     assert!(s.take_library_warnings().iter().all(|n| !n.contains("upgraded from")), "told once");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_selection_restored_from_view_json_names_each_photo_once() {
+    // `view.json` is a plain file a user, a sync tool or another version can leave with a photo listed twice;
+    // the selection never repeats one (a count or a batch would count it twice)
+    let dir = temp_dir("view-dup-selection");
+    let mut s = open(&dir, true);
+    let ids = s.visible_cloned();
+    s.execute("library.select", &json!({"ids": [ids[1].0, ids[2].0], "active": ids[1].0})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+    let path = dir.join("view.json");
+    let mut view: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    view["selection"]["ids"] = json!([ids[1].0, ids[1].0, ids[2].0, ids[1].0]);
+    std::fs::write(&path, serde_json::to_vec(&view).unwrap()).unwrap();
+    let s = open(&dir, false);
+    assert_eq!(s.selection.ids, [ids[1], ids[2]], "first mention kept, in order");
+    assert_eq!(s.selection.active, Some(ids[1]));
+    let _ = std::fs::remove_dir_all(&dir);
+}

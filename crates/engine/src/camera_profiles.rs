@@ -134,9 +134,19 @@ pub fn save(profile: &CameraProfile, dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(file_name(&profile.model));
     let json = serde_json::to_vec_pretty(profile).map_err(|e| e.to_string())?;
+    // Other spellings of the model map to the same file (`Foo Bar` and `Foo_Bar`), so every cached lookup of that file
+    // is dropped. Both locks are held across the write, the invalidation and the render-cache key refresh, so a
+    // concurrent lookup or render key cannot pair the new profile with the old key. Lock order: cache, then key.
+    let saved_name = file_name(&profile.model);
+    let mut cache_guard = cache().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut key_guard = cache_key_slot().lock().unwrap_or_else(PoisonError::into_inner);
     // a fresh temp file renamed over the profile: never a fixed `.tmp` name, which a planted link
     // would have written through
     lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Drop any cached lookup for this model: an earlier miss must not hide the profile just saved (upstream #3938).
+    cache_guard.retain(|model, _| file_name(model) != saved_name);
+    // The key always describes dir(), not the directory this save wrote to.
+    *key_guard = Some(cache_key_for(self::dir().as_deref()));
     Ok(path)
 }
 
@@ -178,8 +188,19 @@ pub fn get(model: &str) -> Option<Arc<CameraProfile>> {
 /// Changes when the profiles folder's contents change (per process): part of the render cache
 /// keys, so thumbnails rendered before a profile existed are not reused after.
 pub fn cache_key() -> u64 {
-    static KEY: OnceLock<u64> = OnceLock::new();
-    *KEY.get_or_init(|| cache_key_for(dir().as_deref()))
+    let slot = cache_key_slot();
+    if let Some(key) = *slot.lock().unwrap_or_else(PoisonError::into_inner) {
+        return key;
+    }
+    // Scan the folder without holding the lock, so a refresh is not blocked on the IO.
+    let key = cache_key_for(dir().as_deref());
+    let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    *guard.get_or_insert(key)
+}
+
+fn cache_key_slot() -> &'static Mutex<Option<u64>> {
+    static KEY: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    KEY.get_or_init(|| Mutex::new(None))
 }
 
 fn cache_key_for(directory: Option<&Path>) -> u64 {
@@ -242,8 +263,12 @@ pub fn load_dcp(path: &Path) -> Result<lcc_raw::dcp::Dcp, String> {
 
 /// The active `.dcp` files in [`dir`] and what they are (damaged ones skipped with a warning).
 pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dir().map(|d| active_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`active_dcps`] of camera-profiles folder `d`.
+pub fn active_dcps_in(d: &Path) -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
@@ -261,8 +286,12 @@ pub fn active_dcps() -> Vec<(PathBuf, lcc_raw::dcp::Dcp)> {
 
 /// The imported `.dcp` files in [`dcp_library_dir`]: `(id, profile)`, the id being `dcp:<file stem>`.
 pub fn library_dcps() -> Vec<(String, lcc_raw::dcp::Dcp)> {
-    let Some(d) = dcp_library_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&d) else { return Vec::new() };
+    dcp_library_dir().map(|d| library_dcps_in(&d)).unwrap_or_default()
+}
+
+/// [`library_dcps`] of library folder `d`.
+pub fn library_dcps_in(d: &Path) -> Vec<(String, lcc_raw::dcp::Dcp)> {
+    let Ok(entries) = std::fs::read_dir(d) else { return Vec::new() };
     let mut paths: Vec<PathBuf> =
         entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dcp"))).collect();
     paths.sort();
@@ -294,6 +323,14 @@ pub fn install_dcps() {
         lcc_raw::dcp::install_library(library_dcps());
         lcc_raw::dcp::install_calibrated(calibrations().iter().map(lcc_camdb::calibration::Calibration::calibrated).collect());
     });
+}
+
+/// Tests that rewrite the decoder's list of imported profiles hold this, so one never drops another's entries.
+#[cfg(test)]
+pub(crate) fn test_library_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    install_dcps();
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Folder of calibration files under development (debug and test builds only): `{ENV_PREFIX}_CAMERA_CALIBRATIONS`.
@@ -347,8 +384,14 @@ fn merge_calibrations(
 /// (the app's own colour). Returns the profile's name when one was applied. A DNG of rendered RGB keeps its colour
 /// ([`lcc_raw::color::is_rendered_rgb`]).
 pub fn apply_choice(color: &mut lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str) -> Option<String> {
+    apply_choice_with(color, meta, choice, true)
+}
+
+/// [`apply_choice`]; `look` false applies the profile's calibration only, without its own look (tone curve, look
+/// table): the photo has one of the app's looks on top ([`lcc_develop::DevelopSettings::keeps_camera_look`]).
+pub fn apply_choice_with(color: &mut lcc_raw::ColorData, meta: &lcc_meta::Metadata, choice: &str, look: bool) -> Option<String> {
     let dcp = profile_for(color, meta, choice)?;
-    dcp.apply(color);
+    dcp.apply_with(color, look);
     if lcc_pipeline::profiling() {
         eprintln!("[profile] camera colour from {:?} ({})", dcp.name, dcp.model);
     }
@@ -361,6 +404,39 @@ pub(crate) fn profile_for(color: &lcc_raw::ColorData, meta: &lcc_meta::Metadata,
         return None;
     }
     lcc_raw::dcp::resolve(choice, meta.make.as_deref(), meta.model.as_deref()?)
+}
+
+/// Whether `id` names a camera-profile choice (`profile.camera`) rather than a look: `lc` (the app's own colour),
+/// `dcp:…` (an imported `.dcp`) or `cal:…` (a calibrated look).
+pub fn is_camera_choice(id: &str) -> bool {
+    id == "lc" || id.starts_with("dcp:") || id.starts_with("cal:")
+}
+
+/// The camera profile a choice names, whatever camera it is for: an imported `.dcp` (`dcp:…`) or a calibrated look
+/// (`cal:…`); `None` for `lc`, the camera's default (`""`) or an id that names nothing.
+pub fn choice_profile(id: &str) -> Option<std::sync::Arc<lcc_raw::dcp::Dcp>> {
+    if id.starts_with("dcp:") {
+        return lcc_raw::dcp::library_get(id);
+    }
+    if id.starts_with("cal:") {
+        return lcc_raw::dcp::calibrated().iter().flat_map(|c| c.looks.iter()).find(|(i, _)| i == id).map(|(_, d)| d.clone());
+    }
+    None
+}
+
+/// The camera profile photo `p` develops with, as the catalog knows the photo (its choice and camera): `None` for a
+/// photo not developed from raw data, the app's own colour, or a camera without a profile.
+pub fn photo_profile(p: &lcc_catalog::Photo) -> Option<std::sync::Arc<lcc_raw::dcp::Dcp>> {
+    if !p.develops_raw() {
+        return None;
+    }
+    lcc_raw::dcp::resolve_camera(&p.develop.profile.camera, &p.meta.camera)
+}
+
+/// Whether photo `p` develops "As profile": its camera profile has a look of its own and the photo keeps it (the
+/// default look), so the profile row names the camera profile rather than the app's look.
+pub fn as_profile(p: &lcc_catalog::Photo) -> bool {
+    p.develop.keeps_camera_look() && photo_profile(p).is_some_and(|d| d.has_look())
 }
 
 /// [`apply_choice`] with the camera's default.
@@ -567,6 +643,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
 
         assert_ne!(before_key, after_key, "a changed profile must not reuse the previous render cache");
+    }
+
+    #[test]
+    fn saving_a_profile_drops_cached_misses_of_other_spellings() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+        let alias = format!("TESTALIAS {} {stamp}", std::process::id());
+        let saved_model = alias.replace(' ', "_");
+        assert_eq!(file_name(&alias), file_name(&saved_model));
+        cache().lock().unwrap_or_else(PoisonError::into_inner).insert(alias.clone(), None);
+        let folder = std::env::temp_dir().join(format!("lc-camera-profile-alias-{}-{stamp}", std::process::id()));
+        let mut saved = profile();
+        saved.model = saved_model;
+        let saved_ok = save(&saved, &folder).is_ok();
+        let still_cached = cache().lock().unwrap_or_else(PoisonError::into_inner).contains_key(&alias);
+        let _ = std::fs::remove_dir_all(&folder);
+        assert!(saved_ok);
+        assert!(!still_cached, "saving a profile must invalidate the cached miss for {alias:?}, which maps to the same file");
+    }
+
+    #[test]
+    fn saved_profile_is_found_after_earlier_miss() {
+        let model = format!(
+            "TESTMISS-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default()
+        );
+        let mut saved = profile();
+        saved.model = model.clone();
+
+        // A lookup before anything is saved caches the miss.
+        assert!(get(&model).is_none(), "no profile saved yet");
+
+        // Saving replaces the on-disk file that `get` reads.
+        let saved_path = dir().map(|d| save(&saved, &d).unwrap());
+
+        assert_eq!(get(&model).as_deref(), Some(&saved), "a profile saved after the first lookup must be returned");
+        if let Some(path) = saved_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

@@ -103,7 +103,7 @@ pub fn lookup(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                             };
                             if let Some(pl) = pl {
                                 places.push(
-                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country}),
+                                    json!({"id": id, "sublocation": pl.sublocation, "city": pl.city, "state": pl.state, "country": pl.country, "countryCode": pl.iso}),
                                 );
                             }
                         }
@@ -298,9 +298,13 @@ fn selected_section(app: &mut LccApp, ui: &mut egui::Ui) {
             );
         }
         crate::panels::metadata::gps(app, ui, &photos, &ids);
-        for (key, label, lines) in
-            [("location", "Sublocation", 1usize), ("city", "City", 1), ("state", "State / Region", 1), ("country", "Country", 1)]
-        {
+        for (key, label, lines) in [
+            ("location", "Sublocation", 1usize),
+            ("city", "City", 1),
+            ("state", "State / Region", 1),
+            ("country", "Country", 1),
+            ("countryCode", "Country Code", 1),
+        ] {
             crate::panels::metadata::text_field(app, ui, &photos, &ids, label, key, lines);
         }
         ui.separator();

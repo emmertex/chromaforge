@@ -11,7 +11,6 @@ pub enum CatalogDialog {}
 #[derive(Default)]
 pub struct CatalogUi {
     pub dialog: Option<CatalogDialog>,
-    pub recent_file: Option<std::path::PathBuf>,
 }
 
 pub fn run(_: &mut LccApp, _: &str, _: &Value) -> Option<Result<Value, String>> {
@@ -19,11 +18,9 @@ pub fn run(_: &mut LccApp, _: &str, _: &Value) -> Option<Result<Value, String>> 
 }
 
 pub fn enabled(_: &LccApp, id: &str) -> Option<bool> {
-    (id.starts_with("catalog.") || matches!(id, "dialog.catalogSettings" | "dialog.exportCatalog" | "dialog.importCatalog")).then_some(false)
-}
-
-pub fn recent_items(_: &LccApp) -> Vec<(String, Value)> {
-    Vec::new()
+    (id.starts_with("catalog.")
+        || matches!(id, "dialog.catalogSettings" | "dialog.exportCatalog" | "dialog.importCatalog" | crate::legacy::IMPORT_LIBRARY_ID))
+    .then_some(false)
 }
 
 pub fn show(_: &mut LccApp, _: &egui::Context) {}

@@ -92,7 +92,7 @@ fn stored_hash(p: &Photo) -> Option<&str> {
 
 /// The content hash of the file at `path` (as import computes it), if it can be read. Read in
 /// pieces: the file is whatever is on the disk, of any size.
-fn file_hash(path: &str) -> Option<String> {
+pub(crate) fn file_hash(path: &str) -> Option<String> {
     use std::io::Read;
     // the opened file must be regular (a FIFO or device would never end), and no more than its size at open is read
     let file = std::fs::File::open(path).ok()?;
@@ -219,7 +219,7 @@ fn free_for(owners: &FileOwners, file: &str, original: PhotoId) -> bool {
 pub enum MatchBy {
     /// Same name and size (and content, when the library knows its hash).
     Name,
-    /// Renamed: same size and content hash.
+    /// Renamed: same content hash (and size, when the library knows it).
     Content,
 }
 
@@ -313,8 +313,8 @@ fn name_key(path: &str) -> String {
 /// Matching, per photo:
 /// 1. a file with the same name ([`name_key`]: any letter case), the same size and the same
 ///    content hash;
-/// 2. renamed: a file of the same size with the same content hash (only same-size files are
-///    read, so this stays cheap);
+/// 2. renamed: a file with the same content hash (and the same size, when one is on record; with
+///    no size on record every file is read, but the hash alone confirms identity);
 /// 3. without a hash to confirm (or the file was edited in place): the one file with the same
 ///    name and size. Several such files are ambiguous: the photo is skipped and reported in
 ///    `ambiguous`, never guessed (two cameras' `IMG_0001.CR3` of one size are different photos).
@@ -359,24 +359,30 @@ pub fn plan_find_missing(candidates: &[FindCandidate], folder: &str) -> std::res
         // 1. same name and size, confirmed by the content hash
         let mut hit: Option<(String, MatchBy)> =
             hash.and_then(|h| named.iter().find(|f| hash_of(f).as_deref() == Some(h))).map(|f| (f.to_string(), MatchBy::Name));
-        // 2. renamed: same size and content
+        // 2. renamed: same content, and same size when one is on record
         if hit.is_none()
             && let Some(h) = hash
-            && size > 0
         {
-            let sizes = by_size.get_or_insert_with(|| {
-                let mut m: HashMap<u64, Vec<String>> = HashMap::new();
-                for f in &files {
-                    if let Some(n) = size_of(f) {
-                        m.entry(n).or_default().push(f.clone());
+            if size > 0 {
+                let sizes = by_size.get_or_insert_with(|| {
+                    let mut m: HashMap<u64, Vec<String>> = HashMap::new();
+                    for f in &files {
+                        if let Some(n) = size_of(f) {
+                            m.entry(n).or_default().push(f.clone());
+                        }
                     }
-                }
-                m
-            });
-            hit = sizes
-                .get(&size)
-                .and_then(|v| v.iter().find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h)))
-                .map(|f| (f.clone(), MatchBy::Content));
+                    m
+                });
+                hit = sizes
+                    .get(&size)
+                    .and_then(|v| v.iter().find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h)))
+                    .map(|f| (f.clone(), MatchBy::Content));
+            } else {
+                hit = files
+                    .iter()
+                    .find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h))
+                    .map(|f| (f.clone(), MatchBy::Content));
+            }
         }
         // 3. same name and size only (no hash, or the file was edited in place): one candidate
         //    is taken, several are ambiguous and skipped rather than guessed
@@ -467,7 +473,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Missing Photos",
             [],
             None,
-            "{folder} — relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or — renamed — same size and content; or {found, missing, ambiguous} — relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
+            "{folder} — relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or — renamed — same content (and size, when the library knows it); or {found, missing, ambiguous} — relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
             always,
             find_missing
         ),

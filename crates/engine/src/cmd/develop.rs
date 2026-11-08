@@ -21,6 +21,25 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettin
     ok()
 }
 
+/// `develop.profile` with a camera profile (OneSlips, LR-PROF-LAYERS `dcp_profiles::choose`): it becomes the photo's
+/// camera profile (`profile.camera`). One with a look of its own (tone curve, look table) comes with that look, "As
+/// profile": the look goes back to the default, so no look of the app's is stacked on it. One without keeps the look.
+fn choose_camera_profile(s: &mut Session, id: &str) -> Result<Value> {
+    const C: &str = "develop.profile";
+    let profile = crate::camera_profiles::choice_profile(id);
+    if id != "lc" && profile.is_none() {
+        return Err(bad(C, format!("unknown camera profile `{id}`")));
+    }
+    let own_look = profile.is_some_and(|d| d.has_look());
+    edit(s, C, "Profile", |d| {
+        d.profile.camera = id.to_string();
+        if own_look {
+            d.profile.id = lcc_develop::DEFAULT_LOOK.to_string();
+        }
+        Ok(())
+    })
+}
+
 /// `d` (photo with source `info`, crop frame `dims`) with control `ctl` moved by `delta` from its
 /// own value: white balance on the photo's own scale (As Shot read as the file's white first),
 /// clamped to the control's range. Quick Develop and the live multi-photo edit use it, so every
@@ -145,6 +164,46 @@ pub(crate) fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
     if o.swaps_axes() { (h, w) } else { (w, h) }
 }
 
+/// Sets photo `id`'s crop as `crop.set` does (`c` names the command in errors): `rect` `[x0, y0,
+/// x1, y1]` normalized in the straightened frame (any order), `angle` in degrees (clamped to ±45°).
+/// A new angle alone turns the crop as Straighten does; a rect is fitted inside the photo. One
+/// History step ("Crop"). Returns the crop as set.
+pub(crate) fn set_crop_of(s: &mut Session, id: PhotoId, c: &str, rect: Option<[f64; 4]>, angle: Option<f64>) -> Result<CropGeometry> {
+    if s.catalog.photo(id).is_none() {
+        return Err(bad(c, format!("no photo {}", id.0)));
+    }
+    let (w, h) = crop_dims(s, id);
+    // the smallest crop a drag of the crop tool can make: below it an export comes out 1×1 (#1952)
+    let min_side = MIN_CROP_FRACTION * w.min(h) * (1.0 - 1e-9);
+    let too_small = |r: Rect| {
+        (r.width() * w < min_side || r.height() * h < min_side)
+            .then(|| bad(c, format!("rect is smaller than the smallest crop ({} % of the shorter side)", MIN_CROP_FRACTION * 100.0)))
+    };
+    let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+    if let Some([x0, y0, x1, y1]) = rect {
+        let r = Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+        if let Some(e) = too_small(r) {
+            return Err(e);
+        }
+        d.crop.geometry.rect = r;
+    }
+    let angle = angle.map(|a| a.clamp(-45.0, 45.0));
+    d.crop.geometry = match (rect, angle) {
+        // a new angle alone turns the crop as Straighten does (issue #742)
+        (None, Some(a)) => d.crop.geometry.with_angle(a, w, h),
+        (_, a) => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.constrained(w, h),
+    };
+    // a rect far larger than the photo is shrunk to fit it, and can come out a sliver
+    if rect.is_some()
+        && let Some(e) = too_small(d.crop.geometry.rect)
+    {
+        return Err(e);
+    }
+    let geometry = d.crop.geometry;
+    s.set_develop(id, d, "Crop")?;
+    Ok(geometry)
+}
+
 /// After a generic control write (`develop.set`, `develop.adjust`, …) that touched `crop.angle`:
 /// refit the crop as `crop.straighten` does, from the crop it had `before`, so the box never takes in
 /// canvas outside the photo (issue #742).
@@ -165,18 +224,22 @@ fn wb_mode_ignores_its_numbers(mode: WbMode, info: &lcc_pipeline::SourceInfo) ->
     mode == WbMode::AsShot || (info.raw && !info.relative_wb && mode.preset().is_some())
 }
 
+/// Whether `partial`'s white balance names one of the two numbers, and not both or neither: the only partial
+/// [`prepare_photo_for_wb_partial`] prepares a photo for (so callers can skip reading the source's facts otherwise).
+pub(crate) fn wb_partial_names_one_number(partial: &Value) -> bool {
+    partial.get("wb").and_then(Value::as_object).is_some_and(|wb| wb.contains_key("temp") != wb.contains_key("tint"))
+}
+
 /// Bring a photo's settings onto the scale and mode a white balance partial names, so a one-field partial means
 /// what it says (issue #2910, and its review). `None` when the partial needs no such preparation: it names both
 /// numbers, neither, or a mode of its own. [`merge_settings_for_photo`] and `preset.apply` both start here, and
 /// both finish with `normalize_wb` so the photo ends on the scale it is edited on.
 pub(crate) fn prepare_photo_for_wb_partial(d: &DevelopSettings, partial: &Value, info: &lcc_pipeline::SourceInfo) -> Option<DevelopSettings> {
-    let mut d = (*d).clone();
-    let wb = partial.get("wb").and_then(Value::as_object);
-    // the partial names one of the two numbers, and not both or neither
-    let one_field = wb.is_some_and(|wb| wb.contains_key("temp") != wb.contains_key("tint"));
-    if !one_field {
+    if !wb_partial_names_one_number(partial) {
         return None;
     }
+    let mut d = (*d).clone();
+    let wb = partial.get("wb").and_then(Value::as_object);
     // a photo whose source is edited in Kelvin is the one with two scales to trip over
     let kelvin_source = info.raw && !info.relative_wb;
     // the scale the partial's numbers are written on: an unmentioned scale means the relative scale, as `merged` reads it
@@ -237,7 +300,7 @@ fn numbers(v: Option<&Value>) -> Option<Vec<f64>> {
 
 /// A width × height lock stored as hundredths. Rejects non-finite, non-positive and
 /// extreme (beyond 20:1) shapes, which would give an empty or unusable crop.
-fn aspect_tuple(c: &str, x: f64, y: f64) -> Result<(u32, u32)> {
+pub(crate) fn aspect_tuple(c: &str, x: f64, y: f64) -> Result<(u32, u32)> {
     let ratio = x / y;
     if !(x.is_finite()
         && y.is_finite()
@@ -252,6 +315,10 @@ fn aspect_tuple(c: &str, x: f64, y: f64) -> Result<(u32, u32)> {
     let (a, b) = (to(x), to(y));
     if a < 1.0 || b < 1.0 || a > f64::from(u32::MAX) || b > f64::from(u32::MAX) {
         return Err(bad(c, "aspect numbers are out of range"));
+    }
+    // what is stored is the rounded pair: `[1, 0.044]` is 22.7:1 once it is `(100, 4)`
+    if !(1.0 / lcc_geom::MAX_RATIO..=lcc_geom::MAX_RATIO).contains(&(a / b)) {
+        return Err(bad(c, "aspect needs two positive numbers with a ratio between 1:20 and 20:1"));
     }
     Ok((a as u32, b as u32))
 }
@@ -780,19 +847,30 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("develop.profile", "Set Profile", [], None, "{id: profile id (see profiles.list), amount?: 0..200}", has_active, |s, p| {
-            let id = str_param(p, "id").ok_or_else(|| bad("develop.profile", "missing id"))?.to_string();
-            if !crate::presets::PROFILES.iter().any(|x| x.id == id) && !s.lut_profiles.iter().any(|x| x.id == id) {
-                return Err(bad("develop.profile", format!("unknown profile `{id}`")));
+        cmd!(
+            "develop.profile",
+            "Set Profile",
+            [],
+            None,
+            "{id: profile id (see profiles.list), or a camera profile (dcp:…, cal:…, lc: as develop.cameraProfile; one with a look of its own comes with it, \"As profile\": the look goes back to the default), amount?: 0..200}",
+            has_active,
+            |s, p| {
+                let id = str_param(p, "id").ok_or_else(|| bad("develop.profile", "missing id"))?.to_string();
+                if crate::camera_profiles::is_camera_choice(&id) {
+                    return choose_camera_profile(s, &id);
+                }
+                if !crate::presets::PROFILES.iter().any(|x| x.id == id) && !s.lut_profiles.iter().any(|x| x.id == id) {
+                    return Err(bad("develop.profile", format!("unknown profile `{id}`")));
+                }
+                edit(s, "develop.profile", "Profile", |d| {
+                    d.profile.id = id.clone();
+                    d.profile.amount = f64_or(p, "amount", d.profile.amount).clamp(0.0, 200.0);
+                    Ok(())
+                })?;
+                s.note_profile_used(&id);
+                ok()
             }
-            edit(s, "develop.profile", "Profile", |d| {
-                d.profile.id = id.clone();
-                d.profile.amount = f64_or(p, "amount", d.profile.amount).clamp(0.0, 200.0);
-                Ok(())
-            })?;
-            s.note_profile_used(&id);
-            ok()
-        }),
+        ),
         cmd!(
             "develop.cameraProfile",
             "Set Camera Profile",
@@ -867,40 +945,15 @@ pub fn specs() -> Vec<CommandSpec> {
         // ---- crop & rotate
         cmd!("crop.set", "Set Crop", [], None, "{rect?: [x0,y0,x1,y1] normalized in the straightened frame, angle?: degrees}", has_active, |s, p| {
             let id = active(s, "crop.set")?;
-            let (w, h) = crop_dims(s, id);
-            // the smallest crop a drag of the crop tool can make: below it an export comes out 1×1 (#1952)
-            let min_side = MIN_CROP_FRACTION * w.min(h) * (1.0 - 1e-9);
-            let too_small = |r: Rect| {
-                (r.width() * w < min_side || r.height() * h < min_side)
-                    .then(|| bad("crop.set", format!("rect is smaller than the smallest crop ({} % of the shorter side)", MIN_CROP_FRACTION * 100.0)))
+            let rect = match p.get("rect") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<f64>>()).as_deref() {
+                    Some(&[x0, y0, x1, y1]) => Some([x0, y0, x1, y1]),
+                    _ => return Err(bad("crop.set", "rect needs 4 numbers")),
+                },
             };
-            edit(s, "crop.set", "Crop", |d| {
-                let explicit = p.get("rect").and_then(Value::as_array);
-                if let Some(a) = explicit {
-                    let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-                    if v.len() != 4 {
-                        return Err(bad("crop.set", "rect needs 4 numbers"));
-                    }
-                    let r = Rect::new(v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3]));
-                    if let Some(e) = too_small(r) {
-                        return Err(e);
-                    }
-                    d.crop.geometry.rect = r;
-                }
-                let angle = p.get("angle").and_then(Value::as_f64).map(|a| a.clamp(-45.0, 45.0));
-                d.crop.geometry = match (p.get("rect"), angle) {
-                    // a new angle alone turns the crop as Straighten does (issue #742)
-                    (None, Some(a)) => d.crop.geometry.with_angle(a, w, h),
-                    (_, a) => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.constrained(w, h),
-                };
-                // a rect far larger than the photo is shrunk to fit it, and can come out a sliver
-                if explicit.is_some()
-                    && let Some(e) = too_small(d.crop.geometry.rect)
-                {
-                    return Err(e);
-                }
-                Ok(())
-            })
+            set_crop_of(s, id, "crop.set", rect, p.get("angle").and_then(Value::as_f64))?;
+            ok()
         }),
         cmd!(
             "crop.drag",
@@ -1087,6 +1140,59 @@ pub fn specs() -> Vec<CommandSpec> {
                     Ok(())
                 })?;
                 Ok(json!({"enabled": enabled, "maxEv": s.develop_of(id).map(|d| d.hdr.max_ev)}))
+            }
+        ),
+        cmd!(
+            "develop.hslPick",
+            "Pick an HSL Curve Point",
+            [],
+            None,
+            "{channel: hue|sat|lum, x, y (normalized image coords)} — samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
+            has_active,
+            |s, p| {
+                let c = "develop.hslPick";
+                let ch = str_param(p, "channel").ok_or_else(|| bad(c, "missing channel"))?.to_string();
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                // the hue the curve receives: the photo with the curves themselves neutral (and
+                // everything after the mixer, as Point Color reads it)
+                let [_, _, h] = super::color::encoded_to_oklch(super::color::probe(s, c, x, y, |d| {
+                    d.hsl_curves = Default::default();
+                    super::color::after_mixer_neutral(d);
+                })?);
+                let hue_x = (h as f64 / std::f64::consts::TAU).rem_euclid(1.0);
+                edit(s, c, "HSL Curves", |d| {
+                    let pts = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad(c, format!("unknown channel `{ch}`")))?;
+                    let at = lcc_pipeline::colorops::hsl_curve_at(pts, hue_x);
+                    pts.push(Point::new(hue_x, at));
+                    pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                    Ok(())
+                })?;
+                Ok(json!({"channel": ch, "x": hue_x}))
+            }
+        ),
+        cmd!(
+            "develop.hslCurves",
+            "Set HSL Curve",
+            [],
+            None,
+            "{channel: hue|sat|lum, points: [[x,y],...] — x hue position 0..1 around the hue circle, y −1..1}",
+            has_active,
+            |s, p| {
+                let ch = str_param(p, "channel").ok_or_else(|| bad("develop.hslCurves", "missing channel"))?.to_string();
+                let mut pts: Vec<Point> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| bad("develop.hslCurves", "missing points"))?
+                    .iter()
+                    .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?.clamp(0.0, 1.0), q.get(1)?.as_f64()?.clamp(-1.0, 1.0))))
+                    .collect();
+                // stored in the order the curve runs, as the editor draws and drags them
+                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                edit(s, "develop.hslCurves", "HSL Curves", |d| {
+                    let c = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad("develop.hslCurves", format!("unknown channel `{ch}`")))?;
+                    *c = pts;
+                    Ok(())
+                })
             }
         ),
         // ---- geometry: Upright
@@ -1455,18 +1561,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 let mut ops = Vec::new();
                 for id in ids {
-                    let Some(d) = s.develop_of(id) else { continue };
-                    // a hand-written preset may name one white balance number only, and then it means the same as
-                    // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
-                    // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses
-                    let info = s.source_info(id);
-                    let prepared = prepare_photo_for_wb_partial(&d, &preset.settings, &info);
-                    let on_kelvin_scale = prepared.is_some() && info.raw && !info.relative_wb;
-                    let base: &DevelopSettings = prepared.as_ref().unwrap_or(&d);
-                    let mut next = preset.apply(base, amount);
-                    if on_kelvin_scale {
-                        lcc_pipeline::local::normalize_wb(&mut next, &info);
-                    }
+                    // the same composition the Presets panel previews (`Session::preset_applied`)
+                    let Some(mut next) = s.preset_applied(id, &preset, amount) else { continue };
                     let own = |m: &&mut lcc_develop::Mask| m.preset.as_deref() == Some(preset.id.as_str());
                     for (m, l) in next.masks.iter_mut().filter(own).zip(&links) {
                         m.link = l.clone();

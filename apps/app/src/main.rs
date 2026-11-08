@@ -1,6 +1,6 @@
 //! The desktop app.
 //!
-//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--control <port>] [files or folders…]`
+//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--no-update-check] [--control <port>] [files or folders…]`
 //!
 //! The library (catalog, presets, thumbnail cache) lives in `--library DIR`, else
 //! `$<PREFIX>_LIBRARY`, else — with Settings ▸ General ▸ At launch set to *Ask me*, or Alt/Option
@@ -106,6 +106,21 @@ impl lcc_ui_egui::render::ScreenTextures for WindowTextures {
     }
 }
 
+/// Whether the window's HDR swapchain keeps the GPU renderer off the window's device: where it stopped
+/// the window drawing (RADV on Wayland, 2026-11-03). Windows and macOS keep the zero-copy path on an
+/// HDR monitor (ported from OneSlips: there it always offers the device).
+const HDR_WINDOW_GUARD: bool = cfg!(not(any(windows, target_os = "macos", target_os = "android")));
+
+/// Whether the GPU renderer is offered the window's device: `<PREFIX>_GPU_WINDOW` (`env`) `0` never,
+/// `1` always; otherwise yes, except on an HDR window (`hdr`) where `guard` holds.
+fn offers_window_device(env: Option<&str>, hdr: bool, guard: bool) -> bool {
+    match env.map(str::trim) {
+        Some("0") => false,
+        Some("1") => true,
+        _ => !(hdr && guard),
+    }
+}
+
 /// Offer the window's device to the GPU renderer, so the loupe's drafts are drawn straight from the
 /// GPU (the kernels are built on it when the renderer warms up, off the UI thread); the textures
 /// they leave are shown through [`WindowTextures`] once it runs there. A device that doesn't suit
@@ -199,7 +214,7 @@ const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// alone on Windows unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
 /// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12) — and DX12
 /// shaders compiled with FXC, never a stray `dxcompiler.dll` (issue #471).
-/// The fallback chain on top of it (DX12 → Vulkan → GL → glow) is in `window_gpu`.
+/// The fallback chain on top of it (DX12 → GL → glow; Vulkan only when asked for) is in `window_gpu`.
 #[cfg(test)]
 fn window_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     window_gpu::base_options()
@@ -677,7 +692,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                         if let Some(t) = &req.title {
                             d = d.set_title(t);
                         }
-                        if let Some((name, exts)) = &req.filter {
+                        for (name, exts) in req.filters() {
                             d = d.add_filter_nocase(name.clone(), exts);
                         }
                         if let Some(n) = &req.file_name {
@@ -705,8 +720,10 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         log_file: log_file.map(|p| p.display().to_string()),
         pick_lightroom_catalog: picker!(|| {
             file_dialog()
-                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom Catalog"))
+                .set_title(lcc_ui_egui::i18n::tr("Import Lightroom or Capture One Catalog"))
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom or Capture One Catalog"), &["lrcat", "cocatalogdb"])
                 .add_filter_nocase(lcc_ui_egui::i18n::tr("Lightroom Classic Catalog"), &["lrcat"])
+                .add_filter_nocase(lcc_ui_egui::i18n::tr("Capture One Catalog"), &["cocatalogdb"])
                 .pick_file()
                 .map(|p| p.to_string_lossy().to_string())
         }),
@@ -1093,6 +1110,8 @@ OPTIONS:
                    else ~/Pictures/{lib})
   --no-demo        don't seed a new library with the procedural demo photos
   --memory         throwaway in-memory session (alias --demo); nothing is saved
+  --no-update-check  don't look for a newer release at start, whatever Settings > General says, for this run
+                   (Help > Check for Updates… still works)
   --control PORT   serve the JSON-lines control channel on 127.0.0.1:PORT (env {P}_CONTROL_PORT;
                    see docs/control-protocol.md). Clients must first send the run's token, which the app
                    writes to <settings folder>/control-token-PORT
@@ -1224,6 +1243,12 @@ fn panic_log_path(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<
 
 /// Whether the arguments ask for a `--memory` (or `--demo`) session. The values of `--control` and `--library` are
 /// skipped, as the parser takes them.
+/// Whether the window looks for a newer release at start: only a session that keeps its settings, and not when
+/// `--no-update-check` was given (Settings > General still decides within that).
+fn startup_update_check(keeps_settings: bool, no_update_check: bool) -> bool {
+    keeps_settings && !no_update_check
+}
+
 fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
     let mut args = args.into_iter();
     while let Some(a) = args.next() {
@@ -1250,6 +1275,7 @@ fn main() -> eframe::Result {
     let mut control_token_arg = control_auth::env_token().filter(|v| !v.trim().is_empty());
     let mut files = Vec::new();
     let mut seed_demo = true;
+    let mut no_update_check = false;
     let mut in_memory = false;
     let mut library_dir: Option<std::path::PathBuf> = None;
     let mut launch_link: Option<String> = None;
@@ -1262,6 +1288,7 @@ fn main() -> eframe::Result {
             "--control-token" => control_token_arg = Some(args.next().unwrap_or_default()),
             "--library" => library_dir = args.next().map(std::path::PathBuf::from),
             "--no-demo" => seed_demo = false,
+            "--no-update-check" => no_update_check = true,
             "--memory" | "--demo" => in_memory = true,
             "--hdr-probe" => {
                 // optional seconds (default 5)
@@ -1340,11 +1367,14 @@ fn main() -> eframe::Result {
         lcc_ui_egui::i18n::set_language(ui.language);
     }
     // --library (or <PREFIX>_LIBRARY), else the list of recent libraries if Settings say Ask me,
-    // else the startup catalog, else the library last opened from Settings, else the default
-    // location if a catalog of this app is there; otherwise (a first start) the welcome dialog
-    // asks. Another app's library (e.g. the upstream app's, named by settings copied from it) is
-    // never opened as this app's own.
+    // else the library last opened from Settings, else the default location if a library of this
+    // app is there; otherwise (a first start) the welcome dialog asks. Another app's library (e.g.
+    // the upstream app's, named by settings copied from it) is never opened as this app's own.
     let mut prefs = prefs;
+    // the recent list of older versions joins the settings' before Ask me is read (issue #871)
+    catalog_hooks::carry_over_recent(prefs.as_mut(), !in_memory && !keep_prefs_file, |ui| {
+        PrefsWriter { path: prefs_path(), ..Default::default() }.save_ui(ui, false)
+    });
     let explicit = library_dir.or_else(|| lcc_brand::env_os("LIBRARY").filter(|p| !p.is_empty()).map(Into::into));
     // only a library named on the command line or in the environment may be created at launch
     let explicit_given = explicit.is_some();
@@ -1353,7 +1383,7 @@ fn main() -> eframe::Result {
         (explicit, None)
     } else {
         let from_prefs = prefs.as_ref().map(|u| u.settings.library_path.clone()).filter(|p| !p.is_empty() && !lcc_brand::env_is_set("LIBRARY"));
-        let remembered = [catalog_hooks::startup_catalog(), from_prefs.map(Into::into)];
+        let remembered = [from_prefs.map(Into::into)];
         match catalog_hooks::decide(explicit, &remembered, lcc_engine::library::default_dir()) {
             catalog_hooks::Startup::Open(d) => (Some(d), None),
             catalog_hooks::Startup::Welcome { foreign } => {
@@ -1389,6 +1419,9 @@ fn main() -> eframe::Result {
     }
     let gpu_on = prefs.as_ref().is_none_or(|u| u.settings.gpu) && gpu_crash.is_none();
     lcc_engine::gpu::set_enabled(gpu_on);
+    // batch work (exports, previews being built) leaves the editing card to the interface while it
+    // is used, and goes to a second graphics card first
+    lcc_engine::gpu::track_interaction(true);
     if let Some(u) = &prefs {
         lcc_engine::gpu::backend::set_compute_preference(u.settings.gpu_backend.name());
     }
@@ -1476,7 +1509,6 @@ fn main() -> eframe::Result {
                     // Auto Sync is the app's, remembered across libraries and restarts
                     app.session.auto_sync = app.ui.settings.auto_sync;
                 }
-                catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown
                 if launch == Launch::Ask {
                     problem = Some(LibraryProblem::choose_later(&app.ui.settings));
@@ -1490,7 +1522,7 @@ fn main() -> eframe::Result {
                 app.pending_link = launch_link;
                 app.gpu_notice = true;
                 // the start-up update check, when the user turned it on (off by default)
-                app.startup_update_check = keeps_settings;
+                app.startup_update_check = startup_update_check(keeps_settings, no_update_check);
                 // an empty library opens where Import is offered (a grid, with the sidebar); before
                 // the snapshot below, so this alone isn't written to the settings file
                 if problem.is_none() && files.is_empty() {
@@ -1579,14 +1611,11 @@ fn main() -> eframe::Result {
                 // the GPU renderer on the window's device, when GPU rendering is on
                 // (<PREFIX>_GPU_WINDOW=0: a device of its own, renders read back - for comparison or a
                 // driver that misbehaves with compute and drawing on one device)
-                // Not on an HDR window for now: with the renderer on the window's device, turning an
-                // edit's HDR on stopped the Wayland window drawing (RADV, 2026-11-03; fine with a
-                // device of its own). `<PREFIX>_GPU_WINDOW=1` offers it anyway, `0` never.
-                let window_device = match lcc_brand::env("GPU_WINDOW").as_deref().map(str::trim) {
-                    Some("0") => false,
-                    Some("1") => true,
-                    _ => !display.is_hdr(),
-                };
+                // Not on an HDR window under Linux / BSD for now: with the renderer on the window's
+                // device, turning an edit's HDR on stopped the Wayland window drawing (RADV,
+                // 2026-11-03; fine with a device of its own). `<PREFIX>_GPU_WINDOW=1` offers it
+                // anyway, `0` never.
+                let window_device = offers_window_device(lcc_brand::env("GPU_WINDOW").as_deref(), display.is_hdr(), HDR_WINDOW_GUARD);
                 let window_textures = cc.wgpu_render_state.as_ref().filter(|_| gpu_on && window_device).map(offer_window_device);
                 Ok(Box::new(App(
                     app,
@@ -1687,6 +1716,19 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// The HDR window guard (ported from OneSlips): an HDR monitor keeps the window's device from the
+    /// renderer only where the guard holds (Linux / BSD); `<PREFIX>_GPU_WINDOW` decides over both.
+    #[test]
+    fn an_hdr_window_keeps_the_window_device_where_no_guard_is_needed() {
+        assert!(offers_window_device(None, true, false), "Windows / macOS: an HDR window still gets it");
+        assert!(!offers_window_device(None, true, true), "Linux / BSD: an HDR window doesn't");
+        assert!(offers_window_device(None, false, true), "an SDR window always does");
+        assert!(offers_window_device(Some(" 1 "), true, true), "1 offers it anyway");
+        assert!(!offers_window_device(Some("0"), false, false), "0 never");
+        assert!(offers_window_device(Some("yes"), false, true), "another value is no choice");
+        assert_eq!(HDR_WINDOW_GUARD, !cfg!(any(windows, target_os = "macos", target_os = "android")));
+    }
 
     /// Modal dimming must not expose the desktop through the compositor-capable window.
     #[test]
@@ -2345,6 +2387,15 @@ mod config_path_tests {
     fn panic_log_stays_in_the_settings_folder() {
         let name = format!("{}-panics.log", lcc_brand::BINARY);
         assert_eq!(panic_log_path(std::iter::empty()), log_dir().map(|d| d.join(name)));
+    }
+
+    /// `--no-update-check` turns the start-up look for a newer release off for the run; without it, a session
+    /// that keeps its settings looks.
+    #[test]
+    fn no_update_check_flag_disables_the_startup_check() {
+        assert!(startup_update_check(true, false));
+        assert!(!startup_update_check(true, true));
+        assert!(!startup_update_check(false, false));
     }
 
     /// A `--memory` session keeps no panic log (it saves nothing); an option's value that reads `--memory` is not the

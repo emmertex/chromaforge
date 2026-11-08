@@ -34,6 +34,10 @@ pub struct Filter {
     pub rating: u8,
     pub rating_op: RatingOp,
     pub flag: Option<Flag>,
+    /// Any of these flags (Hide Rejected Photos shows picks and unflagged ones); empty = no
+    /// constraint. ANDs with `flag`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<Flag>,
     pub label: Option<ColorLabel>,
     /// Only these photos (Find Similar results…); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -42,6 +46,10 @@ pub struct Filter {
     /// `only` means "no constraint".
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub only_none: bool,
+    /// Natural-language (semantic) search query (`LR-FILT-SEARCH-AI`). The matching photo IDs
+    /// (in descending cosine-similarity order) are stored in `only` / `only_none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<String>,
     /// Any of these labels (the filter bar's multi-select); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<ColorLabel>,
@@ -50,6 +58,9 @@ pub struct Filter {
     pub album: Option<AlbumId>,
     /// Show "Recently Deleted" instead of the library.
     pub deleted: bool,
+    /// Keep only the library's photos (`Some(true)`) or only the ones outside it — browsed
+    /// (Local), deleted or demo photos (`Some(false)`).
+    pub in_library: Option<bool>,
     /// Capture date prefix (`2026`, `2026-04`, `2026-04-12`).
     pub date: Option<String>,
     /// A folder the library's photos were imported from: those photos and the ones imported from
@@ -840,7 +851,16 @@ impl Filter {
     /// This filter without the quick culling filters (stars, flags, colour labels): what the filter
     /// bar counts its photos in, so "Picked 47" stays readable while only the picks are shown.
     pub fn without_quick(&self) -> Filter {
-        Filter { rating: 0, rating_op: RatingOp::default(), flag: None, label: None, labels: Vec::new(), ..self.clone() }
+        Filter { rating: 0, rating_op: RatingOp::default(), flag: None, flags: Vec::new(), label: None, labels: Vec::new(), ..self.clone() }
+    }
+
+    /// The flags that `flag` and `flags` let through together; `None` when neither is set.
+    pub fn flags_shown(&self) -> Option<Vec<Flag>> {
+        match (self.flag, self.flags.is_empty()) {
+            (None, true) => None,
+            (Some(f), true) => Some(vec![f]),
+            (f, false) => Some(self.flags.iter().copied().filter(|x| f.is_none_or(|f| f == *x)).collect()),
+        }
     }
 
     /// The labels that `label` and `labels` let through together (they AND), in `labels`' order;
@@ -882,6 +902,9 @@ impl Filter {
         }
         if let Some(f) = self.flag {
             v.push(format!("flag {}", format!("{f:?}").to_lowercase()));
+        }
+        if !self.flags.is_empty() {
+            v.push(format!("flag {}", self.flags.iter().map(|f| format!("{f:?}").to_lowercase()).collect::<Vec<_>>().join(" or ")));
         }
         if let Some(l) = self.label {
             v.push(format!("label {}", format!("{l:?}").to_lowercase()));
@@ -938,6 +961,9 @@ impl Filter {
         if !self.text.trim().is_empty() {
             v.push(format!("“{}”", self.text.trim()));
         }
+        if let Some(q) = self.semantic.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            v.push(format!("AI search “{q}”"));
+        }
         if let Some(rs) = self.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
             v.push(cat.map_or_else(|| rs.describe(), |c| rs.describe_with(c)));
         }
@@ -984,6 +1010,9 @@ impl Filter {
         if p.deleted != self.deleted {
             return false;
         }
+        if self.in_library.is_some_and(|want| p.in_library() != want) {
+            return false;
+        }
         match &self.folder {
             // browsed photos only show in folder views, and in Recently Deleted once deleted (#1430)
             None if p.local && !p.deleted => return false,
@@ -1014,6 +1043,9 @@ impl Filter {
         if let Some(rs) = &self.rule_set
             && !rs.matches(p, cat)
         {
+            return false;
+        }
+        if !self.flags.is_empty() && !self.flags.contains(&p.flag) {
             return false;
         }
         if !self.labels.is_empty() && !p.label.is_some_and(|l| self.labels.contains(&l)) {

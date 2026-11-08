@@ -198,6 +198,8 @@ pub struct SidecarData {
     pub city: Option<String>,
     pub state: Option<String>,
     pub country: Option<String>,
+    /// The ISO 3166-1 alpha-2 country code (`Iptc4xmpCore:CountryCode`).
+    pub country_code: Option<String>,
     pub alt_text: Option<String>,
     pub extended_description: Option<String>,
     /// The IPTC Content fields other editors write (headline, description writer, legacy category).
@@ -218,6 +220,10 @@ pub struct SidecarData {
     /// [`merge_into`] puts boxes drawn on the photo as stored where the upright photo has them (#2674).
     pub regions_drawn_on: Option<(f64, f64)>,
     pub orientation: Option<lcc_meta::Orientation>,
+    /// The packet's `tiff:Orientation` when it carries another editor's develop settings (`crs:`): how that editor
+    /// turns the stored pixels upright, the file's own orientation and the user's rotation together. The import
+    /// turns the photo by what it adds to the file's orientation ([`SidecarData::turn_from`]).
+    pub turned_to: Option<lcc_meta::Orientation>,
     /// Capture time (ISO 8601) from `exif:DateTimeOriginal`, `photoshop:DateCreated` or
     /// `xmp:CreateDate` (first found). Used only when the file itself has no capture time.
     pub captured: Option<String>,
@@ -269,6 +275,7 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         city: m.city.clone(),
         state: m.state.clone(),
         country: m.country.clone(),
+        country_code: m.country_code.clone(),
         alt_text: m.alt_text.clone(),
         extended_description: m.extended_description.clone(),
         headline: m.headline.clone(),
@@ -393,6 +400,9 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         }
         None => None,
     };
+    if matches!(out.develop, Some(DevelopPatch::Partial(_))) {
+        out.turned_to = m.orientation;
+    }
     Ok(out)
 }
 
@@ -439,6 +449,7 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
         (&sc.city, &mut m.city),
         (&sc.state, &mut m.state),
         (&sc.country, &mut m.country),
+        (&sc.country_code, &mut m.country_code),
         (&sc.alt_text, &mut m.alt_text),
         (&sc.extended_description, &mut m.extended_description),
         (&sc.headline, &mut m.headline),
@@ -511,6 +522,36 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
 }
 
 impl SidecarData {
+    /// The patch with the rotation [`SidecarData::turned_to`] adds to `file` (the orientation the photo file states,
+    /// which the decode applies): Lightroom writes a photo turned in it as the whole orientation. Only another
+    /// editor's settings take it; the app's own (`lc:settings`) carry their rotation already.
+    pub fn turn_from(mut self, file: Option<lcc_meta::Orientation>) -> Self {
+        if let (Some(to), Some(DevelopPatch::Partial(v))) = (self.turned_to, self.develop.as_mut())
+            && let Some(o) = v.as_object_mut()
+            && let Ok(turn) = serde_json::to_value(file.unwrap_or_default().inverse().then(to))
+        {
+            o.insert("orientation".into(), turn);
+        }
+        self
+    }
+
+    /// The patch with a Lightroom crop put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
+    /// of the straightened crop on the stored image, before its orientation (the sidecar's whole orientation, else
+    /// the file's) and the straighten turn, as in a Lightroom catalog
+    /// ([`crate::lightroom_catalog::catalog_crop`]). `upright` is the photo's size turned by the file's orientation.
+    /// Only another editor's settings take it; the app's own (`lc:settings`) are in its frame already.
+    pub fn crop_from(mut self, file: Option<lcc_meta::Orientation>, upright: (u32, u32)) -> Self {
+        let file = file.unwrap_or_default();
+        let (w, h) = if file.swaps_axes() { (upright.1, upright.0) } else { upright };
+        if let Some(DevelopPatch::Partial(v)) = self.develop.as_mut()
+            && w > 0
+            && h > 0
+        {
+            crate::lightroom_catalog::catalog_crop(v, self.turned_to.unwrap_or(file), f64::from(w) / f64::from(h));
+        }
+        self
+    }
+
     /// Read the label through the catalog's label names: other editors write the label's name
     /// (a custom set's "To Do" as well as "Red"); unknown names clear the label.
     pub fn resolve_label(mut self, cat: &lcc_catalog::Catalog) -> Self {
@@ -722,6 +763,7 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
         city: nz(&p.meta.city),
         state: nz(&p.meta.state),
         country: nz(&p.meta.country),
+        country_code: nz(&p.meta.country_code),
         copyright: nz(&p.meta.copyright),
         copyright_marked: p.meta.copyright_status.marked(),
         usage_terms: nz(&p.meta.usage_terms),
@@ -739,7 +781,7 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
     };
     let mut meta = meta;
     if remove_location {
-        (meta.sublocation, meta.city, meta.state, meta.country, meta.gps) = (None, None, None, None, None);
+        (meta.sublocation, meta.city, meta.state, meta.country, meta.country_code, meta.gps) = (None, None, None, None, None, None);
     }
     // the pixel-filter stack goes in its own namespace, not in `lc:settings`
     let filters: Vec<lcc_meta::XmpPluginFilter> = p.develop.plugin_filters.iter().map(crate::cmd::plugin_filters::to_xmp).collect();

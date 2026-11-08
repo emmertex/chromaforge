@@ -116,8 +116,8 @@ pub struct Library {
     /// The activity-stack row of the background compaction in flight (issue #448): held exactly
     /// while [`Journal::snapshot_running`], by [`Session::sync_compaction_row`].
     compaction_row: Option<crate::activity::TaskGuard>,
-    /// presets.json, view.json, prefs.json.
-    files: Box<dyn Store>,
+    /// presets.json, view.json, prefs.json (and the unfinished import, [`crate::finishing`]).
+    pub(crate) files: Box<dyn Store>,
     /// What happened when the catalog was loaded.
     pub report: LoadReport,
     /// Last persistence error (shown by the UI; ops stay pending and are retried).
@@ -393,6 +393,9 @@ struct PrefsFile {
     camera_profile_defaults: std::collections::BTreeMap<String, String>,
     /// Thumbnail disk cache budget (MB, 0 = default).
     cache_mb: u32,
+    /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prep: Option<crate::prep::PrepSettings>,
     /// Folder for smart previews (default: `Smart Previews` in the library).
     smart_previews_dir: Option<String>,
     /// Days after which untouched Local records of unbrowsed folders are forgotten (missing =
@@ -666,6 +669,8 @@ impl Session {
             self.pending_sidecar_repairs.append(&mut entry.retry_sidecars);
         }
         self.undo.clear();
+        // a run of the old library no longer holds the new one's history
+        self.undo_hold = std::sync::Weak::new();
         self.redo.clear();
         self.interaction = None;
         self.pending_log.clear();
@@ -723,6 +728,7 @@ impl Session {
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         self.cache_mb = prefs.cache_mb;
+        self.prep.library = prefs.prep.map(crate::prep::PrepSettings::sanitized);
         self.preview_prefs = prefs.previews;
         #[cfg(not(target_arch = "wasm32"))]
         if on_disk {
@@ -797,7 +803,9 @@ impl Session {
             self.sort = v.sort;
             self.previous_export = v.previous_export.into_iter().filter(|id| self.catalog.photo(*id).is_some()).collect();
             self.selection = v.selection;
-            self.selection.ids.retain(|id| self.catalog.photo(*id).is_some());
+            // each photo once: the file is plain JSON, and a selection never repeats one
+            let mut seen = std::collections::HashSet::new();
+            self.selection.ids.retain(|id| self.catalog.photo(*id).is_some() && seen.insert(*id));
             self.selection.active = self.selection.active.filter(|id| self.catalog.photo(*id).is_some());
         }
         // the saved view may name an album the library no longer has
@@ -816,6 +824,7 @@ impl Session {
         self.media.clear_sources();
         if on_disk {
             self.media.attach_disk_cache(&dir.join("thumbs"), self.cache_bytes_in(&dir.join("thumbs")));
+            self.keep_edited_previews_last();
             self.tidy_thumbnail_cache();
         }
         let view_written = self.view_json();
@@ -872,6 +881,8 @@ impl Session {
         if on_disk {
             crate::cmd::previews::refresh_stale_smart_previews(self);
         }
+        // an import still being finished when the app closed picks up where it stopped
+        self.load_finishing();
         self.library_identity = std::sync::Arc::new(());
         Ok(())
     }
@@ -1197,6 +1208,7 @@ impl Session {
             import: self.import_defaults.clone(),
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             cache_mb: self.cache_mb,
+            prep: self.prep.library,
             smart_previews_dir: self.smart_previews_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
             forget_local_days: Some(self.forget_local_days),
             // on disk they live in the catalog's settings (below)
@@ -1266,6 +1278,20 @@ impl Session {
 
     /// The thumbnail disk cache budget in bytes ([`Session::cache_mb`], else the default, which
     /// grows with the library: [`crate::media::default_disk_cache_bytes`]).
+    /// The edited photos' latest previews (their last loupe view and grid thumbnail) are the last
+    /// pictures a full disk cache lets go: the only pictures of their edits (a photo as shot has its
+    /// camera JPEG). A full cache otherwise lost every rendered edit, and the loupe had nothing but
+    /// the unedited camera JPEG.
+    pub fn keep_edited_previews_last(&self) {
+        let Some(d) = self.media.rendered.disk() else { return };
+        let keys = self
+            .catalog
+            .photos()
+            .filter(|p| !crate::import::looks_as_shot(p))
+            .flat_map(|p| [crate::media::latest_view_key(p, true), crate::media::latest_thumb_key(p)]);
+        d.keep_last(keys);
+    }
+
     pub fn cache_bytes(&self) -> u64 {
         match (self.cache_mb, self.media.rendered.disk()) {
             (0, Some(d)) => self.cache_bytes_in(d.dir()),
@@ -1419,6 +1445,22 @@ impl Session {
     /// Optimise the catalog: its store rewritten, indexes rebuilt, compacted.
     pub fn optimize_catalog(&mut self) -> Result<lcc_catalog::library::OptimizeReport> {
         self.with_catalog_journal(|j, c| j.optimize(c))
+    }
+
+    /// Whether quitting should back the catalog up: its schedule says one is due and something
+    /// changed since the last backup (ops waiting to be written count as a change). A library
+    /// opened, looked through and closed again is not backed up, and its user isn't asked to.
+    pub fn catalog_backup_wanted(&self) -> bool {
+        if self.catalog_dir().is_none() {
+            return false;
+        }
+        let settings = self.catalog_settings();
+        let now = lcc_catalog::library::now_secs();
+        if !self.pending_log.is_empty() || self.interaction.is_some() {
+            return settings.backup_due(now);
+        }
+        let mark = self.library.as_ref().and_then(|l| l.journal.backup_mark().ok());
+        settings.backup_wanted(now, mark.as_deref())
     }
 
     /// The exit-time backup: when the catalog's schedule says one is due (with the integrity

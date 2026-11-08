@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use lcc_filters::{Error, Filter, FrameInfo, Limits, Registry, is_filter_module};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// A module implementing the ABI: `manifest` JSON, `version`, `filter` body (params
 /// `$buf $len $w $h $ch $fmt $pp $pl`, result i32) and extra module items.
@@ -344,4 +344,35 @@ fn pc_analyze_is_optional_and_returns_json() {
     (i64.or (i64.shl (i64.const 100) (i64.const 32)) (i64.const 0x7ffffff0)))"#;
     let f = Filter::load(&module(&manifest(""), 1, INVERT, bad), Limits::default()).unwrap();
     assert!(f.analyze_rgb(&img, 4, 4, &json!({}), &AtomicBool::new(false)).is_err());
+}
+
+#[test]
+fn pc_merge_is_optional_and_combines_measurements() {
+    let plain = Filter::load(&ok_module(INVERT), Limits::default()).unwrap();
+    assert!(!plain.has_merge());
+    let one = json!({"base_r": 200});
+    assert!(plain.merge_analyses(std::slice::from_ref(&one), &json!({}), &AtomicBool::new(false)).is_err());
+
+    let json = r#"{"base_r":150,"roll":true}"#;
+    let extra = format!(
+        r#"(data (i32.const 4096) "{}")
+  (func (export "pc_merge") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i64)
+    (i64.or (i64.shl (i64.const {}) (i64.const 32)) (i64.const 4096)))"#,
+        json.replace('"', "\\\""),
+        json.len()
+    );
+    let f = Filter::load(&module(&manifest(""), 1, INVERT, &extra), Limits::default()).unwrap();
+    assert!(f.has_merge() && !f.has_analyze());
+    let r = f.merge_analyses(&[one.clone(), json!({"base_r": 100})], &json!({"encoding": "linear"}), &AtomicBool::new(false)).unwrap();
+    assert_eq!(r, Some(json!({"base_r": 150, "roll": true})));
+    // hostile input: no measurements, or too many, is an error, not a panic
+    assert!(f.merge_analyses(&[], &json!({}), &AtomicBool::new(false)).is_err());
+    let many: Vec<Value> = (0..=lcc_filters::MAX_MERGE).map(|_| one.clone()).collect();
+    assert!(f.merge_analyses(&many, &json!({}), &AtomicBool::new(false)).is_err());
+
+    // a pc_merge pointing outside memory errors
+    let bad = r#"(func (export "pc_merge") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i64)
+    (i64.or (i64.shl (i64.const 100) (i64.const 32)) (i64.const 0x7ffffff0)))"#;
+    let f = Filter::load(&module(&manifest(""), 1, INVERT, bad), Limits::default()).unwrap();
+    assert!(f.merge_analyses(&[one], &json!({}), &AtomicBool::new(false)).is_err());
 }

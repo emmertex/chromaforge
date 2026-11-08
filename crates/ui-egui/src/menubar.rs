@@ -366,6 +366,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "---",
             "dialog.exportCatalog",
             "---",
+            "catalog.backup",
             "file.backupLibrary",
             "file.restoreLibrary",
             "catalog.checkIntegrity",
@@ -375,7 +376,15 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
     (
         "File",
         "More Imports",
-        &["dialog.importCatalog", "file.importLightroom", "file.importImmich", "---", "file.importPresets", "file.importKeywords"],
+        &[
+            "dialog.importCatalog",
+            crate::legacy::IMPORT_LIBRARY_ID,
+            "file.importLightroom",
+            "file.importImmich",
+            "---",
+            "file.importPresets",
+            "file.importKeywords",
+        ],
     ),
     ("Library", "Filters", &["view.filterBar", "library.toggleFilters", "library.clearFilter", "---", "library.refresh", "library.holdView"]),
     (
@@ -397,6 +406,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
         "Loupe Info",
         &[
             "view.infoOverlay",
+            "view.shotInfo",
             "view.focusPoint",
             "view.zoomToFocus",
             "view.faceBoxes",
@@ -499,6 +509,9 @@ pub(crate) fn selection_deleted(app: &LccApp) -> bool {
 fn host_supports(app: &LccApp, id: &str) -> bool {
     match id {
         "file.backupLibrary" => app.services.backup_library.is_some(),
+        // the desktop's backup into the library's backup folder; a host with a backup of its own
+        // (the web build's download) shows that one instead
+        "catalog.backup" => app.services.backup_library.is_none(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
         "photo.restore" | "photo.deletePermanently" => selection_deleted(app),
         "photo.delete" => !selection_deleted(app),
@@ -552,6 +565,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.focusPoint" => Some(u.settings.focus_point),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
+        "view.shotInfo" => Some(u.shot_info),
         "view.frameRate" => Some(u.frame_rate),
         "view.histogram" => Some(if crate::modern::on(app) { crate::modern::histogram_shown(app) } else { u.histogram }),
         "view.clipping" => Some(u.show_clipping),
@@ -620,7 +634,9 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
     let has = active.is_some();
     Some(match name {
         "Previews" => {
-            let running = app.session.preview_build.as_ref().is_some_and(|b| !b.finished.load(std::sync::atomic::Ordering::Relaxed));
+            // (the background preparation's build gives way to one asked for here)
+            let running = app.session.preview_build.as_ref().is_some_and(|b| b.running() && !b.background);
+            let stoppable = app.session.preview_build.as_ref().is_some_and(|b| b.running());
             let scope = if app.session.selection.ids.len() > 1 { "Selected" } else { "Visible" };
             vec![
                 item(
@@ -639,7 +655,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                     !running,
                     None,
                 ),
-                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, running, None),
+                item("library.cancelPreviews", Value::Null, "Stop Building Previews", None, stoppable, None),
                 item(
                     "library.discardPreviews",
                     json!({"size": "full"}),
@@ -892,16 +908,6 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         "Plug-ins" => crate::panels::plugins::menu_items(app).into_iter().map(|(id, p, label)| item(&id, p, label, None, true, None)).collect(),
-        "Open Recent Catalog" => {
-            let mut v: Vec<MenuNode> =
-                crate::catalog_ui::recent_items(app).into_iter().map(|(label, p)| item("catalog.openRecent", p, label, None, true, None)).collect();
-            if v.is_empty() {
-                v.push(item("catalog.openRecent", Value::Null, "No Recent Catalogs", None, false, None));
-            }
-            v.push(MenuNode::Separator);
-            v.push(item("catalog.chooser", Value::Null, "Choose Catalog…", None, true, None));
-            v
-        }
         "Libraries" => {
             let can = crate::panels::settings::can_switch_library(app).is_ok();
             let open = app.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone());

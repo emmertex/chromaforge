@@ -19,11 +19,13 @@
 //! <cli> compare REFERENCE TEST [--size N] [--no-align] [--diff OUT.png] [--json]
 //! <cli> camdb extract [--contributor NAME] NATIVE.dng…
 //! <cli> camdb show MAKE MODEL
+//! <cli> bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
 //! ```
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod alloc_release;
+mod bench_cull;
 mod calibrate_chart;
 mod calibrate_lightroom;
 mod catalog_migrate;
@@ -184,6 +186,12 @@ USAGE:
       camera wrote itself. DNGs written by Adobe software or by {app}'s own export are refused.
   {cli} camdb show MAKE MODEL
       Print the camera database entry a camera's raws use, with its provenance.
+  {cli} bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
+      Time what culling a shoot costs on its own files: reading the folder (browse), the first
+      screen of grid thumbnails, camera previews at loupe sizes and full size, a loupe render,
+      rating, and importing N files in place (default 2000) and copying M (default 200). --files K
+      samples K files of a slow folder. Libraries are made under DIR (default: the temp folder);
+      nothing is written next to the photos.
   {cli} --version | --help
 ";
 
@@ -298,6 +306,7 @@ fn main() -> ExitCode {
         Some("mcp") => mcp(&args[1..]),
         Some("render") => render(&args[1..]),
         Some("snapshot") => snapshot(&args[1..]),
+        Some("bench-cull") => bench_cull::run(&args[1..]),
         Some("commands") => commands(&args[1..]),
         Some("merge") => merge(&args[1..]),
         Some("synth-merge") => synth_merge(&args[1..]),
@@ -893,6 +902,14 @@ fn read_settings(p: &str) -> Result<SettingsFile, String> {
     }
 }
 
+/// Why `library.import` (its result `r`) brought in nothing from `input`.
+fn not_imported(input: &str, r: &Value) -> String {
+    if r["still_copying"].as_array().is_some_and(|a| !a.is_empty()) {
+        return format!("{input}: still being copied, try again shortly");
+    }
+    format!("{input}: not a readable photo")
+}
+
 fn render(args: &[String]) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
@@ -945,7 +962,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let abs = expand_paths(std::slice::from_ref(&input));
     let r = s.execute("library.import", &json!({"paths": abs})).map_err(|e| e.to_string())?;
-    let id = r["imported"][0].as_u64().ok_or_else(|| format!("{input}: not a readable photo"))?;
+    let id = r["imported"][0].as_u64().ok_or_else(|| not_imported(&input, &r))?;
     let run = |s: &mut Session, cmd: &str, p: Value| s.execute(cmd, &p).map(|_| ()).map_err(|e| e.to_string());
     run(&mut s, "library.select", json!({"ids": [id], "active": id}))?;
     if let Some(p) = preset {

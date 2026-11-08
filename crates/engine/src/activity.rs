@@ -14,6 +14,15 @@
 //! ([`TaskInfo::eta_ms`]), and leaves a [`BatchSummary`] when it ends ("200 done, 2 failed", with the reasons). The
 //! per-photo rows under it are children ([`TaskGuard::child`], [`Activity::start_child`]): the stack folds them under
 //! the parent, and cancelling the parent stops them too.
+//!
+//! **Names in the text**: a label, detail or stop warning may say `{key}` where a name goes that no catalog
+//! translates (a program's, a plug-in's: [`TaskGuard::name`]). `activity.list` gives the English with the names in;
+//! [`TaskInfo::templates`] keeps the text as written, so a frontend translates it first and then puts the names in
+//! ([`fill`]).
+//!
+//! **Stopping that throws work away**: a task whose stop loses what it would still bring back (a plug-in's wait for
+//! a program) carries a warning ([`TaskGuard::warn_on_stop`], `stopWarning`). Frontends ask before they stop it;
+//! `activity.cancel` still stops it at once.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -137,7 +146,57 @@ pub struct TaskInfo {
     /// isn't known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_ms: Option<u64>,
+    /// Stopping the task throws work away (a plug-in's wait for a program: what the program makes afterwards never
+    /// comes back): what to tell the user before stopping it, in English. Frontends ask first; `activity.cancel`
+    /// stops it at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_warning: Option<String>,
+    /// The label, detail and stop warning as written, before the names went in (`None`: the task has no names),
+    /// for frontends that translate.
+    #[serde(skip)]
+    pub templates: Option<Templates>,
 }
+
+/// A task's texts as written, with `{key}` where each name goes, and the names ([`TaskGuard::name`]). A frontend
+/// translates a text and then puts the names in with [`fill`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Templates {
+    pub label: String,
+    pub detail: String,
+    pub stop_warning: Option<String>,
+    pub names: Vec<(&'static str, String)>,
+}
+
+/// `template` with each `{key}` of `names` replaced by its name, in one pass (a name that contains `{…}` stays as
+/// it is); any other `{…}` is kept.
+pub fn fill(template: &str, names: &[(&'static str, String)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let (before, from) = rest.split_at(open);
+        out.push_str(before);
+        let found = from.find('}').and_then(|close| {
+            let key = from.get(1..close)?;
+            let (_, name) = names.iter().find(|(k, _)| *k == key)?;
+            Some((name, close))
+        });
+        match found {
+            Some((name, close)) => {
+                out.push_str(name);
+                rest = from.get(close + 1..).unwrap_or("");
+            }
+            None => {
+                out.push('{');
+                rest = from.get(1..).unwrap_or("");
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Names a task's texts can say (more is a mistake: the rest are dropped).
+const MAX_NAMES: usize = 8;
 
 struct Entry {
     id: u64,
@@ -164,6 +223,10 @@ struct Entry {
     /// so a slow start (loading a model) doesn't stretch the estimate for the rest.
     first: Mutex<Option<(web_time::Instant, u64)>>,
     reported: AtomicBool,
+    /// [`TaskGuard::name`]: what `{key}` stands for in the label, detail and stop warning.
+    names: Mutex<Vec<(&'static str, String)>>,
+    /// [`TaskGuard::warn_on_stop`], as written (names not in).
+    stop_warning: Mutex<Option<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -256,7 +319,7 @@ impl Entry {
             id: self.id,
             seq,
             kind: self.kind,
-            label: self.label.clone(),
+            label: self.label(),
             done: self.done.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             total: self.total.load(Ordering::Relaxed),
@@ -271,17 +334,41 @@ impl Entry {
         *lock(&self.detail) = capped(text);
     }
 
+    fn name(&self, key: &'static str, value: &str) {
+        let mut names = lock(&self.names);
+        if let Some(at) = names.iter().position(|(k, _)| *k == key) {
+            if let Some(slot) = names.get_mut(at) {
+                slot.1 = capped(value);
+            }
+        } else if names.len() < MAX_NAMES {
+            names.push((key, capped(value)));
+        }
+    }
+
+    /// The label with the names in.
+    fn label(&self) -> String {
+        fill(&self.label, &lock(&self.names))
+    }
+
     fn info(&self) -> TaskInfo {
         let (done, total) = (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed));
         let unit = Unit::from_u8(self.unit.load(Ordering::Relaxed));
+        // each read once, so the filled texts and the templates agree; one lock at a time
+        let names = lock(&self.names).clone();
+        let raw_detail = lock(&self.detail).clone();
+        let raw_warning = lock(&self.stop_warning).clone();
+        let detail = fill(&raw_detail, &names);
+        let stop_warning = raw_warning.as_deref().map(|w| fill(w, &names));
+        let label = fill(&self.label, &names);
+        let templates = (!names.is_empty()).then(|| Templates { label: self.label.clone(), detail: raw_detail, stop_warning: raw_warning, names });
         TaskInfo {
             id: self.id,
             kind: self.kind,
-            label: self.label.clone(),
+            label,
             done,
             total,
             unit,
-            detail: lock(&self.detail).clone(),
+            detail,
             cancellable: self.is_cancellable(),
             cancelling: self.is_cancelled(),
             age_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -289,11 +376,21 @@ impl Entry {
             batch: self.batch,
             failed: self.failed.load(Ordering::Relaxed),
             eta_ms: if self.batch && unit == Unit::Count { self.eta_ms(done, total) } else { None },
+            stop_warning,
+            templates,
         }
     }
 }
 
 impl Activity {
+    /// Work the user started that the background preparation ([`crate::prep`]) gives way to while
+    /// it runs (preparing photos competed with an export, which could hardly start): an export, an
+    /// import, any batch over photos (AI Denoise, AI masks, finding eyes…). Its kind, or `None`.
+    pub fn user_work(&self) -> Option<&'static str> {
+        const KINDS: [&str; 5] = ["export", "import", "merge", "benchmark", "lightroom"];
+        lock(&self.inner.tasks).iter().find(|e| e.parent.is_none() && (e.batch || KINDS.contains(&e.kind))).map(|e| e.kind)
+    }
+
     /// Register a task; it is listed until the returned guard is dropped. `label` is English (the frontend
     /// translates it).
     pub fn start(&self, kind: &'static str, label: &str, cancel: Cancel) -> TaskGuard {
@@ -338,9 +435,16 @@ impl Activity {
             reasons: Mutex::new(Vec::new()),
             first: Mutex::new(None),
             reported: AtomicBool::new(false),
+            names: Mutex::new(Vec::new()),
+            stop_warning: Mutex::new(None),
         });
         lock(&self.inner.tasks).push(entry.clone());
         TaskGuard { activity: self.clone(), entry }
+    }
+
+    /// Whether `other` is this registry (a clone of it), not just another one like it.
+    pub fn is(&self, other: &Activity) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Every task in flight, oldest first.
@@ -353,7 +457,7 @@ impl Activity {
     pub fn cancel(&self, id: u64) -> Result<(), String> {
         let tasks = lock(&self.inner.tasks);
         let entry = tasks.iter().find(|e| e.id == id).ok_or_else(|| format!("no task {id}"))?;
-        if entry.try_cancel() { Ok(()) } else { Err(format!("{} can't be cancelled", entry.label)) }
+        if entry.try_cancel() { Ok(()) } else { Err(format!("{} can't be cancelled", entry.label())) }
     }
 
     /// Ask every cancellable task to stop; returns how many were asked.
@@ -396,6 +500,19 @@ impl TaskGuard {
 
     pub fn set_unit(&self, unit: Unit) {
         self.entry.unit.store(unit.to_u8(), Ordering::Relaxed);
+    }
+
+    /// The label, detail and stop warning say `{key}` where `value` goes: a name no catalog translates (a
+    /// program's, a plug-in's), so the frontend translates the text around it ("Waiting for {program} to finish").
+    pub fn name(&self, key: &'static str, value: &str) {
+        self.entry.name(key, value);
+    }
+
+    /// Stopping this task throws work away: `text` (English, may say `{key}` names) is what the user is told before
+    /// a frontend stops it. Only for a task that waits on something outside the app; a job that stops between
+    /// files loses nothing already done and needs none.
+    pub fn warn_on_stop(&self, text: &str) {
+        *lock(&self.entry.stop_warning) = Some(capped(text));
     }
 
     /// A step that must not be cut short (the Lightroom import's commit) turns cancelling off for its duration.
@@ -520,6 +637,69 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn names_go_into_the_texts_and_the_templates_keep_them_apart() {
+        let a = Activity::default();
+        let flag = Arc::new(AtomicBool::new(false));
+        let g = a.start("pluginProgram", "Waiting for {program} to finish ({plugin})", Cancel::Flag(flag.clone()));
+        g.name("program", "DxO PureRAW");
+        g.name("plugin", "ccb: Edit in DxO PureRAW");
+        g.detail("The results come back when {program} closes");
+        g.warn_on_stop("{program} keeps running.");
+        let t = a.list().remove(0);
+        assert_eq!(t.label, "Waiting for DxO PureRAW to finish (ccb: Edit in DxO PureRAW)");
+        assert_eq!(t.detail, "The results come back when DxO PureRAW closes");
+        assert_eq!(t.stop_warning.as_deref(), Some("DxO PureRAW keeps running."));
+        let x = t.templates.clone().unwrap_or_default();
+        assert_eq!(x.label, "Waiting for {program} to finish ({plugin})", "the text as written, for translating");
+        assert_eq!(x.stop_warning.as_deref(), Some("{program} keeps running."));
+        // agents see the English with the names in, and the warning; never the templates
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["label"], "Waiting for DxO PureRAW to finish (ccb: Edit in DxO PureRAW)");
+        assert_eq!(json["stopWarning"], "DxO PureRAW keeps running.");
+        assert!(json.get("templates").is_none(), "{json}");
+        // a warning asks the frontend to ask first; `activity.cancel` still stops the task at once
+        a.cancel(g.id()).unwrap();
+        assert!(flag.load(Ordering::Relaxed));
+        // a name set again replaces the old one
+        g.name("program", "Other");
+        assert_eq!(a.list()[0].label, "Waiting for Other to finish (ccb: Edit in DxO PureRAW)");
+    }
+
+    #[test]
+    fn a_task_without_names_or_warning_lists_as_before() {
+        let a = Activity::default();
+        let _g = a.start("export", "Exporting {n}", Cancel::Yes);
+        let t = a.list().remove(0);
+        assert_eq!(t.label, "Exporting {n}", "no names: the label is left alone");
+        assert!(t.templates.is_none() && t.stop_warning.is_none());
+        let json = serde_json::to_value(&t).unwrap();
+        assert!(json.get("stopWarning").is_none(), "{json}");
+    }
+
+    #[test]
+    fn fill_puts_each_name_in_once_and_keeps_the_rest() {
+        let names = vec![("a", "{b}".to_string()), ("b", "Bé".to_string())];
+        assert_eq!(fill("{a} and {b}", &names), "{b} and Bé", "a name that says {{…}} isn't filled again");
+        assert_eq!(fill("{c} {", &names), "{c} {", "unknown keys and a lone brace stay");
+        assert_eq!(fill("}{b}{{b}}", &names), "}Bé{Bé}");
+        assert_eq!(fill("", &names), "");
+        assert_eq!(fill("ünï {b}", &[]), "ünï {b}");
+    }
+
+    #[test]
+    fn names_are_capped() {
+        let a = Activity::default();
+        let g = a.start("x", "{k}", Cancel::No);
+        g.name("k", &"n".repeat(5000));
+        for i in 0..20 {
+            g.name(["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9"][i % 10], "v");
+        }
+        let t = a.list().remove(0);
+        assert_eq!(t.label.chars().count(), MAX_TEXT);
+        assert_eq!(t.templates.unwrap_or_default().names.len(), MAX_NAMES);
+    }
 
     #[test]
     fn guard_drop_removes_the_row() {

@@ -467,7 +467,7 @@ fn background_dialogs(h: &mut Headless) -> Answers {
     answers
 }
 
-/// Tick the welcome box, choose Open Catalog…, and cancel its folder dialog.
+/// Tick the welcome box, choose Open Library…, and cancel its folder dialog.
 fn tick_open_and_cancel(h: &mut Headless, answers: &Answers) {
     ask(h, "ui.clickWidget", json!({"id": "check:welcomeUpdates"}));
     h.step();
@@ -569,7 +569,7 @@ fn a_cancelled_open_forgets_the_box_before_a_later_open_catalog() {
     let mut h = welcome(&dir, &root);
     let answers = background_dialogs(&mut h);
     tick_open_and_cancel(&mut h, &answers);
-    // File ▸ Open Catalog…, answered with a catalog this time
+    // Open Library…, answered with a library this time
     ask(&mut h, "ui.menu.invoke", json!({"id": "catalog.open"}));
     h.step();
     assert_eq!(answers.lock().unwrap().len(), 2, "the folder dialog is up again");
@@ -580,7 +580,7 @@ fn a_cancelled_open_forgets_the_box_before_a_later_open_catalog() {
     h.app.session.close_library().unwrap();
 }
 
-/// The desktop app's file dialogs answer later, on another thread: Open Catalog… from the welcome
+/// The desktop app's file dialogs answer later, on another thread: Open Library… from the welcome
 /// dialog returns before a catalog is chosen, and the catalog opens when the dialog closes. The
 /// ticked box still counts then.
 #[test]

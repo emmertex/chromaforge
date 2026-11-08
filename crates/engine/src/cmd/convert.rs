@@ -293,7 +293,11 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
     if m != before {
         ops.push(Op::SetMeta { id, meta: Box::new(m) });
     }
-    if ph.captured.is_none() && info.captured.is_some() {
+    // a time the photo has only as import's file-date guess ([`lcc_catalog::Photo::captured_fallback`]) gives way to the
+    // capture time the file states now (written by an editor after import); a stated or edited time is kept
+    // (upstream #3137, without its catalog field)
+    let guess = ph.captured.is_some() && ph.captured_stated().is_none();
+    if (ph.captured.is_none() || guess) && info.captured.is_some() && info.captured != ph.captured {
         ops.push(Op::SetCaptured { id, captured: info.captured.clone() });
     }
     ops
@@ -479,6 +483,24 @@ pub fn edit_specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
     use lcc_catalog::{Photo, PhotoId, Source};
+
+    /// Reload replaces the file-date guess with the capture time the file states now, and keeps a stated one.
+    #[test]
+    fn reload_replaces_a_file_date_guess_but_not_a_stated_time() {
+        let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.jpg".into() }, "x.jpg", "jpeg", 40, 30, "2026-10-06T00:00:00");
+        ph.captured = Some("2026-01-01T10:00:00".into());
+        ph.captured_fallback = ph.captured.clone();
+        let mut info = crate::media::ProbeInfo { captured: Some("2025-05-05T08:30:00".into()), ..Default::default() };
+        let ops = fill_missing_meta(PhotoId(1), &ph, &info);
+        assert!(matches!(ops.as_slice(), [Op::SetCaptured { captured: Some(c), .. }] if c == "2025-05-05T08:30:00"), "{ops:?}");
+        // a time that was stated (or edited by hand) stays
+        ph.captured_fallback = None;
+        assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+        // no stated time in the file now: the guess stays
+        ph.captured_fallback = ph.captured.clone();
+        info.captured = None;
+        assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+    }
 
     /// A catalog from before Make and Model were kept separately gets its parts backfilled and its
     /// label re-derived ("Canon Canon IXUS 185" → "Canon IXUS 185") on reload (upstream #1618).

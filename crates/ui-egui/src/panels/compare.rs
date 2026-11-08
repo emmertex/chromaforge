@@ -175,6 +175,16 @@ pub fn advance(app: &mut LccApp, was: Option<PhotoId>) {
     };
 }
 
+/// A right-click on a selected photo of Compare or Survey (a tile or its filmstrip thumbnail) makes it the active
+/// one, so the rating, flag and label rows of its menu judge the photo that was clicked, as the keys judge the
+/// active photo. The selection stays (upstream #3716).
+pub fn activate_on_right_click(app: &mut LccApp, resp: &egui::Response, id: PhotoId) {
+    if resp.secondary_clicked() && culling(app) && app.session.active() != Some(id) && app.session.selection.contains(id) {
+        let ids: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+        let _ = app.run("library.select", json!({"ids": ids, "active": id.0}));
+    }
+}
+
 /// In the culling views, point a photo command at the active photo only (not the whole selection).
 pub fn target_active(app: &LccApp, params: &mut Value) {
     if culling(app)
@@ -186,10 +196,9 @@ pub fn target_active(app: &LccApp, params: &mut Value) {
 }
 
 fn area_and_filmstrip(app: &mut LccApp, ui: &mut egui::Ui) -> Rect {
-    let t = Tokens::get(ui.ctx());
     let full = ui.max_rect();
     let film = crate::module::edge_visible(app, crate::module::Edge::Bottom);
-    let film_h = if film { t.film_h } else { 0.0 };
+    let film_h = if film { app.ui.film_height() } else { 0.0 };
     let canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
     app.canvas_rect = Some(canvas);
     if film {
@@ -326,7 +335,7 @@ fn photo_tile(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, slot: Slot, area
         pt.galley(pos2(x, cap.center().y - g.size().y / 2.0), g.clone(), t.text);
         x += g.size().x + 10.0;
     }
-    let name = photo.copy_name.as_ref().map(|c| format!("{} ({c})", photo.file_name)).unwrap_or(photo.file_name.clone());
+    let name = photo.virtual_copy_name().map(|c| format!("{} ({c})", photo.file_name)).unwrap_or(photo.file_name.clone());
     let g = pt.layout_no_wrap(name, t.font(11.5), t.text_dim);
     let name_w = g.size().x;
     if x + name_w + 110.0 < cap.right() {
@@ -407,6 +416,7 @@ pub fn show_compare(app: &mut LccApp, ui: &mut egui::Ui) {
         if resp.double_clicked() {
             app.ui.zoom = if app.ui.zoom == Zoom::Fit { Zoom::Percent(100.0) } else { Zoom::Fit };
         }
+        activate_on_right_click(app, &resp, id);
         crate::widgets::context_menu(&resp, |ui| {
             if ui.button(crate::i18n::tr("Swap")).clicked() {
                 let _ = swap(app);
@@ -476,6 +486,7 @@ pub fn show_survey(app: &mut LccApp, ui: &mut egui::Ui) {
                 let _ = app.run("library.select", json!({"ids": [id.0], "mode": "toggle"}));
             }
         }
+        activate_on_right_click(app, &resp, *id);
         crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
     }
     let n = photos.len();

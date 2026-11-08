@@ -26,6 +26,12 @@ enum Message {
     Finalized(Result<(), String>),
 }
 
+/// Whether `path` is a Capture One catalog rather than a Lightroom one: the same import reads both,
+/// and what it says names the program the catalog comes from.
+pub(crate) fn is_capture_one(path: &std::path::Path) -> bool {
+    lcc_engine::capture_one_catalog::is_capture_one(path)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Reading,
@@ -43,6 +49,8 @@ pub struct LightroomTask {
     phase: Phase,
     cancelled: bool,
     guard: TaskGuard,
+    /// The catalog is Capture One's ([`is_capture_one`]); else Lightroom's.
+    capture_one: bool,
 }
 
 impl LightroomTask {
@@ -55,12 +63,15 @@ impl LightroomTask {
         progress: LightroomProgress,
         rx: mpsc::Receiver<Message>,
     ) -> Self {
-        let label = match kind {
-            Kind::Inspect => "Reading Lightroom catalog",
-            Kind::Import => "Importing Lightroom catalog",
+        let capture_one = is_capture_one(&path);
+        let label = match (kind, capture_one) {
+            (Kind::Inspect, false) => "Reading Lightroom catalog",
+            (Kind::Import, false) => "Importing Lightroom catalog",
+            (Kind::Inspect, true) => "Reading Capture One catalog",
+            (Kind::Import, true) => "Importing Capture One catalog",
         };
         let guard = s.activity.start("lightroom", label, Cancel::Flag(cancel.clone()));
-        let task = Self { kind, path, cancel, progress, rx, phase: Phase::Reading, cancelled: false, guard };
+        let task = Self { kind, path, cancel, progress, rx, phase: Phase::Reading, cancelled: false, guard, capture_one };
         task.refresh();
         task
     }
@@ -77,13 +88,16 @@ impl LightroomTask {
     /// then what is being done.
     fn refresh(&self) {
         let (step, done, total) = self.progress.step();
+        let c1 = self.capture_one;
         let detail = match (self.phase, self.kind, step) {
             (Phase::Reading, Kind::Inspect, _) => "",
-            (Phase::Reading, Kind::Import, LightroomStep::Catalog) => crate::i18n::tr("Reading Lightroom catalog…"),
+            (Phase::Reading, Kind::Import, LightroomStep::Catalog) => {
+                crate::i18n::tr(if c1 { "Reading Capture One catalog…" } else { "Reading Lightroom catalog…" })
+            }
             (Phase::Reading, Kind::Import, LightroomStep::ReadPhotos) => crate::i18n::tr("Reading photos…"),
             (Phase::Reading, Kind::Import, LightroomStep::AddPhotos) => crate::i18n::tr("Adding photos…"),
-            (Phase::Committing, ..) => crate::i18n::tr("Adding Lightroom photos…"),
-            (Phase::Finalizing, ..) => crate::i18n::tr("Saving Lightroom import index…"),
+            (Phase::Committing, ..) => crate::i18n::tr(if c1 { "Adding Capture One photos…" } else { "Adding Lightroom photos…" }),
+            (Phase::Finalizing, ..) => crate::i18n::tr(if c1 { "Saving Capture One import index…" } else { "Saving Lightroom import index…" }),
         };
         if self.phase == Phase::Reading {
             self.guard.progress(done as u64, total as u64);
@@ -266,7 +280,19 @@ fn terminal(app: &mut LccApp, ctx: &egui::Context, task: &LightroomTask, mut val
             o.entry("library").or_insert_with(|| json!(library.dir.to_string_lossy()));
         }
     }
-    let message = if let Some(e) = value.get("error").and_then(Value::as_str) {
+    let message = if task.capture_one { capture_one_message(kind, &value) } else { lightroom_message(kind, &value) };
+    if matches!(kind, Kind::Import) && value.get("cancelled") != Some(&Value::Bool(true)) {
+        app.lightroom_result = Some(result_dialog(&value, &message, task.capture_one));
+        show_result(app);
+    }
+    app.lightroom_last = Some(value);
+    app.lightroom = None;
+    app.toast_for(ctx, message, 6.0);
+}
+
+/// How an inspect or import of a Lightroom catalog went, in the UI language.
+fn lightroom_message(kind: Kind, value: &Value) -> String {
+    if let Some(e) = value.get("error").and_then(Value::as_str) {
         let warning = value.get("indexWarning").and_then(Value::as_str).map_or(String::new(), |w| format!("; index warning: {w}"));
         if matches!(kind, Kind::Inspect) {
             crate::i18n::tr_format!("Lightroom inspection failed: {e}{warning}", e = e, warning = warning)
@@ -286,7 +312,7 @@ fn terminal(app: &mut LccApp, ctx: &egui::Context, task: &LightroomTask, mut val
             missing = missing
         )
     } else {
-        let report = value.get("report").unwrap_or(&value);
+        let report = value.get("report").unwrap_or(value);
         let imported = report["imported"].as_u64().unwrap_or(0);
         let failed = report["failed"].as_array().map_or(0, Vec::len);
         let warning = value.get("indexWarning").and_then(Value::as_str);
@@ -301,14 +327,47 @@ fn terminal(app: &mut LccApp, ctx: &egui::Context, task: &LightroomTask, mut val
         } else {
             crate::i18n::tr_format!("Lightroom import complete: {imported} photos added, {failed} failed", imported = imported, failed = failed)
         }
-    };
-    if matches!(kind, Kind::Import) && value.get("cancelled") != Some(&Value::Bool(true)) {
-        app.lightroom_result = Some(result_dialog(&value, &message));
-        show_result(app);
     }
-    app.lightroom_last = Some(value);
-    app.lightroom = None;
-    app.toast_for(ctx, message, 6.0);
+}
+
+/// [`lightroom_message`] for a Capture One catalog: the same outcomes, naming Capture One.
+fn capture_one_message(kind: Kind, value: &Value) -> String {
+    if let Some(e) = value.get("error").and_then(Value::as_str) {
+        let warning = value.get("indexWarning").and_then(Value::as_str).map_or(String::new(), |w| format!("; index warning: {w}"));
+        if matches!(kind, Kind::Inspect) {
+            crate::i18n::tr_format!("Capture One inspection failed: {e}{warning}", e = e, warning = warning)
+        } else {
+            crate::i18n::tr_format!("Capture One import failed: {e}{warning}", e = e, warning = warning)
+        }
+    } else if value.get("cancelled").and_then(Value::as_bool).unwrap_or(false) {
+        crate::i18n::tr(if matches!(kind, Kind::Inspect) { "Capture One inspection cancelled" } else { "Capture One import cancelled" }).into()
+    } else if matches!(kind, Kind::Inspect) {
+        let photos = value["photos"].as_u64().unwrap_or(0);
+        let collections = value["collections"].as_u64().unwrap_or(0);
+        let missing = value["missing"].as_array().map_or(0, Vec::len);
+        crate::i18n::tr_format!(
+            "Capture One catalog inspected: {photos} photos, {collections} collections, {missing} missing",
+            photos = photos,
+            collections = collections,
+            missing = missing
+        )
+    } else {
+        let report = value.get("report").unwrap_or(value);
+        let imported = report["imported"].as_u64().unwrap_or(0);
+        let failed = report["failed"].as_array().map_or(0, Vec::len);
+        let warning = value.get("indexWarning").and_then(Value::as_str);
+        if let Some(warning) = warning {
+            crate::i18n::tr_format!(
+                "Capture One import complete: {imported} photos added; index warning: {warning}",
+                imported = imported,
+                warning = warning
+            )
+        } else if failed == 0 {
+            crate::i18n::tr_format!("Capture One import complete: {imported} photos added", imported = imported)
+        } else {
+            crate::i18n::tr_format!("Capture One import complete: {imported} photos added, {failed} failed", imported = imported, failed = failed)
+        }
+    }
 }
 
 fn show_result(app: &mut LccApp) {
@@ -319,7 +378,7 @@ fn show_result(app: &mut LccApp) {
 
 /// The lasting result window for an inspect or import: counts, failures, missing originals, the
 /// skipped images (one line, in the UI language) and at most eight warnings.
-fn result_dialog(value: &Value, summary: &str) -> crate::state::Dialog {
+fn result_dialog(value: &Value, summary: &str, capture_one: bool) -> crate::state::Dialog {
     let report = value.get("report").unwrap_or(value);
     let mut details = Vec::new();
     if let Some(photos) = report["photos"].as_u64() {
@@ -365,6 +424,7 @@ fn result_dialog(value: &Value, summary: &str) -> crate::state::Dialog {
         library: report["library"].as_str().or_else(|| value["library"].as_str()).map(str::to_string),
         details,
         first,
+        capture_one,
     }
 }
 
@@ -637,6 +697,44 @@ mod tests {
         }
     }
 
+    /// A Capture One catalog goes through the same task, and what the person reads names Capture
+    /// One, not Lightroom: the activity row, the toast and the result window.
+    #[test]
+    fn a_capture_one_import_says_capture_one() {
+        let mut h = demo();
+        let dir = std::env::temp_dir().join(format!("c1-import-words-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let catalog = dir.join("Capture One.cocatalogdb");
+        std::fs::write(&catalog, b"").unwrap();
+        assert!(is_capture_one(&catalog) && !is_capture_one(std::path::Path::new("fixture.lrcat")));
+        let (_tx, rx) = mpsc::channel();
+        let task =
+            LightroomTask::new(&h.app.session, Kind::Import, catalog.clone(), Arc::new(AtomicBool::new(false)), LightroomProgress::default(), rx);
+        h.app.lightroom = Some(task);
+        h.step();
+        assert_eq!(h.app.session.activity.list()[0].label, "Importing Capture One catalog");
+        let task = h.app.lightroom.take().unwrap();
+        terminal(&mut h.app, &h.view.ctx, &task, json!({"photos": 2, "imported": 2, "collections": 1, "library": "C:/Pictures/Photo Library"}));
+        let toast = h.app.ui.toast().unwrap().0.to_string();
+        assert!(toast.contains("Capture One import complete") && !toast.contains("Lightroom"), "{toast}");
+        assert!(
+            matches!(&h.app.ui.dialog, Some(crate::state::Dialog::LightroomResult { capture_one: true, summary, .. }) if !summary.contains("Lightroom")),
+            "{:?}",
+            h.app.ui.dialog.is_some()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_catalog_picker_offers_both_kinds_and_each_on_its_own() {
+        let req =
+            crate::pick::PickRequest::file("t", "both", &["lrcat", "cocatalogdb"]).with_filter("lr", &["lrcat"]).with_filter("c1", &["cocatalogdb"]);
+        let names: Vec<&str> = req.filters().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["both", "lr", "c1"]);
+        // a host that offers one filter only gets the one that admits both
+        assert_eq!(req.filter.as_ref().map(|(_, e)| *e), Some(&["lrcat", "cocatalogdb"][..]));
+    }
+
     #[test]
     fn lightroom_result_stays_readable_and_shows_photos_hidden_by_a_filter() {
         let mut h = demo();
@@ -707,7 +805,9 @@ mod tests {
             {"image": 9, "reason": "masterSkipped"},
         ]}});
         crate::i18n::set_language(crate::i18n::Locale::En);
-        let crate::state::Dialog::LightroomResult { details: en, .. } = result_dialog(&value, "done") else { panic!("not a Lightroom result") };
+        let crate::state::Dialog::LightroomResult { details: en, .. } = result_dialog(&value, "done", false) else {
+            panic!("not a Lightroom result")
+        };
         assert_eq!(en.len(), 4, "{en:?}");
         assert_eq!(en[1], "3 catalog images were not imported because their records in the catalog are incomplete.");
         assert_eq!(&en[2..], ["w1", "w2"]);
@@ -718,7 +818,7 @@ mod tests {
         let warnings: Vec<_> = (0..10).map(|i| format!("w{i}")).collect();
         let skipped: Vec<_> = (0..500).map(|i| json!({"image": i, "reason": "missingFile"})).collect();
         let value = json!({"report": {"warnings": warnings, "skipped": skipped}});
-        let crate::state::Dialog::LightroomResult { details, .. } = result_dialog(&value, "done") else { panic!("not a Lightroom result") };
+        let crate::state::Dialog::LightroomResult { details, .. } = result_dialog(&value, "done", false) else { panic!("not a Lightroom result") };
         // one line for the skipped images, then the usual eight warnings and the rest counted
         assert_eq!(details.len(), 10, "{details:?}");
         assert!(details[0].starts_with("500 catalog images were not imported"));

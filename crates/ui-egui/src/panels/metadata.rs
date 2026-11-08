@@ -58,7 +58,13 @@ pub enum Row {
 /// The rows of a field preset (unknown ids fall back to Default).
 pub fn rows(preset: &str) -> Vec<Row> {
     use Row::*;
-    let place = [Text("location", "Sublocation", 1), Text("city", "City", 1), Text("state", "State / Province", 1), Text("country", "Country", 1)];
+    let place = [
+        Text("location", "Sublocation", 1),
+        Text("city", "City", 1),
+        Text("state", "State / Province", 1),
+        Text("country", "Country", 1),
+        Text("countryCode", "Country Code", 1),
+    ];
     let exif = [
         Info("dimensions", "Dimensions"),
         Info("cropped", "Cropped"),
@@ -97,13 +103,14 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("category", "Category", 1),
             Text("supplementalCategories", "Other Categories", 1),
             Text("subjectCode", "IPTC Subject Code", 1),
-            Info("keywords", "Keywords"),
+            Text("keywords", "Keywords", 2),
             Section("Image"),
             Captured,
             Text("location", "Sublocation", 1),
             Text("city", "City", 1),
             Text("state", "State / Province", 1),
             Text("country", "Country", 1),
+            Text("countryCode", "Country Code", 1),
             Section("Copyright"),
             Text("copyright", "Copyright", 1),
             CopyrightStatus,
@@ -119,7 +126,14 @@ pub fn rows(preset: &str) -> Vec<Row> {
             Text("copyrightUrl", "Web Statement of Rights", 1),
         ],
         "location" => {
-            let mut v = vec![FileName, Text("title", "Title", 1), Text("caption", "Caption", 2), Captured];
+            let mut v = vec![
+                FileName,
+                Text("title", "Title", 1),
+                Text("headline", "Headline", 1),
+                Text("caption", "Caption", 2),
+                Text("keywords", "Keywords", 2),
+                Captured,
+            ];
             v.extend(place);
             v.push(Gps);
             v
@@ -134,7 +148,9 @@ pub fn rows(preset: &str) -> Vec<Row> {
                 Rating,
                 Label,
                 Text("title", "Title", 1),
+                Text("headline", "Headline", 1),
                 Text("caption", "Caption", 2),
+                Text("keywords", "Keywords", 2),
                 Text("altText", "Alt Text", 2),
                 Text("extendedDescription", "Extended Description", 3),
                 Text("copyright", "Copyright", 1),
@@ -176,6 +192,7 @@ pub fn value(p: &Photo, key: &str) -> String {
         "city" => m.city.clone(),
         "state" => m.state.clone(),
         "country" => m.country.clone(),
+        "countryCode" => m.country_code.clone(),
         "gps" => m.gps.map(|(la, lo)| format!("{la:.6}, {lo:.6}")).unwrap_or_default(),
         "fileName" => p.file_name.clone(),
         "folder" => match &p.source {
@@ -377,7 +394,7 @@ fn toolbar(app: &mut LccApp, ui: &mut egui::Ui, ids: &[u64]) {
                     hint: "Preset name".into(),
                     value: String::new(),
                     command: "metadata.savePreset".into(),
-                    params: json!({"only": ["title", "headline", "caption", "descriptionWriter", "category", "supplementalCategories", "subjectCode", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "keywords"]}),
+                    params: json!({"only": ["title", "headline", "caption", "descriptionWriter", "category", "supplementalCategories", "subjectCode", "copyright", "copyrightStatus", "usageTerms", "copyrightUrl", "creator", "creatorJobTitle", "creatorAddress", "creatorCity", "creatorState", "creatorPostalCode", "creatorCountry", "creatorPhone", "creatorEmail", "creatorWebsite", "location", "city", "state", "country", "countryCode", "keywords"]}),
                     key: "name".into(),
                 });
             }
@@ -705,7 +722,7 @@ pub(crate) fn focus_text(f: Option<&lcc_meta::FocusPoint>) -> Option<String> {
 fn extras(app: &mut LccApp, ui: &mut egui::Ui, p: &Photo) {
     let t = Tokens::get(ui.ctx());
     recipe_card(app, ui, p.id);
-    if let Some(name) = &p.copy_name {
+    if let Some(name) = p.virtual_copy_name() {
         let of = p
             .copy_of
             .and_then(|m| app.session.catalog.photo(m))
@@ -851,6 +868,7 @@ mod tests {
         assert_eq!(rows("nope"), rows("default"));
         assert!(rows("largeCaption").contains(&Row::Text("caption", "Caption", 12)));
         assert!(rows("location").contains(&Row::Gps));
+        assert!(rows("iptc").contains(&Row::Text("countryCode", "Country Code", 1)));
         assert!(rows("exif").contains(&Row::Info("lens", "Lens")));
     }
 

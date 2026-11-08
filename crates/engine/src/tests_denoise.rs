@@ -41,8 +41,8 @@ impl TileRunner for Dim {
 }
 
 impl Model for Dim {
-    fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
-        (self, threads)
+    fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+        (Box::new(crate::denoise::Lent(self)), threads)
     }
 
     fn self_test(&self, _: RunOn) -> Result<Value, String> {
@@ -55,7 +55,7 @@ fn dim_loader(runs: &Arc<AtomicUsize>) -> Loader {
     Arc::new(move |_, _| Ok(Arc::new(Dim { runs: runs.clone() }) as Arc<dyn Model>))
 }
 
-fn manifest(id: &str) -> DenoiserManifest {
+pub(crate) fn manifest(id: &str) -> DenoiserManifest {
     DenoiserManifest {
         id: id.into(),
         name: "Stand-in".into(),
@@ -536,8 +536,8 @@ fn files_that_cannot_be_denoised_fail_with_a_reason_and_never_a_panic() {
         }
     }
     impl Model for Wrong {
-        fn runner(&self, _: RunOn, threads: usize) -> (&dyn TileRunner, usize) {
-            (self, threads)
+        fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+            (Box::new(crate::denoise::Lent(self)), threads)
         }
         fn self_test(&self, _: RunOn) -> Result<Value, String> {
             Err("no".into())
@@ -873,6 +873,82 @@ fn denoise_row_while_queue_is_busy() {
     let _ = std::fs::remove_dir_all(&x.dir);
 }
 
+/// A model on two graphics cards ([`Model::lanes`] 2): the batch makes two photos at once, one per card (each in its
+/// own row under the batch row, both listed by `running.photos`), never more; one at a light pace.
+#[test]
+fn a_model_on_two_cards_makes_two_photos_at_once() {
+    use std::sync::{Condvar, Mutex};
+    /// [`Dim`] on "two cards", its tiles held until the test lets them go.
+    struct TwoCards {
+        dim: Dim,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl TileRunner for TwoCards {
+        fn run(&self, input: &[f32]) -> Result<Vec<f32>, lcc_denoise::Error> {
+            let (open, wake) = &*self.gate;
+            let mut o = open.lock().unwrap();
+            while !*o {
+                o = wake.wait(o).unwrap();
+            }
+            drop(o);
+            self.dim.run(input)
+        }
+    }
+    impl Model for TwoCards {
+        fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+            (Box::new(crate::denoise::Lent(self)), threads)
+        }
+        fn lanes(&self, _: RunOn) -> usize {
+            2
+        }
+        fn self_test(&self, _: RunOn) -> Result<Value, String> {
+            Ok(json!({"ok": true}))
+        }
+    }
+    let mut x = setup("twocards", false);
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (runs, g) = (x.runs.clone(), gate.clone());
+    x.s.denoise.loader = Arc::new(move |_, _| Ok(Arc::new(TwoCards { dim: Dim { runs: runs.clone() }, gate: g.clone() }) as Arc<dyn Model>));
+    let onnx = model_files(&x.dir, "stand-in");
+    x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    let originals = x.dir.join("originals");
+    let mut paths = Vec::new();
+    for i in 0..3 {
+        let path = originals.join(format!("two{i}.dng"));
+        std::fs::write(&path, ramp_dng(192 + 2 * (i + 1), 160, "RGGB")).unwrap();
+        paths.push(path.to_string_lossy().to_string());
+    }
+    x.s.execute("library.import", &json!({"paths": paths})).unwrap();
+    let ids: Vec<u64> = x.s.catalog.photos().map(|p| p.id.0).collect();
+    x.s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    x.s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    x.s.execute("denoise.toggle", &json!({"enabled": true})).unwrap();
+    // the model installed (and loaded) says how many cards it runs on
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Full), 2);
+    let rows = |s: &Session| s.activity.list().into_iter().filter(|t| t.kind == "denoise" && !t.batch).count();
+    let mut two = false;
+    for _ in 0..400 {
+        x.s.execute("denoise.pump", &json!({"pace": "full"})).unwrap();
+        let r = x.s.execute("denoise.status", &json!({})).unwrap();
+        let photos = r["running"]["photos"].as_array().map_or(0, Vec::len);
+        assert!(photos <= 2, "one photo per card: {r}");
+        if photos == 2 {
+            assert_eq!(rows(&x.s), 2, "a row for each photo being made");
+            two = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(two, "two photos never ran at once: {}", x.s.execute("denoise.status", &json!({})).unwrap());
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Full), 2);
+    assert_eq!(x.s.denoise_lanes(crate::denoise::Pace::Light), 1, "the user is working: one photo");
+    // let them go: every photo is made
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    pump_until_ready(&mut x.s, ids.len() as u64);
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
 /// the AI Denoise switch follows the Develop sliders. With Auto Sync on, every selected raw photo switches
 /// with the active one, in one undo step, and their pictures are made under one batch row; with it off, only the active
 /// photo. Explicit `ids` switch exactly those.
@@ -1177,4 +1253,219 @@ fn denoise_response_v6_is_mostly_clean_at_half_and_monotone() {
         assert!(r <= last + 1e-4, "residual rises at {step}");
         last = r;
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// finished pictures (JPEG, PNG, TIFF …): a model of their own (adapted from upstream #3279)
+
+/// A stand-in model for finished pictures: every value halved, at the same size.
+struct Half {
+    runs: Arc<AtomicUsize>,
+}
+
+impl TileRunner for Half {
+    fn run(&self, input: &[f32]) -> Result<Vec<f32>, lcc_denoise::Error> {
+        self.runs.fetch_add(1, Ordering::Relaxed);
+        Ok(input.iter().map(|v| v * 0.5).collect())
+    }
+}
+
+impl Model for Half {
+    fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+        (Box::new(crate::denoise::Lent(self)), threads)
+    }
+
+    fn self_test(&self, _: RunOn) -> Result<Value, String> {
+        Ok(json!({"ok": true}))
+    }
+}
+
+/// A model for finished pictures that changes nothing.
+struct Same;
+
+impl TileRunner for Same {
+    fn run(&self, input: &[f32]) -> Result<Vec<f32>, lcc_denoise::Error> {
+        Ok(input.to_vec())
+    }
+}
+
+impl Model for Same {
+    fn runner(&self, _: RunOn, threads: usize) -> (Box<dyn TileRunner + '_>, usize) {
+        (Box::new(crate::denoise::Lent(self)), threads)
+    }
+
+    fn self_test(&self, _: RunOn) -> Result<Value, String> {
+        Ok(json!({"ok": true}))
+    }
+}
+
+/// A model for finished pictures, with its manifest beside it (see [`model_files`]).
+fn rgb_model_files(dir: &Path, id: &str) -> PathBuf {
+    let src = dir.join(format!("src-{id}"));
+    std::fs::create_dir_all(&src).unwrap();
+    let m = DenoiserManifest { domain: Domain::RgbToRgb, ..manifest(id) };
+    std::fs::write(src.join("denoise-model.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+    std::fs::write(src.join("model.onnx"), format!("not an onnx file, only a stand-in for {id}")).unwrap();
+    src.join("model.onnx")
+}
+
+/// Write `img` as a PNG in the setup's originals and import it.
+fn import_png(x: &mut Setup, name: &str, img: &lcc_raster::Rgba8) -> lcc_catalog::PhotoId {
+    let path = x.dir.join("originals").join(name);
+    let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    std::fs::write(&path, png).unwrap();
+    x.s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    x.s.catalog.photos().find(|p| p.file_name == name).unwrap().id
+}
+
+/// What a finished picture without a model for its kind reports.
+fn needs_rgb_model(state: &PhotoState) -> bool {
+    matches!(state, PhotoState::Failed { why, unsupported: true } if why.contains("finished pictures"))
+}
+
+#[test]
+fn a_finished_picture_has_a_model_of_its_own_and_its_amount_mixes_in_the_denoised_picture() {
+    let mut x = setup("finished", true);
+    let raw = photo(&x.s);
+    let id = import_png(&mut x, "gradient.png", &lcc_raster::Rgba8::from_fn(150, 100, |px, py| [(40 + px) as u8, (60 + py) as u8, 120, 255]));
+    let rgb_runs = Arc::new(AtomicUsize::new(0));
+    let (dim, half) = (x.runs.clone(), rgb_runs.clone());
+    x.s.denoise.loader = Arc::new(move |_, m: &DenoiserManifest| {
+        Ok(match m.domain {
+            Domain::RgbToRgb => Arc::new(Half { runs: half.clone() }) as Arc<dyn Model>,
+            Domain::BayerToRgb | Domain::RgbToRgb4x => Arc::new(Dim { runs: dim.clone() }) as Arc<dyn Model>,
+        })
+    });
+    x.s.denoise_pump(crate::denoise::Pace::Pause);
+    // the raw photo's model is not the picture's: it has none yet, and switching it on asks for one of its kind
+    assert!(needs_rgb_model(&x.s.denoise_photo_state(id)), "{:?}", x.s.denoise_photo_state(id));
+    assert!(!needs_rgb_model(&x.s.denoise_photo_state(raw)));
+    let e = x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap_err().to_string();
+    assert!(e.contains("finished pictures"), "{e}");
+
+    // installed, the model for finished pictures sits beside the raw one
+    let onnx = rgb_model_files(&x.dir, "stand-in-rgb");
+    let r = x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    assert_eq!((r["model"].clone(), r["rgbModel"].clone()), (json!("stand-in"), json!("stand-in-rgb")), "{r}");
+    let list = x.s.execute("denoise.models.list", &json!({})).unwrap();
+    let row = |id: &str| list["models"].as_array().unwrap().iter().find(|m| m["id"] == id).cloned().unwrap();
+    assert_eq!((row("stand-in")["selected"].clone(), row("stand-in")["domain"].clone()), (json!(true), json!("bayerToRgb")));
+    assert_eq!((row("stand-in-rgb")["selected"].clone(), row("stand-in-rgb")["domain"].clone()), (json!(true), json!("rgbToRgb")));
+    assert_eq!(x.s.execute("denoise.status", &json!({})).unwrap()["rgbModel"]["id"], "stand-in-rgb");
+
+    // on, its picture is made at the file's size, and the Amount mixes it in
+    x.s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let plain = rendered_mean(&mut x.s, id);
+    let on = x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap();
+    assert_eq!(on["amount"], 50.0);
+    set_amount(&mut x.s, 100.0);
+    pump_until_ready(&mut x.s, 1);
+    assert_eq!(x.s.denoise_photo_state(id), PhotoState::Ready);
+    assert!(rgb_runs.load(Ordering::Relaxed) > 0);
+    assert_eq!(x.runs.load(Ordering::Relaxed), 0, "the raw model is not asked about a finished picture");
+    let product = std::fs::read_dir(x.dir.join("library").join("denoise")).unwrap().flatten().next().unwrap().path();
+    let header = lcc_denoise::product::read_header_at(&product).unwrap();
+    assert_eq!((header.width, header.height), (150, 100));
+    let denoised = rendered_mean(&mut x.s, id);
+    assert!(denoised < plain * 0.8, "denoised {denoised} vs plain {plain}");
+    set_amount(&mut x.s, 0.0);
+    assert!((rendered_mean(&mut x.s, id) - plain).abs() < 1.0, "at 0 the plain picture is back");
+
+    // off for finished pictures only: the raw photos keep theirs
+    let r = x.s.execute("denoise.models.select", &json!({"id": null, "kind": "rgb"})).unwrap();
+    assert_eq!((r["model"].clone(), r["rgbModel"].clone()), (json!("stand-in"), Value::Null));
+    assert!(needs_rgb_model(&x.s.denoise_photo_state(id)));
+    assert_eq!(x.s.denoise.active.as_ref().map(|a| a.id.as_str()), Some("stand-in"));
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+#[test]
+fn a_finished_pictures_denoised_picture_comes_back_in_the_plain_pictures_colours() {
+    // with a model that changes nothing, Amount 100 must render the plain picture: the trip to sRGB for the model and
+    // back to the working space for the render (and the product's half floats) lose nothing that shows
+    let mut x = setup("finished-colour", false);
+    let img = lcc_raster::Rgba8::from_fn(150, 100, |px, py| [(20 + px) as u8, (200 - py) as u8, ((px * 7 + py * 3) % 256) as u8, 255]);
+    let id = import_png(&mut x, "colours.png", &img);
+    x.s.denoise.loader = Arc::new(|_, _| Ok(Arc::new(Same) as Arc<dyn Model>));
+    let onnx = rgb_model_files(&x.dir, "same");
+    x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    x.s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let plain = x.s.render_now(id, 160, 160).unwrap().image;
+    x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap();
+    set_amount(&mut x.s, 100.0);
+    pump_until_ready(&mut x.s, 1);
+    let denoised = x.s.render_now(id, 160, 160).unwrap().image;
+    assert_eq!((plain.width, plain.height), (denoised.width, denoised.height));
+    let worst = plain.data.iter().zip(&denoised.data).flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c]))).max().unwrap();
+    assert!(worst <= 2, "a model that changes nothing changed a pixel by {worst} levels");
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+#[test]
+fn a_transparent_finished_picture_is_denoised_on_white_as_it_is_shown() {
+    // the plain picture is flattened onto white: the denoised one must be too, or Amount 100 shows what lies under the
+    // transparency (black here)
+    let mut x = setup("finished-alpha", false);
+    let rgba = lcc_raster::Rgba8::from_fn(150, 100, |px, _| if px < 75 { [0, 0, 0, 0] } else { [90, 140, 60, 255] });
+    let id = import_png(&mut x, "half-clear.png", &rgba);
+    x.s.denoise.loader = Arc::new(|_, _| Ok(Arc::new(Same) as Arc<dyn Model>));
+    let onnx = rgb_model_files(&x.dir, "same");
+    x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    x.s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    let plain = x.s.render_now(id, 160, 160).unwrap().image;
+    assert!(plain.data[10][0] > 200, "the plain picture shows white where it is clear: {:?}", plain.data[10]);
+    x.s.execute("denoise.toggle", &json!({"id": id.0, "enabled": true})).unwrap();
+    set_amount(&mut x.s, 100.0);
+    pump_until_ready(&mut x.s, 1);
+    let denoised = x.s.render_now(id, 160, 160).unwrap().image;
+    let worst = plain.data.iter().zip(&denoised.data).flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c]))).max().unwrap();
+    assert!(worst <= 2, "the denoised picture differs by {worst} levels");
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+#[test]
+fn choosing_the_model_for_finished_pictures_leaves_the_raw_photos_queue_alone() {
+    let mut x = setup("slots-queue", true);
+    let raw = photo(&x.s);
+    x.s.execute("denoise.queue", &json!({"ids": [raw.0]})).unwrap();
+    x.s.denoise_pump(crate::denoise::Pace::Pause);
+    assert!(matches!(x.s.denoise_photo_state(raw), PhotoState::Queued { .. }), "{:?}", x.s.denoise_photo_state(raw));
+    let onnx = rgb_model_files(&x.dir, "stand-in-rgb");
+    x.s.execute("denoise.models.install", &json!({"path": onnx.to_string_lossy(), "acknowledged": true})).unwrap();
+    x.s.execute("denoise.models.select", &json!({"id": null, "kind": "rgb"})).unwrap();
+    x.s.denoise_pump(crate::denoise::Pace::Pause);
+    assert!(matches!(x.s.denoise_photo_state(raw), PhotoState::Queued { .. }), "{:?}", x.s.denoise_photo_state(raw));
+    // the raw model changing (to the built-in denoiser) does drop it: another model's picture is another picture
+    x.s.execute("denoise.models.select", &json!({"id": null})).unwrap();
+    x.s.denoise_pump(crate::denoise::Pace::Pause);
+    assert!(!matches!(x.s.denoise_photo_state(raw), PhotoState::Queued { .. }), "{:?}", x.s.denoise_photo_state(raw));
+    let _ = std::fs::remove_dir_all(&x.dir);
+}
+
+#[test]
+fn a_damaged_finished_picture_fails_with_a_reason_and_never_a_panic() {
+    let dir = temp_dir("rgb-makefails");
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = |path: &Path| crate::denoise::JobSpec {
+        path: path.to_string_lossy().into_owned(),
+        read: None,
+        product: dir.join("p.lcdn"),
+        key: "k".into(),
+        manifest: DenoiserManifest { domain: Domain::RgbToRgb, ..manifest("rgb") },
+        onnx: dir.join("model.onnx"),
+        model: Default::default(),
+        loader: Arc::new(|_, _| Ok(Arc::new(Same) as Arc<dyn Model>)),
+        parallel: 2,
+        run_on: RunOn::Auto,
+    };
+    use crate::denoise::{MakeError, make_product};
+    let junk = dir.join("junk.png");
+    std::fs::write(&junk, b"\x89PNG\r\n\x1a\nnot really").unwrap();
+    assert!(matches!(make_product(&spec(&junk), None), Err(MakeError::Unsupported(_))));
+    // a raw file is not a finished picture
+    let raw = dir.join("ramp.dng");
+    std::fs::write(&raw, ramp_dng(64, 64, "RGGB")).unwrap();
+    assert!(matches!(make_product(&spec(&raw), None), Err(MakeError::Unsupported(_))));
+    assert!(!dir.join("p.lcdn").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -18,6 +18,7 @@ workspace = true
 default = ["denoise", "own-model", "heif"]
 denoise = ["lcc-engine/denoise"]
 rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
+realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
 own-model = ["denoise", "lcc-engine/own-model"]
 # Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default so every build, local
 # ones included, opens iPhone photos; distributors who must avoid HEVC (patents) build with

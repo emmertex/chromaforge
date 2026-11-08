@@ -65,7 +65,8 @@ impl ImportSettings {
 
     /// These settings from an import preset's (unknown fields keep their defaults).
     pub fn from_preset(name: &str, v: &Value) -> ImportSettings {
-        let opts: crate::import::ImportDialog = serde_json::from_value(v.clone()).unwrap_or_default();
+        let mut opts: crate::import::ImportDialog = serde_json::from_value(v.clone()).unwrap_or_default();
+        opts.fold_preset();
         let previews = v.get("previews").and_then(Value::as_str).filter(|p| matches!(*p, "none" | "standard" | "full")).unwrap_or("standard");
         ImportSettings { take: "picks".into(), previews: previews.to_string(), preset_name: name.to_string(), opts: settings_only(opts) }
     }
@@ -105,6 +106,25 @@ pub fn showing(app: &LccApp) -> bool {
     enabled(app) && app.ui.tab == Tab::Import
 }
 
+/// Entering Import: put the Library's filter aside (as Library ▸ Enable Filters off does). A card
+/// or folder being culled for import must show all of its files, and the tab has no filter bar to
+/// clear one with. The filter comes back when the Library tab does ([`leave`]).
+pub(crate) fn enter(app: &mut LccApp) {
+    app.ui.import_develop = false;
+    if !app.session.filters_off() && app.session.filter != lcc_catalog::Filter::default() && app.run("library.toggleFilters", json!({})).is_ok() {
+        app.ui.import_shelved_filter = true;
+    }
+}
+
+/// Leaving Import: bring back the filter the tab put aside — unless something else already
+/// touched the filter state (cleared, or toggled back on by hand), which wins.
+pub(crate) fn leave(app: &mut LccApp) {
+    if app.ui.import_shelved_filter && app.session.filters_off() {
+        let _ = app.run("library.toggleFilters", json!({}));
+    }
+    app.ui.import_shelved_filter = false;
+}
+
 /// The open library's name, as the Import button names it.
 pub fn library_name(app: &LccApp) -> String {
     app.session
@@ -126,6 +146,10 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
     }
     app.ui.tab = tab;
     match tab {
+        Tab::Import => enter(app),
+        Tab::Library => leave(app),
+    }
+    match tab {
         Tab::Import => {
             if app.session.source != LibrarySource::Folder {
                 app.ui.library_source = Some(app.session.source);
@@ -139,11 +163,13 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
                 && std::path::Path::new(&b.path).is_dir()
                 && app.session.source != LibrarySource::Folder
             {
-                let _ = crate::import::browse(app, &b.path, Some(b.subfolders));
+                let _ = crate::import::browse(app, &b.path, Some(b.subfolders), None);
             }
         }
         Tab::Library => {
-            if app.session.source == LibrarySource::Folder {
+            // developing a browsed photo without importing it keeps the folder view on: the grid
+            // comes back to the Browse tab when it ends ([`keep_in_step`])
+            if app.session.source == LibrarySource::Folder && !app.ui.import_develop {
                 let back = app.ui.library_source.take().filter(|s| *s != LibrarySource::Folder).unwrap_or(LibrarySource::All);
                 app.session.source = back;
                 app.session.refresh_view();
@@ -163,20 +189,30 @@ pub fn switch(app: &mut LccApp, tab: Tab) -> Result<Value, String> {
 pub fn keep_in_step(app: &mut LccApp) {
     if !enabled(app) {
         app.ui.tab = Tab::Library;
+        leave(app);
         return;
     }
     // Show Alternatives looks at a folder too, but in the Library tab, under its own bar
     if app.session.alternatives.is_some() {
         app.ui.tab = Tab::Library;
         app.ui.import_was_browsing = false;
+        leave(app);
         return;
     }
     let browsing = app.session.source == LibrarySource::Folder;
-    if browsing && app.ui.tab != Tab::Import {
+    // "Develop without Import": the Library tab shows the Develop module on the browsed folder's
+    // active photo, the folder view (and so the Browse tab) waiting until it ends
+    let developing = app.ui.import_develop && app.ui.module == crate::module::ModuleId::Develop;
+    if !browsing || !developing {
+        app.ui.import_develop = browsing && developing;
+    }
+    if browsing && app.ui.tab != Tab::Import && !developing {
         app.ui.tab = Tab::Import;
         app.ui.module = crate::module::ModuleId::Library;
+        enter(app);
     } else if !browsing && app.ui.import_was_browsing && app.ui.tab == Tab::Import {
         app.ui.tab = Tab::Library;
+        leave(app);
     }
     app.ui.import_was_browsing = browsing;
 }
@@ -233,11 +269,31 @@ pub fn start(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     app.renderer.forget_imports();
     // the Library tab, where the photos come in (Recently Added shows them as they arrive)
     app.ui.tab = Tab::Library;
+    leave(app);
     app.ui.library_source = None;
     app.session.source = LibrarySource::RecentlyAdded;
     app.session.refresh_view();
     app.ui.import_was_browsing = false;
     Ok(json!({"importing": n, "into": library_name(app)}))
+}
+
+/// Develop the browsed folder's active photo without importing it (`import.develop`): the
+/// Library tab's Develop module on the local photo, the folder view kept on so returning to the
+/// Browse tab (or any change of source) brings it back. The edits go to the photo's XMP sidecar
+/// like any photo added in place; the library catalog stays untouched.
+pub fn develop_without_import(app: &mut LccApp) -> Result<Value, String> {
+    if app.session.source != LibrarySource::Folder {
+        return Err(crate::i18n::tr("Choose a folder or card to browse first").to_string());
+    }
+    if app.session.active().is_none() {
+        return Err(crate::i18n::tr("Select a photo to develop").to_string());
+    }
+    app.ui.import_develop = true;
+    app.ui.import_was_browsing = true;
+    leave(app);
+    app.ui.tab = Tab::Library;
+    crate::module::switch(app, crate::module::ModuleId::Develop)?;
+    Ok(json!({"tab": "library", "module": "develop", "photo": app.session.active()}))
 }
 
 /// Apply an import preset to the Import tab's settings (`import.usePreset {name}`).
@@ -261,7 +317,7 @@ pub fn save_preset(app: &mut LccApp, name: &str) -> Result<Value, String> {
 
 /// Change the Import tab's settings (`import.configure`): any of `take`, `previews`, and the
 /// import review's options (`copy`, `moveFiles`, `destination`, `organize`, `folderTemplate`,
-/// `rename`, `preset`, `presets`, `keywords`, `metadataPreset`, `album`, `newAlbum`, `dng`), by
+/// `rename`, `preset`, `presets`, `presetProfile`, `keywords`, `metadataPreset`, `album`, `newAlbum`, `dng`), by
 /// name. Returns the settings.
 pub fn configure(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     let Some(given) = p.as_object() else { return Err("settings must be an object".into()) };
@@ -295,6 +351,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "view.importTab" => switch(app, Tab::Import),
         "view.libraryTab" => switch(app, Tab::Library),
         "import.start" => start(app, p),
+        "import.develop" => develop_without_import(app),
         "import.configure" => configure(app, p),
         "import.usePreset" => match p.get("name").and_then(Value::as_str) {
             Some(n) => use_preset(app, n),
@@ -314,7 +371,6 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 /// From this width the sources and the settings stand beside the photos.
 const WIDE: f32 = 900.0;
 const SOURCES_W: f32 = 230.0;
-const SETTINGS_W: f32 = 330.0;
 const BAR_H: f32 = 48.0;
 
 /// What a narrow window shows in the one column.
@@ -342,7 +398,7 @@ pub fn tabs_width(app: &LccApp, ui: &egui::Ui) -> f32 {
     let finger = crate::dialog_frame::finger_sized(ui);
     let font = t.semibold(if finger { 14.0 } else { 12.5 });
     6.0 + 4.0
-        + ["Import", "Library"]
+        + ["Browse", "Library"]
             .iter()
             .map(|l| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0)
             .sum::<f32>()
@@ -356,11 +412,11 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
     let finger = crate::dialog_frame::finger_sized(ui);
     let h = if finger { 36.0 } else { 26.0 };
     let font = t.semibold(if finger { 14.0 } else { 12.5 });
-    let labels = [(Tab::Import, "Import", "tab-import"), (Tab::Library, "Library", "tab-library")];
+    let labels = [(Tab::Import, "Browse", "tab-import"), (Tab::Library, "Library", "tab-library")];
     let widths: Vec<f32> =
         labels.iter().map(|(_, l, _)| ui.painter().layout_no_wrap(crate::i18n::tr(l).to_string(), font.clone(), t.text).size().x + 24.0).collect();
     let (outer, _) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, h), Sense::hover());
-    ui.painter().rect(outer, h / 2.0, t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    ui.painter().rect(outer, t.radius(h / 2.0), t.field, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
     let mut x = outer.left() + 2.0;
     for ((tab, label, wid), w) in labels.iter().zip(widths) {
         let r = Rect::from_min_size(pos2(x, outer.top() + 2.0), vec2(w, h - 4.0));
@@ -370,9 +426,9 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
         let on = app.ui.tab == *tab;
         crate::access::choice(&resp, label, on);
         if on {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.accent);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.accent);
         } else if resp.hovered() {
-            ui.painter().rect_filled(r, (h - 4.0) / 2.0, t.hover);
+            ui.painter().rect_filled(r, t.radius((h - 4.0) / 2.0), t.hover);
         }
         let color = if on { t.canvas } else { t.text };
         ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::tr(label), font.clone(), color);
@@ -401,9 +457,13 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     } else {
         (None, area)
     };
+    // (the settings column's left edge is dragged to resize it, as the side panels are; the width
+    // is kept in the UI state)
     let (middle, settings_r) = if wide {
-        let w = SETTINGS_W.min(rest.width() * 0.4);
-        (Rect::from_min_max(rest.min, pos2(rest.right() - w, rest.bottom())), Some(Rect::from_min_max(pos2(rest.right() - w, rest.top()), rest.max)))
+        let mut middle = rest;
+        let limits = crate::state::IMPORT_SETTINGS_WIDTH;
+        let r = crate::panels::split_side(ui, &mut middle, false, "importSettings", &mut app.ui.import_settings_width, limits);
+        (middle, Some(r))
     } else {
         (rest, None)
     };
@@ -418,6 +478,22 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         ui.painter().vline(r.left(), r.y_range(), Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-settings").max_rect(r.shrink2(vec2(10.0, 0.0))));
         settings(app, &mut child);
+    }
+    // Library's toolbar under the browsed photos (View ▸ Show Toolbar): view modes, sort, flags,
+    // rating, colour labels and thumbnail size, for culling the card in place
+    let mut middle = middle;
+    if app.ui.toolbar
+        && app.ui.screen_mode != crate::module::ScreenMode::FullScreenHidePanels
+        && pane == Pane::Photos
+        && app.session.source == LibrarySource::Folder
+        && middle.height() > 2.0 * t.bottom_bar_h + BAR_H
+    {
+        let r = Rect::from_min_max(pos2(middle.left(), middle.bottom() - t.bottom_bar_h), middle.max);
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-toolbar").max_rect(r));
+        child.set_clip_rect(r);
+        crate::panels::bottombar::show(app, &mut child);
+        register(ui.ctx(), "importToolbar", r);
+        middle.max.y = r.top();
     }
     let bar_r = Rect::from_min_max(middle.min, pos2(middle.right(), middle.top() + BAR_H));
     let body = Rect::from_min_max(pos2(middle.left(), bar_r.bottom()), middle.max);
@@ -468,9 +544,9 @@ fn source_row(app: &mut LccApp, ui: &mut egui::Ui, wid: &str, label: &str, path:
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     register(ui.ctx(), format!("button:{wid}"), r);
     if on {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.cell_selected);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.cell_selected);
     } else if resp.hovered() {
-        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), 4.0, t.hover);
+        ui.painter().rect_filled(r.shrink2(vec2(6.0, 1.0)), t.radius(4.0), t.hover);
     }
     let shown = crate::widgets::elide_head(label, r.width() - 30.0, |s| ui.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x);
     ui.painter().text(pos2(r.left() + 16.0, r.center().y), Align2::LEFT_CENTER, shown, t.font(12.5), t.text);
@@ -489,6 +565,44 @@ fn browse(app: &mut LccApp, ctx: &egui::Context, path: &str) {
 
 /// The sources: cards and cameras, the Local places (the folders kept there, with their trees),
 /// the folders browsed lately, and a file picker for single files (with the import review).
+/// The drives and volumes of this computer as (label, path), read on a worker thread
+/// ([`crate::panels::left::fs_cached`]): on Windows every drive letter that answers (local, USB,
+/// cards, mapped network drives); elsewhere the root and the mounted volumes.
+/// The one drive tests see: a folder of their own in the temporary folder.
+pub(crate) fn test_drive() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("app-test-drive-{}", std::process::id()))
+}
+
+pub(crate) fn list_drives(_: &str) -> Vec<(String, String)> {
+    // tests never touch this machine's drives (mapped network drives can be slow to answer)
+    if cfg!(test) {
+        return vec![("Test drive".into(), test_drive().to_string_lossy().to_string())];
+    }
+    let mut v: Vec<(String, String)> = Vec::new();
+    if cfg!(windows) {
+        for l in b'A'..=b'Z' {
+            let p = format!("{}:\\", l as char);
+            if std::fs::metadata(&p).is_ok() {
+                v.push((format!("{}:", l as char), p));
+            }
+        }
+    } else {
+        v.push(("/".into(), "/".into()));
+        let user = std::env::var("USER").unwrap_or_default();
+        for base in ["/Volumes".to_string(), format!("/media/{user}"), format!("/run/media/{user}"), "/mnt".to_string()] {
+            let Ok(rd) = std::fs::read_dir(&base) else { continue };
+            let mut found: Vec<(String, String)> = rd
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() || t.is_symlink()))
+                .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().to_string_lossy().to_string()))
+                .collect();
+            found.sort();
+            v.extend(found);
+        }
+    }
+    v
+}
+
 fn sources(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -514,6 +628,18 @@ fn sources(app: &mut LccApp, ui: &mut egui::Ui) {
                 let on = current.as_deref().is_some_and(|c| crate::panels::left::same_folder(c, &open_at));
                 source_row(app, ui, &format!("importCard-{i}"), name, &open_at, on);
             }
+        }
+        // This PC: every drive, each a folder tree to open down to the folder to import from
+        heading(ui, "This PC");
+        let drives = crate::panels::left::fs_cached(ui, "import-drives", "", 5.0, list_drives).unwrap_or_default();
+        if drives.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new(crate::i18n::tr("Looking for drives…")).color(t.text_dim));
+            });
+        }
+        for (label, path) in &drives {
+            crate::panels::left::folder_tree(app, ui, "drives", label, path, 0.0, current.as_deref(), true, false);
         }
         heading(ui, "Folders");
         crate::panels::left::local_body(app, ui);
@@ -559,6 +685,9 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     };
     let mut row = ui.new_child(egui::UiBuilder::new().max_rect(r.shrink2(vec2(10.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.spacing_mut().item_spacing.x = 8.0;
+    // whatever happens on a very narrow window, nothing of the bar paints over the panels beside it
+    row.set_clip_rect(r.intersect(ui.clip_rect()));
+    register(ui.ctx(), "importBar", r);
     // Modern draws no top bar over the tab: the way back to the library is here
     if crate::modern::on(app) && crate::widgets::text_button(&mut row, "importBackToLibrary", crate::i18n::tr("‹ Library"), false).clicked() {
         let _ = app.run("view.libraryTab", json!({}));
@@ -573,25 +702,47 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
     }
     // where: the folder's name, all of it in a tooltip
     let folder = app.session.browse.as_ref().filter(|_| browsing).map(|b| b.path.clone());
-    let button_w = if wide { 220.0 } else { 150.0 };
-    let segs_w = if wide { 190.0 } else { 0.0 };
-    let room = (row.available_width() - button_w - segs_w - 24.0).max(40.0);
-    let text = match &folder {
-        Some(f) => {
-            let name = std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().to_string());
-            crate::i18n::tr_format!("{name} · {all} not imported · {picks} picks", name = name, all = all, picks = picks)
-        }
+    let name = folder.as_ref().map(|f| std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().to_string()));
+    let import_label = crate::i18n::tr_format!("Import {n} into {library}", n = n, library = library_name(app));
+    let layout = bar_layout(&row, &import_label, name.as_deref(), folder.as_deref(), wide);
+    let mut room = layout.room.max(40.0);
+    // the folders above it as a breadcrumb (OneSlips LR-IMP-WINDOW 6e4fa44d0): each opens, those that don't fit
+    // go under "…", whose menu lists them; the folder's own name is kept whole first
+    if let Some(f) = &folder {
+        room = (room - folder_crumbs(app, &mut row, f, (room - layout.name_w).max(0.0))).max(layout.name_w.min(room));
+    }
+    let text = match &name {
+        Some(name) => crate::i18n::tr_format!("{name} · {all} not imported · {picks} picks", name = name, all = all, picks = picks),
         None => crate::i18n::tr("Choose where to import from").to_string(),
     };
-    let shown = crate::widgets::elide_head(&text, room, |s| row.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x);
-    let lr = row.add(egui::Label::new(egui::RichText::new(shown).color(t.text).size(12.5)).truncate());
+    let width = |s: &str| row.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x;
+    let shown = crate::widgets::elide_head(&text, room, width);
+    // no wider than its room, so the right-hand group keeps the rest of the row (cut short at its end, the
+    // folder's name first)
+    let label_w = width(&shown).min(room);
+    let lr = row.add_sized(vec2(label_w, 20.0), egui::Label::new(egui::RichText::new(shown).color(t.text).size(12.5)).truncate());
     register(row.ctx(), "label:importWhere", lr.rect);
     if let Some(f) = &folder {
         lr.on_hover_text(f);
     }
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let label = crate::i18n::tr_format!("Import {n} into {library}", n = n, library = library_name(app));
-        if crate::button::Button::new(&label).primary().enabled(n > 0).widget("importGo").show(ui).clicked() {
+        // right of the Import button (first in the right-to-left row): develop the active photo
+        // here, without importing it — the Develop module in the Library tab, edits to the
+        // sidecar, the catalog untouched
+        if browsing
+            && crate::button::Button::new(develop_label(layout.develop_long))
+                .enabled(app.session.active().is_some())
+                .widget("importDevelop")
+                .show(ui)
+                .on_hover_text(crate::i18n::tr("Develop without Import"))
+                .clicked()
+        {
+            match app.run("import.develop", json!({})) {
+                Ok(_) => {}
+                Err(e) => app.toast(ui.ctx(), e),
+            }
+        }
+        if crate::button::Button::new(&import_label).primary().enabled(n > 0).widget("importGo").show(ui).clicked() {
             match app.run("import.start", json!({})) {
                 Ok(v) => {
                     let n = v["importing"].as_u64().unwrap_or(0);
@@ -600,10 +751,205 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
                 Err(e) => app.toast(ui.ctx(), e),
             }
         }
-        if wide {
+        if layout.view {
+            view_segments(app, ui);
+        }
+        if layout.show {
+            show_segments(app, ui);
+        }
+        if layout.take {
             take_segments(app, ui);
         }
     });
+}
+
+const VIEW_LABELS: [&str; 3] = ["Photo Grid", "Grid", "Detail"];
+const SHOW_LABELS: [&str; 2] = ["Show All", "Show Not Imported"];
+const TAKE_LABELS: [&str; 3] = ["Picks", "Selected", "All"];
+
+/// The Develop without Import button's label: its full name, or "Develop" on a crowded bar (the
+/// full name in its tooltip).
+fn develop_label(long: bool) -> &'static str {
+    crate::i18n::tr(if long { "Develop without Import" } else { "Develop" })
+}
+
+/// What the import bar shows, measured so it fits its row: the right-hand group in its fullest
+/// form that leaves the browsed folder's own name whole, and the room left for the folder.
+#[derive(Debug, PartialEq)]
+pub(crate) struct BarLayout {
+    /// Picks / Selected / All (also under Import Settings).
+    pub take: bool,
+    /// Photo Grid / Grid / Detail (also the bottom bar's view buttons).
+    pub view: bool,
+    /// Show All / Show Not Imported.
+    pub show: bool,
+    /// Develop without Import by its full name, else "Develop".
+    pub develop_long: bool,
+    /// What the right-hand group leaves the breadcrumb and the folder's label.
+    pub room: f32,
+    /// The folder's own name, which the breadcrumb never takes (0 when nothing is browsed).
+    pub name_w: f32,
+}
+
+/// Lay out the import bar's right-hand group in `row`: in order, Picks / Selected / All, Photo Grid / Grid /
+/// Detail, the long Develop label and Show All / Show Not Imported go (each also elsewhere, or shorter)
+/// until what is left holds the browsed folder's whole name with "…" for its parents. Nothing is laid
+/// out past the row, so the bar never runs over the panel beside it.
+fn bar_layout(row: &egui::Ui, import_label: &str, name: Option<&str>, folder: Option<&str>, wide: bool) -> BarLayout {
+    let t = Tokens::get(row.ctx());
+    let browsing = folder.is_some();
+    let gap = row.spacing().item_spacing.x;
+    let avail = row.available_width();
+    let measure = |s: &str| row.painter().layout_no_wrap(s.to_string(), t.font(12.5), t.text).size().x;
+    let button = |label: &str, primary: bool| {
+        let b = crate::button::Button::new(label);
+        if primary { b.primary() } else { b }.desired_size(row).x
+    };
+    // the folder's own name and a little of what follows it, then "…" and a chevron for its parents
+    let name_w = name.map_or(0.0, |n| measure(&format!("{n} …")) + gap);
+    let parents = folder.map_or(0, |f| crate::panels::grid::crumbs(f).len().saturating_sub(1));
+    let crumb_min = if parents > 0 { measure("…") + 14.0 + 3.0 * gap } else { 0.0 };
+    let import_w = button(import_label, true);
+    let develop = |long: bool| if browsing { button(develop_label(long), false) + gap } else { 0.0 };
+    let view_w = crate::widgets::segments_width(row, &VIEW_LABELS) + gap;
+    let show_w = crate::widgets::segments_width(row, &SHOW_LABELS) + gap;
+    let take_w = crate::widgets::segments_width(row, &TAKE_LABELS) + gap;
+    let mut l = BarLayout { take: wide, view: browsing, show: browsing, develop_long: true, room: 0.0, name_w };
+    let right = |l: &BarLayout| {
+        import_w
+            + develop(l.develop_long)
+            + if l.view { view_w } else { 0.0 }
+            + if l.show { show_w } else { 0.0 }
+            + if l.take { take_w } else { 0.0 }
+            + gap
+    };
+    let fits = |l: &BarLayout| avail - right(l) >= name_w + crumb_min;
+    for step in 0..4 {
+        if fits(&l) {
+            break;
+        }
+        match step {
+            0 => l.take = false,
+            1 => l.view = false,
+            2 => l.develop_long = false,
+            _ => l.show = false,
+        }
+    }
+    l.room = (avail - right(&l)).max(0.0);
+    l
+}
+
+/// The browsed folder's parents, nearest last, as a breadcrumb in the bar at most `max_w` wide (widgets
+/// `importCrumb:{i}`, `i` the folder's place in the path; `importCrumb:more` for "…"): a click on one opens it. The
+/// parents that don't fit, from the top of the path down, are listed by "…"'s menu. → the width it took.
+fn folder_crumbs(app: &mut LccApp, ui: &mut egui::Ui, path: &str, max_w: f32) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    let crumbs = crate::panels::grid::crumbs(path);
+    // every folder above the browsed one (the last part is the bar's own label)
+    let parents = crumbs.len().saturating_sub(1);
+    if parents == 0 || !max_w.is_finite() || max_w <= 0.0 {
+        return 0.0;
+    }
+    let font = t.font(12.5);
+    let sep_w = 14.0 + 2.0 * ui.spacing().item_spacing.x;
+    let painter = ui.painter().clone();
+    let width = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), t.text_label).size().x.min(140.0);
+    let dots_w = width("…") + sep_w;
+    // the nearest parents that fit, keeping room for "…" when any are left out
+    let mut shown = 0;
+    let mut used = 0.0;
+    for (name, _) in crumbs.iter().take(parents).rev() {
+        let w = width(name) + sep_w;
+        let need = if shown + 1 < parents { dots_w } else { 0.0 };
+        if used + w + need > max_w {
+            break;
+        }
+        used += w;
+        shown += 1;
+    }
+    let hidden = parents - shown;
+    let start = ui.cursor().left();
+    let separator = |ui: &mut egui::Ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(14.0, 20.0), Sense::hover());
+        crate::icons::paint(ui.painter(), Rect::from_center_size(r.center(), vec2(12.0, 12.0)), crate::icons::Icon::ChevronRight, t.text_dim);
+    };
+    let mut open: Option<String> = None;
+    if hidden > 0 {
+        let dots = ui.add(egui::Label::new(egui::RichText::new("…").font(font.clone()).color(t.text_dim)).sense(Sense::click()));
+        register(ui.ctx(), "importCrumb:more", dots.rect);
+        if dots.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let dots = dots.on_hover_text(path);
+        egui::Popup::menu(&dots).show(|ui| {
+            for (i, (name, to)) in crumbs.iter().enumerate().take(hidden) {
+                let item = ui.button(*name);
+                register(ui.ctx(), format!("importCrumb:{i}"), item.rect);
+                if item.on_hover_text(to).clicked() {
+                    open = Some(to.clone());
+                    ui.close();
+                }
+            }
+        });
+        separator(ui);
+    }
+    for (i, (name, to)) in crumbs.iter().enumerate().take(parents).skip(hidden) {
+        let r = ui.add_sized(
+            vec2(width(name), 20.0),
+            egui::Label::new(egui::RichText::new(*name).font(font.clone()).color(t.text_label)).truncate().sense(Sense::click()),
+        );
+        register(ui.ctx(), format!("importCrumb:{i}"), r.rect);
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if r.on_hover_text(to).clicked() {
+            open = Some(to.clone());
+        }
+        separator(ui);
+    }
+    if let Some(to) = open {
+        browse(app, ui.ctx(), &to);
+    }
+    (ui.cursor().left() - start).max(0.0)
+}
+
+/// Show All / Show Not Imported: the browse quick filter (`library.browse`'s `show`). Not
+/// imported is the default: the files an import would take. Show All adds the files the library
+/// has already, each marked In library in the grid.
+fn show_segments(app: &mut LccApp, ui: &mut egui::Ui) {
+    let Some(b) = app.session.browse.clone() else { return };
+    let chosen = if b.not_imported { 1 } else { 0 };
+    let Some(i) = crate::widgets::segments(ui, "browseShow", &["Show All", "Show Not Imported"], Some(chosen)) else {
+        return;
+    };
+    let show = if i == 0 { "all" } else { "notImported" };
+    if (i == 1) != b.not_imported
+        && let Err(e) = app.run("library.browse", json!({"path": b.path, "subfolders": b.subfolders, "show": show}))
+    {
+        app.toast(ui.ctx(), e);
+    }
+}
+
+/// Photo Grid / Grid / Detail: the view of the browsed folder's photos, the Library's view
+/// commands on the same state, so the tab shows what the Library would.
+fn view_segments(app: &mut LccApp, ui: &mut egui::Ui) {
+    use crate::state::ViewMode;
+    let chosen = match app.ui.view {
+        ViewMode::PhotoGrid => 0,
+        ViewMode::SquareGrid => 1,
+        _ => 2,
+    };
+    let Some(i) = crate::widgets::segments(ui, "browseView", &["Photo Grid", "Grid", "Detail"], Some(chosen)) else {
+        return;
+    };
+    app.ui.view = match i {
+        0 => ViewMode::PhotoGrid,
+        1 => ViewMode::SquareGrid,
+        _ => ViewMode::Detail,
+    };
+    if app.ui.view.is_grid() {
+        app.ui.grid_style = app.ui.view;
+    }
 }
 
 /// Picks / Selected / All: what the big button takes.
@@ -658,9 +1004,11 @@ fn choose_source(app: &mut LccApp, ui: &mut egui::Ui) {
 }
 
 /// The settings on the right: the import preset, what to take, the import review's options (how,
-/// apply), the preset stack, the previews to build, and the big button again at the bottom.
+/// apply, with the preset stack), the previews to build, and the big button again at the bottom.
 fn settings(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    // (one ordered stack: a single preset from older settings goes first, the import preset's name stays)
+    app.ui.settings.import_tab.opts.fold_preset();
     let mut s = app.ui.settings.import_tab.clone();
     egui::ScrollArea::vertical().id_salt("import-tab-settings-scroll").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(12.0);
@@ -681,7 +1029,6 @@ fn settings(app: &mut LccApp, ui: &mut egui::Ui) {
                 }
             });
             crate::import_screen::options_for(app, ui, &mut s.opts, true);
-            preset_stack(app, ui, &mut s);
             group_begin(ui, Some("After the Import"));
             form_row(ui, "Previews", |ui| {
                 let opts = [("none", "None"), ("standard", "Standard"), ("full", "1:1")];
@@ -712,7 +1059,9 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
     let mut chosen: Option<String> = None;
     form_row(ui, "Preset", |ui| {
         let shown = if s.preset_name.is_empty() { crate::i18n::tr("None").to_string() } else { s.preset_name.clone() };
-        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).show_ui(ui, |ui| {
+        let list_w = crate::import::combo_list_width(ui, names.iter().map(String::as_str));
+        let combo = crate::widgets::combo_box("import-tab-preset").selected_text(shown).width(ui.available_width().max(120.0)).show_ui(ui, |ui| {
+            ui.set_min_width(list_w);
             for (i, n) in names.iter().enumerate() {
                 let r = ui.selectable_label(*n == s.preset_name, n);
                 register(ui.ctx(), format!("button:importPreset-{i}"), r.rect);
@@ -750,43 +1099,4 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
         *s = ImportSettings::from_preset(&p.name, &p.settings);
         s.take = take;
     }
-}
-
-/// The preset stack: develop presets applied in order after the Apply card's preset.
-fn preset_stack(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
-    use crate::dialog_frame::{form_row, group_begin, help};
-    let t = Tokens::get(ui.ctx());
-    group_begin(ui, Some("Preset Stack"));
-    let name_of = |id: &str| app.session.presets.iter().find(|p| p.id == id).map(|p| p.name.clone());
-    let mut remove = None;
-    for (i, id) in s.opts.presets.iter().enumerate() {
-        let name = name_of(id).unwrap_or_else(|| crate::i18n::tr("(missing preset)").to_string());
-        form_row(ui, &format!("{}.", i + 1), |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(name).color(t.text_label));
-                if crate::widgets::text_button(ui, &format!("importStackRemove-{i}"), "✕", false).clicked() {
-                    remove = Some(i);
-                }
-            });
-        });
-    }
-    if let Some(i) = remove
-        && i < s.opts.presets.len()
-    {
-        s.opts.presets.remove(i);
-    }
-    let all: Vec<(String, String)> = app.session.presets.iter().map(|p| (p.id.clone(), p.name.clone())).collect();
-    form_row(ui, "Add", |ui| {
-        let combo = crate::widgets::combo_box("import-tab-stack-add").selected_text(crate::i18n::tr("Choose a preset…")).show_ui(ui, |ui| {
-            for (i, (id, name)) in all.iter().enumerate().take(500) {
-                let r = ui.selectable_label(false, name);
-                register(ui.ctx(), format!("button:importStackAdd-{i}"), r.rect);
-                if r.clicked() {
-                    s.opts.presets.push(id.clone());
-                }
-            }
-        });
-        register(ui.ctx(), "combo:importStackAdd", combo.response.rect);
-    });
-    help(ui, "Each preset sets its settings on top of the one before, as its own History step.");
 }

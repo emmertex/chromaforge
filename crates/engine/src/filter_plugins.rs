@@ -204,9 +204,14 @@ pub fn info(f: &Filter) -> Value {
         "overlap": m.overlap,
         "moduleHash": f.module_hash(),
         "analyze": f.has_analyze(),
+        "merge": f.has_merge(),
+        "sections": m.sections,
+        "shortcut": m.shortcut,
         "analyzeArea": m.analyze_area,
         "baseTone": m.base_tone,
         "size": f.size(),
+        "header": m.header.is_some(),
+        "icon": m.icon.is_some(),
         "enabled": true,
     })
 }

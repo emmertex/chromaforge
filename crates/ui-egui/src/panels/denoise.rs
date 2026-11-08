@@ -132,7 +132,7 @@ fn watch_downloads(app: &mut LccApp, ctx: &egui::Context) {
 /// Per-photo AI Denoise switch.
 pub fn detail_toggle(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, on: bool, applicable: bool) {
     let mut enabled = on;
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }).show(ui, |ui| {
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         let mut r = ui.add_enabled(applicable, egui::Checkbox::new(&mut enabled, crate::i18n::tr("AI Denoise")));
         if !applicable && let Some((why, detail)) = not_applicable(app, id) {
             let tip = match detail {
@@ -258,7 +258,11 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if !runtime {
         hint(ui, t, "This build cannot run other denoise models.");
     }
-    hint(ui, t, "Works on raw files from cameras with a standard (Bayer) sensor. Other files keep their normal noise reduction.");
+    hint(
+        ui,
+        t,
+        "Works on raw files from cameras with a standard (Bayer) sensor, and on JPEG, PNG, TIFF and other finished pictures with a model made for them. Other raw files keep their normal noise reduction.",
+    );
     hint(ui, t, "Denoise models are downloaded and chosen under Settings ▸ AI Models.");
     if crate::dialog_frame::link(ui, Some("denoise:openAiModels"), "Open AI Models").clicked() {
         let _ = app.run("app.settings", json!({"tab": "ai"}));
@@ -320,8 +324,8 @@ pub fn other_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
-/// The AI Models dialog's AI Denoise group: each denoise model the app knows how to download, with its size and
-/// licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
+/// The AI Models dialog's AI Denoise and AI Super Resolution groups: each denoise model and upscaler the app knows how
+/// to download, with its size and licence, under the same Download (terms first, then the activity stack), Use and Remove as Settings ▸ AI Denoise.
 pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let list = models(app, ui.ctx());
     let known: Vec<Value> = list["models"].as_array().map(|a| a.iter().filter(|m| m["known"] == true).cloned().collect()).unwrap_or_default();
@@ -334,13 +338,32 @@ pub fn ai_models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         .execute("denoise.models.downloads", &json!({}))
         .map(|v| v["downloads"].as_array().cloned().unwrap_or_default())
         .unwrap_or_default();
-    crate::dialog_frame::group_begin(ui, Some("AI Denoise"));
-    ui.label(tr("Cleans noise out of raw photos (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used."));
-    for m in &known {
-        let dl = downloads.iter().find(|d| d["id"] == m["id"]);
-        model_row(app, ui, t, m, dl, runtime);
+    // denoise models and upscalers share the models folder, but each gets its own group under its own name
+    let (upscalers, denoisers): (Vec<&Value>, Vec<&Value>) = known.iter().partition(|m| slot_kind(m) == "upscale");
+    let groups = [
+        (
+            "AI Denoise",
+            "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.",
+            denoisers,
+        ),
+        (
+            "AI Super Resolution",
+            "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.",
+            upscalers,
+        ),
+    ];
+    for (title, about, models) in groups {
+        if models.is_empty() {
+            continue;
+        }
+        crate::dialog_frame::group_begin(ui, Some(title));
+        crate::dialog_frame::note(ui, RichText::new(tr(about)).color(t.text_dim));
+        for m in models {
+            let dl = downloads.iter().find(|d| d["id"] == m["id"]);
+            model_row(app, ui, t, m, dl, runtime);
+        }
+        crate::dialog_frame::group_end(ui);
     }
-    crate::dialog_frame::group_end(ui);
 }
 
 /// What the cache holds, its limit, and what is being made.
@@ -459,6 +482,24 @@ fn device_line(d: &Value, run_on: &str) -> String {
     }
 }
 
+/// What kind of photo a model is made for, as its row says it.
+fn made_for(m: &Value) -> &'static str {
+    tr(match m["domain"].as_str() {
+        Some("rgbToRgb") => "For JPEG and other finished pictures",
+        Some("rgbToRgb4x") => "For Super Resolution and AI Sharpen",
+        _ => "For raw photos",
+    })
+}
+
+/// The settings slot a model fills (`kind` of `denoise.models.select`).
+fn slot_kind(m: &Value) -> &'static str {
+    match m["domain"].as_str() {
+        Some("rgbToRgb") => "rgb",
+        Some("rgbToRgb4x") => "upscale",
+        _ => "raw",
+    }
+}
+
 fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Option<&Value>, can_run: bool) {
     let id = m["id"].as_str().unwrap_or("").to_string();
     let (installed, selected) = (m["installed"].as_bool() == Some(true), m["selected"].as_bool() == Some(true));
@@ -479,6 +520,7 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                         ui.label(RichText::new(tr("installed")).color(t.text_dim));
                     }
                 });
+                ui.label(RichText::new(made_for(m)).font(t.font(11.5)).color(t.text_dim));
                 ui.label(RichText::new(licence_line(m)).font(t.font(11.5)).color(if m["licence"]["commercial"] == "yes" {
                     t.text_dim
                 } else {
@@ -532,7 +574,8 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                         let r = ui.button(tr("Stop using"));
                         register(ui.ctx(), format!("denoise:off:{id}"), r.rect);
                         if r.clicked() {
-                            let _ = app.run("denoise.models.select", json!({"id": null}));
+                            let kind = slot_kind(m);
+                            let _ = app.run("denoise.models.select", json!({"id": null, "kind": kind}));
                             app.caches.denoise.epoch += 1;
                         }
                     } else {

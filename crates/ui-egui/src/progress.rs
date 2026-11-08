@@ -61,6 +61,7 @@ pub struct Progress {
     label: Option<String>,
     widget: Option<String>,
     width: Option<f32>,
+    height: Option<f32>,
     dimmed: bool,
 }
 
@@ -68,7 +69,7 @@ impl Progress {
     /// `Some(fraction)` of the work done (clamped to 0..=1, NaN as 0), or `None` while it is not
     /// known how much there is.
     pub fn new(fraction: Option<f32>) -> Self {
-        Progress { fraction: fraction.map(clamp_fraction), label: None, widget: None, width: None, dimmed: false }
+        Progress { fraction: fraction.map(clamp_fraction), label: None, widget: None, width: None, height: None, dimmed: false }
     }
 
     /// The fraction drawn, once clamped (`None` for an indeterminate bar).
@@ -100,12 +101,19 @@ impl Progress {
         self
     }
 
+    /// This tall, for a thin bar without text (several stacked in the identity plate's activity area); by default a
+    /// bar is as tall as its text needs.
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
     /// Show it where the layout puts it.
     pub fn show(self, ui: &mut Ui) -> Response {
         let t = Tokens::get(ui.ctx());
         let label = self.label.as_deref().filter(|s| !s.is_empty());
         let width = self.width.unwrap_or_else(|| ui.available_size_before_wrap().x.max(MIN_WIDTH));
-        let height = if label.is_some() { HEIGHT_WITH_TEXT } else { HEIGHT_PLAIN };
+        let height = self.height.unwrap_or(if label.is_some() { HEIGHT_WITH_TEXT } else { HEIGHT_PLAIN }).max(1.0);
         let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         resp.widget_info(|| {
             let mut info = match label {
@@ -139,7 +147,7 @@ impl Progress {
             }
         };
         if fill.width() > 0.0 {
-            p.with_clip_rect(inner).rect_filled(fill, radius - 1.0, if self.dimmed { t.text_dim } else { t.accent });
+            p.with_clip_rect(inner).rect_filled(fill, (radius - 1.0).max(0.0), if self.dimmed { t.text_dim } else { t.accent });
         }
         if let Some(l) = label {
             // the text reads on the track in the theme's colour, and in white where the fill is
@@ -174,6 +182,8 @@ pub fn paint_spinner(p: &egui::Painter, rect: Rect, color: Color32, time: f64) {
     let size = rect.width().min(rect.height());
     let width = (size / 8.0).max(1.5);
     let radius = ((size - width) / 2.0).max(0.5);
+    // Reduce motion: the arc stands still
+    let time = if crate::motion::reduced(p.ctx()) { 0.0 } else { time };
     p.add(Shape::line(arc_points(rect.center(), radius, time), Stroke::new(width, color)));
 }
 
@@ -185,7 +195,9 @@ pub fn spinner(ui: &mut Ui, size: f32) -> Response {
     resp.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ProgressIndicator));
     if ui.is_rect_visible(rect) {
         paint_spinner(ui.painter(), rect, t.text_dim, ui.input(|i| i.time));
-        ui.ctx().request_repaint_after(FRAME);
+        if !crate::motion::reduced(ui.ctx()) {
+            ui.ctx().request_repaint_after(FRAME);
+        }
     }
     resp
 }

@@ -52,6 +52,16 @@ pub enum Dtype {
     F32,
     F16,
     Bf16,
+    F64,
+    I64,
+    U64,
+    I32,
+    U32,
+    I16,
+    U16,
+    I8,
+    U8,
+    Bool,
 }
 
 impl Dtype {
@@ -60,14 +70,44 @@ impl Dtype {
             "F32" => Ok(Self::F32),
             "F16" => Ok(Self::F16),
             "BF16" => Ok(Self::Bf16),
+            "F64" => Ok(Self::F64),
+            "I64" => Ok(Self::I64),
+            "U64" => Ok(Self::U64),
+            "I32" => Ok(Self::I32),
+            "U32" => Ok(Self::U32),
+            "I16" => Ok(Self::I16),
+            "U16" => Ok(Self::U16),
+            "I8" => Ok(Self::I8),
+            "U8" => Ok(Self::U8),
+            "BOOL" => Ok(Self::Bool),
             other => Err(WeightsError::UnsupportedDtype { name: name.to_string(), dtype: other.to_string() }),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "F32",
+            Self::F16 => "F16",
+            Self::Bf16 => "BF16",
+            Self::F64 => "F64",
+            Self::I64 => "I64",
+            Self::U64 => "U64",
+            Self::I32 => "I32",
+            Self::U32 => "U32",
+            Self::I16 => "I16",
+            Self::U16 => "U16",
+            Self::I8 => "I8",
+            Self::U8 => "U8",
+            Self::Bool => "BOOL",
         }
     }
 
     fn bytes_per_elem(self) -> u64 {
         match self {
-            Self::F32 => 4,
-            Self::F16 | Self::Bf16 => 2,
+            Self::F64 | Self::I64 | Self::U64 => 8,
+            Self::F32 | Self::I32 | Self::U32 => 4,
+            Self::F16 | Self::Bf16 | Self::I16 | Self::U16 => 2,
+            Self::I8 | Self::U8 | Self::Bool => 1,
         }
     }
 }
@@ -211,6 +251,18 @@ fn decode_to_f32(name: &str, dtype: Dtype, raw: &[u8]) -> Result<Vec<f32>, Weigh
             }
             Ok(out)
         }
+        Dtype::F64 => {
+            let mut out = Vec::with_capacity(raw.len() / 8);
+            for &chunk in raw.as_chunks::<8>().0 {
+                let v = f64::from_le_bytes(chunk) as f32;
+                if !v.is_finite() {
+                    return Err(WeightsError::NonFiniteWeights { name: name.to_string() });
+                }
+                out.push(v);
+            }
+            Ok(out)
+        }
+        other => Err(WeightsError::UnsupportedDtype { name: name.to_string(), dtype: other.as_str().to_string() }),
     }
 }
 
@@ -294,6 +346,33 @@ mod tests {
         let bad_path = dir.join("huge.safetensors");
         std::fs::write(&bad_path, (u64::MAX).to_le_bytes()).unwrap();
         assert!(matches!(SafetensorsFile::open(&bad_path), Err(WeightsError::InvalidHeaderLength(_))));
+
+        // Checkpoints with I64 index buffers (`position_ids`) alongside F32 weights open cleanly
+        let i64_path = dir.join("with_i64.safetensors");
+        let header = serde_json::json!({
+            "vision_model.embeddings.position_ids": {
+                "dtype": "I64",
+                "shape": [1, 2],
+                "data_offsets": [0, 16]
+            },
+            "w": {
+                "dtype": "F32",
+                "shape": [2],
+                "data_offsets": [16, 24]
+            }
+        });
+        let h_bytes = serde_json::to_vec(&header).unwrap();
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(h_bytes.len() as u64).to_le_bytes());
+        raw.extend_from_slice(&h_bytes);
+        raw.extend_from_slice(&0i64.to_le_bytes());
+        raw.extend_from_slice(&1i64.to_le_bytes());
+        raw.extend_from_slice(&1.5f32.to_le_bytes());
+        raw.extend_from_slice(&2.5f32.to_le_bytes());
+        std::fs::write(&i64_path, &raw).unwrap();
+        let mut st_i64 = SafetensorsFile::open(&i64_path).unwrap();
+        let w = st_i64.load_tensor("w", &[2], &CandleDevice::Cpu).unwrap();
+        assert_eq!(w.dims(), &[2]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -63,7 +63,7 @@ fn fresh_form(app: &mut LccApp) -> Option<Form> {
 }
 
 /// The photos the export writes, in the order it writes them (as `app.export` picks them).
-fn targets(app: &mut LccApp) -> Vec<lcc_catalog::PhotoId> {
+pub(crate) fn targets(app: &mut LccApp) -> Vec<lcc_catalog::PhotoId> {
     if app.session.selection.ids.is_empty() {
         return app.session.active().into_iter().collect();
     }
@@ -98,7 +98,7 @@ impl Module for ExportModule {
         let t = Tokens::get(ui.ctx());
         let mut area = ui.available_rect_before_wrap();
         if crate::module::edge_visible(app, Edge::Bottom) {
-            let film = Rect::from_min_max(pos2(area.left(), area.bottom() - t.film_h), area.max);
+            let film = Rect::from_min_max(pos2(area.left(), area.bottom() - app.ui.film_height()), area.max);
             area.max.y = film.top();
             crate::panels::detail::filmstrip(app, ui, film);
         }

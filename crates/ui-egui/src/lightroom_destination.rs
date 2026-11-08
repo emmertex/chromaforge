@@ -1,4 +1,4 @@
-//! File ▸ Import Lightroom Catalog…: where the catalog goes (issue #2672).
+//! File ▸ Import Lightroom or Capture One Catalog…: where the catalog goes (issue #2672).
 //!
 //! Before the import starts, a window asks whether the catalog's photos, collections and edits
 //! merge into the library open now or go into a new library, named after the catalog and put next
@@ -224,7 +224,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
     let t = crate::theme::Tokens::get(ui.ctx());
     let tr = crate::i18n::tr;
     let file = Path::new(catalog.as_str()).file_name().map_or_else(|| catalog.clone(), |n| n.to_string_lossy().into_owned());
-    ui.label(crate::i18n::tr_format!("Where should the Lightroom catalog “{catalog}” go?", catalog = file));
+    ui.label(if crate::lightroom_import::is_capture_one(Path::new(catalog.as_str())) {
+        crate::i18n::tr_format!("Where should the Capture One catalog “{catalog}” go?", catalog = file)
+    } else {
+        crate::i18n::tr_format!("Where should the Lightroom catalog “{catalog}” go?", catalog = file)
+    });
     ui.label(egui::RichText::new(catalog.as_str()).color(t.text_dim));
     ui.add_space(4.0);
     let n = *photos;
@@ -302,7 +306,11 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
     if !*new_library {
         *dont_ask = ticked;
     }
-    ui.label(egui::RichText::new(tr("To be asked again: Settings → General → When importing a Lightroom catalog.")).size(11.0).color(t.text_dim));
+    ui.label(
+        egui::RichText::new(tr("To be asked again: Settings → General → When importing a Lightroom or Capture One catalog."))
+            .size(11.0)
+            .color(t.text_dim),
+    );
 }
 
 #[cfg(test)]

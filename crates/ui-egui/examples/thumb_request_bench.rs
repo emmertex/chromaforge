@@ -130,6 +130,7 @@ fn micro(points: usize, pending: bool) {
                     pixels: None,
                     warnings: Vec::new(),
                     native: None,
+                    placement: None,
                 },
             );
         }

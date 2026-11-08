@@ -39,7 +39,16 @@ fn display_renders_match_readback_renders() {
         lcc_testkit::skip!(Gpu, "software adapter");
         return;
     }
-    lcc_gpu::adopt_window_device(device.clone(), queue.clone(), &adapter).expect("adopted");
+    if let Err(e) = lcc_gpu::adopt_window_device(device.clone(), queue.clone(), &adapter) {
+        // the adapter variable naming another card than the window's: renders go to that card,
+        // on a device of its own, and the window's is declined by design
+        let window_card = adapter.get_info().name.to_lowercase();
+        if lcc_brand::env("GPU_ADAPTER").is_some_and(|want| !window_card.contains(want.trim().to_lowercase().as_str())) {
+            lcc_testkit::skip!(Gpu, "the editing card named by the adapter variable isn't the window's ({}): {e}", adapter.get_info().name);
+            return;
+        }
+        panic!("adopted: {e}");
+    }
     assert!(lcc_gpu::on_window_device());
     let raw = SourceInfo { raw: true, ..Default::default() };
     let mut s = DevelopSettings::default();

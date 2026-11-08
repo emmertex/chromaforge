@@ -24,6 +24,7 @@ mod command_error;
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
+pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
 pub mod docking;
@@ -47,10 +48,12 @@ pub mod import;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
+pub mod legacy;
 pub mod libtools;
 pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
+pub mod loupe_timing;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -65,6 +68,7 @@ mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
+pub mod motion;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -109,6 +113,8 @@ mod tests_access;
 #[cfg(test)]
 mod tests_activity;
 #[cfg(test)]
+mod tests_adjust_overlay;
+#[cfg(test)]
 mod tests_adjustment_quality;
 #[cfg(test)]
 mod tests_album_picker;
@@ -117,9 +123,15 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_appearance;
 #[cfg(test)]
+mod tests_background_prep;
+#[cfg(test)]
 mod tests_bar_buttons;
 #[cfg(test)]
 mod tests_before_after;
+#[cfg(test)]
+mod tests_bottom_bar_compact;
+#[cfg(test)]
+mod tests_breadcrumb_more;
 #[cfg(test)]
 mod tests_browse_active;
 #[cfg(test)]
@@ -161,6 +173,8 @@ mod tests_crop_rotate;
 #[cfg(test)]
 mod tests_crop_tool;
 #[cfg(test)]
+mod tests_culling_cells;
+#[cfg(test)]
 mod tests_curve;
 #[cfg(test)]
 mod tests_date_picker;
@@ -174,6 +188,8 @@ mod tests_dialog_frame;
 mod tests_dialog_settings;
 #[cfg(test)]
 mod tests_dialog_tab;
+#[cfg(test)]
+mod tests_dialog_width;
 #[cfg(test)]
 mod tests_dialogs;
 #[cfg(test)]
@@ -189,6 +205,8 @@ mod tests_error_kinds;
 #[cfg(test)]
 mod tests_filmstrip;
 #[cfg(test)]
+mod tests_filmstrip_resize;
+#[cfg(test)]
 mod tests_filter_search;
 #[cfg(test)]
 mod tests_focus_point;
@@ -200,6 +218,8 @@ mod tests_folder_drop;
 mod tests_folder_poll;
 #[cfg(test)]
 mod tests_grading;
+#[cfg(test)]
+mod tests_grading_mode;
 #[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
@@ -213,11 +233,15 @@ mod tests_histogram_drag;
 #[cfg(test)]
 mod tests_histogram_modes;
 #[cfg(test)]
+mod tests_hover_pointer;
+#[cfg(test)]
 mod tests_i18n_coverage;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
+#[cfg(test)]
+mod tests_import_drives;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
@@ -265,9 +289,15 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
+mod tests_mask_landing;
+#[cfg(test)]
+mod tests_mask_menus;
+#[cfg(test)]
 mod tests_mask_range_pick;
 #[cfg(test)]
 mod tests_mask_sections;
+#[cfg(test)]
+mod tests_mask_tree;
 #[cfg(test)]
 mod tests_masking;
 #[cfg(test)]
@@ -291,11 +321,15 @@ mod tests_open_lightroom;
 #[cfg(test)]
 mod tests_osd;
 #[cfg(test)]
+mod tests_overlay_on;
+#[cfg(test)]
 mod tests_panel_restore;
 #[cfg(test)]
 mod tests_panels;
 #[cfg(test)]
 mod tests_pickers;
+#[cfg(test)]
+mod tests_plugin_jobs;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
@@ -308,6 +342,8 @@ mod tests_presets_manager;
 mod tests_preview_limit;
 #[cfg(test)]
 mod tests_print;
+#[cfg(test)]
+mod tests_profile_manager;
 #[cfg(test)]
 mod tests_profile_menu;
 #[cfg(test)]
@@ -339,6 +375,8 @@ mod tests_settings_back;
 #[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]
+mod tests_settings_tab_row;
+#[cfg(test)]
 mod tests_settings_window;
 #[cfg(test)]
 mod tests_slider_drag;
@@ -352,6 +390,8 @@ mod tests_solo_sections;
 mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
+#[cfg(test)]
+mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
 #[cfg(test)]
@@ -377,7 +417,11 @@ mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
 #[cfg(test)]
+mod tests_viewperf;
+#[cfg(test)]
 mod tests_wb_selector;
+#[cfg(test)]
+mod tests_witchcraft;
 #[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]
@@ -656,7 +700,7 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
-    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    /// A library backup is due (Library Settings ▸ Back up library): Back Up and Quit, or Skip This Time.
     Backup(String),
 }
 
@@ -727,6 +771,18 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
+    /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
+    /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
+    /// OneSlips, NOTES-1028 note 29).
+    pub(crate) paint_hold_until: f64,
+    /// [`Self::paint_hold_until`] not reached in this frame.
+    pub(crate) paint_hold: bool,
+    /// Masks' mask selection, worked out each frame ([`panels::masking::keep_selection`], OneSlips 0d9d4fb7d).
+    pub(crate) mask_landing: panels::masking::Landing,
+    /// The op (`add`, `subtract`, `intersect`) a People or Remembered picker opened from the selected mask's menu
+    /// combines its selection by (`None`: a new mask).
+    pub(crate) mask_pick_op: Option<String>,
     /// Files the control channel (`ui.dropFiles`) holds over the window: every frame reports them
     /// as hovered, as the OS does while a drag is over the window.
     drop_hover: Vec<String>,
@@ -780,9 +836,21 @@ pub struct LccApp {
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
     /// "thumb", "none").
     pub loupe_shown: Option<(lcc_catalog::PhotoId, &'static str)>,
+    /// When each photo stepped to in the loupe first showed (`ui.inspect` → `perf.loupeSteps`).
+    pub loupe_timing: loupe_timing::LoupeTiming,
+    /// How the loupe drew its picture last frame ([`panels::detail::LoupeDrawn`]): where the
+    /// picture's corners went and the rect it fills (tests check that no part of it is empty).
+    pub loupe_drawn: Option<panels::detail::LoupeDrawn>,
+    /// What the loupe's look-ahead was made for last (photo, stepping back, catalog revision,
+    /// edge), so it is worked out again only when one of them changes ([`panels::detail`]).
+    pub(crate) look_ahead_made_for: Option<(lcc_catalog::PhotoId, bool, u64, usize)>,
     /// The frame ([`render::Renderer::frame`]) in which a cell on screen or the loupe last lacked
     /// its first picture ([`LccApp::pictures_missing`]).
     pub pictures_missing_pass: Option<u64>,
+    /// The loupe's last photo and its place in the view, and whether the user stepped back to
+    /// the one now on screen: the background preparation goes their way ([`lcc_engine::prep`]).
+    pub prep_at: Option<(lcc_catalog::PhotoId, usize)>,
+    pub prep_backward: bool,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -889,7 +957,7 @@ pub struct LccApp {
     /// The window's size last frame: a resize asks the GPU's batch work (exports) to make room.
     last_screen: egui::Vec2,
     /// The export lanes, processor-only switch and GPU share last applied (install settings).
-    export_tuning_applied: Option<(u32, bool, u32, u32)>,
+    export_tuning_applied: Option<(u32, bool, u32, u32, lcc_engine::export::ExportCards)>,
     /// "Test my machine" while it runs (Settings ▸ Performance).
     pub machine: Option<machine_test::MachineTask>,
     /// The memory budget setting last applied (MB, 0 = automatic).
@@ -907,6 +975,8 @@ pub struct LccApp {
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
+    /// Files that waited for a library and wait for the running import or Synchronize Folder too.
+    pub waiting_import: Vec<String>,
     /// Immich: Connections settings, the Import dialog's Immich source, background pump state.
     #[cfg(not(target_arch = "wasm32"))]
     pub immich: panels::connections::ImmichUi,
@@ -927,6 +997,12 @@ pub struct LccApp {
     pub activity_open: std::collections::HashSet<u64>,
     /// The last batch summary said (`Activity::finished` → `seq`): each is said once.
     pub activity_seen_seq: u64,
+    /// Classic: the list of tasks under the module bar's activity area is open (`view.activityList`).
+    pub activity_list: bool,
+    /// Classic: where the module bar drew its activity area this frame (set by `module_bar`, taken by the stack).
+    pub(crate) activity_plate_drawn: Option<egui::Rect>,
+    /// …and in the last frame: what the list opens under, and whether `view.activityList` can open it.
+    pub(crate) activity_plate: Option<egui::Rect>,
     /// The Map module's view state (P3.3).
     pub map: map::MapUi,
     /// The Classic module help sheet (⌘/, P6.3).
@@ -946,6 +1022,22 @@ impl LccApp {
     pub fn pictures_missing(&mut self, pass: u64) {
         self.pictures_missing_pass = Some(pass);
         lcc_engine::prep::pictures_missing();
+    }
+
+    /// Preparing photos in the background ([`lcc_engine::prep`]): the whole view's previews once
+    /// the user is culling in the loupe, built from the photo on screen in the direction of travel;
+    /// held back while a slider drags.
+    fn background_prep(&mut self, ctx: &egui::Context) {
+        if self.session.interaction.is_some() {
+            lcc_engine::prep::foreground();
+        }
+        let mode = panels::detail::prep_mode(self);
+        let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
+        let at = if loupe { self.session.active() } else { None };
+        self.session.prep_tick(mode, at, self.prep_backward);
+        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
 
     /// Whether a picture was missing in frame `pass` or the one before.
@@ -976,6 +1068,23 @@ impl LccApp {
     /// Whether the Compact layout is drawn: chosen, and the Modern layout is off.
     pub(crate) fn compact(&self) -> bool {
         self.ui.settings.compact_layout && !self.ui.modern.enabled
+    }
+
+    /// The right panel's default width follows the layout (Compact: [`state::COMPACT_RIGHT_WIDTH`],
+    /// LAYOUT-DENSE, ported from OneSlips) while it is at the other layout's default; a width the
+    /// user dragged to stays.
+    fn follow_compact_width(&mut self, ctx: &egui::Context) {
+        let key = egui::Id::new("compact-right-width");
+        let now = self.compact();
+        let was = ctx.data(|d| d.get_temp::<bool>(key));
+        if was == Some(now) {
+            return;
+        }
+        ctx.data_mut(|d| d.insert_temp(key, now));
+        // (at launch only Compact moves it: Classic's default needs no change)
+        if was.is_some() || now {
+            self.ui.right_width = state::follow_compact_width(self.ui.right_width, now);
+        }
     }
 
     pub fn new(mut session: Session, services: Services) -> Self {
@@ -1030,6 +1139,10 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            paint_hold_until: f64::NEG_INFINITY,
+            paint_hold: false,
+            mask_landing: Default::default(),
+            mask_pick_op: None,
             drop_hover: vec![],
             drop_pending: vec![],
             copied: None,
@@ -1055,7 +1168,12 @@ impl LccApp {
             space_hand: None,
             brush_live: None,
             loupe_shown: None,
+            loupe_timing: Default::default(),
+            loupe_drawn: None,
+            look_ahead_made_for: None,
             pictures_missing_pass: None,
+            prep_at: None,
+            prep_backward: false,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,
@@ -1114,11 +1232,15 @@ impl LccApp {
             screen_profile: None,
             screen_profile_read: None,
             library_problem: None,
+            waiting_import: Vec::new(),
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,
             activity_open: Default::default(),
             activity_seen_seq: 0,
+            activity_list: false,
+            activity_plate_drawn: None,
+            activity_plate: None,
             surface: Default::default(),
         }
     }
@@ -1263,13 +1385,41 @@ impl LccApp {
             };
         }
         if r.is_ok() && id == "library.toggleFilters" {
-            // the search field shows the text filter: empty while the filters are off, back with them
-            self.ui.search = self.session.filter.text.clone();
+            // the search field shows the active text or semantic filter: empty while the filters are off, back with them
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            } else if !self.session.filter.text.is_empty() {
+                self.ui.semantic_search = false;
+                self.ui.search = self.session.filter.text.clone();
+            } else {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "library.clearFilter" {
             // the search field shows the text filter: cleared from anywhere (the loupe's pill, the
             // menu), it must not keep a search that no longer applies (issue #1648)
             self.ui.search.clear();
+        }
+        if r.is_ok() && id == "search.semantic" {
+            if params.get("clear").and_then(Value::as_bool) == Some(true) {
+                if self.ui.semantic_search {
+                    self.ui.search.clear();
+                }
+            } else if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                self.ui.search = q.clone();
+            }
+        }
+        if r.is_ok() && id == "library.filter" && params.get("semantic").is_some() {
+            if let Some(q) = &self.session.filter.semantic {
+                self.ui.semantic_search = true;
+                if self.ui.search.trim() != q {
+                    self.ui.search = q.clone();
+                }
+            } else if self.ui.semantic_search && params.get("semantic").is_some_and(Value::is_null) {
+                self.ui.search.clear();
+            }
         }
         if r.is_ok() && id == "mask.addComponent" && matches!(self.ui.tool.as_str(), "colorRange" | "brush" | "object") {
             // The eyedropper, the brush and the object tool take every press on the photo, so the handles of a
@@ -1299,7 +1449,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                // from File ▸ Libraries or Library Settings
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
+                    Some(i18n::tr("The library passed the integrity test").to_string())
+                }
+                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1324,9 +1481,21 @@ impl LccApp {
                 }
                 None => i18n::tr("Color label cleared").into(),
             };
+            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
             // Native menu clicks can arrive before logic() updates last_time after an idle gap.
             let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
             self.ui.show_toast((text, now + TOAST_SECONDS, label));
+        }
+        if r.is_ok()
+            && cull_toast::confirms(id)
+            && !matches!(id, "photo.label" | "photo.clearLabel")
+            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
+        {
+            // every rating and flag change confirms, with the count when several photos changed
+            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
+                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+            }
         }
         match &r {
             Err(e) => {
@@ -1603,9 +1772,9 @@ impl LccApp {
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else if lcc_engine::segment::Segmenter::AVAILABLE
-            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::People | AiModel::FaceDetector))
+            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector))
         {
-            // SAM 2.1 was chosen for Object masks, or Retouch needs the MediaPipe models: their downloads are in the
+            // SAM 2.1 was chosen for Object masks, Describe needs the open models, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
             if self.ui.dialog.is_none() {
                 self.ui.dialog = Some(state::Dialog::Settings { tab: "ai".into() });
@@ -1935,6 +2104,17 @@ impl LccApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
         self.frame_log.clear();
+        // painting on the loupe (OneSlips, NOTES-1028 note 29): a brush stroke in progress and a moment after it
+        let now = ctx.input(|i| i.time);
+        let painting = matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. }));
+        if painting {
+            self.paint_hold_until = now + panels::detail::PAINT_HOLD_SECS;
+        }
+        // (a clock that went back never holds for longer than the hold)
+        self.paint_hold = painting || (now < self.paint_hold_until && self.paint_hold_until - now <= 2.0 * panels::detail::PAINT_HOLD_SECS);
+        if self.paint_hold {
+            ctx.request_repaint_after(std::time::Duration::try_from_secs_f64((self.paint_hold_until - now).clamp(0.0, 2.0)).unwrap_or_default());
+        }
         widgets::sync_section_folds(ctx, &mut self.ui.section_open);
         let t0 = now_ms();
         panels::library_problem::logic(self, ctx);
@@ -1960,6 +2140,7 @@ impl LccApp {
         theme::set_ui_font_size(ctx, self.ui.settings.ui_font_size);
         theme::set_slider_layout(ctx, self.slider_layout());
         theme::set_compact(ctx, self.compact());
+        self.follow_compact_width(ctx);
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
         if !self.styled {
@@ -2003,6 +2184,11 @@ impl LccApp {
             surface::tick(self, ctx);
         }
         self.apply_settings(ctx);
+        // input this frame: batch work leaves the editing card to the interface for a moment
+        // (only where the app tracks it: `gpu::track_interaction`)
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+            lcc_engine::gpu::note_interaction();
+        }
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
@@ -2153,6 +2339,10 @@ impl LccApp {
             self.ui.known_cards = None;
         }
         self.session.persist_if_dirty();
+        // an import being finished: kept in the library until done, taken up again after a restart
+        if self.session.finishing_tick() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         panels::denoise::pump(self, ctx);
         panels::plugin_filters::pump(self, ctx);
         panels::right::dust_pump(self, ctx);
@@ -2280,7 +2470,7 @@ impl LccApp {
         self.memory_applied = Some(mb);
         // export lanes and the GPU's share for exports (Settings ▸ Performance, "Test my machine")
         let st = &self.ui.settings;
-        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs);
+        let tuning = (st.export_lanes, st.export_cpu_only, st.gpu_export_mb, st.gpu_export_jobs, st.export_cards);
         if self.export_tuning_applied != Some(tuning) {
             crate::machine_test::apply(st);
             self.export_tuning_applied = Some(tuning);
@@ -2560,6 +2750,23 @@ impl LccApp {
             let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
             self.toast(ctx, msg);
         }
+        // an older install's presets (the app under an earlier name, on this computer) join too, once
+        // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
+        // asks again
+        // (its camera profiles too, bound to the bodies the older install started with them)
+        if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
+            let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
+            let (n, m) = (sum("presets"), sum("cameraProfiles"));
+            let msg = match (n, m) {
+                (0, 0) => None,
+                (n, 0) => Some(crate::i18n::tr_format!("{n} presets from an older install were added.", n = n)),
+                (0, m) => Some(crate::i18n::tr_format!("{m} camera profiles from an older install were added.", m = m)),
+                (n, m) => Some(crate::i18n::tr_format!("{n} presets and {m} camera profiles from an older install were added.", n = n, m = m)),
+            };
+            if let Some(msg) = msg {
+                self.toast(ctx, msg);
+            }
+        }
     }
 
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
@@ -2588,6 +2795,7 @@ impl LccApp {
         let ctx = ui.ctx().clone();
         widgets::sync_section_folds(&ctx, &mut self.ui.section_open);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        motion::set(&ctx, self.ui.settings.reduce_motion);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
@@ -2609,6 +2817,7 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        self.background_prep(&ctx);
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
@@ -2909,8 +3118,8 @@ pub struct Caches {
     keyword_groups: Option<(u64, u64, std::sync::Arc<Vec<panels::keywording::Group>>)>,
     /// The Keyword List's tick boxes, by library revision and selection.
     keyword_ticks: Option<(u64, u64, std::sync::Arc<panels::keyword_list::Ticks>)>,
-    /// The folder tree, made at a catalog revision and a disk folder listing generation.
-    folder_tree: Option<((u64, u64), std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// The folder tree, made at a catalog revision.
+    folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
@@ -3050,32 +3259,25 @@ const READS_CAPTURED: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with
 const READS_FLAG: lcc_catalog::Aspects = lcc_catalog::Aspects::PRESENCE.with(lcc_catalog::Aspects::FLAG);
 
 impl Caches {
-    /// The folders the library's photos were imported from.
+    /// The folders the library's photos were imported from (only those: the Folders panel lists
+    /// where the library's photos live, not the disk around them).
     pub fn folder_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::FolderNode>> {
-        let key = (cat.revision, crate::panels::left::classic::disk_generation());
+        let key = cat.revision;
         if let Some((k, t)) = &self.folder_tree
             && *k == key
         {
             return t.clone();
         }
-        // a catalog change lists the disk folders again: a folder created, moved or removed changes no
-        // photo, so the catalog's own record of what changed can't tell
-        if self.folder_tree.as_ref().is_none_or(|((r, _), _)| *r != cat.revision) {
-            crate::panels::left::classic::invalidate_disk_folders();
-        }
-        // the catalog's part is made again only when a photo's file or presence changed
+        // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
         let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
         self.folder_base = Some((cat.revision, base.clone()));
-        let t = std::sync::Arc::new(crate::panels::left::classic::with_disk_folders(base.as_ref().clone()));
-        self.folder_tree = Some((key, t.clone()));
-        t
+        self.folder_tree = Some((key, base.clone()));
+        base
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {
-        // (the fork's key also carries the disk folders' generation: a folder made on disk is a change too)
-        let disk = crate::panels::left::classic::disk_generation();
-        self.folder_tree.as_ref().filter(|((r, g), _)| *g == disk && still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
+        self.folder_tree.as_ref().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, t)| t.clone())
     }
     /// The library's keyword tree.
     pub fn keyword_tree(&mut self, cat: &lcc_catalog::Catalog) -> std::sync::Arc<Vec<lcc_catalog::KeywordNode>> {
@@ -3650,6 +3852,8 @@ mod cache_tests {
     }
 }
 
+#[cfg(test)]
+mod tests_display_truth;
 #[cfg(test)]
 mod tests_docking_acceptance;
 #[cfg(test)]

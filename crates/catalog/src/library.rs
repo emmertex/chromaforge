@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! My Catalog/
-//!   My Catalog.<catalog_ext>   entry point (what File → Open Catalog picks; JSON, see EntryFile)
+//!   My Catalog.<catalog_ext>   entry point (what File → Libraries → Open Library… picks; JSON, see EntryFile)
 //!   catalog.redb               the v4 store (crate::db)
 //!   catalog.log                op log: undo journal, change feed, crash safety (crate::journal)
 //!   catalog.snap               a stub that makes builds before v4 refuse the folder, untouched
@@ -339,14 +339,15 @@ fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, Cata
 
 // ---- recent catalogs
 
-/// The list behind File → Open Recent Catalog (most recent first), kept in a JSON file.
+/// The recent list of older versions (most recent first, in `recent-catalogs.json`): read once, to
+/// carry its libraries over into the app's one recent list (issue #871).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentCatalogs {
     pub paths: Vec<PathBuf>,
-    /// Open this catalog at startup instead of the last one; `None`: the last one.
+    /// The catalog older versions opened at startup instead of the last one (not carried over).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<PathBuf>,
-    /// Show the catalog chooser at startup (also when Alt is held).
+    /// Older versions showed their catalog chooser at startup (carried over as At launch: Ask me).
     #[serde(default)]
     pub prompt_at_startup: bool,
 }
@@ -430,6 +431,10 @@ pub struct CatalogSettings {
     pub keep_backups: usize,
     /// When the last backup finished (seconds since the Unix epoch).
     pub last_backup: Option<i64>,
+    /// What the catalog was at the last backup ([`Journal::backup_mark`]): an exit with nothing
+    /// changed since needs no backup, and isn't asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_mark: Option<String>,
     /// Test integrity before a backup.
     pub test_integrity: bool,
     /// Optimise after a backup.
@@ -465,8 +470,34 @@ impl CatalogSettings {
             (Some(every), Some(last)) => now.saturating_sub(last) >= every,
         }
     }
+    /// A backup is due on exit at `now` and the catalog changed since the last one: `mark` is what
+    /// it is now ([`Journal::backup_mark`]; `None`, unknown: changed).
+    pub fn backup_wanted(&self, now: i64, mark: Option<&str>) -> bool {
+        self.backup_due(now) && (mark.is_none() || self.backup_mark.as_deref() != mark)
+    }
     pub fn backup_root(&self, dir: &Path) -> PathBuf {
         self.backup_dir.clone().unwrap_or_else(|| dir.join(BACKUPS_DIR))
+    }
+}
+
+/// prefs.json larger than this counts by its size in [`Journal::backup_mark`] (ours are far smaller).
+const MAX_MARKED_FILE: u64 = 256 << 20;
+
+/// FNV-1a, 64-bit: a hash that stays the same across builds and platforms (std's `DefaultHasher`
+/// may change between Rust releases), for [`Journal::backup_mark`].
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Fnv {
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
     }
 }
 
@@ -542,12 +573,30 @@ impl Journal {
         Ok(OptimizeReport { bytes_before: before, bytes_after: file_len(&path), ms: t.elapsed().as_secs_f64() * 1e3 })
     }
 
+    /// What the catalog is now, for telling whether anything changed since its last backup: the
+    /// position of its last op and the contents of the library's prefs.json (its presets and
+    /// habits, which a backup copies too). Equal marks: nothing to back up.
+    pub fn backup_mark(&self) -> Result<String> {
+        let dir = self.db_dir()?;
+        let mut h = Fnv::default();
+        h.write(&self.seq().to_le_bytes());
+        // (a file too large to be one of ours, or unreadable, counts by its size)
+        let prefs = dir.join("prefs.json");
+        match std::fs::metadata(&prefs) {
+            Ok(m) if m.len() <= MAX_MARKED_FILE => h.write(&std::fs::read(&prefs).unwrap_or_default()),
+            Ok(m) => h.write(&m.len().to_le_bytes()),
+            Err(_) => h.write(b"-"),
+        }
+        Ok(format!("{}:{:016x}", self.seq(), h.0))
+    }
+
     /// Back up the catalog into `root/<time>/` (a checkpoint first, so the copy holds every op;
     /// the copy is then opened and integrity-tested). Keeps the newest `keep` backups (0 = all).
     /// Returns the backup folder.
     pub fn backup(&mut self, catalog: &Catalog, root: &Path, keep: usize) -> Result<PathBuf> {
         self.snapshot(catalog)?;
         let dir = self.db_dir()?;
+        let mark = self.backup_mark().ok();
         let dest = root.join(stamp(now_secs()));
         std::fs::create_dir_all(&dest).map_err(ioe)?;
         // (the library's prefs.json too, where the app keeps its presets: gathered back from a backup)
@@ -568,6 +617,7 @@ impl Journal {
         drop(copy);
         let mut settings = CatalogSettings::load(&dir);
         settings.last_backup = Some(now_secs());
+        settings.backup_mark = mark;
         settings.save(&dir)?;
         if keep > 0 {
             prune_backups(root, keep);
@@ -575,12 +625,13 @@ impl Journal {
         Ok(dest)
     }
 
-    /// The exit-time step: back up if the schedule says so (with the integrity test and
-    /// optimise when set). `Ok(None)`: not due.
+    /// The exit-time step: back up if the schedule says so and the catalog changed since the last
+    /// backup (with the integrity test and optimise when set). `Ok(None)`: not due, or nothing
+    /// changed.
     pub fn backup_if_due(&mut self, catalog: &Catalog) -> Result<Option<PathBuf>> {
         let dir = self.db_dir()?;
         let s = CatalogSettings::load(&dir);
-        if !s.backup_due(now_secs()) {
+        if !s.backup_wanted(now_secs(), self.backup_mark().ok().as_deref()) {
             return Ok(None);
         }
         if s.test_integrity {

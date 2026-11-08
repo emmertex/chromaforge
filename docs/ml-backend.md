@@ -35,8 +35,10 @@ embedding cache store.
   catalogue includes `clip-vit-b32-laion2b` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`, MIT, `Commercial::Yes`), pinned
   to a revision and verified by SHA-256 before installation.
 - **CLIP ViT + Text encoder** (`encoder.rs`, `tokenizer.rs`, `weights.rs`, `clip.rs`): a clean-room MIT CLIP vision +
-  text transformer implementation on `candle-core` (CPU everywhere, plus Metal on macOS with automatic fallback to CPU
-  via `JobError::Device`), paired with a positional `.safetensors` reader that validates tensor shapes, bounds, and
+  text transformer implementation on `candle-core` (the CPU reference). On the GPU the towers' transformer blocks run
+  on `lcc-gpu`'s wgpu kernels (`crates/gpu/src/clip.rs`, `wgsl/clip.wgsl`: Vulkan, DX12 or Metal, the same on every
+  OS), plugged in by the engine through `accel::Accelerator`; each tower is checked against the CPU on a test input
+  (`accel::agree`) before use, and any error falls back to the CPU via `JobError::Device`, paired with a positional `.safetensors` reader that validates tensor shapes, bounds, and
   finiteness (rejecting `NaN`/`Inf` weights) and a byte-level BPE tokenizer (`vocab.json` + `merges.txt`).
 - **Binary embedding store** (`store.rs`): per-model cache file `ml-embeddings-<id>.bin` stored beside the library
   (rebuildable, never inside `catalog.json`). Stores L2-normalized `f32` embeddings keyed by `(photo_id, fingerprint)`,
@@ -62,23 +64,34 @@ embedding cache store.
     licence acknowledgement;
   - `ml.pump {pace?: fast | idle | pause}` and `ml.index {ids?, wait?, batchSize?}`: drive background or synchronous
     embedding indexing;
-  - `search.semantic {text, limit?, minScore?, scope?: all | filtered | selected}`: encodes a natural-language query
-    with the CLIP text tower and ranks indexed photos by cosine similarity.
+  - `search.semantic {text, limit?, minScore?, scope?: all | filtered | selected, filter?: bool, clear?: bool}`: encodes a natural-language query
+    with the CLIP text tower, ranks indexed photos by cosine similarity, and (when `filter: true` or via
+    `library.filter {semantic: text}`) filters the library grid in similarity order while composing with ratings, flags,
+    colour labels, keywords and folders (issue #487); as background `ml.pump` batches finish, an active semantic filter
+    refreshes automatically.
+
+**The interface** (`crates/ui-egui/src/panels/topbar.rs`, `crates/ui-egui/src/modern_library.rs`,
+`crates/ui-egui/src/panels/ml_models.rs`) exposes natural-language search (`search:ai` in the top bar,
+`modern:search:ai` in the Modern search pill, a removable `AI search: “…”` chip in the filter-chips bar) and a
+**Semantic search** section in Settings ▸ AI Models (`dialog.aiModels`) to download, select or remove the CLIP model and
+toggle background indexing.
 
 ## What's next
 
 In the order of the plan on issue #491:
 
-1. **Downstream AI features (#487–#490)** on the cached embeddings: UI search integration (#487), aesthetic scoring
+1. **Downstream AI features (#488–#490)** on the cached embeddings: aesthetic scoring
    head (#488), culling suggestions (#489), and orientation suggestions (#490). Suggestions are proposals the user
    accepts, never silent writes.
-2. **GPU on Linux and Windows** (wgpu), if measurements show CPU inference is too slow; checked against the CPU result
-   before it is trusted, as the denoise network's GPU path is.
+2. **More of CLIP on the GPU:** the patch embedding, final layer norm and projections still run on the CPU; moving
+   them would save the per-batch upload of the embedded sequence.
 
 ## Testing
 
 `crates/ml/src/tests.rs` and unit tests across `manifest.rs`, `known.rs`, `store.rs`, `encoder.rs`, `tokenizer.rs`,
 `weights.rs`, and `clip.rs` cover the queue, manifests, SHA-256 verification, hostile `.safetensors` / tokenizer /
-store inputs, and synthetic CLIP image/text encoding. `crates/engine/src/tests_ml.rs` covers the session's activity
-row, GPU-to-CPU fallback, model installation and tamper rejection, background and synchronous indexing, persistent
-embedding stores across library reopen, content-replacement invalidation, and `search.semantic`.
+store inputs, and synthetic CLIP image/text encoding. `crates/engine/src/tests_ml.rs` and
+`crates/ui-egui/src/tests_filter_search.rs` cover the session's activity row, GPU-to-CPU fallback, model installation
+and tamper rejection, background and synchronous indexing, persistent embedding stores across library reopen,
+content-replacement invalidation, `search.semantic`, `library.filter {semantic}`, filter composition, and the UI toggle
+and Settings ▸ AI Models controls.
