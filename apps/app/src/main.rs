@@ -1,6 +1,6 @@
 //! The desktop app.
 //!
-//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--control <port>] [files or folders…]`
+//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--no-update-check] [--control <port>] [files or folders…]`
 //!
 //! The library (catalog, presets, thumbnail cache) lives in `--library DIR`, else
 //! `$<PREFIX>_LIBRARY`, else — with Settings ▸ General ▸ At launch set to *Ask me*, or Alt/Option
@@ -1110,6 +1110,8 @@ OPTIONS:
                    else ~/Pictures/{lib})
   --no-demo        don't seed a new library with the procedural demo photos
   --memory         throwaway in-memory session (alias --demo); nothing is saved
+  --no-update-check  don't look for a newer release at start, whatever Settings > General says, for this run
+                   (Help > Check for Updates… still works)
   --control PORT   serve the JSON-lines control channel on 127.0.0.1:PORT (env {P}_CONTROL_PORT;
                    see docs/control-protocol.md). Clients must first send the run's token, which the app
                    writes to <settings folder>/control-token-PORT
@@ -1241,6 +1243,12 @@ fn panic_log_path(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<
 
 /// Whether the arguments ask for a `--memory` (or `--demo`) session. The values of `--control` and `--library` are
 /// skipped, as the parser takes them.
+/// Whether the window looks for a newer release at start: only a session that keeps its settings, and not when
+/// `--no-update-check` was given (Settings > General still decides within that).
+fn startup_update_check(keeps_settings: bool, no_update_check: bool) -> bool {
+    keeps_settings && !no_update_check
+}
+
 fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
     let mut args = args.into_iter();
     while let Some(a) = args.next() {
@@ -1267,6 +1275,7 @@ fn main() -> eframe::Result {
     let mut control_token_arg = control_auth::env_token().filter(|v| !v.trim().is_empty());
     let mut files = Vec::new();
     let mut seed_demo = true;
+    let mut no_update_check = false;
     let mut in_memory = false;
     let mut library_dir: Option<std::path::PathBuf> = None;
     let mut launch_link: Option<String> = None;
@@ -1279,6 +1288,7 @@ fn main() -> eframe::Result {
             "--control-token" => control_token_arg = Some(args.next().unwrap_or_default()),
             "--library" => library_dir = args.next().map(std::path::PathBuf::from),
             "--no-demo" => seed_demo = false,
+            "--no-update-check" => no_update_check = true,
             "--memory" | "--demo" => in_memory = true,
             "--hdr-probe" => {
                 // optional seconds (default 5)
@@ -1510,7 +1520,7 @@ fn main() -> eframe::Result {
                 app.pending_link = launch_link;
                 app.gpu_notice = true;
                 // the start-up update check, when the user turned it on (off by default)
-                app.startup_update_check = keeps_settings;
+                app.startup_update_check = startup_update_check(keeps_settings, no_update_check);
                 // an empty library opens where Import is offered (a grid, with the sidebar); before
                 // the snapshot below, so this alone isn't written to the settings file
                 if problem.is_none() && files.is_empty() {
@@ -2375,6 +2385,15 @@ mod config_path_tests {
     fn panic_log_stays_in_the_settings_folder() {
         let name = format!("{}-panics.log", lcc_brand::BINARY);
         assert_eq!(panic_log_path(std::iter::empty()), log_dir().map(|d| d.join(name)));
+    }
+
+    /// `--no-update-check` turns the start-up look for a newer release off for the run; without it, a session
+    /// that keeps its settings looks.
+    #[test]
+    fn no_update_check_flag_disables_the_startup_check() {
+        assert!(startup_update_check(true, false));
+        assert!(!startup_update_check(true, true));
+        assert!(!startup_update_check(false, false));
     }
 
     /// A `--memory` session keeps no panic log (it saves nothing); an option's value that reads `--memory` is not the
