@@ -488,7 +488,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     for button in &nav_buttons {
         fire.push(if *button == egui::PointerButton::Extra1 { "library.previous" } else { "library.next" }.to_string());
     }
+    let mut h_press = false;
     ctx.input(|i| {
+        // an unmodified H no assignment has claimed (the Masking panel's pin toggle, below)
+        h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !taken.contains(&(Modifiers::NONE, Key::H));
         classic::module_key_presses(i, module_keys, keymap, &mut consumed, &mut aliased);
         // Enter opens the active grid photo; widgets, popups and custom bindings keep the key.
         if grid
@@ -563,6 +566,17 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             }
         }
     });
+    // While the Masking panel is open, a plain H toggles the mask pins (View > Show Mask Pins)
+    // instead of opening Remove; a Remove key moved elsewhere still opens it. The full-screen
+    // preview and a hidden tools panel show no panel, so H keeps its own binding there.
+    if h_press
+        && app.ui.right == crate::state::RightPanel::Masking
+        && !app.ui.fullscreen
+        && crate::docking::exposed(app, crate::docking::Panel::Tools)
+    {
+        let _ = app.run("view.maskPins", json!({}));
+        fire.retain(|f| f != "panel.remove");
+    }
     use crate::panels::compare;
     // rating/flag/label keys: in Compare/Survey they act on the active photo only; Shift+key or
     // Auto Advance then moves on (next candidate in Compare, next photo elsewhere)
@@ -966,6 +980,28 @@ mod tests {
     fn select_only_active_chord(h: &mut crate::headless::Headless) {
         let r = h.request("ui.key", json!({"key": "D", "cmd": true, "shift": true}), std::time::Duration::from_secs(20));
         assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn h_toggles_mask_pins_while_masking_and_opens_remove_elsewhere() {
+        use crate::state::RightPanel;
+        let mut h = library();
+        let tm = std::time::Duration::from_secs(20);
+        h.app.run("panel.masking", json!({})).unwrap();
+        h.step();
+        h.step();
+        assert_eq!(h.app.ui.right, RightPanel::Masking);
+        let pins = h.app.ui.mask_pins;
+        let r = h.request("ui.key", json!({"key": "H"}), tm);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.ui.mask_pins, !pins, "H toggles the pins");
+        assert_eq!(h.app.ui.right, RightPanel::Masking, "and does not open Remove");
+        // Remove moved to another key: it still opens there, and leaves the pins alone
+        h.app.run("app.setShortcut", json!({"id": "panel.remove", "shortcut": "J"})).unwrap();
+        let pins = h.app.ui.mask_pins;
+        h.request("ui.key", json!({"key": "J"}), tm);
+        assert_eq!(h.app.ui.right, RightPanel::Remove);
+        assert_eq!(h.app.ui.mask_pins, pins);
     }
 
     #[test]
