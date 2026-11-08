@@ -696,7 +696,7 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
-    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    /// A library backup is due (Library Settings ▸ Back up library): Back Up and Quit, or Skip This Time.
     Backup(String),
 }
 
@@ -1445,7 +1445,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                // from File ▸ Libraries or Library Settings
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
+                    Some(i18n::tr("The library passed the integrity test").to_string())
+                }
+                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
