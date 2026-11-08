@@ -3338,6 +3338,46 @@ fn raw_with_lightroom_sidecar_imports_rating_label_crop_and_develop() {
     }
 }
 
+/// A photo turned in Lightroom comes in turned: Lightroom writes the whole orientation as the sidecar's
+/// `tiff:Orientation`, and the photo takes what it adds to the file's own (none here, so a half turn for 3).
+#[test]
+fn a_raw_turned_in_lightroom_imports_turned() {
+    use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+    let px: Vec<u8> = (0..60 * 40).flat_map(|i| [(i % 251) as u8, 90, 200]).collect();
+    let j = encode_jpeg(&EncodeImage::new(60, 40, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+    let off = 8 + 2 + 24 + 4;
+    let mut nef = b"II*\0\x08\0\0\0\x02\0".to_vec();
+    for (tag, v) in [(513u16, off as u32), (514, j.len() as u32)] {
+        nef.extend_from_slice(&tag.to_le_bytes());
+        nef.extend_from_slice(&[4, 0, 1, 0, 0, 0]);
+        nef.extend_from_slice(&v.to_le_bytes());
+    }
+    nef.extend_from_slice(&[0, 0, 0, 0]);
+    nef.extend_from_slice(&j);
+    for (exif, settings, want) in [
+        ("3", true, lcc_geom::Orientation::Rotate180),
+        ("8", true, lcc_geom::Orientation::Rotate270),
+        ("1", true, lcc_geom::Orientation::Normal),
+        // a packet without develop settings (a metadata-only writer) doesn't turn the photo
+        ("3", false, lcc_geom::Orientation::Normal),
+    ] {
+        let src = temp_dir("lr-turned");
+        std::fs::write(src.join("DSC_0002.NEF"), &nef).unwrap();
+        let crs = if settings { r#"crs:Version="17.0" crs:ProcessVersion="15.4" crs:Exposure2012="+0.50" crs:HasSettings="True""# } else { "" };
+        let xmp = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmp:Rating="2" tiff:Orientation="{exif}" {crs}/></rdf:RDF></x:xmpmeta>"#
+        );
+        std::fs::write(src.join("DSC_0002.xmp"), xmp).unwrap();
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        assert_eq!(ids(&r, "imported"), 1, "{r}");
+        let p = s.catalog.photos().next().unwrap();
+        assert_eq!(p.rating, 2);
+        assert_eq!(p.develop.orientation, want, "tiff:Orientation {exif}, settings {settings}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
 /// Sidecars are found and read whatever their name's case, header or byte-order mark, so a
 /// raw's rating and crop never silently stay behind while the file's own IPTC comes in (issue #43).
 #[test]
