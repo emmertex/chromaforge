@@ -6241,6 +6241,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     } else if compare {
                         // ⌘/Ctrl- and Shift-clicks change the selection; the pair on screen stays (#187)
                         super::compare::select_with_modifier(app, *id, !m.command)
+                    } else if app.ui.view == crate::state::ViewMode::Survey && !m.command && !m.shift {
+                        // Survey: keep the surveyed group; a thumbnail outside it joins, one inside only becomes active
+                        app.run("library.select", json!({"ids": [id.0], "mode": "add"}))
                     } else {
                         // on the picture: the active photo changes, the set stays; on the frame: this photo alone
                         let on_picture = resp.interact_pointer_pos().is_none_or(|at| picture.contains(at));

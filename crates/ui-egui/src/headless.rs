@@ -939,6 +939,30 @@ mod tests {
         Headless::new(app, size, 1.0)
     }
 
+    /// Upstream #1639: plain filmstrip clicks in Survey keep the surveyed group (a new photo joins, a
+    /// surveyed one only becomes active); ⌘-click still removes and Shift-click still extends.
+    #[test]
+    fn survey_filmstrip_clicks_keep_the_group() {
+        let mut h = demo([1200.0, 760.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        assert!(ids.len() >= 5);
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0]]}}), t);
+        h.request("ui.set", json!({"view": "survey"}), t);
+        h.settle(SETTLE);
+        for id in &ids[1..4] {
+            h.request("ui.clickWidget", json!({"id": format!("film:{id}")}), t);
+            h.settle(SETTLE);
+        }
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[1])}), t);
+        h.settle(SETTLE);
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        assert_eq!(state["active"], ids[1]);
+    }
+
     /// Agents cut, copy and paste in a text field as the system does for ⌘X / ⌘C / ⌘V
     /// (`ui.clipboard`), and `ui.inspect` → `copied` says what the UI last copied.
     #[test]
