@@ -450,44 +450,51 @@ pub const PRIMARY_MASTER: f32 = 0.15;
 /// Gain's master wheel, which multiplies and so starts at twice the additive base, at strength 1.
 pub const PRIMARY_GAIN_MASTER: f32 = 0.3;
 
-/// How much stronger each wheel reads, by variant — (lift, gamma, gain, offset), tuned by eye on
-/// rendered photos: the additive lift and offset overshoot quickly (halved), gamma needs reach
-/// (×5), gain's highlights want pull (×3), and the Log variant's narrow highlights barely showed
-/// without ×10 (its shadows, like lift, halved; the midtones stay as tuned).
-pub fn primary_strength(log: bool) -> [f32; 4] {
-    if log { [0.5, 1.0, 10.0, 0.5] } else { [0.5, 5.0, 3.0, 0.5] }
-}
+/// How much stronger each wheel reads — tuned by eye on rendered photos: the additive lift and
+/// offset overshoot quickly (halved), gamma needs reach (×5), gain's highlights want pull (×3);
+/// the Log set's narrow highlights barely showed without ×10 (its shadows, like lift, halved;
+/// the midtones stay as tuned). (lift/gamma/gain/offset, then shadow/midtone/highlight/offset.)
+pub const PRIMARY_STRENGTH: ([f32; 4], [f32; 4]) = ([0.5, 5.0, 3.0, 0.5], [0.5, 1.0, 10.0, 0.5]);
 
-/// The colourist primaries resolved once per render: lift, gamma, gain and offset wheels and the
-/// Log variant's range boundaries (see [`lcc_develop::Primaries`]). `None` when the wheels are
-/// neutral. The GPU kernel reads the same values ([`Self::words`]).
+/// The colourist primaries resolved once per render: the Color wheels (lift, gamma, gain, offset —
+/// wide tonal overlap) and the Log wheels (shadow, midtone, highlight, offset — narrow ranges
+/// between `low` and `high`); both sets apply, complimentary as Resolve's (see
+/// [`lcc_develop::Primaries`]). `None` when every wheel is neutral. The GPU kernel reads the same
+/// values ([`Self::words`]).
 #[derive(Clone, Copy, Debug)]
 pub struct PrimariesK {
     pub lift: PrimaryK,
     pub gamma: PrimaryK,
     pub gain: PrimaryK,
     pub offset: PrimaryK,
-    pub log: bool,
+    pub shadow: PrimaryK,
+    pub midtone: PrimaryK,
+    pub highlight: PrimaryK,
+    pub log_offset: PrimaryK,
     pub low: f32,
     pub high: f32,
 }
 
-/// f32s the GPU kernel reads for [`PrimariesK`]: lift, gamma, gain and offset (rgb + master each,
-/// in that order), then `low`, `high` and `log` (0/1).
-pub const PRIMARY_WORDS: usize = 19;
+/// f32s the GPU kernel reads for [`PrimariesK`]: the Color wheels then the Log wheels (rgb + master
+/// each, in their orders), then `low` and `high`.
+pub const PRIMARY_WORDS: usize = 34;
 
 impl PrimariesK {
     pub fn new(p: &lcc_develop::Primaries) -> Option<PrimariesK> {
         if p.is_neutral() {
             return None;
         }
-        let f = primary_strength(p.log);
+        let (f, fl) = PRIMARY_STRENGTH;
+        let log = &p.log_wheels;
         Some(PrimariesK {
             lift: primary_wheel(&p.lift, PRIMARY_PUCK * f[0], PRIMARY_MASTER * f[0]),
             gamma: primary_wheel(&p.gamma, PRIMARY_PUCK * f[1], PRIMARY_MASTER * f[1]),
             gain: primary_wheel(&p.gain, PRIMARY_PUCK * f[2], PRIMARY_GAIN_MASTER * f[2]),
             offset: primary_wheel(&p.offset, PRIMARY_PUCK * f[3], PRIMARY_MASTER * f[3]),
-            log: p.log,
+            shadow: primary_wheel(&log.shadow, PRIMARY_PUCK * fl[0], PRIMARY_MASTER * fl[0]),
+            midtone: primary_wheel(&log.midtone, PRIMARY_PUCK * fl[1], PRIMARY_MASTER * fl[1]),
+            highlight: primary_wheel(&log.highlight, PRIMARY_PUCK * fl[2], PRIMARY_GAIN_MASTER * fl[2]),
+            log_offset: primary_wheel(&log.offset, PRIMARY_PUCK * fl[3], PRIMARY_MASTER * fl[3]),
             low: p.low.clamp(0.0, 1.0) as f32,
             high: p.high.clamp(0.0, 1.0) as f32,
         })
@@ -495,7 +502,7 @@ impl PrimariesK {
 
     pub fn words(&self) -> [f32; PRIMARY_WORDS] {
         let mut w = [0.0; PRIMARY_WORDS];
-        let parts: [&[f32]; 8] = [
+        let parts: [&[f32]; 16] = [
             &self.lift.rgb,
             std::slice::from_ref(&self.lift.master),
             &self.gamma.rgb,
@@ -504,6 +511,14 @@ impl PrimariesK {
             std::slice::from_ref(&self.gain.master),
             &self.offset.rgb,
             std::slice::from_ref(&self.offset.master),
+            &self.shadow.rgb,
+            std::slice::from_ref(&self.shadow.master),
+            &self.midtone.rgb,
+            std::slice::from_ref(&self.midtone.master),
+            &self.highlight.rgb,
+            std::slice::from_ref(&self.highlight.master),
+            &self.log_offset.rgb,
+            std::slice::from_ref(&self.log_offset.master),
         ];
         let mut i = 0;
         for part in parts {
@@ -512,36 +527,40 @@ impl PrimariesK {
                 i += 1;
             }
         }
-        w[16] = self.low;
-        w[17] = self.high;
-        w[18] = if self.log { 1.0 } else { 0.0 };
+        w[32] = self.low;
+        w[33] = self.high;
         w
     }
 
-    /// The wheels on display-linear Rec.2020 `rgb` (after the tone map): lift and gamma tilt their
-    /// range additively, gain scales the highlights multiplicatively, offset moves everything.
-    /// Sources: own design (industry-standard lift/gamma/gain), semantics read from Blackmagic's
-    /// *Colorist Guide to DaVinci Resolve 18* (pp. xviii, 12, 23–33).
+    /// The wheels on display-linear Rec.2020 `rgb` (after the tone map): the Color wheels' lift
+    /// and gamma tilt their wide ranges additively, gain scales the highlights multiplicatively,
+    /// offset moves everything — then the Log wheels do the same over their narrow ranges between
+    /// `low` and `high` (both sets, complimentary). Sources: own design (industry-standard
+    /// lift/gamma/gain), semantics read from Blackmagic's *Colorist Guide to DaVinci Resolve 18*
+    /// (pp. xviii, 12, 23–33).
     #[inline]
     pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
         let t = lcc_color::luminance_2020(rgb).clamp(0.0, 1.0);
-        let [ws, wm, wh] = primary_zones(t, self.log, self.low, self.high);
+        let [ws, wm, wh] = color_zones(t);
+        let [ls, lm, lh] = log_zones(t, self.low, self.high);
         let mut out = rgb;
         for k in 0..3 {
             out[k] += (self.lift.rgb[k] + self.lift.master) * ws;
             out[k] += (self.gamma.rgb[k] + self.gamma.master) * wm;
             out[k] *= 1.0 + (self.gain.rgb[k] + self.gain.master) * wh;
             out[k] += self.offset.rgb[k] + self.offset.master;
+            out[k] += (self.shadow.rgb[k] + self.shadow.master) * ls;
+            out[k] += (self.midtone.rgb[k] + self.midtone.master) * lm;
+            out[k] *= 1.0 + (self.highlight.rgb[k] + self.highlight.master) * lh;
+            out[k] += self.log_offset.rgb[k] + self.log_offset.master;
             out[k] = out[k].max(0.0);
         }
         out
     }
 }
 
-/// A wheel's puck as a linear-Rec.2020 colour direction: the pure hue scaled by its saturation,
-/// and the master wheel scaled by `master_amt`.
 /// A wheel's puck as a linear-Rec.2020 colour direction: the pure hue scaled by its saturation
-/// (`puck_amt`), and the master wheel scaled by `master_amt` ([`primary_strength`] tunes both).
+/// (`puck_amt`), and the master wheel scaled by `master_amt` ([`PRIMARY_STRENGTH`] tunes both).
 fn primary_wheel(w: &lcc_develop::Wheel, puck_amt: f32, master_amt: f32) -> PrimaryK {
     let c = hsv_to_rgb(w.hue.clamp(0.0, 360.0) as f32, 1.0, 1.0);
     let lin = c.map(lcc_color::transfer::srgb_to_linear);
@@ -551,18 +570,23 @@ fn primary_wheel(w: &lcc_develop::Wheel, puck_amt: f32, master_amt: f32) -> Prim
 }
 
 /// How much display-linear luminance `t` (0..1) belongs to the shadows, midtones and highlights of
-/// the primaries: the Colour wheels' wide overlap, or the Log wheels' narrow ranges with their
-/// boundaries at `low` and `high` (0..1). The GPU mirrors it in `finish.wgsl`.
+/// the Color wheels: a wide overlap, so one wheel's change reaches well into its neighbours (as
+/// Resolve's Colour wheels do). The GPU mirrors it in `finish.wgsl`.
 #[inline]
-pub fn primary_zones(t: f32, log: bool, low: f32, high: f32) -> [f32; 3] {
-    let (lm, hm, e) = if log {
-        let low = low.clamp(0.02, 0.9);
-        (low, high.clamp(low + 0.05, 0.98), 0.10)
-    } else {
-        (0.45, 0.55, 0.45)
-    };
-    let ws = 1.0 - smooth(lm - e, lm + e, t);
-    let wh = smooth(hm - e, hm + e, t);
+pub fn color_zones(t: f32) -> [f32; 3] {
+    let ws = 1.0 - smooth(0.0, 0.9, t);
+    let wh = smooth(0.1, 1.0, t);
+    [ws, (1.0 - ws - wh).max(0.0), wh]
+}
+
+/// The Log wheels' zones: narrowly separated ranges with their boundaries at `low` and `high`
+/// (0..1). The GPU mirrors it in `finish.wgsl`.
+#[inline]
+pub fn log_zones(t: f32, low: f32, high: f32) -> [f32; 3] {
+    let low = low.clamp(0.02, 0.9);
+    let hm = high.clamp(low + 0.05, 0.98);
+    let ws = 1.0 - smooth(low - 0.10, low + 0.10, t);
+    let wh = smooth(hm - 0.10, hm + 0.10, t);
     [ws, (1.0 - ws - wh).max(0.0), wh]
 }
 
@@ -816,24 +840,29 @@ mod tests {
     }
 
     #[test]
-    fn the_wheels_strengths_match_their_variant() {
-        // the calibration the palette was tuned with: lift and offset halved, gamma ×5, gain ×3,
-        // and the Log variant's highlights ×10 of the Color ones (its midtones unchanged)
+    fn the_two_wheel_sets_carry_their_own_strengths() {
+        // the calibration the palette was tuned with: the Color set's lift and offset halved,
+        // gamma ×5, gain ×3; the Log set's shadows halved, midtones as tuned, highlights ×10
         let full = lcc_develop::Wheel { hue: 0.0, sat: 100.0, lum: 100.0 };
-        let s = lcc_develop::Primaries { lift: full, gamma: full, gain: full, offset: full, ..Default::default() };
-        let color = PrimariesK::new(&s).unwrap();
-        let log = PrimariesK::new(&lcc_develop::Primaries { log: true, ..s }).unwrap();
-        let f = primary_strength(false);
+        let (f, fl) = PRIMARY_STRENGTH;
+        let s = lcc_develop::Primaries {
+            lift: full,
+            gamma: full,
+            gain: full,
+            offset: full,
+            log_wheels: lcc_develop::LogWheels { shadow: full, midtone: full, highlight: full, offset: full },
+            ..Default::default()
+        };
+        let k = PrimariesK::new(&s).unwrap();
         // the master wheels carry no hue, so their amounts are exact; the puck goes by ratio
-        assert!((color.gain.master - PRIMARY_GAIN_MASTER * f[2]).abs() < 1e-6);
-        assert!((color.offset.master - PRIMARY_MASTER * f[3]).abs() < 1e-6);
-        assert!((color.gamma.rgb[0] / color.lift.rgb[0] - f[1] / f[0]).abs() < 1e-3);
-        let fl = primary_strength(true);
-        assert!((log.gain.master - PRIMARY_GAIN_MASTER * fl[2]).abs() < 1e-6);
-        assert!((log.gamma.rgb[0] - color.gamma.rgb[0] * fl[1] / f[1]).abs() < 1e-6, "the Log midtones keep the base strength");
-        // a full-saturation Log-gain puck is strong but stays finite on real values
+        assert!((k.gain.master - PRIMARY_GAIN_MASTER * f[2]).abs() < 1e-6);
+        assert!((k.offset.master - PRIMARY_MASTER * f[3]).abs() < 1e-6);
+        assert!((k.gamma.rgb[0] / k.lift.rgb[0] - f[1] / f[0]).abs() < 1e-3);
+        assert!((k.highlight.master - PRIMARY_GAIN_MASTER * fl[2]).abs() < 1e-6);
+        assert!((k.midtone.rgb[0] / k.shadow.rgb[0] - fl[1] / fl[0]).abs() < 1e-3, "the Log midtones keep the base strength");
+        // a full pull on every wheel stays finite on real values
         for c in [[0.0, 0.0, 0.0], [0.9, 0.9, 0.9]] {
-            let out = log.apply(c);
+            let out = k.apply(c);
             assert!(out.iter().all(|v| v.is_finite()), "{c:?} -> {out:?}");
         }
     }
@@ -896,8 +925,12 @@ mod tests {
     fn primaries_neutral_is_identity() {
         assert!(PrimariesK::new(&lcc_develop::Primaries::default()).is_none());
         // the ranges alone move nothing, whatever they are set to
-        let p = lcc_develop::Primaries { log: true, low: 0.0, high: 1.0, ..Default::default() };
+        let p = lcc_develop::Primaries { low: 0.0, high: 1.0, ..Default::default() };
         assert!(PrimariesK::new(&p).is_none());
+        // a Log wheel alone is an edit like any Color one
+        let mut s = DevelopSettings::default();
+        s.primaries.log_wheels.shadow = lcc_develop::Wheel { hue: 220.0, sat: 40.0, lum: 0.0 };
+        assert!(!ColorOps::new(&s).is_identity());
         // a hue with no saturation is no move either (as the grading wheels read it)
         let mut s = DevelopSettings::default();
         s.primaries.lift.hue = 220.0;
@@ -941,20 +974,26 @@ mod tests {
     }
 
     #[test]
-    fn primaries_log_ranges_narrow_the_wheels() {
-        let mut s = DevelopSettings::default();
-        s.primaries.lift = lcc_develop::Wheel { hue: 220.0, sat: 100.0, lum: 0.0 };
-        let wide = PrimariesK::new(&s.primaries).unwrap();
+    fn the_log_wheels_stay_narrow_and_both_sets_stack() {
+        // the same pull on lift (Color, wide) and shadow (Log, narrow): the wide one reaches well
+        // into the midtones, the narrow one stops below them — and both together stack additively
+        let pull = lcc_develop::Wheel { hue: 220.0, sat: 100.0, lum: 0.0 };
+        let s = lcc_develop::Primaries { lift: pull, ..Default::default() };
+        let wide = PrimariesK::new(&s).unwrap();
+        let s2 = lcc_develop::Primaries { log_wheels: lcc_develop::LogWheels { shadow: pull, ..Default::default() }, ..Default::default() };
+        let log = PrimariesK::new(&s2).unwrap();
         let mid = [0.5, 0.5, 0.5];
         let w = wide.apply(mid);
-        s.primaries.log = true;
-        let log = PrimariesK::new(&s.primaries).unwrap();
         let l = log.apply(mid);
-        // wide wheels reach well into the midtones; the Log wheels' shadows stop below them
-        assert!(w[2] - w[0] > (l[2] - l[0]) + 0.02, "wide {w:?} vs log {l:?}");
-        // and the log shadows still reach true shadows
+        assert!(w[2] - w[0] > (l[2] - l[0]) + 0.02, "wide {w:?} vs narrow {l:?}");
+        // the narrow shadows still reach true shadows
         let dark = log.apply([0.02, 0.02, 0.02]);
         assert!(dark[2] > dark[0] + 0.02, "{dark:?}");
+        // complimentary: with both sets pulled, the midtones see (at least) the Color wheels' tilt
+        let both = lcc_develop::Primaries { lift: pull, log_wheels: lcc_develop::LogWheels { shadow: pull, ..Default::default() }, ..Default::default() };
+        let k = PrimariesK::new(&both).unwrap();
+        let stacked_mid = k.apply(mid);
+        assert!(stacked_mid[2] - stacked_mid[0] > 0.0, "both sets render together: {stacked_mid:?}");
     }
 
     #[test]
@@ -962,7 +1001,13 @@ mod tests {
         let p = lcc_develop::Primaries {
             lift: lcc_develop::Wheel { hue: 220.0, sat: 50.0, lum: -10.0 },
             gain: lcc_develop::Wheel { hue: 0.0, sat: 25.0, lum: 15.0 },
-            log: true,
+            log_wheels: lcc_develop::LogWheels {
+                shadow: lcc_develop::Wheel { hue: 220.0, sat: 50.0, lum: -10.0 },
+                highlight: lcc_develop::Wheel { hue: 0.0, sat: 25.0, lum: 15.0 },
+                ..Default::default()
+            },
+            low: 0.25,
+            high: 0.8,
             ..Default::default()
         };
         let k = PrimariesK::new(&p).unwrap();
@@ -970,23 +1015,29 @@ mod tests {
         assert_eq!(w.len(), PRIMARY_WORDS);
         assert_eq!([w[0], w[1], w[2], w[3]], [k.lift.rgb[0], k.lift.rgb[1], k.lift.rgb[2], k.lift.master]);
         assert_eq!([w[8], w[9], w[10], w[11]], [k.gain.rgb[0], k.gain.rgb[1], k.gain.rgb[2], k.gain.master]);
-        assert_eq!((w[16], w[17], w[18]), (k.low, k.high, 1.0));
+        assert_eq!([w[16], w[17], w[18], w[19]], [k.shadow.rgb[0], k.shadow.rgb[1], k.shadow.rgb[2], k.shadow.master]);
+        assert_eq!([w[28], w[29], w[30], w[31]], [k.log_offset.rgb[0], k.log_offset.rgb[1], k.log_offset.rgb[2], k.log_offset.master]);
+        assert_eq!((w[32], w[33]), (k.low, k.high));
     }
 
     #[test]
     fn primaries_hostile_settings_stay_finite_and_in_range() {
-        // from_untrusted_json clamps through the control specs (a sat of inf reads as the default)
+        // from_untrusted_json clamps through the control specs (a sat of inf reads as the default);
+        // an older experimental `log` switch in the JSON is left unread
         let v = DevelopSettings::from_untrusted_json(&serde_json::json!({
             "primaries": {
                 "lift": {"hue": -900.0, "sat": 1e300, "lum": -1e300},
                 "gain": {"hue": 1e308, "sat": -50.0, "lum": 1e9},
-                "log": true, "low": -2.0, "high": 99.0
+                "log": true,
+                "logWheels": {"shadow": {"hue": 1e9, "sat": 1e9, "lum": -1e9}},
+                "low": -2.0, "high": 99.0
             }
         }))
         .unwrap();
         let p = &v.primaries;
         assert!((0.0..=360.0).contains(&p.lift.hue) && (0.0..=100.0).contains(&p.lift.sat) && (-100.0..=100.0).contains(&p.lift.lum));
         assert!((0.0..=1.0).contains(&p.low) && (0.0..=1.0).contains(&p.high));
+        assert!((-100.0..=100.0).contains(&p.log_wheels.shadow.lum), "the Log wheels clamp too");
         let k = PrimariesK::new(p).unwrap();
         for c in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.2, 0.5, 0.9]] {
             let out = k.apply(c);

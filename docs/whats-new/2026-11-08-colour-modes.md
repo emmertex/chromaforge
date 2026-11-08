@@ -5,12 +5,15 @@
 - **Witchcraft** leads with a strip of **nodes** — the grade's stages (Balance, Primaries, HSL Curves, Curve, Colour,
   Grade, each of the photo's masks, Effects, Output). Click a node to open its panel; click its number to bypass that
   stage, as a colourist disables a node.
-- The **Primaries** palette: four colourist wheels — **Lift, Gamma, Gain, Offset**, each with its master wheel beneath
-  — with the same drag holds as the Color Grading wheels (Shift keeps the hue, Cmd/Ctrl the saturation, Alt
-  fine-adjusts, double-click resets). The palette's own switch picks the variant: **Color** wheels (wide tonal
-  overlap) or **Log** wheels (Shadows / Midtones / Highlights with **Low Range** and **High Range** boundaries).
+- The **Primaries** palette has two sets of colourist wheels, each wheel with its master wheel beneath
+  and the same drag holds as the Color Grading wheels (Shift keeps the hue, Cmd/Ctrl the saturation, Alt
+  fine-adjusts, double-click resets): the **Color** wheels (Lift, Gamma, Gain, Offset — wide tonal
+  overlap) and the **Log** wheels (Shadows, Midtones, Highlights, Offset — narrow ranges you place with
+  **Low Range** and **High Range**). Both sets render at once, complimentary as in Resolve — the Color
+  wheels establish the range, the Log wheels refine it; the palette's Color | Log tabs just pick which
+  set you are editing, and nothing resets when you switch.
 - **HSL Curves**: Hue vs Hue, Hue vs Sat and Hue vs Lum, each a curve you draw yourself — click anywhere to
   add a point, drag it where the edit belongs, double-click a point to remove it. The smooth curve through
   your points (neutral at the hue axis's ends) is exactly what renders, on CPU and GPU alike.
 - Everything works in Eboda too: the wheels, curves and scopes are ordinary develop controls (`primaries.*`,
-  `develop.primaries`), so presets, history, XMP sidecars, the CLI and agents see one edit like any other.
+  `develop.hslCurves`), so presets, history, XMP sidecars, the CLI and agents see one edit like any other.

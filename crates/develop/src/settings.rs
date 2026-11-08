@@ -937,10 +937,13 @@ impl ColorGrading {
     }
 }
 
-/// The colourist primaries (the Witchcraft grading mode's wheels): lift, gamma, gain and offset —
-/// each a [`Wheel`] whose hue/saturation is the puck and whose luminance is the master wheel
-/// beneath — plus the Log variant's tonal-range boundaries. Semantics read from Blackmagic's
-/// *Colorist Guide to DaVinci Resolve 18* (pp. xviii, 12, 23–33); the maths is this codebase's own.
+/// The colourist primaries (the Witchcraft grading mode's wheels): two sets that both render, as
+/// Resolve's do — the **Color wheels** (lift, gamma, gain, offset; wide tonal overlap) establish
+/// the range, and the **Log wheels** (`log_wheels`; narrow ranges between `low` and `high`) refine
+/// it. Each wheel is a [`Wheel`]: hue/saturation is the puck, luminance the master wheel beneath.
+/// Semantics read from Blackmagic's *Colorist Guide to DaVinci Resolve 18* (pp. xviii, 12, 23–33);
+/// the maths is this codebase's own. (An older experimental shape of this group wrote a `log`
+/// switch into the same four wheels; that key is left unread.)
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Primaries {
@@ -948,18 +951,35 @@ pub struct Primaries {
     pub gamma: Wheel,
     pub gain: Wheel,
     pub offset: Wheel,
-    /// The Log wheels: narrowly separated ranges with their boundaries at `low` and `high`, instead
-    /// of the Colour wheels' wide overlap.
-    pub log: bool,
-    /// Shadow/midtone boundary 0..1 (Log wheels).
+    pub log_wheels: LogWheels,
+    /// Shadow/midtone boundary 0..1 (the Log wheels' ranges).
     pub low: f64,
-    /// Midtone/highlight boundary 0..1 (Log wheels).
+    /// Midtone/highlight boundary 0..1 (the Log wheels' ranges).
     pub high: f64,
+}
+
+/// The Log wheels: narrowly separated shadows / midtones / highlights with their own offset —
+/// complimentary to the Color wheels, not an alternative (both apply).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogWheels {
+    pub shadow: Wheel,
+    pub midtone: Wheel,
+    pub highlight: Wheel,
+    pub offset: Wheel,
 }
 
 impl Default for Primaries {
     fn default() -> Self {
-        Self { lift: Wheel::default(), gamma: Wheel::default(), gain: Wheel::default(), offset: Wheel::default(), log: false, low: 0.35, high: 0.7 }
+        Self {
+            lift: Wheel::default(),
+            gamma: Wheel::default(),
+            gain: Wheel::default(),
+            offset: Wheel::default(),
+            log_wheels: LogWheels::default(),
+            low: 0.35,
+            high: 0.7,
+        }
     }
 }
 
@@ -968,9 +988,12 @@ impl Primaries {
         *self == Self::default()
     }
 
-    /// The wheels move nothing (the range boundaries alone cannot).
+    /// No wheel moves anything (the range boundaries alone cannot).
     pub fn is_neutral(&self) -> bool {
-        [self.lift, self.gamma, self.gain, self.offset].iter().all(|w| w.sat == 0.0 && w.lum == 0.0)
+        [&self.lift, &self.gamma, &self.gain, &self.offset]
+            .into_iter()
+            .chain([&self.log_wheels.shadow, &self.log_wheels.midtone, &self.log_wheels.highlight, &self.log_wheels.offset])
+            .all(|w| w.sat == 0.0 && w.lum == 0.0)
     }
 }
 

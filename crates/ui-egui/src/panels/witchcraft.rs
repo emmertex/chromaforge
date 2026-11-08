@@ -15,10 +15,12 @@ use crate::LccApp;
 use crate::theme::Tokens;
 use crate::widgets::register;
 
-/// The wheels, in the palette's order: the key names the `primaries.<key>.*` controls; the label
-/// is the Color variant's (the Log variant renames the first three).
-const WHEELS: [(&str, &str, &str); 4] =
-    [("lift", "Lift", "Shadows"), ("gamma", "Gamma", "Midtones"), ("gain", "Gain", "Highlights"), ("offset", "Offset", "Offset")];
+/// The palette's two sets of wheels, both always rendering (Resolve's Primaries: the Color wheels
+/// establish the range, the Log wheels refine it — complimentary, not either/or): each entry is
+/// the control prefix under `primaries.` and the wheel's label.
+const COLOR_WHEELS: [(&str, &str); 4] = [("lift", "Lift"), ("gamma", "Gamma"), ("gain", "Gain"), ("offset", "Offset")];
+const LOG_WHEELS: [(&str, &str); 4] =
+    [("logWheels.shadow", "Shadows"), ("logWheels.midtone", "Midtones"), ("logWheels.highlight", "Highlights"), ("logWheels.offset", "Offset")];
 
 /// The node strip at the head of the Witchcraft panel: the grade's stages as Resolve lays a node
 /// tree out — the panels' own sections in the grade's order, the photo's masks in the middle, the
@@ -110,18 +112,21 @@ pub(crate) fn node_strip(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSetting
     });
 }
 
-/// The Primaries palette: the Color | Log variant switch, the four wheels in two rows, the master
-/// wheel of each under its column, and the Log variant's range boundaries.
+/// The Primaries palette: the Color | Log tabs pick which set of wheels is edited (both always
+/// render — Resolve's own Primaries palette works the same way), the four wheels of that set in two
+/// rows, the master wheel of each under its column, and the Log set's range boundaries.
 pub(crate) fn primaries(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
-    // Color (the default) or Log, as the palette's own segmented switch (Resolve's Primaries palette)
+    // which set of wheels the palette shows: a view choice (UiState), not a render mode
+    let log_view = app.ui.primaries_tab == "log";
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            let active = usize::from(d.primaries.log);
-            if let Some(i) = crate::widgets::segmented(ui, "primariesVariant", &[("Color", "color"), ("Log", "log")], Some(active), 2) {
-                let _ = app.run("develop.primaries", json!({"log": i == 1}));
+            let active = usize::from(log_view);
+            if let Some(i) = crate::widgets::segmented(ui, "primariesWheels", &[("Color", "color"), ("Log", "log")], Some(active), 2) {
+                app.ui.primaries_tab = if i == 1 { "log".into() } else { "color".into() };
             }
         });
     });
+    let wheels: &[(&str, &str)] = if log_view { &LOG_WHEELS } else { &COLOR_WHEELS };
     // four wheels in two rows, the master wheels under their columns (as the 3-Way grading lays
     // its wheels and luminance sliders out)
     let w = ui.available_width();
@@ -133,45 +138,47 @@ pub(crate) fn primaries(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings
         pos2(area.left() + w * 0.28, area.top() + rad * 3.0 + 36.0),
         pos2(area.left() + w * 0.72, area.top() + rad * 3.0 + 36.0),
     ];
-    let labels: Vec<&str> = WHEELS.iter().map(|(_, color, log)| if d.primaries.log { *log } else { *color }).collect();
-    for ((key, ..), c) in WHEELS.iter().zip(at) {
-        wheel(app, ui, d, key, c, rad);
+    for ((key, label), c) in wheels.iter().zip(at) {
+        wheel(app, ui, d, key, label, c, rad);
     }
-    for ((key, ..), label) in WHEELS.iter().zip(&labels) {
+    for (key, label) in wheels {
         control_as(app, ui, d, &format!("primaries.{key}.lum"), true, Some(label));
     }
-    // the Log variant's range boundaries (they move where the Shadow and Highlight wheels stop)
-    if d.primaries.log {
+    // the Log set's range boundaries (they move where its Shadow and Highlight wheels stop)
+    if log_view {
         control_as(app, ui, d, "primaries.low", true, Some("Low Range"));
         control_as(app, ui, d, "primaries.high", true, Some("High Range"));
     }
     ui.add_space(8.0);
 }
 
-/// One colourist wheel (`key` of [`WHEELS`]) centred on `c`: drag to pick hue and saturation,
-/// double-click to reset the puck — the same holds and readouts as the Color Grading wheels.
-fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, key: &str, c: Pos2, rad: f32) {
+/// One colourist wheel (`prefix` under `primaries.`, of [`COLOR_WHEELS`] or [`LOG_WHEELS`])
+/// centred on `c`: drag to pick hue and saturation, double-click to reset the puck — the same
+/// holds and readouts as the Color Grading wheels.
+fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, prefix: &str, label: &str, c: Pos2, rad: f32) {
     let t = Tokens::get(ui.ctx());
-    let wh = match key {
+    let wh = match prefix {
         "lift" => d.primaries.lift,
         "gamma" => d.primaries.gamma,
         "gain" => d.primaries.gain,
+        "logWheels.shadow" => d.primaries.log_wheels.shadow,
+        "logWheels.midtone" => d.primaries.log_wheels.midtone,
+        "logWheels.highlight" => d.primaries.log_wheels.highlight,
+        "logWheels.offset" => d.primaries.log_wheels.offset,
         _ => d.primaries.offset,
     };
-    let label = WHEELS.iter().find(|(k, ..)| *k == key).map_or(key, |(_, l, _)| *l);
-    let log_label = WHEELS.iter().find(|(k, ..)| *k == key).map_or(key, |(_, _, l)| *l);
     let r = Rect::from_center_size(c, vec2(rad * 2.0, rad * 2.0));
-    let resp = ui.interact(r, egui::Id::new(("primariesWheel", key)), Sense::click_and_drag());
+    let resp = ui.interact(r, egui::Id::new(("primariesWheel", prefix)), Sense::click_and_drag());
     crate::widgets::announce(&resp, format!("{} {}", crate::i18n::tr(label), crate::i18n::tr("Color wheel")));
     let resp = resp.on_hover_text(crate::i18n::tr(
         "Drag to set hue and saturation. Hold Shift to keep the hue, Cmd/Ctrl to keep the saturation, Alt/Option to fine-adjust. Double-click to reset.",
     ));
-    register(ui.ctx(), format!("wheel:primaries-{key}"), r);
+    register(ui.ctx(), format!("wheel:primaries-{prefix}"), r);
     paint_wheel(ui.painter(), c, rad);
     let a = (wh.hue as f32).to_radians();
     let dot = c + vec2(a.cos(), -a.sin()) * rad * (wh.sat as f32 / 100.0);
     // the puck's modifiers and mid-drag re-grab, as the Color Grading wheels
-    let grab_id = egui::Id::new(("primariesWheelGrab", key));
+    let grab_id = egui::Id::new(("primariesWheelGrab", prefix));
     let mods = ui.input(|i| WheelMods::from_modifiers(i.modifiers));
     let pointer = wheel_pointer(ui, &resp);
     let grab = match pointer {
@@ -203,21 +210,16 @@ fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, key: &str, c:
     ui.painter().circle_filled(c, 2.0, Color32::WHITE);
     ui.painter().circle_filled(dot, 5.0, Color32::WHITE);
     ui.painter().circle_stroke(dot, 5.0, Stroke::new(1.0, Color32::BLACK));
-    ui.painter().text(
-        pos2(c.x, c.y + rad + 12.0),
-        Align2::CENTER_CENTER,
-        crate::i18n::tr(if d.primaries.log { log_label } else { label }),
-        t.font(12.0),
-        t.text_label,
-    );
+    ui.painter().text(pos2(c.x, c.y + rad + 12.0), Align2::CENTER_CENTER, crate::i18n::tr(label), t.font(12.0), t.text_label);
     if resp.drag_started() {
-        let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr(if d.primaries.log { log_label } else { label })}));
+        let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr(label)}));
     }
     if (resp.dragged() || resp.clicked())
         && let Some(q) = pointer
     {
         let (hue, sat) = grab.map_or_else(|| wheel_pick(q - c, rad, None), |g| g.pick(q - c, rad));
-        let _ = app.run("develop.set", json!({"values": {format!("primaries.{key}.hue"): hue.round(), format!("primaries.{key}.sat"): sat.round()}}));
+        let _ = app
+            .run("develop.set", json!({"values": {format!("primaries.{prefix}.hue"): hue.round(), format!("primaries.{prefix}.sat"): sat.round()}}));
     }
     if resp.drag_stopped() || resp.clicked() {
         let _ = app.run("develop.endInteraction", json!({}));
@@ -229,7 +231,7 @@ fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, key: &str, c:
         give_pointer_back(ui.ctx(), held.origin);
     }
     if resp.double_clicked() {
-        let _ = app.run("develop.set", json!({"values": {format!("primaries.{key}.hue"): 0, format!("primaries.{key}.sat"): 0}}));
+        let _ = app.run("develop.set", json!({"values": {format!("primaries.{prefix}.hue"): 0, format!("primaries.{prefix}.sat"): 0}}));
     }
 }
 

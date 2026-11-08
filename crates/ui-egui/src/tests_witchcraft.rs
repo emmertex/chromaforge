@@ -48,7 +48,7 @@ fn witchcraft_shows_the_palette_eboda_keeps_lightrooms_panels() {
     for key in ["lift", "gamma", "gain", "offset"] {
         assert!(has(&h, &format!("wheel:primaries-{key}")), "wheel {key}");
     }
-    assert!(has(&h, "button:primariesVariant-log"), "the Color | Log switch");
+    assert!(has(&h, "button:primariesWheels-log"), "the Color | Log tabs");
     // back in Eboda the palette is away: Lightroom's own panels only
     run(&mut h, "view.gradingMode", json!({"mode": "eboda"}));
     h.step();
@@ -57,19 +57,35 @@ fn witchcraft_shows_the_palette_eboda_keeps_lightrooms_panels() {
 }
 
 #[test]
-fn the_log_variant_shows_the_range_boundaries() {
+fn the_log_wheels_are_their_own_set_and_both_render() {
     let mut h = demo();
-    assert!(!any_has(&h, "primaries.low"), "the Color variant has no range sliders");
-    let r = run(&mut h, "develop.primaries", json!({"log": true}));
-    assert_eq!(r["log"], true);
+    // a Color wheel and a Log wheel are separate edits that both hold their values
+    run(&mut h, "develop.set", json!({"control": "primaries.lift.sat", "value": 40.0}));
+    assert!(!any_has(&h, "primaries.low"), "the Color view has no range sliders");
+    let r = h.request("ui.clickWidget", json!({"id": "button:primariesWheels-log"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.primaries_tab, "log");
+    // the Log view shows its own wheels and the range boundaries
+    assert!(has(&h, "wheel:primaries-logWheels.shadow"));
+    assert!(any_has(&h, "primaries.low") && any_has(&h, "primaries.high"));
+    assert!(!has(&h, "wheel:primaries-lift"), "the Color wheels are in the other view");
+    // the Color edit survives the view switch — both sets are live at once
     let id = h.app.session.active().unwrap();
-    assert!(h.app.session.develop_of(id).unwrap_or_default().primaries.log);
-    // the Log wheels' boundary sliders appear beside the wheels
-    assert!(any_has(&h, "primaries.low"));
-    assert!(any_has(&h, "primaries.high"));
-    let r = run(&mut h, "develop.primaries", json!({}));
-    assert_eq!(r["log"], false);
-    assert!(!any_has(&h, "primaries.low"));
+    let p = h.app.session.develop_of(id).unwrap_or_default().primaries;
+    assert_eq!(p.lift.sat, 40.0);
+    run(&mut h, "develop.set", json!({"control": "primaries.logWheels.shadow.sat", "value": 55.0}));
+    let p = h.app.session.develop_of(id).unwrap_or_default().primaries;
+    assert_eq!((p.lift.sat, p.log_wheels.shadow.sat), (40.0, 55.0), "two sets, each with its own values");
+    // back to the Color view: nothing reset
+    let r = h.request("ui.clickWidget", json!({"id": "button:primariesWheels-color"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(has(&h, "wheel:primaries-lift"));
+    let p = h.app.session.develop_of(id).unwrap_or_default().primaries;
+    assert_eq!((p.lift.sat, p.log_wheels.shadow.sat), (40.0, 55.0));
 }
 
 #[test]

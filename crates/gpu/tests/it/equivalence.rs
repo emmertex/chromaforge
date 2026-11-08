@@ -274,11 +274,20 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.primaries.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
         }),
         ("colourist primaries (log)", |s| {
-            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
-            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
-            s.primaries.log = true;
+            s.primaries.log_wheels.shadow = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.log_wheels.highlight = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
             s.primaries.low = 0.25;
             s.primaries.high = 0.8;
+        }),
+        ("colourist primaries (both sets)", |s| {
+            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.gamma = Wheel { hue: 30.0, sat: 20.0, lum: 0.0 };
+            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
+            s.primaries.log_wheels.shadow = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.log_wheels.midtone = Wheel { hue: 60.0, sat: 15.0, lum: 5.0 };
+            s.primaries.log_wheels.highlight = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.log_wheels.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
         }),
         ("hsl curves", |s| {
             s.hsl_curves.hue = vec![Point::new(0.55, -0.4), Point::new(0.8, 0.3)];

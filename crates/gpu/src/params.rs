@@ -74,15 +74,19 @@ const FIELDS: &[(&str, usize)] = &[
     ("BALANCE", 1),
     ("SKIN", 1),
     ("BANDH", 8),
-    // the colourist primaries (`PrimariesK`): the four wheels (rgb + master each), the Log ranges
+    // the colourist primaries (`PrimariesK`): the Color wheels then the Log wheels (rgb + master
+    // each), the Log wheels' range boundaries
     ("PRIMARIES", 1),
     ("PRIM_LIFT", 4),
     ("PRIM_GAMMA", 4),
     ("PRIM_GAIN", 4),
     ("PRIM_OFFSET", 4),
+    ("PRIM_SHADOW", 4),
+    ("PRIM_MIDTONE", 4),
+    ("PRIM_HIGHLIGHT", 4),
+    ("PRIM_LOG_OFFSET", 4),
     ("PRIM_LOW", 1),
     ("PRIM_HIGH", 1),
-    ("PRIM_LOG", 1),
     // the HSL curves (`HslK`): the hue, saturation and luminance LUTs over the hue circle
     ("HSL", 1),
     ("HSL_LUT", HSL_WORDS),
@@ -361,12 +365,20 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     }
     if let Some(pr) = &ops.primaries {
         p.b("PRIMARIES", true);
-        for (name, w) in [("PRIM_LIFT", &pr.lift), ("PRIM_GAMMA", &pr.gamma), ("PRIM_GAIN", &pr.gain), ("PRIM_OFFSET", &pr.offset)] {
+        for (name, w) in [
+            ("PRIM_LIFT", &pr.lift),
+            ("PRIM_GAMMA", &pr.gamma),
+            ("PRIM_GAIN", &pr.gain),
+            ("PRIM_OFFSET", &pr.offset),
+            ("PRIM_SHADOW", &pr.shadow),
+            ("PRIM_MIDTONE", &pr.midtone),
+            ("PRIM_HIGHLIGHT", &pr.highlight),
+            ("PRIM_LOG_OFFSET", &pr.log_offset),
+        ] {
             p.fs(name, &[w.rgb[0], w.rgb[1], w.rgb[2], w.master]);
         }
         p.f("PRIM_LOW", pr.low);
         p.f("PRIM_HIGH", pr.high);
-        p.b("PRIM_LOG", pr.log);
     }
     if let Some(hsl) = &ops.hsl {
         p.b("HSL", true);
