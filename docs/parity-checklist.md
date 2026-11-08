@@ -750,8 +750,8 @@ From `06-shortcuts.md` part 1. Evidence is our binding; conflicts are explained 
 | KEY-PICK | Pick — Z | P0 | 🟡 | `cmd:photo.pick` | bound to P; Z toggles zoom |
 | KEY-UNFLAG | Unflag — U | P0 | ✅ | `cmd:photo.unflag` | |
 | KEY-REJECT | Reject — X | P0 | ✅ | `cmd:photo.reject` | swaps crop aspect while cropping |
-| KEY-RATING | Ratings — 0…5 | P0 | ✅ | `crates/ui-egui/src/shortcuts.rs` → `cmd:photo.rate` | 0 clears, 1–5 set; Shift applies and advances; native macOS plain keys stay with egui; grid multi-selection and undo/redo tested |
-| KEY-LABELS | Labels — 6…9 | P1 | ✅ | `crates/ui-egui/src/shortcuts.rs` → `cmd:photo.label` | 6 red, 7 yellow, 8 green, 9 blue; pressing the same key again toggles off; Shift+6–9 toggles and advances; purple/none available from menus |
+| KEY-RATING | Ratings — 0…5 | P0 | ✅ | `crates/ui-egui/src/shortcuts.rs` → `cmd:photo.rate` | 0 clears, 1–5 set; Shift applies and advances; native macOS plain keys stay with egui; grid multi-selection and undo/redo tested; the digits are the remappable commands `cmd:photo.rate0`…`cmd:photo.rate5` (Help ▸ Keyboard Shortcuts); on French AZERTY the `'` (4) key rates without Shift |
+| KEY-LABELS | Labels — 6…9 | P1 | ✅ | `crates/ui-egui/src/shortcuts.rs` → `cmd:photo.label` | 6 red, 7 yellow, 8 green, 9 blue; pressing the same key again toggles off; Shift+6–9 toggles and advances; purple/none available from menus; remappable as `cmd:photo.labelRed`, `cmd:photo.labelYellow`, `cmd:photo.labelGreen`, `cmd:photo.labelBlue` |
 | KEY-MASKING | Masking — M | P0 | ✅ | `cmd:panel.masking` | |
 | KEY-ERASE | Erase while held — ⌥ | P0 | ✅ | `crates/ui-egui/src/panels/detail.rs`, `crates/ui-egui/src/panels/masking.rs` | ⌥ while painting flips Add ↔ Erase for that stroke; Add/Erase buttons too |
 | KEY-RATEADVANCE | Rate and advance — ⇧0…5 | P1 | ✅ | `crates/ui-egui/src/shortcuts.rs` → `cmd:photo.rate` (`advance`) | |

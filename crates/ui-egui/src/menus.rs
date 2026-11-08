@@ -156,6 +156,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View>Tool Overlay"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View>Tool Overlay"),
     ("view.cropMaskOpacity", "Crop Mask Opacity", None, ""),
+    ("photo.rate0", "Clear Rating", Some("0"), ""),
+    ("photo.rate1", "Rate ★", Some("1"), ""),
+    ("photo.rate2", "Rate ★★", Some("2"), ""),
+    ("photo.rate3", "Rate ★★★", Some("3"), ""),
+    ("photo.rate4", "Rate ★★★★", Some("4"), ""),
+    ("photo.rate5", "Rate ★★★★★", Some("5"), ""),
+    ("photo.labelRed", "Red Label", Some("6"), ""),
+    ("photo.labelYellow", "Yellow Label", Some("7"), ""),
+    ("photo.labelGreen", "Green Label", Some("8"), ""),
+    ("photo.labelBlue", "Blue Label", Some("9"), ""),
     ("view.back", "Back to Grid", Some("Escape"), ""),
     ("tool.done", "Done", Some("Enter"), ""),
     ("view.filterBar", "Filter Bar", Some("Shift+F"), "Library>Filters"),
@@ -1656,6 +1666,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             };
             app.ui.crop_mask_opacity = opacity;
             Ok(json!({"opacity": opacity}))
+        }
+        "photo.rate0" | "photo.rate1" | "photo.rate2" | "photo.rate3" | "photo.rate4" | "photo.rate5" => {
+            let rating = id.strip_prefix("photo.rate").and_then(|n| n.parse::<u8>().ok()).unwrap_or(0);
+            return Some(app.run("photo.rate", json!({"rating": rating})));
+        }
+        "photo.labelRed" | "photo.labelYellow" | "photo.labelGreen" | "photo.labelBlue" => {
+            let label = id.strip_prefix("photo.label").unwrap_or("").to_lowercase();
+            return Some(app.run("photo.label", json!({"label": label, "toggle": true})));
         }
         "view.cropOverlayOrientation" => {
             app.ui.crop_overlay_orient = (app.ui.crop_overlay_orient + 1) % 4;

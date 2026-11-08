@@ -296,6 +296,39 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
+/// The rating and label commands with the digit key each starts on.
+const DIGIT_COMMANDS: [(Key, &str); 10] = [
+    (Key::Num0, "photo.rate0"),
+    (Key::Num1, "photo.rate1"),
+    (Key::Num2, "photo.rate2"),
+    (Key::Num3, "photo.rate3"),
+    (Key::Num4, "photo.rate4"),
+    (Key::Num5, "photo.rate5"),
+    (Key::Num6, "photo.labelRed"),
+    (Key::Num7, "photo.labelYellow"),
+    (Key::Num8, "photo.labelGreen"),
+    (Key::Num9, "photo.labelBlue"),
+];
+
+/// The id the culling path takes for a rating or label command (`rate:3:0`, `label:red`).
+fn culling_id(id: &str) -> Option<String> {
+    if let Some(n) = id.strip_prefix("photo.rate").filter(|n| n.len() == 1) {
+        return Some(format!("rate:{n}:0"));
+    }
+    let label = id.strip_prefix("photo.label").filter(|l| matches!(*l, "Red" | "Yellow" | "Green" | "Blue"))?;
+    Some(format!("label:{}", label.to_lowercase()))
+}
+
+/// Whether the digit-row key `digit` was pressed with no modifier but reported as the punctuation
+/// egui names (French AZERTY types `'` on the 4 key, macOS's French layout `!` on the 8 key): its
+/// place is the digit's. Letters, the numeric keypad's arrows and keys another command holds are not digits.
+fn digit_by_place(i: &egui::InputState, digit: Key) -> bool {
+    i.events.iter().any(|e| {
+        matches!(e, egui::Event::Key { key: Key::Quote | Key::Exclamationmark, physical_key: Some(p), pressed: true, modifiers, .. }
+            if *p == digit && *modifiers == Modifiers::NONE)
+    })
+}
+
 fn matches(i: &egui::InputState, m: Modifiers, k: Key) -> bool {
     // the windowing layer turns ⌘C / ⌘X / ⌘V (with any other modifiers held) and the keyboard's
     // Copy / Cut / Paste keys into these on Windows and Linux (macOS's menu bar takes them first);
@@ -509,7 +542,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 && matches(i, m, k)
                 && let Some(id) = grid_key_command(keymap, grid, app.ui.fullscreen, b.id, (m, k))
             {
-                fire.push(id.to_string());
+                // a rating or label command goes the culling path its digit always took
+                fire.push(culling_id(id).map_or_else(|| id.to_string(), |c| c));
             }
         }
         // a held Space repeats: it toggles the zoom (or takes the hand) once per press
@@ -525,17 +559,21 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             }
         }
         // rating 0-5, colour labels 6-9 (with Shift: and advance)
+        // (the plain digits are the `photo.rate0`..`photo.labelBlue` commands, above; Shift+digit stays fixed)
         for (n, key) in [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5].iter().enumerate() {
-            if matches(i, Modifiers::NONE, *key) && !native(&n.to_string()) && !taken.contains(&(Modifiers::NONE, *key)) {
-                fire.push(format!("rate:{n}:0"));
-            }
             if matches(i, Modifiers::SHIFT, *key) && !taken.contains(&(Modifiers::SHIFT, *key)) {
                 fire.push(format!("rate:{n}:1"));
             }
         }
-        for (label, key, sc) in [("red", Key::Num6, "6"), ("yellow", Key::Num7, "7"), ("green", Key::Num8, "8"), ("blue", Key::Num9, "9")] {
-            if matches(i, Modifiers::NONE, key) && !native(sc) && !taken.contains(&(Modifiers::NONE, key)) {
-                fire.push(format!("label:{label}"));
+        // AZERTY: a digit-row key whose typed character egui names as punctuation still rates or labels
+        for (key, id) in DIGIT_COMMANDS {
+            if digit_by_place(i, key)
+                && !taken.contains(&(Modifiers::NONE, Key::Quote))
+                && !taken.contains(&(Modifiers::NONE, Key::Exclamationmark))
+                && shortcut_of(keymap, id).is_some_and(|sc| parse(sc) == Some((Modifiers::NONE, key)))
+                && let Some(c) = culling_id(id)
+            {
+                fire.push(c);
             }
         }
         if grid_navigation {
@@ -1360,6 +1398,31 @@ mod tests {
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
         assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
         assert_eq!(h.app.session.active(), Some(PhotoId(2)));
+    }
+
+    /// A rating key can be moved: the new key rates, the old digit no longer does. On French AZERTY the
+    /// 4 key types `'` without Shift: it still rates 4.
+    #[test]
+    fn rating_keys_are_remappable_and_azerty_digits_rate() {
+        use lcc_catalog::PhotoId;
+        let mut h = library();
+        let rating = |h: &crate::headless::Headless| h.app.session.catalog.photo(PhotoId(1)).unwrap().rating;
+        for pressed in [true, false] {
+            h.app.synthetic.push(egui::Event::Key {
+                key: Key::Quote,
+                physical_key: Some(Key::Num4),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+        assert_eq!(rating(&h), 4, "the 4 key of a French layout rates without Shift");
+        assign(&mut h.app.ui.settings.keymap, "photo.rate3", Some("F2")).unwrap();
+        key(&mut h, "3", false);
+        assert_eq!(rating(&h), 4, "3 no longer rates 3");
+        key(&mut h, "F2", false);
+        assert_eq!(rating(&h), 3, "the new key does");
     }
 
     #[test]
