@@ -199,10 +199,11 @@ pub enum LaunchLibrary {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GradingMode {
-    /// The Lightroom Classic panels, as the Edit panel always had them (the default).
-    #[default]
+    /// The Lightroom Classic panels, as the Edit panel always had them.
     Eboda,
-    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes.
+    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes
+    /// (the default — the fork's own face, with Lightroom's panels one Settings row away).
+    #[default]
     Witchcraft,
 }
 
@@ -591,8 +592,8 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
-    /// The Edit panel's grading mode (`view.gradingMode`): Eboda, the Lightroom Classic panels
-    /// (the default), or Witchcraft, the DaVinci Resolve style colour-grading palettes. Both edit
+    /// The Edit panel's grading mode (`view.gradingMode`): Witchcraft, the DaVinci Resolve style
+    /// colour-grading palettes (the default), or Eboda, the Lightroom Classic panels. Both edit
     /// the same photo; a value this version doesn't know reads as the default.
     #[serde(deserialize_with = "lenient")]
     pub grading_mode: GradingMode,
@@ -771,7 +772,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
-            grading_mode: GradingMode::Eboda,
+            grading_mode: GradingMode::Witchcraft,
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),

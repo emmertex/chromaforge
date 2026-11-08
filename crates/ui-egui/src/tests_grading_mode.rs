@@ -34,13 +34,13 @@ fn grade(h: &mut Headless, params: serde_json::Value) -> serde_json::Value {
 #[test]
 fn the_command_cycles_selects_and_rejects_unknown_modes() {
     let mut h = demo();
-    assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Eboda);
+    assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Witchcraft, "Witchcraft is the default");
     let r = grade(&mut h, json!({}));
-    assert_eq!(r["mode"], "witchcraft");
-    assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Witchcraft);
-    let r = grade(&mut h, json!({"mode": "eboda"}));
     assert_eq!(r["mode"], "eboda");
     assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Eboda);
+    let r = grade(&mut h, json!({"mode": "witchcraft"}));
+    assert_eq!(r["mode"], "witchcraft");
+    assert_eq!(h.app.ui.settings.grading_mode, GradingMode::Witchcraft);
     let r = h.request("engine.execute", json!({"command": "view.gradingMode", "params": {"mode": "nope"}}), T);
     assert_eq!(r["ok"], false, "an unknown mode is an error, not a panic: {r}");
 }
@@ -80,11 +80,11 @@ fn both_modes_edit_the_same_photo_settings() {
 }
 
 #[test]
-fn grading_mode_round_trips_and_unknown_values_read_as_eboda() {
-    let s: AppSettings = serde_json::from_str(r#"{"gradingMode":"witchcraft"}"#).unwrap();
-    assert_eq!(s.grading_mode, GradingMode::Witchcraft);
-    let s: AppSettings = serde_json::from_str(r#"{"gradingMode":"nope"}"#).unwrap();
+fn grading_mode_round_trips_and_unknown_values_read_as_the_default() {
+    let s: AppSettings = serde_json::from_str(r#"{"gradingMode":"eboda"}"#).unwrap();
     assert_eq!(s.grading_mode, GradingMode::Eboda);
+    let s: AppSettings = serde_json::from_str(r#"{"gradingMode":"nope"}"#).unwrap();
+    assert_eq!(s.grading_mode, GradingMode::Witchcraft, "unknown reads as the default");
     let j = serde_json::to_value(AppSettings { grading_mode: GradingMode::Witchcraft, ..Default::default() }).unwrap();
     assert_eq!(j["gradingMode"], "witchcraft");
 }
