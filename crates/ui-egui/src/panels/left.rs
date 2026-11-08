@@ -2425,7 +2425,8 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
 /// it has none, or one with nothing to offer (no new photos, no parent folder) is left out.
 fn folder_item_available(app: &LccApp, item: FolderItem, path: &str, node: Option<&FolderNode>) -> bool {
     match item {
-        FolderItem::Move | FolderItem::ImportHere => app.services.pick_folder.is_some(),
+        FolderItem::Move => app.services.pick_folder.is_some() || app.services.picker.is_some(),
+        FolderItem::ImportHere => app.services.pick_folder.is_some(),
         FolderItem::UpdateLocation => app.services.pick_folder.is_some() && node.is_some(),
         FolderItem::Reveal => app.services.reveal.is_some(),
         FolderItem::AddNew => node.is_some() && lcc_engine::folder_watch::new_in(&app.session, path).is_some(),
@@ -2568,10 +2569,17 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             let id = if matches!(row, FolderRow::Local { .. }) { format!("localFolderMove:{path}") } else { format!("folderMove:{path}") };
             register(ui.ctx(), id, r.rect);
             if r.clicked() {
-                let into = app.services.pick_folder.as_mut().and_then(|f| f());
-                if let Some(into) = into {
+                // the dialog runs off the UI thread where the host has a picker (upstream #3325); `folder.move`
+                // then runs when it closes (`pick::poll`)
+                let req = crate::pick::PickRequest::folder(crate::i18n::tr("Move Folder To…"));
+                let params = json!({"path": path});
+                let picked =
+                    crate::pick::ask(app, "folder.move", &params, "into", req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x]));
+                if let crate::pick::Picked::Now(v) = picked
+                    && let Some(into) = v.into_iter().next()
+                {
                     match app.run("folder.move", json!({"path": path, "into": into})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved; {} photo(s) relinked", r["relinked"])),
+                        Ok(r) => app.toast(ui.ctx(), crate::pick::answered_message("folder.move", &r).unwrap_or_default()),
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }
