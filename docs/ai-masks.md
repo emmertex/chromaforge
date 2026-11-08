@@ -30,6 +30,17 @@ In the Masking panel (M):
   the people out of a sky mask; − ▸ Object then clicks remove one object.
 - **Edge** (per selection, −100…100): below 0 a crisper border, above 0 a feathered one (up to 2 %
   of the long edge, so previews and exports match).
+- **Edges follow the photo:** the model's grid (288² over the whole photo) has ~20 px cells on a
+  24 MP export, so a plain enlargement put the mask's edge up to a cell off the subject's and a
+  raised Exposure drew a bright outline around it. Where the grid is coarser than the output, an
+  Object or Describe mask's logits are guided-filtered by the photo's log luminance (the fast
+  guided filter, a window of 1.5 grid cells, so a preview and an export put the edge in the same
+  place): near the edge the selection follows the photo's tones, ≈ 0 a pixel or two outside a
+  subject that stands out from its background and ≈ 1 inside. Pixels whose surroundings are all in
+  or all out, and edges the photo has no contrast across, keep the plain enlargement. Refine Edges
+  then works on the combined mask and finds these edges in place. People and remembered-object
+  selections are still enlarged plainly. Cost per AI selection (Apple silicon, release build):
+  13 → 37 ms at 24 MP, 32 → 86 ms at 60 MP, 2 → 11 ms on a 2.7 MP preview.
 - **Detail:** about a second after the last click (or right after a description), the photo
   around the selection is analyzed again, zoomed in, from a sharper source (~5 s on an M4 Pro,
   in the background); the result is kept as a high-resolution patch (at most 4 per selection),

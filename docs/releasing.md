@@ -30,28 +30,45 @@ How a real run flows:
 
 ## Prepare and start a release
 
-1. **Land the upstream intake PR first.** Upstream work arrives one round at a time, all of a round in a single PR
-   ([`docs/upstream-pr-intake.md`](upstream-pr-intake.md)). That PR is opened ready for review and waits between
-   releases: this is where it merges, before the changelog is gathered, so one full CI run and one set of release
-   notes cover it. Merge `main` into it first if `main` moved, re-run the fast checks, and name the landed upstream
-   PRs and commits in the release notes. Nothing from upstream lands outside this step, except a security or
-   data-loss fix the maintainer chooses to take early (recorded as `URGENT` in the intake ledger).
+1. **Land what is ready.** Pull requests, intake rounds included
+   ([`docs/upstream-pr-intake.md`](upstream-pr-intake.md)), merge when they are reviewed and green, in any order; a
+   release takes whatever `main` holds when its changelog PR merges. Branches must be up to date with `main`, so
+   each merge leaves the other open PRs behind: merging several in a row means bringing each up to date
+   (`gh pr update-branch N`, or a merge of `main` into it) and waiting for its checks (about 6 minutes) before the
+   next. Merge a waiting intake PR early: it is the one most likely to need a merge of `main` by hand.
 2. Gather the changelog on `main`, in a PR: `cargo xtask notes --release <version>` writes
    `docs/changelog/<version>.md` from the entries in `docs/changelog/unreleased/` (adding to the file if it was
    already started) and deletes them; `--dry-run` shows it first. Edit it as usual. Gathering on `main` keeps the
-   entries from being gathered again for the next release. Then merge the release-ready changes into `release`.
-3. Set the workspace version in `Cargo.toml` (for example, with `cargo xtask version set 1.2.0`).
+   entries from being gathered again for the next release.
+   - If `main` moves before this PR merges, merge `main` into it and run `notes --release <version>` again, so the
+     entries merged meanwhile are in this release's notes too.
+   - Name the upstream pull requests that landed since the last release (the intake PRs' adopted rows) in a
+     `## Upstream` section, one line per change ending `(upstream #N, <author>)`. Don't link them: the upstream
+     repository's name fails the brand check.
+3. Set the workspace version in `Cargo.toml` (for example, with `cargo xtask version set 1.2.0`), in the same PR.
    For a manual workflow run, the version input can override the workspace version for that run.
    Use a semantic version such as `1.2.0` or `1.2.0-rc.1`; versions containing a hyphen are
    marked as prereleases.
 4. Dispatch CI on the commit (Actions → CI → Run workflow: the full test run on all three OSes) and wait for it to
-   pass; a push to `release` doesn't run CI again. Then push that commit to `release`, or dispatch the workflow on
-   `release` (a dispatch on another branch is a dry run; see below).
-5. Check the workflow run. On success, the workflow creates or updates a **draft**
+   pass (about 2½ hours); a push to `release` doesn't run CI again. A workflow can only be dispatched on a branch of
+   this repository, so when the changelog PR comes from a fork, dispatch on `main` once it has merged. Then bring
+   that commit to `release`: a PR into `release` whose head is that commit (merging it gives exactly its tree),
+   a push, or a dispatch of the workflow on `release` (a dispatch on another branch is a dry run; see below).
+   The merge or push starts the release.
+5. **Set the release notes while it builds.** The version job creates the draft with GitHub's generated list of pull
+   requests, and the release job copies the draft's notes into `latest.json`, the "What's New" of the in-app
+   update dialog. So once the draft exists, and before the platform jobs finish, replace them with the changelog:
+   `gh release edit v<version> --notes-file docs/changelog/<version>.md`. Set later, the feed keeps the generated
+   list: download `latest.json`, set its `notes` and `releases[0].notes` to the changelog, and upload it again
+   with `gh release upload v<version> latest.json --clobber` (it isn't in `SHA256SUMS.txt`, so the signature
+   still holds; `releases/latest/download/` serves the old file for a minute or so).
+6. Check the workflow run. On success, the workflow creates or updates a **draft**
    GitHub Release named `<app> v<version>`, targeted at the commit that triggered the run.
    Review the draft and its `SHA256SUMS.txt`, then publish it in GitHub Releases when ready. The job log's
    *Sign the checksums* step says `SHA256SUMS.txt.sig verified`; if it warns that the list is not signed,
    the app will not install this release by itself (see [Update signing key](#update-signing-key)).
+   [Check a draft release](#check-a-draft-release) works with any two small files from the draft (the web zip and
+   the AppImage's `.zsync`, say) beside the checksum list and its signature.
 
 The workflow replaces assets when it updates an existing draft (the version job clears them first). It stops rather than overwriting a
 release that has already been published, so bump the version before producing another release.

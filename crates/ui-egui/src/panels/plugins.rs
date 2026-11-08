@@ -296,7 +296,7 @@ fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, S
     let grant = if grant.is_object() {
         grant
     } else {
-        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "network": [], "fs": [], "programs": []})
+        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "pixels": false, "crop": false, "virtualCopy": false, "network": [], "fs": [], "programs": []})
     };
     s.pending = Some(Pending { path: path.to_string(), info, grant });
     s.open = true;
@@ -567,10 +567,13 @@ pub fn export_hooks_running() -> bool {
 /// Per frame: answer the running export hooks' catalog requests, keep their activity row up to
 /// date and, when they finish, report how they went.
 pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
-    // a plug-in's program.end hook asks for the catalog from its own thread
+    // a plug-in's program.end hook, or a job, asks for the catalog from its own thread
     lcc_engine::cmd::plugin_programs::answer_requests(&mut app.session);
-    if lcc_engine::cmd::plugin_programs::hooks_running() {
+    if lcc_engine::cmd::plugin_programs::hooks_running() || lcc_engine::cmd::plugin_jobs::running() {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    for ended in lcc_engine::cmd::plugin_jobs::take_finished(&mut app.session) {
+        job_ended(app, ctx, &ended);
     }
     let mut g = task_lock();
     let Some(task) = g.as_mut() else { return };
@@ -592,6 +595,17 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     *g = None;
     drop(g);
     report(app, ctx, &results);
+}
+
+/// A plug-in job ended (`plugin_jobs::take_finished`): its last reply's `message` as a toast, or
+/// its error; a cancelled job says nothing (its row was stopped on purpose).
+fn job_ended(app: &mut LccApp, ctx: &egui::Context, ended: &Value) {
+    if let Some(e) = ended["error"].as_str() {
+        let label = ended["label"].as_str().unwrap_or("");
+        app.toast_error(ctx, format!("{} {label}: {e}", tr("Plug-in command failed:")));
+    } else if let Some(m) = ended["ok"]["message"].as_str() {
+        app.toast(ctx, m.to_string());
+    }
 }
 
 fn report(app: &mut LccApp, ctx: &egui::Context, results: &[Value]) {
@@ -825,6 +839,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
     let entries = entries(&list);
+    own_icons(app, ctx, &entries);
+    own_headers(app, ctx, &entries);
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     if s.open {
         // a page on screen: the first entry's when none (or one just removed) was selected
@@ -991,6 +1007,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
 }
 
 fn toast_result(app: &mut LccApp, ctx: &egui::Context, s: &mut State, v: &Value) {
+    // a job started: its row shows it, and its message comes when it ends
+    if v["running"] == true && v["job"].is_u64() {
+        return;
+    }
     s.message = v.get("message").and_then(Value::as_str).map_or_else(|| v.to_string(), str::to_string);
     app.toast(ctx, s.message.clone());
 }
@@ -1152,7 +1172,7 @@ enum Row {
 
 fn permission_rows(req: &Value) -> Vec<Row> {
     let mut v = Vec::new();
-    for k in ["catalog", "metadataWrite", "libraryAdd"] {
+    for k in ["catalog", "metadataWrite", "libraryAdd", "pixels", "crop", "virtualCopy"] {
         if req[k].as_bool() == Some(true) {
             v.push(Row::Flag(k));
         }
@@ -1178,6 +1198,9 @@ impl Row {
             }
             Row::Flag("catalog") => tr("Read the catalog").to_string(),
             Row::Flag("libraryAdd") => tr("Add files made from photos to the library").to_string(),
+            Row::Flag("pixels") => tr("Look at downsized copies of photos").to_string(),
+            Row::Flag("crop") => tr("Change the crop of photos").to_string(),
+            Row::Flag("virtualCopy") => tr("Make virtual copies of photos").to_string(),
             Row::Flag(_) => tr("Write photo metadata").to_string(),
             Row::Host(h) => format!("{} {}", tr("Connect to"), h.as_str().unwrap_or("")),
             Row::Root(r) => {
@@ -1219,6 +1242,11 @@ fn dialog_ui(ctx: &egui::Context, s: &mut State, actions: &mut Vec<(&'static str
     egui::Window::new(d.label.clone()).id(key().with("dialog")).title_bar(false).frame(crate::dialog_frame::card_frame(ctx)).collapsible(false).show(
         ctx,
         |ui| {
+            // the plug-in's own header picture above the command's title
+            if let Some(tex) = header_of(ctx, &d.plugin) {
+                ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width()));
+                ui.add_space(4.0);
+            }
             crate::dialog_frame::card_header(ui, &d.label, None);
             if let Some(e) = &d.error {
                 ui.colored_label(ui.visuals().warn_fg_color, e);
@@ -1249,6 +1277,63 @@ fn dialog_ui(ctx: &egui::Context, s: &mut State, actions: &mut Vec<(&'static str
 /// whole height and leaves the dialog tall and mostly empty).
 fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), egui::Layout::right_to_left(egui::Align::Center), add);
+}
+
+/// Loads the own icon of every plug-in and filter whose manifest carries one (`plugin.picture`),
+/// once per module: the rows and pages then draw it in place of the identicon.
+fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    for e in entries.iter().filter(|e| e.info["icon"].as_bool() == Some(true)) {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("");
+        if super::plugin_icon::custom_is_current(ctx, &e.id, hash) {
+            continue;
+        }
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "icon"}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, 128, 128).ok())
+            .map(|img| ctx.load_texture("plugin-own-icon", img, egui::TextureOptions::LINEAR));
+        super::plugin_icon::keep_custom(ctx, &e.id, hash, tex);
+    }
+}
+
+/// The box a header picture is rasterised into (pixels: about twice what it's shown at, for sharp
+/// HiDPI) and its height on screen (points).
+const HEADER_PIXELS: (u32, u32) = (640, 96);
+const HEADER_HEIGHT: f32 = 40.0;
+
+/// The key a plug-in's header picture is kept under for an interface theme.
+fn header_key(id: &str, dark: bool) -> egui::Id {
+    egui::Id::new(("plugin-own-header", id, dark))
+}
+
+/// Loads the header picture of every plug-in whose manifest carries one (`plugin.picture`), once
+/// per module and interface theme: its page and its command dialogs draw it in place of its name.
+fn own_headers(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    for e in entries.iter().filter(|e| !e.filter && e.info["header"].as_bool() == Some(true)) {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("").to_string();
+        let key = header_key(&e.id, dark);
+        if ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(key)).is_some_and(|(h, _)| h == hash) {
+            continue;
+        }
+        let theme = if dark { "dark" } else { "light" };
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "header", "theme": theme}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, HEADER_PIXELS.0, HEADER_PIXELS.1).ok())
+            .map(|img| ctx.load_texture("plugin-own-header", img, egui::TextureOptions::LINEAR));
+        ctx.data_mut(|d| d.insert_temp(key, (hash, tex)));
+    }
+}
+
+/// Plug-in `id`'s header picture for the current interface theme, once [`own_headers`] loaded it.
+fn header_of(ctx: &egui::Context, id: &str) -> Option<egui::TextureHandle> {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(header_key(id, dark))).and_then(|(_, t)| t)
 }
 
 /// The list: plug-ins, then pixel filters, each under its heading.
@@ -1312,7 +1397,7 @@ fn entry_row(ui: &mut egui::Ui, e: &Entry, selected: bool) -> bool {
     };
     ui.painter().rect_filled(rect, 4.0, fill);
     let icon = egui::Rect::from_min_size(rect.min + egui::vec2(4.0, 4.0), egui::vec2(22.0, 22.0));
-    super::plugin_icon::paint(ui, icon, &super::plugin_icon::identicon(&e.id));
+    super::plugin_icon::paint_for(ui, icon, &e.id);
     let mark = egui::pos2(icon.right() + 10.0, rect.center().y);
     paint_mark(ui.painter(), mark, e.mark, &t);
     let font = egui::FontId::proportional(13.0);
@@ -1330,7 +1415,15 @@ fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>,
         super::plugin_icon::show(ui, &e.id, 52.0);
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                match header_of(ui.ctx(), &e.id).filter(|_| !e.filter) {
+                    // the plug-in's own header picture stands for its name
+                    Some(tex) => {
+                        ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width() - 60.0)).on_hover_text(&e.name);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                    }
+                }
                 if !e.version.is_empty() {
                     ui.weak(&e.version);
                 }

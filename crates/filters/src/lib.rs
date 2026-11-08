@@ -26,8 +26,8 @@ mod registry;
 mod runtime;
 mod sniff;
 
-pub use apply::FrameInfo;
-pub use manifest::{AnalyzeArea, Area, BaseTone, Kind, Manifest, ParamSpec, Stage};
+pub use apply::{FrameInfo, MAX_MERGE, MAX_MERGE_BYTES};
+pub use manifest::{AnalyzeArea, Area, BaseTone, Header, Kind, Manifest, ParamSection, ParamSpec, Stage};
 pub use registry::{FolderReport, Registry};
 pub use runtime::{ABI_VERSION, Filter, Limits};
 pub use sniff::is_filter_module;

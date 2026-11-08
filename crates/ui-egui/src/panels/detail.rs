@@ -615,7 +615,7 @@ pub(crate) fn draw_focus_point(p: &egui::Painter, img: Rect, photo: &lcc_catalog
 
 /// Ease the loupe rect toward `target` while a click-zoom animation runs; otherwise follow it exactly.
 fn animated_rect(ctx: &egui::Context, anim: &mut bool, target: Rect) -> Rect {
-    let t = if *anim { 0.22 } else { 0.0 };
+    let t = if *anim && !crate::motion::reduced(ctx) { 0.22 } else { 0.0 };
     let id = egui::Id::new("loupe_anim");
     let v = |k: &str, x: f32| ctx.animate_value_with_time(id.with(k), x, t);
     let (c, s) = (target.center(), target.size());
@@ -3059,7 +3059,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" => {
+        "wbPicker" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3123,6 +3123,18 @@ fn general_interaction(
             if let Ok(r) = app.run("pointColor.pick", json!({"x": n.x, "y": n.y})) {
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "hslPick" {
+        // the Witchcraft HSL curves' picker: the hue under the pointer becomes a point on the
+        // shown curve
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            let _ = app.run("develop.hslPick", json!({"channel": app.ui.hsl_curve, "x": n.x, "y": n.y}));
             app.ui.tool.clear();
         }
         return;
@@ -3267,7 +3279,7 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if pts.len() == 4 {
         let uv_to_norm = frame.out_to_norm(1, 1);
         let photo = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(u, v)| map.screen(uv_to_norm.apply(Point::new(u, v))));
-        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(150)));
+        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(crate::state::crop_mask_alpha(app.ui.crop_mask_opacity))));
     }
     // the box's centre: what a rotation turns the photo about (it stays put on screen)
     let box_centre = pos2(pts.iter().map(|q| q.x).sum::<f32>() / 4.0, pts.iter().map(|q| q.y).sum::<f32>() / 4.0);
@@ -6241,6 +6253,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     } else if compare {
                         // ⌘/Ctrl- and Shift-clicks change the selection; the pair on screen stays (#187)
                         super::compare::select_with_modifier(app, *id, !m.command)
+                    } else if app.ui.view == crate::state::ViewMode::Survey && !m.command && !m.shift {
+                        // Survey: keep the surveyed group; a thumbnail outside it joins, one inside only becomes active
+                        app.run("library.select", json!({"ids": [id.0], "mode": "add"}))
                     } else {
                         // on the picture: the active photo changes, the set stays; on the frame: this photo alone
                         let on_picture = resp.interact_pointer_pos().is_none_or(|at| picture.contains(at));
@@ -6256,6 +6271,7 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let _ = app.run("map.reveal", json!({"force": true}));
                 }
                 // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
+                super::compare::activate_on_right_click(app, &resp, *id);
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
         });
@@ -6766,6 +6782,7 @@ mod tests {
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,
                 max_h: 100,
+                exact_size: false,
                 quality: Default::default(),
                 apply_crop: false,
                 overlay: Default::default(),

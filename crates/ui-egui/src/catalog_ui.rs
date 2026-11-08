@@ -1,11 +1,16 @@
-//! Catalog-level UI (P1.5): File ▸ New / Open / Open Recent Catalog, the catalog chooser
-//! (at startup when asked for, or with Alt held while the window opens), Catalog Settings,
-//! Export as Catalog, Import from Another Catalog with its change preview, and the
-//! Read / Save Metadata conflict question, and the welcome dialog of a first start (no catalog
-//! yet: create one, or open one).
+//! Library-level UI (P1.5): the `catalog.*` UI commands that create and open libraries, Library
+//! Settings, Export as Library, Import from Another Library with its change preview, the
+//! Read / Save Metadata conflict question, and the welcome dialog of a first start (no library
+//! yet: create one, or open one). The ids keep their older `catalog` name for agents and scripts.
+//!
+//! One recent list and one startup choice serve every way in (issue #871): Settings ▸ General ▸
+//! At launch, and `settings.recent_libraries`, which File ▸ Libraries and the launch list
+//! (`panels::library_problem`) show. `catalog.chooser` opens that launch list. A recent list
+//! kept by older versions in `recent-catalogs.json` is carried over once
+//! ([`carry_over_recent_catalogs`]).
 //!
 //! The work is done by engine commands (`catalog.*`, `photo.xmpStatus`, `library.previewSettings`);
-//! this module only holds the dialogs and the UI commands that switch catalogs.
+//! this module only holds the dialogs and the UI commands that switch libraries.
 
 use std::path::{Path, PathBuf};
 
@@ -14,16 +19,17 @@ use serde_json::{Value, json};
 
 use crate::LccApp;
 use crate::pick::Picked;
+use crate::state::{AppSettings, LaunchLibrary};
 
-/// The catalog dialogs (one at a time, in their own window).
+/// The library dialogs (one at a time, in their own window).
 #[derive(Clone, Debug, PartialEq)]
 pub enum CatalogDialog {
-    /// First start, no catalog to open yet: create one (name, location, sample photos or not) or
+    /// First start, no library to open yet: create one (name, location, sample photos or not) or
     /// open one. `foreign`: libraries of another app found where this app's would be (e.g. the
     /// upstream app's), which can't be opened here; named so the user knows why they don't open.
     /// `updates`: the user ticked "Check for updates when the app starts" (unticked at first).
     /// Each action carries it as `checkAtStartup`, and it is saved through `update.prefs` only
-    /// when that action opens a catalog; closing the dialog saves nothing.
+    /// when that action opens a library; closing the dialog saves nothing.
     Welcome {
         parent: String,
         name: String,
@@ -31,8 +37,6 @@ pub enum CatalogDialog {
         updates: bool,
         foreign: Vec<String>,
     },
-    /// Pick a catalog: the recent ones, New…, Open….
-    Chooser,
     NewCatalog {
         parent: String,
         name: String,
@@ -61,24 +65,18 @@ pub enum CatalogDialog {
     },
 }
 
-/// Catalog UI state on [`LccApp`].
+/// Library UI state on [`LccApp`].
 #[derive(Default)]
 pub struct CatalogUi {
     pub dialog: Option<CatalogDialog>,
-    /// `recent-catalogs.json`; `None` (tests, scripts with `<PREFIX>_NO_PREFS`): no list is kept.
-    pub recent_file: Option<PathBuf>,
-    /// The list, read once.
-    recent: Option<RecentCatalogs>,
-    /// Frames since the window opened (Alt held during the first ones opens the chooser).
-    frames: u32,
-    /// Files from the command line of a first start, imported once a catalog is open.
+    /// Files from the command line of a first start, imported once a library is open.
     pub pending_import: Vec<String>,
     /// Why the welcome dialog's "Check for updates when the app starts" couldn't be turned on once
-    /// its catalog opened: said in a toast on the next frame.
+    /// its library opened: said in a toast on the next frame.
     pub update_error: Option<String>,
 }
 
-/// The welcome dialog: a new catalog under the Pictures folder by default.
+/// The welcome dialog: a new library under the Pictures folder by default.
 pub fn welcome(app: &mut LccApp, foreign: Vec<String>) {
     let parent = lcc_engine::library::default_dir()
         .and_then(|d| d.parent().map(Path::to_path_buf))
@@ -88,40 +86,79 @@ pub fn welcome(app: &mut LccApp, foreign: Vec<String>) {
         Some(CatalogDialog::Welcome { parent, name: lcc_brand::LIBRARY_DEFAULT.to_string(), demo: false, updates: false, foreign });
 }
 
-impl CatalogUi {
-    pub fn recent(&mut self) -> &mut RecentCatalogs {
-        let file = self.recent_file.clone();
-        self.recent.get_or_insert_with(|| file.map(|f| RecentCatalogs::load(&f)).unwrap_or_default())
-    }
+/// What [`carry_over_recent_catalogs`] did.
+#[derive(Debug, PartialEq)]
+pub enum CarryOver {
+    /// No `recent-catalogs.json`: nothing to carry over.
+    Nothing,
+    /// Its libraries that still exist were added to the recent list (`added` of them were new), and
+    /// its "always show" choice became At launch: *Ask me* (`ask`). The file is still there: set it
+    /// aside ([`set_aside_recent_catalogs`]) once the settings are saved.
+    Carried { added: usize, ask: bool },
+    /// It couldn't be read or understood: left out, with this reason in the log.
+    Skipped(String),
+}
 
-    /// The list without loading it into the cache (menus are built from `&LccApp`).
-    pub fn recent_view(&self) -> RecentCatalogs {
-        match (&self.recent, &self.recent_file) {
-            (Some(r), _) => r.clone(),
-            (None, Some(f)) => RecentCatalogs::load(f),
-            (None, None) => RecentCatalogs::default(),
+/// Carry the recent list of older versions (`recent-catalogs.json`, behind File ▸ Open Recent
+/// Catalog and the catalog chooser) over into the one recent list, once: the libraries it names
+/// that still exist go at the end of `settings.recent_libraries` (no duplicates, at most
+/// [`crate::state::RECENT_LIBRARIES`]), and its "Always show this when the app starts" turns At
+/// launch into *Ask me*. A file that can't be read or parsed is never an error: it is logged and
+/// (if it can be) set aside, and the settings are unchanged. The host calls this before it decides
+/// what to open at launch, saves `settings`, and only then sets a carried-over file aside
+/// ([`set_aside_recent_catalogs`]), so a library removed from the list later doesn't come back, and
+/// a start that ends before the save carries it over again (adding nothing twice).
+pub fn carry_over_recent_catalogs(settings: &mut AppSettings, file: &Path) -> CarryOver {
+    let bytes = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return CarryOver::Nothing,
+        Err(e) => {
+            let why = format!("{}: can't be read: {e}", file.display());
+            log::warn!("recent catalogs: {why}; not carried over");
+            return CarryOver::Skipped(why);
         }
-    }
-
-    fn save_recent(&mut self) {
-        let Some(file) = self.recent_file.clone() else { return };
-        if let Some(r) = &self.recent
-            && let Err(e) = r.save(&file)
-        {
-            log::warn!("recent catalogs: {e}");
+    };
+    let old: RecentCatalogs = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            let why = format!("{}: not a recent-catalogs list: {e}", file.display());
+            log::warn!("recent catalogs: {why}; not carried over");
+            set_aside_recent_catalogs(file);
+            return CarryOver::Skipped(why);
         }
+    };
+    let mut added = 0;
+    for path in &old.paths {
+        if settings.recent_libraries.len() >= crate::state::RECENT_LIBRARIES {
+            break;
+        }
+        // an entry point or a folder; this app's libraries only, and only those still there
+        let Ok(dir) = lcc_catalog::library::resolve(path) else { continue };
+        if lcc_catalog::library::foreign_format(&dir).is_some() || settings.recent_libraries.iter().any(|r| Path::new(r) == dir) {
+            continue;
+        }
+        settings.recent_libraries.push(dir.to_string_lossy().into_owned());
+        added += 1;
     }
+    if old.prompt_at_startup {
+        settings.at_launch = LaunchLibrary::Ask;
+    }
+    CarryOver::Carried { added, ask: old.prompt_at_startup }
+}
 
-    /// Put the catalog in `dir` at the top of Open Recent.
-    pub fn touch(&mut self, dir: &Path) {
-        let entry = lcc_catalog::library::find_entry(dir).unwrap_or_else(|| dir.to_path_buf());
-        self.recent().touch(&entry);
-        self.save_recent();
+/// Rename a carried-over (or unreadable) `recent-catalogs.json` to `<file>.carried-over`, out of
+/// the way of later starts; a failure is logged.
+pub fn set_aside_recent_catalogs(file: &Path) {
+    let mut name = file.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".carried-over");
+    if let Err(e) = std::fs::rename(file, file.with_file_name(name)) {
+        log::warn!("recent catalogs: can't set {} aside: {e}", file.display());
     }
 }
 
-/// Open a catalog chosen by the user (entry point or folder): validated first, so a folder that
-/// isn't a catalog is an error rather than a new, empty library.
+/// Open a library chosen by the user (catalog entry point or folder): validated first, so a folder
+/// that isn't a library is an error rather than a new, empty one. Opening puts it at the top of
+/// the recent list (`panels::settings::open_library`).
 fn open_catalog(app: &mut LccApp, path: &str, p: &Value) -> Result<Value, String> {
     let dir = lcc_catalog::library::resolve(Path::new(path)).map_err(|e| e.to_string())?;
     open_dir(app, &dir, false, p)
@@ -134,11 +171,10 @@ fn check_at_startup(p: &Value) -> bool {
     p.get("checkAtStartup").and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// Open the catalog in `dir`; with `checkAtStartup` in `p`, the start-up update check is turned
+/// Open the library in `dir`; with `checkAtStartup` in `p`, the start-up update check is turned
 /// on (through `update.prefs`) once it is open.
 fn open_dir(app: &mut LccApp, dir: &Path, demo: bool, p: &Value) -> Result<Value, String> {
     let r = crate::panels::settings::open_library(app, &json!({"path": dir.to_string_lossy(), "demo": demo}))?;
-    app.catalog_ui.touch(dir);
     if check_at_startup(p)
         && let Err(e) = app.session.execute("update.prefs", &json!({"checkAtStartup": true}))
     {
@@ -169,7 +205,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "catalog.new" => new_catalog(app, p),
         "catalog.open" => match str_of(p, "path") {
             Some(path) => open_catalog(app, path, p),
-            None => match pick_folder(app, id, p, "path", "Open Catalog") {
+            None => match pick_folder(app, id, p, "path", "Open Library") {
                 Ok(Some(path)) => open_catalog(app, &path, p),
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(e),
@@ -180,26 +216,24 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
                 let r = open_catalog(app, path, p);
                 if r.is_err() && !Path::new(path).exists() {
                     // gone: drop it from the list
-                    app.catalog_ui.recent().remove(Path::new(path));
-                    app.catalog_ui.save_recent();
+                    crate::panels::settings::forget_library(&mut app.ui.settings, path);
+                    app.recent_checks.forget(path);
                 }
                 r
             }
-            None => Ok(json!({"recent": app.catalog_ui.recent().existing()})),
+            None => Ok(json!({"recent": recent_existing(app)})),
         },
         "catalog.welcome" => {
             welcome(app, Vec::new());
             Ok(Value::Null)
         }
-        "catalog.chooser" => {
-            app.catalog_ui.dialog = Some(CatalogDialog::Chooser);
-            Ok(Value::Null)
-        }
+        // the launch list, over the library open now
+        "catalog.chooser" => crate::panels::library_problem::offer_list(app).map(|()| Value::Null),
+        // Settings ▸ General ▸ At launch: *Ask me* (on) or the last library (off)
         "catalog.promptAtStartup" => {
-            let on = p.get("on").and_then(Value::as_bool).unwrap_or(!app.catalog_ui.recent().prompt_at_startup);
-            app.catalog_ui.recent().prompt_at_startup = on;
-            app.catalog_ui.save_recent();
-            Ok(json!({"promptAtStartup": on}))
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(app.ui.settings.at_launch != LaunchLibrary::Ask);
+            app.ui.settings.at_launch = if on { LaunchLibrary::Ask } else { LaunchLibrary::Last };
+            Ok(json!({"promptAtStartup": on, "atLaunch": app.ui.settings.at_launch}))
         }
         "dialog.catalogSettings" => {
             let settings = app.session.execute("catalog.info", &json!({})).map(|v| v["settings"].clone()).unwrap_or_default();
@@ -210,7 +244,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
             let scope = if app.session.selection.ids.len() > 1 { "selected" } else { "all" };
             let parent = app.session.catalog_dir().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
             app.catalog_ui.dialog =
-                Some(CatalogDialog::ExportCatalog { parent, name: "Exported Catalog".into(), scope: scope.into(), originals: false, previews: true });
+                Some(CatalogDialog::ExportCatalog { parent, name: "Exported Library".into(), scope: scope.into(), originals: false, previews: true });
             Ok(Value::Null)
         }
         // a library in the catalog format of this app's earlier name (`crate::legacy`)
@@ -221,7 +255,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
                 app.catalog_ui.dialog = Some(CatalogDialog::ImportCatalog { path: path.into(), plan, rule: "replaceSettingsAndMetadata".into() });
                 Ok(Value::Null)
             }
-            None => match pick_folder(app, id, p, "path", "Import from Another Catalog") {
+            None => match pick_folder(app, id, p, "path", "Import from Another Library") {
                 Ok(Some(path)) => run(app, id, &json!({"path": path}))?,
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(e),
@@ -235,7 +269,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 }
 
 /// Read / Save Metadata: ask first when it would overwrite newer changes on the other side
-/// (Read: changes made in the catalog; Save: changes another app made to the file).
+/// (Read: changes made in the library; Save: changes another app made to the file).
 fn xmp_conflict(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     let st = app.session.execute("photo.xmpStatus", p).ok()?;
     let lost = if id == "photo.readMetadataFromFile" { ["changedInCatalog", "conflict"] } else { ["changedOnDisk", "conflict"] };
@@ -260,7 +294,7 @@ fn new_catalog(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 r
             } else {
                 let entry = lcc_catalog::library::create(Path::new(parent), name).map_err(|e| e.to_string())?;
-                let dir = entry.parent().map(Path::to_path_buf).ok_or("catalog without a folder")?;
+                let dir = entry.parent().map(Path::to_path_buf).ok_or("library without a folder")?;
                 let mut r = open_dir(app, &dir, false, p)?;
                 r["entry"] = json!(entry);
                 r
@@ -272,7 +306,7 @@ fn new_catalog(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 .map(str::to_string)
                 .or_else(|| app.session.catalog_dir().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            app.catalog_ui.dialog = Some(CatalogDialog::NewCatalog { parent, name: str_of(p, "name").unwrap_or("New Catalog").into() });
+            app.catalog_ui.dialog = Some(CatalogDialog::NewCatalog { parent, name: str_of(p, "name").unwrap_or("New Library").into() });
             Ok(Value::Null)
         }
     }
@@ -290,16 +324,9 @@ pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     })
 }
 
-/// File ▸ Open Recent Catalog entries: (label, params).
-pub fn recent_items(app: &LccApp) -> Vec<(String, Value)> {
-    let current = app.session.catalog_dir().map(Path::to_path_buf);
-    app.catalog_ui
-        .recent_view()
-        .existing()
-        .into_iter()
-        .filter(|p| current.as_deref().is_none_or(|c| lcc_catalog::library::resolve(p).ok().as_deref() != Some(c)))
-        .map(|p| (display_name(&p), json!({"path": p})))
-        .collect()
+/// The recent libraries that are still there (`catalog.openRecent` without a path), newest first.
+fn recent_existing(app: &LccApp) -> Vec<String> {
+    app.ui.settings.recent_libraries.iter().filter(|p| Path::new(p).exists()).cloned().collect()
 }
 
 fn display_name(p: &Path) -> String {
@@ -308,38 +335,29 @@ fn display_name(p: &Path) -> String {
     format!("{name} — {}", dir.parent().map(|d| d.display().to_string()).unwrap_or_default())
 }
 
-/// Whether Open Catalog…'s folder dialog is still up.
+/// Whether Open Library…'s folder dialog (of the welcome dialog) is still up.
 fn picking_catalog(app: &LccApp) -> bool {
     app.pending_picks.iter().any(|p| p.command == "catalog.open")
 }
 
-/// Each frame: Alt held while the window opens shows the chooser; then the dialog, if any.
+/// Each frame: the dialog, if any. (Alt held as the window appears is the launch list's:
+/// `panels::library_problem`.)
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(e) = app.catalog_ui.update_error.take() {
         app.toast_error(ctx, format!("{}: {e}", crate::i18n::tr("Checking for updates when the app starts is still off")));
     }
-    if app.catalog_ui.frames < 30 {
-        app.catalog_ui.frames += 1;
-        let alt = ctx.input(|i| i.modifiers.alt);
-        let asked = app.catalog_ui.frames == 1 && app.catalog_ui.recent_file.is_some() && app.catalog_ui.recent().prompt_at_startup;
-        if (alt && app.catalog_ui.recent_file.is_some() || asked) && app.catalog_ui.dialog.is_none() {
-            app.catalog_ui.dialog = Some(CatalogDialog::Chooser);
-            app.catalog_ui.frames = 30;
-        }
-    }
     let Some(mut dlg) = app.catalog_ui.dialog.clone() else { return };
     let welcoming = matches!(dlg, CatalogDialog::Welcome { .. });
     if welcoming {
-        // nothing behind it can be used before a catalog is open
+        // nothing behind it can be used before a library is open
         crate::panels::library_problem::dim(ctx);
     }
     let title = match &dlg {
         CatalogDialog::Welcome { .. } => "Welcome to {app}",
-        CatalogDialog::Chooser => "Select a Catalog",
-        CatalogDialog::NewCatalog { .. } => "New Catalog",
-        CatalogDialog::Settings { .. } => "Catalog Settings",
-        CatalogDialog::ExportCatalog { .. } => "Export as Catalog",
-        CatalogDialog::ImportCatalog { .. } => "Import from Catalog",
+        CatalogDialog::NewCatalog { .. } => "New Library",
+        CatalogDialog::Settings { .. } => "Library Settings",
+        CatalogDialog::ExportCatalog { .. } => "Export as Library",
+        CatalogDialog::ImportCatalog { .. } => "Import from Another Library",
         CatalogDialog::XmpConflict { command, .. } if command == "photo.readMetadataFromFile" => "Read Metadata from File",
         CatalogDialog::XmpConflict { .. } => "Save Metadata to File",
     };
@@ -368,9 +386,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 CatalogDialog::Welcome { parent, name, demo, updates, foreign } => {
                     welcome_ui(app, ui, &t, parent, name, demo, updates, foreign, &mut action);
                 }
-                CatalogDialog::Chooser => chooser(app, ui, &mut action, &mut close),
                 CatalogDialog::NewCatalog { parent, name } => {
-                    ui.label(dim("A catalog is a folder: its photos' records, settings and history. The photos themselves stay where they are."));
+                    ui.label(dim("A library is a folder: its photos' records, settings and history. The photos themselves stay where they are."));
                     text_row(ui, "Name", name, "field:catalogName");
                     folder_row(app, ui, "Location", parent, "field:catalogParent", "button:catalogParent");
                     if buttons(ui, "Create", "button:catalogCreate", &mut close) {
@@ -388,11 +405,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     });
                     text_row(ui, "Name", name, "field:exportCatalogName");
                     folder_row(app, ui, "Location", parent, "field:exportCatalogParent", "button:exportCatalogParent");
-                    let r = ui.checkbox(originals, crate::i18n::tr("Export the original files (copied into the new catalog's Originals folder)"));
+                    let r = ui.checkbox(originals, crate::i18n::tr("Export the original files (copied into the new library's Originals folder)"));
                     crate::widgets::register(ui.ctx(), "check:exportCatalogOriginals", r.rect);
                     let r = ui.checkbox(previews, crate::i18n::tr("Include available previews"));
                     crate::widgets::register(ui.ctx(), "check:exportCatalogPreviews", r.rect);
-                    if buttons(ui, "Export Catalog", "button:exportCatalog", &mut close) {
+                    if buttons(ui, "Export Library", "button:exportCatalog", &mut close) {
                         action = Some((
                             "catalog.export".into(),
                             json!({"parent": parent, "name": name, "scope": scope, "originals": originals, "previews": previews}),
@@ -419,9 +436,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 CatalogDialog::XmpConflict { command, ids, affected } => {
                     let read = command == "photo.readMetadataFromFile";
                     ui.label(crate::i18n::tr(if read {
-                            "Photos changed in the catalog since their metadata file was last read or written: reading replaces those changes with what the file says."
+                            "Photos changed in the library since their metadata file was last read or written: reading replaces those changes with what the file says."
                         } else {
-                            "Photos whose metadata file another program changed: saving replaces those changes with the catalog's."
+                            "Photos whose metadata file another program changed: saving replaces those changes with the library's."
                         }));
                     ui.label(egui::RichText::new(format!("{}: {affected}", crate::i18n::tr("Photos affected"))).strong());
                     if buttons(ui, if read { "Read" } else { "Overwrite" }, "button:xmpConflictConfirm", &mut close) {
@@ -435,7 +452,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if app.catalog_ui.dialog.is_some() {
         app.catalog_ui.dialog = Some(dlg);
     }
-    // the welcome dialog stays until a catalog is open (or the app quits)
+    // the welcome dialog stays until a library is open (or the app quits)
     if !welcoming && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         close = true;
     }
@@ -443,11 +460,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         app.catalog_ui.dialog = None;
     }
     if let Some((cmd, params)) = action {
-        // the command may open the next dialog (Chooser ▸ New Catalog…); on an error, or for the
-        // Catalog Settings buttons, this one stays
+        // the command may open the next dialog; on an error, or for the Library Settings buttons,
+        // this one stays
         let prev = app.catalog_ui.dialog.take();
         let r = app.run(&cmd, params);
-        // the welcome dialog also stays (waiting) while its Open Catalog… folder dialog is up and
+        // the welcome dialog also stays (waiting) while its Open Library… folder dialog is up and
         // nothing is open: cancelling that leaves the user where they were
         let keep = r.is_err()
             || (welcoming && cmd == "catalog.open" && picking_catalog(app) && app.session.library.is_none())
@@ -464,7 +481,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Err(e) => app.toast_error(ctx, e),
         }
     }
-    // a first start's command-line files, once a catalog is open
+    // a first start's command-line files, once a library is open
     if !app.catalog_ui.pending_import.is_empty() && app.session.library.is_some() {
         let files = std::mem::take(&mut app.catalog_ui.pending_import);
         if let Err(e) = crate::import::start_paths(app, files) {
@@ -489,15 +506,15 @@ fn welcome_ui(
     ui.set_width(460.0);
     let dim = |s: &str| egui::RichText::new(crate::i18n::tr(s)).color(t.text_dim);
     ui.label(dim(
-        "{app} keeps the records of your photos, their edits and history in a catalog. Create one to start, or open one you already have. Your photos stay where they are.",
+        "{app} keeps the records of your photos, their edits and history in a library. Create one to start, or open one you already have. Your photos stay where they are.",
     ));
-    // Open Catalog…'s folder dialog is up: everything here waits for it
+    // Open Library…'s folder dialog is up: everything here waits for it
     if picking_catalog(app) {
         ui.label(egui::RichText::new(crate::i18n::tr("Choose a folder…")).strong());
         ui.disable();
     }
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(crate::i18n::tr("Create a new catalog")).strong());
+    ui.label(egui::RichText::new(crate::i18n::tr("Create a new library")).strong());
     ui.horizontal(|ui| {
         ui.add_sized([80.0, 20.0], egui::Label::new(crate::i18n::tr("Name")));
         crate::text_field::TextField::singleline("field:welcomeName", name).width(360.0).show(ui);
@@ -518,19 +535,17 @@ fn welcome_ui(
     let r = ui.checkbox(updates, crate::i18n::tr("Check for updates when the app starts"));
     crate::widgets::register(ui.ctx(), "check:welcomeUpdates", r.rect);
     let ready = !name.trim().is_empty() && !parent.trim().is_empty();
-    let r = ui.add_enabled(ready, egui::Button::new(egui::RichText::new(crate::i18n::tr("Create Catalog")).strong()).min_size(egui::vec2(0.0, 26.0)));
+    let r = ui.add_enabled(ready, egui::Button::new(egui::RichText::new(crate::i18n::tr("Create Library")).strong()).min_size(egui::vec2(0.0, 26.0)));
     crate::widgets::register(ui.ctx(), "button:welcomeCreate", r.rect);
     if r.clicked() {
         *action = Some(("catalog.new".into(), json!({"parent": parent.trim(), "name": name.trim(), "demo": *demo, "checkAtStartup": *updates})));
     }
     ui.separator();
-    ui.label(egui::RichText::new(crate::i18n::tr("Open an existing catalog")).strong());
-    // this app's catalogs only: another app's never open here
-    let recent: Vec<PathBuf> = app
-        .catalog_ui
-        .recent()
-        .existing()
+    ui.label(egui::RichText::new(crate::i18n::tr("Open an existing library")).strong());
+    // this app's libraries only: another app's never open here
+    let recent: Vec<PathBuf> = recent_existing(app)
         .into_iter()
+        .map(PathBuf::from)
         .filter(|p| lcc_catalog::library::resolve(p).is_ok_and(|d| lcc_catalog::library::foreign_format(&d).is_none()))
         .collect();
     for (i, p) in recent.iter().enumerate() {
@@ -548,7 +563,7 @@ fn welcome_ui(
     }
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let r = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr("Open Catalog…")));
+        let r = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr("Open Library…")));
         crate::widgets::register(ui.ctx(), "button:welcomeOpen", r.rect);
         if r.clicked() {
             *action = Some(("catalog.open".into(), json!({"checkAtStartup": *updates})));
@@ -563,13 +578,10 @@ fn welcome_ui(
 
 fn done_message(cmd: &str, v: &Value) -> Option<String> {
     Some(match cmd {
-        "catalog.export" => format!("{}: {}", crate::i18n::tr("Photos exported as a catalog"), v["photos"]),
-        "catalog.import" if v["imported"] == true => crate::i18n::tr("Imported from the other catalog").to_string(),
+        "catalog.export" => format!("{}: {}", crate::i18n::tr("Photos exported as a library"), v["photos"]),
+        "catalog.import" if v["imported"] == true => crate::i18n::tr("Imported from the other library").to_string(),
         "catalog.import" => crate::i18n::tr("Nothing to import").to_string(),
-        "catalog.backup" => format!("{} {}", crate::i18n::tr("Catalog backed up to"), v["backup"].as_str().unwrap_or("")),
-        "catalog.checkIntegrity" if v["ok"] == true => crate::i18n::tr("The catalog passed the integrity test").to_string(),
-        "catalog.checkIntegrity" => crate::i18n::tr("The catalog failed the integrity test: back it up and optimise it").to_string(),
-        "catalog.optimize" => crate::i18n::tr("Catalog optimised").to_string(),
+        // Back Up, Test Integrity and Optimise say how they went wherever they run from (`LccApp::run_typed`)
         _ => return None,
     })
 }
@@ -615,52 +627,6 @@ fn buttons(ui: &mut egui::Ui, ok: &str, widget: &str, close: &mut bool) -> bool 
     clicked
 }
 
-fn chooser(app: &mut LccApp, ui: &mut egui::Ui, action: &mut Option<(String, Value)>, close: &mut bool) {
-    let current = app.session.catalog_dir().map(Path::to_path_buf);
-    let recent = app.catalog_ui.recent().existing();
-    if recent.is_empty() {
-        ui.label(crate::i18n::tr("No recent catalogs."));
-    }
-    for (i, p) in recent.iter().enumerate() {
-        let open_now = current.as_deref().is_some_and(|c| lcc_catalog::library::resolve(p).ok().as_deref() == Some(c));
-        let label = if open_now { format!("{} ({})", display_name(p), crate::i18n::tr("open")) } else { display_name(p) };
-        let r = ui.selectable_label(false, label);
-        crate::widgets::register(ui.ctx(), format!("item:recentCatalog{i}"), r.rect);
-        if r.clicked() {
-            if open_now {
-                *close = true;
-            } else {
-                *action = Some(("catalog.openRecent".into(), json!({"path": p})));
-            }
-        }
-    }
-    ui.separator();
-    let mut prompt = app.catalog_ui.recent().prompt_at_startup;
-    let r = ui.checkbox(&mut prompt, crate::i18n::tr("Always show this when the app starts (or hold Alt while it opens)"));
-    crate::widgets::register(ui.ctx(), "check:catalogPrompt", r.rect);
-    if r.changed() {
-        app.catalog_ui.recent().prompt_at_startup = prompt;
-        app.catalog_ui.save_recent();
-    }
-    ui.horizontal(|ui| {
-        let r = ui.button(crate::i18n::tr("New Catalog…"));
-        crate::widgets::register(ui.ctx(), "button:chooserNew", r.rect);
-        if r.clicked() {
-            *action = Some(("catalog.new".into(), json!({})));
-        }
-        let r = ui.button(crate::i18n::tr("Open Another Catalog…"));
-        crate::widgets::register(ui.ctx(), "button:chooserOpen", r.rect);
-        if r.clicked() {
-            *action = Some(("catalog.open".into(), json!({})));
-        }
-        let r = ui.button(crate::i18n::tr("Continue"));
-        crate::widgets::register(ui.ctx(), "button:chooserContinue", r.rect);
-        if r.clicked() {
-            *close = true;
-        }
-    });
-}
-
 const SCHEDULES: &[(&str, &str)] = &[
     ("never", "Never"),
     ("everyExit", "Every time the app exits"),
@@ -690,13 +656,13 @@ fn combo(ui: &mut egui::Ui, id: &str, label: &str, value: &mut Value, options: &
 
 fn settings_ui(app: &mut LccApp, ui: &mut egui::Ui, s: &mut Value, action: &mut Option<(String, Value)>, close: &mut bool) {
     ui.label(egui::RichText::new(crate::i18n::tr("Backup")).strong());
-    combo(ui, "catalogBackup", "Back up catalog", &mut s["backup"], SCHEDULES);
+    combo(ui, "catalogBackup", "Back up library", &mut s["backup"], SCHEDULES);
     let mut dir = s["backupDir"].as_str().unwrap_or("").to_string();
     folder_row(app, ui, "Backup folder", &mut dir, "field:catalogBackupDir", "button:catalogBackupDir");
     s["backupDir"] = json!(dir);
     for (key, label, widget) in [
         ("testIntegrity", "Test integrity before backing up", "check:catalogIntegrity"),
-        ("optimize", "Optimise catalog after backing up", "check:catalogOptimize"),
+        ("optimize", "Optimise library after backing up", "check:catalogOptimize"),
     ] {
         let mut b = s[key].as_bool().unwrap_or(false);
         let r = ui.checkbox(&mut b, crate::i18n::tr(label));
@@ -734,7 +700,7 @@ fn settings_ui(app: &mut LccApp, ui: &mut egui::Ui, s: &mut Value, action: &mut 
     combo(ui, "catalogDiscard", "Discard 1:1 previews", &mut s["previews"]["discardFull"], DISCARD);
     combo(ui, "catalogAtImport", "Build at import", &mut s["previews"]["atImport"], AT_IMPORT);
     if buttons(ui, "OK", "button:catalogSettingsOk", close) {
-        // the default folder stays "the default" (it moves with the catalog)
+        // the default folder stays "the default" (it moves with the library)
         if s["backupDir"] == s["defaultBackupDir"] {
             s["backupDir"] = json!("");
         }
@@ -780,7 +746,7 @@ fn import_preview(ui: &mut egui::Ui, v: &Value, rule: &mut String, t: &crate::th
         });
     }
     let rules = [
-        ("keep", "Nothing (keep this catalog's version)"),
+        ("keep", "Nothing (keep this library's version)"),
         ("replaceSettings", "Develop settings only"),
         ("replaceMetadata", "Metadata only"),
         ("replaceSettingsAndMetadata", "Metadata and develop settings"),

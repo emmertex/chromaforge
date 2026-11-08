@@ -144,6 +144,8 @@ pub(crate) struct GpuState {
     pub checking: bool,
     /// The GPU it runs on; `None` when it runs on the CPU.
     pub device: Option<String>,
+    /// Which card that is (`second`, the second graphics card, or `editing`); `None` on the CPU.
+    pub card: Option<&'static str>,
     /// Why it runs on the CPU.
     pub why: Option<String>,
 }
@@ -194,10 +196,11 @@ pub(crate) fn offer_gpu(
             }
         };
         let device = lcc_faces::net::Accelerator::device(&*gpu);
+        let card = gpu.card().id();
         match attach(gpu) {
             Ok(()) => {
-                log::info!("faces: {what} runs on {device}");
-                set_gpu_state(what, GpuState { device: Some(device), ..GpuState::default() });
+                log::info!("faces: {what} runs on {device} (the {card} card)");
+                set_gpu_state(what, GpuState { device: Some(device), card: Some(card), ..GpuState::default() });
             }
             Err(why) => {
                 log::info!("faces: {what} stays on the CPU: {why}");
@@ -209,6 +212,34 @@ pub(crate) fn offer_gpu(
         log::warn!("faces: could not check the GPU for {what}: {e}");
         set_gpu_state(what, GpuState { why: Some(format!("could not check the GPU: {e}")), ..GpuState::default() });
     }
+}
+
+/// The card a model that was on the GPU (`st`) has to leave: its net dropped the accelerator (`attached` false) because
+/// that card stopped working. A model the GPU merely failed once (out of memory, a wrong answer) stays on the CPU, as
+/// before there were two cards.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn lost_card(st: &GpuState, attached: bool) -> Option<lcc_gpu::faces::Card> {
+    if st.checking || attached || st.device.is_none() {
+        return None;
+    }
+    let card = lcc_gpu::ai::CARDS.into_iter().find(|c| st.card == Some(c.id()))?;
+    lcc_gpu::faces::broken_reason_on(card).is_some().then_some(card)
+}
+
+/// When the card model `what` ran on stopped working ([`lost_card`]), offer the model to the GPU again: it goes to the
+/// other card when that works ([`lcc_gpu::faces::accelerator`], checked against the CPU there as at first), else it
+/// stays on the CPU and says why. Cheap to call every frame; each card is given up on once, so this ends.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn move_off_lost_card(
+    s: &Session,
+    what: &'static str,
+    attached: bool,
+    attach: impl FnOnce(Arc<dyn lcc_faces::net::Accelerator>) -> std::result::Result<(), String> + Send + 'static,
+) -> bool {
+    let Some(card) = gpu_state(what).and_then(|st| lost_card(&st, attached)) else { return false };
+    log::info!("faces: the {} card stopped working; {what} tries the other card", card.id());
+    offer_gpu(s, what, attach);
+    true
 }
 
 /// `faces.gpu`: where the face models run, and the switch that keeps them on the CPU.
@@ -250,9 +281,9 @@ pub(crate) fn detection_gpu_state(s: &Session) -> GpuState {
         return st;
     }
     if !s.segmenter.open_model_installed("face") {
-        GpuState { checking: false, device: None, why: Some("Face detector model not installed".into()) }
+        GpuState { why: Some("Face detector model not installed".into()), ..GpuState::default() }
     } else {
-        GpuState { checking: false, device: None, why: Some("Face Landmarker runs multithreaded on the CPU".into()) }
+        GpuState { why: Some("Face Landmarker runs multithreaded on the CPU".into()), ..GpuState::default() }
     }
 }
 
@@ -264,29 +295,29 @@ pub(crate) fn recognition_gpu_state(s: &Session) -> GpuState {
         return st;
     }
     if cpu_only(s) {
-        return GpuState { checking: false, device: None, why: Some("the CPU is chosen in Settings".into()) };
+        return GpuState { why: Some("the CPU is chosen in Settings".into()), ..GpuState::default() };
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((_, e)) = &s.faces.embedder
         && let Some(a) = e.net().accelerator()
     {
-        return GpuState { checking: false, device: Some(a.device()), why: None };
+        return GpuState { device: Some(a.device()), ..GpuState::default() };
     }
     let dir = s.face_models_dir.as_deref();
     let has_embedder = dir.is_some_and(|d| super::face_models::read_settings(d).embedder.is_some());
     if !has_embedder {
-        return GpuState { checking: false, device: None, why: Some("No recognition model chosen".into()) };
+        return GpuState { why: Some("No recognition model chosen".into()), ..GpuState::default() };
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         match lcc_gpu::faces::accelerator() {
-            Ok(gpu) => GpuState { checking: false, device: Some(lcc_faces::net::Accelerator::device(&*gpu)), why: None },
-            Err(why) => GpuState { checking: false, device: None, why: Some(why) },
+            Ok(gpu) => GpuState { device: Some(lcc_faces::net::Accelerator::device(&*gpu)), card: Some(gpu.card().id()), ..GpuState::default() },
+            Err(why) => GpuState { why: Some(why), ..GpuState::default() },
         }
     }
     #[cfg(target_arch = "wasm32")]
     {
-        GpuState { checking: false, device: None, why: Some("GPU acceleration is not supported on WebAssembly".into()) }
+        GpuState { why: Some("GPU acceleration is not supported on WebAssembly".into()), ..GpuState::default() }
     }
 }
 
@@ -590,5 +621,22 @@ mod tests {
         assert!(!overlaps_existing(&face(0.59, 0.49, 0.80, 0.80), &existing));
         assert!(!overlaps_existing(&face(0.0, 0.0, 0.0, 0.0), &existing), "an empty box overlaps nothing");
         assert!(!overlaps_existing(&face(0.4, 0.2, 0.6, 0.5), &[]));
+    }
+
+    /// A model whose card stopped working leaves it (for the other card, else the CPU); one the GPU failed once, still
+    /// attached or still being checked stays where it is.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_model_leaves_a_card_that_stopped_working() {
+        use lcc_gpu::faces::Card;
+        // (only the second card is given up on: the other tests here may run on the card for editing)
+        lcc_gpu::faces::give_up_on(Card::Second, "device lost (test)");
+        let on = |card: &'static str| GpuState { device: Some("a card".into()), card: Some(card), ..GpuState::default() };
+        assert_eq!(lost_card(&on("second"), false), Some(Card::Second), "dropped by a card that broke");
+        assert_eq!(lost_card(&on("second"), true), None, "still attached");
+        assert_eq!(lost_card(&GpuState { checking: true, ..on("second") }, false), None, "being checked");
+        assert_eq!(lost_card(&on("editing"), false), None, "dropped by a card that still works (out of memory, say)");
+        assert_eq!(lost_card(&GpuState::default(), false), None, "on the CPU");
+        assert_eq!(lost_card(&GpuState { why: Some("slower".into()), ..GpuState::default() }, false), None);
     }
 }

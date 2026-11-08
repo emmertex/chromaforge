@@ -917,3 +917,57 @@ fn a_is_the_aspect_lock_under_crop_and_visualize_spots_elsewhere() {
     assert!(h.app.ui.visualize_spots, "Visualize Spots is on");
     assert_eq!(aspect(&h), before, "and the aspect is untouched");
 }
+
+/// An installed filter plug-in with a `shortcut` in its manifest is a bindable *Add <name>*: its
+/// key puts the filter on the selected photos and opens the Plug-in Filters section; the user
+/// can rebind it like any shortcut.
+#[test]
+fn a_filter_plugins_declared_key_adds_it_to_the_selection() {
+    let manifest = r#"{"id":"test.keymap.neg","name":"Neg","kind":"filter","shortcut":"Ctrl+Alt+N"}"#;
+    let src = format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{m}")
+  (func (export "pc_abi_version") (result i32) (i32.const 1))
+  (func (export "pc_manifest") (result i64) (i64.or (i64.shl (i64.const {len}) (i64.const 32)) (i64.const 16)))
+  (func (export "pc_alloc") (param $n i32) (result i32) (i32.const 65536))
+  (func (export "pc_filter") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 0)))"#,
+        m = manifest.replace('"', "\\\""),
+        len = manifest.len()
+    );
+    lcc_engine::filter_plugins::install_in_memory(&wat::parse_str(&src).unwrap()).unwrap();
+    let id = format!("{}test.keymap.neg", crate::shortcuts::PLUGIN_ADD);
+    let b = crate::shortcuts::find_bindable(&id).expect("an installed filter is bindable");
+    // New Smart Collection has Cmd+Alt+N: the same press as Ctrl+Alt+N except on macOS, where the
+    // declared key is free; elsewhere the filter starts without one and the user gives it the key
+    let mac = cfg!(target_os = "macos");
+    assert_eq!((b.label, b.default()), ("Add Neg", if mac { Some("Ctrl+Alt+N") } else { None }));
+
+    let mut h = demo();
+    if !mac {
+        // given the key, the filter takes it from New Smart Collection
+        let r = h.app.run("app.setShortcut", json!({"id": id, "shortcut": "Ctrl+Alt+N"})).unwrap();
+        assert!(r["removedFrom"].as_array().is_some_and(|l| l.iter().any(|c| c == "dialog.newSmartAlbum")), "{r}");
+    }
+    let ids: Vec<u64> = h.app.session.catalog.photos().take(2).map(|p| p.id.0).collect();
+    h.app.run("library.select", json!({"ids": ids})).unwrap();
+    h.step();
+    let r = h.request("ui.key", json!({"key": "N", "ctrl": true, "alt": true}), Duration::from_secs(20));
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..3 {
+        h.step();
+    }
+    for id in &ids {
+        let d = h.app.session.develop_of(lcc_catalog::PhotoId(*id)).unwrap();
+        assert_eq!(d.plugin_filters.len(), 1, "photo {id}");
+        assert_eq!(d.plugin_filters[0].plugin, "test.keymap.neg");
+    }
+    assert!(h.app.ui.section_open(lcc_develop::PLUGIN_FILTERS_SECTION));
+    // rebound: the new key adds, the old one no longer does
+    h.app.run("app.setShortcut", json!({"id": id, "shortcut": "Cmd+Alt+Shift+N"})).unwrap();
+    let r = h.request("ui.key", json!({"key": "N", "ctrl": true, "alt": true}), Duration::from_secs(20));
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.session.develop_of(lcc_catalog::PhotoId(ids[0])).unwrap().plugin_filters.len(), 1);
+    lcc_engine::filter_plugins::uninstall("test.keymap.neg").unwrap();
+}

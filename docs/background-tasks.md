@@ -16,10 +16,13 @@ Where the tasks show depends on the layout:
   `activityList` says whether it is open. Esc, a click outside or the last task ending closes it. The plate and the
   status line come back once nothing runs. With the module bar hidden, or Edit ▸ Identity Plate Setup's Show Status
   and Activity off, no activity shows: the tasks run on, in `activity.list`, and Quit still asks.
+- **Compact** (`view.compactLayout`) is Classic drawn denser, with the same module bar: the tasks show as in Classic,
+  and the list stays open across a switch between the two. The list's frame takes Compact's sharper corners
+  (`Tokens::radius`).
 - **Modern**: a floating card centred under the Library / Develop switch, three rows and "+N more"
   (`activity:more`).
 
-The registry is `lcc_engine::activity` (`crates/engine/src/activity.rs`, `Session::activity`). The stack (both layouts) is
+The registry is `lcc_engine::activity` (`crates/engine/src/activity.rs`, `Session::activity`). The stack (every layout) is
 `crates/ui-egui/src/panels/activity.rs`; the module bar calls it from `crates/ui-egui/src/module.rs`. Every job that can last more than a moment uses it; **don't add a progress
 window, panel or progress toast of your own**. A dialog may still show progress inline (the Synchronize Folder
 dialog counts files while it scans), and a toast at the end saying what happened is fine. A view saying its pixels

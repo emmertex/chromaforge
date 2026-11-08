@@ -1,3 +1,0 @@
-## Performance
-
-- **Culling shows your edit at once:** an edited photo never stands in with its unedited, uncropped camera JPEG; its latest rendered picture (kept in the preview cache, the last to be pruned) stands in, placed by its crop when its look is close, else a fast draft of the edit from the camera JPEG. The loupe makes the next photos' stand-ins and thumbnails ahead of the step, holds back the raw render while an arrow key is held (`perf.loupeSteps` in `ui.inspect`), shows a raw's full-size camera JPEG at 100 % until the window render arrives, and labels the camera JPEG as "Camera preview". New `bench-cull FOLDER` CLI command and `tools/cull-bench.py` time culling a real shoot.

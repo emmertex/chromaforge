@@ -24,12 +24,15 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         camera_make,
         camera_model,
         camera_serial: m.serial_number.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect(),
+        lens_make: m.lens_make.clone().unwrap_or_default(),
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
         aperture: m.f_number.map(|f| f as f32),
         shutter,
         iso: m.iso,
+        flash: m.flash.as_ref().map(|f| f.fired),
+        exposure_bias: m.exposure_bias.map(|v| v as f32).filter(|v| v.is_finite()),
         lens_range: m.lens_spec.map(|s| (s[0] as f32, s[1] as f32)).filter(|(a, b)| a.is_finite() && b.is_finite() && *a > 0.0 && *b >= *a),
         location: m.sublocation.clone().unwrap_or_default(),
         city: m.city.clone().unwrap_or_default(),
@@ -765,7 +768,10 @@ fn load_bytes_now(
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
         let window = lcc_raw::sensor_window(&bytes, [info.active_area.width, info.active_area.height]);
-        let lens = crate::lens_profiles::for_raw(&info, window, || lcc_meta::extract(&bytes));
+        let (lens, lens_from_file) = match crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(&bytes), None) {
+            Some((l, applied)) => (Some(l), applied == crate::lens_profiles::Applied::Embedded),
+            None => (None, false),
+        };
         // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
         let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         // A DNG's preview already has its lens opcodes applied. Keep them for its single tone fit,
@@ -883,6 +889,7 @@ fn load_bytes_now(
                 as_shot_temp: temp,
                 as_shot_tint: tint,
                 lens,
+                lens_from_file,
                 relative_wb: scale.relative,
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
@@ -1543,6 +1550,21 @@ fn file_modified(path: &str) -> Option<String> {
     lcc_catalog::dates::local(secs)
 }
 
+/// Whether the file at `path` is as it was when `info` probed it: still a file, the same size and the same
+/// modification time (to the second, as the probe records it). A file edited in place keeps its size when only
+/// a few bytes change (an embedded XMP packet rewritten at the same length), so the size alone can't tell; for
+/// the same reason a file whose modification time isn't known, now or then, counts as changed (upstream #3607).
+pub(crate) fn probe_still_valid(path: &str, info: &ProbeInfo) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() || meta.len() != info.file_size {
+        return false;
+    }
+    match (file_modified(path), info.file_modified.as_deref()) {
+        (Some(now), Some(then)) => now == then,
+        _ => false,
+    }
+}
+
 impl crate::Session {
     /// Install the filesystem file hooks (desktop, CLI, MCP headless), and on macOS the Apple Photos
     /// runner ([`crate::apple_photos::osascript`]; installed, not run).
@@ -2089,6 +2111,28 @@ pub(crate) mod tests {
         let (_, window, read) = preview_window(&path, usize::MAX).expect("the file reads").expect("sRGB is what the JPEG-only decode assumes");
         assert!(read.planned && !read.adobe_rgb, "the plan still answers");
         assert!(window.starts_with(&[0xff, 0xd8]), "and hands on the JPEG");
+    }
+
+    /// A scan's probe is reused only for a file as it was: a file rewritten at the same size has another
+    /// modification time, and a file with no known time on either side counts as changed (upstream #3607).
+    #[test]
+    fn a_probe_is_reused_only_for_a_file_with_the_same_size_and_modification_time() {
+        let dir = std::env::temp_dir().join(format!("lcc-probe-valid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jpg");
+        std::fs::write(&path, [0u8; 10]).unwrap();
+        let path = path.to_string_lossy().to_string();
+        let now = file_modified(&path);
+        assert!(now.is_some());
+        let probed = |size: u64, modified: Option<String>| ProbeInfo { file_size: size, file_modified: modified, ..ProbeInfo::default() };
+        assert!(probe_still_valid(&path, &probed(10, now.clone())));
+        assert!(!probe_still_valid(&path, &probed(9, now.clone())), "another size");
+        assert!(!probe_still_valid(&path, &probed(10, None)), "no time when probed");
+        let earlier = std::fs::metadata(&path).unwrap().modified().unwrap() - std::time::Duration::from_secs(3600);
+        let earlier_secs = earlier.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(!probe_still_valid(&path, &probed(10, lcc_catalog::dates::local(earlier_secs as i64))), "rewritten since");
+        assert!(!probe_still_valid(&dir.join("gone.jpg").to_string_lossy(), &probed(10, now)), "gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A JPEG with no date in its metadata (an export saved without it) takes the file's date, as
@@ -3533,6 +3577,38 @@ pub(crate) mod tests {
         assert!(!s.catalog.photo(old).unwrap().is_edited(), "still as imported");
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Upstream #3783: a DNG's `ProfileToneCurve` is the finish stage's camera curve, so process V8
+    /// extends it past its last point (the sensor's white, scene 1.0) with the stop roll-off as well. A
+    /// curve that reaches white there renders as under V7 up to it and white past it; one that ends
+    /// below white (here 0.9) keeps what Exposure lifts past the sensor's white apart instead of
+    /// reaching 8-bit 255 within a stop.
+    #[test]
+    fn v8_extends_a_dng_tone_curve_past_white_in_stops() {
+        use lcc_color::transfer::linear_to_srgb;
+        use lcc_develop::{DevelopSettings, Process};
+        use lcc_pipeline::SourceInfo;
+        let code = |curve: &[f64], process: Process, y: f32| {
+            let tone = lcc_raw::profile::ToneCurve::from_tag(curve).and_then(|c| super::dng_tone_curve(&c));
+            let info = SourceInfo { raw: true, camera_tone: Some(tone.expect("a valid curve")), ..SourceInfo::default() };
+            let s = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+            let o = lcc_pipeline::finish::base_tone(&s, &info, 1.0).apply(y);
+            (linear_to_srgb(o.clamp(0.0, 1.0)) * 255.0).round()
+        };
+        let to_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.78, 1.0, 1.0];
+        for y in [0.01, 0.05, 0.18, 0.5, 0.9] {
+            assert_eq!(code(&to_white, Process::V8, y), code(&to_white, Process::V7, y), "{y}");
+        }
+        for y in [1.0, 2.0, 4.0] {
+            assert_eq!((code(&to_white, Process::V7, y), code(&to_white, Process::V8, y)), (255.0, 255.0), "{y}");
+        }
+        let below_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.72, 1.0, 0.9];
+        let at = |process, ev: f32| code(&below_white, process, ev.exp2());
+        assert_eq!(at(Process::V8, 0.0), at(Process::V7, 0.0));
+        assert_eq!(at(Process::V7, 1.0), 255.0, "V7 is frozen");
+        let (white, beyond) = (at(Process::V8, 0.0), at(Process::V8, 1.0));
+        assert!(beyond < 254.0 && beyond - white >= 3.0, "{white} then {beyond} a stop past the sensor's white");
     }
 
     /// An ILCE-7CR frame at ISO 50 (the sensor at ISO 100 with a stop more light) develops at half the level of the

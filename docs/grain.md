@@ -9,7 +9,7 @@ This is the grain of **process V7** and later ([process-versions.md](process-ver
 on V1 to V6 keep the value-noise grain they were edited with (`finish::FinishParams::grain`), so opening an
 older catalog never changes a photo's grain; Update to Current Process (`develop.updateProcess`)
 moves a photo to the particle grain, as one undo step. Size Variation, Clumping, Color and Response
-only act on V7 (the Effects panel shows them only there); Size, Roughness and Seed act on both models.
+only act on V7 and later (the Effects panel shows them only there); Size, Roughness and Seed act on both models.
 
 ## Model
 

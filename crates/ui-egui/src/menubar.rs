@@ -366,6 +366,7 @@ const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
             "---",
             "dialog.exportCatalog",
             "---",
+            "catalog.backup",
             "file.backupLibrary",
             "file.restoreLibrary",
             "catalog.checkIntegrity",
@@ -508,6 +509,9 @@ pub(crate) fn selection_deleted(app: &LccApp) -> bool {
 fn host_supports(app: &LccApp, id: &str) -> bool {
     match id {
         "file.backupLibrary" => app.services.backup_library.is_some(),
+        // the desktop's backup into the library's backup folder; a host with a backup of its own
+        // (the web build's download) shows that one instead
+        "catalog.backup" => app.services.backup_library.is_none(),
         "file.restoreLibrary" => app.services.restore_library.is_some(),
         "photo.restore" | "photo.deletePermanently" => selection_deleted(app),
         "photo.delete" => !selection_deleted(app),
@@ -904,16 +908,6 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         "Plug-ins" => crate::panels::plugins::menu_items(app).into_iter().map(|(id, p, label)| item(&id, p, label, None, true, None)).collect(),
-        "Open Recent Catalog" => {
-            let mut v: Vec<MenuNode> =
-                crate::catalog_ui::recent_items(app).into_iter().map(|(label, p)| item("catalog.openRecent", p, label, None, true, None)).collect();
-            if v.is_empty() {
-                v.push(item("catalog.openRecent", Value::Null, "No Recent Catalogs", None, false, None));
-            }
-            v.push(MenuNode::Separator);
-            v.push(item("catalog.chooser", Value::Null, "Choose Catalog…", None, true, None));
-            v
-        }
         "Libraries" => {
             let can = crate::panels::settings::can_switch_library(app).is_ok();
             let open = app.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone());

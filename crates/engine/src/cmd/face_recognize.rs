@@ -355,6 +355,7 @@ mod imp {
     use lcc_faces::runtime::Embedder;
     use lcc_geom::Rect;
     use lcc_meta::{Region, RegionKind};
+    use rayon::prelude::*;
     use serde_json::{Value, json};
 
     use super::super::bad;
@@ -729,6 +730,13 @@ mod imp {
             return Ok(json!({"active": false}));
         };
         s.faces.retry_at = None;
+        // the card the model ran on stopped working mid-scan: the rest goes to the other card, or the CPU
+        {
+            let net = embedder.clone();
+            super::super::face_detect::move_off_lost_card(s, "recognition", embedder.net().accelerator().is_some(), move |gpu| {
+                net.accelerate(gpu, true).map_err(|e| e.to_string())
+            });
+        }
         let (embedded, _) = collect(s);
         if (s.faces.index.has_unsaved() || s.faces.scanned.has_unsaved()) && s.faces.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
             if let Err(e) = s.faces.index.save() {
@@ -755,8 +763,8 @@ mod imp {
             w.allow(target, pace);
         }
         // the GPU is held back the same way: a light pace leaves it mostly free for the window's own renders
-        let (runs, share) = crate::faces_worker::gpu_pace(pace);
-        lcc_gpu::faces::set_pace(runs, share);
+        let (runs, share, second_share) = crate::faces_worker::gpu_pace(pace);
+        lcc_gpu::faces::set_pace(runs, share, second_share);
         while target > 0 && s.faces.in_flight.len() < target + PREFETCH {
             let Some(id) = s.faces.queue.pop() else { break };
             let Some(job) = prepare(s, id, true) else { continue };
@@ -808,12 +816,14 @@ mod imp {
             return ready;
         }
         let bar = embedder.manifest().thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD) * 0.8;
-        let refs: Vec<(&str, &[f32])> = gallery.iter().map(|e| ("person", &e[..])).collect();
+        let refs: Vec<&[f32]> = gallery.iter().map(|e| &e[..]).collect();
         let top = top_faces(s);
+        // every unnamed face against every face of theirs: hundreds of millions of comparisons in a large
+        // library, so on every core (minutes on one)
         let mut scored: Vec<(f32, u64, usize, Rect)> = candidates
-            .into_iter()
+            .into_par_iter()
             .filter_map(|(photo, index, rect, e)| {
-                let score = matching::rank_top(&e, &refs, top).first()?.score;
+                let score = matching::person_score(&e, &refs, top)?;
                 (score >= bar).then_some((score, photo, index, rect))
             })
             .collect();
