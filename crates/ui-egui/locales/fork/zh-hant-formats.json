@@ -23,6 +23,7 @@
   "Delete these {count} photos from disk, or only remove them from the library?": "要從磁碟刪除這 {count} 張照片，還是只從圖庫中移除？",
   "Delete {n} presets": "刪除 {n} 個預設",
   "Denoising {name}: {done} of {total} tiles{}": "正在為 {name} 降噪：第 {done}/{total} 個區塊{}",
+  "Disable backups in {path}": "可在 {path} 中關閉備份",
   "Discard 1:1 Previews ({scope})": "捨棄 1:1 預覽（{scope}）",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "已下載 {n} 個地名（GeoNames，CC-BY 4.0）",
   "Downloads from {host}. Once it has arrived and checked out, {app} installs it, {after}.": "從 {host} 下載。下載完成並通過檢查後，{app} 會安裝它，並{after}。",

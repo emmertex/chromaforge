@@ -3059,7 +3059,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" => {
+        "wbPicker" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3123,6 +3123,18 @@ fn general_interaction(
             if let Ok(r) = app.run("pointColor.pick", json!({"x": n.x, "y": n.y})) {
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "hslPick" {
+        // the Witchcraft HSL curves' picker: the hue under the pointer becomes a point on the
+        // shown curve
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            let _ = app.run("develop.hslPick", json!({"channel": app.ui.hsl_curve, "x": n.x, "y": n.y}));
             app.ui.tool.clear();
         }
         return;

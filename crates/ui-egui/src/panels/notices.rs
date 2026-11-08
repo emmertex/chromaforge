@@ -95,7 +95,19 @@ enum Choice {
     Ok,
 }
 
-fn window(ctx: &egui::Context, id: &str, title: &str, text: &str, buttons: &[(&str, &str, Choice)]) -> Option<usize> {
+/// Where the backup schedule is set, as the menu bar shows it ("Disable backups in Edit ▸ Library Settings…"),
+/// translated; `None` if the command has no menu path.
+fn backup_hint() -> Option<String> {
+    let (_, label, _, menu) = crate::menus::ui_commands().find(|c| c.0 == "dialog.catalogSettings")?;
+    if menu.is_empty() {
+        return None;
+    }
+    let path: Vec<&str> = menu.split('>').chain([*label]).map(crate::i18n::tr).collect();
+    Some(crate::i18n::tr_format!("Disable backups in {path}", path = path.join(" ▸ ")))
+}
+
+/// A modal card: `text`, then `hint` (dimmer) when given, then the buttons.
+fn window(ctx: &egui::Context, id: &str, title: &str, text: &str, hint: Option<&str>, buttons: &[(&str, &str, Choice)]) -> Option<usize> {
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new((id, "dim"))).order(egui::Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
@@ -120,7 +132,12 @@ fn window(ctx: &egui::Context, id: &str, title: &str, text: &str, buttons: &[(&s
             ui.spacing_mut().item_spacing.y = 8.0;
             crate::dialog_frame::card_header(ui, crate::i18n::tr(title), None);
             let mut layout = crate::dialog_frame::ModalLayout::begin(ui, window_id);
-            layout.body(ui, |ui| ui.add(egui::Label::new(RichText::new(text).color(t.text_label)).wrap()));
+            layout.body(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(text).color(t.text_label)).wrap());
+                if let Some(hint) = hint {
+                    ui.add(egui::Label::new(RichText::new(hint).color(t.text_dim)).wrap());
+                }
+            });
             layout.footer(ui, |ui| {
                 ui.add_space(4.0);
                 // (wrapping on a narrow window)
@@ -141,7 +158,7 @@ fn window(ctx: &egui::Context, id: &str, title: &str, text: &str, buttons: &[(&s
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(QuitPrompt::Tasks(text)) = app.quit_prompt.clone() {
         let buttons = [("quitAnyway", "Quit Anyway", Choice::QuitAnyway), ("quitCancel", "Cancel", Choice::Cancel)];
-        let Some(i) = window(ctx, "quit-tasks", "Quit while tasks are running?", &text, &buttons) else { return };
+        let Some(i) = window(ctx, "quit-tasks", "Quit while tasks are running?", &text, None, &buttons) else { return };
         app.quit_prompt = None;
         if matches!(buttons[i].2, Choice::QuitAnyway) {
             app.session.activity.cancel_all();
@@ -158,7 +175,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             ("quitSkipBackup", "Skip This Time", Choice::QuitAnyway),
             ("quitCancel", "Cancel", Choice::Cancel),
         ];
-        let Some(i) = window(ctx, "quit-backup", "Back up the catalog?", &text, &buttons) else { return };
+        let Some(i) = window(ctx, "quit-backup", "Back up the library?", &text, backup_hint().as_deref(), &buttons) else { return };
         app.quit_prompt = None;
         match buttons[i].2 {
             Choice::Retry => app.exit_backup = Some(true),
@@ -176,7 +193,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             ("quitAnyway", "Quit Anyway", Choice::QuitAnyway),
             ("quitCancel", "Cancel", Choice::Cancel),
         ];
-        let Some(i) = window(ctx, "quit-unsaved", "Quit with unsaved changes?", &text, &buttons) else { return };
+        let Some(i) = window(ctx, "quit-unsaved", "Quit with unsaved changes?", &text, None, &buttons) else { return };
         match buttons[i].2 {
             Choice::Retry => {
                 app.quit_prompt = None;
@@ -197,7 +214,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         let buttons = [("noticeOk", "OK", Choice::Ok)];
         // an upgrade is news, not a problem: don't title it like one
         let title = if text.starts_with(lcc_engine::library::UPGRADE_NOTICE_START) { "Library upgraded" } else { "Settings file problem" };
-        if window(ctx, "settings-notice", title, &text, &buttons).is_some() {
+        if window(ctx, "settings-notice", title, &text, None, &buttons).is_some() {
             app.notices.remove(0);
         }
     }

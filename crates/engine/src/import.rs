@@ -258,6 +258,9 @@ pub struct ImportReport {
     pub kept: Vec<Kept>,
     /// (path, error)
     pub failed: Vec<(String, String)>,
+    /// Files skipped as still being copied in (`lcc_catalog::incoming`): a later scan or import picks them up.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub still_copying: Vec<String>,
     /// Files found after expanding folders.
     pub scanned: usize,
     /// Photos whose metadata/develop settings were read from an XMP sidecar (or embedded XMP).
@@ -1034,7 +1037,7 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
-    // probes from a preceding `scan` are reused when the file is unchanged (same size)
+    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time)
     let cached: Vec<Option<ProbeInfo>> = todo
         .iter()
         .map(|f| {
@@ -1044,8 +1047,9 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
             if progress.cancel.load(Relaxed) {
                 return None;
             }
-            let size = std::fs::metadata(f).map(|m| m.len()).ok();
-            (size.is_none() || size == Some(info.file_size)).then_some(info)
+            // (a file that can't be looked at counts as unchanged; one that can is reused only as it was,
+            // size and modification time)
+            (std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, &info)).then_some(info)
         })
         .collect();
     let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
@@ -1204,6 +1208,8 @@ enum PreparedItem {
         hash: Option<String>,
     },
     Failed(String, String),
+    /// Still being copied in: left for a later scan.
+    Copying(String),
     Kept(Kept),
     Ready(Box<ReadyFile>),
 }
@@ -1441,9 +1447,7 @@ impl ImportJob {
             .iter()
             .map(|f| {
                 // (the web's files are not std::fs files: kept as probed)
-                self.cache
-                    .remove(f)
-                    .filter(|info| cfg!(target_arch = "wasm32") || std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.len() == info.file_size))
+                self.cache.remove(f).filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
             })
             .collect();
         let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
@@ -1478,6 +1482,7 @@ impl ImportJob {
                 Err(e) if lcc_catalog::incoming::is_still_being_written(&e) => {
                     log::info!("import: skipped {e}");
                     self.done.fetch_add(1, Relaxed);
+                    plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
                     continue;
                 }
                 Err(e) => {
@@ -1916,6 +1921,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
             }
             PreparedItem::Failed(path, e) => report.failed.push((path, e)),
+            PreparedItem::Copying(path) => report.still_copying.push(path),
             PreparedItem::Kept(k) => report.kept.push(k),
             PreparedItem::Ready(r) if r.promote.is_some_and(|id| s.catalog.photo(id).is_some_and(|p| p.local)) => {
                 // a browsed photo copied or moved: its record follows the file into the library,
@@ -1945,7 +1951,10 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 let sidecar = sidecar.map(|sc| sc.resolve_label(&s.catalog)).filter(|sc| *sc != crate::sidecar::SidecarData::default());
                 // the photo is upright as the file's own orientation turns it, when the file states one
-                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData { orientation: info.orientation.or(sc.orientation), ..sc });
+                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData {
+                    orientation: info.orientation.or(sc.orientation),
+                    ..sc.turn_from(info.orientation).crop_from(info.orientation, (info.width, info.height))
+                });
                 // a copy is catalogued under its new name
                 let name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let mut p = Photo::new(id, Source::File { path: stored }, &name, &info.format, info.width, info.height, &now);

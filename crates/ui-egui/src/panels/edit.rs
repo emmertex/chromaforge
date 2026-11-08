@@ -194,7 +194,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     // (Lightroom Classic's Basic has no on/off switch: it shows only while an older edit has Basic or Color switched off,
     // so that edit can be switched back on)
     let basic_switch = !d.section_enabled("light") || !d.section_enabled("color");
-    section_with(app, ui, &d, "light", "Basic", basic_switch, |app, ui, d| {
+    section_with(app, ui, &d, "light", "Basic", basic_switch, None, |app, ui, d| {
         if dense {
             header_rows(app, ui, id, d, preview_only.as_deref());
         }
@@ -252,6 +252,26 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Witchcraft's palettes follow Basic (the grade continues where every photo starts: Basic,
+    // then the colourist's Primaries wheels and HSL curves) before Lightroom's own panels — in
+    // Eboda all three are away; the histogram's own mode menu (its scopes included) stays
+    // Lightroom's way, and the two Witchcraft sections carry the mode's pill beside their titles
+    if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        if shows("primaries") {
+            section_with(app, ui, &d, "primaries", "Primaries", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::primaries(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+        // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its
+        // own panel)
+        if shows("hsl") && !crate::is_bw(&d) {
+            section_with(app, ui, &d, "hsl", "HSL Curves", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::hsl_curves(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {
@@ -862,10 +882,11 @@ pub(crate) fn section(
     title: &str,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
-    section_with(app, ui, d, id, title, true, body);
+    section_with(app, ui, d, id, title, true, None, body);
 }
 
-/// [`section`], with its on/off switch (`switch`) or without.
+/// [`section`], with its on/off switch (`switch`) or without, and optionally a small pill
+/// (`badge`, e.g. "Witchcraft") beside the title saying which mode the section belongs to.
 pub(crate) fn section_with(
     app: &mut LccApp,
     ui: &mut egui::Ui,
@@ -873,6 +894,7 @@ pub(crate) fn section_with(
     id: &str,
     title: &str,
     switch: bool,
+    badge: Option<&str>,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
     // one section alone (the Modern layout's card): open, no header
@@ -884,7 +906,7 @@ pub(crate) fn section_with(
         return;
     }
     let open = app.ui.section_open(id);
-    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)));
+    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)), badge);
     // video takes the global Light and Color controls only: the rest show greyed out
     let blocked = !crate::video_ui::section_allowed(id) && app.session.active().is_some_and(|p| crate::video_ui::photo_is_video(app, p));
     let resp = if blocked { resp.on_hover_text(crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO)) } else { resp };
@@ -1739,11 +1761,11 @@ impl CurveTarget {
 
 /// The Tone Curve editor (`CurveTarget::Photo`) or a mask's local Curve editor.
 /// The closest two points of a point curve may be in x (a fraction of the graph's width).
-const POINT_GAP: f64 = 0.01;
+pub(crate) const POINT_GAP: f64 = 0.01;
 
 /// `pts` with a point added at (`x`, `y`), and where it went; `None` when a point is already
 /// within [`POINT_GAP`] of `x` (the curve would fall off a cliff between the two).
-fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
+pub(crate) fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
     if pts.iter().any(|p| (p.x - x).abs() < POINT_GAP) {
         return None;
     }
@@ -2862,19 +2884,19 @@ impl WheelGrab {
 /// in place for the drag; elsewhere it moves unseen and is put back. The browser can't move it
 /// (eframe's web host ignores the command), so there it only shows again where the drag ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct WheelCapture {
+pub(crate) struct WheelCapture {
     /// Where the button went down: the pointer goes back there.
-    origin: Pos2,
+    pub(crate) origin: Pos2,
     /// Where the pointer would be had it been free: where the drag began plus the travel since.
     pos: Pos2,
     /// Let go early (the window lost focus): the rest of this drag leaves the wheel alone.
-    dropped: bool,
+    pub(crate) dropped: bool,
     /// The pass that last drew the dragged wheel.
     pass: u64,
 }
 
 /// One wheel is dragged at a time, so one capture for them all.
-const WHEEL_CAPTURE: &str = "wheelCapture";
+pub(crate) const WHEEL_CAPTURE: &str = "wheelCapture";
 
 /// The mouse's travel this frame: the pointer's, or, while the pointer stands still (locked, or
 /// against a screen edge), the raw motion the host reports.
@@ -2888,7 +2910,7 @@ fn wheel_travel(delta: egui::Vec2, motion: Option<egui::Vec2>) -> egui::Vec2 {
 /// Where the wheel `resp` reads the pointer this frame: where it clicked, or for a drag the held
 /// pointer ([`WheelCapture`]), `None` once a lost focus let go of it (Esc ends the drag itself:
 /// egui stops a drag on Esc).
-fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
+pub(crate) fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
     let q = resp.interact_pointer_pos()?;
     if !resp.dragged() {
         return Some(q);
@@ -2924,7 +2946,7 @@ fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
 }
 
 /// Unlock and show the pointer a wheel drag held, back at `origin`.
-fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
+pub(crate) fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
     if cfg!(target_os = "macos") {
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
     }
@@ -2969,7 +2991,7 @@ pub(crate) fn wheel_pick(v: egui::Vec2, rad: f32, lock: Option<WheelLock>) -> (f
     }
 }
 
-fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
+pub(crate) fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
     p.add(wheel_mesh(c, rad));
     p.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_gray(40)));
 }

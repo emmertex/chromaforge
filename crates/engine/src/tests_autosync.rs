@@ -128,3 +128,27 @@ fn pasted_object_masks_leave_their_clicks_behind() {
     let MaskShape::Object { hint, exclude, seg, .. } = &got[0].components[0].shape else { panic!("an Object: {got:?}") };
     assert!(hint.is_empty() && exclude.is_empty() && seg.is_none(), "no clicks or pixels from a");
 }
+
+/// Auto with Auto Sync on gives every selected photo its own Auto (upstream #3808), not the active photo's numbers,
+/// as one undo step.
+#[test]
+fn auto_with_auto_sync_runs_each_photos_own_auto() {
+    let ids: Vec<u64> = demo().visible_cloned().iter().take(3).map(|p| p.0).collect();
+    // what Auto gives each photo alone
+    let mut alone = Vec::new();
+    for id in &ids {
+        let mut s = demo();
+        s.execute("library.select", &json!({"ids": [id]})).unwrap();
+        s.execute("develop.auto", &json!({})).unwrap();
+        alone.push(Session::auto_values(&s.develop_of(lcc_catalog::PhotoId(*id)).unwrap()));
+    }
+    let mut s = demo();
+    s.execute("library.select", &json!({"ids": ids, "active": ids[0]})).unwrap();
+    s.execute("develop.autoSync", &json!({"on": true})).unwrap();
+    let before = s.commits();
+    s.execute("develop.auto", &json!({})).unwrap();
+    for (id, want) in ids.iter().zip(&alone) {
+        assert_eq!(&Session::auto_values(&s.develop_of(lcc_catalog::PhotoId(*id)).unwrap()), want, "photo {id} got its own Auto");
+    }
+    assert_eq!(s.commits(), before + 1, "one undo step");
+}

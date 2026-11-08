@@ -198,11 +198,20 @@ pub struct Meta {
     /// two bodies of one model apart for their own camera profiles ([`Meta::camera_model`] says the model).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub camera_serial: String,
+    /// The lens maker (Exif `LensMake`), written back on export. Left out of the catalog JSON when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lens_make: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
     pub shutter: String,
     pub iso: Option<u32>,
+    /// Whether the flash fired (Exif `Flash`); `None` when the file does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+    /// Exposure compensation in EV (Exif `ExposureBiasValue`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_bias: Option<f32>,
     /// The lens's focal range (mm, shortest and longest), from the file's LensSpecification: the loupe's shot info
     /// adds it to a lens name that doesn't say it (OneSlips PERF-CULL-7 a5f6da85e). Left out of the catalog JSON when
     /// unknown, so older catalogs read unchanged.

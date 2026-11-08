@@ -193,6 +193,44 @@ pub enum LaunchLibrary {
     Ask,
 }
 
+/// The Edit panel's grading mode (Window ▸ Grading Mode, `view.gradingMode`): a presentation
+/// choice — both modes edit the same photo settings, they only lay the colour tools out
+/// differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GradingMode {
+    /// The Lightroom Classic panels, as the Edit panel always had them.
+    Eboda,
+    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes
+    /// (the default — the fork's own face, with Lightroom's panels one Settings row away).
+    #[default]
+    Witchcraft,
+}
+
+impl GradingMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            GradingMode::Eboda => "eboda",
+            GradingMode::Witchcraft => "witchcraft",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "eboda" => Some(GradingMode::Eboda),
+            "witchcraft" => Some(GradingMode::Witchcraft),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GradingMode::Eboda => GradingMode::Witchcraft,
+            GradingMode::Witchcraft => GradingMode::Eboda,
+        }
+    }
+}
+
 /// When grid cells show their rating / flag / edited badges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -554,6 +592,11 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
+    /// The Edit panel's grading mode (`view.gradingMode`): Witchcraft, the DaVinci Resolve style
+    /// colour-grading palettes (the default), or Eboda, the Lightroom Classic panels. Both edit
+    /// the same photo; a value this version doesn't know reads as the default.
+    #[serde(deserialize_with = "lenient")]
+    pub grading_mode: GradingMode,
     /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
     /// whichever library is open and after a restart.
     pub auto_sync: bool,
@@ -729,6 +772,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
+            grading_mode: GradingMode::Witchcraft,
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
@@ -1513,6 +1557,11 @@ pub struct UiState {
     pub mixer_adjust: String,
     /// The HSL group shown: "hue" | "sat" | "lum" | "all".
     pub mixer_group: String,
+    /// The Witchcraft HSL Curves panel's curve: "hue" | "sat" | "lum".
+    pub hsl_curve: String,
+    /// The Primaries palette's wheels: "color" (Lift / Gamma / Gain / Offset) or "log"
+    /// (Shadow / Midtone / Highlight / Offset). Which set is edited; both always render.
+    pub primaries_tab: String,
     /// Selected colour grading tab: "3way" | "shadows" | "midtones" | "highlights".
     pub grading_mode: String,
     /// Colour grading wheels (shadows, midtones, highlights) hidden for viewing by their eye, and
@@ -2369,7 +2418,9 @@ impl Default for UiState {
             zoom_anim: false,
             before_after: BeforeAfter::Off,
             thumb_size: 220.0,
-            open_sections: vec!["light".into()],
+            // "primaries" (the Witchcraft palette) opens with the app: in Eboda the section never
+            // renders, so the extra entry is invisible there; a user who closes it keeps that
+            open_sections: vec!["light".into(), "primaries".into()],
             open_flyouts: vec![],
             single_panel: false,
             show_clipping: false,
@@ -2453,6 +2504,8 @@ impl Default for UiState {
             mixer_mode: "red".into(),
             mixer_adjust: "hsl".into(),
             mixer_group: "hue".into(),
+            hsl_curve: "hue".into(),
+            primaries_tab: "color".into(),
             grading_mode: "3way".into(),
             grading_hidden: None,
             tool: String::new(),

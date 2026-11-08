@@ -2086,6 +2086,7 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
         };
         out.make = make;
         out.model = model;
+        out.lens_make = text(&m.lens_make);
         out.lens_model = text(&m.lens);
         out.focal_length = m.focal_mm.map(f64::from);
         out.f_number = m.aperture.map(f64::from);
@@ -4050,6 +4051,22 @@ mod tests {
         old.meta.camera = "Canon Canon IXUS 185".into();
         let m = export_metadata(&old, &Catalog::new(), &ExportOptions::default()).unwrap();
         assert_eq!((m.make.as_deref(), m.model.as_deref()), (None, Some("Canon Canon IXUS 185")));
+    }
+
+    /// The lens maker (Exif LensMake, upstream #3828) is exported with metadata "All" and reads back from the JPEG.
+    #[test]
+    fn export_writes_lens_make() {
+        use lcc_catalog::{Catalog, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-10-06T00:00:00");
+        p.meta.lens = "RF 24-105mm f/4L IS USM".into();
+        p.meta.lens_make = "Canon".into();
+        let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+        assert_eq!(m.lens_make.as_deref(), Some("Canon"));
+        let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
+        assert_eq!(lcc_meta::extract(&jpg).lens_make.as_deref(), Some("Canon"));
+        p.meta.lens_make.clear();
+        let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+        assert_eq!(m.lens_make, None);
     }
 
     #[test]

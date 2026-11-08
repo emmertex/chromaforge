@@ -264,6 +264,24 @@ fn every_setting_is_reachable_through_the_groups_sections() {
     assert_eq!(h.app.ui.modern.more.as_deref(), Some("grading"));
 }
 
+/// The Colour group's Color Grading card follows the grading mode (Settings ▸ General): Witchcraft
+/// shows the colourist's Primaries palette and HSL curves, Eboda Lightroom's own 3-way wheels.
+#[test]
+fn the_colour_grading_card_matches_the_grading_mode() {
+    let mut h = develop([1280.0, 800.0]);
+    exec(&mut h, "modern.chrome", json!({"on": true}));
+    exec(&mut h, "modern.group", json!({"group": "colour"}));
+    ask(&mut h, "ui.clickWidget", json!({"id": "modern:more:grading"}));
+    // Witchcraft (the default): the Primaries palette and the HSL curves
+    assert!(has(&h, "wheel:primaries-lift"), "the colourist wheels");
+    assert!(has(&h, "curve:hsl"), "the HSL curves");
+    assert!(!has(&h, "wheel:shadows"), "not Lightroom's 3-way");
+    // Eboda: the 3-way wheels the card always had
+    exec(&mut h, "view.gradingMode", json!({"mode": "eboda"}));
+    assert!(has(&h, "wheel:shadows"), "the 3-way wheels");
+    assert!(!has(&h, "wheel:primaries-lift"));
+}
+
 /// While a pill is dragged the chrome fades away (the slider and the histogram stay), and it comes
 /// back when the drag ends.
 #[test]

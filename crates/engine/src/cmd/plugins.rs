@@ -500,17 +500,26 @@ fn log(_: &mut Session, p: &Value) -> Result<Value> {
 fn picture(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.picture";
     let id = id_param(p, C)?;
-    let f = crate::filter_plugins::registry().get(id).ok_or_else(|| bad(C, format!("no filter plug-in {id:?} is installed")))?;
     let dark = match str_param(p, "theme") {
         None | Some("dark") => true,
         Some("light") => false,
         Some(t) => return Err(bad(C, format!("`theme` must be dark or light, not {t:?}"))),
     };
-    let m = f.manifest();
-    let svg = match str_param(p, "picture") {
-        None | Some("header") => m.header.as_ref().map(|h| h.for_theme(dark).to_string()),
-        Some("icon") => m.icon.clone(),
+    let header = match str_param(p, "picture") {
+        None | Some("header") => true,
+        Some("icon") => false,
         Some(k) => return Err(bad(C, format!("`picture` must be header or icon, not {k:?}"))),
+    };
+    // a pixel filter's, else a plug-in's: both manifests carry the same two pictures
+    let svg = if let Some(f) = crate::filter_plugins::registry().get(id) {
+        let m = f.manifest();
+        if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() }
+    } else {
+        with_manager(|m| {
+            let i = m.get(id).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed")))?;
+            let m = i.plugin.manifest();
+            Ok(if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() })
+        })?
     };
     Ok(json!({"svg": svg}))
 }
@@ -1249,7 +1258,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "plugin.rollback", "Go Back to Previous Plug-in Version", [], None, "{id} — goes back to the version the plug-in's last update replaced (plugin.list → previousVersion), with its settings as they were before that update; one level deep. Its grant is kept, cut back to what that version asks for, without programs (only the user keeps those, from the plug-in's page). An error when no version is kept; nothing changes when the old module can't be written → the plug-in, as plugin.list lists it", always, rollback),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
         cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plug-in Manager (an error, nothing changes) → granted", always, set_grant),
-        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)} — a filter plug-in's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
+        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)} — a plug-in's or pixel filter's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
         cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
@@ -1618,6 +1627,34 @@ pub(crate) mod tests {
         let path = dir.join(format!("{name}.wasm"));
         std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
         path
+    }
+
+    /// A plug-in's own icon and header, as a pixel filter's: listed, and served by `plugin.picture`.
+    #[test]
+    fn a_plugins_pictures_are_listed_and_served() {
+        let _turn = turn();
+        let mut s = Session::with_demo();
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><rect width='4' height='4'/></svg>";
+        let light = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><rect width='1' height='1'/></svg>";
+        let manifest = json!({"id": "test.pictures", "name": "Pictures", "version": "1.0.0", "icon": svg, "header": {"dark": svg, "light": light}});
+        let info = s.execute("plugin.install", &json!({"path": module_file("pictures", &manifest)})).unwrap();
+        assert_eq!((info["icon"].as_bool(), info["header"].as_bool()), (Some(true), Some(true)));
+        let listed = s.execute("plugin.list", &json!({})).unwrap();
+        let row = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.pictures").unwrap().clone();
+        assert_eq!(row["icon"], true);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "picture": "icon"})).unwrap()["svg"], svg);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures"})).unwrap()["svg"], svg, "the header, dark by default");
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "theme": "light"})).unwrap()["svg"], light);
+        // without pictures: listed as absent, none served
+        let plain = s
+            .execute("plugin.install", &json!({"path": module_file("plain", &json!({"id": "test.plain", "name": "Plain", "version": "1.0.0"}))}))
+            .unwrap();
+        assert_eq!((plain["icon"].as_bool(), plain["header"].as_bool()), (Some(false), Some(false)));
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.plain", "picture": "icon"})).unwrap()["svg"], Value::Null);
+        assert!(s.execute("plugin.picture", &json!({"id": "test.nowhere"})).is_err());
+        for id in ["test.pictures", "test.plain"] {
+            s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+        }
     }
 
     /// `requires`, the version rule and downgrades through the commands the install dialog and

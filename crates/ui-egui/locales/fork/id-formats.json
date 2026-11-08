@@ -26,6 +26,7 @@
   "Delete the {n} rejected photos of this view?": "Hapus {n} foto yang ditolak di tampilan ini?",
   "Delete these {count} photos from disk, or only remove them from the library?": "Delete these {count} photos from disk, or only remove them from the library?",
   "Delete {n} presets": "Hapus {n} preset",
+  "Disable backups in {path}": "Nonaktifkan pencadangan di {path}",
   "Discard 1:1 Previews ({scope})": "Discard 1:1 Previews ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Downloaded {n} place names (GeoNames, CC-BY 4.0)",
   "Estimated time: {est}": "Estimated time: {est}",

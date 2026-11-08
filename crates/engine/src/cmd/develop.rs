@@ -13,6 +13,18 @@ fn active(s: &Session, c: &str) -> Result<PhotoId> {
 }
 
 /// Modify the active photo's settings with `f` and commit (or preview during an interaction).
+/// Auto's tone and colour numbers onto a photo's settings.
+fn set_auto_tone(d: &mut DevelopSettings, a: &lcc_pipeline::auto::AutoTone) {
+    d.light.exposure = a.exposure;
+    d.light.contrast = a.contrast;
+    d.light.highlights = a.highlights;
+    d.light.shadows = a.shadows;
+    d.light.whites = a.whites;
+    d.light.blacks = a.blacks;
+    d.color.vibrance = a.vibrance;
+    d.color.saturation = a.saturation;
+}
+
 fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettings) -> Result<()>) -> Result<Value> {
     let id = active(s, c)?;
     let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
@@ -727,20 +739,47 @@ pub fn specs() -> Vec<CommandSpec> {
             // Source plug-in filters (e.g. a negative conversion) change what the photo is
             let src = lcc_pipeline::plugin_filters::filtered_source(&src, &info, &d, 1024);
             let a = lcc_pipeline::auto::auto_tone(&src, &info, &d);
-            edit(s, "develop.auto", "Auto", |d| {
-                d.light.exposure = a.exposure;
-                d.light.contrast = a.contrast;
-                d.light.highlights = a.highlights;
-                d.light.shadows = a.shadows;
-                d.light.whites = a.whites;
-                d.light.blacks = a.blacks;
-                d.color.vibrance = a.vibrance;
-                d.color.saturation = a.saturation;
-                Ok(())
-            })?;
-            if let Some(d) = s.develop_of(id) {
-                let values = Session::auto_values(&d);
-                s.auto_applied.insert(id, values);
+            // With Auto Sync on, every other selected photo gets its own Auto (worked out on its own pixels), not
+            // the active photo's numbers (upstream #3808, in our own form); one undo step. A photo that can't
+            // be read keeps its settings.
+            if s.auto_sync_applies(id, "Auto") {
+                let others: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
+                let mut picks = vec![(id, a)];
+                for x in others {
+                    let Ok(xsrc) = s.source_now(x, SourceLevel::Thumb) else { continue };
+                    let (xinfo, xd) = (s.source_info(x), s.develop_of(x).unwrap_or_default());
+                    let xsrc = lcc_pipeline::plugin_filters::filtered_source(&xsrc, &xinfo, &xd, 1024);
+                    picks.push((x, lcc_pipeline::auto::auto_tone(&xsrc, &xinfo, &xd)));
+                }
+                let mut ops: Vec<Op> = Vec::new();
+                let mut done: Vec<PhotoId> = Vec::new();
+                for (x, ax) in picks {
+                    let mut nd = (*s.develop_of(x).unwrap_or_default()).clone();
+                    set_auto_tone(&mut nd, &ax);
+                    if let Some(op) = s.develop_op(x, nd, "Auto") {
+                        ops.push(op);
+                        done.push(x);
+                    }
+                }
+                s.end_interaction()?;
+                if !ops.is_empty() {
+                    s.commit("Auto", Op::Batch { ops })?;
+                }
+                for x in done {
+                    if let Some(d) = s.develop_of(x) {
+                        let values = Session::auto_values(&d);
+                        s.auto_applied.insert(x, values);
+                    }
+                }
+            } else {
+                edit(s, "develop.auto", "Auto", |d| {
+                    set_auto_tone(d, &a);
+                    Ok(())
+                })?;
+                if let Some(d) = s.develop_of(id) {
+                    let values = Session::auto_values(&d);
+                    s.auto_applied.insert(id, values);
+                }
             }
             let mut r = serde_json::to_value(a).unwrap_or_default();
             if let Some(o) = r.as_object_mut() {
@@ -1140,6 +1179,59 @@ pub fn specs() -> Vec<CommandSpec> {
                     Ok(())
                 })?;
                 Ok(json!({"enabled": enabled, "maxEv": s.develop_of(id).map(|d| d.hdr.max_ev)}))
+            }
+        ),
+        cmd!(
+            "develop.hslPick",
+            "Pick an HSL Curve Point",
+            [],
+            None,
+            "{channel: hue|sat|lum, x, y (normalized image coords)} — samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
+            has_active,
+            |s, p| {
+                let c = "develop.hslPick";
+                let ch = str_param(p, "channel").ok_or_else(|| bad(c, "missing channel"))?.to_string();
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                // the hue the curve receives: the photo with the curves themselves neutral (and
+                // everything after the mixer, as Point Color reads it)
+                let [_, _, h] = super::color::encoded_to_oklch(super::color::probe(s, c, x, y, |d| {
+                    d.hsl_curves = Default::default();
+                    super::color::after_mixer_neutral(d);
+                })?);
+                let hue_x = (h as f64 / std::f64::consts::TAU).rem_euclid(1.0);
+                edit(s, c, "HSL Curves", |d| {
+                    let pts = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad(c, format!("unknown channel `{ch}`")))?;
+                    let at = lcc_pipeline::colorops::hsl_curve_at(pts, hue_x);
+                    pts.push(Point::new(hue_x, at));
+                    pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                    Ok(())
+                })?;
+                Ok(json!({"channel": ch, "x": hue_x}))
+            }
+        ),
+        cmd!(
+            "develop.hslCurves",
+            "Set HSL Curve",
+            [],
+            None,
+            "{channel: hue|sat|lum, points: [[x,y],...] — x hue position 0..1 around the hue circle, y −1..1}",
+            has_active,
+            |s, p| {
+                let ch = str_param(p, "channel").ok_or_else(|| bad("develop.hslCurves", "missing channel"))?.to_string();
+                let mut pts: Vec<Point> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| bad("develop.hslCurves", "missing points"))?
+                    .iter()
+                    .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?.clamp(0.0, 1.0), q.get(1)?.as_f64()?.clamp(-1.0, 1.0))))
+                    .collect();
+                // stored in the order the curve runs, as the editor draws and drags them
+                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                edit(s, "develop.hslCurves", "HSL Curves", |d| {
+                    let c = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad("develop.hslCurves", format!("unknown channel `{ch}`")))?;
+                    *c = pts;
+                    Ok(())
+                })
             }
         ),
         // ---- geometry: Upright
@@ -1756,22 +1848,91 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": new_group}))
         }),
-        cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
-            let c = "preset.deleteGroup";
-            let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
-                return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
+        cmd!(
+            "preset.copy",
+            "Copy Presets to Folder",
+            [],
+            None,
+            "{ids: [presetId], group} → {ids: [new presetId], skipped} — user presets with the same settings under a new id, built-in presets included, unstarred; a preset identical to one already in the folder is skipped",
+            always,
+            |s, p| {
+                let c = "preset.copy";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                let group = existing_preset_group(s, group);
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let copies: Vec<Preset> = s
+                    .presets
+                    .iter()
+                    .filter(|x| ids.contains(&x.id))
+                    .map(|x| Preset {
+                        id: String::new(),
+                        name: x.name.clone(),
+                        group: group.clone(),
+                        settings: x.settings.clone(),
+                        favorite: false,
+                        builtin: false,
+                    })
+                    .collect();
+                if copies.is_empty() {
+                    return Err(bad(c, "none of these presets exist"));
+                }
+                let asked = copies.len();
+                let added = s.add_presets(copies);
+                let skipped = asked.saturating_sub(added.len());
+                s.presets.bump();
+                Ok(json!({"ids": added, "skipped": skipped}))
             }
-            let prefix = format!("{group}/");
-            s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
-            let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
-            let removed = gone.len();
-            s.presets.retain(|q| !gone.contains(&q.id));
-            s.preset_at_import.retain(|x| !gone.contains(x));
-            s.preset_hidden.retain(|x| !gone.contains(x));
-            s.presets.bump();
-            Ok(json!({"deleted": removed}))
-        }),
+        ),
+        cmd!(
+            "preset.deleteMany",
+            "Delete Presets",
+            [],
+            None,
+            "{ids: [presetId]} → {deleted, skipped} — user presets; built-in and unknown ids are skipped",
+            always,
+            |s, p| {
+                let c = "preset.deleteMany";
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let gone: std::collections::HashSet<&String> =
+                    s.presets.iter().filter(|q| !q.builtin && ids.contains(&q.id)).map(|q| &q.id).collect();
+                let gone: Vec<String> = gone.into_iter().cloned().collect();
+                s.presets.retain(|q| !gone.contains(&q.id));
+                s.preset_at_import.retain(|x| !gone.contains(x));
+                s.preset_hidden.retain(|x| !gone.contains(x));
+                s.presets.bump();
+                Ok(json!({"deleted": gone.len(), "skipped": ids.len().saturating_sub(gone.len())}))
+            }
+        ),
+        cmd!(
+            "preset.deleteGroup",
+            "Delete Preset Folder",
+            [],
+            None,
+            "{group, expect?: how many presets it should hold} — refused when `expect` is given and wrong",
+            always,
+            |s, p| {
+                let c = "preset.deleteGroup";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
+                    return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
+                }
+                if let Some(expect) = p.get("expect").and_then(Value::as_u64) {
+                    let held = s.presets.iter().filter(|q| in_group(q, group)).count() as u64;
+                    if held != expect {
+                        return Err(bad(c, format!("the folder holds {held} presets, not {expect}: nothing deleted")));
+                    }
+                }
+                let prefix = format!("{group}/");
+                s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
+                let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+                let removed = gone.len();
+                s.presets.retain(|q| !gone.contains(&q.id));
+                s.preset_at_import.retain(|x| !gone.contains(x));
+                s.preset_hidden.retain(|x| !gone.contains(x));
+                s.presets.bump();
+                Ok(json!({"deleted": removed}))
+            }
+        ),
         cmd!(
             "preset.update",
             "Update Preset with Current Settings",

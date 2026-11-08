@@ -402,6 +402,9 @@ fn unknown_manifest_fields_are_named_and_the_install_goes_ahead() {
     assert_eq!(unknown, ["commands[0].dialog[0].stepp", "commands[0].lable", "descripton", "permissions.netwrok"]);
     let clean = json!({"id": "t.clean", "name": "C", "version": "1.0.0", "description": "", "hooks": {}, "permissions": {}});
     assert!(Manifest::parse(clean.to_string().as_bytes()).unwrap().unknown_fields.is_empty(), "known fields at their defaults");
+    // pictures are known fields, even one the host drops
+    let pictures = json!({"id": "t.pics", "name": "P", "icon": "not an svg", "header": {"dark": 3}});
+    assert!(Manifest::parse(pictures.to_string().as_bytes()).unwrap().unknown_fields.is_empty(), "icon and header are known");
     // many known fields at their defaults before a typo don't crowd it out
     let commands: Vec<Value> = (0..40).map(|i| json!({"id": format!("c{i}"), "label": "C", "job": false, "prepare": false})).collect();
     let crowded = json!({"id": "t.crowded", "name": "C", "version": "1.0.0", "commands": commands, "zz_typo": 1});

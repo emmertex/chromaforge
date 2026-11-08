@@ -71,3 +71,27 @@ fn manager_commands_refuse_bad_parameters() {
         assert!(s.execute(c, &p).is_err(), "{c} {p}");
     }
 }
+
+/// LR-PRE-MANAGE: presets are copied (built-ins too) and deleted several at once; a folder delete can be guarded by
+/// the count the user was shown.
+#[test]
+fn copy_delete_many_and_guarded_folder_delete() {
+    let mut s = Session::with_demo();
+    let b = s.presets.iter().find(|p| p.builtin).unwrap().clone();
+    let r = s.execute("preset.copy", &json!({"ids": [b.id, "no.such"], "group": "Mine"})).unwrap();
+    let new_ids: Vec<String> = r["ids"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(new_ids.len(), 1);
+    let copy = s.presets.iter().find(|p| p.id == new_ids[0]).unwrap().clone();
+    assert!(!copy.builtin && !copy.favorite && copy.group == "Mine" && copy.settings == b.settings);
+    // again: the same preset is already in the folder
+    let r = s.execute("preset.copy", &json!({"ids": [b.id], "group": "mine"})).unwrap();
+    assert_eq!((r["ids"].as_array().unwrap().len(), r["skipped"].clone()), (0, json!(1)));
+    assert!(s.execute("preset.copy", &json!({"ids": ["no.such"], "group": "Mine"})).is_err());
+    assert!(s.execute("preset.copy", &json!({"ids": [b.id]})).is_err());
+    assert!(s.execute("preset.deleteGroup", &json!({"group": "Mine", "expect": 5})).is_err());
+    assert!(s.presets.iter().any(|p| p.id == copy.id), "a wrong count deletes nothing");
+    let r = s.execute("preset.deleteMany", &json!({"ids": [copy.id, b.id, "no.such"]})).unwrap();
+    assert_eq!((r["deleted"].clone(), r["skipped"].clone()), (json!(1), json!(2)));
+    assert!(s.presets.iter().any(|p| p.id == b.id), "built-ins stay");
+    assert!(s.execute("preset.deleteMany", &json!({})).is_err());
+}

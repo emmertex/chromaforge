@@ -943,14 +943,15 @@ mod tests {
     /// surveyed one only becomes active); ⌘-click still removes and Shift-click still extends.
     #[test]
     fn survey_filmstrip_clicks_keep_the_group() {
-        let mut h = demo([1200.0, 760.0]);
+        let mut h = demo([1000.0, 700.0]);
+        h.settle(SETTLE);
         let t = Duration::from_secs(10);
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
         assert!(ids.len() >= 5);
-        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0]]}}), t);
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0], ids[1]]}}), t);
         h.request("ui.set", json!({"view": "survey"}), t);
         h.settle(SETTLE);
-        for id in &ids[1..4] {
+        for id in &ids[2..4] {
             h.request("ui.clickWidget", json!({"id": format!("film:{id}")}), t);
             h.settle(SETTLE);
         }
@@ -967,7 +968,8 @@ mod tests {
     /// flags as Pick with the Crop panel open, where X is the crop aspect swap.
     #[test]
     fn survey_right_click_activates_and_p_flags_with_crop_open() {
-        let mut h = demo([1200.0, 760.0]);
+        let mut h = demo([1000.0, 700.0]);
+        h.settle(SETTLE);
         let t = Duration::from_secs(10);
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
         h.request("engine.execute", json!({"command": "library.select", "params": {"ids": ids[..3]}}), t);
@@ -4047,6 +4049,8 @@ mod tests {
         let mut h = demo([1300.0, 1200.0]);
         let t = Duration::from_secs(10);
         h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
+        // Lightroom's own panel heights (the Witchcraft sections push Tone Curve below this window)
+        h.request("engine.execute", json!({"command": "view.gradingMode", "params": {"mode": "eboda"}}), t);
         h.settle(SETTLE);
         // (Tone Curve: Basic has no switch, as in Lightroom Classic)
         let light_on = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().section_enabled("curve");
