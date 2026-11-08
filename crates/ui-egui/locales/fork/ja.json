@@ -609,6 +609,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "GPS から地区、都市、都道府県、国を入力します。プロバイダーを選ぶまでオフです。",
   "Fills made earlier for this photo, not on it now:": "この写真用に以前作成し、現在は適用されていない塗りつぶし：",
   "Film recipe": "フィルムレシピ",
+  "Filmstrip size": "フィルムストリップのサイズ",
   "Filters": "フィルター",
   "Find": "検索",
   "Find Again": "再検出",

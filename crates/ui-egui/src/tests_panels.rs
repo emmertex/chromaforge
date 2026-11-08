@@ -1121,6 +1121,24 @@ fn album_folders_have_a_disclosure_triangle() {
     assert!(has(&h, &format!("albumToggle:{empty}")), "it gets one with its first child");
 }
 
+/// Survey's bottom bar has a filmstrip size slider that sets the filmstrip height within 100-240.
+#[test]
+fn survey_filmstrip_size_slider_sets_the_filmstrip_height() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "survey"}));
+    h.step();
+    h.step();
+    let r = h.app.widgets.iter().find(|(w, _)| w == "slider:filmSize").map(|(_, r)| *r).expect("the slider shows in Survey");
+    let y = r.center().y;
+    let r2 = h.request("ui.click", json!({"x": r.right() - 0.5, "y": y}), T);
+    assert_eq!(r2["ok"], true, "{r2}");
+    h.step();
+    assert!((h.app.ui.film_height - 240.0).abs() < 8.0, "{}", h.app.ui.film_height);
+    let r3 = h.request("ui.click", json!({"x": r.left() + 0.5, "y": y}), T);
+    assert_eq!(r3["ok"], true, "{r3}");
+    h.step();
+    assert!(h.app.ui.film_height <= 108.0 && h.app.ui.film_height >= 96.0, "{}", h.app.ui.film_height);
+}
+
 /// Alt-click on a triangle folds or opens the folder and everything inside it; a plain click still
 /// flips only that row.
 #[test]
