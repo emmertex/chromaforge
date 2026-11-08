@@ -1547,6 +1547,21 @@ fn file_modified(path: &str) -> Option<String> {
     lcc_catalog::dates::local(secs)
 }
 
+/// Whether the file at `path` is as it was when `info` probed it: still a file, the same size and the same
+/// modification time (to the second, as the probe records it). A file edited in place keeps its size when only
+/// a few bytes change (an embedded XMP packet rewritten at the same length), so the size alone can't tell; for
+/// the same reason a file whose modification time isn't known, now or then, counts as changed (upstream #3607).
+pub(crate) fn probe_still_valid(path: &str, info: &ProbeInfo) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() || meta.len() != info.file_size {
+        return false;
+    }
+    match (file_modified(path), info.file_modified.as_deref()) {
+        (Some(now), Some(then)) => now == then,
+        _ => false,
+    }
+}
+
 impl crate::Session {
     /// Install the filesystem file hooks (desktop, CLI, MCP headless), and on macOS the Apple Photos
     /// runner ([`crate::apple_photos::osascript`]; installed, not run).
@@ -2093,6 +2108,28 @@ pub(crate) mod tests {
         let (_, window, read) = preview_window(&path, usize::MAX).expect("the file reads").expect("sRGB is what the JPEG-only decode assumes");
         assert!(read.planned && !read.adobe_rgb, "the plan still answers");
         assert!(window.starts_with(&[0xff, 0xd8]), "and hands on the JPEG");
+    }
+
+    /// A scan's probe is reused only for a file as it was: a file rewritten at the same size has another
+    /// modification time, and a file with no known time on either side counts as changed (upstream #3607).
+    #[test]
+    fn a_probe_is_reused_only_for_a_file_with_the_same_size_and_modification_time() {
+        let dir = std::env::temp_dir().join(format!("lcc-probe-valid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jpg");
+        std::fs::write(&path, [0u8; 10]).unwrap();
+        let path = path.to_string_lossy().to_string();
+        let now = file_modified(&path);
+        assert!(now.is_some());
+        let probed = |size: u64, modified: Option<String>| ProbeInfo { file_size: size, file_modified: modified, ..ProbeInfo::default() };
+        assert!(probe_still_valid(&path, &probed(10, now.clone())));
+        assert!(!probe_still_valid(&path, &probed(9, now.clone())), "another size");
+        assert!(!probe_still_valid(&path, &probed(10, None)), "no time when probed");
+        let earlier = std::fs::metadata(&path).unwrap().modified().unwrap() - std::time::Duration::from_secs(3600);
+        let earlier_secs = earlier.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(!probe_still_valid(&path, &probed(10, lcc_catalog::dates::local(earlier_secs as i64))), "rewritten since");
+        assert!(!probe_still_valid(&dir.join("gone.jpg").to_string_lossy(), &probed(10, now)), "gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A JPEG with no date in its metadata (an export saved without it) takes the file's date, as
