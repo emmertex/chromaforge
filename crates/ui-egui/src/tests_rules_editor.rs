@@ -108,3 +108,35 @@ fn hovering_a_field_keeps_its_size() {
         }
     }
 }
+
+/// A rule's move handle takes the keyboard: ↓ moves the row down one place and the handle keeps the
+/// focus, so the next ↓ moves it again; a refused move changes nothing.
+#[test]
+fn arrow_keys_reorder_rules_from_the_move_handle() {
+    let mut h = editor(json!([
+        {"field": "rating", "op": "gte", "value": 1},
+        {"field": "rating", "op": "gte", "value": 2},
+        {"field": "rating", "op": "gte", "value": 3},
+    ]));
+    let order = |h: &Headless| -> Vec<i64> {
+        let Some(crate::state::Dialog::SmartRules { rules, .. }) = &h.app.ui.dialog else { panic!("no rule editor") };
+        rules
+            .rules
+            .iter()
+            .filter_map(|r| match r {
+                lcc_catalog::Rule::Field { value, .. } => value.as_i64(),
+                lcc_catalog::Rule::Group { .. } => None,
+            })
+            .collect()
+    };
+    request(&mut h, "ui.clickWidget", "button:ruleMove-rules-0");
+    for _ in 0..2 {
+        let r = h.request("ui.key", json!({"key": "down"}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    }
+    assert_eq!(order(&h), vec![2, 3, 1], "two presses moved the first rule to the end");
+    h.request("ui.key", json!({"key": "down"}), T);
+    h.settle(SETTLE);
+    assert_eq!(order(&h), vec![2, 3, 1], "the last rule has nowhere further down");
+}

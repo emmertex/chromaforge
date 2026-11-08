@@ -1957,6 +1957,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     row(ui, t, crate::i18n::tr("Wheel scroll speed"), |ui| {
         choices(ui, "settingsWheelSpeed", &[(1.0, "Normal"), (2.0, "Fast"), (3.0, "Fastest")], &mut app.ui.settings.wheel_scroll_speed);
     });
+    check(ui, "settings.reduceMotion", &mut app.ui.settings.reduce_motion, "Reduce motion");
+    hint(ui, t, crate::i18n::tr("Turns off zoom and spinner animations. Fades stay."));
     check(ui, "settings.wheelResizesBrush", &mut app.ui.settings.wheel_resizes_brush, "Wheel resizes brush instead of zooming");
     heading(ui, t, crate::i18n::tr("Keywords"));
     row(ui, t, crate::i18n::tr("Keywords of the selection"), |ui| {

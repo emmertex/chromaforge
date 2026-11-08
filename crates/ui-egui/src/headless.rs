@@ -939,6 +939,52 @@ mod tests {
         Headless::new(app, size, 1.0)
     }
 
+    /// Upstream #1639: plain filmstrip clicks in Survey keep the surveyed group (a new photo joins, a
+    /// surveyed one only becomes active); ⌘-click still removes and Shift-click still extends.
+    #[test]
+    fn survey_filmstrip_clicks_keep_the_group() {
+        let mut h = demo([1200.0, 760.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        assert!(ids.len() >= 5);
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0]]}}), t);
+        h.request("ui.set", json!({"view": "survey"}), t);
+        h.settle(SETTLE);
+        for id in &ids[1..4] {
+            h.request("ui.clickWidget", json!({"id": format!("film:{id}")}), t);
+            h.settle(SETTLE);
+        }
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[1])}), t);
+        h.settle(SETTLE);
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        assert_eq!(state["active"], ids[1]);
+    }
+
+    /// Upstream #3716: a right-click on a surveyed photo makes it the active one (the selection stays), and P
+    /// flags as Pick with the Crop panel open, where X is the crop aspect swap.
+    #[test]
+    fn survey_right_click_activates_and_p_flags_with_crop_open() {
+        let mut h = demo([1200.0, 760.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": ids[..3]}}), t);
+        h.request("ui.set", json!({"view": "survey"}), t);
+        h.settle(SETTLE);
+        h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[2]), "button": "right"}), t);
+        h.settle(SETTLE);
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..3]));
+        assert_eq!(state["active"], ids[2]);
+        h.app.ui.right = crate::state::RightPanel::Crop;
+        h.request("ui.key", json!({"key": "p"}), t);
+        h.settle(SETTLE);
+        let flag = h.app.session.catalog.photo(lcc_catalog::PhotoId(ids[2])).map(|p| p.flag);
+        assert_eq!(flag, Some(lcc_catalog::Flag::Pick));
+    }
+
     /// Agents cut, copy and paste in a text field as the system does for ⌘X / ⌘C / ⌘V
     /// (`ui.clipboard`), and `ui.inspect` → `copied` says what the UI last copied.
     #[test]
@@ -3408,6 +3454,20 @@ mod tests {
         assert_eq!(h.app.crop_tool_aspect(), Some((p.width * 100, p.height * 100)));
         h.settle(SETTLE);
         assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
+    }
+
+    /// The crop mask strength is a setting that rejects unknown levels.
+    #[test]
+    fn crop_mask_opacity_command() {
+        let mut h = demo([1200.0, 800.0]);
+        let t = Duration::from_secs(10);
+        assert_eq!(h.app.ui.crop_mask_opacity, 60);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 20}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 33}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
+        assert_eq!(crate::state::crop_mask_alpha(100), 255);
+        assert_eq!(crate::state::crop_mask_alpha(0), 0);
     }
 
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
@@ -5942,6 +6002,22 @@ mod tests {
         let r = h.request("engine.execute", json!({"command": "view.viewOptions", "params": {"briefly": "info3"}}), t);
         assert_eq!(r["ok"], false, "{r}");
         assert_eq!(h.app.ui.settings.loupe_info.briefly, InfoOverlay::Off, "a refused change changes nothing");
+    }
+
+    /// With Reduce motion on, a click-zoom lands at once: the animation flag clears on the next frame.
+    #[test]
+    fn reduce_motion_zooms_at_once() {
+        let mut h = demo([1000.0, 700.0]);
+        let t = Duration::from_secs(10);
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        h.app.ui.settings.reduce_motion = true;
+        h.step();
+        assert!(crate::motion::reduced(&h.view.ctx));
+        h.request("ui.clickWidget", json!({"id": "canvas:image", "fx": 0.5, "fy": 0.5}), t);
+        h.step();
+        h.step();
+        assert!(!h.app.ui.zoom_anim, "no glide with Reduce motion");
     }
 
     /// A click on the image zooms to the chosen click-zoom ratio (1:1 by default), animating the
