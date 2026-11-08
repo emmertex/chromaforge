@@ -301,6 +301,11 @@ pub struct DevelopSettings {
     pub point_colors: Vec<PointColor>,
     pub bw_mix: BwMix,
     pub grading: ColorGrading,
+    /// The colourist primaries (the Witchcraft grading mode): lift, gamma, gain and offset wheels
+    /// with the Log variant's range boundaries. Not written while it is the default, so settings
+    /// without them keep their JSON and `hash64` (and every cached preview stays valid).
+    #[serde(skip_serializing_if = "Primaries::is_default")]
+    pub primaries: Primaries,
     pub effects: Effects,
     pub vignette: Vignette,
     pub grain: Grain,
@@ -417,6 +422,7 @@ impl Default for DevelopSettings {
             point_colors: Vec::new(),
             bw_mix: BwMix::default(),
             grading: ColorGrading::default(),
+            primaries: Primaries::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
             grain: Grain::default(),
@@ -923,6 +929,43 @@ impl Default for ColorGrading {
 impl ColorGrading {
     pub fn is_neutral(&self) -> bool {
         [self.shadows, self.midtones, self.highlights, self.global].iter().all(|w| w.sat == 0.0 && w.lum == 0.0)
+    }
+}
+
+/// The colourist primaries (the Witchcraft grading mode's wheels): lift, gamma, gain and offset —
+/// each a [`Wheel`] whose hue/saturation is the puck and whose luminance is the master wheel
+/// beneath — plus the Log variant's tonal-range boundaries. Semantics read from Blackmagic's
+/// *Colorist Guide to DaVinci Resolve 18* (pp. xviii, 12, 23–33); the maths is this codebase's own.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Primaries {
+    pub lift: Wheel,
+    pub gamma: Wheel,
+    pub gain: Wheel,
+    pub offset: Wheel,
+    /// The Log wheels: narrowly separated ranges with their boundaries at `low` and `high`, instead
+    /// of the Colour wheels' wide overlap.
+    pub log: bool,
+    /// Shadow/midtone boundary 0..1 (Log wheels).
+    pub low: f64,
+    /// Midtone/highlight boundary 0..1 (Log wheels).
+    pub high: f64,
+}
+
+impl Default for Primaries {
+    fn default() -> Self {
+        Self { lift: Wheel::default(), gamma: Wheel::default(), gain: Wheel::default(), offset: Wheel::default(), log: false, low: 0.35, high: 0.7 }
+    }
+}
+
+impl Primaries {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The wheels move nothing (the range boundaries alone cannot).
+    pub fn is_neutral(&self) -> bool {
+        [self.lift, self.gamma, self.gain, self.offset].iter().all(|w| w.sat == 0.0 && w.lum == 0.0)
     }
 }
 

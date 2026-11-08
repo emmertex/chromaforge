@@ -870,6 +870,10 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 d = if fp.hue_clip { keep_hue(d, grey, o, peak) } else { grey };
             }
 
+            // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)
+            if let Some(p) = &ops.primaries {
+                d = p.apply(d);
+            }
             // --- colour
             d = ops.apply(d, l_sat, l_hue);
             // local Point Color: each mask's samples at the mask's opacity

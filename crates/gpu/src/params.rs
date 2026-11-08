@@ -74,6 +74,15 @@ const FIELDS: &[(&str, usize)] = &[
     ("BALANCE", 1),
     ("SKIN", 1),
     ("BANDH", 8),
+    // the colourist primaries (`PrimariesK`): the four wheels (rgb + master each), the Log ranges
+    ("PRIMARIES", 1),
+    ("PRIM_LIFT", 4),
+    ("PRIM_GAMMA", 4),
+    ("PRIM_GAIN", 4),
+    ("PRIM_OFFSET", 4),
+    ("PRIM_LOW", 1),
+    ("PRIM_HIGH", 1),
+    ("PRIM_LOG", 1),
     ("VIG", 1),
     ("VIG_AMOUNT", 1),
     ("VIG_START", 1),
@@ -346,6 +355,15 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.fs("WHEELS", &w);
         p.f("BLENDING", *blending);
         p.f("BALANCE", *balance);
+    }
+    if let Some(pr) = &ops.primaries {
+        p.b("PRIMARIES", true);
+        for (name, w) in [("PRIM_LIFT", &pr.lift), ("PRIM_GAMMA", &pr.gamma), ("PRIM_GAIN", &pr.gain), ("PRIM_OFFSET", &pr.offset)] {
+            p.fs(name, &[w.rgb[0], w.rgb[1], w.rgb[2], w.master]);
+        }
+        p.f("PRIM_LOW", pr.low);
+        p.f("PRIM_HIGH", pr.high);
+        p.b("PRIM_LOG", pr.log);
     }
     p.f("SKIN", ops.skin);
     p.fs("BANDH", lcc_pipeline::colorops::band_hues());

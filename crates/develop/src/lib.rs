@@ -154,6 +154,7 @@ impl DevelopSettings {
             || off("curve")
             || off("mixer")
             || off("grading")
+            || off("primaries")
             || off("detail")
             || (off(PLUGIN_FILTERS_SECTION) && !self.plugin_filters.is_empty()))
         {
@@ -181,6 +182,9 @@ impl DevelopSettings {
         }
         if off("grading") {
             d.reset_section(Section::Grading);
+        }
+        if off("primaries") {
+            d.reset_section(Section::Primaries);
         }
         if off("detail") {
             d.reset_section(Section::Detail);
@@ -228,6 +232,8 @@ impl DevelopSettings {
             }
             Section::Color => self.wb.mode = WbMode::AsShot,
             Section::Detail => self.enhance.denoise_on = None,
+            // the Log variant is a switch, not a control: the whole group goes back to its default
+            Section::Primaries => self.primaries = Primaries::default(),
             // the creative profile is not a control: the chosen look goes back to the default one,
             // and so does the camera's own local tone mapping
             Section::Profile => {

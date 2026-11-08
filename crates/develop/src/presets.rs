@@ -30,6 +30,8 @@ pub enum SettingsGroup {
     Color,
     ColorMixer,
     ColorGrading,
+    /// The colourist primaries (the Witchcraft grading mode's wheels, beyond Lightroom).
+    Primaries,
     Effects,
     Vignette,
     Grain,
@@ -50,7 +52,7 @@ pub enum SettingsGroup {
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 22] = [
+    pub const ALL: [SettingsGroup; 23] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -59,6 +61,7 @@ impl SettingsGroup {
         SettingsGroup::Color,
         SettingsGroup::ColorMixer,
         SettingsGroup::ColorGrading,
+        SettingsGroup::Primaries,
         SettingsGroup::Effects,
         SettingsGroup::Vignette,
         SettingsGroup::Grain,
@@ -101,6 +104,7 @@ impl SettingsGroup {
             SettingsGroup::Color => "Color",
             SettingsGroup::ColorMixer => "Color Mixer",
             SettingsGroup::ColorGrading => "Color Grading",
+            SettingsGroup::Primaries => "Primaries",
             SettingsGroup::Effects => "Effects",
             SettingsGroup::Vignette => "Vignette",
             SettingsGroup::Grain => "Grain",
@@ -129,6 +133,7 @@ impl SettingsGroup {
             SettingsGroup::Color => &["color"],
             SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors"],
             SettingsGroup::ColorGrading => &["grading"],
+            SettingsGroup::Primaries => &["primaries"],
             SettingsGroup::Effects => &["effects"],
             SettingsGroup::Vignette => &["vignette"],
             SettingsGroup::Grain => &["grain"],
@@ -293,6 +298,7 @@ impl SettingsGroup {
             SettingsGroup::Color => "color",
             SettingsGroup::ColorMixer => "colorMixer",
             SettingsGroup::ColorGrading => "colorGrading",
+            SettingsGroup::Primaries => "primaries",
             SettingsGroup::Effects => "effects",
             SettingsGroup::Vignette => "vignette",
             SettingsGroup::Grain => "grain",

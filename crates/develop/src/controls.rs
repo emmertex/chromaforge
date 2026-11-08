@@ -18,6 +18,8 @@ pub enum Section {
     Mixer,
     BwMix,
     Grading,
+    /// The colourist primaries of the Witchcraft grading mode (beyond Lightroom).
+    Primaries,
     Effects,
     Vignette,
     Grain,
@@ -45,6 +47,7 @@ impl Section {
             Section::Mixer => "Color Mixer",
             Section::BwMix => "B&W Mixer",
             Section::Grading => "Color Grading",
+            Section::Primaries => "Primaries",
             Section::Effects => "Effects",
             Section::Vignette => "Vignette",
             Section::Grain => "Grain",
@@ -281,6 +284,20 @@ controls! {
     "grading.global.lum" => grading.global.lum, "Global Luminance", Grading, -100, 100, 0, 1, 0, Centered;
     "grading.blending" => grading.blending, "Blending", Grading, 0, 100, 50, 1, 0, Plain;
     "grading.balance" => grading.balance, "Balance", Grading, -100, 100, 0, 1, 0, Centered;
+    "primaries.lift.hue" => primaries.lift.hue, "Lift Hue", Primaries, 0, 360, 0, 1, 0, Rainbow;
+    "primaries.lift.sat" => primaries.lift.sat, "Lift Saturation", Primaries, 0, 100, 0, 1, 0, Plain;
+    "primaries.lift.lum" => primaries.lift.lum, "Lift Luminance", Primaries, -100, 100, 0, 1, 0, Centered;
+    "primaries.gamma.hue" => primaries.gamma.hue, "Gamma Hue", Primaries, 0, 360, 0, 1, 0, Rainbow;
+    "primaries.gamma.sat" => primaries.gamma.sat, "Gamma Saturation", Primaries, 0, 100, 0, 1, 0, Plain;
+    "primaries.gamma.lum" => primaries.gamma.lum, "Gamma Luminance", Primaries, -100, 100, 0, 1, 0, Centered;
+    "primaries.gain.hue" => primaries.gain.hue, "Gain Hue", Primaries, 0, 360, 0, 1, 0, Rainbow;
+    "primaries.gain.sat" => primaries.gain.sat, "Gain Saturation", Primaries, 0, 100, 0, 1, 0, Plain;
+    "primaries.gain.lum" => primaries.gain.lum, "Gain Luminance", Primaries, -100, 100, 0, 1, 0, Centered;
+    "primaries.offset.hue" => primaries.offset.hue, "Offset Hue", Primaries, 0, 360, 0, 1, 0, Rainbow;
+    "primaries.offset.sat" => primaries.offset.sat, "Offset Saturation", Primaries, 0, 100, 0, 1, 0, Plain;
+    "primaries.offset.lum" => primaries.offset.lum, "Offset Luminance", Primaries, -100, 100, 0, 1, 0, Centered;
+    "primaries.low" => primaries.low, "Low Range", Primaries, 0, 1, 0.35, 0.01, 2, Plain;
+    "primaries.high" => primaries.high, "High Range", Primaries, 0, 1, 0.7, 0.01, 2, Plain;
     "skin.amount" => skin.amount, "Amount", Skin, 0, 100, 0, 1, 0, Plain;
     "skin.texture" => skin.texture, "Texture", Skin, -100, 100, 0, 1, 0, Centered;
     "skin.evenTone" => skin.even_tone, "Even Tone", Skin, 0, 100, 0, 1, 0, Plain;

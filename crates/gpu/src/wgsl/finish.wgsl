@@ -195,6 +195,33 @@ fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
     return oklab_inv(vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z)));
 }
 
+// `PrimariesK::apply` (the colourist wheels): lift and gamma tilt their tonal range additively,
+// gain scales the highlights, offset moves everything. Zones as `primary_zones`: the Colour
+// wheels' wide overlap, or the Log wheels' narrow ranges between PRIM_LOW and PRIM_HIGH.
+fn primaries(rgb: vec3<f32>) -> vec3<f32> {
+    if (pu(F_PRIMARIES) == 0u) {
+        return rgb;
+    }
+    let t = clamp(lum2020(rgb), 0.0, 1.0);
+    var lm = 0.45;
+    var hm = 0.55;
+    var e = 0.45;
+    if (pu(F_PRIM_LOG) != 0u) {
+        lm = clamp(pf(F_PRIM_LOW), 0.02, 0.9);
+        hm = clamp(pf(F_PRIM_HIGH), lm + 0.05, 0.98);
+        e = 0.10;
+    }
+    let ws = 1.0 - sstep(lm - e, lm + e, t);
+    let wh = sstep(hm - e, hm + e, t);
+    let wm = max(1.0 - ws - wh, 0.0);
+    var o = rgb;
+    o += (vec3<f32>(pf(F_PRIM_LIFT), pf(F_PRIM_LIFT + 1u), pf(F_PRIM_LIFT + 2u)) + vec3<f32>(pf(F_PRIM_LIFT + 3u))) * ws;
+    o += (vec3<f32>(pf(F_PRIM_GAMMA), pf(F_PRIM_GAMMA + 1u), pf(F_PRIM_GAMMA + 2u)) + vec3<f32>(pf(F_PRIM_GAMMA + 3u))) * wm;
+    o *= vec3<f32>(1.0) + (vec3<f32>(pf(F_PRIM_GAIN), pf(F_PRIM_GAIN + 1u), pf(F_PRIM_GAIN + 2u)) + vec3<f32>(pf(F_PRIM_GAIN + 3u))) * wh;
+    o += vec3<f32>(pf(F_PRIM_OFFSET), pf(F_PRIM_OFFSET + 1u), pf(F_PRIM_OFFSET + 2u)) + vec3<f32>(pf(F_PRIM_OFFSET + 3u));
+    return max(o, vec3<f32>(0.0));
+}
+
 // `ColorOps::apply`.
 fn color_ops(rgb: vec3<f32>, local_sat: f32, local_hue: f32) -> vec3<f32> {
     if (pu(F_OPS_IDENTITY) != 0u && local_sat == 0.0 && local_hue == 0.0) {
@@ -930,6 +957,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
+    // --- primaries (the colourist wheels: lift/gamma/gain/offset, balance before the look)
+    d = primaries(d);
     // --- colour
     d = color_ops(d, lt[11], lt[12]);
     if (pu(F_LPOINTS) != 0u) {

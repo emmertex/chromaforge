@@ -27,6 +27,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("bw_mix", "color"),
     ("bw", "color"),
     ("grading", "grading"),
+    ("primaries", "grading"),
     ("detail", "detail"),
     ("effects", "effects"),
     ("vignette", "effects"),

@@ -267,6 +267,19 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.grading.blending = 70.0;
             s.grading.balance = 20.0;
         }),
+        ("colourist primaries", |s| {
+            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.gamma = Wheel { hue: 30.0, sat: 20.0, lum: 0.0 };
+            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
+        }),
+        ("colourist primaries (log)", |s| {
+            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.log = true;
+            s.primaries.low = 0.25;
+            s.primaries.high = 0.8;
+        }),
         ("tone curves", |s| {
             s.curve.highlights = -30.0;
             s.curve.shadows = 25.0;
