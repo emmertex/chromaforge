@@ -967,6 +967,8 @@ pub struct LccApp {
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
+    /// Files that waited for a library and wait for the running import or Synchronize Folder too.
+    pub waiting_import: Vec<String>,
     /// Immich: Connections settings, the Import dialog's Immich source, background pump state.
     #[cfg(not(target_arch = "wasm32"))]
     pub immich: panels::connections::ImmichUi,
@@ -1222,6 +1224,7 @@ impl LccApp {
             screen_profile: None,
             screen_profile_read: None,
             library_problem: None,
+            waiting_import: Vec::new(),
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,

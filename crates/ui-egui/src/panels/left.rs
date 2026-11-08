@@ -1162,25 +1162,32 @@ pub(crate) fn fs_cached<T: Clone + Send + 'static>(ui: &egui::Ui, kind: &'static
         due
     };
     if start {
-        use std::sync::atomic::Ordering;
         let running = fs_running_counter(ui.ctx());
-        running.fetch_add(1, Ordering::AcqRel);
-        let (out, path, repaint, done) = (cell.clone(), path.to_string(), ui.ctx().clone(), running.clone());
+        running.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        // (settled when the work ends however it ends: a listing that panics must not stay running, nor keep
+        // the count up, which `Headless::busy` waits on)
+        struct Settle<T> {
+            cell: Cell<T>,
+            count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            repaint: egui::Context,
+        }
+        impl<T> Drop for Settle<T> {
+            fn drop(&mut self) {
+                self.cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+                // after the answer is stored: a frame that sees the count drop also sees the answer
+                self.count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                self.repaint.request_repaint();
+            }
+        }
+        let (path, settle) = (path.to_string(), Settle { cell: cell.clone(), count: running.clone(), repaint: ui.ctx().clone() });
         let work = move || {
             let v = f(&path);
-            let mut e = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            e.value = Some(v);
-            e.running = false;
-            drop(e);
-            // after the answer is stored: a frame that sees the count drop also sees the answer
-            done.fetch_sub(1, Ordering::AcqRel);
-            repaint.request_repaint();
+            settle.cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).value = Some(v);
+            drop(settle);
         };
         #[cfg(not(target_arch = "wasm32"))]
-        if std::thread::Builder::new().name("lc-fs-list".into()).spawn(work).is_err() {
-            cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
-            running.fetch_sub(1, Ordering::AcqRel);
-        }
+        // (no thread to be had: the closure is dropped unrun, which settles it)
+        let _ = std::thread::Builder::new().name("lc-fs-list".into()).spawn(work);
         #[cfg(target_arch = "wasm32")]
         work();
     }
@@ -2425,7 +2432,8 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
 /// it has none, or one with nothing to offer (no new photos, no parent folder) is left out.
 fn folder_item_available(app: &LccApp, item: FolderItem, path: &str, node: Option<&FolderNode>) -> bool {
     match item {
-        FolderItem::Move | FolderItem::ImportHere => app.services.pick_folder.is_some(),
+        FolderItem::Move => app.services.pick_folder.is_some() || app.services.picker.is_some(),
+        FolderItem::ImportHere => app.services.pick_folder.is_some(),
         FolderItem::UpdateLocation => app.services.pick_folder.is_some() && node.is_some(),
         FolderItem::Reveal => app.services.reveal.is_some(),
         FolderItem::AddNew => node.is_some() && lcc_engine::folder_watch::new_in(&app.session, path).is_some(),
@@ -2568,10 +2576,17 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             let id = if matches!(row, FolderRow::Local { .. }) { format!("localFolderMove:{path}") } else { format!("folderMove:{path}") };
             register(ui.ctx(), id, r.rect);
             if r.clicked() {
-                let into = app.services.pick_folder.as_mut().and_then(|f| f());
-                if let Some(into) = into {
+                // the dialog runs off the UI thread where the host has a picker (upstream #3325); `folder.move`
+                // then runs when it closes (`pick::poll`)
+                let req = crate::pick::PickRequest::folder(crate::i18n::tr("Move Folder To…"));
+                let params = json!({"path": path});
+                let picked =
+                    crate::pick::ask(app, "folder.move", &params, "into", req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x]));
+                if let crate::pick::Picked::Now(v) = picked
+                    && let Some(into) = v.into_iter().next()
+                {
                     match app.run("folder.move", json!({"path": path, "into": into})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved; {} photo(s) relinked", r["relinked"])),
+                        Ok(r) => app.toast(ui.ctx(), crate::pick::answered_message("folder.move", &r).unwrap_or_default()),
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }

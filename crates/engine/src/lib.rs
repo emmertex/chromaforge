@@ -1987,6 +1987,13 @@ impl Session {
         self.filter.only = photos;
     }
 
+    /// The flag filter shows picks and unflagged photos but no rejects (View > Hide Rejected
+    /// Photos, `library.hideRejected`).
+    pub fn rejects_hidden(&self) -> bool {
+        use lcc_catalog::Flag;
+        self.filter.flags_shown().as_deref() == Some(&[Flag::Pick, Flag::None])
+    }
+
     /// Library > Enable Filters is off: a filter is put aside (`library.toggleFilters`).
     pub fn filters_off(&self) -> bool {
         self.shelved_filter.is_some()
