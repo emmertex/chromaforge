@@ -96,6 +96,30 @@ fn keyword_rename_merge_delete_undo_and_replay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `keyword.delete {keywords}` removes several keywords (and what is below them) as one undo step, and refuses the
+/// whole call when one is empty (upstream #2757).
+#[test]
+fn several_keywords_are_deleted_as_one_undo_step() {
+    let dir = temp_dir("kw-batch");
+    let mut s = Session::new();
+    s.open_library(&dir, true).unwrap();
+    let ids: Vec<u64> = s.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    s.execute("photo.setMeta", &json!({"ids": [ids[0]], "keywords": ["travel|italy", "sea", "keep"]})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [ids[1]], "keywords": ["sea", "city"]})).unwrap();
+    let before = s.catalog.to_snapshot();
+    assert!(s.execute("keyword.delete", &json!({"keywords": ["sea", ""]})).is_err());
+    assert!(s.execute("keyword.delete", &json!({"keywords": []})).is_err());
+    assert_eq!(s.catalog.to_snapshot(), before, "a refused call changes nothing");
+    let undo_before = s.undo.len();
+    s.execute("keyword.delete", &json!({"keywords": ["travel", "sea"]})).unwrap();
+    assert_eq!(s.undo.len(), undo_before + 1, "one undo step");
+    assert_eq!(keywords_of(&s, ids[0]), ["keep"]);
+    assert_eq!(keywords_of(&s, ids[1]), ["city"]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.to_snapshot(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn write_png(path: &std::path::Path, seed: u8) {
     let (w, h) = (24usize, 16usize);
     let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 9) as u8, (i / w * 11) as u8, seed, 255]).collect();

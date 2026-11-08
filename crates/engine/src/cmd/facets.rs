@@ -45,7 +45,10 @@ fn without(field: &str, f: &Filter) -> Filter {
             f.label = None;
             f.labels.clear();
         }
-        "flag" => f.flag = None,
+        "flag" => {
+            f.flag = None;
+            f.flags.clear();
+        }
         "rating" => f.rating = 0,
         "kind" => f.kind = None,
         "year" => {

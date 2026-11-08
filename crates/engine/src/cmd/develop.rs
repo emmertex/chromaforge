@@ -164,6 +164,46 @@ pub(crate) fn crop_dims(s: &Session, id: PhotoId) -> (f64, f64) {
     if o.swaps_axes() { (h, w) } else { (w, h) }
 }
 
+/// Sets photo `id`'s crop as `crop.set` does (`c` names the command in errors): `rect` `[x0, y0,
+/// x1, y1]` normalized in the straightened frame (any order), `angle` in degrees (clamped to ±45°).
+/// A new angle alone turns the crop as Straighten does; a rect is fitted inside the photo. One
+/// History step ("Crop"). Returns the crop as set.
+pub(crate) fn set_crop_of(s: &mut Session, id: PhotoId, c: &str, rect: Option<[f64; 4]>, angle: Option<f64>) -> Result<CropGeometry> {
+    if s.catalog.photo(id).is_none() {
+        return Err(bad(c, format!("no photo {}", id.0)));
+    }
+    let (w, h) = crop_dims(s, id);
+    // the smallest crop a drag of the crop tool can make: below it an export comes out 1×1 (#1952)
+    let min_side = MIN_CROP_FRACTION * w.min(h) * (1.0 - 1e-9);
+    let too_small = |r: Rect| {
+        (r.width() * w < min_side || r.height() * h < min_side)
+            .then(|| bad(c, format!("rect is smaller than the smallest crop ({} % of the shorter side)", MIN_CROP_FRACTION * 100.0)))
+    };
+    let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+    if let Some([x0, y0, x1, y1]) = rect {
+        let r = Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+        if let Some(e) = too_small(r) {
+            return Err(e);
+        }
+        d.crop.geometry.rect = r;
+    }
+    let angle = angle.map(|a| a.clamp(-45.0, 45.0));
+    d.crop.geometry = match (rect, angle) {
+        // a new angle alone turns the crop as Straighten does (issue #742)
+        (None, Some(a)) => d.crop.geometry.with_angle(a, w, h),
+        (_, a) => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.constrained(w, h),
+    };
+    // a rect far larger than the photo is shrunk to fit it, and can come out a sliver
+    if rect.is_some()
+        && let Some(e) = too_small(d.crop.geometry.rect)
+    {
+        return Err(e);
+    }
+    let geometry = d.crop.geometry;
+    s.set_develop(id, d, "Crop")?;
+    Ok(geometry)
+}
+
 /// After a generic control write (`develop.set`, `develop.adjust`, …) that touched `crop.angle`:
 /// refit the crop as `crop.straighten` does, from the crop it had `before`, so the box never takes in
 /// canvas outside the photo (issue #742).
@@ -905,40 +945,15 @@ pub fn specs() -> Vec<CommandSpec> {
         // ---- crop & rotate
         cmd!("crop.set", "Set Crop", [], None, "{rect?: [x0,y0,x1,y1] normalized in the straightened frame, angle?: degrees}", has_active, |s, p| {
             let id = active(s, "crop.set")?;
-            let (w, h) = crop_dims(s, id);
-            // the smallest crop a drag of the crop tool can make: below it an export comes out 1×1 (#1952)
-            let min_side = MIN_CROP_FRACTION * w.min(h) * (1.0 - 1e-9);
-            let too_small = |r: Rect| {
-                (r.width() * w < min_side || r.height() * h < min_side)
-                    .then(|| bad("crop.set", format!("rect is smaller than the smallest crop ({} % of the shorter side)", MIN_CROP_FRACTION * 100.0)))
+            let rect = match p.get("rect") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<f64>>()).as_deref() {
+                    Some(&[x0, y0, x1, y1]) => Some([x0, y0, x1, y1]),
+                    _ => return Err(bad("crop.set", "rect needs 4 numbers")),
+                },
             };
-            edit(s, "crop.set", "Crop", |d| {
-                let explicit = p.get("rect").and_then(Value::as_array);
-                if let Some(a) = explicit {
-                    let v: Vec<f64> = a.iter().filter_map(Value::as_f64).collect();
-                    if v.len() != 4 {
-                        return Err(bad("crop.set", "rect needs 4 numbers"));
-                    }
-                    let r = Rect::new(v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3]));
-                    if let Some(e) = too_small(r) {
-                        return Err(e);
-                    }
-                    d.crop.geometry.rect = r;
-                }
-                let angle = p.get("angle").and_then(Value::as_f64).map(|a| a.clamp(-45.0, 45.0));
-                d.crop.geometry = match (p.get("rect"), angle) {
-                    // a new angle alone turns the crop as Straighten does (issue #742)
-                    (None, Some(a)) => d.crop.geometry.with_angle(a, w, h),
-                    (_, a) => CropGeometry { angle: a.unwrap_or(d.crop.geometry.angle), ..d.crop.geometry }.constrained(w, h),
-                };
-                // a rect far larger than the photo is shrunk to fit it, and can come out a sliver
-                if explicit.is_some()
-                    && let Some(e) = too_small(d.crop.geometry.rect)
-                {
-                    return Err(e);
-                }
-                Ok(())
-            })
+            set_crop_of(s, id, "crop.set", rect, p.get("angle").and_then(Value::as_f64))?;
+            ok()
         }),
         cmd!(
             "crop.drag",

@@ -1760,6 +1760,21 @@ impl CurveTarget {
 }
 
 /// The Tone Curve editor (`CurveTarget::Photo`) or a mask's local Curve editor.
+/// The closest two points of a point curve may be in x (a fraction of the graph's width).
+const POINT_GAP: f64 = 0.01;
+
+/// `pts` with a point added at (`x`, `y`), and where it went; `None` when a point is already
+/// within [`POINT_GAP`] of `x` (the curve would fall off a cliff between the two).
+fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
+    if pts.iter().any(|p| (p.x - x).abs() < POINT_GAP) {
+        return None;
+    }
+    let i = pts.iter().position(|p| p.x > x).unwrap_or(pts.len());
+    let mut v = pts.to_vec();
+    v.insert(i, Point::new(x, y));
+    Some((i, v))
+}
+
 pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSettings, target: CurveTarget) {
     let t = Tokens::get(ui.ctx());
     let photo = target == CurveTarget::Photo;
@@ -1824,7 +1839,6 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let resp = ui.interact(r, egui::Id::new(("curve", target.widget(""), &ch)), Sense::click_and_drag());
     crate::widgets::announce(&resp, crate::i18n::tr(target.label()));
     register(ui.ctx(), target.widget(""), r);
-    crate::widgets::context_menu(&resp, |ui| curve_reset_menu(app, ui, &ch, target));
     let p = ui.painter();
     p.rect_filled(r, 2.0, t.canvas);
     if let Some(hist) = preview_histogram(app, id) {
@@ -1891,6 +1905,31 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let mut selected: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(sel_id)).flatten().filter(|i| *i < pts.len());
     let nearest = |q: Pos2| pts.iter().enumerate().map(|(i, p)| (i, to_screen(p.x, p.y).distance(q))).min_by(|a, b| a.1.total_cmp(&b.1));
     let hovered = resp.hover_pos().and_then(nearest).filter(|(_, dist)| *dist < 10.0).map(|(i, _)| i);
+    // right-click on a point: the menu opens with Delete Control Point (not on the two end points);
+    // the point under the pointer is read when the menu opens and kept while it is open
+    let menu_point_id = egui::Id::new(("curve-menu-point", target.widget(""), &ch));
+    if resp.secondary_clicked() {
+        let hit = resp
+            .interact_pointer_pos()
+            .and_then(nearest)
+            .filter(|(i, dist)| *dist < 10.0 && *i != 0 && i.checked_add(1).is_some_and(|n| n < pts.len()))
+            .map(|(i, _)| i);
+        ui.data_mut(|dd| dd.insert_temp(menu_point_id, hit));
+    }
+    let menu_point: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(menu_point_id)).flatten().filter(|i| *i < pts.len());
+    crate::widgets::context_menu(&resp, |ui| {
+        if let Some(i) = menu_point {
+            let r = ui.button(crate::i18n::tr("Delete Control Point"));
+            register(ui.ctx(), target.widget("Menu:deletePoint"), r.rect);
+            if r.clicked() {
+                let arr: Vec<[f64; 2]> = pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| [p.x, p.y]).collect();
+                let _ = app.run("develop.curve", target.params(json!({"channel": ch, "points": arr})));
+                ui.close();
+            }
+            ui.separator();
+        }
+        curve_reset_menu(app, ui, &ch, target);
+    });
     if dragging.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if hovered.is_some() {
@@ -1930,21 +1969,17 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         // pick the point under the press, not where the pointer is once the drag threshold passed
-        let _ = app.run("develop.beginInteraction", json!({"label": target.label()}));
-        match nearest(q) {
-            Some((i, dist)) if dist < 10.0 => {
-                dragging = Some(i);
-                selected = Some(i);
-            }
-            _ => {
-                let (x, y) = from_screen(q);
-                let mut v = pts.clone();
-                let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-                v.insert(i, Point::new(x, y));
-                dragging = Some(i);
-                selected = Some(i);
-                new_pts = Some(v);
-            }
+        let (x, y) = from_screen(q);
+        let grabbed = match nearest(q) {
+            Some((i, dist)) if dist < 10.0 => Some((i, None)),
+            _ => with_point(&pts, x, y).map(|(i, v)| (i, Some(v))),
+        };
+        // a press that grabs nothing and may add nothing starts no interaction (it would never be closed)
+        if let Some((i, added)) = grabbed {
+            let _ = app.run("develop.beginInteraction", json!({"label": target.label()}));
+            dragging = Some(i);
+            selected = Some(i);
+            new_pts = added;
         }
     } else if resp.dragged()
         && let (Some(i), Some(q)) = (dragging, resp.interact_pointer_pos())
@@ -1961,8 +1996,8 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
             _ => from_screen(q),
         };
         if i < v.len() {
-            let lo = if i == 0 { 0.0 } else { v[i - 1].x + 0.01 };
-            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - 0.01 };
+            let lo = if i == 0 { 0.0 } else { v[i - 1].x + POINT_GAP };
+            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - POINT_GAP };
             if i == 0 {
                 x = x.min(hi);
             } else if i + 1 == v.len() {
@@ -1985,11 +2020,10 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
         // point doesn't change the curve until it is dragged
         let (x, _) = from_screen(q);
         let y = curve.eval(x).clamp(0.0, 1.0);
-        let mut v = pts.clone();
-        let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-        v.insert(i, Point::new(x, y));
-        selected = Some(i);
-        new_pts = Some(v);
+        if let Some((i, v)) = with_point(&pts, x, y) {
+            selected = Some(i);
+            new_pts = Some(v);
+        }
     } else if resp.clicked()
         && let Some(q) = resp.interact_pointer_pos()
         && let Some((i, _)) = nearest(q)
@@ -3225,6 +3259,18 @@ mod curve_histogram_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_point_is_not_added_on_top_of_another() {
+        use super::{POINT_GAP, with_point};
+        use lcc_geom::Point;
+        let pts = [Point::new(0.0, 0.0), Point::new(0.5, 0.5), Point::new(1.0, 1.0)];
+        assert!(with_point(&pts, 0.5 + POINT_GAP / 2.0, 0.2).is_none());
+        assert!(with_point(&pts, 0.0, 0.2).is_none());
+        let (i, v) = with_point(&pts, 0.6, 0.2).expect("clear of the others");
+        assert_eq!((i, v.len()), (2, 4));
+        assert!(v.windows(2).all(|w| w[1].x - w[0].x >= POINT_GAP));
+    }
+
     use super::*;
 
     /// The Profile Manager's hidden camera profiles are left out of the Camera Profiles submenu too, except the

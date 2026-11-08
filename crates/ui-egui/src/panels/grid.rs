@@ -1740,9 +1740,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
 pub fn label_menu(app: &mut LccApp, ui: &mut egui::Ui) {
     let current = app.session.active().and_then(|id| app.session.catalog.photo(id)).and_then(|p| p.label);
     if let Some(l) = label_items(app, ui, current, "photoLabel") {
-        let mut params = json!({"label": label_param(l)});
-        crate::panels::compare::target_active(app, &mut params);
-        let _ = app.run("photo.label", params);
+        let _ = crate::menubar::run_item(app, "photo.label", json!({"label": label_param(l)}));
         ui.close();
     }
 }
@@ -1862,14 +1860,14 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Flag"), |ui| {
         for (l, f) in [("Pick", "pick"), ("Reject", "reject"), ("Unflagged", "none")] {
             if ui.button(crate::i18n::tr(l)).clicked() {
-                let _ = app.run("photo.flag", json!({"flag": f}));
+                let _ = crate::menubar::run_item(app, "photo.flag", json!({"flag": f}));
             }
         }
     });
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Rating"), |ui| {
         for r in 0..=5 {
             if ui.button(if r == 0 { crate::i18n::tr("No Stars").to_string() } else { "★".repeat(r) }).clicked() {
-                let _ = app.run("photo.rate", json!({"rating": r}));
+                let _ = crate::menubar::run_item(app, "photo.rate", json!({"rating": r}));
             }
         }
     });

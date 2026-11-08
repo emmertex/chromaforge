@@ -145,3 +145,34 @@ fn old_catalog_is_upgraded_with_progress_then_opened() {
     drop(h);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Files that waited for a library find an import running: they are kept and imported once it
+/// ends, instead of being dropped (upstream #3403).
+#[test]
+fn files_waiting_for_a_library_wait_for_a_running_import() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-waiting-import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..300u32 {
+        let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[(i % 251) as u8, (i / 251) as u8, 9, 255]; 64] };
+        let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+        std::fs::write(dir.join(format!("{i}.png")), png).unwrap();
+    }
+    let late = std::env::temp_dir().join(format!("lc-ui-waiting-late-{}.png", std::process::id()));
+    let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[1, 2, 3, 255]; 64] };
+    std::fs::write(&late, lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap()).unwrap();
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::new(), Services { png: None, ..Default::default() }), [1200.0, 900.0], 1.0);
+    h.settle(Duration::from_secs(20));
+    crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
+    h.app.waiting_import = vec![late.to_string_lossy().to_string()];
+    h.step();
+    assert!(!h.app.waiting_import.is_empty(), "kept while the import runs");
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_secs(60) && (!h.app.waiting_import.is_empty() || crate::import::running(&h.app)) {
+        h.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.app.waiting_import.is_empty() && !crate::import::running(&h.app), "imported after the first import ended");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&late);
+}

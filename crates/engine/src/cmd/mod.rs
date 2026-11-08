@@ -65,6 +65,8 @@ pub mod profile_manager;
 pub(crate) mod retouch;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod plugin_develop;
 pub(crate) mod plugin_filters;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_jobs;
