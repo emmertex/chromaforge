@@ -252,6 +252,14 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Witchcraft's own palette leads the panels (Resolve's Primaries); in Eboda it stays away —
+    // Lightroom's own panels end with the Color Grading wheels
+    if shows("primaries") && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
+            super::witchcraft::primaries(app, ui, d);
+            ui.add_space(8.0);
+        });
+    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {
@@ -518,10 +526,12 @@ fn grading_mode_row(app: &mut LccApp, ui: &mut egui::Ui) {
             r.on_hover_text(crate::i18n::tr(
                 "Eboda shows the Lightroom Classic panels; Witchcraft the DaVinci Resolve style colour-grading palettes. Both edit the same photo.",
             ));
+            // a right_to_left layout puts the first item rightmost, so the array is reversed to
+            // draw Eboda | Witchcraft left to right
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let active = usize::from(app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft);
-                if let Some(i) = crate::widgets::segmented(ui, "gradingMode", &[("Eboda", "eboda"), ("Witchcraft", "witchcraft")], Some(active), 2) {
-                    let mode = if i == 0 { "eboda" } else { "witchcraft" };
+                let active = usize::from(app.ui.settings.grading_mode == crate::state::GradingMode::Eboda);
+                if let Some(i) = crate::widgets::segmented(ui, "gradingMode", &[("Witchcraft", "witchcraft"), ("Eboda", "eboda")], Some(active), 2) {
+                    let mode = if i == 0 { "witchcraft" } else { "eboda" };
                     let _ = app.run("view.gradingMode", json!({"mode": mode}));
                 }
             });
@@ -2852,19 +2862,19 @@ impl WheelGrab {
 /// in place for the drag; elsewhere it moves unseen and is put back. The browser can't move it
 /// (eframe's web host ignores the command), so there it only shows again where the drag ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct WheelCapture {
+pub(crate) struct WheelCapture {
     /// Where the button went down: the pointer goes back there.
-    origin: Pos2,
+    pub(crate) origin: Pos2,
     /// Where the pointer would be had it been free: where the drag began plus the travel since.
     pos: Pos2,
     /// Let go early (the window lost focus): the rest of this drag leaves the wheel alone.
-    dropped: bool,
+    pub(crate) dropped: bool,
     /// The pass that last drew the dragged wheel.
     pass: u64,
 }
 
 /// One wheel is dragged at a time, so one capture for them all.
-const WHEEL_CAPTURE: &str = "wheelCapture";
+pub(crate) const WHEEL_CAPTURE: &str = "wheelCapture";
 
 /// The mouse's travel this frame: the pointer's, or, while the pointer stands still (locked, or
 /// against a screen edge), the raw motion the host reports.
@@ -2878,7 +2888,7 @@ fn wheel_travel(delta: egui::Vec2, motion: Option<egui::Vec2>) -> egui::Vec2 {
 /// Where the wheel `resp` reads the pointer this frame: where it clicked, or for a drag the held
 /// pointer ([`WheelCapture`]), `None` once a lost focus let go of it (Esc ends the drag itself:
 /// egui stops a drag on Esc).
-fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
+pub(crate) fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
     let q = resp.interact_pointer_pos()?;
     if !resp.dragged() {
         return Some(q);
@@ -2914,7 +2924,7 @@ fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
 }
 
 /// Unlock and show the pointer a wheel drag held, back at `origin`.
-fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
+pub(crate) fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
     if cfg!(target_os = "macos") {
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
     }
@@ -2959,7 +2969,7 @@ pub(crate) fn wheel_pick(v: egui::Vec2, rad: f32, lock: Option<WheelLock>) -> (f
     }
 }
 
-fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
+pub(crate) fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
     p.add(wheel_mesh(c, rad));
     p.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_gray(40)));
 }

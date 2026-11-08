@@ -2397,7 +2397,9 @@ impl Default for UiState {
             zoom_anim: false,
             before_after: BeforeAfter::Off,
             thumb_size: 220.0,
-            open_sections: vec!["light".into()],
+            // "primaries" (the Witchcraft palette) opens with the app: in Eboda the section never
+            // renders, so the extra entry is invisible there; a user who closes it keeps that
+            open_sections: vec!["light".into(), "primaries".into()],
             open_flyouts: vec![],
             single_panel: false,
             show_clipping: false,

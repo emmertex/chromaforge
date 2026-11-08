@@ -39,6 +39,7 @@ const EDIT_SECTIONS: &[UiCommand] = &[
     ("section.curve", "Tone Curve", Some("Cmd+2"), "Window>Edit Sections"),
     ("section.mixer", "Color Mixer", Some("Cmd+3"), "Window>Edit Sections"),
     ("section.grading", "Color Grading", Some("Cmd+4"), "Window>Edit Sections"),
+    ("section.primaries", "Primaries", None, "Window>Edit Sections"),
     ("section.geometry", "Transform", Some("Cmd+7"), "Window>Edit Sections"),
     ("section.pluginFilters", "Plug-in Filters", None, "Window>Edit Sections"),
 ];
@@ -99,7 +100,7 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
     }
     Some(match id {
         // the fork's Edit sections, opened and closed as upstream's are (⌥-click: just this one)
-        "section.curve" | "section.mixer" | "section.grading" | "section.geometry" | "section.pluginFilters" => {
+        "section.curve" | "section.mixer" | "section.grading" | "section.primaries" | "section.geometry" | "section.pluginFilters" => {
             let sec = &id["section.".len()..];
             app.ui.right = crate::state::RightPanel::Edit;
             if p.get("solo").and_then(Value::as_bool) == Some(true) {

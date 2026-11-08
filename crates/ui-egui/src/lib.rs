@@ -417,6 +417,8 @@ mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
 #[cfg(test)]
+mod tests_witchcraft;
+#[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]
 mod tests_zoom_keys;

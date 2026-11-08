@@ -1127,6 +1127,26 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": enabled, "maxEv": s.develop_of(id).map(|d| d.hdr.max_ev)}))
             }
         ),
+        // ---- colourist primaries (the Witchcraft grading mode)
+        cmd!(
+            "develop.primaries",
+            "Primaries",
+            [],
+            None,
+            "{log?: bool (default: toggle)} — the colourist primaries' variant: Color wheels (wide tonal overlap, the default) or Log wheels (narrow ranges between primaries.low and primaries.high) → {log}",
+            has_active,
+            |s, p| {
+                let id = active(s, "develop.primaries")?;
+                let cur = s.develop_of(id).unwrap_or_default().primaries;
+                let log = bool_or(p, "log", !cur.log);
+                let label = if log { "Log Wheels" } else { "Color Wheels" };
+                edit(s, "develop.primaries", label, |d| {
+                    d.primaries.log = log;
+                    Ok(())
+                })?;
+                Ok(json!({"log": log}))
+            }
+        ),
         // ---- geometry: Upright
         cmd!(
             "geometry.upright",
