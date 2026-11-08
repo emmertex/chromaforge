@@ -32,10 +32,14 @@ pub struct Bindable {
     pub default: Option<&'static str>,
 }
 
-/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id).
+/// Every command that can have a shortcut: UI commands, then engine commands (one entry per id),
+/// then one *Add <filter>* per installed filter plug-in ([`PLUGIN_ADD`]; its manifest's `shortcut`
+/// is the declared key). The list is rebuilt when the installed filters change (a plug-in
+/// installed or removed), and stays `'static` for the callers that keep references into it.
 pub fn bindable() -> &'static [Bindable] {
-    static ALL: OnceLock<Vec<Bindable>> = OnceLock::new();
-    ALL.get_or_init(|| {
+    static FIXED: OnceLock<Vec<Bindable>> = OnceLock::new();
+    static ALL: std::sync::Mutex<Option<(u64, &'static [Bindable])>> = std::sync::Mutex::new(None);
+    let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
             if !v.iter().any(|b| b.id == *id) {
@@ -51,7 +55,68 @@ pub fn bindable() -> &'static [Bindable] {
             v.push(Bindable { id: c.id, label: c.label, default });
         }
         v
-    })
+    });
+    // rebuilt when the set of installed filters changes (the registry counts its changes)
+    let registry = lcc_engine::filter_plugins::registry();
+    let generation = registry.generation();
+    let mut all = ALL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((g, list)) = all.as_ref()
+        && *g == generation
+    {
+        return list;
+    }
+    let filters: Vec<(String, String, Option<String>)> =
+        registry.list().iter().map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone())).collect();
+    let mut v = fixed.clone();
+    let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).map(same_key).collect();
+    for (id, name, sc) in &filters {
+        let bid = intern(&format!("{PLUGIN_ADD}{id}"));
+        if v.iter().any(|b| b.id == bid) {
+            continue;
+        }
+        // a declared key another command declares too, on this platform's keyboard (Ctrl+Alt+N is
+        // Cmd+Alt+N on Windows and Linux), stays with that command: the user may still give it to
+        // the filter in Keyboard Shortcuts, which takes it from the other command
+        let default = sc.as_deref().filter(|sc| parse(sc).is_some_and(|k| !fixed_keys.contains(&same_key(k)))).map(intern);
+        v.push(Bindable { id: bid, label: intern(&format!("Add {name}")), default });
+    }
+    // rebuilt only when a filter is installed or removed: a few leaked strings per change
+    let list: &'static [Bindable] = Box::leak(v.into_boxed_slice());
+    *all = Some((generation, list));
+    list
+}
+
+/// A key as the platform's keyboard presses it: on Windows and Linux `Ctrl` and `Cmd` are the one
+/// Control key, so `Ctrl+Alt+N` and `Cmd+Alt+N` are the same press there (on macOS they differ).
+/// Conflicts between shortcuts are judged on this, so giving one command `Ctrl+Alt+N` there takes
+/// `Cmd+Alt+N` from another.
+fn same_key((m, k): (Modifiers, Key)) -> (Modifiers, Key) {
+    if cfg!(target_os = "macos") || !m.ctrl {
+        return (m, k);
+    }
+    (Modifiers { ctrl: false, command: true, ..m }, k)
+}
+
+/// The id family of the *Add <filter>* shortcuts: `pluginFilter.add:<plug-in id>`, which runs
+/// `develop.pluginFilter.addTo {plugin}` on the selection.
+pub const PLUGIN_ADD: &str = "pluginFilter.add:";
+
+/// A `'static` copy of `s`, shared with every earlier request for the same text (the filter
+/// bindables' ids and labels; at most [`MAX_INTERNED`] distinct strings, then the text leaks).
+fn intern(s: &str) -> &'static str {
+    use std::collections::HashMap;
+    const MAX_INTERNED: usize = 4096;
+    static POOL: std::sync::Mutex<Option<HashMap<String, &'static str>>> = std::sync::Mutex::new(None);
+    let mut g = POOL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let pool = g.get_or_insert_with(HashMap::new);
+    if let Some(t) = pool.get(s) {
+        return t;
+    }
+    let t: &'static str = Box::leak(s.to_string().into_boxed_str());
+    if pool.len() < MAX_INTERNED {
+        pool.insert(s.to_string(), t);
+    }
+    t
 }
 
 pub fn find_bindable(id: &str) -> Option<&'static Bindable> {
@@ -73,9 +138,10 @@ pub fn binding<'a>(keymap: &'a Keymap, id: &str, default: Option<&'a str>) -> Op
 /// Whether the keymap gives the key `sc` to a known command other than `id` and its contextual
 /// partner.
 fn assigned_elsewhere(keymap: &Keymap, id: &str, sc: &str) -> bool {
-    let Some(key) = parse(sc) else { return false };
-    saved_keys(keymap)
-        .any(|(other, k)| other != id && k == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other)))
+    let Some(key) = parse(sc).map(same_key) else { return false };
+    saved_keys(keymap).any(|(other, k)| {
+        other != id && same_key(k) == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other))
+    })
 }
 
 /// The keys the keymap gives to known commands, with each command's id. Entries for commands this
@@ -96,11 +162,11 @@ pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"),
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
-    let Some(key) = parse(sc) else { return vec![] };
+    let Some(key) = parse(sc).map(same_key) else { return vec![] };
     bindable()
         .iter()
         .filter(|b| b.id != id && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == b.id) || (*y == id && *x == b.id)))
-        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse) == Some(key))
+        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse).map(same_key) == Some(key))
         .map(|b| b.id)
         .collect()
 }
@@ -296,6 +362,39 @@ pub fn parse(s: &str) -> Option<(Modifiers, Key)> {
     key.map(|k| (m, k))
 }
 
+/// The rating and label commands with the digit key each starts on.
+const DIGIT_COMMANDS: [(Key, &str); 10] = [
+    (Key::Num0, "photo.rate0"),
+    (Key::Num1, "photo.rate1"),
+    (Key::Num2, "photo.rate2"),
+    (Key::Num3, "photo.rate3"),
+    (Key::Num4, "photo.rate4"),
+    (Key::Num5, "photo.rate5"),
+    (Key::Num6, "photo.labelRed"),
+    (Key::Num7, "photo.labelYellow"),
+    (Key::Num8, "photo.labelGreen"),
+    (Key::Num9, "photo.labelBlue"),
+];
+
+/// The id the culling path takes for a rating or label command (`rate:3:0`, `label:red`).
+fn culling_id(id: &str) -> Option<String> {
+    if let Some(n) = id.strip_prefix("photo.rate").filter(|n| n.len() == 1) {
+        return Some(format!("rate:{n}:0"));
+    }
+    let label = id.strip_prefix("photo.label").filter(|l| matches!(*l, "Red" | "Yellow" | "Green" | "Blue"))?;
+    Some(format!("label:{}", label.to_lowercase()))
+}
+
+/// Whether the digit-row key `digit` was pressed with no modifier but reported as the punctuation
+/// egui names (French AZERTY types `'` on the 4 key, macOS's French layout `!` on the 8 key): its
+/// place is the digit's. Letters, the numeric keypad's arrows and keys another command holds are not digits.
+fn digit_by_place(i: &egui::InputState, digit: Key) -> bool {
+    i.events.iter().any(|e| {
+        matches!(e, egui::Event::Key { key: Key::Quote | Key::Exclamationmark, physical_key: Some(p), pressed: true, modifiers, .. }
+            if *p == digit && *modifiers == Modifiers::NONE)
+    })
+}
+
 fn matches(i: &egui::InputState, m: Modifiers, k: Key) -> bool {
     // the windowing layer turns ⌘C / ⌘X / ⌘V (with any other modifiers held) and the keyboard's
     // Copy / Cut / Paste keys into these on Windows and Linux (macOS's menu bar takes them first);
@@ -488,7 +587,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     for button in &nav_buttons {
         fire.push(if *button == egui::PointerButton::Extra1 { "library.previous" } else { "library.next" }.to_string());
     }
+    let mut h_press = false;
     ctx.input(|i| {
+        // an unmodified H no assignment has claimed (the Masking panel's pin toggle, below)
+        h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !taken.contains(&(Modifiers::NONE, Key::H));
         classic::module_key_presses(i, module_keys, keymap, &mut consumed, &mut aliased);
         // Enter opens the active grid photo; widgets, popups and custom bindings keep the key.
         if grid
@@ -509,7 +611,8 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 && matches(i, m, k)
                 && let Some(id) = grid_key_command(keymap, grid, app.ui.fullscreen, b.id, (m, k))
             {
-                fire.push(id.to_string());
+                // a rating or label command goes the culling path its digit always took
+                fire.push(culling_id(id).unwrap_or_else(|| id.to_string()));
             }
         }
         // a held Space repeats: it toggles the zoom (or takes the hand) once per press
@@ -525,17 +628,21 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             }
         }
         // rating 0-5, colour labels 6-9 (with Shift: and advance)
+        // (the plain digits are the `photo.rate0`..`photo.labelBlue` commands, above; Shift+digit stays fixed)
         for (n, key) in [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5].iter().enumerate() {
-            if matches(i, Modifiers::NONE, *key) && !native(&n.to_string()) && !taken.contains(&(Modifiers::NONE, *key)) {
-                fire.push(format!("rate:{n}:0"));
-            }
             if matches(i, Modifiers::SHIFT, *key) && !taken.contains(&(Modifiers::SHIFT, *key)) {
                 fire.push(format!("rate:{n}:1"));
             }
         }
-        for (label, key, sc) in [("red", Key::Num6, "6"), ("yellow", Key::Num7, "7"), ("green", Key::Num8, "8"), ("blue", Key::Num9, "9")] {
-            if matches(i, Modifiers::NONE, key) && !native(sc) && !taken.contains(&(Modifiers::NONE, key)) {
-                fire.push(format!("label:{label}"));
+        // AZERTY: a digit-row key whose typed character egui names as punctuation still rates or labels
+        for (key, id) in DIGIT_COMMANDS {
+            if digit_by_place(i, key)
+                && !taken.contains(&(Modifiers::NONE, Key::Quote))
+                && !taken.contains(&(Modifiers::NONE, Key::Exclamationmark))
+                && shortcut_of(keymap, id).is_some_and(|sc| parse(sc) == Some((Modifiers::NONE, key)))
+                && let Some(c) = culling_id(id)
+            {
+                fire.push(c);
             }
         }
         if grid_navigation {
@@ -563,6 +670,17 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             }
         }
     });
+    // While the Masking panel is open, a plain H toggles the mask pins (View > Show Mask Pins)
+    // instead of opening Remove; a Remove key moved elsewhere still opens it. The full-screen
+    // preview and a hidden tools panel show no panel, so H keeps its own binding there.
+    if h_press
+        && app.ui.right == crate::state::RightPanel::Masking
+        && !app.ui.fullscreen
+        && crate::docking::exposed(app, crate::docking::Panel::Tools)
+    {
+        let _ = app.run("view.maskPins", json!({}));
+        fire.retain(|f| f != "panel.remove");
+    }
     use crate::panels::compare;
     // rating/flag/label keys: in Compare/Survey they act on the active photo only; Shift+key or
     // Auto Advance then moves on (next candidate in Compare, next photo elsewhere)
@@ -615,15 +733,27 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let _ = app.run(if f == "library.next" { "slideshow.next" } else { "slideshow.previous" }, json!({}));
             continue;
         }
-        if let Some(rest) = f.strip_prefix("rate:") {
+        if let Some(plugin) = f.strip_prefix(PLUGIN_ADD) {
+            // Add <filter>: on every selected photo that has none; the Develop panel's section opens
+            match app.run("develop.pluginFilter.addTo", json!({"plugin": plugin})) {
+                Ok(r) => {
+                    let (added, had) = (r["added"].as_u64().unwrap_or(0), r["had"].as_u64().unwrap_or(0));
+                    let name = find_bindable(&f).map_or(plugin, |b| b.label.strip_prefix("Add ").unwrap_or(b.label));
+                    let text = match (added, had) {
+                        (0, _) => crate::i18n::tr_format!("{name} is already on the selected photos", name = name),
+                        (1, 0) => crate::i18n::tr_format!("{name} added", name = name),
+                        (n, _) => crate::i18n::tr_format!("{name} added to {n} photos", name = name, n = n),
+                    };
+                    app.toast(ctx, text);
+                    if !app.ui.section_open(lcc_develop::PLUGIN_FILTERS_SECTION) {
+                        app.ui.toggle_section(lcc_develop::PLUGIN_FILTERS_SECTION);
+                    }
+                }
+                Err(e) => app.toast(ctx, e),
+            }
+        } else if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
             cull(app, "photo.rate", json!({"rating": n.parse::<u8>().unwrap_or(0)}), adv == "1");
-            let label = if n == "0" {
-                crate::i18n::tr("Rating cleared").to_string()
-            } else {
-                crate::i18n::tr_format!("Rated {}", "★".repeat(n.parse().unwrap_or(0)))
-            };
-            app.toast(ctx, label);
         } else if matches!(f.as_str(), "photo.decreaseRating" | "photo.increaseRating" | "photo.clearLabel") {
             cull(app, &f, json!({}), false);
         } else if let Some(l) = f.strip_prefix("label:") {
@@ -686,23 +816,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let d = if matches!(f.as_str(), "library.next" | "library.down") { 1 } else { -1 };
             let _ = if app.ui.view == crate::state::ViewMode::Compare { compare::compare_step(app, d) } else { compare::survey_step(app, d) };
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
-            // `, ⌘↑, ⌘↓: step the flag; the toast names the active photo's new state (read before Auto Advance moves on)
-            let active = app.session.active();
+            // `, ⌘↑, ⌘↓: step the flag; the toast is the command's own (`cull_toast`, shown by `run`)
             cull(app, &f, json!({}), false);
-            let flag = active.and_then(|id| app.session.catalog.photo(id)).map(|p| p.flag);
-            match flag {
-                Some(lcc_catalog::Flag::Pick) => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                Some(lcc_catalog::Flag::Reject) => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                Some(lcc_catalog::Flag::None) => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
-                None => {}
-            }
-        } else if matches!(f.as_str(), "photo.pick" | "photo.reject" | "photo.unflag") && app.ui.right != crate::state::RightPanel::Crop {
+        } else if matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && app.ui.right != crate::state::RightPanel::Crop) {
+            // P and U flag with Crop open too; X there swaps the crop aspect (#1866)
             cull(app, &f, json!({}), false);
-            match f.as_str() {
-                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                _ => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
-            }
         } else {
             // in the full-screen preview (no panels) I cycles the info overlay instead
             if f == "panel.info" && app.ui.fullscreen {
@@ -851,9 +969,6 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 app.toast(ctx, e);
             }
             match f.as_str() {
-                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                "photo.unflag" => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
                 "edit.undo" => change_toast(app, ctx, crate::i18n::tr("Undo")),
                 "edit.redo" => change_toast(app, ctx, crate::i18n::tr("Redo")),
                 _ => {}
@@ -966,6 +1081,28 @@ mod tests {
     fn select_only_active_chord(h: &mut crate::headless::Headless) {
         let r = h.request("ui.key", json!({"key": "D", "cmd": true, "shift": true}), std::time::Duration::from_secs(20));
         assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn h_toggles_mask_pins_while_masking_and_opens_remove_elsewhere() {
+        use crate::state::RightPanel;
+        let mut h = library();
+        let tm = std::time::Duration::from_secs(20);
+        h.app.run("panel.masking", json!({})).unwrap();
+        h.step();
+        h.step();
+        assert_eq!(h.app.ui.right, RightPanel::Masking);
+        let pins = h.app.ui.mask_pins;
+        let r = h.request("ui.key", json!({"key": "H"}), tm);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.ui.mask_pins, !pins, "H toggles the pins");
+        assert_eq!(h.app.ui.right, RightPanel::Masking, "and does not open Remove");
+        // Remove moved to another key: it still opens there, and leaves the pins alone
+        h.app.run("app.setShortcut", json!({"id": "panel.remove", "shortcut": "J"})).unwrap();
+        let pins = h.app.ui.mask_pins;
+        h.request("ui.key", json!({"key": "J"}), tm);
+        assert_eq!(h.app.ui.right, RightPanel::Remove);
+        assert_eq!(h.app.ui.mask_pins, pins);
     }
 
     #[test]
@@ -1360,6 +1497,56 @@ mod tests {
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
         assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
         assert_eq!(h.app.session.active(), Some(PhotoId(2)));
+    }
+
+    /// A rating key can be moved: the new key rates, the old digit no longer does. On French AZERTY the
+    /// 4 key types `'` without Shift: it still rates 4.
+    #[test]
+    fn rating_keys_are_remappable_and_azerty_digits_rate() {
+        use lcc_catalog::PhotoId;
+        let mut h = library();
+        let rating = |h: &crate::headless::Headless| h.app.session.catalog.photo(PhotoId(1)).unwrap().rating;
+        for pressed in [true, false] {
+            h.app.synthetic.push(egui::Event::Key {
+                key: Key::Quote,
+                physical_key: Some(Key::Num4),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.step();
+        assert_eq!(rating(&h), 4, "the 4 key of a French layout rates without Shift");
+        assign(&mut h.app.ui.settings.keymap, "photo.rate3", Some("F2")).unwrap();
+        key(&mut h, "3", false);
+        assert_eq!(rating(&h), 4, "3 no longer rates 3");
+        key(&mut h, "F2", false);
+        assert_eq!(rating(&h), 3, "the new key does");
+    }
+
+    /// Every rating and flag change confirms with a toast, with the count when several photos change, and a
+    /// refused change says nothing.
+    #[test]
+    fn rating_and_flag_changes_confirm_with_the_count() {
+        let mut h = library();
+        let toast = |h: &crate::headless::Headless| h.app.ui.toast().map(|t| t.0.clone());
+        h.app.session.execute("library.select", &json!({"ids": [1]})).unwrap();
+        key(&mut h, "3", false);
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★★★"));
+        h.app.session.execute("library.select", &json!({"ids": [1, 2, 3]})).unwrap();
+        key(&mut h, "2", false);
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★★ · 3 photos"));
+        h.app.run("photo.decreaseRating", json!({})).unwrap();
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★ · 3 photos"));
+        // (flag changes are reported by the on-screen overlay instead while it is on for the window)
+        h.app.run("osd.settings", json!({"mode": "surface"})).unwrap();
+        key(&mut h, "P", false);
+        assert_eq!(toast(&h).as_deref(), Some("Flagged as Pick · 3 photos"));
+        key(&mut h, "6", false);
+        assert_eq!(toast(&h).as_deref(), Some("Red Label · 3 photos"));
+        h.app.ui.toasts.clear();
+        assert!(h.app.run("photo.rate", json!({"rating": 9})).is_err());
+        assert_eq!(toast(&h), None, "a refused rating shows no toast");
     }
 
     #[test]

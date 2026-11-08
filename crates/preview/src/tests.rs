@@ -1201,3 +1201,18 @@ fn a_full_cache_prunes_the_pictures_kept_last_after_everything_else() {
     assert!(others <= 3, "the others went first: {others} of 9 left");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// An entry that is not a regular file (a directory here; a FIFO or an endless device on Unix) is a miss, never read
+/// (upstream #3728).
+#[test]
+fn disk_cache_entry_that_is_not_a_regular_file_is_a_miss() {
+    let dir = temp_dir("non-regular");
+    let key = hash_bytes(&[4, 2]);
+    let hex = key.to_string();
+    let shard = dir.join(&hex[..2]);
+    std::fs::create_dir_all(shard.join(format!("{hex}.{}", disk::EXT))).unwrap();
+    let d = DiskCache::new(&dir, 1 << 20);
+    assert!(d.get(key).is_none());
+    assert!(d.get_data(key).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

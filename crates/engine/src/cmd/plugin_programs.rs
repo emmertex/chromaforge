@@ -39,12 +39,14 @@ static ANSWERED: AtomicBool = AtomicBool::new(false);
 /// `program.end` hooks running now.
 static HOOKS: AtomicUsize = AtomicUsize::new(0);
 
-fn relay_sender() -> Sender<HostRequest> {
+/// Where plug-in calls on a worker send their catalog requests for [`answer_requests`]
+/// (`program.end` hooks, jobs).
+pub(super) fn relay_sender() -> Sender<HostRequest> {
     let mut g = RELAY.lock().unwrap_or_else(PoisonError::into_inner);
     g.get_or_insert_with(channel).0.clone()
 }
 
-/// Answers the catalog requests of `program.end` hooks from `s` (the app, once per frame).
+/// Answers the catalog requests of `program.end` hooks and plug-in jobs from `s` (the app, once per frame).
 pub fn answer_requests(s: &mut Session) {
     ANSWERED.store(true, Ordering::Relaxed);
     loop {
@@ -60,6 +62,11 @@ pub fn answer_requests(s: &mut Session) {
             None => break,
         }
     }
+}
+
+/// Whether something answers relayed requests in this process ([`answer_requests`] has run).
+pub(super) fn answered() -> bool {
+    ANSWERED.load(Ordering::Relaxed)
 }
 
 /// Whether a `program.end` hook is running (the app then looks for its requests often).
@@ -92,6 +99,21 @@ impl HostApi for HookHost {
     fn library_add(&mut self, params: &Value) -> Result<Value, String> {
         self.reachable()?;
         self.0.ask_within(Relayed::LibraryAdd, params, ANSWER_WAIT)
+    }
+
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.pixels_within(photo, long_edge, Some(ANSWER_WAIT))
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.ask_within(Relayed::SetCrop, &super::plugins::crop_params(photo, rect, angle), ANSWER_WAIT)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.ask_within(Relayed::VirtualCopy, &super::plugins::copy_params(photo, name), ANSWER_WAIT)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
@@ -172,7 +194,7 @@ fn call_end(
         let r = manager_for(library).get_or_insert_with(Manager::in_memory).program_end_call(plugin, run, program, status, code, dir);
         match r {
             Ok(p) => break p,
-            Err(lcc_plugins::Error::Busy(_)) if started.elapsed() < BUSY_WAIT => std::thread::sleep(Duration::from_millis(200)),
+            Err(lcc_plugins::Error::Busy(..)) if started.elapsed() < BUSY_WAIT => std::thread::sleep(Duration::from_millis(200)),
             Err(e) => {
                 log::warn!("{plugin}: program.end for {run} could not run: {e}");
                 return;

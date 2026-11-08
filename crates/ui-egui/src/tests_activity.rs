@@ -325,6 +325,108 @@ fn switching_to_modern_closes_the_list() {
     assert_eq!(h.request("ui.inspect", json!({}), T)["result"]["activityList"], false);
 }
 
+/// The demo library in the Compact layout: Classic drawn denser, with the same module bar.
+fn compact() -> Headless {
+    let mut h = demo();
+    set_layout(&mut h, "view.compactLayout");
+    h
+}
+
+fn set_layout(h: &mut Headless, command: &str) {
+    let r = h.request("engine.execute", json!({"command": command, "params": {"on": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+}
+
+/// The corner radius of the framed card painted around `card` (the list or the Modern card), from the last frame.
+fn card_radius(h: &Headless, card: egui::Rect) -> f32 {
+    h.view
+        .painted_shapes()
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::Rect(rs) if rs.stroke.width > 0.0 && (rs.rect.min - card.min).length() < 2.0 && (rs.rect.max - card.max).length() < 2.0 => {
+                Some(rs.corner_radius.nw as f32)
+            }
+            _ => None,
+        })
+        .next()
+        .unwrap_or_else(|| panic!("no framed card painted at {card:?}"))
+}
+
+/// Issue #847: Compact turns Modern off, so its tasks show as Classic's do: in the identity plate's place, with the
+/// list under them and no floating card.
+#[test]
+fn compact_shows_tasks_in_the_module_bar_and_lists_them_as_classic() {
+    let mut h = compact();
+    assert!(h.app.compact() && crate::theme::compact(&h.view.ctx), "the Compact layout is on");
+    let guards: Vec<_> = (0..3).map(|i| h.app.session.activity.start("export", &format!("Task {i}"), Cancel::Yes)).collect();
+    wait_visible(&mut h);
+    assert!(has(&h, PLATE) && !has(&h, "region:identityPlate"), "the tasks take the plate's place");
+    let bar = rect(&h, "region:moduleBar");
+    assert!(bar.contains_rect(rect(&h, PLATE)), "inside the module bar: {:?} in {bar:?}", rect(&h, PLATE));
+    let card = h.view.ctx.memory(|m| m.area_rect(egui::Id::new("activity-stack")));
+    assert!(card.is_none() && rows(&h) == 0, "no floating card in Compact: {card:?}");
+    // a click opens the list under the tasks, every row inside it
+    open_list(&mut h);
+    let list = rect(&h, LIST);
+    assert!(list.top() >= bar.bottom() - 1.0, "under the module bar: {list:?}");
+    for g in &guards {
+        let r = rect(&h, &format!("activity:row:{}", g.id()));
+        assert!(list.contains_rect(r), "row {} at {r:?} is cut off by the list at {list:?}", g.id());
+    }
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(!h.app.activity_list && !has(&h, LIST), "Esc closed it");
+    // and by command
+    let r = h.request("engine.execute", json!({"command": "view.activityList", "params": {"open": true}}), T);
+    assert_eq!(r["result"]["open"], true, "{r}");
+    h.step();
+    assert!(has(&h, LIST) && rows(&h) == guards.len(), "the command opens it with every row");
+}
+
+/// Issue #847: the list takes Compact's sharper corners; Classic keeps its rounder list, and Modern its card.
+#[test]
+fn the_list_takes_compacts_corners() {
+    let mut h = demo();
+    let _g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    open_list(&mut h);
+    let classic = card_radius(&h, rect(&h, LIST));
+    set_layout(&mut h, "view.compactLayout");
+    assert!(h.app.activity_list && has(&h, LIST), "still open in Compact");
+    let compact = card_radius(&h, rect(&h, LIST));
+    assert!(compact <= crate::theme::DENSE_RADIUS, "Compact's radius at most {}: {compact}", crate::theme::DENSE_RADIUS);
+    assert!(compact < classic, "sharper than Classic's list: {compact} vs {classic}");
+    set_layout(&mut h, "view.modernLayout");
+    let stack = h.view.ctx.memory(|m| m.area_rect(egui::Id::new("activity-stack"))).expect("the Modern card is drawn");
+    assert_eq!(card_radius(&h, stack), classic, "the Modern card keeps the rounded corners");
+}
+
+/// Issue #847: Classic and Compact share the module bar, so the list stays open across a switch between them, under
+/// the tasks; Modern closes it, from either.
+#[test]
+fn switching_between_classic_and_compact_keeps_the_list_open() {
+    let mut h = demo();
+    let _g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    open_list(&mut h);
+    for (command, on) in [("view.compactLayout", true), ("view.compactLayout", false), ("view.compactLayout", true)] {
+        let r = h.request("engine.execute", json!({"command": command, "params": {"on": on}}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+        h.step();
+        assert_eq!(h.app.compact(), on);
+        assert!(h.app.activity_list && has(&h, LIST), "the list stays open (compact: {on})");
+        let (list, tasks) = (rect(&h, LIST), rect(&h, PLATE));
+        assert!(list.top() >= tasks.bottom() && (list.left() - tasks.left()).abs() < 1.0, "under the tasks: {list:?} vs {tasks:?}");
+    }
+    set_layout(&mut h, "view.modernLayout");
+    assert!(!h.app.activity_list, "Modern closes it, from Compact too");
+}
+
 /// a batch row in the list folds its photos, with the time left and the failures; when it ends, what it did shows
 /// once as a message.
 #[test]
@@ -416,6 +518,8 @@ fn quit_with_a_running_task_asks_and_quit_anyway_cancels() {
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Tasks(_))), "{:?}", h.app.quit_prompt);
     h.step();
     assert!(!has(&h, "button:quitRetry"));
+    let text = h.painted_text().join("\n");
+    assert!(!text.contains("Disable backups"), "only the backup prompt points at the backup setting:\n{text}");
     click(&mut h, "button:quitAnyway");
     assert!(g.is_cancelled() && h.quit_requested());
 }
@@ -776,11 +880,9 @@ fn immediate_library_commands_and_auto_sync_show_completion() {
     assert!(h.app.ui.toast().is_none());
 }
 
-/// A catalog backup due at quit asks first, as Lightroom Classic does: Skip This Time quits without
-/// one (ported from OneSlips' LR-BACKUP).
-#[test]
-fn quitting_with_a_backup_due_asks_and_skip_quits() {
-    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-{}", std::process::id()));
+/// An app on a library (in a temp folder named after `name`) with a backup due on every exit.
+fn backup_due(name: &str) -> (Headless, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("lcc-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -793,12 +895,43 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
+    (h, dir)
+}
+
+/// A catalog backup due at quit asks first, as Lightroom Classic does, and says where the schedule
+/// is set: Cancel keeps the app open, Skip This Time quits without one (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_a_backup_due_asks_and_skip_quits() {
+    let (mut h, dir) = backup_due("quit-backup");
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    h.step();
+    let text = h.painted_text().join("\n");
+    assert!(text.lines().any(|l| l == "Back up the library?"), "the prompt is titled for the library:\n{text}");
+    assert!(text.contains("Disable backups in Edit ▸ Library Settings…"), "the prompt says where the schedule is set:\n{text}");
+    click(&mut h, "button:quitCancel");
+    assert!(h.app.quit_prompt.is_none() && !h.quit_requested(), "Cancel keeps the app open");
+    assert!(!crate::panels::notices::may_close(&mut h.app), "and the next quit asks again");
     click(&mut h, "button:quitSkipBackup");
     assert_eq!(h.app.exit_backup, Some(false));
     assert!(h.quit_requested());
     assert!(crate::panels::notices::may_close(&mut h.app), "asked once");
+    let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The backup prompt's title and hint are translated, the menu path in the hint too.
+#[test]
+fn the_backup_prompt_is_translated_with_its_menu_path() {
+    let (mut h, dir) = backup_due("quit-backup-de");
+    h.app.ui.language = crate::i18n::Locale::De;
+    crate::i18n::set_language(crate::i18n::Locale::De);
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    h.step();
+    let text = h.painted_text().join("\n");
+    crate::i18n::set_language(crate::i18n::Locale::En);
+    assert!(text.lines().any(|l| l == "Bibliothek sichern?"), "the title is translated:\n{text}");
+    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Bibliothekseinstellungen… abschalten"), "{text}");
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }

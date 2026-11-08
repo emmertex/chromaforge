@@ -2450,6 +2450,21 @@ pub(crate) struct ExportForm<'a> {
 
 /// The Export dialog's preset list column, in points.
 const EXPORT_PRESETS_W: f32 = 200.0;
+/// Whether a JPEG size limit of `limit_kb` is tight for the largest of the photos (`(width, height)`
+/// in pixels) at the chosen size (`lcc_engine::export::size_limit_is_tight`).
+pub(crate) fn size_limit_is_tight_for(limit_kb: u32, full_size: bool, resize: &lcc_engine::export::Resize, photos: &[(u32, u32)]) -> bool {
+    let pixels = photos
+        .iter()
+        .map(|&(w, h)| {
+            let k = if full_size { 1.0 } else { resize.scale(f64::from(w), f64::from(h)) };
+            let k = if k.is_finite() { k.clamp(0.0, 64.0) } else { 1.0 };
+            let k = if !full_size && resize.dont_enlarge { k.min(1.0) } else { k };
+            (f64::from(w) * k) * (f64::from(h) * k)
+        })
+        .fold(0.0_f64, f64::max);
+    pixels >= 1.0 && limit_kb > 0 && lcc_engine::export::size_limit_is_tight(limit_kb, pixels as usize)
+}
+
 /// The Export dialog's label column: its slider names are long ("Limit file size (KB, 0 = off)").
 const EXPORT_LABEL_W: f32 = 180.0;
 /// Narrower than this, the Export dialog drops its preset column for a Preset menu at the top.
@@ -3228,6 +3243,24 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             let mut k = *limit_kb as f64;
             if num(ui, &LIMIT_KB, &mut k) {
                 *limit_kb = k as u32;
+            }
+            if *limit_kb > 0 {
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr("The size limit picks the highest quality, up to Quality, whose file fits."))
+                        .color(t.text_dim),
+                );
+                let sizes: Vec<(u32, u32)> =
+                    crate::export_module::targets(app).iter().filter_map(|id| app.session.catalog.photo(*id)).map(|p| (p.width, p.height)).collect();
+                if size_limit_is_tight_for(*limit_kb, *full_size, resize, &sizes) {
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(
+                            "This limit is tight for the largest photo at this size: the quality may drop low enough to show blocks in smooth areas. A smaller size or a larger limit keeps more quality.",
+                        ))
+                        .color(t.caution),
+                    );
+                }
             }
         }
     }
@@ -4155,5 +4188,22 @@ mod cull_dialog_tests {
         h.step();
         h.step();
         assert_eq!(burst(&h), (1800.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod size_limit_note_tests {
+    use super::size_limit_is_tight_for;
+    use lcc_engine::export::Resize;
+
+    /// 1 MB over a 40 MP photo at full size is tight; at 2048 px, or with no limit, it is not.
+    #[test]
+    fn a_size_limit_is_tight_only_for_big_outputs() {
+        let photos = [(7728, 5152), (3000, 2000)];
+        assert!(size_limit_is_tight_for(1000, true, &Resize::default(), &photos));
+        assert!(!size_limit_is_tight_for(1000, false, &Resize::long_edge(2048), &photos));
+        assert!(!size_limit_is_tight_for(0, true, &Resize::default(), &photos));
+        assert!(!size_limit_is_tight_for(1000, true, &Resize::default(), &[]));
+        assert!(!size_limit_is_tight_for(1000, false, &Resize { value: f32::NAN, ..Resize::default() }, &[(0, 0)]));
     }
 }

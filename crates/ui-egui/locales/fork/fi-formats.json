@@ -26,6 +26,7 @@
   "Delete the {n} rejected photos of this view?": "Poistetaanko tämän näkymän {n} hylättyä kuvaa?",
   "Delete these {count} photos from disk, or only remove them from the library?": "Delete these {count} photos from disk, or only remove them from the library?",
   "Delete {n} presets": "Poista {n} esiasetusta",
+  "Disable backups in {path}": "Poista varmuuskopiot käytöstä kohteessa {path}",
   "Discard 1:1 Previews ({scope})": "Discard 1:1 Previews ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "Downloaded {n} place names (GeoNames, CC-BY 4.0)",
   "Estimated time: {est}": "Estimated time: {est}",

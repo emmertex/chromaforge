@@ -964,11 +964,11 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
     }
     match id {
         "second.filter" => crate::panels::second::set_filter(app, p),
-        // Classic: the list of every task under the module bar's activity area ({open?: bool}; toggles without)
+        // Classic and Compact: the list of every task under the module bar's activity area ({open?: bool}; toggles without)
         "view.activityList" => {
             let open = bool_param(p, "open").unwrap_or(!app.activity_list);
             if open && app.activity_plate.is_none() {
-                return Err("view.activityList: no tasks show in the identity plate (it needs the Classic layout, the module bar, \
+                return Err("view.activityList: no tasks show in the identity plate (it needs the Classic or Compact layout, the module bar, \
                             Show Status and Activity, and a task running)"
                     .into());
             }

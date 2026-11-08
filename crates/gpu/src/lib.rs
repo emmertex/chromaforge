@@ -43,6 +43,8 @@ mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cards;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod clip;
+#[cfg(not(target_arch = "wasm32"))]
 mod ctx;
 #[cfg(not(target_arch = "wasm32"))]
 mod exit;

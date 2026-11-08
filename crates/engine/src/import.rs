@@ -258,6 +258,9 @@ pub struct ImportReport {
     pub kept: Vec<Kept>,
     /// (path, error)
     pub failed: Vec<(String, String)>,
+    /// Files skipped as still being copied in (`lcc_catalog::incoming`): a later scan or import picks them up.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub still_copying: Vec<String>,
     /// Files found after expanding folders.
     pub scanned: usize,
     /// Photos whose metadata/develop settings were read from an XMP sidecar (or embedded XMP).
@@ -1034,7 +1037,7 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
     let by_path = library_files(&input.library, &files);
     let todo: Vec<String> = files.iter().filter(|f| !by_path.contains_key(Path::new(f))).cloned().collect();
     progress.total.store(todo.len(), Relaxed);
-    // probes from a preceding `scan` are reused when the file is unchanged (same size)
+    // probes from a preceding `scan` are reused when the file is unchanged (same size and modification time)
     let cached: Vec<Option<ProbeInfo>> = todo
         .iter()
         .map(|f| {
@@ -1044,8 +1047,9 @@ pub(crate) fn scan_files(mut input: ScanInput, files: Vec<String>, progress: &Sc
             if progress.cancel.load(Relaxed) {
                 return None;
             }
-            let size = std::fs::metadata(f).map(|m| m.len()).ok();
-            (size.is_none() || size == Some(info.file_size)).then_some(info)
+            // (a file that can't be looked at counts as unchanged; one that can is reused only as it was,
+            // size and modification time)
+            (std::fs::metadata(f).is_err() || crate::files::probe_still_valid(f, &info)).then_some(info)
         })
         .collect();
     let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
@@ -1187,6 +1191,9 @@ pub struct ImportJob {
 #[derive(Debug, Default)]
 pub struct Prepared {
     pub scanned: usize,
+    /// A Cancel left files of the batch undone (they have no item): the batch is not the whole of
+    /// what was asked. A Cancel that came after the last file was prepared leaves this `false`.
+    pub cut_short: bool,
     items: Vec<PreparedItem>,
 }
 
@@ -1201,6 +1208,8 @@ enum PreparedItem {
         hash: Option<String>,
     },
     Failed(String, String),
+    /// Still being copied in: left for a later scan.
+    Copying(String),
     Kept(Kept),
     Ready(Box<ReadyFile>),
 }
@@ -1397,7 +1406,7 @@ impl ImportJob {
         let library = self.look_up_library();
         let opts = self.opts.clone();
         let mode = self.mode;
-        let mut out = Prepared { scanned: files.len(), items: Vec::new() };
+        let mut out = Prepared { scanned: files.len(), cut_short: false, items: Vec::new() };
         let mut todo = Vec::new();
         // browsed (Local) records whose files are copied or moved: the record follows its file
         let mut follow: HashMap<String, PhotoId> = HashMap::new();
@@ -1438,9 +1447,7 @@ impl ImportJob {
             .iter()
             .map(|f| {
                 // (the web's files are not std::fs files: kept as probed)
-                self.cache
-                    .remove(f)
-                    .filter(|info| cfg!(target_arch = "wasm32") || std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.len() == info.file_size))
+                self.cache.remove(f).filter(|info| cfg!(target_arch = "wasm32") || crate::files::probe_still_valid(f, info))
             })
             .collect();
         let missing: Vec<String> = todo.iter().zip(&cached).filter(|(_, c)| c.is_none()).map(|(f, _)| f.clone()).collect();
@@ -1466,6 +1473,7 @@ impl ImportJob {
         let mut listing = crate::sidecar::FolderListing::default();
         for (path, info) in todo.into_iter().zip(probed) {
             if cancel.load(Relaxed) {
+                out.cut_short = true;
                 break;
             }
             let mut info = match info {
@@ -1474,6 +1482,7 @@ impl ImportJob {
                 Err(e) if lcc_catalog::incoming::is_still_being_written(&e) => {
                     log::info!("import: skipped {e}");
                     self.done.fetch_add(1, Relaxed);
+                    plan.slots.push(Slot::Item(PreparedItem::Copying(path)));
                     continue;
                 }
                 Err(e) => {
@@ -1491,6 +1500,7 @@ impl ImportJob {
             {
                 self.run_plan(&mut plan, &mut out, cancel);
                 if cancel.load(Relaxed) {
+                    out.cut_short = true;
                     break;
                 }
             }
@@ -1569,6 +1579,7 @@ impl ImportJob {
                     if plan.transfers.iter().any(|t| t.family == family) {
                         self.run_plan(&mut plan, &mut out, cancel);
                         if cancel.load(Relaxed) {
+                            out.cut_short = true;
                             break;
                         }
                     }
@@ -1607,6 +1618,8 @@ impl ImportJob {
             }));
         }
         self.run_plan(&mut plan, &mut out, cancel);
+        // (`cut_short` says whether a Cancel stopped a file from being prepared: the flag itself may
+        // have been set after the last one was)
         out
     }
 
@@ -1619,7 +1632,10 @@ impl ImportJob {
                 Slot::Item(it) => it,
                 Slot::Transfer => match done.next().flatten() {
                     Some(it) => it,
-                    None => continue,
+                    None => {
+                        out.cut_short = true;
+                        continue;
+                    }
                 },
             };
             if let PreparedItem::Ready(r) = &item
@@ -1905,6 +1921,7 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
             }
             PreparedItem::Failed(path, e) => report.failed.push((path, e)),
+            PreparedItem::Copying(path) => report.still_copying.push(path),
             PreparedItem::Kept(k) => report.kept.push(k),
             PreparedItem::Ready(r) if r.promote.is_some_and(|id| s.catalog.photo(id).is_some_and(|p| p.local)) => {
                 // a browsed photo copied or moved: its record follows the file into the library,
@@ -1934,7 +1951,10 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 let sidecar = sidecar.map(|sc| sc.resolve_label(&s.catalog)).filter(|sc| *sc != crate::sidecar::SidecarData::default());
                 // the photo is upright as the file's own orientation turns it, when the file states one
-                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData { orientation: info.orientation.or(sc.orientation), ..sc });
+                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData {
+                    orientation: info.orientation.or(sc.orientation),
+                    ..sc.turn_from(info.orientation).crop_from(info.orientation, (info.width, info.height))
+                });
                 // a copy is catalogued under its new name
                 let name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let mut p = Photo::new(id, Source::File { path: stored }, &name, &info.format, info.width, info.height, &now);
@@ -2327,6 +2347,7 @@ mod prepared_tests {
         };
         let mut prepared = Prepared {
             scanned: 2,
+            cut_short: false,
             items: vec![PreparedItem::Ready(Box::new(ready(&existing_path))), PreparedItem::Ready(Box::new(ready(&other_path)))],
         };
         prepared.revalidate_add(&s);

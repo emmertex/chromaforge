@@ -442,6 +442,11 @@ impl Activity {
         TaskGuard { activity: self.clone(), entry }
     }
 
+    /// Whether `other` is this registry (a clone of it), not just another one like it.
+    pub fn is(&self, other: &Activity) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Every task in flight, oldest first.
     pub fn list(&self) -> Vec<TaskInfo> {
         lock(&self.inner.tasks).iter().map(|e| e.info()).collect()

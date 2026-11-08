@@ -100,6 +100,10 @@ pub fn recently_modified(path: &Path) -> bool {
     std::time::SystemTime::now().duration_since(t).map_or(true, |age| age < SETTLE)
 }
 
+/// The furthest a classic TIFF's 32-bit offsets and counts can reach: a declared end past it is impossible, not a
+/// file still being written.
+const MAX_TIFF_END: u64 = 1 << 32;
+
 /// IFDs followed at most (IFD chains plus SubIFDs): raws carry a handful.
 const MAX_IFDS: usize = 64;
 /// Entries read per IFD at most.
@@ -124,9 +128,13 @@ pub fn declared_end(head: &[u8]) -> Option<u64> {
     };
     let r = Reader { b: head, le };
     // 42 for TIFF, plus the magic numbers of TIFF-based raws (ORF, RW2)
-    if !matches!(r.u16(2)?, 42 | 0x4f52 | 0x5352 | 0x55) {
+    let magic = r.u16(2)?;
+    if !matches!(magic, 42 | 0x4f52 | 0x5352 | 0x55) {
         return None;
     }
+    // a Panasonic RW2 (magic 0x55) can give its strip offset as 0xFFFFFFFF and the real start of the raw data in its own
+    // tag 0x0118 (RawDataOffset); in a plain TIFF 0x0118 is MinSampleValue, so it is only read for RW2
+    let panasonic = magic == 0x55;
     let mut queue = vec![u64::from(r.u32(4)?)];
     let mut seen = std::collections::HashSet::new();
     let mut end: Option<u64> = None;
@@ -137,6 +145,7 @@ pub fn declared_end(head: &[u8]) -> Option<u64> {
         let Ok(at) = usize::try_from(ifd) else { continue };
         let Some(n) = r.u16(at) else { continue };
         let mut tags: [(Vec<u64>, Vec<u64>); 3] = Default::default(); // strips, tiles, JPEG
+        let mut raw_data_offset = None;
         for i in 0..usize::from(n).min(MAX_ENTRIES) {
             let Some(e) = i.checked_mul(12).and_then(|o| o.checked_add(at)).and_then(|o| o.checked_add(2)) else { break };
             let (Some(tag), Some(vals)) = (r.u16(e), r.values(e)) else { continue };
@@ -148,12 +157,20 @@ pub fn declared_end(head: &[u8]) -> Option<u64> {
                 0x0201 => tags[2].0 = vals,
                 0x0202 => tags[2].1 = vals,
                 0x014a => queue.extend(vals),
+                0x0118 if panasonic => raw_data_offset = vals.first().copied(),
                 _ => {}
             }
         }
         for (offsets, counts) in &tags {
             for (o, c) in offsets.iter().zip(counts) {
-                if let Some(e) = o.checked_add(*c) {
+                // the placeholder offset says where nothing is: RW2's own offset, else no end from this strip
+                let o = match (*o == u64::from(u32::MAX), raw_data_offset) {
+                    (false, _) => *o,
+                    (true, Some(raw)) => raw,
+                    (true, None) => continue,
+                };
+                // a classic TIFF addresses at most 4 GiB with its 32-bit offsets: an end past that is no end at all
+                if let Some(e) = o.checked_add(*c).filter(|e| *e <= MAX_TIFF_END) {
                     end = Some(end.map_or(e, |m| m.max(e)));
                 }
             }

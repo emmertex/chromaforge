@@ -124,6 +124,14 @@ fn virtual_copy_names(s: &Session, targets: &[PhotoId], name: Option<&str>) -> R
         .collect()
 }
 
+/// One virtual copy of `src`, named `name` or the next "Copy N" of its master, as
+/// `photo.virtualCopy` names them; the selection is left alone. For plug-ins.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn virtual_copy_one(s: &mut Session, src: PhotoId, name: Option<&str>) -> Result<Option<PhotoId>> {
+    let Some(Some(name)) = virtual_copy_names(s, &[src], name)?.into_iter().next() else { return Ok(None) };
+    virtual_copy(s, src, &name)
+}
+
 /// Create one virtual copy of `src`: a new photo sharing its file, with the same settings and
 /// metadata, added to the same albums and stacked right after it (the stack is expanded so the
 /// copy is visible). `name` is resolved by the command before any copies are created.

@@ -24,6 +24,7 @@ mod command_error;
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
+pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
 pub mod docking;
@@ -67,6 +68,7 @@ mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
+pub mod motion;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -217,6 +219,8 @@ mod tests_folder_poll;
 #[cfg(test)]
 mod tests_grading;
 #[cfg(test)]
+mod tests_grading_mode;
+#[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
 mod tests_grid_style;
@@ -228,6 +232,8 @@ mod tests_hdr_zoom_cache;
 mod tests_histogram_drag;
 #[cfg(test)]
 mod tests_histogram_modes;
+#[cfg(test)]
+mod tests_hover_pointer;
 #[cfg(test)]
 mod tests_i18n_coverage;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -323,6 +329,8 @@ mod tests_panels;
 #[cfg(test)]
 mod tests_pickers;
 #[cfg(test)]
+mod tests_plugin_jobs;
+#[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
 mod tests_preset_folders;
@@ -412,6 +420,8 @@ mod tests_update;
 mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
+#[cfg(test)]
+mod tests_witchcraft;
 #[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]
@@ -690,7 +700,7 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
-    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    /// A library backup is due (Library Settings ▸ Back up library): Back Up and Quit, or Skip This Time.
     Backup(String),
 }
 
@@ -965,6 +975,8 @@ pub struct LccApp {
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
+    /// Files that waited for a library and wait for the running import or Synchronize Folder too.
+    pub waiting_import: Vec<String>,
     /// Immich: Connections settings, the Import dialog's Immich source, background pump state.
     #[cfg(not(target_arch = "wasm32"))]
     pub immich: panels::connections::ImmichUi,
@@ -1220,6 +1232,7 @@ impl LccApp {
             screen_profile: None,
             screen_profile_read: None,
             library_problem: None,
+            waiting_import: Vec::new(),
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,
@@ -1436,7 +1449,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                // from File ▸ Libraries or Library Settings
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
+                    Some(i18n::tr("The library passed the integrity test").to_string())
+                }
+                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1461,9 +1481,21 @@ impl LccApp {
                 }
                 None => i18n::tr("Color label cleared").into(),
             };
+            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
             // Native menu clicks can arrive before logic() updates last_time after an idle gap.
             let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
             self.ui.show_toast((text, now + TOAST_SECONDS, label));
+        }
+        if r.is_ok()
+            && cull_toast::confirms(id)
+            && !matches!(id, "photo.label" | "photo.clearLabel")
+            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
+        {
+            // every rating and flag change confirms, with the count when several photos changed
+            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
+                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+            }
         }
         match &r {
             Err(e) => {
@@ -2763,6 +2795,7 @@ impl LccApp {
         let ctx = ui.ctx().clone();
         widgets::sync_section_folds(&ctx, &mut self.ui.section_open);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        motion::set(&ctx, self.ui.settings.reduce_motion);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
