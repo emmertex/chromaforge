@@ -292,7 +292,7 @@ fn the_background_pump_saves_what_it_embeds_for_the_next_launch() {
 }
 
 #[test]
-fn faces_person_lists_a_persons_faces_and_looks_for_more_only_while_recognition_runs() {
+fn faces_person_lists_a_persons_faces_and_looks_for_more_even_with_background_scan_off() {
     let d = temp("person");
     let (mut s, _) = setup(&d, 64);
     s.execute("faces.index", &json!({"budgetMs": 0})).unwrap();
@@ -325,14 +325,21 @@ fn faces_person_lists_a_persons_faces_and_looks_for_more_only_while_recognition_
     let more = r["more"].as_array().unwrap();
     assert_eq!((more.len(), more[0]["photo"].clone(), more[0]["index"].clone()), (1, json!(b.0), json!(0)), "{r}");
     assert!(more[0]["score"].as_f64().unwrap() > 0.9);
-    // with background scanning switched off, suggestion review remains accessible
+    // with background scanning switched off, suggestion review remains accessible without loading the ONNX network
     s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    s.faces.embedder = None;
     let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
     assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(2), json!(true), 1));
+    assert!(s.faces.embedder.is_none(), "looking up indexed look-alikes does not load the ONNX network");
     // confirming it moves it from one list to the other (and is one undo step) even with background scanning off
     s.execute("faces.setName", &json!({"id": b.0, "index": 0, "name": "Ann"})).unwrap();
     let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
     assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(3), json!(true), 0));
+    // with no model chosen at all, `ready` is false and `more` is empty
+    s.execute("faces.models.select", &json!({"id": null})).unwrap();
+    s.faces.checked = None;
+    let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
+    assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(3), json!(false), 0));
     // nobody by that name, and bad input, are plain answers and errors
     let r = s.execute("faces.person", &json!({"name": "Nobody"})).unwrap();
     assert_eq!((r["total"].clone(), r["confirmed"].as_array().unwrap().len(), r["ready"].clone()), (json!(0), 0, json!(false)));
@@ -749,15 +756,18 @@ fn face_review_queue_and_actions_remain_accessible_when_background_scan_is_off()
     s.faces.index.insert(b.0, &region(0.1, None).rect, unit(&[(0, 0.95)])); // Unnamed, matches Alice
     s.faces.index.insert(b.0, &region(0.5, None).rect, unit(&[(2, 1.0)])); // Unnamed, distinct
 
-    // Toggle background scanning OFF to save system resources
+    // Toggle background scanning OFF to save system resources, and drop the loaded ONNX network as on a fresh launch
     assert_eq!(s.execute("faces.enable", &json!({"enabled": false})).unwrap()["enabled"], false);
+    s.faces.embedder = None;
+    s.faces.checked = None;
 
-    // 1. Background indexing pump does NOT run any workers or active indexing
+    // 1. Background indexing pump does NOT run any workers or load the ONNX network
     let pump_res = s.execute("faces.pump", &json!({})).unwrap();
     assert_eq!(pump_res["active"], false);
     assert_eq!(pump_res["indexedFaces"], 4);
+    assert!(s.faces.embedder.is_none(), "background pump with recognition off does not load the ONNX network");
 
-    // 2. Person review queue ("More" section) is accessible and returns candidate suggestions
+    // 2. Person review queue ("More" section) is accessible and returns candidate suggestions without loading the network
     let person_res = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
     assert_eq!(person_res["ready"], true);
     let more = person_res["more"].as_array().unwrap();
@@ -765,6 +775,7 @@ fn face_review_queue_and_actions_remain_accessible_when_background_scan_is_off()
     assert_eq!(more[0]["photo"], b.0);
     assert_eq!(more[0]["index"], 0);
     assert!(more[0]["score"].as_f64().unwrap() > 0.9);
+    assert!(s.faces.embedder.is_none());
 
     // 3. Review queue actions: confirm one candidate via faces.setName
     s.execute("faces.setName", &json!({"id": b.0, "index": 0, "name": "Alice"})).unwrap();
@@ -780,13 +791,16 @@ fn face_review_queue_and_actions_remain_accessible_when_background_scan_is_off()
     let person_after_ignore = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
     assert_eq!(person_after_ignore["more"].as_array().unwrap().len(), 0);
 
-    // 5. Unnamed faces list still provides suggestions and grouping
+    // 5. Unnamed faces list and loupe hints (`faces.suggest {budgetMs: 0}`) still provide suggestions without loading ONNX
     s.execute("edit.undo", &json!({})).unwrap(); // restore ignored face
     let unnamed_res = s.execute("faces.unnamed", &json!({})).unwrap();
     assert_eq!(unnamed_res["ready"], true);
     assert_eq!(unnamed_res["ordered"], true);
     let suggestion = unnamed_res["faces"].as_array().unwrap().iter().find(|f| f["photo"] == b.0 && f["index"] == 0).unwrap();
     assert_eq!(suggestion["suggestion"]["name"], "Alice");
+    let suggest_res = s.execute("faces.suggest", &json!({"ids": [b.0], "budgetMs": 0})).unwrap();
+    assert_eq!(suggest_res["photos"][0]["faces"][0]["suggestion"]["name"], "Alice");
+    assert!(s.faces.embedder.is_none(), "read-only queries over cached embeddings leave the ONNX network unloaded");
 
     let _ = std::fs::remove_dir_all(&d);
 }

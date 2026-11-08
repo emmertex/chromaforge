@@ -328,7 +328,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
     let step = if recognising { super::faces::Setup::Running } else { super::faces::setup(app, ui.ctx()) };
     let note: Option<String> = if step == super::faces::Setup::TurnOn {
         Some(format!("Face recognition is off. Turn it on to find more photos of {shown_name}."))
-    } else if !recognising {
+    } else if matches!(step, super::faces::Setup::GetModel | super::faces::Setup::Unavailable) {
         Some(format!("Face recognition needs a model, in Settings, to find more photos of {shown_name}."))
     } else if more.is_empty() && page.pending > 0 {
         Some(format!("Looking through your photos… {} left", page.pending))
@@ -385,7 +385,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
             ),
         };
         ui.painter().text(pos2(area.left() + PAD, area.top() + more_top + 36.0), Align2::LEFT_CENTER, sub, t.font(12.0), t.text_dim);
-        if !recognising {
+        if matches!(step, super::faces::Setup::TurnOn | super::faces::Setup::GetModel) {
             let r = Rect::from_min_size(pos2(area.left() + PAD + 330.0, area.top() + more_top + 8.0), vec2(120.0, 24.0));
             let label = if step == super::faces::Setup::TurnOn { "Turn on" } else { "Open Settings" };
             let b = ui.put(r, egui::Button::new(label));
