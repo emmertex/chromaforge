@@ -149,7 +149,7 @@ pub fn ui_command_ids(menus_rs: &str) -> Vec<String> {
         "pub const LANGUAGE_COMMANDS",
         "pub const SHELL_COMMANDS",
         "pub const COMMANDS",
-        // the fork's tables (menus_fork.rs): the grading modes and its Edit sections
+        // Chromaforge's tables (menus_fork.rs): the grading modes and its Edit sections
         "const GRADING_COMMANDS",
         "const EDIT_SECTIONS",
         "const PLUGIN_COMMANDS",
@@ -364,7 +364,7 @@ pub fn run(root: &Path, write: bool) -> Result<(), String> {
     for f in ["crates/ui-egui/src/print_ui.rs", "crates/ui-egui/src/creations_ui.rs"] {
         commands.extend(ui_command_ids(&std::fs::read_to_string(root.join(f)).map_err(|e| format!("{f}: {e}"))?));
     }
-    // the fork's own UI commands (grading modes, its Edit sections)
+    // Chromaforge's own UI commands (grading modes, its Edit sections)
     let fork = std::fs::read_to_string(root.join("crates/ui-egui/src/menus_fork.rs")).map_err(|e| format!("menus_fork.rs: {e}"))?;
     commands.extend(ui_command_ids(&fork));
     let controls = registry(cli.as_deref(), "controls")?;
