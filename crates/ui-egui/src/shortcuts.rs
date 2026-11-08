@@ -546,7 +546,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 && let Some(id) = grid_key_command(keymap, grid, app.ui.fullscreen, b.id, (m, k))
             {
                 // a rating or label command goes the culling path its digit always took
-                fire.push(culling_id(id).map_or_else(|| id.to_string(), |c| c));
+                fire.push(culling_id(id).unwrap_or_else(|| id.to_string()));
             }
         }
         // a held Space repeats: it toggles the zoom (or takes the hand) once per press
