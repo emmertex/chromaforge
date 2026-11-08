@@ -2651,6 +2651,9 @@ mod tests_people_masks;
 #[cfg(test)]
 mod tests_persist;
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_plugin_develop;
+#[cfg(test)]
 mod tests_plugin_filters;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
