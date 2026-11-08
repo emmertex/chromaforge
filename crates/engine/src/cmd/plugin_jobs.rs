@@ -132,6 +132,16 @@ impl HostApi for JobHost {
     fn library_add(&mut self, _: &Value) -> Result<Value, String> {
         Err(format!("library.add: {NO_WRITES}"))
     }
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
+        self.reachable()?;
+        self.0.pixels_within(photo, long_edge, Some(ANSWER_WAIT))
+    }
+    fn set_crop(&mut self, _: &str, _: [f64; 4], _: Option<f64>) -> Result<Value, String> {
+        Err(format!("develop.setCrop: {NO_WRITES}"))
+    }
+    fn virtual_copy(&mut self, _: &str, _: Option<&str>) -> Result<Value, String> {
+        Err(format!("photo.virtualCopy: {NO_WRITES}"))
+    }
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.find_program(program)
     }

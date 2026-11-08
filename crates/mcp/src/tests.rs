@@ -724,3 +724,47 @@ fn render_photo_falls_back_to_a_file_for_an_older_app() {
     let r = call_tool(&mut OtherMachine { app: Headless::demo(), old_app: true }, "render_photo", &json!({}));
     assert!(r.is_error, "{r:?}");
 }
+
+/// A server whose policy is read from `vars` (names without the brand prefix) instead of the environment.
+fn server_with(vars: &[(&str, &str)]) -> Server {
+    let policy = crate::Policy::from_lookup(|k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string()));
+    Server::new(Box::new(Headless::demo())).with_policy(policy)
+}
+
+#[test]
+fn a_denied_command_is_refused_on_every_route_that_could_run_it() {
+    let mut s = server_with(&[("MCP_DENY", "catalog.stats")]);
+    let calls = [
+        json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}),
+        json!({"name": "command_run", "arguments": {"id": "catalog.stats"}}),
+        json!({"name": "command_batch", "arguments": {"steps": [{"id": "engine.commands"}, {"id": "catalog.stats"}]}}),
+        json!({"name": "cmd_catalog_stats", "arguments": {}}),
+        json!({"name": "doc_inspect", "arguments": {}}),
+    ];
+    for (i, call) in calls.into_iter().enumerate() {
+        let r = rpc(&mut s, i as u64 + 1, "tools/call", call.clone());
+        assert_eq!(r["result"]["isError"], true, "{call}");
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("refused by policy"), "{call}: {r}");
+    }
+    let listed = rpc(&mut s, 9, "tools/list", json!({}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(!names.contains(&"cmd_catalog_stats") && !names.contains(&"doc_inspect"), "{names:?}");
+    assert!(names.contains(&"run_command"), "the generic routes stay: they are checked per call");
+}
+
+#[test]
+fn no_policy_variables_means_nothing_is_refused() {
+    let mut s = server_with(&[]);
+    let r = rpc(&mut s, 1, "tools/call", json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}));
+    assert_eq!(r["result"]["isError"], false, "{r}");
+}
+
+#[test]
+fn an_allow_list_leaves_only_those_tools_listed_and_callable() {
+    let mut s = server_with(&[("MCP_ALLOW_TOOLS", "doc_inspect")]);
+    let listed = rpc(&mut s, 1, "tools/list", json!({}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, ["doc_inspect"]);
+    let r = rpc(&mut s, 2, "tools/call", json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+}

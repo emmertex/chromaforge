@@ -44,6 +44,12 @@ fn own_copy(profiles: &Path, p: &LutProfile) -> Option<PathBuf> {
     std::fs::symlink_metadata(&f).ok().filter(std::fs::Metadata::is_file).map(|_| f)
 }
 
+/// A `.cube` or look file's text, for an import: a regular file of at most [`MAX_CUBE_BYTES`].
+fn read_text(f: &Path) -> std::result::Result<String, String> {
+    let b = crate::bounded_read::read_bounded(f, MAX_CUBE_BYTES).map_err(|e| e.to_string())?;
+    String::from_utf8(b).map_err(|e| e.to_string())
+}
+
 /// `f` as text, when it is at most [`MAX_CUBE_BYTES`].
 fn read_cube(f: &Path) -> Option<String> {
     use std::io::Read;
@@ -86,7 +92,7 @@ fn cube_files(paths: &[String]) -> (Vec<(String, String, Option<String>)>, Vec<V
         if path.is_dir() {
             let cube = |f: &Path| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("cube")) || crate::xmp_look::is_look_file(f);
             for ep in crate::walk::files_in(path, None, crate::walk::Limits::default(), cube).files {
-                match std::fs::read_to_string(&ep) {
+                match read_text(&ep) {
                     Ok(t) => {
                         let group = ep.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().to_string());
                         if ep.extension().is_some_and(|x| x.eq_ignore_ascii_case("xmp")) {
@@ -99,7 +105,7 @@ fn cube_files(paths: &[String]) -> (Vec<(String, String, Option<String>)>, Vec<V
                 }
             }
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")) {
-            let b = match std::fs::read(path) {
+            let b = match crate::bounded_read::read_bounded(path, crate::preset_import::MAX_ZIP_TOTAL as u64).map_err(|e| e.to_string()) {
                 Ok(b) => b,
                 Err(e) => {
                     failed.push(json!([stem(path), e.to_string()]));
@@ -133,7 +139,7 @@ fn cube_files(paths: &[String]) -> (Vec<(String, String, Option<String>)>, Vec<V
             if ext == "dcp" {
                 continue;
             }
-            match std::fs::read_to_string(path) {
+            match read_text(path) {
                 Ok(t) if ext == "xmp" => look(stem(path), &t, None, &mut out, &mut failed),
                 Ok(t) => out.push((stem(path), t, None)),
                 Err(e) => failed.push(json!([stem(path), e.to_string()])),
@@ -156,6 +162,10 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (files, mut failed) = cube_files(&paths);
     let mut imported = Vec::new();
+    // the ids taken and the next suffix per slug: a bundle of same-titled LUTs doesn't probe the
+    // whole list from 2 for each one
+    let mut taken: std::collections::HashSet<String> = s.lut_profiles.iter().map(|x| x.id.clone()).collect();
+    let mut next_suffix: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for (name, text, group) in files {
         let lut = match lcc_pipeline::lut::Lut3d::parse_cube(&text) {
             Ok(l) => l,
@@ -168,11 +178,12 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let group = super::super::preset_import::group_from_dir(&group.unwrap_or_default()).unwrap_or_else(|| "Imported".into());
         let slug = crate::presets::slug(&format!("{group}-{display}"));
         let mut id = format!("lut:{slug}");
-        let mut n = 2;
-        while s.lut_profiles.iter().any(|x| x.id == id) {
+        let n = next_suffix.entry(slug.clone()).or_insert(2);
+        while taken.contains(&id) {
             id = format!("lut:{slug}-{n}");
-            n += 1;
+            *n = n.saturating_add(1);
         }
+        taken.insert(id.clone());
         let file = match &dir {
             Some(d) => {
                 let f = d.join(format!("{}.cube", id.trim_start_matches("lut:")));

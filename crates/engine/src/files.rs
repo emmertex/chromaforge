@@ -765,7 +765,10 @@ fn load_bytes_now(
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
         let window = lcc_raw::sensor_window(&bytes, [info.active_area.width, info.active_area.height]);
-        let lens = crate::lens_profiles::for_raw(&info, window, || lcc_meta::extract(&bytes));
+        let (lens, lens_from_file) = match crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(&bytes), None) {
+            Some((l, applied)) => (Some(l), applied == crate::lens_profiles::Applied::Embedded),
+            None => (None, false),
+        };
         // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
         let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         // A DNG's preview already has its lens opcodes applied. Keep them for its single tone fit,
@@ -883,6 +886,7 @@ fn load_bytes_now(
                 as_shot_temp: temp,
                 as_shot_tint: tint,
                 lens,
+                lens_from_file,
                 relative_wb: scale.relative,
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,

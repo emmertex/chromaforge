@@ -418,6 +418,19 @@ impl Catalog {
         Ok(Op::Batch { ops })
     }
 
+    /// Remove several keywords (each with the keywords below it) from every photo and from the keyword list as one
+    /// batch (upstream #2757). Nothing is removed when one is empty or none is named.
+    pub fn delete_keywords_ops(&self, keywords: &[String]) -> Result<Op> {
+        let ks: Vec<String> = keywords.iter().map(|k| clean(k)).collect();
+        if ks.is_empty() || ks.iter().any(String::is_empty) {
+            return Err(CatalogError::Invalid("empty keyword".into()));
+        }
+        let under_any = |x: &str| ks.iter().any(|k| is_under(x, k));
+        let mut ops = self.keyword_ops(|kws| kws.iter().filter(|x| !under_any(x)).cloned().collect());
+        ops.extend(self.list_ops(|list| list.retain(|_, l| !under_any(&l.path))));
+        Ok(Op::Batch { ops })
+    }
+
     /// Merge several keywords (with their children) into `into`.
     pub fn merge_keywords_ops(&self, from: &[String], into: &str) -> Result<Op> {
         let into = clean(into);

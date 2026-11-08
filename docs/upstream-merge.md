@@ -11,7 +11,7 @@ round meant conflict resolutions quietly brought upstream behaviour back in, whi
 degradation came from.
 
 > **The primary path is PR intake:** [`docs/upstream-pr-intake.md`](upstream-pr-intake.md) covers open, closed and
-> merged pull requests, the local ledger, and the single fork PR per round that merges only at a version release.
+> merged pull requests, the local ledger, and the single fork PR per round.
 > This page keeps the commit-level lane (upstream commits that never had a PR), the cherry-pick mechanics, and the
 > outbound lane (our fixes offered upstream). `cargo xtask upstream-merge` is retired: do not use it.
 
@@ -61,7 +61,7 @@ git remote add upstream ../lightcraft  # only if it is missing
    if needed, `docs/changelog/unreleased/`), in our words. `docs/whats-new.md` (upstream's history up to the last
    merge) stays as it is: `cargo xtask notes --check` fails if it changes.
 5. **Check and land** as any change: `cargo xtask ci --fast` plus the targeted tests. In a PR-intake round the
-   commit goes into that round's single PR (see the runbook), and the PR merges at a version release; a commit
+   commit goes into that round's single PR (see the runbook); a commit
    reviewed only in the commit lane joins the next round. Mention the upstream commit(s) in the PR (the
    `cherry picked from` lines do this per commit).
 6. **Record the review** once every listed commit is ported or decided against:

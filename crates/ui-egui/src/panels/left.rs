@@ -258,6 +258,61 @@ pub(crate) fn set_tree_open(app: &mut LccApp, ui: &egui::Ui, key: &str, open_id:
     ui.data_mut(|d| d.insert_temp(open_id, open));
 }
 
+/// An Option / Alt-click on a triangle, being applied to the rows drawn after it that sit deeper
+/// than it (the rows inside it). Rows that only appear once their parent opens are reached on the
+/// next pass; the sweep ends after a pass that changed nothing. Folding keeps the clicked row open
+/// until then, so the rows inside it are still drawn to fold.
+#[derive(Clone, Default)]
+struct BranchSweep {
+    root: String,
+    indent: f32,
+    open: bool,
+    pass: u64,
+    changed: bool,
+    active: bool,
+}
+
+fn sweep_id() -> egui::Id {
+    egui::Id::new("lc-branch-sweep")
+}
+
+fn branch_sweep(app: &mut LccApp, ui: &egui::Ui, key: &str, indent: f32, open_id: egui::Id, open: &mut bool) {
+    let Some(mut s) = ui.data(|d| d.get_temp::<BranchSweep>(sweep_id())) else { return };
+    let pass = ui.ctx().cumulative_pass_nr();
+    if s.pass != pass {
+        if !s.changed {
+            // nothing moved in the last pass: the sweep is done (a folded branch closes its root now)
+            ui.data_mut(|d| d.remove_temp::<BranchSweep>(sweep_id()));
+            if !s.open {
+                app.ui.set_tree_open(&s.root, false);
+                if s.root == key {
+                    *open = false;
+                    ui.data_mut(|d| d.insert_temp(open_id, false));
+                }
+            }
+            return;
+        }
+        s.pass = pass;
+        s.changed = false;
+        s.active = false;
+    }
+    if s.root == key {
+        s.active = true;
+    } else if s.active {
+        if indent > s.indent {
+            if *open != s.open {
+                *open = s.open;
+                set_tree_open(app, ui, key, open_id, s.open);
+                s.changed = true;
+            }
+        } else {
+            s.active = false;
+        }
+    }
+    ui.ctx().request_repaint();
+    ui.data_mut(|d| d.insert_temp(sweep_id(), s));
+}
+
 /// The chevron of a tree row that has rows inside it (Albums' folders, Local, By Date, Folders,
 /// Keywords): a click flips `open` and remembers it under `key`. Returns the chevron's response
 /// (it sits on the row and takes its clicks, so a row's context menu is attached to it too).
@@ -272,9 +327,24 @@ fn tree_toggle(
     widget: String,
 ) -> egui::Response {
     let tri = disclosure_chevron(ui, row, indent, *open, open_id.with("triangle"), widget);
+    branch_sweep(app, ui, key, indent, open_id, open);
     if tri.clicked() {
-        *open = !*open;
-        set_tree_open(app, ui, key, open_id, *open);
+        if ui.input(|i| i.modifiers.alt) {
+            // Option / Alt-click: the row and everything inside it open, or all fold
+            let open_all = !*open;
+            let pass = ui.ctx().cumulative_pass_nr();
+            ui.data_mut(|d| {
+                d.insert_temp(sweep_id(), BranchSweep { root: key.to_string(), indent, open: open_all, pass, changed: true, active: true })
+            });
+            if open_all {
+                *open = true;
+                set_tree_open(app, ui, key, open_id, true);
+            }
+            ui.ctx().request_repaint();
+        } else {
+            *open = !*open;
+            set_tree_open(app, ui, key, open_id, *open);
+        }
     }
     let label = if *open { crate::i18n::tr("Collapse") } else { crate::i18n::tr("Expand") };
     tri.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
@@ -1162,25 +1232,32 @@ pub(crate) fn fs_cached<T: Clone + Send + 'static>(ui: &egui::Ui, kind: &'static
         due
     };
     if start {
-        use std::sync::atomic::Ordering;
         let running = fs_running_counter(ui.ctx());
-        running.fetch_add(1, Ordering::AcqRel);
-        let (out, path, repaint, done) = (cell.clone(), path.to_string(), ui.ctx().clone(), running.clone());
+        running.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        // (settled when the work ends however it ends: a listing that panics must not stay running, nor keep
+        // the count up, which `Headless::busy` waits on)
+        struct Settle<T> {
+            cell: Cell<T>,
+            count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            repaint: egui::Context,
+        }
+        impl<T> Drop for Settle<T> {
+            fn drop(&mut self) {
+                self.cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+                // after the answer is stored: a frame that sees the count drop also sees the answer
+                self.count.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                self.repaint.request_repaint();
+            }
+        }
+        let (path, settle) = (path.to_string(), Settle { cell: cell.clone(), count: running.clone(), repaint: ui.ctx().clone() });
         let work = move || {
             let v = f(&path);
-            let mut e = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            e.value = Some(v);
-            e.running = false;
-            drop(e);
-            // after the answer is stored: a frame that sees the count drop also sees the answer
-            done.fetch_sub(1, Ordering::AcqRel);
-            repaint.request_repaint();
+            settle.cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).value = Some(v);
+            drop(settle);
         };
         #[cfg(not(target_arch = "wasm32"))]
-        if std::thread::Builder::new().name("lc-fs-list".into()).spawn(work).is_err() {
-            cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
-            running.fetch_sub(1, Ordering::AcqRel);
-        }
+        // (no thread to be had: the closure is dropped unrun, which settles it)
+        let _ = std::thread::Builder::new().name("lc-fs-list".into()).spawn(work);
         #[cfg(target_arch = "wasm32")]
         work();
     }
@@ -2425,7 +2502,8 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
 /// it has none, or one with nothing to offer (no new photos, no parent folder) is left out.
 fn folder_item_available(app: &LccApp, item: FolderItem, path: &str, node: Option<&FolderNode>) -> bool {
     match item {
-        FolderItem::Move | FolderItem::ImportHere => app.services.pick_folder.is_some(),
+        FolderItem::Move => app.services.pick_folder.is_some() || app.services.picker.is_some(),
+        FolderItem::ImportHere => app.services.pick_folder.is_some(),
         FolderItem::UpdateLocation => app.services.pick_folder.is_some() && node.is_some(),
         FolderItem::Reveal => app.services.reveal.is_some(),
         FolderItem::AddNew => node.is_some() && lcc_engine::folder_watch::new_in(&app.session, path).is_some(),
@@ -2568,10 +2646,17 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             let id = if matches!(row, FolderRow::Local { .. }) { format!("localFolderMove:{path}") } else { format!("folderMove:{path}") };
             register(ui.ctx(), id, r.rect);
             if r.clicked() {
-                let into = app.services.pick_folder.as_mut().and_then(|f| f());
-                if let Some(into) = into {
+                // the dialog runs off the UI thread where the host has a picker (upstream #3325); `folder.move`
+                // then runs when it closes (`pick::poll`)
+                let req = crate::pick::PickRequest::folder(crate::i18n::tr("Move Folder To…"));
+                let params = json!({"path": path});
+                let picked =
+                    crate::pick::ask(app, "folder.move", &params, "into", req, |s| s.pick_folder.as_mut().and_then(|f| f()).map(|x| vec![x]));
+                if let crate::pick::Picked::Now(v) = picked
+                    && let Some(into) = v.into_iter().next()
+                {
                     match app.run("folder.move", json!({"path": path, "into": into})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved; {} photo(s) relinked", r["relinked"])),
+                        Ok(r) => app.toast(ui.ctx(), crate::pick::answered_message("folder.move", &r).unwrap_or_default()),
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }

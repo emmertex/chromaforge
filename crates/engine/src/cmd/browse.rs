@@ -533,8 +533,11 @@ pub(crate) fn follow_folder(s: &mut Session, from: &str, to: &str) {
     // a library folder chosen at or below it follows too, as a source or as a filter
     follow_library_folder(&mut s.library_folder, from, to);
     follow_library_folder(&mut s.filter.library_folder, from, to);
+    // and so does the filter's own folder criterion, or the photos that moved with it would stop matching
+    follow_library_folder(&mut s.filter.folder, from, to);
     if let Some(f) = s.shelved_filter.as_mut() {
         follow_library_folder(&mut f.library_folder, from, to);
+        follow_library_folder(&mut f.folder, from, to);
     }
     if let Some(b) = &mut s.browse
         && let Ok(rel) = Path::new(&b.path).strip_prefix(from)

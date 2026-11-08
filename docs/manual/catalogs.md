@@ -6,7 +6,7 @@ A **library** is a folder. Inside it:
 
 | Path | What |
 |---|---|
-| `<name>.<catalog_ext>` | the catalog entry file you open (File → Open Catalog…) |
+| `<name>.<catalog_ext>` | the catalog entry file inside the library (File → Libraries → Open Library… takes the folder or this file) |
 | `catalog.redb`, `catalog.snap`, `catalog.log` | the catalog store: photos, edits, history, collections, keywords |
 | `catalog.lock` | held while the catalog is open, so two app instances can't write it at once |
 | `Originals/` | photos copied or moved in on import (`YYYY/YYYY-MM-DD/` by default) |
@@ -21,8 +21,9 @@ read ([xmp-interop.md](../xmp-interop.md)). App-wide settings (keymap, language,
 
 ## Opening and creating
 
-File → New Catalog… creates an empty library folder; File → Open Catalog… (or File → Open Library…) opens another.
-The last one opens at the next start. From the command line, `--library DIR` opens or creates one:
+File → Libraries → New Library… creates an empty library folder; File → Libraries → Open Library… opens another, and
+the libraries you opened last are listed below them. Settings → General → At launch opens the last one at the next
+start, or asks which one (*Ask me*); holding Alt (Option on a Mac) as the window appears asks once. From the command line, `--library DIR` opens or creates one:
 
 ```sh
 <cli> run --library ~/Pictures/Test catalog.info
@@ -30,18 +31,20 @@ The last one opens at the next start. From the command line, `--library DIR` ope
 
 ## Backups and maintenance
 
-Edit → Catalog Settings… sets the backup schedule (never, every exit, daily, weekly — the default — or monthly), the
+Edit → Library Settings… sets the backup schedule (never, every exit, daily, weekly — the default — or monthly), the
 backup folder, how many backups to keep, and whether to test integrity and optimize when backing up.
 
-- File → Back Up Catalog: copy the catalog now and test the copy (`catalog.backup`).
-- File → Test Catalog Integrity (`catalog.checkIntegrity`) and File → Optimize Catalog (`catalog.optimize`).
-- File → Back Up Library… / Restore Library from Backup…: the whole library folder.
+- File → Libraries → Back Up Library: copy the catalog now and test the copy (`catalog.backup`).
+- File → Libraries → Test Library Integrity (`catalog.checkIntegrity`) and Compact Library (`library.compact`);
+  Library Settings… → Optimise (`catalog.optimize`) rewrites the store and rebuilds its indexes.
+- In the browser version, File → Libraries → Back Up Library… / Restore Library from Backup… download and restore
+  the whole library.
 
-## Moving photos between catalogs
+## Moving photos between libraries
 
-- File → Export as Catalog… (`catalog.export`): selected, visible or all photos with their collections and stacks into
-  a new catalog folder, optionally with the originals and previews (for a laptop trip).
-- File → Import from Another Catalog… (`catalog.import`): bring them back. Choose what wins for photos both catalogs
+- File → Libraries → Export as Library… (`catalog.export`): selected, visible or all photos with their collections and
+  stacks into a new library folder, optionally with the originals and previews (for a laptop trip).
+- File → More Imports → Import from Another Library… (`catalog.import`): bring them back. Choose what wins for photos both libraries
   have — keep, replace settings, replace metadata, or both — and preview the changes first. One undo step.
 
 ## Missing photos

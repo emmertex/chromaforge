@@ -30,10 +30,14 @@ pub fn list_auto_import_folder(folder: &str) -> std::result::Result<Vec<(String,
     let rd = std::fs::read_dir(folder).map_err(|e| format!("{folder}: {e}"))?;
     Ok(rd
         .flatten()
-        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| {
-            let m = std::fs::metadata(e.path()).ok()?;
-            m.is_file().then(|| (e.path().to_string_lossy().to_string(), m.len()))
+            let path = e.path();
+            // through a link: its target's type and size
+            let m = std::fs::metadata(&path).ok()?;
+            // but a link's own hidden attribute, not its target's, as in a folder walk
+            let hidden =
+                if e.file_type().is_ok_and(|t| t.is_symlink()) { crate::walk::is_hidden_entry(&e) } else { crate::walk::is_hidden_with(&path, &m) };
+            (m.is_file() && !hidden).then(|| (path.to_string_lossy().to_string(), m.len()))
         })
         .collect())
 }
@@ -774,6 +778,25 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.filter = f;
                 }
                 Ok(json!({"enabled": s.shelved_filter.is_none(), "count": s.visible().len()}))
+            }
+        ),
+        // View > Hide Rejected Photos: the filter bar's Picked + Unflagged on one key
+        cmd!(
+            "library.hideRejected",
+            "Hide Rejected Photos",
+            ["View"],
+            None,
+            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or no longer filters by flag; the rest of the filter stays. Like any filter change, it forgets a filter put aside → {hidden, count}",
+            always,
+            |s, p| {
+                let hide = match p.get("hide") {
+                    None | Some(Value::Null) => !s.rejects_hidden(),
+                    Some(v) => v.as_bool().ok_or_else(|| bad("library.hideRejected", "hide must be true or false"))?,
+                };
+                s.filter.flag = None;
+                s.filter.flags = if hide { vec![Flag::Pick, Flag::None] } else { Vec::new() };
+                s.shelved_filter = None;
+                Ok(json!({"hidden": hide, "count": s.visible().len()}))
             }
         ),
         cmd!(
@@ -2307,7 +2330,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 },
             }))
         }),
-        cmd!("library.compact", "Optimize Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
+        cmd!("library.compact", "Compact Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
             s.compact_library()?;
             ok()
         }),
@@ -2759,3 +2782,7 @@ mod source_album_filter_tests;
 #[cfg(test)]
 #[path = "library/tests_select.rs"]
 mod tests_select;
+
+#[cfg(test)]
+#[path = "library/tests_hide_rejected.rs"]
+mod hide_rejected_tests;

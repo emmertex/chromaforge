@@ -6,6 +6,9 @@
 //! | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` | `catalog` | [`HostApi::catalog`] |
 //! | `metadata.setStandard`| `metadataWrite`             | [`HostApi::set_metadata`]               |
 //! | `library.add`         | `libraryAdd`                | [`HostApi::library_add`]                |
+//! | `photo.pixels`        | `pixels`                    | [`HostApi::photo_pixels`]               |
+//! | `develop.setCrop`     | `crop`                      | [`HostApi::set_crop`]                   |
+//! | `photo.virtualCopy`   | `virtualCopy`               | [`HostApi::virtual_copy`]               |
 //! | `ns.get`, `ns.set`, `ns.photos` | always (own namespace) | [`NamespaceStore`]               |
 //! | `settings.get`, `settings.set` | always (own settings) | [`SettingsStore`], checked against the manifest's `settings` |
 //! | `fs.readText`, `fs.list`, `fs.exists` | a readable root | std::fs                           |
@@ -36,6 +39,14 @@ pub const MAX_IO_BYTES: usize = 8 << 20;
 pub const MAX_LIST: usize = 10_000;
 /// Most lines one call adds to the plug-in's log about what the host did for it.
 pub const MAX_NOTES: usize = 20;
+/// Long edge `photo.pixels` gives when the plug-in names none.
+pub const PIXELS_DEFAULT_EDGE: u32 = 1024;
+/// Smallest and largest long edge `photo.pixels` gives: at the largest, a square photo's 8-bit RGB
+/// as base64 stays well inside the 16 MiB message cap.
+pub const PIXELS_MIN_EDGE: u32 = 64;
+pub const PIXELS_MAX_EDGE: u32 = 1536;
+/// Longest name `photo.virtualCopy` takes for a copy, in characters.
+pub const MAX_COPY_NAME: usize = 256;
 
 /// Catalog access the application provides. The default methods refuse, so a host without a
 /// catalog (tests, the CLI before a library is open) only implements what it has.
@@ -57,6 +68,31 @@ pub trait HostApi {
     fn library_add(&mut self, params: &Value) -> Result<Value, String> {
         let _ = params;
         Err("library.add: not available".into())
+    }
+    /// A downsized copy of photo `photo`'s pixels: the whole frame as the crop tool shows it
+    /// (orientation, lens and perspective applied, no crop, no straighten), long edge at most
+    /// `long_edge` (already clamped to [`PIXELS_MIN_EDGE`]..=[`PIXELS_MAX_EDGE`]), 8-bit sRGB.
+    /// → `{width, height, channels: 3, encoding: "srgb8", data: base64 of interleaved RGB rows}`.
+    /// Its coordinates are the ones [`HostApi::set_crop`] takes, normalized.
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
+        let _ = (photo, long_edge);
+        Err("photo.pixels: not available".into())
+    }
+    /// Sets photo `photo`'s crop: `rect` `[x0, y0, x1, y1]` normalized in the frame
+    /// [`HostApi::photo_pixels`] gives turned by `angle` (degrees, none: 0) about its centre. One History
+    /// step; the user adjusts it afterwards in the crop tool like any crop. → the crop as set,
+    /// `{rect: [x0, y0, x1, y1], angle}` (the host may fit it inside the photo).
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        let _ = (photo, rect, angle);
+        Err("develop.setCrop: not available".into())
+    }
+    /// Makes a virtual copy of photo `photo`: a new catalog entry sharing its file, with a copy of
+    /// its settings and metadata, stacked right after it and in the albums that hold it, named
+    /// `name` or "Copy N". One History step; the selection stays as it was. → `{photo}`, the
+    /// copy's id as a decimal string.
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        let _ = (photo, name);
+        Err("photo.virtualCopy: not available".into())
     }
 
     /// Where `program` is installed on this system (none: not installed). Read-only; never
@@ -150,13 +186,33 @@ pub(crate) struct CallContext<'a> {
 /// Whether host call `method` with `p` changes something: refused in a read-only call.
 fn writes(method: &str, p: &Value) -> bool {
     match method {
-        "metadata.setStandard" | "library.add" | "ns.set" | "settings.set" | "fs.writeText" | "fs.writeBytes" | "fs.remove" | "program.start" => true,
+        "metadata.setStandard"
+        | "library.add"
+        | "develop.setCrop"
+        | "photo.virtualCopy"
+        | "ns.set"
+        | "settings.set"
+        | "fs.writeText"
+        | "fs.writeBytes"
+        | "fs.remove"
+        | "program.start" => true,
         // a request that may change something on the server
         "http.request" => {
             let m = p.get("method").and_then(Value::as_str).unwrap_or("GET");
             !m.eq_ignore_ascii_case("GET") && !m.eq_ignore_ascii_case("HEAD")
         }
         _ => false,
+    }
+}
+
+/// `rect` of `develop.setCrop`: four finite numbers in 0..=1, ordered `x0 < x1`, `y0 < y1`.
+fn crop_rect(p: &Value) -> Result<[f64; 4], String> {
+    const E: &str = "develop.setCrop: `rect` must be [x0, y0, x1, y1], normalized (0..1), with x0 < x1 and y0 < y1";
+    let a = p.get("rect").and_then(Value::as_array).filter(|a| a.len() == 4).ok_or(E)?;
+    let v: Vec<f64> = a.iter().filter_map(Value::as_f64).filter(|v| v.is_finite() && (0.0..=1.0).contains(v)).collect();
+    match v[..] {
+        [x0, y0, x1, y1] if x0 < x1 && y0 < y1 => Ok([x0, y0, x1, y1]),
+        _ => Err(E.into()),
     }
 }
 
@@ -186,7 +242,7 @@ impl CallContext<'_> {
             if job.cancelled() {
                 return Err("cancelled".into());
             }
-            if matches!(method, "metadata.setStandard" | "library.add") {
+            if matches!(method, "metadata.setStandard" | "library.add" | "develop.setCrop" | "photo.virtualCopy") {
                 return Err(format!("{method}: writes to the catalog aren't available in a job yet"));
             }
             if method == "program.start" {
@@ -214,6 +270,46 @@ impl CallContext<'_> {
                     return Err("library.add: params must be {path, from, stack?, album?}".into());
                 }
                 self.host.library_add(p)
+            }
+            "photo.pixels" => {
+                if !self.perms.pixels {
+                    return Err(denied("pixels"));
+                }
+                let photo = str_arg(p, "photo")?;
+                let edge = match p.get("longEdge") {
+                    None | Some(Value::Null) => PIXELS_DEFAULT_EDGE,
+                    Some(v) => v
+                        .as_f64()
+                        .filter(|e| e.is_finite())
+                        .ok_or("photo.pixels: `longEdge` must be a number")?
+                        .round()
+                        .clamp(f64::from(PIXELS_MIN_EDGE), f64::from(PIXELS_MAX_EDGE)) as u32,
+                };
+                self.host.photo_pixels(photo, edge)
+            }
+            "develop.setCrop" => {
+                if !self.perms.crop {
+                    return Err(denied("crop"));
+                }
+                let photo = str_arg(p, "photo")?;
+                let rect = crop_rect(p)?;
+                let angle = match p.get("angle") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_f64().filter(|a| a.is_finite()).ok_or("develop.setCrop: `angle` must be a number of degrees")?),
+                };
+                self.host.set_crop(photo, rect, angle)
+            }
+            "photo.virtualCopy" => {
+                if !self.perms.virtual_copy {
+                    return Err(denied("virtualCopy"));
+                }
+                let photo = str_arg(p, "photo")?;
+                let name = match p.get("name") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(n)) if n.chars().count() <= MAX_COPY_NAME => Some(n.trim()).filter(|n| !n.is_empty()),
+                    Some(_) => return Err(format!("photo.virtualCopy: `name` must be text of at most {MAX_COPY_NAME} characters")),
+                };
+                self.host.virtual_copy(photo, name)
             }
             "ns.get" => Ok(self.store.get(str_arg(p, "photo")?)),
             "ns.set" => {

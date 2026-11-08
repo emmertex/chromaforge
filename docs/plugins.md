@@ -96,6 +96,9 @@ are the granted permissions intersected with the requested ones.
 | `catalog: true` | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` (read-only) |
 | `metadataWrite: true` | `metadata.setStandard {ids, title?, caption?, keywords?, addKeywords?, …}` |
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
+| `pixels: true` | `photo.pixels {photo, longEdge?}`: a downsized copy of a photo, the whole uncropped frame (see [Pixels and crop](#pixels-and-crop)). Requires `pixels`. |
+| `virtualCopy: true` | `photo.virtualCopy {photo, name?}`: makes a virtual copy of a photo, stacked with it (see [Pixels and crop](#pixels-and-crop)). Requires `virtualCopy`. |
+| `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
 | `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plug-in Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
@@ -296,7 +299,7 @@ manifest error.
 - **Reading, not writing:** a job may read the catalog (`catalog.query`, `photo.inspect`, …), and
   read and write its own namespace (`ns.set`) and settings, files and the network as granted. It
   may not change the catalog:
-  `metadata.setStandard` and `library.add` fail with "writes to the catalog aren't available in a
+  `metadata.setStandard`, `library.add`, `develop.setCrop` and `photo.virtualCopy` fail with "writes to the catalog aren't available in a
   job yet", and `program.start` fails too. The catalog reads are answered by the window between
   frames; a session with no window (headless CLI or MCP) refuses them, so run a job there with
   **`plugin.run {…, wait: true}`**: it runs to its end on the caller's thread and returns the
@@ -306,6 +309,45 @@ manifest error.
   clicked meanwhile: leave `wait` out there and follow the row (`activity.list`).
 
 The `job-tools` example works through the selected photos ten per call, reporting each one.
+
+## Pixels and crop
+
+A plug-in can look at a photo and set its crop: find a film frame's picture area inside its
+rebate, square up a scan, trim a border. The crop it sets is an ordinary one: one History step,
+undone with Undo, and adjusted afterwards in the crop tool like any other. Two permissions, each
+with a host feature of the same name (`"requires": ["pixels", "crop"]`):
+
+- **`photo.pixels {photo, longEdge?}`** (`pixels`; `host::photo_pixels(photo, long_edge)`) →
+  `{width, height, channels: 3, encoding: "srgb8", data}`: the photo as the crop tool shows it
+  before cropping (orientation, flips, lens corrections and perspective applied; no crop, no
+  straighten), downsized to a long edge of `longEdge` (default 1024, kept within 64..=1536, never
+  larger than the photo), as 8-bit sRGB, `data` the interleaved RGB rows, top to bottom, as base64.
+  The pixels are the decoded photo before tone and colour adjustments (a raw's are its linear
+  values with the sRGB curve on top, so they may look dark): enough to find edges, not a render.
+  It only reads, so a prepare step may call it.
+- **`develop.setCrop {photo, rect, angle?}`** (`crop`; `host::set_crop(photo, rect, angle)`) →
+  `{rect, angle}`: sets the crop as `crop.set` does. `rect` is `[x0, y0, x1, y1]`, normalized (0..1)
+  in the frame `photo.pixels` gives, so a box found in those pixels is set as it is; `angle` is the
+  straighten angle in degrees, clockwise (clamped to ±45°; left out, 0, whatever the photo was
+  straightened by before). With an angle, `rect` is in that frame turned by `angle` about its
+  centre: the frame `crop.set` reads, so a box found in the pixels after turning them level is set
+  as found. The host fits the crop inside the photo (a straightened crop may come out smaller) and
+  returns it as set; a rect smaller than the crop tool's smallest crop is refused. It writes, so
+  prepare steps and jobs can't call it.
+
+- **`photo.virtualCopy {photo, name?}`** (`virtualCopy`, with a host feature of the same name;
+  `host::virtual_copy(photo, name)`) → `{photo}`: a virtual copy, as *Create Virtual Copy*
+  makes one: a new catalog entry sharing the photo's file, with a copy of its settings and
+  metadata, stacked right after it and added to the albums that hold it, named `name` (at most
+  256 characters) or the next "Copy N". One History step; the user's selection stays as it was.
+  A photo in Recently Deleted is refused. It writes, so prepare steps and jobs can't call it. With
+  `develop.setCrop` it lets a plug-in split one capture into several photos: two half-frame
+  exposures in one 35 mm scan, say, the original cropped to one and a copy to the other.
+
+From a hook running on a worker (an export hook, `program.end`) all three are answered on the UI
+thread, and from a job `photo.pixels` is, like the catalog reads. Each call loads the photo's
+source at the smallest level that covers `longEdge` (the 512 px thumbnail level up to 520, the
+preview level above), as the library grid and the loupe do.
 
 ## Limits
 
@@ -324,7 +366,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -491,6 +533,9 @@ The manifest fields:
 | `host::query(params)` | `catalog.query` (also `photo.inspect`, `catalog.stats`, `keyword.list` via `call`) | `catalog` |
 | `host::call("metadata.setStandard", {ids, title?, caption?, keywords?, addKeywords?, …})` | writes standard fields | `metadataWrite` |
 | `host::library_add(path, from, stack, album)` | `library.add {path, from, stack?, album?}` → `{photo, added, reloaded}` | `libraryAdd` |
+| `host::photo_pixels(photo, long_edge)` → `Pixels {width, height, rgb}` | `photo.pixels {photo, longEdge?}` | `pixels` |
+| `host::set_crop(photo, rect, angle)` | `develop.setCrop {photo, rect, angle?}` → `{rect, angle}` | `crop` |
+| `host::virtual_copy(photo, name)` → the copy's id | `photo.virtualCopy {photo, name?}` → `{photo}` | `virtualCopy` |
 | `host::ns_get(photo)`, `host::ns_set(photo, key, value)` | `ns.get`, `ns.set`, `ns.photos` | nothing (own namespace; also holds `metadataFields` values) |
 | `host::read_text`, `host::write_text`, `host::read_bytes`, `host::write_bytes`, `host::remove`, `host::exists` | `fs.*` | an `fs` root (or a lent file) |
 | `host::http(method, url, headers, body)`, `host::http_bytes(…)` | `http.request` → `{status, contentType, location, body}` | the URL's host in `network` |
@@ -614,7 +659,7 @@ Besides the plug-ins above, <app> runs **pixel filters** written for PhotoCraft'
 `memory`, `pc_abi_version`, `pc_manifest`, `pc_alloc` and `pc_filter`. They install the same way
 (File ▸ Plug-ins ▸ Plug-in Manager…, or `<cli> commands plugin.install '{"path": "film.wasm"}'`): the host
 sniffs the exports and keeps filter modules in the same folder, in a registry of their own.
-`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, icon, header}`
+`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, merge, sections, shortcut, icon, header}`
 (`params` is the manifest's spec); `plugin.uninstall` removes one. Filters ask for no permissions.
 
 A photo's filter stack is part of its develop settings (`develop.pluginFilter.add {plugin,
@@ -642,6 +687,26 @@ with the photo (`setAnalysis`). It runs in the background as an activity row (ki
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
+With `ids: [photo, …]` it measures every photo named, one after the other, each getting its own
+measurement; the entry is `uid` on the active photo and the first entry of the same plug-in on
+the others, and a photo without one first gets a copy of the active entry (parameters, stage,
+on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
+{uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
+false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
+the selection, and *Apply to N Selected* the copy.
+
+**A roll (ABI v1.1 proposal).** A module may also export
+`pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of
+UTF-8 JSON: a list of `count` objects its `pc_analyze` returned, one per photo. It returns, like
+`pc_analyze`, one JSON object: the measurement of all of them together (a film converter takes
+the roll's thinnest and densest points, say, so every frame is converted alike and keeps its own
+exposure). `develop.pluginFilter.analyze {uid, ids, roll: true}` measures each photo, hands the
+list to `pc_merge`, and stores the result on every photo with `_roll`: how many it came from
+(the panel's *Measure N Selected as a Roll*; "Measured as part of a roll of N" under the tools).
+A roll with one photo unmeasured has no measurement: the error is reported for all of them.
+Modules without `pc_merge` give an "unsupported" error for `roll`; `plugin.list` shows the
+export as `merge`. At most 1024 photos and 16 MiB of measurements go in one call.
+
 A manifest may set `"analyzeArea": "crop"` (default `"frame"`; other values mean the frame) to be
 measured on the photo as its develop geometry frames it instead: orientation, crop, straighten,
 flips, lens profile and perspective, what the Source stage sees (a negative converter measuring
@@ -657,6 +722,27 @@ options without a group stay at the top level, in place. A list of another lengt
 that isn't 1-64 printable characters, is ignored (a flat menu), as hosts without the field do.
 `plugin.list` gives each grouped parameter's `groups`. The dropdown is widget
 `pluginFilterChoice:<uid>:<param>`.
+**Sections (ABI v1.1 proposal).** A manifest may group its parameters under headings:
+`"sections": [{"label": "Tone", "params": ["exposure", "contrast"], "collapsed": false}, …]`.
+Develop ▸ Plug-in Filters shows each as a heading with a fold arrow (widget
+`pluginFilterSection:<uid>:<label>`; the fold is remembered for the session), the parameters
+under it in the section's order; parameters in no section come first, in the manifest's order.
+A section without a printable 1-64 character label or without a parameter of the manifest is
+dropped, a parameter named twice stays in the first section, and at most 16 sections are read.
+Hosts without the field show a flat list. `plugin.list` gives them as `sections`.
+
+**A key to add the filter (ABI v1.1 proposal).** A manifest may name a shortcut, `"shortcut":
+"Ctrl+Alt+N"` (`Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined with `+`; `Cmd` is ⌘ on macOS and
+Ctrl elsewhere, `Ctrl` the Control key everywhere). Every installed filter is a command *Add
+<name>* in Help ▸ Keyboard Shortcuts (id `pluginFilter.add:<plug-in id>`), with the manifest's
+key as its default when the key is free on this platform's keyboard, else none (on Windows and
+Linux `Ctrl` is `Cmd`, so a key another command has as `Cmd+…` is taken there); the user binds or
+changes it like any other, and giving the filter a taken key moves the key to it.
+The key runs `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of the plug-in (its
+defaults, its stage) on every selected photo that has none, in one History step, then opens
+Develop ▸ Plug-in Filters and says what it did. `plugin.list` shows the manifest's key as
+`shortcut`.
+
 **Base tone (ABI v1.1 proposal).** A raw is toned after the Source stage: by its camera's own
 curve when the file has one, else by the default raw curve. A Source filter whose output is
 already a finished picture (a negative conversion with its own tone curve) may set
