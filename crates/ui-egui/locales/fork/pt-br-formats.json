@@ -23,6 +23,7 @@
   "Delete these {count} photos from disk, or only remove them from the library?": "Excluir estas {count} fotos do disco ou apenas removê-las da biblioteca?",
   "Delete {n} presets": "Excluir {n} predefinições",
   "Denoising {name}: {done} of {total} tiles{}": "Removendo ruído de {name}: bloco {done} de {total}{}",
+  "Disable backups in {path}": "Desative os backups em {path}",
   "Discard 1:1 Previews ({scope})": "Descartar pré-visualizações 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "{n} nomes de lugares baixados (GeoNames, CC-BY 4.0)",
   "Downloads from {host}. Once it has arrived and checked out, {app} installs it, {after}.": "Baixa de {host}. Depois que chegar e for verificado, o {app} o instala e {after}.",

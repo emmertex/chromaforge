@@ -63,7 +63,7 @@ fn fresh_form(app: &mut LccApp) -> Option<Form> {
 }
 
 /// The photos the export writes, in the order it writes them (as `app.export` picks them).
-fn targets(app: &mut LccApp) -> Vec<lcc_catalog::PhotoId> {
+pub(crate) fn targets(app: &mut LccApp) -> Vec<lcc_catalog::PhotoId> {
     if app.session.selection.ids.is_empty() {
         return app.session.active().into_iter().collect();
     }

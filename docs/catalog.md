@@ -182,7 +182,7 @@ My Catalog/
   references) and `Journal::optimize` (the store rewritten from the catalog: unused settings dropped, indexes rebuilt;
   then compacted).
 
-## Export as catalog / import from another catalog
+## Export as library / import from another library
 
 `crates/catalog/src/transfer.rs`: `export_catalog(catalog, ExportOptions { photos, include_originals,
 include_previews }, parent, name)` writes a new catalog folder with those photos, the albums that hold them (only
@@ -195,33 +195,41 @@ both). Photos match by file path and virtual-copy name, so a photo whose origina
 
 ## In the app
 
-- **File ▸ Catalog ▸ New Catalog… / Open Catalog… / Open Recent Catalog ▸** (UI commands `catalog.new`, `catalog.open`,
-  `catalog.openRecent`; `crates/ui-egui/src/catalog_ui.rs`). Open validates the folder or entry point
-  (`library::resolve`), so a folder that is no catalog is refused instead of becoming an empty library. The recent
-  list is `recent-catalogs.json` in the config folder (`<PREFIX>_CONFIG_DIR`, portable data folder or `<settings_dir>`) (`RecentCatalogs`); its `default` is opened at startup when no
-  `--library` is given.
-- **Catalog chooser** (`catalog.chooser`): recent catalogs, New…, Open…, "always show at startup"
-  (`catalog.promptAtStartup`). It shows at startup when asked for, or when Alt is held while the window opens. The
-  last catalog is opened first and the chooser switches from it (pure Rust has no portable way to read the keyboard
-  before the window exists).
+- **File ▸ Libraries** holds New Library…, Open Library…, the recent libraries, Export as Library…, Back Up
+  Library (`catalog.backup`; the browser version has its own Back Up Library… and Restore Library from Backup…
+  there instead), Test Library Integrity and Compact Library. The UI commands `catalog.new`, `catalog.open` and
+  `catalog.openRecent {path?}` (`crates/ui-egui/src/catalog_ui.rs`; the ids keep their older name) open libraries
+  like `app.newLibrary` and `app.openLibrary`. Open validates the folder or entry point (`library::resolve`), so a
+  folder that is no library is refused instead of becoming an empty one. Every way of opening a library puts it
+  first in one recent list, the settings' `recent_libraries` (issue #871); `catalog.openRecent` without a path
+  returns the ones that still exist.
+- **At launch** (Settings ▸ General): open the last library, or ask with the launch list
+  (`panels/library_problem.rs`). `catalog.promptAtStartup {on?}` sets it (*Ask me* / *Last*) and returns it;
+  `catalog.chooser` opens the launch list in a running app, as holding Alt while the window appears does (once).
+- **The old recent list** (`recent-catalogs.json` in the config folder, `RecentCatalogs`): the first desktop start
+  after issue #871 appends its libraries that still exist to the recent list, turns its "always show at startup"
+  into At launch: *Ask me*, writes the settings, and only then renames the file to
+  `recent-catalogs.json.carried-over` (a start that ends before the write carries it over again, adding nothing
+  twice). Its startup default (`default`) is not carried over: At launch decides. A file it can't parse is skipped
+  with a log line and set aside; one it can't read is logged and kept for the next start.
 - **First start** (`catalog.welcome`): when there is no catalog of this app to open (no `--library` /
   `<PREFIX>_LIBRARY`, nothing remembered, no catalog at the default location) the welcome dialog asks: create a
-  catalog (name, location — default `~/Pictures/<library_default>` — and sample photos only if ticked; `catalog.new
+  library (name, location — default `~/Pictures/<library_default>` — and sample photos only if ticked; `catalog.new
   {parent, name, demo}`) or open one. Its "Check for updates when the app starts" box (unticked at first) travels with the
   action as `checkAtStartup: true` when ticked (`catalog.new`, `catalog.open`, `catalog.openRecent`), and turns the
-  start-up check on through `update.prefs` only once that action has opened a catalog; while Open Catalog…'s folder
+  start-up check on through `update.prefs` only once that action has opened a library; while Open Library…'s folder
   dialog is up the welcome dialog waits, and cancelling it returns there. Another app's library (e.g. the upstream app's, named by settings copied from a
   previous name) is never opened as this app's own: its format is refused as `Foreign`, never upgraded in place, and
   the dialog names it. The problem window words each failure by its cause (damaged only after a failed integrity
   check; in use, newer, another app's, missing, permission).
-- **Backup**: engine commands `catalog.backup {dir?}`, `catalog.checkIntegrity`, `catalog.optimize` (File menu) and
+- **Backup**: engine commands `catalog.backup {dir?}`, `catalog.checkIntegrity`, `catalog.optimize` and
   `catalog.backupIfDue`, which the desktop app runs on exit before the closing checkpoint.
-- **Catalog Settings…** (Edit menu, `dialog.catalogSettings` → `catalog.settings`): backup schedule, folder, integrity
+- **Library Settings…** (Edit menu, `dialog.catalogSettings` → `catalog.settings`): backup schedule, folder, integrity
   test, optimise after backup; standard preview size, 1:1 discard, previews at import. The preview settings live in
   `catalog-settings.json` (`previews`), no longer in the library's `prefs.json` (read from there once, moved on the next
   save). Browser and in-memory libraries keep them in `prefs.json`.
-- **File ▸ Catalog ▸ Export as Catalog…** (`catalog.export {parent, name, ids? | scope, originals, previews}`) and **Import from
-  Another Catalog…** (`catalog.import {path, rule, preview}`): the dialog shows the change preview and the rule for
+- **File ▸ Libraries ▸ Export as Library…** (`catalog.export {parent, name, ids? | scope, originals, previews}`) and **File ▸
+  More Imports ▸ Import from Another Library…** (`catalog.import {path, rule, preview}`): the dialog shows the change preview and the rule for
   changed photos; the import is one undo step.
 - **Metadata vs XMP**: every XMP write (Save Metadata to File, auto-write) and read (Read Metadata from File, import
   of a photo with a sidecar) records an `XmpStamp` (journaled, not an undo step). `photo.xmpStatus` reports in sync /

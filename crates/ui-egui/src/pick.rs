@@ -205,9 +205,23 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     app.pending_picks = waiting;
     for (p, paths) in answered {
         let params = with_answer(&p.params, p.key, p.kind, &paths);
-        if let Err(e) = app.run(&p.command, params) {
-            app.toast_error(ctx, e);
+        match app.run(&p.command, params) {
+            Ok(r) => {
+                if let Some(text) = answered_message(&p.command, &r) {
+                    app.toast(ctx, text);
+                }
+            }
+            Err(e) => app.toast_error(ctx, e),
         }
+    }
+}
+
+/// What `command`, run with a dialog's answer, says when it worked (`None`: its result shows
+/// for itself). The same words whether the dialog answered at once or later.
+pub fn answered_message(command: &str, result: &Value) -> Option<String> {
+    match command {
+        "folder.move" => Some(crate::i18n::tr_format!("Moved; {} photo(s) relinked", result["relinked"])),
+        _ => None,
     }
 }
 
@@ -337,6 +351,21 @@ mod tests {
         answer_after_restart(&mut h.app, &ctx, PickKind::Files, Ok(vec![]));
         assert!(h.app.ui.toast().is_none(), "cancelled: nothing to say");
         assert!(import_sources(&mut h).is_none());
+    }
+
+    #[test]
+    fn move_folder_asks_off_the_ui_thread_and_runs_when_the_dialog_closes() {
+        let (mut h, asked) = app_with_picker();
+        let params = json!({"path": "/pics/trip"});
+        let req = PickRequest::folder("Move Folder To…");
+        let picked = ask(&mut h.app, "folder.move", &params, "into", req, |_| None);
+        assert!(matches!(picked, Picked::Later), "the window is not held up");
+        assert_eq!(asked.lock().unwrap()[0].0.kind, PickKind::Folder);
+        asked.lock().unwrap()[0].1.send(Ok(vec!["/pics/elsewhere".to_string()])).unwrap();
+        let ctx = h.view.ctx.clone();
+        poll(&mut h.app, &ctx);
+        assert!(h.app.pending_picks.is_empty());
+        assert!(h.app.ui.take_toast().is_some(), "the move ran with the chosen folder and said how it went");
     }
 
     #[test]
