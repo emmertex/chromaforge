@@ -682,8 +682,9 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
-    /// `photo.pixels`: `{photo, longEdge}`, already checked.
-    Pixels,
+    /// `photo.pixels`: `{photo, longEdge}`, already checked. The session's thread only finds the
+    /// source and leaves it here; the caller decodes it on its own thread.
+    Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
     /// `develop.setCrop`: `{photo, rect, angle}`, already checked.
     SetCrop,
 }
@@ -698,10 +699,16 @@ pub(super) fn crop_params(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Va
     json!({"photo": photo, "rect": rect, "angle": angle})
 }
 
-fn relayed_pixels(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+fn relayed_pixels(
+    s: &mut Session,
+    p: &Value,
+    slot: &std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>,
+) -> std::result::Result<Value, String> {
     let photo = p["photo"].as_str().ok_or("photo.pixels: missing photo")?;
     let edge = p["longEdge"].as_u64().and_then(|e| u32::try_from(e).ok()).ok_or("photo.pixels: missing longEdge")?;
-    host.photo_pixels(photo, edge)
+    let source = super::plugin_develop::pixels_source(s, photo, edge)?;
+    *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    Ok(Value::Null)
 }
 
 fn relayed_crop(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
@@ -728,7 +735,7 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
-            Relayed::Pixels => relayed_pixels(&mut host, &self.params),
+            Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
             Relayed::SetCrop => relayed_crop(&mut host, &self.params),
         };
         let _ = self.reply.send(r);
@@ -753,6 +760,20 @@ impl RelayHost {
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(WAITING));
         self.0.send(HostRequest { method, params: params.clone(), reply, state }).map_err(|_| "the catalog is closed".to_string())?;
         rx.recv().map_err(|_| "the catalog is closed".to_string())?
+    }
+
+    /// `photo.pixels`: the session's thread finds the source ([`Relayed::Pixels`]), and it is
+    /// decoded here, on the caller's thread. With a `limit`, as [`RelayHost::ask_within`].
+    pub(super) fn pixels_within(&self, photo: &str, long_edge: u32, limit: Option<std::time::Duration>) -> std::result::Result<Value, String> {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let method = Relayed::Pixels(slot.clone());
+        let params = pixels_params(photo, long_edge);
+        match limit {
+            Some(limit) => self.ask_within(method, &params, limit)?,
+            None => self.ask(method, &params)?,
+        };
+        let source = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        source.ok_or_else(|| "photo.pixels: the catalog gave no source".to_string())?.decode()
     }
 
     /// [`RelayHost::ask`], giving up after `limit` unless the session's thread has already taken
@@ -790,7 +811,7 @@ impl HostApi for RelayHost {
     }
 
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
-        self.ask(Relayed::Pixels, &pixels_params(photo, long_edge))
+        self.pixels_within(photo, long_edge, None)
     }
 
     fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {

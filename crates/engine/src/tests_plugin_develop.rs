@@ -118,6 +118,20 @@ fn bad_photos_and_slivers_are_refused_and_change_nothing() {
     assert!(f.crop().is_identity());
 }
 
+/// The rect is in the pixels' frame turned by the angle given, so an angle left out is 0: on a
+/// photo straightened before, the rect still lands where it was found in the pixels.
+#[test]
+fn an_angle_left_out_is_level_not_the_photos() {
+    let mut f = Fixture::new("level");
+    let id = f.id();
+    SessionHost(&mut f.s).set_crop(&id, [0.0, 0.0, 1.0, 1.0], Some(5.0)).unwrap();
+    assert_eq!(f.crop().angle, 5.0);
+    let r = SessionHost(&mut f.s).set_crop(&id, [0.25, 0.25, 0.75, 0.75], None).unwrap();
+    assert_eq!((r["angle"].as_f64(), &r["rect"]), (Some(0.0), &json!([0.25, 0.25, 0.75, 0.75])));
+    let g = f.crop();
+    assert_eq!((g.angle, g.rect.x0, g.rect.y1), (0.0, 0.25, 0.75), "set as found, not refitted: {g:?}");
+}
+
 /// A hook on a worker: both calls go to the session's thread.
 #[test]
 fn from_a_worker_both_calls_go_through_the_session_thread() {

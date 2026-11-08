@@ -76,7 +76,7 @@ pub trait HostApi {
         Err("photo.pixels: not available".into())
     }
     /// Sets photo `photo`'s crop: `rect` `[x0, y0, x1, y1]` normalized in the frame
-    /// [`HostApi::photo_pixels`] gives, `angle` in degrees (none: keep the photo's). One History
+    /// [`HostApi::photo_pixels`] gives turned by `angle` (degrees, none: 0) about its centre. One History
     /// step; the user adjusts it afterwards in the crop tool like any crop. → the crop as set,
     /// `{rect: [x0, y0, x1, y1], angle}` (the host may fit it inside the photo).
     fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
@@ -230,7 +230,7 @@ impl CallContext<'_> {
             if job.cancelled() {
                 return Err("cancelled".into());
             }
-            if matches!(method, "metadata.setStandard" | "library.add") {
+            if matches!(method, "metadata.setStandard" | "library.add" | "develop.setCrop") {
                 return Err(format!("{method}: writes to the catalog aren't available in a job yet"));
             }
             if method == "program.start" {

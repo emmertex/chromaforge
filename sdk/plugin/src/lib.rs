@@ -199,7 +199,6 @@ impl Request {
     }
 }
 
-/// Standard base64 (with padding), as `fs.readBytes` / `fs.writeBytes` / `bodyBase64` use.
 /// A photo's pixels from [`host::photo_pixels`]: `width × height`, 8-bit sRGB, interleaved RGB
 /// rows top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +208,7 @@ pub struct Pixels {
     pub rgb: Vec<u8>,
 }
 
+/// Standard base64 (with padding), as `fs.readBytes` / `fs.writeBytes` / `bodyBase64` use.
 pub mod base64 {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     const INVALID: u8 = 0xff;
@@ -249,7 +249,7 @@ pub mod base64 {
             return Ok(Vec::new());
         };
         let mut out = Vec::with_capacity(s.len() / 4 * 3);
-        for c in body.chunks_exact(4) {
+        for c in body.as_chunks::<4>().0 {
             let (a, b, x, y) = (DECODE[usize::from(c[0])], DECODE[usize::from(c[1])], DECODE[usize::from(c[2])], DECODE[usize::from(c[3])]);
             // every valid value fits in 6 bits; INVALID (also `=` before the end) doesn't
             if (a | b | x | y) & 0xc0 != 0 {
@@ -435,14 +435,16 @@ pub mod host {
             Some(rgb) => rgb,
             None => crate::base64::decode(v["data"].as_str().unwrap_or_default())?,
         };
-        if rgb.len() != width * height * 3 {
+        // checked: on wasm32 a usize product of two reply numbers can overflow
+        if width.checked_mul(height).and_then(|n| n.checked_mul(3)) != Some(rgb.len()) {
             return Err(format!("photo.pixels: {} bytes for {width} × {height}", rgb.len()));
         }
         Ok(crate::Pixels { width, height, rgb })
     }
 
     /// Sets photo `photo`'s crop (`crop` permission): `rect` `[x0, y0, x1, y1]`, normalized (0..1)
-    /// in the frame [`photo_pixels`] gives; `angle` in degrees (`None` keeps the photo's). One
+    /// in the frame [`photo_pixels`] gives turned by `angle` (degrees, clockwise; `None` is 0) about
+    /// its centre, so a box found in those pixels, turned to level them, is set as found. One
     /// History step; the user adjusts it in the crop tool like any crop. → `{rect, angle}` as set
     /// (the host fits it inside the photo).
     pub fn set_crop(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {

@@ -318,12 +318,17 @@ with a host feature of the same name (`"requires": ["pixels", "crop"]`):
 - **`develop.setCrop {photo, rect, angle?}`** (`crop`; `host::set_crop(photo, rect, angle)`) →
   `{rect, angle}`: sets the crop as `crop.set` does. `rect` is `[x0, y0, x1, y1]`, normalized (0..1)
   in the frame `photo.pixels` gives, so a box found in those pixels is set as it is; `angle` is the
-  straighten angle in degrees (clamped to ±45°; left out, the photo's is kept). The host fits the
-  crop inside the photo (a straightened crop may come out smaller) and returns it as set; a rect
-  smaller than the crop tool's smallest crop is refused. It writes, so prepare steps can't call it.
+  straighten angle in degrees, clockwise (clamped to ±45°; left out, 0, whatever the photo was
+  straightened by before). With an angle, `rect` is in that frame turned by `angle` about its
+  centre: the frame `crop.set` reads, so a box found in the pixels after turning them level is set
+  as found. The host fits the crop inside the photo (a straightened crop may come out smaller) and
+  returns it as set; a rect smaller than the crop tool's smallest crop is refused. It writes, so
+  prepare steps and jobs can't call it.
 
-From a hook running on a worker (an export hook, `program.end`), both are answered on the UI
-thread, like the catalog reads.
+From a hook running on a worker (an export hook, `program.end`) both are answered on the UI
+thread, and from a job `photo.pixels` is, like the catalog reads. Each call loads the photo's
+source at the smallest level that covers `longEdge` (the 512 px thumbnail level up to 520, the
+preview level above), as the library grid and the loupe do.
 
 ## Limits
 

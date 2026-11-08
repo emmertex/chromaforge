@@ -103,7 +103,7 @@ impl HostApi for HookHost {
 
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
         self.reachable()?;
-        self.0.ask_within(Relayed::Pixels, &super::plugins::pixels_params(photo, long_edge), ANSWER_WAIT)
+        self.0.pixels_within(photo, long_edge, Some(ANSWER_WAIT))
     }
 
     fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
