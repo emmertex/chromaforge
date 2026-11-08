@@ -656,12 +656,6 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
             cull(app, "photo.rate", json!({"rating": n.parse::<u8>().unwrap_or(0)}), adv == "1");
-            let label = if n == "0" {
-                crate::i18n::tr("Rating cleared").to_string()
-            } else {
-                crate::i18n::tr_format!("Rated {}", "★".repeat(n.parse().unwrap_or(0)))
-            };
-            app.toast(ctx, label);
         } else if matches!(f.as_str(), "photo.decreaseRating" | "photo.increaseRating" | "photo.clearLabel") {
             cull(app, &f, json!({}), false);
         } else if let Some(l) = f.strip_prefix("label:") {
@@ -724,23 +718,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let d = if matches!(f.as_str(), "library.next" | "library.down") { 1 } else { -1 };
             let _ = if app.ui.view == crate::state::ViewMode::Compare { compare::compare_step(app, d) } else { compare::survey_step(app, d) };
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
-            // `, ⌘↑, ⌘↓: step the flag; the toast names the active photo's new state (read before Auto Advance moves on)
-            let active = app.session.active();
+            // `, ⌘↑, ⌘↓: step the flag; the toast is the command's own (`cull_toast`, shown by `run`)
             cull(app, &f, json!({}), false);
-            let flag = active.and_then(|id| app.session.catalog.photo(id)).map(|p| p.flag);
-            match flag {
-                Some(lcc_catalog::Flag::Pick) => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                Some(lcc_catalog::Flag::Reject) => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                Some(lcc_catalog::Flag::None) => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
-                None => {}
-            }
         } else if matches!(f.as_str(), "photo.pick" | "photo.reject" | "photo.unflag") && app.ui.right != crate::state::RightPanel::Crop {
             cull(app, &f, json!({}), false);
-            match f.as_str() {
-                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                _ => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
-            }
         } else {
             // in the full-screen preview (no panels) I cycles the info overlay instead
             if f == "panel.info" && app.ui.fullscreen {
@@ -889,9 +870,6 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 app.toast(ctx, e);
             }
             match f.as_str() {
-                "photo.pick" => change_toast(app, ctx, crate::i18n::tr("Flagged as Pick")),
-                "photo.reject" => change_toast(app, ctx, crate::i18n::tr("Flagged as Reject")),
-                "photo.unflag" => change_toast(app, ctx, crate::i18n::tr("Unflagged")),
                 "edit.undo" => change_toast(app, ctx, crate::i18n::tr("Undo")),
                 "edit.redo" => change_toast(app, ctx, crate::i18n::tr("Redo")),
                 _ => {}
@@ -1423,6 +1401,31 @@ mod tests {
         assert_eq!(rating(&h), 4, "3 no longer rates 3");
         key(&mut h, "F2", false);
         assert_eq!(rating(&h), 3, "the new key does");
+    }
+
+    /// Every rating and flag change confirms with a toast, with the count when several photos change, and a
+    /// refused change says nothing.
+    #[test]
+    fn rating_and_flag_changes_confirm_with_the_count() {
+        let mut h = library();
+        let toast = |h: &crate::headless::Headless| h.app.ui.toast().map(|t| t.0.clone());
+        h.app.session.execute("library.select", &json!({"ids": [1]})).unwrap();
+        key(&mut h, "3", false);
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★★★"));
+        h.app.session.execute("library.select", &json!({"ids": [1, 2, 3]})).unwrap();
+        key(&mut h, "2", false);
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★★ · 3 photos"));
+        h.app.run("photo.decreaseRating", json!({})).unwrap();
+        assert_eq!(toast(&h).as_deref(), Some("Rated ★ · 3 photos"));
+        // (flag changes are reported by the on-screen overlay instead while it is on for the window)
+        h.app.run("osd.settings", json!({"mode": "surface"})).unwrap();
+        key(&mut h, "P", false);
+        assert_eq!(toast(&h).as_deref(), Some("Flagged as Pick · 3 photos"));
+        key(&mut h, "6", false);
+        assert_eq!(toast(&h).as_deref(), Some("Red Label · 3 photos"));
+        h.app.ui.toasts.clear();
+        assert!(h.app.run("photo.rate", json!({"rating": 9})).is_err());
+        assert_eq!(toast(&h), None, "a refused rating shows no toast");
     }
 
     #[test]

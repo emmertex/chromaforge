@@ -24,6 +24,7 @@ mod command_error;
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
+pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
 pub mod docking;
@@ -1467,9 +1468,21 @@ impl LccApp {
                 }
                 None => i18n::tr("Color label cleared").into(),
             };
+            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
             // Native menu clicks can arrive before logic() updates last_time after an idle gap.
             let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
             self.ui.show_toast((text, now + TOAST_SECONDS, label));
+        }
+        if r.is_ok()
+            && cull_toast::confirms(id)
+            && !matches!(id, "photo.label" | "photo.clearLabel")
+            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
+        {
+            // every rating and flag change confirms, with the count when several photos changed
+            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
+                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+            }
         }
         match &r {
             Err(e) => {
