@@ -1,6 +1,6 @@
 //! P6.3 localisation coverage: every complete catalog carries the same messages (a message missing
-//! from one language fails, it doesn't quietly show English), and every text the fork's own UI
-//! passes to `tr` (directly, or through a helper that translates) is in every complete catalog.
+//! from one language fails, it doesn't quietly show English), and every text the UI passes to
+//! `tr` (directly, or through a helper that translates; read by `i18n_scan`) is in every complete catalog.
 //!
 //! The languages in [`PARTIAL`] are catching up: what they lack is reported, not failed, as
 //! upstream's `display_label_gaps_are_reported` does for every language.
@@ -62,7 +62,7 @@ fn complete() -> impl Iterator<Item = Locale> {
 fn report(what: &str, gaps: &[String]) {
     if !gaps.is_empty() {
         eprintln!(
-            "{} {what} (partial languages, reported only); first ones:\n{}",
+            "{} {what} (reported only: partial languages, files outside STRICT); first ones:\n{}",
             gaps.len(),
             gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
         );
@@ -113,117 +113,94 @@ fn every_catalog_carries_every_message() {
     }
 }
 
-/// The fork's UI files (owned in `upstream-owned.txt`) whose text must be translated.
-const OWNED: &[(&str, &str)] = &[
-    ("map/mod.rs", include_str!("map/mod.rs")),
-    ("map/side.rs", include_str!("map/side.rs")),
-    ("map/view.rs", include_str!("map/view.rs")),
-    ("book.rs", include_str!("book.rs")),
-    ("slideshow_ui.rs", include_str!("slideshow_ui.rs")),
-    ("print_ui.rs", include_str!("print_ui.rs")),
-    ("web_module.rs", include_str!("web_module.rs")),
-    ("creations_ui.rs", include_str!("creations_ui.rs")),
-    ("edit_in.rs", include_str!("edit_in.rs")),
-    ("module.rs", include_str!("module.rs")),
-    ("plate.rs", include_str!("plate.rs")),
-    ("help_overlay.rs", include_str!("help_overlay.rs")),
-    ("access.rs", include_str!("access.rs")),
-    ("panels/publish.rs", include_str!("panels/publish.rs")),
-    ("panels/ai_models.rs", include_str!("panels/ai_models.rs")),
-    ("panels/retouch.rs", include_str!("panels/retouch.rs")),
-    ("panels/tether_bar.rs", include_str!("panels/tether_bar.rs")),
-    ("panels/connections.rs", include_str!("panels/connections.rs")),
-    ("panels/peer_sync.rs", include_str!("panels/peer_sync.rs")),
-    ("folder_poll.rs", include_str!("folder_poll.rs")),
-    ("panels/plugins.rs", include_str!("panels/plugins.rs")),
-    ("panels/classic.rs", include_str!("panels/classic.rs")),
-    ("panels/navigator.rs", include_str!("panels/navigator.rs")),
-    ("panels/metadata.rs", include_str!("panels/metadata.rs")),
-    ("panels/cells.rs", include_str!("panels/cells.rs")),
-    ("video_ui.rs", include_str!("video_ui.rs")),
-    ("video_view.rs", include_str!("video_view.rs")),
+/// The files whose text every complete catalog must carry today. The scan reads every file; the
+/// rest of the UI's text is reported until the catalogs catch up, and then this list goes.
+const STRICT: &[&str] = &[
+    "map/mod.rs",
+    "map/side.rs",
+    "map/view.rs",
+    "book.rs",
+    "slideshow_ui.rs",
+    "print_ui.rs",
+    "web_module.rs",
+    "creations_ui.rs",
+    "edit_in.rs",
+    "module.rs",
+    "plate.rs",
+    "help_overlay.rs",
+    "access.rs",
+    "panels/publish.rs",
+    "panels/ai_models.rs",
+    "panels/retouch.rs",
+    "panels/tether_bar.rs",
+    "panels/connections.rs",
+    "panels/peer_sync.rs",
+    "folder_poll.rs",
+    "panels/plugins.rs",
+    "panels/classic.rs",
+    "panels/navigator.rs",
+    "panels/metadata.rs",
+    "panels/cells.rs",
+    "video_ui.rs",
+    "video_view.rs",
 ];
 
-/// Calls whose first string literal is translated: `tr("…")`, and the helpers that call `tr` on
-/// their text argument.
-const TRANSLATING: &[&str] =
-    &["tr(", "tr_format!(", "access::button(", "access::choice(", "access::label(", "section(ui, ", "heading(ui, ", "small(ui, "];
-
-/// The Rust string literal starting at `s` (just after its opening quote), unescaped; `None` for
-/// anything this little reader doesn't understand (it is skipped, not guessed).
-fn literal(s: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '\'' => out.push('\''),
-                '\n' => {
-                    // a line continuation: the next line's leading spaces are dropped
-                    let rest = chars.as_str().trim_start();
-                    chars = rest.chars();
-                }
-                _ => return None,
-            },
-            c => out.push(c),
-        }
-    }
-    None
-}
-
-/// Every literal the owned files hand to a translating call (test modules excluded).
-fn owned_texts() -> BTreeMap<String, &'static str> {
-    let mut found = BTreeMap::new();
-    for (file, src) in OWNED {
-        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
-        for call in TRANSLATING {
-            let mut rest = code;
-            while let Some(i) = rest.find(call) {
-                let before = &rest[..i];
-                rest = &rest[i + call.len()..];
-                // `tr(` must be the function, not the end of another name (`attr(`, `str(`)
-                if *call == "tr(" && before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                    continue;
-                }
-                // the first argument for tr / tr_format; for access::* and helpers, the first literal
-                let args = rest.trim_start();
-                let start = match *call {
-                    "tr(" | "tr_format!(" => args.strip_prefix('"'),
-                    _ => args
-                        .split_once(['"', ')', ';'])
-                        .and_then(|(head, _)| (!head.contains('(')).then(|| &args[head.len()..]))
-                        .and_then(|a| a.strip_prefix('"')),
-                };
-                let Some(text) = start.and_then(literal) else { continue };
-                if text.chars().any(char::is_alphabetic) {
-                    found.entry(text).or_insert(*file);
-                }
-            }
-        }
-    }
-    found
-}
-
+/// Every text the UI hands to `tr` (directly, or through a helper that translates), in every
+/// non-test source file (`i18n_scan`), is in every complete catalog: a failure for the [`STRICT`]
+/// files, a report for the others.
 #[test]
-fn owned_ui_text_is_in_every_catalog() {
-    let texts = owned_texts();
-    assert!(texts.len() > 300, "the scan finds the owned UI's text ({} messages)", texts.len());
+fn ui_text_is_in_every_catalog() {
+    let texts = crate::i18n_scan::translated_texts();
+    assert!(texts.len() > 2000, "the scan finds the UI's text ({} messages)", texts.len());
     assert!(texts.contains_key("Map Style") && texts.contains_key("Zoom In"), "helpers and access names are scanned");
     let (mut missing, mut gaps) = (Vec::new(), Vec::new());
     for l in translated() {
         let (plain, formats) = (catalog(l.code(), false), catalog(l.code(), true));
-        for (text, file) in &texts {
+        for (text, files) in &texts {
             if !plain.contains_key(text) && !formats.contains_key(text) {
-                let gap = format!("{}: {text:?} ({file})", l.code());
-                if PARTIAL.contains(&l) { gaps.push(gap) } else { missing.push(gap) }
+                let files: Vec<&str> = files.iter().map(String::as_str).collect();
+                let gap = format!("{}: {text:?} ({})", l.code(), files.join(", "));
+                if PARTIAL.contains(&l) || !files.iter().any(|f| STRICT.contains(f)) { gaps.push(gap) } else { missing.push(gap) }
             }
         }
     }
     assert!(missing.is_empty(), "{} untranslated message(s):\n{}", missing.len(), missing.join("\n"));
     report("untranslated messages", &gaps);
+}
+
+/// `build.rs` writes each format message's macro arm as JSON spells it, and `macro_rules!` matches a
+/// literal as written in the source, so a call spelled another way (`\u{201c}` for `“`, a raw string)
+/// matches no arm and shows English in every language. JSON and Rust spell only `\n`, `\t`, `\"` and
+/// `\\` the same way.
+#[test]
+fn format_messages_are_spelled_as_their_macro_arms() {
+    let mut odd = Vec::new();
+    for source in crate::i18n_scan::sources() {
+        for (at, _) in source.code.match_indices("tr_format!(") {
+            let rest = source.code.get(at + "tr_format!(".len()..).unwrap_or_default().trim_start();
+            let Some(body) = rest.strip_prefix('"') else {
+                if rest.starts_with('r') {
+                    odd.push(format!("{}: a raw string", source.file));
+                }
+                continue;
+            };
+            // the literal as written, up to its closing quote
+            let (mut raw, mut chars, mut spelled_alike) = (String::new(), body.chars(), true);
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => {
+                        let next = chars.next().unwrap_or_default();
+                        spelled_alike &= matches!(next, 'n' | 't' | '"' | '\\');
+                        raw.extend([c, next]);
+                    }
+                    _ => raw.push(c),
+                }
+            }
+            if !spelled_alike {
+                odd.push(format!("{}: \"{raw}\"", source.file));
+            }
+        }
+    }
+    assert!(odd.is_empty(), "format messages that match no catalog arm (write the characters themselves):\n{}", odd.join("\n"));
 }

@@ -773,7 +773,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for set in sets["sets"].as_array().into_iter().flatten() {
                             let name = set["name"].as_str().unwrap_or_default();
-                            if crate::widgets::text_button(ui, &format!("labelSet-{name}"), name, false).clicked() {
+                            let shown = crate::i18n::builtin_label(name, set["builtin"].as_bool() == Some(true));
+                            if crate::widgets::text_button(ui, &format!("labelSet-{name}"), shown, false).clicked() {
                                 *names = set["names"].as_array().into_iter().flatten().map(|n| n.as_str().unwrap_or_default().to_string()).collect();
                             }
                         }
@@ -783,7 +784,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         field(ui, &colour, |ui| {
                             let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                             ui.painter().circle_filled(r.center(), 6.0, crate::panels::grid::label_color(*l));
-                            let te = crate::widgets::named(ui.add(egui::TextEdit::singleline(&mut names[i]).hint_text(colour.as_str()).desired_width(f32::INFINITY)), crate::i18n::tr(&colour));
+                            let te = crate::widgets::named(ui.add(egui::TextEdit::singleline(&mut names[i]).hint_text(crate::i18n::tr(&colour)).desired_width(f32::INFINITY)), crate::i18n::tr(&colour));
                             crate::widgets::register(ui.ctx(), format!("field:labelName-{}", colour.to_lowercase()), te.rect);
                         });
                     }

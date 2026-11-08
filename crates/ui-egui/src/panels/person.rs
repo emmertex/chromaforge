@@ -204,7 +204,8 @@ fn batch_bar(app: &mut LccApp, ui: &mut egui::Ui, current: &str) {
                 }
             }
             if let Some(new) = create {
-                let b = ui.add(egui::Button::new(RichText::new(format!("+ Create \u{201c}{new}\u{201d}")).color(t.text_label)).frame(false));
+                let b =
+                    ui.add(egui::Button::new(RichText::new(crate::i18n::tr_format!("+ Create “{new}”", new = new)).color(t.text_label)).frame(false));
                 register(ui.ctx(), "person:create", b.rect);
                 if b.clicked() {
                     assign = Some(new);
@@ -554,7 +555,7 @@ fn tile(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, f: &Face, ppp: f32, more: 
             hit = Hit::Confirm;
         }
     } else {
-        let _ = resp.clone().on_hover_text(format!("{name} — click to open this photo"));
+        let _ = resp.clone().on_hover_text(crate::i18n::tr_format!("{name} — click to open this photo", name = name));
         if resp.clicked() {
             hit = Hit::Open;
         }
