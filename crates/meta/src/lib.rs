@@ -23,6 +23,7 @@ mod fuji;
 mod gpx;
 mod heif;
 mod iptc;
+pub mod jxl;
 mod legacy;
 pub mod mrw;
 mod psd;

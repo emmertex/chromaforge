@@ -560,6 +560,22 @@ impl Backend for Recorder {
     }
 }
 
+/// A malformed `paths` entry refuses the whole import before any file is discovered or dispatched.
+#[test]
+fn import_rejects_non_string_paths_before_dispatch() {
+    for mode in ["add", "copy", "move"] {
+        for invalid in [json!(null), json!(false), json!(7), json!(1.5), json!({"path": "photo.png"}), json!(["photo.png"])] {
+            for paths in [json!(["photo.png", invalid]), json!([invalid, "photo.png"])] {
+                let mut b = Recorder(vec![]);
+                let r = call_tool(&mut b, "import", &json!({"paths": paths, "mode": mode}));
+                assert!(r.is_error, "{mode} {paths}: {r:?}");
+                assert!(r.content[0]["text"].as_str().unwrap().contains("paths["), "{r:?}");
+                assert!(b.0.is_empty(), "{mode} {paths} dispatched a partial batch: {:?}", b.0);
+            }
+        }
+    }
+}
+
 /// With the app attached, agents cut, copy and paste in its text fields (`clipboard`).
 #[test]
 fn the_clipboard_tool_cuts_copies_and_pastes_in_the_app() {

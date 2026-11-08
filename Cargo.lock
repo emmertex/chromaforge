@@ -5125,6 +5125,8 @@ dependencies = [
 name = "lcc-meta"
 version = "26.45.4"
 dependencies = [
+ "brotli",
+ "brotli-decompressor",
  "chrono",
  "lcc-brand",
  "lcc-geom",

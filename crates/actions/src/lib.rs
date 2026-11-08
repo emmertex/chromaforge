@@ -146,6 +146,8 @@ pub fn is_navigation(id: &str) -> bool {
             | "library.selectNone"
             | "library.next"
             | "library.previous"
+            | "library.nextUnrated"
+            | "library.prevUnrated"
             | "library.first"
             | "library.last"
             | "library.source"
