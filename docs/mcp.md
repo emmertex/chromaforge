@@ -188,6 +188,10 @@ per-request `_meta` receive `resultType: complete` and list/read cache hints; re
 | `render_photo {id?, size?, format?, path?}` | Render with current settings → **image content** (PNG, or JPEG with `format: "jpeg"`), long edge `size` (default 1024); the image travels in the reply, so it also works over `--connect` to an app on another machine (`path` saves a copy on this one) |
 | `export {path \| dir, id? \| ids?, format?, longEdge? \| shortEdge? \| width?/height? \| megapixels? \| percent?, dontEnlarge?, ppi?, quality?, colorSpace?, bitDepth?, …}` | Full-quality render to `.png` / `.jpg` / `.tif` / `.webp` / `.avif` / `.jxl` (`jxlLossless`, `jxlEffort`, `jxlProgressive`); `format: "original"` copies the file + an XMP sidecar with the edits, `format: "dng"` writes raw photos as DNG with the edits embedded. No size param = 3000 px long edge; `longEdge: 0` = full size (cropped, native resolution); `width` + `height` fit either orientation (Lightroom's Dimensions); with `fit: "widthHeight"` they limit the width and the height as the photo stands (Width & Height); `dontEnlarge` defaults to true |
 
+`import` validates every `paths` array entry before discovering files or importing any of them.
+A non-string entry is a tool error naming its zero-based index (for example, `paths[1]`);
+the whole request is refused, including in Copy and Move modes. A single path string is also accepted.
+
 `get_develop {id}` and `render_photo {id}` use that photo without changing the selection.
 `set_develop`, `crop` and `export` with a supplied photo `id` end the current edit interaction,
 replace the selection with that one photo and make it active. Without `id`,
@@ -380,3 +384,21 @@ an input error, even when output fails.
 
 Connect mode and exports inside `command_batch` remain synchronous and do not report MCP
 progress or cancellation. Use a direct headless export call for this behavior.
+
+## Limiting what an agent may do
+
+The MCP server can refuse tools and commands at call time. Nothing is refused unless one of these
+environment variables is set; put them in the `env` block of the MCP client's configuration.
+
+| Variable | Effect |
+|---|---|
+| `<PREFIX>_MCP_SAFE=1` | Refuses `export.addToPhotos`, `ui.clipboard`, `ui.dropFiles`, `app.quit` and `folder.move`, the `clipboard` tool, an import in `move` mode, and `addToPhotos` in an export |
+| `<PREFIX>_MCP_DENY=a.b,c.*` | Refuses these command ids (exact, or `prefix.*`) and tool names |
+| `<PREFIX>_MCP_ALLOW_TOOLS=x,y` | When set, only these tools are listed and callable |
+| `<PREFIX>_MCP_EXPORT_ROOT=DIR` | Every export `path` / `dir` must resolve inside DIR (no `..`, no symlink out, no `sameAsOriginal`) |
+
+The check runs on every `tools/call`, so `run_command`, `command_run`, `command_batch` and the
+`cmd_*` tools cannot get around it; `tools/list` leaves out what a call would be refused. A refusal
+comes back as a tool error that says why. The paths are checked just before the export runs, not
+held open: this limits a helpful agent's mistakes and a prompt-injected one's reach, it is not a
+sandbox against a process that can race the filesystem.

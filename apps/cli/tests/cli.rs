@@ -697,6 +697,30 @@ fn mcp_refuses_a_program_chosen_by_the_request() {
     assert!(!marker.exists(), "no program was started");
 }
 
+/// `render` of a file still being copied in says so (try again shortly), not that the file is unreadable.
+#[test]
+fn render_of_a_file_still_being_copied_says_to_try_again() {
+    let mut b = vec![0u8; 64];
+    b[0..4].copy_from_slice(b"II*\0");
+    b[4..8].copy_from_slice(&8u32.to_le_bytes());
+    b[8..10].copy_from_slice(&2u16.to_le_bytes());
+    for (at, tag, v) in [(10usize, 0x0111u16, 64u32), (22, 0x0117, 4000)] {
+        b[at..at + 2].copy_from_slice(&tag.to_le_bytes());
+        b[at + 2..at + 4].copy_from_slice(&4u16.to_le_bytes());
+        b[at + 4..at + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[at + 8..at + 12].copy_from_slice(&v.to_le_bytes());
+    }
+    b.extend([0u8; 100]);
+    let input = tmp("copying-IMG_0001.NEF");
+    std::fs::write(&input, &b).unwrap();
+    let out = tmp("copying-out.jpg");
+    let o = Command::new(BIN).args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap()]).output().unwrap();
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("still being copied, try again shortly"), "{err}");
+    assert!(!err.contains("not a readable photo"), "{err}");
+}
+
 #[test]
 fn render_subcommand() {
     let input = tmp("r-in.png");

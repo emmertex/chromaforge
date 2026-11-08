@@ -16,7 +16,7 @@ talk through first: [join the Discord](https://discord.gg/c3dfYATzsQ) and bring 
   and its checklist id. Claims live in comments.
 - **Check upstream's work too.** Chromaforge no longer merges upstream: each round reviews upstream's pull requests
   and commits and ports the useful ones by hand ([`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md)), and
-  the whole round lands as one fork PR at a version release. A bug fixed upstream may already be ported, or due to
+  the whole round lands as one fork PR. A bug fixed upstream may already be ported, or due to
   be: search the log and the open pull requests for the upstream issue or pull request number before you start.
 
 ## Claim it

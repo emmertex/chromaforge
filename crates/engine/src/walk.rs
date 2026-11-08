@@ -54,6 +54,75 @@ fn hidden(p: &Path) -> bool {
     p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))
 }
 
+/// A platform's hidden attribute: the bit of an entry's attribute word that hides it (upstream #3185).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HiddenAttribute {
+    bit: u32,
+    /// Whether a folder's listing already holds every entry's attribute word (Windows). Where it does not (macOS:
+    /// one lstat per entry, a round trip each on a network share), the attribute of a listed entry is read only for
+    /// folders and links: a hidden folder (`~/Library`) hides a whole tree, while a file hidden other than by a dot
+    /// name is a rare system file, not a photo.
+    listed: bool,
+}
+
+impl HiddenAttribute {
+    fn hides(self, word: u32) -> bool {
+        word & self.bit != 0
+    }
+
+    /// Whether a listed entry's attribute word is read at all.
+    fn read_for(self, may_hold_a_tree: bool) -> bool {
+        may_hold_a_tree || self.listed
+    }
+}
+
+/// `FILE_ATTRIBUTE_HIDDEN`, which comes with the listing.
+const WINDOWS_HIDDEN: HiddenAttribute = HiddenAttribute { bit: 0x2, listed: true };
+/// `UF_HIDDEN` (Finder's hidden flag) in `st_flags`, which takes an lstat.
+const MACOS_HIDDEN: HiddenAttribute = HiddenAttribute { bit: 0x8000, listed: false };
+/// This platform's hidden attribute (none elsewhere: only dot names are hidden).
+const HIDDEN: Option<HiddenAttribute> = if cfg!(windows) {
+    Some(WINDOWS_HIDDEN)
+} else if cfg!(target_os = "macos") {
+    Some(MACOS_HIDDEN)
+} else {
+    None
+};
+
+/// The word [`HIDDEN`]'s bit is in.
+fn attribute_word(m: &std::fs::Metadata) -> u32 {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        m.file_attributes()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::darwin::fs::MetadataExt;
+        m.st_flags()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = m;
+        0
+    }
+}
+
+/// Whether a listed entry is hidden: a dot-prefixed name, or the Windows or macOS hidden attribute (on macOS read for
+/// folders and links only, see [`HiddenAttribute`]; a link's own attribute, not its target's).
+pub fn is_hidden_entry(entry: &std::fs::DirEntry) -> bool {
+    hidden(&entry.path()) || entry.file_type().is_ok_and(|t| attribute_hides_entry(entry, &t))
+}
+
+fn attribute_hides_entry(entry: &std::fs::DirEntry, ft: &std::fs::FileType) -> bool {
+    HIDDEN.is_some_and(|a| a.read_for(ft.is_dir() || ft.is_symlink()) && entry.metadata().is_ok_and(|m| a.hides(attribute_word(&m))))
+}
+
+/// Whether `path`, whose `metadata` the caller has already read, is hidden (name or attribute).
+pub fn is_hidden_with(path: &Path, metadata: &std::fs::Metadata) -> bool {
+    hidden(path) || HIDDEN.is_some_and(|a| a.hides(attribute_word(metadata)))
+}
+
 /// What a folder's listing says an entry is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
@@ -153,11 +222,11 @@ fn walk(
             let p = e.path();
             // (a hidden entry's kind is only asked for when the listing is wanted; every other
             // entry's is asked once)
-            let is_hidden = hidden(&p);
+            let ft = e.file_type();
+            let is_hidden = hidden(&p) || ft.as_ref().is_ok_and(|t| attribute_hides_entry(&e, t));
             if is_hidden && listed.is_none() {
                 continue;
             }
-            let ft = e.file_type();
             if let Some(listed) = listed.as_mut() {
                 let kind = match &ft {
                     Ok(t) if t.is_symlink() => EntryKind::Other,
@@ -213,6 +282,39 @@ fn walk(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_attribute_bits_and_which_entries_are_read() {
+        // (the platform words are stubbed: the logic is the same where the attribute exists)
+        assert!(MACOS_HIDDEN.hides(0x8000 | 0x1));
+        assert!(!MACOS_HIDDEN.hides(0x1));
+        assert!(WINDOWS_HIDDEN.hides(0x2 | 0x20));
+        assert!(!WINDOWS_HIDDEN.hides(0x20));
+        // macOS reads the attribute (an lstat each) for folders and links only; Windows has it from the listing
+        assert!(MACOS_HIDDEN.read_for(true) && !MACOS_HIDDEN.read_for(false));
+        assert!(WINDOWS_HIDDEN.read_for(true) && WINDOWS_HIDDEN.read_for(false));
+    }
+
+    #[test]
+    fn auto_import_listing_skips_dot_files_and_lists_links_by_target() {
+        let dir = std::env::temp_dir().join(format!("lcc-walk-hidden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("folder")).unwrap();
+        std::fs::write(dir.join("shown.jpg"), b"shown").unwrap();
+        std::fs::write(dir.join(".dot.jpg"), b"x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("shown.jpg"), dir.join("link.jpg")).unwrap();
+        let mut listed = crate::cmd::library::list_auto_import_folder(&dir.to_string_lossy()).unwrap();
+        listed.sort();
+        let entry = |name: &str, size: u64| (dir.join(name).to_string_lossy().to_string(), size);
+        let mut expected = vec![entry("shown.jpg", 5)];
+        if cfg!(unix) {
+            expected.push(entry("link.jpg", 5));
+        }
+        expected.sort();
+        assert_eq!(listed, expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lc-walk-{tag}-{}", std::process::id()));

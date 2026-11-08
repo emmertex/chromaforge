@@ -522,6 +522,7 @@ fn alt_held_as_the_window_appears_asks_once_over_the_last_library() {
     let c = h.app.library_problem.as_ref().and_then(|p| p.chooser.clone()).expect("the list shows");
     assert_eq!(c.selected, Some(0));
     assert!(c.over.is_some(), "over the library that opened");
+    assert!(h.app.catalog_ui.dialog.is_none(), "one window for Alt: no catalog chooser as well (issue #871)");
     assert!(c.libraries[0].unavailable.is_none(), "the open library itself can be chosen");
     assert!(has(&h, "button:libraryOpen"));
     // Esc keeps the library that opened

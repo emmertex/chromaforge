@@ -28,6 +28,18 @@ pub struct Permissions {
     /// was made from, stacked on it or put in an album that holds it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub library_add: bool,
+    /// Read a downsized copy of a photo's pixels (`photo.pixels`): the whole uncropped frame, as
+    /// the crop tool shows it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixels: bool,
+    /// Set a photo's crop (`develop.setCrop`): one History step per photo, editable afterwards in
+    /// the crop tool like any crop.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub crop: bool,
+    /// Make a virtual copy of a photo (`photo.virtualCopy`): a new catalog entry sharing the
+    /// photo's file, with its own settings, stacked with it. One History step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub virtual_copy: bool,
     /// Hosts the plug-in may send HTTP(S) requests to: `api.example.com`, or `*.example.com` for
     /// any sub-domain (not the bare domain).
     #[serde(default)]
@@ -88,6 +100,9 @@ impl Permissions {
             catalog: self.catalog && other.catalog,
             metadata_write: self.metadata_write && other.metadata_write,
             library_add: self.library_add && other.library_add,
+            pixels: self.pixels && other.pixels,
+            crop: self.crop && other.crop,
+            virtual_copy: self.virtual_copy && other.virtual_copy,
             network: self.network.iter().filter(|h| other.network.contains(h)).cloned().collect(),
             fs: self
                 .fs
@@ -102,7 +117,15 @@ impl Permissions {
 
     /// True when nothing is allowed.
     pub fn is_empty(&self) -> bool {
-        !self.catalog && !self.metadata_write && !self.library_add && self.network.is_empty() && self.fs.is_empty() && self.programs.is_empty()
+        !self.catalog
+            && !self.metadata_write
+            && !self.library_add
+            && !self.pixels
+            && !self.crop
+            && !self.virtual_copy
+            && self.network.is_empty()
+            && self.fs.is_empty()
+            && self.programs.is_empty()
     }
 
     /// May the plug-in talk to `host`? Matching ignores ASCII case.
@@ -206,12 +229,15 @@ mod tests {
             catalog: true,
             metadata_write: true,
             library_add: true,
+            pixels: true,
+            crop: true,
+            virtual_copy: true,
             network: vec!["a.com".into(), "b.com".into()],
             fs: vec![FsRoot { path: "/x".into(), write: false }],
             programs: vec![],
         };
         let e = grant.intersect(&req);
-        assert!(e.catalog && !e.metadata_write && !e.library_add);
+        assert!(e.catalog && !e.metadata_write && !e.library_add && !e.pixels && !e.crop && !e.virtual_copy);
         assert_eq!(e.network, vec!["a.com".to_string()]);
         assert_eq!(e.fs, vec![FsRoot { path: "/x".into(), write: false }]);
     }

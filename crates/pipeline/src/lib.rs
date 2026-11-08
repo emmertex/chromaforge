@@ -88,6 +88,9 @@ pub struct CameraColor {
 pub struct SourceInfo {
     /// Lens corrections embedded in the file (DNG opcodes), relative to the EXIF-oriented source.
     pub lens: Option<lcc_develop::EmbeddedLens>,
+    /// `lens` is the file's own correction (a DNG's opcodes, a converted camera correction), not a database profile
+    /// matched by the lens name: the decode read it from the file, so the catalog's copy can be brought up to date.
+    pub lens_from_file: bool,
     /// Raw sources use absolute Kelvin white balance; rendered sources use a relative scale around
     /// their as-shot white.
     pub raw: bool,
@@ -162,6 +165,7 @@ impl Default for SourceInfo {
             as_shot_temp: 6500.0,
             as_shot_tint: 0.0,
             lens: None,
+            lens_from_file: false,
             relative_wb: false,
             legacy_relative_wb: false,
             camera_color: None,

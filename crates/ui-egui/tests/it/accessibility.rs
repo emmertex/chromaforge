@@ -249,6 +249,11 @@ fn tab_walks_the_right_panels_top_to_bottom() {
             // the focus is never left on a control scrolled out of view (the top bar above is not the panel's)
             let in_panel = b.y0 as f32 >= panel.top() - 1.0;
             assert!(!in_panel || b.y1 as f32 <= panel.bottom() + 1.0, "{right:?}: {name:?} has the focus out of view at {b:?}");
+            // a tall control (a colour wheel) scrolls the panel to fit when it takes the focus, which moves every
+            // position after it: it is checked for being in view above, but not for its place in the order
+            if (b.y1 - b.y0) as f32 > 60.0 {
+                continue;
+            }
             if seen.iter().any(|(s, y)| *s == name && (*y - b.y0 as f32).abs() < 1.0) && !name.is_empty() {
                 break;
             }

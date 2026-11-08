@@ -13,6 +13,8 @@
 //!   XMP `uuid` box.
 //! - HEIF, HEIC and AVIF (ISO base media file, see `crate::heif`): the primary image's `Exif` item and XMP
 //!   (`mime`) item, found through `meta` / `iinf` / `iloc` / `iref`; no picture is decoded.
+//! - JPEG XL (ISO base media file, see [`crate::jxl`]): the `Exif` and `xml ` boxes, plain or Brotli-wrapped in
+//!   `brob`; a bare codestream has no metadata.
 
 use lcc_tiff::{Tiff, tags};
 
@@ -56,6 +58,9 @@ pub fn embedded(bytes: &[u8]) -> Embedded {
     }
     if let Some(e) = crate::heif::embedded(bytes) {
         return e;
+    }
+    if crate::jxl::is_jxl_container(bytes) {
+        return crate::jxl::metadata(bytes);
     }
     if bytes.starts_with(&[0xff, 0xd8]) {
         jpeg_segments(bytes)

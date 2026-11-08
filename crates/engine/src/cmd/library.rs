@@ -30,10 +30,14 @@ pub fn list_auto_import_folder(folder: &str) -> std::result::Result<Vec<(String,
     let rd = std::fs::read_dir(folder).map_err(|e| format!("{folder}: {e}"))?;
     Ok(rd
         .flatten()
-        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| {
-            let m = std::fs::metadata(e.path()).ok()?;
-            m.is_file().then(|| (e.path().to_string_lossy().to_string(), m.len()))
+            let path = e.path();
+            // through a link: its target's type and size
+            let m = std::fs::metadata(&path).ok()?;
+            // but a link's own hidden attribute, not its target's, as in a folder walk
+            let hidden =
+                if e.file_type().is_ok_and(|t| t.is_symlink()) { crate::walk::is_hidden_entry(&e) } else { crate::walk::is_hidden_with(&path, &m) };
+            (m.is_file() && !hidden).then(|| (path.to_string_lossy().to_string(), m.len()))
         })
         .collect())
 }
@@ -427,6 +431,52 @@ fn step_in(s: &mut Session, d: isize, within: bool) -> Result<Value> {
     Ok(json!({"active": vis[next].0}))
 }
 
+/// `library.nextUnrated` / `library.prevUnrated` (ported from upstream #3904 in our own form): jump to the next
+/// (`d > 0`) or previous photo of the view with no rating, wrapping round. With several photos selected the target is
+/// added to the selection, which is kept. `{"allRated": true}` when nothing in the view is unrated.
+fn step_unrated(s: &mut Session, d: isize) -> Result<Value> {
+    let vis = s.visible_cloned();
+    if vis.is_empty() {
+        return ok();
+    }
+    let unrated: Vec<bool> = vis.iter().map(|id| s.catalog.photo(*id).is_some_and(|p| p.rating == 0)).collect();
+    if !unrated.iter().any(|u| *u) {
+        return Ok(json!({"allRated": true}));
+    }
+    let n = vis.len();
+    let cur = s.selection.active.and_then(|a| vis.iter().position(|x| *x == a));
+    // Walk away from the current photo (from the near end when there is none), wrapping once round; the current
+    // photo is the last candidate, so the only unrated photo stays where it is.
+    let target = (1..=n).find_map(|k| {
+        let i = match (cur, d >= 0) {
+            (Some(c), true) => c.checked_add(k)? % n,
+            (Some(c), false) => c.checked_add(n.checked_sub(k % n)?)? % n,
+            (None, true) => k.checked_sub(1)?,
+            (None, false) => n.checked_sub(k)?,
+        };
+        unrated.get(i).copied().unwrap_or(false).then_some(i)
+    });
+    let Some(id) = target.and_then(|i| vis.get(i)).copied() else {
+        return Ok(json!({"allRated": true}));
+    };
+    if s.selection.active == Some(id) {
+        return Ok(json!({"active": id.0}));
+    }
+    s.end_interaction()?;
+    let (was, was_mask) = (s.selection.active, s.active_mask);
+    if s.selection.ids.len() > 1 {
+        if !s.selection.contains(id) {
+            s.selection.ids.push(id);
+        }
+        s.selection.active = Some(id);
+    } else {
+        s.selection = Selection::single(id);
+    }
+    s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+    s.active_spot = None;
+    Ok(json!({"active": id.0}))
+}
+
 /// `library.up` / `library.down`: how many photos to move (at least 1, capped so hostile input
 /// can't overflow).
 fn row_step(p: &Value) -> isize {
@@ -776,6 +826,25 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": s.shelved_filter.is_none(), "count": s.visible().len()}))
             }
         ),
+        // View > Hide Rejected Photos: the filter bar's Picked + Unflagged on one key
+        cmd!(
+            "library.hideRejected",
+            "Hide Rejected Photos",
+            ["View"],
+            None,
+            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or no longer filters by flag; the rest of the filter stays. Like any filter change, it forgets a filter put aside → {hidden, count}",
+            always,
+            |s, p| {
+                let hide = match p.get("hide") {
+                    None | Some(Value::Null) => !s.rejects_hidden(),
+                    Some(v) => v.as_bool().ok_or_else(|| bad("library.hideRejected", "hide must be true or false"))?,
+                };
+                s.filter.flag = None;
+                s.filter.flags = if hide { vec![Flag::Pick, Flag::None] } else { Vec::new() };
+                s.shelved_filter = None;
+                Ok(json!({"hidden": hide, "count": s.visible().len()}))
+            }
+        ),
         cmd!(
             "library.sort",
             "Sort",
@@ -1048,6 +1117,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{} — with several photos selected: the previous selected one (wrapping round), the selection kept",
             always,
             |s, _| step_in(s, -1, true)
+        ),
+        cmd!(
+            "library.nextUnrated",
+            "Next Unrated Photo",
+            [],
+            Some("Cmd+Alt+Right"),
+            "{} — the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, 1)
+        ),
+        cmd!(
+            "library.prevUnrated",
+            "Previous Unrated Photo",
+            [],
+            Some("Cmd+Alt+Left"),
+            "{} — the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, -1)
         ),
         cmd!(
             "library.down",
@@ -2307,7 +2394,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 },
             }))
         }),
-        cmd!("library.compact", "Optimize Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
+        cmd!("library.compact", "Compact Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
             s.compact_library()?;
             ok()
         }),
@@ -2745,6 +2832,10 @@ mod rated_out_tests;
 mod step_selection_tests;
 
 #[cfg(test)]
+#[path = "library/tests_next_unrated.rs"]
+mod next_unrated_tests;
+
+#[cfg(test)]
 #[path = "library/tests_clear_label.rs"]
 mod clear_label_tests;
 
@@ -2759,3 +2850,7 @@ mod source_album_filter_tests;
 #[cfg(test)]
 #[path = "library/tests_select.rs"]
 mod tests_select;
+
+#[cfg(test)]
+#[path = "library/tests_hide_rejected.rs"]
+mod hide_rejected_tests;

@@ -184,9 +184,13 @@ public XMP documentation, 105 map (test `develop_field_coverage_over_public_crs_
 eight have no equivalent and are reported: `AutoWhiteVersion`, `LensProfileSetup`, `UprightPreview`,
 `UprightCenterMode`, `UprightFocalLength35mm`, the pre-2012 `Defringe`, `HDRMaxValue` and `SDRBlend`.
 A Custom white balance on a raw the app develops relative to its as-shot look (ARW, NEF, RW2,
-RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin: the catalog keeps no
-as-shot white for Custom photos, so the photo stays As Shot and `Temperature, Tint` are reported
-(issue #510; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
+RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin on its own. A Custom
+photo's develop settings keep no as-shot white, but its history does: the last
+`Adobe_libraryImageDevelopHistoryStep` that says As Shot with a `Temperature` and `Tint` gives the white
+the edit is the same mired shift from (read row by row, none kept, so a history table of any size gives it; a
+read that fails warns and keeps the whites found so far). With no such step the photo stays As Shot and
+`Temperature, Tint` are reported
+(issue #510, upstream #3906; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
 shifted by the same mired difference, see [xmp-interop.md](xmp-interop.md)). A raw whose camera has
 measured colour matrices (`lcc_raw::spectral`: ILCE-7M3, D850, EOS 5D Mark III…), or whose white-balance
 presets give a Kelvin scale (`lcc_raw::kelvin_presets`: ILCA-99M2, ILCA-77M2…), edits in Kelvin

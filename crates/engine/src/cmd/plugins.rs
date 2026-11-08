@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lcc_plugins::{HostApi, Manager, Permissions};
+use lcc_plugins::{Begun, HostApi, Manager, Permissions};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, always, bad, bool_or, cmd, str_param};
@@ -144,6 +144,18 @@ impl HostApi for SessionHost<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         super::plugin_library::add(self.0, params)
+    }
+
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        super::plugin_develop::pixels(self.0, photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        super::plugin_develop::set_crop(self.0, photo, rect, angle)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        super::plugin_develop::virtual_copy(self.0, photo, name)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
@@ -339,17 +351,26 @@ fn log(_: &mut Session, p: &Value) -> Result<Value> {
 fn picture(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.picture";
     let id = id_param(p, C)?;
-    let f = crate::filter_plugins::registry().get(id).ok_or_else(|| bad(C, format!("no filter plug-in {id:?} is installed")))?;
     let dark = match str_param(p, "theme") {
         None | Some("dark") => true,
         Some("light") => false,
         Some(t) => return Err(bad(C, format!("`theme` must be dark or light, not {t:?}"))),
     };
-    let m = f.manifest();
-    let svg = match str_param(p, "picture") {
-        None | Some("header") => m.header.as_ref().map(|h| h.for_theme(dark).to_string()),
-        Some("icon") => m.icon.clone(),
+    let header = match str_param(p, "picture") {
+        None | Some("header") => true,
+        Some("icon") => false,
         Some(k) => return Err(bad(C, format!("`picture` must be header or icon, not {k:?}"))),
+    };
+    // a pixel filter's, else a plug-in's: both manifests carry the same two pictures
+    let svg = if let Some(f) = crate::filter_plugins::registry().get(id) {
+        let m = f.manifest();
+        if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() }
+    } else {
+        with_manager(|m| {
+            let i = m.get(id).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed")))?;
+            let m = i.plugin.manifest();
+            Ok(if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() })
+        })?
     };
     Ok(json!({"svg": svg}))
 }
@@ -359,11 +380,22 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let id = id_param(p, C)?;
     let command = str_param(p, "command").ok_or_else(|| bad(C, "missing `command`"))?;
     let args = p.get("args").cloned().unwrap_or(Value::Null);
+    let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let selection: Vec<String> = s.targets(p)?.iter().map(|i| i.0.to_string()).collect();
     let source = source_param(s, p, C)?;
     let lib = s.plugin_library.clone();
-    let mut host = SessionHost(s);
-    let r = with_library(&lib, |m| m.run_command_from(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)));
+    let begun = {
+        let mut host = SessionHost(s);
+        with_library(&lib, |m| m.begin_command(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)))?
+    };
+    let r = match begun {
+        Begun::Message(m) => return Ok(json!({"message": m, "ran": false})),
+        Begun::Call(call) if call.is_job() => return super::plugin_jobs::run(s, *call, wait).map_err(|e| plugin_err(C, e)),
+        Begun::Call(mut call) => {
+            let outcome = call.run(&mut SessionHost(s));
+            with_library(&lib, |m| m.end(*call, Some(outcome)).map_err(|e| plugin_err(C, e)))
+        }
+    };
     // the command may have written the plug-in's own fields
     sync_fields(s);
     r
@@ -643,7 +675,8 @@ impl ExportHooks {
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
-    /// The host call: a catalog read, `metadata.setStandard` or `library.add`.
+    /// The host call: a catalog read, `metadata.setStandard`, `library.add`, `photo.pixels`,
+    /// `develop.setCrop` or `photo.virtualCopy`.
     method: Relayed,
     params: Value,
     reply: std::sync::mpsc::Sender<std::result::Result<Value, String>>,
@@ -662,6 +695,52 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
+    /// `photo.pixels`: `{photo, longEdge}`, already checked. The session's thread only finds the
+    /// source and leaves it here; the caller decodes it on its own thread.
+    Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
+    /// `develop.setCrop`: `{photo, rect, angle}`, already checked.
+    SetCrop,
+    /// `photo.virtualCopy`: `{photo, name}`, already checked.
+    VirtualCopy,
+}
+
+/// [`Relayed::Pixels`]'s parameters, and back.
+pub(super) fn pixels_params(photo: &str, long_edge: u32) -> Value {
+    json!({"photo": photo, "longEdge": long_edge})
+}
+
+/// [`Relayed::SetCrop`]'s parameters, and back.
+pub(super) fn crop_params(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Value {
+    json!({"photo": photo, "rect": rect, "angle": angle})
+}
+
+/// [`Relayed::VirtualCopy`]'s parameters, and back.
+pub(super) fn copy_params(photo: &str, name: Option<&str>) -> Value {
+    json!({"photo": photo, "name": name})
+}
+
+fn relayed_copy(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.virtualCopy: missing photo")?;
+    host.virtual_copy(photo, p["name"].as_str())
+}
+
+fn relayed_pixels(
+    s: &mut Session,
+    p: &Value,
+    slot: &std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>,
+) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.pixels: missing photo")?;
+    let edge = p["longEdge"].as_u64().and_then(|e| u32::try_from(e).ok()).ok_or("photo.pixels: missing longEdge")?;
+    let source = super::plugin_develop::pixels_source(s, photo, edge)?;
+    *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    Ok(Value::Null)
+}
+
+fn relayed_crop(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("develop.setCrop: missing photo")?;
+    let v: Vec<f64> = p["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+    let rect: [f64; 4] = v.try_into().map_err(|_| "develop.setCrop: missing rect")?;
+    host.set_crop(photo, rect, p["angle"].as_f64())
 }
 
 const WAITING: u8 = 0;
@@ -681,6 +760,9 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
+            Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
+            Relayed::SetCrop => relayed_crop(&mut host, &self.params),
+            Relayed::VirtualCopy => relayed_copy(&mut host, &self.params),
         };
         let _ = self.reply.send(r);
     }
@@ -704,6 +786,20 @@ impl RelayHost {
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(WAITING));
         self.0.send(HostRequest { method, params: params.clone(), reply, state }).map_err(|_| "the catalog is closed".to_string())?;
         rx.recv().map_err(|_| "the catalog is closed".to_string())?
+    }
+
+    /// `photo.pixels`: the session's thread finds the source ([`Relayed::Pixels`]), and it is
+    /// decoded here, on the caller's thread. With a `limit`, as [`RelayHost::ask_within`].
+    pub(super) fn pixels_within(&self, photo: &str, long_edge: u32, limit: Option<std::time::Duration>) -> std::result::Result<Value, String> {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let method = Relayed::Pixels(slot.clone());
+        let params = pixels_params(photo, long_edge);
+        match limit {
+            Some(limit) => self.ask_within(method, &params, limit)?,
+            None => self.ask(method, &params)?,
+        };
+        let source = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        source.ok_or_else(|| "photo.pixels: the catalog gave no source".to_string())?.decode()
     }
 
     /// [`RelayHost::ask`], giving up after `limit` unless the session's thread has already taken
@@ -740,6 +836,18 @@ impl HostApi for RelayHost {
         self.ask(Relayed::LibraryAdd, params)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.pixels_within(photo, long_edge, None)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::SetCrop, &crop_params(photo, rect, angle))
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::VirtualCopy, &copy_params(photo, name))
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.1.find_program(program)
     }
@@ -771,6 +879,18 @@ impl HostApi for HookSession<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         self.0.library_add(params)
+    }
+
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.0.photo_pixels(photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.0.set_crop(photo, rect, angle)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.0.virtual_copy(photo, name)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
@@ -988,11 +1108,11 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} — removes the module and its data; also a plug-in listed under plugin.list → failed (by its id there)", always, uninstall),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
         cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plug-in Manager (an error, nothing changes) → granted", always, set_grant),
-        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)} — a filter plug-in's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
+        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)} — a plug-in's or pixel filter's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
         cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
-        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare} — runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared", always, run),
+        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare, wait?: a job runs to its end} — runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared. A job (a command with `job`) runs on a worker with a row in the activity stack and returns at once → {job: its activity id (activity.list, activity.cancel), running: true, plugin, command}; with `wait: true` it runs here to its end → its result (a cancelled job is an error). Headless sessions answer a job's catalog reads only with `wait`", always, run),
         cmd!(query "plugin.settings", "Plug-in Settings", [], None, "{id} → {id, fields: [field + value], values: {key: value}, error: why the plug-in's own options are missing | null}; kept for the whole app, defaults for what was never set", always, settings),
         cmd!(query "plugin.setSettings", "Set Plug-in Settings", [], None, "{id, values: {key: value (null: the default)}} — each value checked against its field (numbers clamped); an unknown key or a value that doesn't fit changes nothing → {id, values}", always, set_settings),
         cmd!(query "plugin.suggestMetadata", "Suggest Metadata (Plug-ins)", [], None, "{ids?} — asks metadata providers about the photos → [{plugin, ok: {suggestions}} | {plugin, error}]; writes nothing", always, suggest),
@@ -1357,6 +1477,34 @@ pub(crate) mod tests {
         let path = dir.join(format!("{name}.wasm"));
         std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
         path
+    }
+
+    /// A plug-in's own icon and header, as a pixel filter's: listed, and served by `plugin.picture`.
+    #[test]
+    fn a_plugins_pictures_are_listed_and_served() {
+        let _turn = turn();
+        let mut s = Session::with_demo();
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><rect width='4' height='4'/></svg>";
+        let light = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><rect width='1' height='1'/></svg>";
+        let manifest = json!({"id": "test.pictures", "name": "Pictures", "version": "1.0.0", "icon": svg, "header": {"dark": svg, "light": light}});
+        let info = s.execute("plugin.install", &json!({"path": module_file("pictures", &manifest)})).unwrap();
+        assert_eq!((info["icon"].as_bool(), info["header"].as_bool()), (Some(true), Some(true)));
+        let listed = s.execute("plugin.list", &json!({})).unwrap();
+        let row = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.pictures").unwrap().clone();
+        assert_eq!(row["icon"], true);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "picture": "icon"})).unwrap()["svg"], svg);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures"})).unwrap()["svg"], svg, "the header, dark by default");
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "theme": "light"})).unwrap()["svg"], light);
+        // without pictures: listed as absent, none served
+        let plain = s
+            .execute("plugin.install", &json!({"path": module_file("plain", &json!({"id": "test.plain", "name": "Plain", "version": "1.0.0"}))}))
+            .unwrap();
+        assert_eq!((plain["icon"].as_bool(), plain["header"].as_bool()), (Some(false), Some(false)));
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.plain", "picture": "icon"})).unwrap()["svg"], Value::Null);
+        assert!(s.execute("plugin.picture", &json!({"id": "test.nowhere"})).is_err());
+        for id in ["test.pictures", "test.plain"] {
+            s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+        }
     }
 
     /// `requires`, the version rule and downgrades through the commands the install dialog and

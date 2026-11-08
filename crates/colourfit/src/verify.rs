@@ -136,6 +136,41 @@ fn export_space(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// `xmp` without its `crs:AlreadyApplied` flag (attribute or element). Lightroom marks every export's settings as
+/// already applied, which is right for importing the export itself (its pixels contain them) and makes the sidecar
+/// import skip them; here they are the edit to apply to the raw.
+fn as_edit(xmp: &str) -> String {
+    const NAME: &str = "crs:AlreadyApplied";
+    let mut out = String::with_capacity(xmp.len());
+    let mut rest = xmp;
+    while let Some(i) = rest.find(NAME) {
+        let (before, at) = rest.split_at(i);
+        let after = &at[NAME.len()..];
+        let attr = after.trim_start().strip_prefix('=').map(str::trim_start).and_then(|v| {
+            let q = v.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+            v[1..].find(q).map(|end| &v[1 + end + 1..])
+        });
+        if let Some(tail) = attr {
+            // an attribute: drop it with the space before it
+            out.push_str(before.trim_end_matches(char::is_whitespace));
+            rest = tail;
+        } else if let Some(tail) = before.strip_suffix('<').and(after.strip_prefix('>')).and_then(|a| {
+            let close = format!("</{NAME}>");
+            a.find(&close).map(|end| &a[end + close.len()..])
+        }) {
+            // an element: drop it whole
+            out.push_str(&before[..before.len() - 1]);
+            rest = tail;
+        } else {
+            out.push_str(before);
+            out.push_str(NAME);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Import `raw`, apply the export's settings if it carries them, render a 16-bit TIFF in `space`.
 fn render_ours(raw: &Path, export_xmp: Option<&str>, space: &str, edge: u32) -> std::result::Result<(Vec<u8>, bool), String> {
     use lcc_engine::export::{ExportOptions, export_photo};
@@ -148,7 +183,7 @@ fn render_ours(raw: &Path, export_xmp: Option<&str>, space: &str, edge: u32) -> 
     if let Some(xmp) = export_xmp {
         let photo = s.catalog.photo(id).ok_or("the imported photo is missing")?;
         let target = lcc_engine::crs::Target::for_photo(photo);
-        let sc = lcc_engine::sidecar::parse_sidecar(xmp, target).map_err(|e| format!("the export's settings: {e}"))?;
+        let sc = lcc_engine::sidecar::parse_sidecar(&as_edit(xmp), target).map_err(|e| format!("the export's settings: {e}"))?;
         let op = s.sidecar_op(id, sc).map_err(|e| e.to_string())?;
         s.commit("Settings from the export", op).map_err(|e| e.to_string())?;
         applied = true;
@@ -265,4 +300,35 @@ pub fn text(r: &VerifyReport) -> String {
     }
     s.push_str("\nΔE: per-photo CIEDE2000 of the app's render against the export · ΔL* > 0: the app's render is lighter · ΔC* > 0: more saturated\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::as_edit;
+
+    #[test]
+    fn an_exports_already_applied_flag_is_dropped_and_nothing_else() {
+        let attr = r#"<rdf:Description crs:ProcessVersion="15.4" crs:AlreadyApplied="True" crs:Exposure2012="-1.00"/>"#;
+        assert_eq!(as_edit(attr), r#"<rdf:Description crs:ProcessVersion="15.4" crs:Exposure2012="-1.00"/>"#);
+        let single = "<d crs:AlreadyApplied = 'True'
+   crs:Exposure2012='+1'/>";
+        assert_eq!(
+            as_edit(single),
+            "<d
+   crs:Exposure2012='+1'/>"
+        );
+        let elem = "<d><crs:AlreadyApplied>True</crs:AlreadyApplied><crs:Contrast2012>+10</crs:Contrast2012></d>";
+        assert_eq!(as_edit(elem), "<d><crs:Contrast2012>+10</crs:Contrast2012></d>");
+        // no flag, a truncated one, or the name in text: unchanged, and no panic
+        for s in [
+            "<d crs:Exposure2012=\"+1\"/>",
+            "<d crs:AlreadyApplied=\"Tru",
+            "crs:AlreadyApplied",
+            "<crs:AlreadyApplied>",
+            "",
+            "é crs:AlreadyApplied=é",
+        ] {
+            assert_eq!(as_edit(s), s, "{s:?}");
+        }
+    }
 }

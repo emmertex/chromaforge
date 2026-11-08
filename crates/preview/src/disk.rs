@@ -87,6 +87,25 @@ fn write_fresh(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(bytes)
 }
 
+/// Most bytes of one cache entry read into memory (a thumbnail is a few hundred KB).
+const MAX_ENTRY_BYTES: u64 = 64 << 20;
+
+/// The entry at `path`: the OPENED file must be a regular file within [`MAX_ENTRY_BYTES`], so a link planted in
+/// the cache to an endless source or a FIFO is not read to its end (upstream #3728).
+fn read_regular(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let mut b = Vec::new();
+    f.take(MAX_ENTRY_BYTES.saturating_add(1)).read_to_end(&mut b)?;
+    if u64::try_from(b.len()).is_ok_and(|n| n > MAX_ENTRY_BYTES) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "cache entry too large"));
+    }
+    Ok(b)
+}
+
 pub struct DiskCache {
     dir: PathBuf,
     /// Bytes the cache may hold (changed in place by [`DiskCache::set_budget`]).
@@ -173,13 +192,13 @@ impl DiskCache {
         if !p.parent().is_some_and(is_real_dir) {
             return None;
         }
-        if let Ok(bytes) = std::fs::read(&p) {
+        if let Ok(bytes) = read_regular(&p) {
             return Some((p, bytes));
         }
         let old = self.named(key, OLD_EXT);
-        let Ok(bytes) = std::fs::read(&old) else {
+        let Ok(bytes) = read_regular(&old) else {
             // (taken over by the tidying between the two looks: it is under the new name now)
-            return std::fs::read(&p).ok().map(|bytes| (p, bytes));
+            return read_regular(&p).ok().map(|bytes| (p, bytes));
         };
         // (taken over; if that can't be done it is read where it is, and tried again next time)
         match std::fs::rename(&old, &p) {
@@ -250,7 +269,7 @@ impl DiskCache {
         if !p.parent().is_some_and(is_real_dir) {
             return None;
         }
-        let Ok(bytes) = std::fs::read(&p) else {
+        let Ok(bytes) = read_regular(&p) else {
             self.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         };

@@ -1,9 +1,8 @@
-//! The catalog's steps of the desktop app's start and exit (fork-owned; `main.rs` calls each once).
+//! The library's steps of the desktop app's start and exit (fork-owned; `main.rs` calls each once).
 
 use lcc_engine::Session;
-use lcc_ui_egui::LccApp;
 
-/// The catalog's backup schedule (Catalog Settings): checked on exit, like Lightroom.
+/// The library's backup schedule (Library Settings): checked on exit, like Lightroom.
 pub fn backup_if_due(session: &mut Session) {
     match session.backup_catalog_if_due() {
         Ok(Some(dir)) => log::info!("catalog backed up to {}", dir.display()),
@@ -12,19 +11,22 @@ pub fn backup_if_due(session: &mut Session) {
     }
 }
 
-/// The catalog chosen to open at startup (the chooser's default), if it still exists.
-pub fn startup_catalog() -> Option<std::path::PathBuf> {
-    let file = lcc_engine::config::recent_catalogs_file().filter(|_| !lcc_brand::env_is_set("NO_PREFS") && !lcc_brand::env_is_set("LIBRARY"))?;
-    let d = lcc_engine::catalog::library::RecentCatalogs::load(&file).default?;
-    lcc_engine::catalog::library::resolve(&d).ok()
-}
-
-/// File ▸ Open Recent Catalog and the startup chooser (not for throwaway sessions).
-pub fn remember_recent(app: &mut LccApp, in_memory: bool) {
-    if !in_memory && !lcc_brand::env_is_set("NO_PREFS") {
-        app.catalog_ui.recent_file = lcc_engine::config::recent_catalogs_file();
-        if let Some(dir) = app.session.catalog_dir().map(std::path::Path::to_path_buf) {
-            app.catalog_ui.touch(&dir);
+/// The recent list of older versions (`recent-catalogs.json`), carried over once into the settings
+/// (`lcc_ui_egui::catalog_ui::carry_over_recent_catalogs`), before the launch decides what to open:
+/// its "always show" choice then already asks. Only into settings read from their file that this
+/// session may write (not `--memory`, `<PREFIX>_NO_PREFS` or an unreadable `ui.json`; it waits for
+/// a later start then). The settings are written at once with `save`, and the old file is set aside
+/// only once that worked: otherwise the next start carries it over again.
+pub fn carry_over_recent(prefs: Option<&mut lcc_ui_egui::UiState>, writable: bool, save: impl FnOnce(&lcc_ui_egui::UiState) -> Result<(), String>) {
+    use lcc_ui_egui::catalog_ui::{CarryOver, carry_over_recent_catalogs, set_aside_recent_catalogs};
+    if !writable || lcc_brand::env_is_set("NO_PREFS") {
+        return;
+    }
+    let (Some(ui), Some(file)) = (prefs, lcc_engine::config::recent_catalogs_file()) else { return };
+    if let CarryOver::Carried { .. } = carry_over_recent_catalogs(&mut ui.settings, &file) {
+        match save(ui) {
+            Ok(()) => set_aside_recent_catalogs(&file),
+            Err(e) => log::warn!("recent catalogs: kept until the settings can be saved: {e}"),
         }
     }
 }
@@ -47,9 +49,9 @@ pub fn is_foreign(dir: &std::path::Path) -> bool {
 }
 
 /// Decide what to open at startup. `explicit`: `--library` or `<PREFIX>_LIBRARY` (always opened,
-/// or created). `remembered`: the catalogs the settings name (the startup catalog of the recent
-/// list, then the library of the preferences). `default`: the default library folder, opened only
-/// when it already holds a catalog of this app (never created silently).
+/// or created). `remembered`: the libraries the settings name (the library last opened). `default`:
+/// the default library folder, opened only when it already holds a library of this app (never
+/// created silently).
 pub fn decide(explicit: Option<std::path::PathBuf>, remembered: &[Option<std::path::PathBuf>], default: Option<std::path::PathBuf>) -> Startup {
     if let Some(d) = explicit {
         return Startup::Open(d);
