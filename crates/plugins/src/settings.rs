@@ -207,6 +207,35 @@ impl SettingsStore {
         serde_json::to_vec_pretty(&FileRef { format: FORMAT, settings: &self.settings, dialogs: &self.dialogs })
     }
 
+    /// The store as kept with its plug-in's previous version ([`crate::Manager::rollback`]).
+    pub(crate) fn snapshot(&self) -> Value {
+        serde_json::json!({"format": FORMAT, "settings": self.settings, "dialogs": self.dialogs})
+    }
+
+    /// The file `snapshot` ([`SettingsStore::snapshot`]) is written as, or why this version can't
+    /// take it back.
+    pub(crate) fn snapshot_file(snapshot: &Value) -> std::result::Result<Vec<u8>, String> {
+        let f: File = serde_json::from_value(snapshot.clone()).map_err(|e| e.to_string())?;
+        if f.format > FORMAT {
+            return Err(format!("written by a newer version (format {})", f.format));
+        }
+        let bytes = serde_json::to_vec_pretty(&f).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_SETTINGS_BYTES {
+            return Err(format!("over {MAX_SETTINGS_BYTES} bytes"));
+        }
+        Ok(bytes)
+    }
+
+    /// Takes `snapshot` back, already written to the store's file: a change of the settings.
+    pub(crate) fn restored(&mut self, snapshot: &Value) {
+        let f: File = serde_json::from_value(snapshot.clone()).unwrap_or_default();
+        self.settings = f.settings;
+        self.dialogs = f.dialogs;
+        self.damaged = false;
+        self.dirty = false;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     fn too_big(&self) -> bool {
         self.serialized().map_or(true, |b| b.len() > MAX_SETTINGS_BYTES)
     }

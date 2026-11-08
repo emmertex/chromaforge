@@ -68,6 +68,8 @@ pub struct Filter {
     analyze: bool,
     /// The module exports the optional `pc_merge` (ABI v1.1 proposal): one measurement from several.
     merge: bool,
+    /// The manifest JSON as the module gave it.
+    manifest_json: String,
 }
 
 impl std::fmt::Debug for Filter {
@@ -169,6 +171,7 @@ impl Filter {
             source: None,
             analyze: false,
             merge: false,
+            manifest_json: String::new(),
         };
         let deadline = Deadline::new(&p.limits, None);
         let mut live = p.instantiate(&deadline)?;
@@ -186,6 +189,7 @@ impl Filter {
         let text =
             live.memory.data(&live.store).get(ptr..ptr.saturating_add(len)).ok_or_else(|| Error::Abi("pc_manifest points outside memory".into()))?;
         p.manifest = Manifest::parse(text)?;
+        p.manifest_json = String::from_utf8_lossy(text).into_owned();
         // The other exports must exist with the right types.
         live.func::<i32, i32>("pc_alloc")?;
         live.func::<FilterArgs, i32>("pc_filter")?;
@@ -208,6 +212,11 @@ impl Filter {
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// The manifest JSON as the module gave it (fields the host doesn't read included).
+    pub fn manifest_json(&self) -> &str {
+        &self.manifest_json
     }
     pub fn id(&self) -> &str {
         &self.manifest.id

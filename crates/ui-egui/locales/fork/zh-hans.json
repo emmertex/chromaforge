@@ -802,6 +802,7 @@
   "Keep Square": "保持正方形",
   "Keep both": "保留两者",
   "Keep in Favorites": "保留在收藏夹中",
+  "Keep its data and settings, for when it's installed again": "保留其数据和设置，以便再次安装时使用",
   "Keep keys in": "密钥保存位置",
   "Keeps image quality consistent while adjusting. When an edit is too slow for that, the image updates faster while a slider moves and sharpens as soon as it stops.": "调整时保持一致的图像质量。如果编辑太慢无法做到，拖动滑块时图像会以更快的方式更新，停下后立即恢复清晰。",
   "Key Storage Status": "密钥存储状态",

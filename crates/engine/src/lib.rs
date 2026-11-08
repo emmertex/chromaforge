@@ -2657,6 +2657,8 @@ mod tests_plugin_develop;
 #[cfg(test)]
 mod tests_plugin_filters;
 #[cfg(test)]
+mod tests_plugin_installs;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;
 #[cfg(test)]

@@ -21,7 +21,8 @@
 //! - A program a plug-in may start (`programs`) is granted only here, by the user: the install
 //!   button and the permission checkboxes go through [`lcc_engine::cmd::plugins::install_by_user`]
 //!   and [`lcc_engine::cmd::plugins::grant_by_user`], which no command reaches. Each such row
-//!   shows where the program is installed.
+//!   shows where the program is installed. Going back to the previous version from the page
+//!   ([`lcc_engine::cmd::plugins::rollback_by_user`]) keeps the programs granted, too.
 //!
 //! Every other action is an engine `plugin.*` command. State lives in a static here (no field on the
 //! app), so the shell only needs the calls in `run`, `show`, `menu_items`, `after_export` and
@@ -119,7 +120,18 @@ struct State {
     tab: Tab,
     /// The selected plug-in's settings, when it declares any.
     page: Option<Page>,
+    /// Remove was clicked on this entry's page: it asks first.
+    removing: Option<Removing>,
     message: String,
+}
+
+/// The question Remove asks before anything is deleted.
+#[derive(Clone)]
+struct Removing {
+    /// The entry being removed ([`Entry::id`]).
+    entry: String,
+    /// "Keep its data and settings" is ticked (plug-ins only: a filter keeps none).
+    keep_data: bool,
 }
 
 fn key() -> egui::Id {
@@ -456,9 +468,12 @@ fn entries(list: &Value) -> Vec<Entry> {
             })
         })
         .collect();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|e| e.id.clone()).collect();
     out.extend(list["failed"].as_array().into_iter().flatten().filter_map(|f| {
-        let id = f["id"].as_str().filter(|i| !i.is_empty())?.to_string();
-        Some(Entry { name: id.clone(), version: String::new(), filter: f["kind"] == "filter", mark: Mark::Failed, info: f.clone(), id })
+        let name = f["id"].as_str().filter(|i| !i.is_empty())?.to_string();
+        // another module has its id (the first by file name loaded): its row goes by its file
+        let id = if seen.insert(name.clone()) { name.clone() } else { f["file"].as_str().unwrap_or(&name).to_string() };
+        Some(Entry { name, version: String::new(), filter: f["kind"] == "filter", mark: Mark::Failed, info: f.clone(), id })
     }));
     // plug-ins first; failures after the ones that loaded, each section by name
     out.sort_by_key(|e| (e.filter, e.mark == Mark::Failed, e.name.to_lowercase()));
@@ -876,6 +891,13 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         actions.push(("plugins.pick", Value::Null));
                     }
                 });
+                // modules past the most the folder loads: not looked at, so they have no rows
+                if let Some(n) = list["skipped"].as_u64().filter(|n| *n > 0) {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        tr_format!("{count} modules in the plug-ins folder weren't loaded: it holds more than it can load.", count = n),
+                    );
+                }
                 // a failure that isn't a module (the folder couldn't be opened) has no row
                 for f in list["failed"].as_array().into_iter().flatten().filter(|f| f["id"].as_str().is_none_or(str::is_empty)) {
                     ui.colored_label(
@@ -908,7 +930,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         ui.set_max_width(w);
                         if let Some(e) = selected {
                             egui::ScrollArea::vertical().id_salt("plugin-page").auto_shrink([false, false]).max_height(BODY_H).show(ui, |ui| {
-                                page_ui(ui, e, &mut s.tab, s.page.as_mut(), &installs, &mut actions);
+                                page_ui(ui, e, &mut s.tab, s.page.as_mut(), &mut s.removing, &installs, &mut actions);
                             });
                         }
                     });
@@ -982,7 +1004,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Err(e) => s.message = e,
                 }
             }
-            // only these two can grant programs: the user's own clicks, never a command
+            "plugins.askRemove" => {
+                s.removing = p["entry"].as_str().map(|entry| Removing { entry: entry.to_string(), keep_data: false });
+            }
+            // only these three can grant or keep programs: the user's own clicks, never a command
             "plugins.userInstall" => {
                 if let Err(e) = lcc_engine::cmd::plugins::install_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
@@ -990,6 +1015,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             }
             "plugins.userGrant" => {
                 if let Err(e) = lcc_engine::cmd::plugins::grant_by_user(&mut app.session, &p) {
+                    s.message = e.to_string();
+                }
+            }
+            "plugins.userRollback" => {
+                if let Err(e) = lcc_engine::cmd::plugins::rollback_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
                 }
             }
@@ -1023,7 +1053,9 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
     // what stops the install (plugin.install refuses it too): features this version lacks, a bad version
     let missing: Vec<String> = pending.info["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
     let version_error = pending.info["versionError"].as_str().map(str::to_string);
-    let blocked = !missing.is_empty() || version_error.is_some();
+    // a module of the other kind (plug-in or pixel filter) has its id
+    let conflict = pending.info["conflict"].as_str().map(str::to_string);
+    let blocked = !missing.is_empty() || version_error.is_some() || conflict.is_some();
     let downgrade = pending.info["downgrade"].as_bool() == Some(true);
     let mut keep = true;
     let window_id = key().with("approve");
@@ -1045,6 +1077,14 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                 } else if installed.is_object() {
                     ui.label(format!("{} {old}", tr("Updates the installed version")));
                 }
+                // fields this version doesn't know: a typo, or a field from a newer app
+                let unknown: Vec<&str> = pending.info["unknownFields"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if !unknown.is_empty() {
+                    ui.label(tr_format!(
+                        "Its manifest has fields this version doesn't know, which it ignores: {fields}",
+                        fields = unknown.join(", ")
+                    ));
+                }
                 ui.separator();
                 if blocked {
                     if !missing.is_empty() {
@@ -1054,7 +1094,7 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                         }
                         ui.label(tr("Install a newer version of the app to use it."));
                     }
-                    if let Some(e) = &version_error {
+                    for e in version_error.iter().chain(&conflict) {
                         ui.label(format!("{} {e}", tr("It can't be installed:")));
                     }
                     return;
@@ -1365,7 +1405,15 @@ fn entry_row(ui: &mut egui::Ui, e: &Entry, selected: bool) -> bool {
 }
 
 /// The selected entry's page: its header, then what its kind shows.
-fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
+fn page_ui(
+    ui: &mut egui::Ui,
+    e: &Entry,
+    tab: &mut Tab,
+    page: Option<&mut Page>,
+    removing: &mut Option<Removing>,
+    installs: &Installs,
+    actions: &mut Vec<(&'static str, Value)>,
+) {
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         super::plugin_icon::show(ui, &e.id, 52.0);
@@ -1383,6 +1431,14 @@ fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>,
         });
     });
     ui.add_space(6.0);
+    // another entry's question goes when this page shows
+    if removing.as_ref().is_some_and(|r| r.entry != e.id) {
+        *removing = None;
+    }
+    if removing.is_some() {
+        confirm_remove(ui, e, removing, actions);
+        ui.add_space(6.0);
+    }
     match (e.mark, e.filter) {
         (Mark::Failed, _) => failed_page(ui, e, actions),
         (_, true) => filter_page(ui, e, actions),
@@ -1407,7 +1463,14 @@ fn plugin_page(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Pa
             actions.push(("plugin.enable", json!({"id": id, "enabled": on})));
         }
         if Button::new("Remove").widget(format!("button:pluginRemove:{id}")).show(ui).clicked() {
-            actions.push(("plugin.uninstall", json!({"id": id})));
+            actions.push(("plugins.askRemove", json!({"entry": id})));
+        }
+        // the version its last update replaced
+        if let Some(v) = e.info["previousVersion"].as_str() {
+            let label = tr_format!("Go Back to Version {version}", version = v);
+            if Button::new(&label).widget(format!("button:pluginRollback:{id}")).show(ui).clicked() {
+                actions.push(("plugins.userRollback", json!({"id": id})));
+            }
         }
     });
     ui.add_space(6.0);
@@ -1523,7 +1586,7 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     use crate::button::Button;
     let p = &e.info;
     if Button::new("Remove").widget(format!("button:pluginRemove:{}", e.id)).show(ui).clicked() {
-        actions.push(("plugin.uninstall", json!({"id": e.id})));
+        actions.push(("plugins.askRemove", json!({"entry": e.id})));
     }
     ui.add_space(6.0);
     if let Some(d) = p["description"].as_str().filter(|d| !d.is_empty()) {
@@ -1588,7 +1651,43 @@ fn failed_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     ui.add_space(6.0);
     // a module that didn't load can still be removed
     if Button::new("Remove").widget(format!("button:pluginRemoveFailed:{}", e.id)).show(ui).clicked() {
-        actions.push(("plugin.uninstall", json!({"id": e.id})));
+        actions.push(("plugins.askRemove", json!({"entry": e.id})));
+    }
+}
+
+/// Remove's question: Remove (keeping a plug-in's data and settings when ticked) or Cancel, which
+/// changes nothing.
+fn confirm_remove(ui: &mut egui::Ui, e: &Entry, removing: &mut Option<Removing>, actions: &mut Vec<(&'static str, Value)>) {
+    use crate::button::{Button, Kind};
+    let Some(r) = removing.as_mut() else { return };
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let mut done = false;
+    egui::Frame::NONE.fill(t.inset).stroke(egui::Stroke::new(1.0, t.caution.gamma_multiply(0.7))).corner_radius(4.0).inner_margin(8).show(ui, |ui| {
+        ui.label(tr_format!("Remove {name}?", name = e.name));
+        if !e.filter {
+            let c = ui.checkbox(&mut r.keep_data, tr("Keep its data and settings, for when it's installed again"));
+            crate::widgets::register(ui.ctx(), format!("pluginKeepData:{}", e.id), c.rect);
+        }
+        ui.horizontal(|ui| {
+            if Button::new("Remove").kind(Kind::Primary).widget(format!("button:pluginRemoveConfirm:{}", e.id)).show(ui).clicked() {
+                // a module that didn't load goes by its file, so only it goes when another module has its id
+                let mut p = match (e.mark, e.info["file"].as_str()) {
+                    (Mark::Failed, Some(file)) => json!({"file": file}),
+                    _ => json!({"id": e.id}),
+                };
+                if !e.filter {
+                    p["keepData"] = json!(r.keep_data);
+                }
+                actions.push(("plugin.uninstall", p));
+                done = true;
+            }
+            if Button::new("Cancel").widget(format!("button:pluginRemoveCancel:{}", e.id)).show(ui).clicked() {
+                done = true;
+            }
+        });
+    });
+    if done {
+        *removing = None;
     }
 }
 
