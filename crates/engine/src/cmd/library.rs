@@ -431,6 +431,52 @@ fn step_in(s: &mut Session, d: isize, within: bool) -> Result<Value> {
     Ok(json!({"active": vis[next].0}))
 }
 
+/// `library.nextUnrated` / `library.prevUnrated` (ported from upstream #3904 in our own form): jump to the next
+/// (`d > 0`) or previous photo of the view with no rating, wrapping round. With several photos selected the target is
+/// added to the selection, which is kept. `{"allRated": true}` when nothing in the view is unrated.
+fn step_unrated(s: &mut Session, d: isize) -> Result<Value> {
+    let vis = s.visible_cloned();
+    if vis.is_empty() {
+        return ok();
+    }
+    let unrated: Vec<bool> = vis.iter().map(|id| s.catalog.photo(*id).is_some_and(|p| p.rating == 0)).collect();
+    if !unrated.iter().any(|u| *u) {
+        return Ok(json!({"allRated": true}));
+    }
+    let n = vis.len();
+    let cur = s.selection.active.and_then(|a| vis.iter().position(|x| *x == a));
+    // Walk away from the current photo (from the near end when there is none), wrapping once round; the current
+    // photo is the last candidate, so the only unrated photo stays where it is.
+    let target = (1..=n).find_map(|k| {
+        let i = match (cur, d >= 0) {
+            (Some(c), true) => c.checked_add(k)? % n,
+            (Some(c), false) => c.checked_add(n.checked_sub(k % n)?)? % n,
+            (None, true) => k.checked_sub(1)?,
+            (None, false) => n.checked_sub(k)?,
+        };
+        unrated.get(i).copied().unwrap_or(false).then_some(i)
+    });
+    let Some(id) = target.and_then(|i| vis.get(i)).copied() else {
+        return Ok(json!({"allRated": true}));
+    };
+    if s.selection.active == Some(id) {
+        return Ok(json!({"active": id.0}));
+    }
+    s.end_interaction()?;
+    let (was, was_mask) = (s.selection.active, s.active_mask);
+    if s.selection.ids.len() > 1 {
+        if !s.selection.contains(id) {
+            s.selection.ids.push(id);
+        }
+        s.selection.active = Some(id);
+    } else {
+        s.selection = Selection::single(id);
+    }
+    s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+    s.active_spot = None;
+    Ok(json!({"active": id.0}))
+}
+
 /// `library.up` / `library.down`: how many photos to move (at least 1, capped so hostile input
 /// can't overflow).
 fn row_step(p: &Value) -> isize {
@@ -1071,6 +1117,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "{} — with several photos selected: the previous selected one (wrapping round), the selection kept",
             always,
             |s, _| step_in(s, -1, true)
+        ),
+        cmd!(
+            "library.nextUnrated",
+            "Next Unrated Photo",
+            [],
+            Some("Cmd+Alt+Right"),
+            "{} — the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, 1)
+        ),
+        cmd!(
+            "library.prevUnrated",
+            "Previous Unrated Photo",
+            [],
+            Some("Cmd+Alt+Left"),
+            "{} — the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, -1)
         ),
         cmd!(
             "library.down",
@@ -2766,6 +2830,10 @@ mod rated_out_tests;
 #[cfg(test)]
 #[path = "library/tests_step_selection.rs"]
 mod step_selection_tests;
+
+#[cfg(test)]
+#[path = "library/tests_next_unrated.rs"]
+mod next_unrated_tests;
 
 #[cfg(test)]
 #[path = "library/tests_clear_label.rs"]
