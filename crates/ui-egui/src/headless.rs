@@ -939,6 +939,52 @@ mod tests {
         Headless::new(app, size, 1.0)
     }
 
+    /// Upstream #1639: plain filmstrip clicks in Survey keep the surveyed group (a new photo joins, a
+    /// surveyed one only becomes active); ⌘-click still removes and Shift-click still extends.
+    #[test]
+    fn survey_filmstrip_clicks_keep_the_group() {
+        let mut h = demo([1200.0, 760.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        assert!(ids.len() >= 5);
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0]]}}), t);
+        h.request("ui.set", json!({"view": "survey"}), t);
+        h.settle(SETTLE);
+        for id in &ids[1..4] {
+            h.request("ui.clickWidget", json!({"id": format!("film:{id}")}), t);
+            h.settle(SETTLE);
+        }
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[1])}), t);
+        h.settle(SETTLE);
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..4]));
+        assert_eq!(state["active"], ids[1]);
+    }
+
+    /// Upstream #3716: a right-click on a surveyed photo makes it the active one (the selection stays), and P
+    /// flags as Pick with the Crop panel open, where X is the crop aspect swap.
+    #[test]
+    fn survey_right_click_activates_and_p_flags_with_crop_open() {
+        let mut h = demo([1200.0, 760.0]);
+        let t = Duration::from_secs(10);
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        h.request("engine.execute", json!({"command": "library.select", "params": {"ids": ids[..3]}}), t);
+        h.request("ui.set", json!({"view": "survey"}), t);
+        h.settle(SETTLE);
+        h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[2]), "button": "right"}), t);
+        h.settle(SETTLE);
+        let state = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(state["selection"], json!(ids[..3]));
+        assert_eq!(state["active"], ids[2]);
+        h.app.ui.right = crate::state::RightPanel::Crop;
+        h.request("ui.key", json!({"key": "p"}), t);
+        h.settle(SETTLE);
+        let flag = h.app.session.catalog.photo(lcc_catalog::PhotoId(ids[2])).map(|p| p.flag);
+        assert_eq!(flag, Some(lcc_catalog::Flag::Pick));
+    }
+
     /// Agents cut, copy and paste in a text field as the system does for ⌘X / ⌘C / ⌘V
     /// (`ui.clipboard`), and `ui.inspect` → `copied` says what the UI last copied.
     #[test]
