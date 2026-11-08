@@ -1848,22 +1848,91 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": new_group}))
         }),
-        cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
-            let c = "preset.deleteGroup";
-            let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
-            if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
-                return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
+        cmd!(
+            "preset.copy",
+            "Copy Presets to Folder",
+            [],
+            None,
+            "{ids: [presetId], group} → {ids: [new presetId], skipped} — user presets with the same settings under a new id, built-in presets included, unstarred; a preset identical to one already in the folder is skipped",
+            always,
+            |s, p| {
+                let c = "preset.copy";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                let group = existing_preset_group(s, group);
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let copies: Vec<Preset> = s
+                    .presets
+                    .iter()
+                    .filter(|x| ids.contains(&x.id))
+                    .map(|x| Preset {
+                        id: String::new(),
+                        name: x.name.clone(),
+                        group: group.clone(),
+                        settings: x.settings.clone(),
+                        favorite: false,
+                        builtin: false,
+                    })
+                    .collect();
+                if copies.is_empty() {
+                    return Err(bad(c, "none of these presets exist"));
+                }
+                let asked = copies.len();
+                let added = s.add_presets(copies);
+                let skipped = asked.saturating_sub(added.len());
+                s.presets.bump();
+                Ok(json!({"ids": added, "skipped": skipped}))
             }
-            let prefix = format!("{group}/");
-            s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
-            let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
-            let removed = gone.len();
-            s.presets.retain(|q| !gone.contains(&q.id));
-            s.preset_at_import.retain(|x| !gone.contains(x));
-            s.preset_hidden.retain(|x| !gone.contains(x));
-            s.presets.bump();
-            Ok(json!({"deleted": removed}))
-        }),
+        ),
+        cmd!(
+            "preset.deleteMany",
+            "Delete Presets",
+            [],
+            None,
+            "{ids: [presetId]} → {deleted, skipped} — user presets; built-in and unknown ids are skipped",
+            always,
+            |s, p| {
+                let c = "preset.deleteMany";
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let gone: std::collections::HashSet<&String> =
+                    s.presets.iter().filter(|q| !q.builtin && ids.contains(&q.id)).map(|q| &q.id).collect();
+                let gone: Vec<String> = gone.into_iter().cloned().collect();
+                s.presets.retain(|q| !gone.contains(&q.id));
+                s.preset_at_import.retain(|x| !gone.contains(x));
+                s.preset_hidden.retain(|x| !gone.contains(x));
+                s.presets.bump();
+                Ok(json!({"deleted": gone.len(), "skipped": ids.len().saturating_sub(gone.len())}))
+            }
+        ),
+        cmd!(
+            "preset.deleteGroup",
+            "Delete Preset Folder",
+            [],
+            None,
+            "{group, expect?: how many presets it should hold} — refused when `expect` is given and wrong",
+            always,
+            |s, p| {
+                let c = "preset.deleteGroup";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
+                    return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
+                }
+                if let Some(expect) = p.get("expect").and_then(Value::as_u64) {
+                    let held = s.presets.iter().filter(|q| in_group(q, group)).count() as u64;
+                    if held != expect {
+                        return Err(bad(c, format!("the folder holds {held} presets, not {expect}: nothing deleted")));
+                    }
+                }
+                let prefix = format!("{group}/");
+                s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
+                let gone: Vec<String> = s.presets.iter().filter(|q| in_group(q, group)).map(|q| q.id.clone()).collect();
+                let removed = gone.len();
+                s.presets.retain(|q| !gone.contains(&q.id));
+                s.preset_at_import.retain(|x| !gone.contains(x));
+                s.preset_hidden.retain(|x| !gone.contains(x));
+                s.presets.bump();
+                Ok(json!({"deleted": removed}))
+            }
+        ),
         cmd!(
             "preset.update",
             "Update Preset with Current Settings",
