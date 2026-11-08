@@ -1945,7 +1945,10 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                 }
                 let sidecar = sidecar.map(|sc| sc.resolve_label(&s.catalog)).filter(|sc| *sc != crate::sidecar::SidecarData::default());
                 // the photo is upright as the file's own orientation turns it, when the file states one
-                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData { orientation: info.orientation.or(sc.orientation), ..sc });
+                let sidecar = sidecar.map(|sc| crate::sidecar::SidecarData {
+                    orientation: info.orientation.or(sc.orientation),
+                    ..sc.turn_from(info.orientation).crop_from(info.orientation, (info.width, info.height))
+                });
                 // a copy is catalogued under its new name
                 let name = Path::new(&stored).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
                 let mut p = Photo::new(id, Source::File { path: stored }, &name, &info.format, info.width, info.height, &now);
