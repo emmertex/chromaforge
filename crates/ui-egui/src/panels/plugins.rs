@@ -1320,11 +1320,16 @@ fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Loads the own icon of every plug-in and filter whose manifest carries one (`plugin.picture`),
-/// once per module: the rows and pages then draw it in place of the identicon.
+/// once per module: the rows and pages then draw it in place of the identicon. A module without
+/// one (an update or a rollback to a version without a picture) clears the one kept for its id.
 fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
-    for e in entries.iter().filter(|e| e.info["icon"].as_bool() == Some(true)) {
+    for e in entries {
         let hash = e.info["moduleHash"].as_str().unwrap_or("");
         if super::plugin_icon::custom_is_current(ctx, &e.id, hash) {
+            continue;
+        }
+        if e.info["icon"].as_bool() != Some(true) {
+            super::plugin_icon::keep_custom(ctx, &e.id, hash, None);
             continue;
         }
         let tex = app
@@ -1350,12 +1355,17 @@ fn header_key(id: &str, dark: bool) -> egui::Id {
 
 /// Loads the header picture of every plug-in whose manifest carries one (`plugin.picture`), once
 /// per module and interface theme: its page and its command dialogs draw it in place of its name.
+/// A module without one clears the one kept for its id.
 fn own_headers(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
     let dark = ctx.theme() == egui::Theme::Dark;
-    for e in entries.iter().filter(|e| !e.filter && e.info["header"].as_bool() == Some(true)) {
+    for e in entries.iter().filter(|e| !e.filter) {
         let hash = e.info["moduleHash"].as_str().unwrap_or("").to_string();
         let key = header_key(&e.id, dark);
         if ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(key)).is_some_and(|(h, _)| h == hash) {
+            continue;
+        }
+        if e.info["header"].as_bool() != Some(true) {
+            ctx.data_mut(|d| d.insert_temp::<(String, Option<egui::TextureHandle>)>(key, (hash, None)));
             continue;
         }
         let theme = if dark { "dark" } else { "light" };

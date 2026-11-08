@@ -761,3 +761,30 @@ fn remove_keeps_the_settings_when_asked() {
     assert!(removed, "the plug-in went");
     assert!(kept, "its settings stayed");
 }
+
+/// Going back to a version without a header picture: the page shows the plug-in's name again, not
+/// the newer version's picture.
+#[test]
+fn going_back_drops_a_picture_the_old_version_lacks() {
+    let _turn = turn();
+    let dir = folder("rollback-pictures");
+    let plugins = dir.join("plugins");
+    let _ = std::fs::remove_dir_all(&plugins);
+    let mut h = app();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&plugins).unwrap());
+    let id = "test.mgr.pictured";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 2'><rect width='8' height='2'/></svg>";
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "pictured-1", &json!({"id": id, "name": "Pictured", "version": "1.0.0"}))}));
+    let v2 = json!({"id": id, "name": "Pictured", "version": "2.0.0", "icon": svg, "header": svg});
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "pictured-2", &v2)}));
+    let names = |h: &Headless| h.painted_text().iter().filter(|t| t.as_str() == "Pictured").count();
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    let with_header = names(&h);
+    click(&mut h, &format!("button:pluginRollback:{id}"));
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    let after = names(&h);
+    exec(&mut h, "plugin.uninstall", json!({"id": id}));
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(after, with_header + 1, "the page's name comes back in place of the header ({with_header} before, {after} after)");
+}
