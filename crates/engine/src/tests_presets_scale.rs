@@ -102,6 +102,32 @@ fn importing_thousands_of_presets_is_not_quadratic() {
     assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
 }
 
+/// Presets sharing a name and id all get unique ids in one call, and the result says which of the
+/// batch were skipped as already present.
+#[test]
+fn presets_sharing_a_name_and_id_get_unique_ids_and_repeats_are_reported() {
+    let mut s = Session::new();
+    let same: Vec<Preset> = (0..5_000)
+        .map(|i| Preset {
+            id: "user.x".into(),
+            name: "Look".into(),
+            group: "Coll".into(),
+            settings: json!({"light": {"exposure": i}}),
+            favorite: false,
+            builtin: false,
+        })
+        .collect();
+    let each = s.add_presets_each(same);
+    assert_eq!(each.len(), 5_000);
+    assert!(each.iter().all(Option::is_some));
+    let ids: std::collections::HashSet<_> = s.presets.iter().filter(|p| p.group == "Coll").map(|p| p.id.as_str()).collect();
+    assert_eq!(ids.len(), 5_000);
+    let Some(last) = s.presets.last().cloned() else { return };
+    let again = s.add_presets_each(vec![last.clone(), Preset { settings: json!({"light": {"exposure": -1}}), ..last }]);
+    assert_eq!(again.first(), Some(&None));
+    assert!(again.get(1).is_some_and(Option::is_some));
+}
+
 /// With the shared settings store (`Library Store`), a command that leaves the presets alone
 /// doesn't copy or serialize them: shared.json is checked after every command, and building it
 /// from a deep copy of every preset made each command (and the frame loop) take seconds with a
