@@ -37,8 +37,22 @@ pub fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
         return None;
     }
-    let d: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let d = dot(a, b);
     d.is_finite().then_some(d)
+}
+
+/// The dot product of two vectors of the same length, summed in eight lanes so the compiler can use the processor's
+/// vector instructions (one running sum can't be: each addition waits for the one before). The result differs from a
+/// plain running sum only in the last bits.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let mut lanes = [0f32; 8];
+    let ((ca, ra), (cb, rb)) = (a.as_chunks::<8>(), b.as_chunks::<8>());
+    for (x, y) in ca.iter().zip(cb) {
+        for ((l, x), y) in lanes.iter_mut().zip(x).zip(y) {
+            *l += x * y;
+        }
+    }
+    lanes.iter().sum::<f32>() + ra.iter().zip(rb).map(|(x, y)| x * y).sum::<f32>()
 }
 
 /// Rank the people in `gallery` (a name and one face's embedding per entry; a person appears once per face),
@@ -76,6 +90,34 @@ pub fn rank_top(query: &[f32], gallery: &[(&str, &[f32])], top: usize) -> Vec<Ra
     out
 }
 
+/// One person's score for `query`, as [`rank_top`] gives it, when all of `gallery` is that person: the mean of the `top`
+/// (1 to [`MAX_TOP_FACES`]) faces most like it, or of all of them when they have fewer. `None` when no face compares.
+/// Made for scoring many faces against one person: no names to group by and nothing allocated, so it can run on
+/// every core.
+pub fn person_score(query: &[f32], gallery: &[&[f32]], top: usize) -> Option<f32> {
+    let top = top.clamp(1, MAX_TOP_FACES);
+    // the best similarities so far, highest first
+    let mut best = [f32::NEG_INFINITY; MAX_TOP_FACES];
+    let mut seen = 0usize;
+    for face in gallery {
+        let Some(c) = cosine(query, face) else { continue };
+        seen = seen.saturating_add(1);
+        // insert `c` where it ranks among the `top` best; the lowest falls off the end
+        if let Some(window) = best.get_mut(..top)
+            && let Some(at) = window.iter().position(|b| c > *b)
+            && let Some(tail) = window.get_mut(at..)
+        {
+            tail.rotate_right(1);
+            if let Some(first) = tail.first_mut() {
+                *first = c;
+            }
+        }
+    }
+    let n = seen.min(top);
+    let kept = best.get(..n)?;
+    (n > 0).then(|| kept.iter().sum::<f32>() / n as f32)
+}
+
 /// The best person if they pass both bars: a score of at least `threshold`, and at least `margin` ahead of the
 /// next person (when there is one).
 pub fn suggest(ranked: &[Ranked], threshold: f32, margin: f32) -> Option<Suggestion> {
@@ -90,6 +132,39 @@ pub fn suggest(ranked: &[Ranked], threshold: f32, margin: f32) -> Option<Suggest
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_persons_score_is_the_one_ranking_gives_them() {
+        // pseudo-random unit vectors, the same on every run
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let mut face = || unit_vec(&(0..19).map(|_| next()).collect::<Vec<_>>());
+        let gallery: Vec<Vec<f32>> = (0..40).map(|_| face()).collect();
+        let refs: Vec<&[f32]> = gallery.iter().map(Vec::as_slice).collect();
+        let named: Vec<(&str, &[f32])> = refs.iter().map(|e| ("Ann", *e)).collect();
+        for top in [1, 2, 5, 8] {
+            for _ in 0..30 {
+                let q = face();
+                let ranked = rank_top(&q, &named, top);
+                let score = person_score(&q, &refs, top).unwrap();
+                assert!((score - ranked[0].score).abs() < 1e-5, "{score} against {}", ranked[0].score);
+            }
+        }
+        // fewer faces than asked, bad embeddings skipped, nothing to compare, and any count
+        let q = face();
+        assert!((person_score(&q, &refs[..1], 4).unwrap() - cosine(&q, refs[0]).unwrap()).abs() < 1e-6);
+        let nan = [f32::NAN; 19];
+        assert_eq!(person_score(&q, &[&nan[..], refs[0]], 2), person_score(&q, &refs[..1], 2));
+        assert_eq!(person_score(&q, &[], 2), None);
+        assert_eq!(person_score(&q, &[&nan[..]], 2), None);
+        assert_eq!(person_score(&q, &refs, 0), person_score(&q, &refs, 1));
+        assert_eq!(person_score(&q, &refs, 1000), person_score(&q, &refs, 8));
+    }
 
     fn unit_vec(v: &[f32]) -> Vec<f32> {
         let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();

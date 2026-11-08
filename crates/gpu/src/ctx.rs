@@ -1,5 +1,6 @@
 //! The wgpu device, the compiled kernels, buffers, dispatch and readback.
 
+use crate::init::Progress;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -167,7 +168,12 @@ fn pop_scopes(scopes: [wgpu::ErrorScopeGuard; 2]) -> Option<String> {
 /// compiles each one, single-threaded, inside `create_compute_pipeline`. The
 /// device takes pipeline creation from any thread, so the entry points are shared out to worker
 /// threads. This thread works too: every kernel is built even when no thread can be started.
+///
+/// Each module prepared and each kernel built is [`Progress`]: a first start compiles every kernel
+/// (30 s on an RTX 4070 SUPER under DX12), longer than the start-up limit, and goes on as long as
+/// kernels keep coming.
 fn build_kernels(device: &wgpu::Device) -> Result<HashMap<&'static str, Kernel>, String> {
+    let progress = Progress::current();
     let scopes = push_scopes(device);
     let consts = constants();
     let prepared: Vec<Prepared> = MODULES
@@ -183,6 +189,7 @@ fn build_kernels(device: &wgpu::Device) -> Result<HashMap<&'static str, Kernel>,
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
+            progress.tick();
             Prepared { module, layout, pipeline_layout, nbuf: m.bindings.len() }
         })
         .collect();
@@ -194,7 +201,7 @@ fn build_kernels(device: &wgpu::Device) -> Result<HashMap<&'static str, Kernel>,
     let built = std::sync::Mutex::new(HashMap::with_capacity(jobs.len()));
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(jobs.len()).saturating_sub(1);
     let errors: Vec<String> = std::thread::scope(|s| {
-        let work = || build_jobs(device, &jobs, &next, &built);
+        let work = || build_jobs(device, &jobs, &next, &built, &progress);
         let threads: Vec<_> =
             (0..workers).filter_map(|_| std::thread::Builder::new().name("gpu-kernels".into()).spawn_scoped(s, work).ok()).collect();
         let mut errors: Vec<String> = work().into_iter().collect();
@@ -218,6 +225,7 @@ fn build_jobs(
     jobs: &[(&Prepared, &'static str)],
     next: &AtomicUsize,
     built: &std::sync::Mutex<HashMap<&'static str, Kernel>>,
+    progress: &Progress,
 ) -> Option<String> {
     let scopes = push_scopes(device);
     while let Some(&(p, entry)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -234,6 +242,7 @@ fn build_jobs(
         });
         let kernel = Kernel { pipeline, layout: p.layout.clone(), nbuf: p.nbuf };
         built.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(entry, kernel);
+        progress.tick();
     }
     pop_scopes(scopes)
 }

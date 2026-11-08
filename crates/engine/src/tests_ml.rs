@@ -470,3 +470,45 @@ fn semantic_search_filters_grid_composes_with_ratings_and_updates_as_photos_inde
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// AI search runs CLIP's blocks on the GPU through wgpu (any OS) and gives what the CPU gives.
+#[test]
+fn clip_on_the_gpu_matches_the_cpu() {
+    use lcc_ml::{Encoder, Priority, Queue, RgbImage, cosine};
+    if let Err(e) = lcc_gpu::clip::adapter() {
+        lcc_testkit::skip!(Gpu, "no GPU for the CLIP kernels: {e}");
+        return;
+    }
+    let dir = temp_dir("clip-gpu");
+    lcc_ml::Clip::write_synthetic_dir(&dir, "test-clip").unwrap();
+    let cpu = Arc::new(lcc_ml::Clip::load_lazy(&dir).unwrap());
+    let gpu = Arc::new(lcc_ml::Clip::load_lazy(&dir).unwrap().with_accelerator(crate::ml::clip_accelerator()));
+    let img = RgbImage::new(16, 16, (0..16 * 16 * 3).map(|i| (i * 7 % 256) as u8).collect()).unwrap();
+    let run = |clip: Arc<lcc_ml::Clip>, gpu: bool| {
+        let probe: lcc_ml::Probe = if gpu { Box::new(lcc_gpu::clip::adapter) } else { Box::new(|| Err("cpu".into())) };
+        let pref = if gpu { Preference::Auto } else { Preference::Cpu };
+        let q: Queue<(Vec<Vec<f32>>, Vec<f32>)> = Queue::new(Config { preference: pref, ..Config::default() }, probe, None);
+        let im = img.clone();
+        q.submit(
+            Job::new("both", move |ctx| Ok((clip.encode_images(&[im.clone(), im.clone()], ctx)?, clip.encode_text("sunset", ctx)?)))
+                .priority(Priority::Interactive),
+        )
+        .unwrap();
+        let mut out = None;
+        wait_for(|| {
+            for f in q.drain() {
+                if let Outcome::Done(v) = f.outcome {
+                    out = Some(v);
+                }
+            }
+            out.is_some()
+        });
+        (out.unwrap(), q.status().device.unwrap())
+    };
+    let ((ci, ct), _) = run(cpu, false);
+    let ((gi, gt), device) = run(gpu, true);
+    assert!(device.is_gpu(), "fell back to the CPU: {:?}", device.why_cpu);
+    assert!(cosine(&ci[0], &gi[0]) > 0.999 && cosine(&ci[1], &gi[1]) > 0.999);
+    assert!(cosine(&ct, &gt) > 0.999);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -280,8 +280,16 @@ impl State {
         self.device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    pub(crate) fn set_chosen_device(&self, choice: Option<String>) {
-        *self.device_choice.lock().unwrap_or_else(PoisonError::into_inner) = choice;
+    pub(crate) fn set_chosen_device(&mut self, choice: Option<String>) {
+        let mut guard = self.device_choice.lock().unwrap_or_else(PoisonError::into_inner);
+        if *guard != choice {
+            *guard = choice;
+            drop(guard);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.encoder = None;
+            }
+        }
     }
 
     fn cached_settings(&mut self, dir: &Path) -> MlSettings {
@@ -392,78 +400,65 @@ fn gpu_probe_for(target_card: Option<String>) -> Result<String, String> {
     {
         return Err("the AI device preference is the CPU".into());
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("GPU acceleration for AI embeddings currently requires Metal on macOS; running on CPU (multithreaded)".into())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut adapters = lcc_gpu::adapters();
-        if adapters.is_empty() {
-            adapters = lcc_gpu::refresh_adapters();
-        }
-        let mut chosen_metal_index = 0usize;
-        let mut chosen_name = String::new();
-
-        // Both wgpu's Metal backend (`Instance::enumerate_adapters`) and candle's
-        // `CandleDevice::new_metal(index)` enumerate Apple's `MTLCopyAllDevices()` in order.
-        // Filtering to Metal adapters preserves that 0-based ordinal.
-        let metal_adapters: Vec<&lcc_gpu::cards::AdapterEntry> =
-            adapters.iter().filter(|a| a.backend.eq_ignore_ascii_case("metal") || a.key.backend.eq_ignore_ascii_case("metal")).collect();
-
-        if let Some(ref card_key) = target_card
-            && let Some(parsed) = lcc_gpu::cards::AdapterKey::parse(card_key)
-        {
-            if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == parsed || a.key.same_model(&parsed)))
-            {
-                chosen_metal_index = m_idx;
-                chosen_name = entry.name.clone();
-            } else if adapters.iter().any(|a| a.usable && (a.key == parsed || a.key.same_model(&parsed))) {
-                return Err("selected graphics card does not use Apple Metal".into());
-            } else {
-                return Err("selected graphics card is not available or not usable".into());
-            }
-        }
-
-        if chosen_name.is_empty() {
-            // Automatic device selection follows the rendering/editing GPU (`card_status` / `adapter_name`),
-            // matching `docs/ml-backend.md` so two-GPU Macs do not fall back to an integrated card.
-            let (saved_card, in_use_card, _) = lcc_gpu::card_status();
-            let editing_key = in_use_card.or(saved_card).and_then(|k| lcc_gpu::cards::AdapterKey::parse(&k));
-            if let Some(ref ek) = editing_key
-                && let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && (a.key == *ek || a.key.same_model(ek)))
-            {
-                chosen_metal_index = m_idx;
-                chosen_name = entry.name.clone();
-            }
-            if chosen_name.is_empty()
-                && let Some(render_name) = lcc_gpu::adapter_name()
-            {
-                let base_name = render_name.rsplit_once(" (").map(|(n, _)| n.trim()).unwrap_or(render_name.trim());
-                if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable && a.name.eq_ignore_ascii_case(base_name)) {
-                    chosen_metal_index = m_idx;
-                    chosen_name = entry.name.clone();
-                } else {
-                    chosen_name = render_name;
-                }
-            }
-            if chosen_name.is_empty() {
-                if let Some((m_idx, entry)) = metal_adapters.iter().enumerate().find(|(_, a)| a.usable) {
-                    chosen_metal_index = m_idx;
-                    chosen_name = entry.name.clone();
-                } else {
-                    return Err(lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()));
-                }
-            }
-        }
-        Ok(format!("{chosen_name}#{chosen_metal_index}"))
-    }
+    // the device CLIP's wgpu kernels run on (Vulkan, DX12 or Metal: the same on every OS)
+    #[cfg(not(target_arch = "wasm32"))]
+    return lcc_gpu::clip::adapter_for(target_card.as_deref());
+    #[cfg(target_arch = "wasm32")]
+    lcc_gpu::adapter_name().ok_or_else(|| lcc_gpu::unavailable_reason().unwrap_or_else(|| "no usable GPU".into()))
 }
 
 fn make_gpu_probe(device_choice: Arc<Mutex<Option<String>>>) -> Probe {
     Box::new(move || {
         let target = device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone();
         gpu_probe_for(target)
+    })
+}
+
+/// CLIP's transformer blocks on the GPU through `lcc-gpu`'s wgpu kernels (`lcc_ml` checks them against the CPU first).
+#[cfg(test)]
+pub(crate) fn clip_accelerator() -> lcc_ml::AccelFactory {
+    clip_accelerator_for(Arc::new(Mutex::new(None)))
+}
+
+/// CLIP's transformer blocks on the GPU through `lcc-gpu`'s wgpu kernels, bound to the session's `device_choice`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn clip_accelerator_for(device_choice: Arc<Mutex<Option<String>>>) -> lcc_ml::AccelFactory {
+    struct Tower(lcc_gpu::clip::ClipTower);
+    impl lcc_ml::Accelerator for Tower {
+        fn device(&self) -> String {
+            self.0.device()
+        }
+        fn run_blocks(&self, x: &[f32], batch: usize, seq: usize) -> Result<Vec<f32>, String> {
+            self.0.run(x, batch, seq)
+        }
+    }
+    Arc::new(move |w: &lcc_ml::TowerWeights| {
+        let spec = lcc_gpu::clip::TowerSpec { hidden: w.hidden, intermediate: w.intermediate, heads: w.heads, causal: w.causal, eps: w.eps };
+        let blocks: Vec<lcc_gpu::clip::BlockRef<'_>> = w
+            .blocks
+            .iter()
+            .map(|b| lcc_gpu::clip::BlockRef {
+                ln1_w: &b.ln1_w,
+                ln1_b: &b.ln1_b,
+                q_w: &b.q_w,
+                q_b: &b.q_b,
+                k_w: &b.k_w,
+                k_b: &b.k_b,
+                v_w: &b.v_w,
+                v_b: &b.v_b,
+                o_w: &b.o_w,
+                o_b: &b.o_b,
+                ln2_w: &b.ln2_w,
+                ln2_b: &b.ln2_b,
+                fc1_w: &b.fc1_w,
+                fc1_b: &b.fc1_b,
+                fc2_w: &b.fc2_w,
+                fc2_b: &b.fc2_b,
+            })
+            .collect();
+        let target = device_choice.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let tower = lcc_gpu::clip::tower_for(target.as_deref(), spec, &blocks)?;
+        Ok(Arc::new(Tower(tower)) as Arc<dyn lcc_ml::Accelerator>)
     })
 }
 
@@ -1199,7 +1194,9 @@ impl Session {
             return Ok(enc);
         }
 
-        let clip = lcc_ml::Clip::load_lazy(&model_dir).map_err(|e| e.to_string())?;
+        let clip = lcc_ml::Clip::load_lazy(&model_dir)
+            .map_err(|e| e.to_string())?
+            .with_accelerator(clip_accelerator_for(Arc::clone(&self.ml.device_choice)));
         let enc: Arc<dyn Encoder> = Arc::new(clip);
         self.ml.save_store_now();
         self.ml.encoder = Some((tag.clone(), Arc::clone(&enc)));

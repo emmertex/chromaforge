@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use candle_core::{D, Device as CandleDevice, Tensor};
 use thiserror::Error;
 
+use crate::accel::{AccelFactory, Accelerator, BlockWeights, TowerWeights, agree};
 use crate::encoder::{Encoder, RgbImage, preprocess_image};
 use crate::manifest::{Commercial, InputSpec, Licence, MANIFEST_FILE, MANIFEST_VERSION, ModelFile, ModelManifest, Role, VerifyError, sha256_file};
 use crate::queue::{Ctx, JobError};
@@ -387,6 +388,89 @@ fn load_towers(weights_path: &Path, arch: ArchSpec, device: CandleDevice) -> Res
     Ok(DeviceTowers { vision, text })
 }
 
+fn flat(t: &Tensor) -> Result<Vec<f32>, String> {
+    t.flatten_all().and_then(|t| t.to_vec1::<f32>()).map_err(|e| e.to_string())
+}
+
+/// A linear layer's weight back in `[out, in]` order, and its bias (zeros when it has none).
+fn linear_weights(l: &Linear) -> Result<(Vec<f32>, Vec<f32>), String> {
+    let w = l.weight_t.t().and_then(|t| t.contiguous()).map_err(|e| e.to_string())?;
+    let out = l.weight_t.dims().get(1).copied().unwrap_or(0);
+    let b = match &l.bias {
+        Some(b) => flat(b)?,
+        None => vec![0.0; out],
+    };
+    Ok((flat(&w)?, b))
+}
+
+/// A tower's blocks as plain weights for an [`Accelerator`].
+fn tower_weights(blocks: &[TransformerBlock], hidden: usize, intermediate: usize, heads: usize, causal: bool) -> Result<TowerWeights, String> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let (q_w, q_b) = linear_weights(&b.q_proj)?;
+        let (k_w, k_b) = linear_weights(&b.k_proj)?;
+        let (v_w, v_b) = linear_weights(&b.v_proj)?;
+        let (o_w, o_b) = linear_weights(&b.out_proj)?;
+        let (fc1_w, fc1_b) = linear_weights(&b.fc1)?;
+        let (fc2_w, fc2_b) = linear_weights(&b.fc2)?;
+        out.push(BlockWeights {
+            ln1_w: flat(&b.ln1.weight)?,
+            ln1_b: flat(&b.ln1.bias)?,
+            q_w,
+            q_b,
+            k_w,
+            k_b,
+            v_w,
+            v_b,
+            o_w,
+            o_b,
+            ln2_w: flat(&b.ln2.weight)?,
+            ln2_b: flat(&b.ln2.bias)?,
+            fc1_w,
+            fc1_b,
+            fc2_w,
+            fc2_b,
+        });
+    }
+    Ok(TowerWeights { hidden, intermediate, heads, causal, eps: LAYER_NORM_EPS as f32, blocks: out })
+}
+
+/// `x` (`[1, seq, hidden]`) through the CPU blocks: the reference a GPU runner is checked against.
+fn run_cpu_blocks(blocks: &[TransformerBlock], x: &[f32], seq: usize, hidden: usize, mask: Option<&Tensor>) -> Result<Vec<f32>, String> {
+    let mut t = Tensor::from_slice(x, (1, seq, hidden), &CandleDevice::Cpu).map_err(|e| e.to_string())?;
+    for b in blocks {
+        t = b.forward(&t, mask).map_err(|e| e.to_string())?;
+    }
+    flat(&t)
+}
+
+/// A runner from `factory` for `weights`, once it agrees with the CPU (`cpu`) on a test input of `seq` positions.
+fn check(
+    factory: &AccelFactory,
+    weights: &TowerWeights,
+    seq: usize,
+    cpu: impl FnOnce(&[f32]) -> Result<Vec<f32>, String>,
+) -> Result<Arc<dyn Accelerator>, String> {
+    let acc =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factory(weights))).unwrap_or_else(|_| Err("making the GPU runner failed".into()))?;
+    let n = seq.checked_mul(weights.hidden).ok_or("a tower too large")?;
+    let x: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.618).sin()).collect();
+    let want = cpu(&x)?;
+    let got = acc.run_blocks(&x, 1, seq)?;
+    agree(&got, &want)?;
+    log::info!("clip: transformer blocks on {} (checked against the CPU)", acc.device());
+    Ok(acc)
+}
+
+/// `hidden` (`[batch, seq, width]`) through `acc`; errors are device errors (the job moves to the CPU).
+fn run_on(acc: &dyn Accelerator, hidden: &Tensor) -> Result<Tensor, JobError> {
+    let dev = |e: String| JobError::Device(e);
+    let (b, seq, w) = hidden.dims3().map_err(|e| dev(e.to_string()))?;
+    let x = flat(hidden).map_err(dev)?;
+    let y = acc.run_blocks(&x, b, seq).map_err(dev)?;
+    Tensor::from_vec(y, (b, seq, w), hidden.device()).map_err(|e| dev(e.to_string()))
+}
+
 /// Loaded CLIP ViT + Text encoder ready for [`crate::Queue`] execution.
 pub struct Clip {
     manifest: ModelManifest,
@@ -395,7 +479,11 @@ pub struct Clip {
     tokenizer: Tokenizer,
     cpu_vision: Mutex<Option<Arc<VisionTower>>>,
     cpu_text: Mutex<Option<Arc<TextTower>>>,
-    gpu: Mutex<Option<(usize, DeviceTowers)>>,
+    /// Makes the GPU runner for a tower ([`Clip::with_accelerator`]).
+    accel: Option<AccelFactory>,
+    /// Each tower's GPU runner once made, or why there is none.
+    gpu_vision: Mutex<Option<Result<Arc<dyn Accelerator>, String>>>,
+    gpu_text: Mutex<Option<Result<Arc<dyn Accelerator>, String>>>,
 }
 
 impl Clip {
@@ -422,7 +510,9 @@ impl Clip {
             tokenizer,
             cpu_vision: Mutex::new(Some(Arc::new(cpu.vision))),
             cpu_text: Mutex::new(Some(Arc::new(cpu.text))),
-            gpu: Mutex::new(None),
+            accel: None,
+            gpu_vision: Mutex::new(None),
+            gpu_text: Mutex::new(None),
         })
     }
 
@@ -442,7 +532,59 @@ impl Clip {
             .map_err(|e| TokenizerError::Io { path: dir.join("merges.txt").display().to_string(), message: e.to_string() })?;
         let tokenizer = Tokenizer::from_json_and_merges(&vocab_bytes, &merges_str, arch.context_len)?;
 
-        Ok(Self { manifest, weights_path, arch, tokenizer, cpu_vision: Mutex::new(None), cpu_text: Mutex::new(None), gpu: Mutex::new(None) })
+        Ok(Self {
+            manifest,
+            weights_path,
+            arch,
+            tokenizer,
+            cpu_vision: Mutex::new(None),
+            cpu_text: Mutex::new(None),
+            accel: None,
+            gpu_vision: Mutex::new(None),
+            gpu_text: Mutex::new(None),
+        })
+    }
+
+    /// Run the towers' transformer blocks with `factory`'s runner when a job is on the GPU. Without one, GPU jobs fail
+    /// with [`JobError::Device`] and the queue moves them to the CPU, saying why.
+    pub fn with_accelerator(mut self, factory: AccelFactory) -> Self {
+        self.accel = Some(factory);
+        self
+    }
+
+    /// The GPU runner for one tower, made (and checked against the CPU) on first use.
+    fn ensure_gpu(&self, text: bool) -> Result<Arc<dyn Accelerator>, JobError> {
+        let slot = if text { &self.gpu_text } else { &self.gpu_vision };
+        let mut guard = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(r) = guard.as_ref() {
+            return r.clone().map_err(JobError::Device);
+        }
+        let made = self.make_gpu(text);
+        if let Err(why) = &made {
+            log::warn!("clip: the {} tower stays on the CPU: {why}", if text { "text" } else { "vision" });
+        }
+        *guard = Some(made.clone());
+        made.map_err(JobError::Device)
+    }
+
+    fn make_gpu(&self, text: bool) -> Result<Arc<dyn Accelerator>, String> {
+        let factory = self.accel.as_ref().ok_or("no GPU runner for CLIP in this build")?;
+        let to_s = |e: JobError| match e {
+            JobError::Device(s) | JobError::Failed(s) => s,
+            JobError::Cancelled => "cancelled".into(),
+        };
+        // a test input through the CPU blocks and the GPU's: one item, a whole sequence
+        if text {
+            let t = self.ensure_cpu_text().map_err(to_s)?;
+            let w = tower_weights(&t.blocks, self.arch.text_hidden, self.arch.text_intermediate, self.arch.text_heads, true)?;
+            let seq = t.context_len;
+            check(factory, &w, seq, |x| run_cpu_blocks(&t.blocks, x, seq, w.hidden, Some(&t.causal_mask)))
+        } else {
+            let v = self.ensure_cpu_vision().map_err(to_s)?;
+            let w = tower_weights(&v.blocks, self.arch.vision_hidden, self.arch.vision_intermediate, self.arch.vision_heads, false)?;
+            let seq = self.arch.num_positions;
+            check(factory, &w, seq, |x| run_cpu_blocks(&v.blocks, x, seq, w.hidden, None))
+        }
     }
 
     fn ensure_cpu_vision(&self) -> Result<Arc<VisionTower>, JobError> {
@@ -467,7 +609,13 @@ impl Clip {
         Ok(tower)
     }
 
-    fn forward_images_on(&self, vision: &VisionTower, batch: &[RgbImage], ctx: &Ctx) -> Result<Vec<Vec<f32>>, JobError> {
+    fn forward_images_on(
+        &self,
+        vision: &VisionTower,
+        batch: &[RgbImage],
+        ctx: &Ctx,
+        gpu: Option<&dyn Accelerator>,
+    ) -> Result<Vec<Vec<f32>>, JobError> {
         if batch.is_empty() {
             return Ok(Vec::new());
         }
@@ -505,9 +653,14 @@ impl Clip {
         let mut hidden =
             Tensor::cat(&[&cls, &patches], 1).and_then(|t| t.broadcast_add(&pos)).and_then(|t| vision.pre_ln.forward(&t)).map_err(map_err)?;
 
-        for block in &vision.blocks {
+        if let Some(acc) = gpu {
             ctx.check()?;
-            hidden = block.forward(&hidden, None).map_err(map_err)?;
+            hidden = run_on(acc, &hidden)?;
+        } else {
+            for block in &vision.blocks {
+                ctx.check()?;
+                hidden = block.forward(&hidden, None).map_err(map_err)?;
+            }
         }
 
         let pooled: Vec<Vec<f32>> = hidden
@@ -528,7 +681,7 @@ impl Clip {
         Ok(out)
     }
 
-    fn forward_text_on(&self, text_tower: &TextTower, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
+    fn forward_text_on(&self, text_tower: &TextTower, text: &str, ctx: &Ctx, gpu: Option<&dyn Accelerator>) -> Result<Vec<f32>, JobError> {
         ctx.check()?;
         let prompts = if text_tower.context_len >= 16 { prompt_variants(text) } else { vec![text.to_string()] };
         let b = prompts.len().max(1);
@@ -550,9 +703,14 @@ impl Clip {
         let pos = text_tower.position_embedding.unsqueeze(0).map_err(map_err)?;
         let mut hidden = tok_emb.broadcast_add(&pos).map_err(map_err)?;
 
-        for block in &text_tower.blocks {
+        if let Some(acc) = gpu {
             ctx.check()?;
-            hidden = block.forward(&hidden, Some(&text_tower.causal_mask)).map_err(map_err)?;
+            hidden = run_on(acc, &hidden)?;
+        } else {
+            for block in &text_tower.blocks {
+                ctx.check()?;
+                hidden = block.forward(&hidden, Some(&text_tower.causal_mask)).map_err(map_err)?;
+            }
         }
 
         let normed = text_tower.final_ln.forward(&hidden).map_err(map_err)?;
@@ -578,17 +736,6 @@ impl Clip {
             return Err(JobError::Failed("text encoder produced non-finite or zero-norm embedding".into()));
         }
         Ok(sum)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn ensure_gpu_towers(&self, device_index: usize) -> Result<(), JobError> {
-        let mut guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.as_ref().is_none_or(|(idx, _)| *idx != device_index) {
-            let dev = CandleDevice::new_metal(device_index).map_err(|e| JobError::Device(e.to_string()))?;
-            let towers = load_towers(&self.weights_path, self.arch, dev).map_err(|e| JobError::Device(e.to_string()))?;
-            *guard = Some((device_index, towers));
-        }
-        Ok(())
     }
 
     /// Write a tiny, deterministic CLIP checkpoint directory (`manifest.json`, `model.safetensors`, `vocab.json`,
@@ -804,30 +951,15 @@ impl Encoder for Clip {
     }
 
     fn encode_images(&self, batch: &[RgbImage], ctx: &Ctx) -> Result<Vec<Vec<f32>>, JobError> {
-        #[cfg(target_os = "macos")]
-        if ctx.device().is_gpu() {
-            self.ensure_gpu_towers(ctx.device().index)?;
-            let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((_, gpu_towers)) = guard.as_ref() {
-                return self.forward_images_on(&gpu_towers.vision, batch, ctx);
-            }
-        }
-        let _ = &self.gpu;
+        let gpu = if ctx.device().is_gpu() { Some(self.ensure_gpu(false)?) } else { None };
         let vision = self.ensure_cpu_vision()?;
-        self.forward_images_on(&vision, batch, ctx)
+        self.forward_images_on(&vision, batch, ctx, gpu.as_deref())
     }
 
     fn encode_text(&self, text: &str, ctx: &Ctx) -> Result<Vec<f32>, JobError> {
-        #[cfg(target_os = "macos")]
-        if ctx.device().is_gpu() {
-            self.ensure_gpu_towers(ctx.device().index)?;
-            let guard = self.gpu.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((_, gpu_towers)) = guard.as_ref() {
-                return self.forward_text_on(&gpu_towers.text, text, ctx);
-            }
-        }
+        let gpu = if ctx.device().is_gpu() { Some(self.ensure_gpu(true)?) } else { None };
         let text_tower = self.ensure_cpu_text()?;
-        self.forward_text_on(&text_tower, text, ctx)
+        self.forward_text_on(&text_tower, text, ctx, gpu.as_deref())
     }
 }
 
@@ -926,6 +1058,34 @@ mod tests {
         std::fs::write(&weights_path, bytes).unwrap();
         assert!(matches!(Clip::load(&dir), Err(ClipError::Verify(VerifyError::HashMismatch { .. }))));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A GPU runner that disagrees with the CPU is never used: the job moves to the CPU, which says why.
+    #[test]
+    fn a_gpu_runner_that_disagrees_with_the_cpu_falls_back() {
+        struct Identity;
+        impl Accelerator for Identity {
+            fn device(&self) -> String {
+                "identity".into()
+            }
+            fn run_blocks(&self, x: &[f32], _: usize, _: usize) -> Result<Vec<f32>, String> {
+                Ok(x.to_vec())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("lcc-ml-clip-accel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Clip::write_synthetic_dir(&dir, "clip-accel").unwrap();
+        let clip =
+            Arc::new(Clip::load_lazy(&dir).unwrap().with_accelerator(Arc::new(|_: &TowerWeights| Ok(Arc::new(Identity) as Arc<dyn Accelerator>))));
+        let q = Queue::new(Config { preference: Preference::Auto, ..Config::default() }, Box::new(|| Ok("Test GPU".into())), None);
+        let c = Arc::clone(&clip);
+        q.submit(Job::new("text", move |ctx| c.encode_text("sunset", ctx)).priority(Priority::Interactive)).unwrap();
+        let emb = wait_result(&q, "text");
+        assert!(emb.iter().all(|v| v.is_finite()));
+        let device = q.status().device.unwrap();
+        assert!(!device.is_gpu());
+        assert!(device.why_cpu.unwrap_or_default().contains("differs"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -13,6 +13,10 @@ use crate::{Error, Result};
 const CH: usize = 3;
 /// `pc_filter`'s `format` for 32-bit float RGB without alpha: depth 32, colour mode 3 (RGB).
 const FORMAT_RGB32: u32 = 32 | (3 << 16);
+/// Most measurements one `pc_merge` call takes (a roll is 36 frames; a bulk roll a few hundred).
+pub const MAX_MERGE: usize = 1024;
+/// Largest list of measurements handed to `pc_merge`.
+pub const MAX_MERGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Where the buffer sits in the full image, so position-dependent filters (gradients, noise
 /// seeded by position) line up across tiles and bands.
@@ -175,6 +179,26 @@ impl Filter {
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.analyze_buffer(img, width, height, CH as u32, FORMAT_RGB32, &pbytes, &deadline)
         }));
+        run.map_err(|_| Error::Trap("the runtime panicked".into()))?
+    }
+
+    /// Runs the module's optional `pc_merge` export on `analyses` (what its `pc_analyze` measured
+    /// on several photos: a roll of film, say) with `params` as [`Self::apply_rgb`] passes them,
+    /// and returns the one measurement it makes of them (`None`: nothing). An error when the module
+    /// has no `pc_merge` ([`Self::has_merge`]) or the list is empty or longer than [`MAX_MERGE`].
+    pub fn merge_analyses(&self, analyses: &[Value], params: &Value, cancel: &AtomicBool) -> Result<Option<Value>> {
+        if analyses.is_empty() || analyses.len() > MAX_MERGE {
+            return Err(Error::Params(format!("`pc_merge` takes 1..={MAX_MERGE} measurements, not {}", analyses.len())));
+        }
+        let base = self.host_params(params)?;
+        let text = serde_json::to_vec(&Value::Array(analyses.to_vec())).map_err(|e| Error::Params(e.to_string()))?;
+        if text.len() > MAX_MERGE_BYTES {
+            return Err(Error::Params(format!("the measurements are {} bytes (limit {MAX_MERGE_BYTES})", text.len())));
+        }
+        let pbytes = serde_json::to_vec(&Value::Object(base)).map_err(|e| Error::Params(e.to_string()))?;
+        let deadline = Deadline::new(self.limits(), Some(cancel));
+        let count = u32::try_from(analyses.len()).map_err(|_| Error::Params("too many measurements".into()))?;
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.merge_buffer(&text, count, &pbytes, &deadline)));
         run.map_err(|_| Error::Trap("the runtime panicked".into()))?
     }
 

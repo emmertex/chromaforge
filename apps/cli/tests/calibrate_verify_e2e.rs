@@ -12,6 +12,9 @@ const BIN: &str = env!("CARGO_BIN_EXE_app-cli");
 const PHOTOS: usize = 3;
 const SIDECAR: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:WhiteBalance="As Shot" crs:Exposure2012="+1.00"/></rdf:RDF></x:xmpmeta>"#;
 
+/// The packet Lightroom embeds in an export: the same edit, flagged as already applied to the export's pixels.
+const EXPORT_XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:AlreadyApplied="True" crs:WhiteBalance="As Shot" crs:Exposure2012="+1.00"/></rdf:RDF></x:xmpmeta>"#;
+
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("lcc-cli-verify-e2e-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -148,7 +151,8 @@ fn verify_measures_edited_renders_against_their_exports() {
     let groups = far["groups"].as_array().unwrap();
     assert!(groups.iter().any(|g| g["name"] == "light"), "{far}");
 
-    // no sidecar, the edit carried by the export itself (as Lightroom writes with Include: All Metadata)
+    // no sidecar, the edit carried by the export itself (as Lightroom writes with Include: All Metadata, marked
+    // crs:AlreadyApplied, which must not stop verify from applying it to the raw)
     let embedded = root.join("embedded");
     std::fs::create_dir_all(&embedded).unwrap();
     for k in 0..PHOTOS {
@@ -158,7 +162,7 @@ fn verify_measures_edited_renders_against_their_exports() {
         let d = lcc_codecs::decode(&std::fs::read(&srgb_tif).unwrap(), lcc_codecs::DecodeOptions::default()).unwrap();
         let px: Vec<u8> = d.image.data.iter().flat_map(|p| p.map(|v| (srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)).collect();
         let img = lcc_codecs::EncodeImage::new(d.image.width as u32, d.image.height as u32, 3, lcc_codecs::Samples::U8(&px));
-        let meta = lcc_codecs::EncodeMeta { xmp: Some(SIDECAR), ..Default::default() };
+        let meta = lcc_codecs::EncodeMeta { xmp: Some(EXPORT_XMP), ..Default::default() };
         let tif = lcc_codecs::encode_tiff(&img, lcc_codecs::TiffCompression::default(), &meta).unwrap();
         std::fs::write(embedded.join(format!("{name}.tif")), tif).unwrap();
     }

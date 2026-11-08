@@ -110,6 +110,9 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("aperture", "Aperture", Kind::Number),
     ("shutterSpeed", "Shutter Speed", Kind::Number),
     ("iso", "ISO Speed", Kind::Number),
+    ("flash", "Flash", Kind::Bool),
+    ("exposureBias", "Exposure Bias", Kind::Number),
+    ("cameraSerial", "Camera Serial Number", Kind::Text),
     // Location
     ("location", "Location", Kind::Text),
     ("sublocation", "Sublocation", Kind::Text),
@@ -149,7 +152,7 @@ pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Date", &["captureDate", "importDate", "editDate"]),
     ("Keywords & People", &["keywords", "keywordCount", "person", "personCount", "faceCount"]),
     ("Description", &["title", "caption", "altText", "creator", "copyright", "usageTerms", "copyrightStatus"]),
-    ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso"]),
+    ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso", "flash", "exposureBias", "cameraSerial"]),
     ("Location", &["location", "sublocation", "city", "state", "country", "countryCode", "hasGps"]),
     ("Size", &["longEdge", "shortEdge", "width", "height", "aspect", "megapixels"]),
     ("Develop", &["edited", "cropped", "treatment"]),
@@ -1103,6 +1106,9 @@ impl Rule {
             "editDate" => date_op(op, p.edited.as_deref(), value),
             "shutterSpeed" => num_op(op, crate::parse_shutter_seconds(&m.shutter), &shutter_value(value)),
             "iso" => num_op(op, m.iso.map(|v| v as f64), value),
+            "flash" => yes(m.flash.unwrap_or(false)),
+            "exposureBias" => num_op32(op, m.exposure_bias, value),
+            "cameraSerial" => text(&m.camera_serial),
             "aperture" => num_op32(op, m.aperture, value),
             "focalLength" => num_op32(op, m.focal_mm, value),
             "longEdge" | "shortEdge" => {
@@ -1387,6 +1393,21 @@ mod tests {
         yes(json!({"rules": [{"field": "filePath", "op": "isEmpty"}]}));
         yes(json!({"rules": [{"field": "camera", "op": "contains", "value": "x2"}, {"field": "title", "op": "isEmpty"}]}));
         yes(json!({"rules": [{"field": "iso", "op": "between", "value": [800, 3200]}, {"field": "aperture", "op": "lte", "value": "f/4"}]}));
+        // flash, exposure bias and camera serial (ported from upstream #3821): unrecorded is "no flash", no bias, empty
+        no(json!({"rules": [{"field": "flash", "op": "is", "value": true}]}));
+        no(json!({"rules": [{"field": "exposureBias", "op": "lt", "value": 0}]}));
+        no(json!({"rules": [{"field": "cameraSerial", "op": "contains", "value": "x2"}]}));
+        let mut fl = photo(2);
+        fl.meta.flash = Some(true);
+        fl.meta.exposure_bias = Some(-0.67);
+        fl.meta.camera_serial = "SN-X2".into();
+        let flm = |v: serde_json::Value| rs(v).matches(&fl, &cat);
+        assert!(flm(json!({"rules": [{"field": "flash", "op": "is", "value": true}]})));
+        assert!(!flm(json!({"rules": [{"field": "flash", "op": "is", "value": false}]})));
+        assert!(flm(json!({"rules": [{"field": "exposureBias", "op": "lt", "value": 0}]})));
+        assert!(flm(json!({"rules": [{"field": "exposureBias", "op": "between", "value": [-1.0, -0.3]}]})));
+        assert!(flm(json!({"rules": [{"field": "cameraSerial", "op": "contains", "value": "x2"}]})));
+        assert_eq!(field_group("exposureBias"), Some("Camera Info"));
         yes(json!({"rules": [{"field": "megapixels", "op": "gte", "value": 24}]}));
         yes(
             json!({"rules": [{"field": "captureDate", "op": "is", "value": "2026-08"}, {"field": "captureDate", "op": "before", "value": "2026-09-01"}]}),

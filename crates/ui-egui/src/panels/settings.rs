@@ -572,6 +572,19 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             };
         }
     });
+    // the Edit panel's colour tools: Lightroom Classic's panels, or the colourist's Witchcraft
+    // layout (Window ▸ Grading Mode and Ctrl+Shift+G switch it too)
+    row(ui, t, crate::i18n::tr("Grading Mode"), |ui| {
+        let mut mode = app.ui.settings.grading_mode;
+        if choices(
+            ui,
+            "settingsGradingMode",
+            &[(crate::state::GradingMode::Eboda, "Eboda"), (crate::state::GradingMode::Witchcraft, "Witchcraft")],
+            &mut mode,
+        ) {
+            let _ = app.run("view.gradingMode", json!({"mode": mode.id()}));
+        }
+    });
     row(ui, t, crate::i18n::tr("Language"), |ui| {
         // a list, not a row of buttons: there are too many languages for one line
         let current = language_label(ui.ctx(), app.ui.language);
@@ -1962,6 +1975,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     row(ui, t, crate::i18n::tr("Wheel scroll speed"), |ui| {
         choices(ui, "settingsWheelSpeed", &[(1.0, "Normal"), (2.0, "Fast"), (3.0, "Fastest")], &mut app.ui.settings.wheel_scroll_speed);
     });
+    check(ui, "settings.reduceMotion", &mut app.ui.settings.reduce_motion, "Reduce motion");
+    hint(ui, t, crate::i18n::tr("Turns off zoom and spinner animations. Fades stay."));
     check(ui, "settings.wheelResizesBrush", &mut app.ui.settings.wheel_resizes_brush, "Wheel resizes brush instead of zooming");
     heading(ui, t, crate::i18n::tr("Keywords"));
     row(ui, t, crate::i18n::tr("Keywords of the selection"), |ui| {

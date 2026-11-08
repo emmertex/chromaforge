@@ -35,8 +35,10 @@ embedding cache store.
   catalogue includes `clip-vit-b32-laion2b` (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`, MIT, `Commercial::Yes`), pinned
   to a revision and verified by SHA-256 before installation.
 - **CLIP ViT + Text encoder** (`encoder.rs`, `tokenizer.rs`, `weights.rs`, `clip.rs`): a clean-room MIT CLIP vision +
-  text transformer implementation on `candle-core` (CPU everywhere, plus Metal on macOS with automatic fallback to CPU
-  via `JobError::Device`), paired with a positional `.safetensors` reader that validates tensor shapes, bounds, and
+  text transformer implementation on `candle-core` (the CPU reference). On the GPU the towers' transformer blocks run
+  on `lcc-gpu`'s wgpu kernels (`crates/gpu/src/clip.rs`, `wgsl/clip.wgsl`: Vulkan, DX12 or Metal, the same on every
+  OS), plugged in by the engine through `accel::Accelerator`; each tower is checked against the CPU on a test input
+  (`accel::agree`) before use, and any error falls back to the CPU via `JobError::Device`, paired with a positional `.safetensors` reader that validates tensor shapes, bounds, and
   finiteness (rejecting `NaN`/`Inf` weights) and a byte-level BPE tokenizer (`vocab.json` + `merges.txt`).
 - **Binary embedding store** (`store.rs`): per-model cache file `ml-embeddings-<id>.bin` stored beside the library
   (rebuildable, never inside `catalog.json`). Stores L2-normalized `f32` embeddings keyed by `(photo_id, fingerprint)`,
@@ -46,9 +48,8 @@ embedding cache store.
 **The engine** (`crates/engine/src/ml.rs`, `crates/engine/src/cmd/ml.rs`) integrates `lcc-ml` into `Session`:
 
 - its GPU probe follows the rendering GPU's switches (`<PREFIX>_GPU`, `<PREFIX>_GPU_BACKEND`, `app.gpu`) and the ML device
-  setting (`AppSettings::ml_device`, `ml.status {device}`); on macOS, it selects the specific Metal
-  device index matching the chosen GPU (or the rendering GPU under `Automatic`); on other platforms, it truthfully reports multithreaded CPU execution with `whyCpu`
-  explaining that Metal is currently required for GPU inference;
+  setting (`AppSettings::ml_device`, `ml.status {device}`), using `lcc_gpu::clip` (wgpu on Vulkan, DX12 or Metal) on the
+  chosen graphics card (or the automatic AI card);
 - `<PREFIX>_ML_DEVICE=cpu` keeps the AI jobs on the CPU (`auto` is the default);
 - its row in the activity stack is a batch: kind `mlIndex`, label "Indexing photos" ("Indexing photos · 37 of 200 ·
   2 failed"), detail the photo's file name;
@@ -85,8 +86,8 @@ In the order of the plan on issue #491:
 1. **Downstream AI features (#488–#490)** on the cached embeddings: aesthetic scoring
    head (#488), culling suggestions (#489), and orientation suggestions (#490). Suggestions are proposals the user
    accepts, never silent writes.
-2. **GPU on Linux and Windows** (wgpu), if measurements show CPU inference is too slow; checked against the CPU result
-   before it is trusted, as the denoise network's GPU path is.
+2. **More of CLIP on the GPU:** the patch embedding, final layer norm and projections still run on the CPU; moving
+   them would save the per-batch upload of the embedded sequence.
 
 ## Testing
 

@@ -495,3 +495,66 @@ fn keyword_picker_example_settings_remember_and_prepare() {
     let mut m = Manager::open(&dir).unwrap();
     assert_eq!(m.settings(id, &mut lcc_plugins::NoHost).unwrap().values["minCount"], json!(100.0), "kept after a restart");
 }
+
+/// Counts what the job-tools example reports; cancelled once `cancel_after` photos were counted.
+#[derive(Default)]
+struct JobRow {
+    items: std::cell::Cell<u64>,
+    failed: std::cell::RefCell<Vec<String>>,
+    last: std::cell::Cell<(u64, u64)>,
+    cancel_after: Option<u64>,
+}
+
+impl lcc_plugins::JobReporter for JobRow {
+    fn progress(&self, done: u64, total: u64, _: lcc_plugins::JobUnit) {
+        self.last.set((done, total));
+    }
+    fn detail(&self, _: &str) {}
+    fn item_done(&self) {
+        self.items.set(self.items.get() + 1);
+    }
+    fn item_failed(&self, why: &str) {
+        self.items.set(self.items.get() + 1);
+        self.failed.borrow_mut().push(why.to_string());
+    }
+    fn cancelled(&self) -> bool {
+        self.cancel_after.is_some_and(|n| self.items.get() >= n)
+    }
+}
+
+/// A catalog that can't inspect photo 13.
+struct Inspect;
+impl HostApi for Inspect {
+    fn catalog(&mut self, method: &str, p: &Value) -> Result<Value, String> {
+        match p["id"].as_str() {
+            Some("13") => Err("the file is missing".into()),
+            _ => Ok(json!({"method": method})),
+        }
+    }
+}
+
+#[test]
+fn job_tools_example_works_through_the_photos_and_stops_when_asked() {
+    let Some(wasm) = build_sdk_example("job-tools") else { return };
+    let mut m = Manager::in_memory();
+    m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    let id = "org.example.job-tools";
+    let photos: Vec<String> = (1..=25).map(|n| n.to_string()).collect();
+    let run = |m: &mut Manager, row: &JobRow| {
+        let lcc_plugins::Begun::Call(mut call) = m.begin_command(id, "check", &json!({}), &photos, &Value::Null, &mut Inspect).unwrap() else {
+            panic!("check runs")
+        };
+        assert!(call.is_job());
+        let outcome = call.run_with(&mut Inspect, row);
+        m.end(*call, Some(outcome))
+    };
+    let row = JobRow::default();
+    assert_eq!(run(&mut m, &row).unwrap(), json!({"message": "Checked 25 photos"}));
+    assert_eq!(row.items.get(), 25, "every photo counted, over three calls");
+    assert_eq!(row.last.get(), (25, 25));
+    assert_eq!(*row.failed.borrow(), vec!["13: the file is missing".to_string()]);
+
+    let row = JobRow { cancel_after: Some(12), ..JobRow::default() };
+    assert_eq!(run(&mut m, &row).unwrap(), json!({"message": "Stopped after 12 of 25 photos"}), "it stops cleanly and says how far it got");
+    assert_eq!(row.items.get(), 12);
+}

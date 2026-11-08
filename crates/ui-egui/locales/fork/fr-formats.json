@@ -23,6 +23,7 @@
   "Delete the {n} rejected photos of this view?": "Supprimer les {n} photos rejetées de cette vue ?",
   "Delete these {count} photos from disk, or only remove them from the library?": "Supprimer ces {count} photos du disque, ou seulement les retirer de la bibliothèque ?",
   "Delete {n} presets": "Supprimer {n} paramètres prédéfinis",
+  "Disable backups in {path}": "Désactiver les sauvegardes dans {path}",
   "Discard 1:1 Previews ({scope})": "Supprimer les aperçus 1:1 ({scope})",
   "Downloaded {n} place names (GeoNames, CC-BY 4.0)": "{n} noms de lieux téléchargés (GeoNames, CC-BY 4.0)",
   "Downloads from {host}. Once it has arrived and checked out, {app} installs it, {after}.": "Téléchargement depuis {host}. Une fois le téléchargement terminé et vérifié, {app} l’installe, {after}.",

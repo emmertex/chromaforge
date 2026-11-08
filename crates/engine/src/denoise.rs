@@ -1551,7 +1551,8 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
     }
     let bytes = match &spec.read {
         Some(r) => r(&spec.path).map_err(MakeError::Failed)?,
-        None => std::fs::read(&spec.path).map_err(|e| MakeError::Failed(format!("{}: {e}", spec.path)))?,
+        None => crate::bounded_read::read_bounded(std::path::Path::new(&spec.path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| MakeError::Failed(format!("{}: {e}", spec.path)))?,
     };
     if spec.manifest.domain == Domain::RgbToRgb {
         return make_rgb_product(spec, bytes, progress, began);

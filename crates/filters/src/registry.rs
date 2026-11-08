@@ -10,6 +10,8 @@ use crate::{Error, Filter, Limits, Result};
 pub struct Registry {
     limits: Limits,
     filters: Mutex<BTreeMap<String, Arc<Filter>>>,
+    /// Bumped on every install and removal (see [`Registry::generation`]).
+    generation: std::sync::atomic::AtomicU64,
 }
 
 /// What [`Registry::load_folder`] did.
@@ -24,7 +26,17 @@ pub struct FolderReport {
 impl Registry {
     /// An empty registry loading modules with `limits`.
     pub fn new(limits: Limits) -> Self {
-        Self { limits, filters: Mutex::new(BTreeMap::new()) }
+        Self { limits, filters: Mutex::new(BTreeMap::new()), generation: std::sync::atomic::AtomicU64::new(0) }
+    }
+
+    /// How many times the set of installed filters has changed (an install or a removal): a
+    /// cheap way for a cache built from [`Self::list`] to know it is stale.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn bump(&self) {
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     fn map(&self) -> MutexGuard<'_, BTreeMap<String, Arc<Filter>>> {
@@ -35,6 +47,7 @@ impl Registry {
     pub fn install(&self, filter: Filter) -> Arc<Filter> {
         let f = Arc::new(filter);
         self.map().insert(f.id().to_string(), f.clone());
+        self.bump();
         f
     }
 
@@ -60,7 +73,11 @@ impl Registry {
 
     /// Uninstalls `id`; false if it wasn't installed.
     pub fn remove(&self, id: &str) -> bool {
-        self.map().remove(id).is_some()
+        let gone = self.map().remove(id).is_some();
+        if gone {
+            self.bump();
+        }
+        gone
     }
 
     /// Installs every `*.wasm` directly in `dir` (not recursive), in file-name order. A bad

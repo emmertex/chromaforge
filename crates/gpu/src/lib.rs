@@ -43,6 +43,8 @@ mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cards;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod clip;
+#[cfg(not(target_arch = "wasm32"))]
 mod ctx;
 #[cfg(not(target_arch = "wasm32"))]
 mod exit;
@@ -904,7 +906,7 @@ fn editing_device(backends: wgpu::Backends, window: Option<WindowDevice>) -> Res
 
 /// The cards `adapters` are, as the settings list them (remembered for [`adapters`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
+pub(crate) fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
     let infos: Vec<_> =
         adapters.iter().map(|a| (a.get_info(), a.limits().max_storage_buffers_per_shader_stage, lcc_gpumem::adapter_memory(a))).collect();
     let entries = cards::entries_from(&infos, cards::screen().as_ref());
