@@ -776,6 +776,25 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": s.shelved_filter.is_none(), "count": s.visible().len()}))
             }
         ),
+        // View > Hide Rejected Photos: the filter bar's Picked + Unflagged on one key
+        cmd!(
+            "library.hideRejected",
+            "Hide Rejected Photos",
+            ["View"],
+            None,
+            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or no longer filters by flag; the rest of the filter stays. Like any filter change, it forgets a filter put aside → {hidden, count}",
+            always,
+            |s, p| {
+                let hide = match p.get("hide") {
+                    None | Some(Value::Null) => !s.rejects_hidden(),
+                    Some(v) => v.as_bool().ok_or_else(|| bad("library.hideRejected", "hide must be true or false"))?,
+                };
+                s.filter.flag = None;
+                s.filter.flags = if hide { vec![Flag::Pick, Flag::None] } else { Vec::new() };
+                s.shelved_filter = None;
+                Ok(json!({"hidden": hide, "count": s.visible().len()}))
+            }
+        ),
         cmd!(
             "library.sort",
             "Sort",
@@ -2759,3 +2778,7 @@ mod source_album_filter_tests;
 #[cfg(test)]
 #[path = "library/tests_select.rs"]
 mod tests_select;
+
+#[cfg(test)]
+#[path = "library/tests_hide_rejected.rs"]
+mod hide_rejected_tests;

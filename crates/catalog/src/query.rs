@@ -34,6 +34,10 @@ pub struct Filter {
     pub rating: u8,
     pub rating_op: RatingOp,
     pub flag: Option<Flag>,
+    /// Any of these flags (Hide Rejected Photos shows picks and unflagged ones); empty = no
+    /// constraint. ANDs with `flag`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<Flag>,
     pub label: Option<ColorLabel>,
     /// Only these photos (Find Similar results…); empty = no constraint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -847,7 +851,16 @@ impl Filter {
     /// This filter without the quick culling filters (stars, flags, colour labels): what the filter
     /// bar counts its photos in, so "Picked 47" stays readable while only the picks are shown.
     pub fn without_quick(&self) -> Filter {
-        Filter { rating: 0, rating_op: RatingOp::default(), flag: None, label: None, labels: Vec::new(), ..self.clone() }
+        Filter { rating: 0, rating_op: RatingOp::default(), flag: None, flags: Vec::new(), label: None, labels: Vec::new(), ..self.clone() }
+    }
+
+    /// The flags that `flag` and `flags` let through together; `None` when neither is set.
+    pub fn flags_shown(&self) -> Option<Vec<Flag>> {
+        match (self.flag, self.flags.is_empty()) {
+            (None, true) => None,
+            (Some(f), true) => Some(vec![f]),
+            (f, false) => Some(self.flags.iter().copied().filter(|x| f.is_none_or(|f| f == *x)).collect()),
+        }
     }
 
     /// The labels that `label` and `labels` let through together (they AND), in `labels`' order;
@@ -889,6 +902,9 @@ impl Filter {
         }
         if let Some(f) = self.flag {
             v.push(format!("flag {}", format!("{f:?}").to_lowercase()));
+        }
+        if !self.flags.is_empty() {
+            v.push(format!("flag {}", self.flags.iter().map(|f| format!("{f:?}").to_lowercase()).collect::<Vec<_>>().join(" or ")));
         }
         if let Some(l) = self.label {
             v.push(format!("label {}", format!("{l:?}").to_lowercase()));
@@ -1027,6 +1043,9 @@ impl Filter {
         if let Some(rs) = &self.rule_set
             && !rs.matches(p, cat)
         {
+            return false;
+        }
+        if !self.flags.is_empty() && !self.flags.contains(&p.flag) {
             return false;
         }
         if !self.labels.is_empty() && !p.label.is_some_and(|l| self.labels.contains(&l)) {

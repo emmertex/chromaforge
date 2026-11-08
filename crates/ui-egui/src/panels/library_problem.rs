@@ -588,6 +588,20 @@ enum Choice {
 
 /// Whether dropped photos wait for a library ([`hold_dropped`]): none is open and the window
 /// asking for one is up (not dismissed by Continue Without Saving).
+/// Import the files that waited for a library, in the background like files dropped on the window
+/// (issue #374). While another import or a Synchronize Folder runs they keep waiting and are
+/// imported as soon as it ends, instead of being dropped (upstream #3403).
+pub(crate) fn import_waiting(app: &mut LccApp, ctx: &egui::Context) {
+    if app.waiting_import.is_empty() {
+        return;
+    }
+    let files = std::mem::take(&mut app.waiting_import);
+    if crate::import::start_paths(app, files.clone()).is_err() {
+        app.waiting_import = files;
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
 pub fn holds_drops(app: &LccApp) -> bool {
     app.session.library.is_none() && app.library_problem.as_ref().is_some_and(|p| !p.dismissed)
 }
@@ -619,11 +633,7 @@ fn open(app: &mut LccApp, path: Option<String>) {
         Ok(_) => {
             let files = app.library_problem.take().map(|p| p.pending_import).unwrap_or_default();
             // in the background, like files dropped on the window (issue #374)
-            if !files.is_empty()
-                && let Err(e) = crate::import::start_paths(app, files)
-            {
-                log::warn!("import: {e}");
-            }
+            app.waiting_import.extend(files);
         }
         Err(e) => {
             // a failed switch reopens the library that was open behind the launch list
@@ -655,6 +665,7 @@ fn open(app: &mut LccApp, path: Option<String>) {
 /// one than the launch list was opened over; offer the list when Alt/Option is held as the window
 /// appears; and the list's keys.
 pub fn logic(app: &mut LccApp, ctx: &egui::Context) {
+    import_waiting(app, ctx);
     if let Some(p) = &app.library_problem
         && app.session.library.is_some()
         && p.chooser.as_ref().and_then(|c| c.over) != Some(app.session.library_generation())
@@ -662,11 +673,7 @@ pub fn logic(app: &mut LccApp, ctx: &egui::Context) {
         // files from the command line go into the library opened another way (New Library…,
         // File ▸ Open Library…), as through the window's own buttons
         let files = app.library_problem.take().map(|p| p.pending_import).unwrap_or_default();
-        if !files.is_empty()
-            && let Err(e) = crate::import::start_paths(app, files)
-        {
-            log::warn!("import: {e}");
-        }
+        app.waiting_import.extend(files);
     }
     alt_at_launch(app, ctx);
     reap_checks(app);
@@ -1028,11 +1035,7 @@ fn act(app: &mut LccApp, choice: Choice) {
             }
             let files = app.library_problem.as_mut().map(|p| std::mem::take(&mut p.pending_import)).unwrap_or_default();
             // in the background, like files dropped on the window (issue #374)
-            if !files.is_empty()
-                && let Err(e) = crate::import::start_paths(app, files)
-            {
-                log::warn!("import: {e}");
-            }
+            app.waiting_import.extend(files);
         }
         Choice::Quit => app.ui.quit = true,
     }
