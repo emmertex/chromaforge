@@ -1809,6 +1809,53 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": new_group}))
         }),
+        cmd!(
+            "preset.copy",
+            "Copy Presets to Folder",
+            [],
+            None,
+            "{ids: [presetId], group} → {ids: [new presetId], skipped} — user presets with the same settings under a new id, built-in presets included, unstarred; a preset identical to one already in the folder is skipped",
+            always,
+            |s, p| {
+                let c = "preset.copy";
+                let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
+                let group = existing_preset_group(s, group);
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let copies: Vec<Preset> = s
+                    .presets
+                    .iter()
+                    .filter(|x| ids.contains(&x.id))
+                    .map(|x| Preset { id: String::new(), name: x.name.clone(), group: group.clone(), settings: x.settings.clone(), favorite: false, builtin: false })
+                    .collect();
+                if copies.is_empty() {
+                    return Err(bad(c, "none of these presets exist"));
+                }
+                let asked = copies.len();
+                let added = s.add_presets(copies);
+                let skipped = asked.saturating_sub(added.len());
+                s.presets.bump();
+                Ok(json!({"ids": added, "skipped": skipped}))
+            }
+        ),
+        cmd!(
+            "preset.deleteMany",
+            "Delete Presets",
+            [],
+            None,
+            "{ids: [presetId]} → {deleted, skipped} — user presets; built-in and unknown ids are skipped",
+            always,
+            |s, p| {
+                let c = "preset.deleteMany";
+                let ids = super::metadata_files::strings(p, "ids").filter(|v| !v.is_empty()).ok_or_else(|| bad(c, "missing ids"))?;
+                let gone: std::collections::HashSet<&String> = s.presets.iter().filter(|q| !q.builtin && ids.contains(&q.id)).map(|q| &q.id).collect();
+                let gone: Vec<String> = gone.into_iter().cloned().collect();
+                s.presets.retain(|q| !gone.contains(&q.id));
+                s.preset_at_import.retain(|x| !gone.contains(x));
+                s.preset_hidden.retain(|x| !gone.contains(x));
+                s.presets.bump();
+                Ok(json!({"deleted": gone.len(), "skipped": ids.len().saturating_sub(gone.len())}))
+            }
+        ),
         cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
             let c = "preset.deleteGroup";
             let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
