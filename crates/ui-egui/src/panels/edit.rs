@@ -189,6 +189,29 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         header_rows(app, ui, id, &d, preview_only.as_deref());
     }
 
+    // Witchcraft's palettes lead the panel (Resolve's: the node strip of stages, the scope switch,
+    // the Primaries wheels, the HSL curves) before Lightroom's own panels — in Eboda all four are
+    // away and the histogram's own mode menu is Lightroom's way
+    if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        if only.is_none() {
+            super::witchcraft::node_strip(app, ui, &d);
+            super::witchcraft::scopes_row(app, ui);
+        }
+        if shows("primaries") {
+            section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
+                super::witchcraft::primaries(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+        // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its
+        // own panel)
+        if shows("hsl") && !crate::is_bw(&d) {
+            section_with(app, ui, &d, "hsl", "HSL Curves", true, |app, ui, d| {
+                super::witchcraft::hsl_curves(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+    }
     let video = crate::video_ui::photo_is_video(app, id);
     // Lightroom Classic's Basic panel: white balance, then Tone (with Auto), then Presence
     // (Lightroom Classic's Basic has no on/off switch: it shows only while an older edit has Basic or Color switched off,
@@ -252,27 +275,6 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
-    // Witchcraft: the scope switch leads the panels (the histogram above is the colorist's
-    // instrument panel); in Eboda the histogram's own mode menu is Lightroom's way
-    if only.is_none() && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
-        super::witchcraft::scopes_row(app, ui);
-    }
-    // Witchcraft's own palette comes next of the panels (Resolve's Primaries); in Eboda it stays away —
-    // Lightroom's own panels end with the Color Grading wheels
-    if shows("primaries") && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
-        section_with(app, ui, &d, "primaries", "Primaries", true, |app, ui, d| {
-            super::witchcraft::primaries(app, ui, d);
-            ui.add_space(8.0);
-        });
-    }
-    // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its own
-    // panel), between the wheels and the tone curve
-    if shows("hsl") && app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft && !crate::is_bw(&d) {
-        section_with(app, ui, &d, "hsl", "HSL Curves", true, |app, ui, d| {
-            super::witchcraft::hsl_curves(app, ui, d);
-            ui.add_space(8.0);
-        });
-    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {

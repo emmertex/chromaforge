@@ -110,6 +110,42 @@ fn the_hsl_curves_write_the_mixer_bands() {
 }
 
 #[test]
+fn the_node_strip_lists_the_stages_and_its_badges_bypass_them() {
+    let mut h = demo();
+    for id in ["light", "primaries", "hsl", "curve", "mixer", "grading", "effects", "output"] {
+        assert!(has(&h, &format!("node:{id}")), "node {id}");
+    }
+    let r = h.request("ui.clickWidget", json!({"id": "nodeBadge:grading"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    let id = h.app.session.active().unwrap();
+    let d = h.app.session.develop_of(id).unwrap_or_default();
+    assert!(!d.section_enabled("grading"), "the badge is the section's eye");
+    assert!(d.effective().grading.is_neutral(), "a bypassed stage renders neutral");
+    let r = h.request("ui.clickWidget", json!({"id": "node:curve"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(h.app.ui.section_open("curve"), "a node click opens its panel");
+}
+
+#[test]
+fn the_node_strip_lists_the_photo_masks() {
+    let mut h = demo();
+    run(&mut h, "mask.add", json!({"kind": "radial", "center": {"x": 0.2, "y": 0.7}}));
+    h.step();
+    assert!(has(&h, "node:mask1"), "a radial mask is a node");
+    let r = h.request("ui.clickWidget", json!({"id": "nodeBadge:mask1"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    let id = h.app.session.active().unwrap();
+    let d = h.app.session.develop_of(id).unwrap_or_default();
+    assert!(!d.masks.first().is_none_or(|m| m.visible), "the mask's badge hides the mask");
+}
+
+#[test]
 fn the_wheels_write_the_primaries_controls_and_the_eye_switches_the_palette_off() {
     let mut h = demo();
     run(&mut h, "develop.set", json!({"control": "primaries.lift.hue", "value": 220.0}));
