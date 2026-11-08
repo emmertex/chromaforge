@@ -4047,6 +4047,8 @@ mod tests {
         let mut h = demo([1300.0, 1200.0]);
         let t = Duration::from_secs(10);
         h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
+        // Lightroom's own panel heights (the Witchcraft sections push Tone Curve below this window)
+        h.request("engine.execute", json!({"command": "view.gradingMode", "params": {"mode": "eboda"}}), t);
         h.settle(SETTLE);
         // (Tone Curve: Basic has no switch, as in Lightroom Classic)
         let light_on = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().section_enabled("curve");

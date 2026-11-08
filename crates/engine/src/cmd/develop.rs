@@ -1142,6 +1142,59 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": enabled, "maxEv": s.develop_of(id).map(|d| d.hdr.max_ev)}))
             }
         ),
+        cmd!(
+            "develop.hslPick",
+            "Pick an HSL Curve Point",
+            [],
+            None,
+            "{channel: hue|sat|lum, x, y (normalized image coords)} — samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
+            has_active,
+            |s, p| {
+                let c = "develop.hslPick";
+                let ch = str_param(p, "channel").ok_or_else(|| bad(c, "missing channel"))?.to_string();
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                // the hue the curve receives: the photo with the curves themselves neutral (and
+                // everything after the mixer, as Point Color reads it)
+                let [_, _, h] = super::color::encoded_to_oklch(super::color::probe(s, c, x, y, |d| {
+                    d.hsl_curves = Default::default();
+                    super::color::after_mixer_neutral(d);
+                })?);
+                let hue_x = (h as f64 / std::f64::consts::TAU).rem_euclid(1.0);
+                edit(s, c, "HSL Curves", |d| {
+                    let pts = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad(c, format!("unknown channel `{ch}`")))?;
+                    let at = lcc_pipeline::colorops::hsl_curve_at(pts, hue_x);
+                    pts.push(Point::new(hue_x, at));
+                    pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                    Ok(())
+                })?;
+                Ok(json!({"channel": ch, "x": hue_x}))
+            }
+        ),
+        cmd!(
+            "develop.hslCurves",
+            "Set HSL Curve",
+            [],
+            None,
+            "{channel: hue|sat|lum, points: [[x,y],...] — x hue position 0..1 around the hue circle, y −1..1}",
+            has_active,
+            |s, p| {
+                let ch = str_param(p, "channel").ok_or_else(|| bad("develop.hslCurves", "missing channel"))?.to_string();
+                let mut pts: Vec<Point> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| bad("develop.hslCurves", "missing points"))?
+                    .iter()
+                    .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?.clamp(0.0, 1.0), q.get(1)?.as_f64()?.clamp(-1.0, 1.0))))
+                    .collect();
+                // stored in the order the curve runs, as the editor draws and drags them
+                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                edit(s, "develop.hslCurves", "HSL Curves", |d| {
+                    let c = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad("develop.hslCurves", format!("unknown channel `{ch}`")))?;
+                    *c = pts;
+                    Ok(())
+                })
+            }
+        ),
         // ---- geometry: Upright
         cmd!(
             "geometry.upright",

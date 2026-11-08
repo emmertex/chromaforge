@@ -219,6 +219,8 @@ mod tests_folder_poll;
 #[cfg(test)]
 mod tests_grading;
 #[cfg(test)]
+mod tests_grading_mode;
+#[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
 mod tests_grid_style;
@@ -418,6 +420,8 @@ mod tests_update;
 mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
+#[cfg(test)]
+mod tests_witchcraft;
 #[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]

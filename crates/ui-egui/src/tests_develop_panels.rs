@@ -16,6 +16,9 @@ fn develop() -> Headless {
     let mut h = Headless::new(app, [1300.0, 1400.0], 1.0);
     let r = h.request("ui.set", json!({"module": "develop", "view": "detail", "right": "edit"}), T);
     assert_eq!(r["ok"], true, "{r}");
+    // this is Eboda's panel (the Witchcraft mode inserts its own sections after Basic)
+    let r = h.request("engine.execute", json!({"command": "view.gradingMode", "params": {"mode": "eboda"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
     h
 }
