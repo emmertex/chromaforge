@@ -1817,7 +1817,6 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let resp = ui.interact(r, egui::Id::new(("curve", target.widget(""), &ch)), Sense::click_and_drag());
     crate::widgets::announce(&resp, crate::i18n::tr(target.label()));
     register(ui.ctx(), target.widget(""), r);
-    crate::widgets::context_menu(&resp, |ui| curve_reset_menu(app, ui, &ch, target));
     let p = ui.painter();
     p.rect_filled(r, 2.0, t.canvas);
     if let Some(hist) = preview_histogram(app, id) {
@@ -1884,6 +1883,31 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let mut selected: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(sel_id)).flatten().filter(|i| *i < pts.len());
     let nearest = |q: Pos2| pts.iter().enumerate().map(|(i, p)| (i, to_screen(p.x, p.y).distance(q))).min_by(|a, b| a.1.total_cmp(&b.1));
     let hovered = resp.hover_pos().and_then(nearest).filter(|(_, dist)| *dist < 10.0).map(|(i, _)| i);
+    // right-click on a point: the menu opens with Delete Control Point (not on the two end points);
+    // the point under the pointer is read when the menu opens and kept while it is open
+    let menu_point_id = egui::Id::new(("curve-menu-point", target.widget(""), &ch));
+    if resp.secondary_clicked() {
+        let hit = resp
+            .interact_pointer_pos()
+            .and_then(nearest)
+            .filter(|(i, dist)| *dist < 10.0 && *i != 0 && i.checked_add(1).is_some_and(|n| n < pts.len()))
+            .map(|(i, _)| i);
+        ui.data_mut(|dd| dd.insert_temp(menu_point_id, hit));
+    }
+    let menu_point: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(menu_point_id)).flatten().filter(|i| *i < pts.len());
+    crate::widgets::context_menu(&resp, |ui| {
+        if let Some(i) = menu_point {
+            let r = ui.button(crate::i18n::tr("Delete Control Point"));
+            register(ui.ctx(), target.widget("Menu:deletePoint"), r.rect);
+            if r.clicked() {
+                let arr: Vec<[f64; 2]> = pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| [p.x, p.y]).collect();
+                let _ = app.run("develop.curve", target.params(json!({"channel": ch, "points": arr})));
+                ui.close();
+            }
+            ui.separator();
+        }
+        curve_reset_menu(app, ui, &ch, target);
+    });
     if dragging.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if hovered.is_some() {
