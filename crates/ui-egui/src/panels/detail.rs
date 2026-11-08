@@ -615,7 +615,7 @@ pub(crate) fn draw_focus_point(p: &egui::Painter, img: Rect, photo: &lcc_catalog
 
 /// Ease the loupe rect toward `target` while a click-zoom animation runs; otherwise follow it exactly.
 fn animated_rect(ctx: &egui::Context, anim: &mut bool, target: Rect) -> Rect {
-    let t = if *anim { 0.22 } else { 0.0 };
+    let t = if *anim && !crate::motion::reduced(ctx) { 0.22 } else { 0.0 };
     let id = egui::Id::new("loupe_anim");
     let v = |k: &str, x: f32| ctx.animate_value_with_time(id.with(k), x, t);
     let (c, s) = (target.center(), target.size());
@@ -3267,7 +3267,7 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if pts.len() == 4 {
         let uv_to_norm = frame.out_to_norm(1, 1);
         let photo = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(u, v)| map.screen(uv_to_norm.apply(Point::new(u, v))));
-        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(150)));
+        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(crate::state::crop_mask_alpha(app.ui.crop_mask_opacity))));
     }
     // the box's centre: what a rotation turns the photo about (it stays put on screen)
     let box_centre = pos2(pts.iter().map(|q| q.x).sum::<f32>() / 4.0, pts.iter().map(|q| q.y).sum::<f32>() / 4.0);
