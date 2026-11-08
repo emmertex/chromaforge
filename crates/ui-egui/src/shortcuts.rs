@@ -38,7 +38,7 @@ pub struct Bindable {
 /// installed or removed), and stays `'static` for the callers that keep references into it.
 pub fn bindable() -> &'static [Bindable] {
     static FIXED: OnceLock<Vec<Bindable>> = OnceLock::new();
-    static ALL: std::sync::Mutex<Option<(String, &'static [Bindable])>> = std::sync::Mutex::new(None);
+    static ALL: std::sync::Mutex<Option<(u64, &'static [Bindable])>> = std::sync::Mutex::new(None);
     let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
@@ -56,20 +56,17 @@ pub fn bindable() -> &'static [Bindable] {
         }
         v
     });
-    // the installed filters, as (id, name, declared key), in id order: the list's fingerprint
-    let mut filters: Vec<(String, String, Option<String>)> = lcc_engine::filter_plugins::registry()
-        .list()
-        .iter()
-        .map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone()))
-        .collect();
-    filters.sort();
-    let fingerprint = format!("{filters:?}");
+    // rebuilt when the set of installed filters changes (the registry counts its changes)
+    let registry = lcc_engine::filter_plugins::registry();
+    let generation = registry.generation();
     let mut all = ALL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((fp, list)) = all.as_ref()
-        && *fp == fingerprint
+    if let Some((g, list)) = all.as_ref()
+        && *g == generation
     {
         return list;
     }
+    let filters: Vec<(String, String, Option<String>)> =
+        registry.list().iter().map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone())).collect();
     let mut v = fixed.clone();
     let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).collect();
     for (id, name, sc) in &filters {
@@ -83,7 +80,7 @@ pub fn bindable() -> &'static [Bindable] {
     }
     // rebuilt only when a filter is installed or removed: a few leaked strings per change
     let list: &'static [Bindable] = Box::leak(v.into_boxed_slice());
-    *all = Some((fingerprint, list));
+    *all = Some((generation, list));
     list
 }
 

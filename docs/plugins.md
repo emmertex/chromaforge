@@ -571,12 +571,13 @@ with the photo (`setAnalysis`). It runs in the background as an activity row (ki
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
-With `ids: [photo, …]` it measures every photo named (each needs an entry of the same plug-in,
-which `develop.pluginFilter.applyTo {uid, ids?, measurement?}` puts there: the active photo's
-entry, with its parameters, stage, on/off and, unless `measurement: false`, its measurement,
-copied onto the other photos, replacing an entry of the same plug-in or added after the others),
-one after the other, each getting its own measurement; the panel's Measure ▾ menu offers it for
-the selection, and *Apply to N* the copy.
+With `ids: [photo, …]` it measures every photo named, one after the other, each getting its own
+measurement; the entry is `uid` on the active photo and the first entry of the same plug-in on
+the others, and a photo without one first gets a copy of the active entry (parameters, stage,
+on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
+{uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
+false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
+the selection, and *Apply to N Selected* the copy.
 
 **A roll (ABI v1.1 proposal).** A module may also export
 `pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of

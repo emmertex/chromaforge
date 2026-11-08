@@ -295,9 +295,23 @@ fn a_batch_measures_each_selected_photo_and_a_roll_shares_one_measurement() {
     let active = s.active().unwrap();
     assert_eq!(active.0, ids[0]);
 
-    // the other photos have no entry yet: a batch names the first one missing
-    let err = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids, "wait": true})).unwrap_err().to_string();
-    assert!(err.contains(&format!("photo {}", ids[1])) && err.contains("applyTo"), "{err}");
+    // the other photos have no entry yet: a batch gives them a copy of this one (without a
+    // measurement) before measuring, so a roll needs no step before it
+    s.execute("develop.pluginFilter.set", &json!({"uid": uid, "params": {"amount": 0.25}})).unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": uid, "ids": ids, "wait": true})).unwrap();
+    assert_eq!(r["analyses"].as_array().unwrap().len(), 3);
+    for id in &ids {
+        let d = s.develop_of(crate::catalog::PhotoId(*id)).unwrap();
+        assert_eq!(d.plugin_filters.len(), 1, "photo {id}");
+        assert_eq!(d.plugin_filters[0].params["amount"], 0.25);
+        assert_eq!(d.plugin_filters[0].analysis, Some(json!({"base": [0.8, 0.5, 0.3]})));
+    }
+    for id in &ids[1..] {
+        s.execute("library.select", &json!({"ids": [id]})).unwrap();
+        s.execute("develop.pluginFilter.remove", &json!({"uid": 1})).unwrap();
+    }
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": uid, "analysis": null})).unwrap();
 
     // Apply to Selected: the entry (parameters, stage, on/off) lands on the others, one History step
     s.execute("develop.pluginFilter.set", &json!({"uid": uid, "stage": "source", "enabled": false})).unwrap();
@@ -393,4 +407,37 @@ fn add_to_puts_a_default_entry_on_the_selected_photos_that_lack_one() {
     assert!(s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.nope"})).is_err());
     assert!(s.execute("develop.pluginFilter.addTo", &json!({"plugin": "test.engine.addto", "ids": "3"})).is_err());
     s.execute("plugin.uninstall", &json!({"id": "test.engine.addto"})).unwrap();
+}
+
+/// A photo may carry two entries of one plug-in: a measurement asked for the second one lands on
+/// it, not on the first, on the active photo; the other photos' first entry of the plug-in is used.
+#[test]
+fn two_entries_of_one_plugin_measure_the_one_asked_for() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.twiceroll","name":"TwiceRoll","kind":"filter"}"#;
+    install_bytes(&mut s, "test.engine.twiceroll", &module_with_merge(m, Some(r#"{"base":[0.8,0.5,0.3]}"#), Some(r#"{"base":[0.7,0.5,0.3]}"#)));
+    let ids: Vec<u64> = s.catalog.photos().take(2).map(|p| p.id.0).collect();
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    let u1 = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.twiceroll"})).unwrap()["uid"].as_u64().unwrap();
+    let u2 = s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.twiceroll"})).unwrap()["uid"].as_u64().unwrap();
+    assert_ne!(u1, u2);
+    let active = s.active().unwrap();
+    // alone: the second entry is measured, the first stays unmeasured
+    s.execute("develop.pluginFilter.analyze", &json!({"uid": u2})).unwrap();
+    assert!(s.plugin_analyzing(active, u2 as u32) && !s.plugin_analyzing(active, u1 as u32));
+    pump_until_idle(&mut s);
+    let d = s.develop_of(active).unwrap();
+    assert!(d.plugin_filters[0].analysis.is_none() && d.plugin_filters[1].analysis.is_some());
+    // as a roll with another photo: the second entry here, the other photo's only one there
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": u2, "ids": ids, "roll": true, "wait": true})).unwrap();
+    assert_eq!(r["analyses"].as_array().unwrap().len(), 2);
+    let d = s.develop_of(active).unwrap();
+    assert!(d.plugin_filters[0].analysis.is_none());
+    assert_eq!(d.plugin_filters[1].analysis.as_ref().unwrap()["_roll"], 2);
+    let other = s.develop_of(crate::catalog::PhotoId(ids[1])).unwrap();
+    assert_eq!(other.plugin_filters.len(), 1);
+    assert_eq!(other.plugin_filters[0].analysis.as_ref().unwrap()["_roll"], 2);
+    // a uid no entry has is refused
+    assert!(s.execute("develop.pluginFilter.analyze", &json!({"uid": 99, "ids": ids})).is_err());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.twiceroll"})).unwrap();
 }

@@ -248,12 +248,16 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         register(ui.ctx(), "pluginFilterAddMenu", r.response.rect);
     });
     for a in actions {
-        // errors surface through the app's command error path; nothing here can corrupt the stack
-        let _ = match a {
+        // a refused request says why (a batch naming a photo that can't be measured, say); nothing
+        // here can corrupt the stack
+        let r = match a {
             Action::Run(id, p) => app.run(id, p),
             Action::Begin(label) => app.run("develop.beginInteraction", json!({"label": label})),
             Action::End => app.run("develop.endInteraction", json!({})),
         };
+        if let Err(e) = r {
+            app.toast(ui.ctx(), e);
+        }
     }
 }
 

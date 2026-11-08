@@ -341,10 +341,11 @@ struct Frame {
 }
 
 /// The photos a measurement acts on: `ids` as given, else the active photo. On the active photo
-/// it is entry `uid`, the one the caller named (a photo may carry several entries of a plug-in);
-/// every other photo must be in the library and carry an entry of plug-in `plugin`, its first, and
-/// a photo without one is an error that names it, so a roll isn't measured with a frame missing.
-fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, uid: u32, plugin: &str, name: &str) -> Result<Vec<Frame>> {
+/// the entry is `uid` (a photo may carry several entries of one plug-in); on every other photo
+/// its first entry of the same plug-in. A photo without one gets a copy of the active entry
+/// (parameters, stage, on/off; no measurement) first, in one History step for all of them, so a
+/// roll needs no step before it.
+fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, entry: &PluginFilter) -> Result<Vec<Frame>> {
     let ids = super::photo_ids(p, c)?.unwrap_or_else(|| vec![active]);
     if ids.is_empty() {
         return Err(bad(c, "`ids` names no photo"));
@@ -352,23 +353,96 @@ fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, uid: u32, plugin
     if ids.len() > lcc_filters::MAX_MERGE {
         return Err(bad(c, format!("at most {} photos at a time", lcc_filters::MAX_MERGE)));
     }
+    let mut ids: Vec<PhotoId> = ids.into_iter().fold(Vec::new(), |mut v, id| {
+        if !v.contains(&id) {
+            v.push(id);
+        }
+        v
+    });
+    for id in &ids {
+        if s.catalog.photo(*id).is_none() {
+            return Err(bad(c, format!("photo {} is not in the library", id.0)));
+        }
+    }
+    // the active photo's entry is the one asked for; the others' is looked up by plug-in
+    let missing: Vec<PhotoId> = ids
+        .iter()
+        .copied()
+        .filter(|x| *x != active && !s.develop_of(*x).is_some_and(|d| d.plugin_filters.iter().any(|f| f.plugin == entry.plugin)))
+        .collect();
+    if !missing.is_empty() {
+        apply_entry(s, c, active, entry, &missing, false, true)?;
+    }
+    ids.retain(|x| s.catalog.photo(*x).is_some());
     let mut out: Vec<Frame> = Vec::with_capacity(ids.len());
     for id in ids {
-        if out.iter().any(|f| f.photo == id) {
-            continue;
-        }
         let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, format!("photo {} is not in the library", id.0)))?;
         let settings = s.develop_of(id).map(|d| (*d).clone()).unwrap_or_default();
-        let entry = settings
-            .plugin_filters
-            .iter()
-            .find(|f| if id == active { f.uid == uid } else { f.plugin == plugin })
-            .cloned()
-            .ok_or_else(|| bad(c, format!("photo {} has no {name} filter: apply it there first (develop.pluginFilter.applyTo)", id.0)))?;
+        let found = if id == active {
+            settings.plugin_filters.iter().find(|f| f.uid == entry.uid)
+        } else {
+            settings.plugin_filters.iter().find(|f| f.plugin == entry.plugin)
+        };
+        let found = found.cloned().ok_or_else(|| bad(c, format!("photo {} has no {} filter", id.0, entry.name)))?;
         let source = s.media.source_ref(&photo, crate::media::SourceLevel::Preview);
-        out.push(Frame { photo: id, entry, settings, source });
+        out.push(Frame { photo: id, entry: found, settings, source });
     }
     Ok(out)
+}
+
+/// Puts `entry` (of the active photo `from`) onto `ids`: a photo with an entry of the same
+/// plug-in gets it replaced in place (its uid kept; `only_missing` leaves it alone instead), any
+/// other gets it appended; `with_measurement` says whether the measurement goes along. One
+/// History step; the number of photos changed.
+fn apply_entry(
+    s: &mut Session,
+    c: &str,
+    from: PhotoId,
+    entry: &PluginFilter,
+    ids: &[PhotoId],
+    with_measurement: bool,
+    only_missing: bool,
+) -> Result<usize> {
+    let mut ops = Vec::new();
+    let mut seen: Vec<PhotoId> = Vec::new();
+    for x in ids.iter().copied().filter(|x| *x != from) {
+        if seen.contains(&x) {
+            continue;
+        }
+        seen.push(x);
+        let Some(dd) = s.develop_of(x) else { continue };
+        let mut nd = (*dd).clone();
+        let mut copy = entry.clone();
+        if !with_measurement {
+            copy.analysis = None;
+        }
+        match nd.plugin_filters.iter_mut().find(|e| e.plugin == entry.plugin) {
+            Some(_) if only_missing => continue,
+            Some(there) => {
+                copy.uid = there.uid;
+                if !with_measurement {
+                    copy.analysis = there.analysis.take();
+                }
+                *there = copy;
+            }
+            None => {
+                if nd.plugin_filters.len() >= MAX_PLUGIN_FILTERS {
+                    return Err(bad(c, format!("photo {} already has {MAX_PLUGIN_FILTERS} plug-in filters", x.0)));
+                }
+                copy.uid = match nd.plugin_filters.iter().map(|e| e.uid).max() {
+                    Some(m) => m.checked_add(1).ok_or_else(|| bad(c, "no free uid"))?,
+                    None => 1,
+                };
+                nd.plugin_filters.push(copy);
+            }
+        }
+        ops.extend(s.develop_op(x, nd, &label(&entry.name)));
+    }
+    let n = ops.len();
+    if n > 0 {
+        s.commit(&format!("{} › Apply to {n} photos", label(&entry.name)), lcc_catalog::Op::Batch { ops })?;
+    }
+    Ok(n)
 }
 
 fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
@@ -384,7 +458,7 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     if roll && !filter.has_merge() {
         return Err(bad(c, format!("unsupported: plug-in {:?} can't measure a roll (no pc_merge)", f.plugin)));
     }
-    let frames = frames(s, p, c, id, f.uid, &f.plugin, &f.name)?;
+    let frames = frames(s, p, c, id, &f)?;
     let keys: Vec<(PhotoId, u32)> = frames.iter().map(|fr| (fr.photo, fr.entry.uid)).collect();
     if keys.iter().any(|k| s.plugin_analyzing(k.0, k.1)) {
         return Ok(json!({ "started": false, "running": true }));
@@ -526,44 +600,7 @@ fn apply_to(s: &mut Session, p: &Value) -> Result<Value> {
     let f = d.plugin_filters.get(position(&d, u, c)?).cloned().ok_or_else(|| bad(c, "no such plug-in filter"))?;
     let with_measurement = p.get("measurement").and_then(Value::as_bool).unwrap_or(true);
     let ids = super::photo_ids(p, c)?.unwrap_or_else(|| s.selected());
-    let mut ops = Vec::new();
-    let mut seen: Vec<PhotoId> = Vec::new();
-    for x in ids.into_iter().filter(|x| *x != id) {
-        if seen.contains(&x) {
-            continue;
-        }
-        seen.push(x);
-        let Some(dd) = s.develop_of(x) else { continue };
-        let mut nd = (*dd).clone();
-        let mut entry = f.clone();
-        if !with_measurement {
-            entry.analysis = None;
-        }
-        match nd.plugin_filters.iter_mut().find(|e| e.plugin == f.plugin) {
-            Some(there) => {
-                entry.uid = there.uid;
-                if !with_measurement {
-                    entry.analysis = there.analysis.take();
-                }
-                *there = entry;
-            }
-            None => {
-                if nd.plugin_filters.len() >= MAX_PLUGIN_FILTERS {
-                    return Err(bad(c, format!("photo {} already has {MAX_PLUGIN_FILTERS} plug-in filters", x.0)));
-                }
-                entry.uid = match nd.plugin_filters.iter().map(|e| e.uid).max() {
-                    Some(m) => m.checked_add(1).ok_or_else(|| bad(c, "no free uid"))?,
-                    None => 1,
-                };
-                nd.plugin_filters.push(entry);
-            }
-        }
-        ops.extend(s.develop_op(x, nd, &label(&f.name)));
-    }
-    let n = ops.len();
-    if n > 0 {
-        s.commit(&format!("{} › Apply to {n} photos", label(&f.name)), lcc_catalog::Op::Batch { ops })?;
-    }
+    let n = apply_entry(s, c, id, &f, &ids, with_measurement, false)?;
     Ok(json!({ "changed": n }))
 }
 
@@ -683,7 +720,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Measure Plug-in Filter on Photo",
             [],
             None,
-            "{uid, ids?: [photo], roll?: false, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (each needs an entry of the same plug-in; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
+            "{uid, ids?: [photo], roll?: false, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (one without an entry of the plug-in gets a copy of this one first, without its measurement; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
             has_active,
             analyze
         ),
