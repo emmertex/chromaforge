@@ -24,7 +24,13 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::modern::COMMANDS)
         .chain(crate::modern_library::COMMANDS)
         .chain(crate::modern_sheets::COMMANDS)
+        .chain(GRADING_COMMANDS)
 }
+
+/// The Edit panel's grading modes: Eboda, the Lightroom Classic panels (the default), and
+/// Witchcraft, the DaVinci Resolve style colour-grading palettes. `view.gradingMode` cycles, or
+/// takes `{mode: eboda|witchcraft}`; the Edit panel's header shows the same choice.
+const GRADING_COMMANDS: &[UiCommand] = &[("view.gradingMode", "Grading Mode", Some("Cmd+Shift+G"), "Window>Grading Mode")];
 
 /// The Edit panel's sections the fork adds: Transform (Upright and the transform sliders, upstream's Geometry in the
 /// Crop tool), as Lightroom Classic's Transform panel, and Plug-in Filters (the photo's pixel-filter stack). Opened and
@@ -102,6 +108,18 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
                 app.ui.toggle_section(sec);
             }
             Ok(Value::Null)
+        }
+        "view.gradingMode" => {
+            // {mode?: eboda|witchcraft}; without one, cycles Eboda → Witchcraft → Eboda
+            let mode = match p.get("mode") {
+                None | Some(Value::Null) => app.ui.settings.grading_mode.next(),
+                Some(v) => match v.as_str().and_then(crate::state::GradingMode::parse) {
+                    Some(m) => m,
+                    None => return Some(Err(format!("view.gradingMode: unknown mode {v} (eboda|witchcraft)"))),
+                },
+            };
+            app.ui.settings.grading_mode = mode;
+            Ok(json!({"mode": mode.id()}))
         }
         "view.colorReadout" | "view.colorReadoutRgb" | "view.colorReadoutHsl" | "view.colorReadoutLab" => {
             // {format?: rgb|hsl|lab}; `view.colorReadout` without one cycles RGB → HSL → Lab

@@ -506,6 +506,29 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     ui.add_space(40.0);
 }
 
+/// The grading-mode switch (Window ▸ Grading Mode, `view.gradingMode`): Eboda, the Lightroom
+/// Classic panels (the default), or Witchcraft, the DaVinci Resolve style colour-grading
+/// palettes. A presentation choice — both modes edit the same photo settings.
+fn grading_mode_row(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let m = crate::widgets::row_margin;
+    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 8, bottom: 0 }, 3, 0)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let r = ui.label(egui::RichText::new(crate::i18n::tr("Grading Mode")).font(t.font(12.0)).color(t.text_dim));
+            r.on_hover_text(crate::i18n::tr(
+                "Eboda shows the Lightroom Classic panels; Witchcraft the DaVinci Resolve style colour-grading palettes. Both edit the same photo.",
+            ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let active = usize::from(app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft);
+                if let Some(i) = crate::widgets::segmented(ui, "gradingMode", &[("Eboda", "eboda"), ("Witchcraft", "witchcraft")], Some(active), 2) {
+                    let mode = if i == 0 { "eboda" } else { "witchcraft" };
+                    let _ = app.run("view.gradingMode", json!({"mode": mode}));
+                }
+            });
+        });
+    });
+}
+
 /// The rows above the Develop sections: in Classic the "Edit" title, the Auto · B&W | HDR row,
 /// the notices, Auto Sync and the profile row; in the Compact layout (at the top of Basic) the same
 /// rows without the title and with the panels' shared margins and heights (LAYOUT-DENSE, ported
@@ -525,6 +548,7 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
             },
         );
     }
+    grading_mode_row(app, ui);
     egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 10, bottom: 14 }, 3, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             if dense {

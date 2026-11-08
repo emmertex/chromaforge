@@ -193,6 +193,43 @@ pub enum LaunchLibrary {
     Ask,
 }
 
+/// The Edit panel's grading mode (Window ▸ Grading Mode, `view.gradingMode`): a presentation
+/// choice — both modes edit the same photo settings, they only lay the colour tools out
+/// differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GradingMode {
+    /// The Lightroom Classic panels, as the Edit panel always had them (the default).
+    #[default]
+    Eboda,
+    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes.
+    Witchcraft,
+}
+
+impl GradingMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            GradingMode::Eboda => "eboda",
+            GradingMode::Witchcraft => "witchcraft",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "eboda" => Some(GradingMode::Eboda),
+            "witchcraft" => Some(GradingMode::Witchcraft),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GradingMode::Eboda => GradingMode::Witchcraft,
+            GradingMode::Witchcraft => GradingMode::Eboda,
+        }
+    }
+}
+
 /// When grid cells show their rating / flag / edited badges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -552,6 +589,11 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
+    /// The Edit panel's grading mode (`view.gradingMode`): Eboda, the Lightroom Classic panels
+    /// (the default), or Witchcraft, the DaVinci Resolve style colour-grading palettes. Both edit
+    /// the same photo; a value this version doesn't know reads as the default.
+    #[serde(deserialize_with = "lenient")]
+    pub grading_mode: GradingMode,
     /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
     /// whichever library is open and after a restart.
     pub auto_sync: bool,
@@ -726,6 +768,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
+            grading_mode: GradingMode::Eboda,
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
