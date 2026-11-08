@@ -137,6 +137,8 @@ fn the_ai_models_dialog_lists_the_downloadable_denoise_models() {
     for id in &known {
         let w = format!("denoise:download:{id}");
         assert!(h.app.widgets.iter().any(|(n, _)| n == &w), "the dialog lists {id}");
+        // the models are rows of Settings ▸ AI: scroll to the button as a person would
+        crate::settings_screen::reveal(&mut h, &w);
         assert_eq!(h.request("ui.clickWidget", json!({"id": w}), std::time::Duration::from_secs(5))["ok"], true, "{id}");
         h.step();
         assert!(

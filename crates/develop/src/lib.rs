@@ -22,7 +22,19 @@ pub use settings::*;
 
 use serde_json::Value;
 
+/// The default look (Craft Colour): adds nothing of its own, so over a camera profile with a look of its own (a
+/// tone curve or look table) the photo develops with that look, "As profile".
+pub const DEFAULT_LOOK: &str = "lc.color";
+
 impl DevelopSettings {
+    /// Whether the camera profile's own look (its tone curve and look table) applies: with the default look ("As
+    /// profile", [`DEFAULT_LOOK`]). Any other look sits on the camera profile's calibration only, so two looks are
+    /// never stacked (OneSlips, LR-PROF-LAYERS). Settings from before this rule keep their JSON: a photo on the
+    /// default look renders as it did, one on another look loses the camera profile's look under it.
+    pub fn keeps_camera_look(&self) -> bool {
+        self.profile.id.is_empty() || self.profile.id == DEFAULT_LOOK
+    }
+
     /// Settings for a freshly imported raw file (Lightroom applies capture sharpening and colour
     /// noise reduction by default to raw files).
     pub fn for_raw(as_shot_temp: f64, as_shot_tint: f64) -> DevelopSettings {
@@ -84,6 +96,10 @@ impl DevelopSettings {
         for p in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue].into_iter().flatten() {
             *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
         }
+        let hsl = &mut self.hsl_curves;
+        for p in [&mut hsl.hue, &mut hsl.sat, &mut hsl.lum].into_iter().flatten() {
+            *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(-1.0, 1.0));
+        }
         let g = &mut self.crop.geometry;
         g.angle = if g.angle.is_finite() { g.angle.clamp(-45.0, 45.0) } else { 0.0 };
         if g.angle == 0.0 {
@@ -142,6 +158,7 @@ impl DevelopSettings {
             || off("curve")
             || off("mixer")
             || off("grading")
+            || off("primaries")
             || off("detail")
             || (off(PLUGIN_FILTERS_SECTION) && !self.plugin_filters.is_empty()))
         {
@@ -169,6 +186,9 @@ impl DevelopSettings {
         }
         if off("grading") {
             d.reset_section(Section::Grading);
+        }
+        if off("primaries") {
+            d.reset_section(Section::Primaries);
         }
         if off("detail") {
             d.reset_section(Section::Detail);
@@ -216,6 +236,8 @@ impl DevelopSettings {
             }
             Section::Color => self.wb.mode = WbMode::AsShot,
             Section::Detail => self.enhance.denoise_on = None,
+            // the Log variant is a switch, not a control: the whole group goes back to its default
+            Section::Primaries => self.primaries = Primaries::default(),
             // the creative profile is not a control: the chosen look goes back to the default one,
             // and so does the camera's own local tone mapping
             Section::Profile => {

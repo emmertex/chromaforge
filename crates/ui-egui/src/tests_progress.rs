@@ -282,6 +282,8 @@ fn an_activity_bar_is_named_after_its_task() {
         batch: false,
         failed: 0,
         eta_ms: None,
+        stop_warning: None,
+        templates: None,
     };
     let (nodes, _, _) = frames(Vec::new(), |ui| crate::panels::activity::bar(ui, &task, 200.0).rect.width());
     let bar = nodes.iter().find(|n| n.role == "ProgressIndicator").unwrap_or_else(|| panic!("{nodes:?}"));

@@ -36,6 +36,10 @@ pub enum LibrarySource {
 pub struct Browse {
     pub path: String,
     pub subfolders: bool,
+    /// The Browse tab's quick filter on "Show Not Imported": only the files an import would take.
+    /// Off (the default), the view is everything on disk, the files the library has already
+    /// included — they carry an In library badge in the grid.
+    pub not_imported: bool,
 }
 
 /// How far back Recently Added reaches from the latest import.
@@ -190,8 +194,9 @@ pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
         let label = if f.rating == 0 { "Unrated".to_string() } else { format!("Rating {op} {}★", f.rating) };
         add(label, json!({"rating": 0, "ratingOp": "atLeast"}));
     }
-    if let Some(fl) = f.flag {
-        add(format!("Flag: {}", format!("{fl:?}").to_lowercase()), json!({"flag": Null}));
+    if let Some(shown) = f.flags_shown() {
+        let names = shown.iter().map(|fl| format!("{fl:?}").to_lowercase()).collect::<Vec<_>>().join(" or ");
+        add(format!("Flag: {names}"), json!({"flag": Null, "flags": []}));
     }
     if let Some(shown) = f.labels_shown() {
         let or = |ls: &[lcc_catalog::ColorLabel]| ls.iter().map(|l| cat.label_name(*l)).collect::<Vec<_>>().join(" or ");
@@ -264,7 +269,9 @@ pub fn filter_chips(f: &Filter, cat: &Catalog) -> Vec<FilterChip> {
     if let Some(rs) = f.rule_set.as_ref().filter(|r| !r.rules.is_empty()) {
         add(format!("Rules: {}", rs.describe_with(cat)), json!({"ruleSet": Null}));
     }
-    if f.only_none || !f.only.is_empty() {
+    if let Some(q) = f.semantic.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        add(format!("AI search: “{q}”"), json!({"semantic": Null, "only": [], "onlyNone": false}));
+    } else if f.only_none || !f.only.is_empty() {
         let n = if f.only_none { 0 } else { f.only.len() };
         add(format!("Only {n} photos"), json!({"only": [], "onlyNone": false}));
     }

@@ -30,10 +30,14 @@ pub fn list_auto_import_folder(folder: &str) -> std::result::Result<Vec<(String,
     let rd = std::fs::read_dir(folder).map_err(|e| format!("{folder}: {e}"))?;
     Ok(rd
         .flatten()
-        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| {
-            let m = std::fs::metadata(e.path()).ok()?;
-            m.is_file().then(|| (e.path().to_string_lossy().to_string(), m.len()))
+            let path = e.path();
+            // through a link: its target's type and size
+            let m = std::fs::metadata(&path).ok()?;
+            // but a link's own hidden attribute, not its target's, as in a folder walk
+            let hidden =
+                if e.file_type().is_ok_and(|t| t.is_symlink()) { crate::walk::is_hidden_entry(&e) } else { crate::walk::is_hidden_with(&path, &m) };
+            (m.is_file() && !hidden).then(|| (path.to_string_lossy().to_string(), m.len()))
         })
         .collect())
 }
@@ -383,11 +387,38 @@ fn advance_if(s: &mut Session, p: &Value) {
 }
 
 fn step(s: &mut Session, d: isize) -> Result<Value> {
+    step_in(s, d, false)
+}
+
+/// [`step`], and with `within` (← / →) through the selection when several photos are selected (ported from OneSlips,
+/// NOTES-1028 note 16): in the view's order, the selection kept, wrapping round; the photos between are skipped.
+/// ↑ / ↓ and Auto Advance step through the view.
+fn step_in(s: &mut Session, d: isize, within: bool) -> Result<Value> {
     let vis = s.visible_cloned();
     if vis.is_empty() {
         return ok();
     }
     let cur = s.selection.active.and_then(|a| vis.iter().position(|x| *x == a));
+    if within
+        && let Some(i) = cur
+        && s.selection.ids.len() > 1
+    {
+        let picked: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
+        let order: Vec<PhotoId> = vis.iter().copied().filter(|x| picked.contains(x)).collect();
+        if order.len() > 1
+            && let Some(at) = vis.get(i).and_then(|a| order.iter().position(|x| x == a))
+        {
+            let n = order.len() as isize;
+            let to = (at as isize + d.signum()).rem_euclid(n) as usize;
+            let Some(&next) = order.get(to) else { return ok() };
+            s.end_interaction()?;
+            let (was, was_mask) = (s.selection.active, s.active_mask);
+            s.selection.active = Some(next);
+            s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+            s.active_spot = None;
+            return Ok(json!({"active": next.0}));
+        }
+    }
     let next = match cur {
         Some(i) => (i as isize + d).clamp(0, vis.len() as isize - 1) as usize,
         None => 0,
@@ -398,6 +429,52 @@ fn step(s: &mut Session, d: isize) -> Result<Value> {
     s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
     s.active_spot = None;
     Ok(json!({"active": vis[next].0}))
+}
+
+/// `library.nextUnrated` / `library.prevUnrated` (ported from upstream #3904 in our own form): jump to the next
+/// (`d > 0`) or previous photo of the view with no rating, wrapping round. With several photos selected the target is
+/// added to the selection, which is kept. `{"allRated": true}` when nothing in the view is unrated.
+fn step_unrated(s: &mut Session, d: isize) -> Result<Value> {
+    let vis = s.visible_cloned();
+    if vis.is_empty() {
+        return ok();
+    }
+    let unrated: Vec<bool> = vis.iter().map(|id| s.catalog.photo(*id).is_some_and(|p| p.rating == 0)).collect();
+    if !unrated.iter().any(|u| *u) {
+        return Ok(json!({"allRated": true}));
+    }
+    let n = vis.len();
+    let cur = s.selection.active.and_then(|a| vis.iter().position(|x| *x == a));
+    // Walk away from the current photo (from the near end when there is none), wrapping once round; the current
+    // photo is the last candidate, so the only unrated photo stays where it is.
+    let target = (1..=n).find_map(|k| {
+        let i = match (cur, d >= 0) {
+            (Some(c), true) => c.checked_add(k)? % n,
+            (Some(c), false) => c.checked_add(n.checked_sub(k % n)?)? % n,
+            (None, true) => k.checked_sub(1)?,
+            (None, false) => n.checked_sub(k)?,
+        };
+        unrated.get(i).copied().unwrap_or(false).then_some(i)
+    });
+    let Some(id) = target.and_then(|i| vis.get(i)).copied() else {
+        return Ok(json!({"allRated": true}));
+    };
+    if s.selection.active == Some(id) {
+        return Ok(json!({"active": id.0}));
+    }
+    s.end_interaction()?;
+    let (was, was_mask) = (s.selection.active, s.active_mask);
+    if s.selection.ids.len() > 1 {
+        if !s.selection.contains(id) {
+            s.selection.ids.push(id);
+        }
+        s.selection.active = Some(id);
+    } else {
+        s.selection = Selection::single(id);
+    }
+    s.active_mask = s.carried_mask(was, was_mask, s.selection.active);
+    s.active_spot = None;
+    Ok(json!({"active": id.0}))
 }
 
 /// `library.up` / `library.down`: how many photos to move (at least 1, capped so hostile input
@@ -457,7 +534,7 @@ fn active_meta(s: &Session, c: &str) -> Result<Value> {
         "category": m.category, "supplementalCategories": m.supplemental_categories, "subjectCode": m.subject_code,
         "altText": m.alt_text, "extendedDescription": m.extended_description,
         "copyright": m.copyright, "copyrightStatus": m.copyright_status.id(), "usageTerms": m.usage_terms, "copyrightUrl": m.copyright_url,
-        "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country,
+        "creator": m.creator, "location": m.location, "city": m.city, "state": m.state, "country": m.country, "countryCode": m.country_code,
         "keywords": m.keywords, "creatorJobTitle": m.contact.job_title, "creatorAddress": m.contact.address,
         "creatorCity": m.contact.city, "creatorState": m.contact.state, "creatorPostalCode": m.contact.postal_code,
         "creatorCountry": m.contact.country, "creatorPhone": m.contact.phone, "creatorEmail": m.contact.email,
@@ -582,13 +659,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, semantic?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
                 lcc_develop::presets::deep_merge(&mut v, p);
                 let f: Filter = serde_json::from_value(v).map_err(|e| bad("library.filter", e.to_string()))?;
                 let mut f = f;
+                f.semantic = f.semantic.map(|q| q.trim().to_string()).filter(|q| !q.is_empty());
                 // a blank folder is no folder: no hidden "filters active" state
                 f.library_folder = f.library_folder.filter(|d| !d.trim().is_empty());
                 if f.library_folder.is_some() && s.source == LibrarySource::LibraryFolder {
@@ -609,7 +687,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 if p.get("album").is_some_and(|a| !a.is_null()) && f.album.is_some_and(|a| s.catalog.album(a).is_none()) {
                     return Err(bad("library.filter", "no such collection"));
                 }
+                let sets_semantic = p.get("semantic").is_some();
+                let sets_only = p.get("only").is_some();
                 s.filter = f;
+                if sets_semantic {
+                    if let Some(q) = s.filter.semantic.clone() {
+                        if !sets_only {
+                            s.apply_semantic_filter("library.filter", Some(&q), None, None)?;
+                        }
+                    } else if !sets_only {
+                        s.filter.only.clear();
+                        s.filter.only_none = false;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            s.ml.last_query = None;
+                        }
+                    }
+                }
                 s.shelved_filter = None;
                 Ok(json!({"count": s.visible().len()}))
             }
@@ -705,6 +799,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("library.clearFilter", "Clear Filters", ["Library", "Filters"], None, "{}", always, |s, _| {
             s.filter = Default::default();
             s.shelved_filter = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                s.ml.last_query = None;
+            }
             Ok(json!({"count": s.visible().len()}))
         }),
         // Classic: Library > Enable Filters (Cmd+L) switches the filter off and on again as it was
@@ -726,6 +824,25 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.filter = f;
                 }
                 Ok(json!({"enabled": s.shelved_filter.is_none(), "count": s.visible().len()}))
+            }
+        ),
+        // View > Hide Rejected Photos: the filter bar's Picked + Unflagged on one key
+        cmd!(
+            "library.hideRejected",
+            "Hide Rejected Photos",
+            ["View"],
+            None,
+            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or no longer filters by flag; the rest of the filter stays. Like any filter change, it forgets a filter put aside → {hidden, count}",
+            always,
+            |s, p| {
+                let hide = match p.get("hide") {
+                    None | Some(Value::Null) => !s.rejects_hidden(),
+                    Some(v) => v.as_bool().ok_or_else(|| bad("library.hideRejected", "hide must be true or false"))?,
+                };
+                s.filter.flag = None;
+                s.filter.flags = if hide { vec![Flag::Pick, Flag::None] } else { Vec::new() };
+                s.shelved_filter = None;
+                Ok(json!({"hidden": hide, "count": s.visible().len()}))
             }
         ),
         cmd!(
@@ -983,8 +1100,42 @@ pub fn specs() -> Vec<CommandSpec> {
             s.selection = Selection { ids: a.into_iter().collect(), active: a };
             ok()
         }),
-        cmd!("library.next", "Next Photo", [], Some("Right"), "{}", always, |s, _| step(s, 1)),
-        cmd!("library.previous", "Previous Photo", [], Some("Left"), "{}", always, |s, _| step(s, -1)),
+        cmd!(
+            "library.next",
+            "Next Photo",
+            [],
+            Some("Right"),
+            "{} — with several photos selected: the next selected one (wrapping round), the selection kept",
+            always,
+            |s, _| step_in(s, 1, true)
+        ),
+        cmd!(
+            "library.previous",
+            "Previous Photo",
+            [],
+            Some("Left"),
+            "{} — with several photos selected: the previous selected one (wrapping round), the selection kept",
+            always,
+            |s, _| step_in(s, -1, true)
+        ),
+        cmd!(
+            "library.nextUnrated",
+            "Next Unrated Photo",
+            [],
+            Some("Cmd+Alt+Right"),
+            "{} — the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, 1)
+        ),
+        cmd!(
+            "library.prevUnrated",
+            "Previous Unrated Photo",
+            [],
+            Some("Cmd+Alt+Left"),
+            "{} — the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            always,
+            |s, _| step_unrated(s, -1)
+        ),
         cmd!(
             "library.down",
             "Photo Below",
@@ -1339,7 +1490,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Info",
             [],
             None,
-            "{ids?, title?, headline?, caption?, descriptionWriter?, category?, supplementalCategories?: [..] | \"a, b\", subjectCode?: [..] | \"c, d\", altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, location?, city?, state?, country?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
+            "{ids?, title?, headline?, caption?, descriptionWriter?, category?, supplementalCategories?: [..] | \"a, b\", subjectCode?: [..] | \"c, d\", altText?, extendedDescription?, copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, location?, city?, state?, country?, countryCode?, gps?: \"lat, lon\" | [lat, lon] | null, keywords?: [..], addKeywords?: [..], removeKeywords?: [..]}",
             has_selection,
             |s, p| {
                 let strs = |k: &str| {
@@ -1396,6 +1547,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         ("city", &mut m.city),
                         ("state", &mut m.state),
                         ("country", &mut m.country),
+                        ("countryCode", &mut m.country_code),
                         ("altText", &mut m.alt_text),
                         ("extendedDescription", &mut m.extended_description),
                     ] {
@@ -2242,7 +2394,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 },
             }))
         }),
-        cmd!("library.compact", "Optimize Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
+        cmd!("library.compact", "Compact Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
             s.compact_library()?;
             ok()
         }),
@@ -2676,6 +2828,14 @@ mod tests_custom_order;
 mod rated_out_tests;
 
 #[cfg(test)]
+#[path = "library/tests_step_selection.rs"]
+mod step_selection_tests;
+
+#[cfg(test)]
+#[path = "library/tests_next_unrated.rs"]
+mod next_unrated_tests;
+
+#[cfg(test)]
 #[path = "library/tests_clear_label.rs"]
 mod clear_label_tests;
 
@@ -2690,3 +2850,7 @@ mod source_album_filter_tests;
 #[cfg(test)]
 #[path = "library/tests_select.rs"]
 mod tests_select;
+
+#[cfg(test)]
+#[path = "library/tests_hide_rejected.rs"]
+mod hide_rejected_tests;

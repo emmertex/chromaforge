@@ -89,7 +89,11 @@ pub fn folders(app: &mut LccApp) -> Value {
         false,
         "The lens database lens corrections fall back to.",
     ));
-    for (id, label, cmd) in [("faceModels", "Face models", "faces.models.list"), ("denoiseModels", "Denoise models", "denoise.models.list")] {
+    for (id, label, cmd) in [
+        ("faceModels", "Face models", "faces.models.list"),
+        ("denoiseModels", "Denoise models", "denoise.models.list"),
+        ("mlModels", "Semantic search models", "ml.models.list"),
+    ] {
         let dir = app.session.execute(cmd, &json!({})).ok().and_then(|v| v["dir"].as_str().map(str::to_string));
         out.push(entry(id, label, dir, false, false, false, "Models you install are kept here."));
     }

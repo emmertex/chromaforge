@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 
 use crate::LccApp;
+use crate::icons::Icon;
 use crate::render::Slot;
 use crate::theme::Tokens;
 use crate::widgets::register;
@@ -75,8 +76,12 @@ pub struct ImportDialog {
     pub camera_profile: String,
     /// With `camera_profile` automatic: a profile per camera body for this import (body key → id).
     pub per_body: std::collections::BTreeMap<String, String>,
-    /// The Import tab's preset stack (ids, applied in order after `preset`).
+    /// The preset stack (ids, applied in order after `preset`; the UI keeps them all here:
+    /// [`ImportDialog::fold_preset`]).
     pub presets: Vec<String>,
+    /// A preset's own camera profile replaces each raw's body profile (`presetProfile`; off: each
+    /// raw keeps its body's profile through the presets).
+    pub preset_profile: bool,
     /// An optional batch-edit recipe: develop control id → value (only controls moved off their
     /// default are kept), set on every photo this import adds, on top of its sidecar, camera
     /// default and preset (the `recipe` param of `library.import`).
@@ -153,6 +158,27 @@ impl ImportDialog {
     /// A clean review dialog with default import settings.
     pub fn empty() -> Self {
         ImportDialog { on_deleted: "restore".into(), subfolders: true, ..Default::default() }
+    }
+
+    /// Put the single `preset` (older settings, scripts) at the top of the stack: the UI shows
+    /// one ordered list.
+    pub fn fold_preset(&mut self) {
+        if !self.preset.is_empty() {
+            let p = std::mem::take(&mut self.preset);
+            self.presets.insert(0, p);
+        }
+    }
+
+    /// The preset stack and camera profile choices of `from` (the ones kept between imports), for
+    /// a new review. A body's choice whose profile is gone goes back to automatic.
+    pub fn take_stack_of(&mut self, from: &ImportDialog) {
+        self.preset.clone_from(&from.preset);
+        self.presets.clone_from(&from.presets);
+        self.preset_profile = from.preset_profile;
+        self.fold_preset();
+        self.camera_profile = Some(from.camera_profile.clone()).filter(|id| lcc_engine::profile_bodies::known_profile(id)).unwrap_or_default();
+        self.per_body =
+            from.per_body.iter().filter(|(_, id)| lcc_engine::profile_bodies::known_profile(id)).map(|(k, v)| (k.clone(), v.clone())).collect();
     }
 
     /// Whether any of the scanned sources is a directory.
@@ -313,6 +339,9 @@ impl ImportDialog {
         }
         if !self.presets.is_empty() {
             params["presets"] = json!(self.presets);
+        }
+        if self.preset_profile {
+            params["presetProfile"] = json!(true);
         }
         if !self.camera_profile.is_empty() {
             params["cameraProfile"] = json!({"all": self.camera_profile});
@@ -684,7 +713,7 @@ pub fn rescan_with_subfolders(app: &mut LccApp, d: &ImportDialog, subfolders: bo
 /// once, the folder is listed and read on a worker thread (a network share can take minutes),
 /// and the photos then join the view in small batches under a progress window. A browse already
 /// running is replaced; the import review's scan is not.
-pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<Value, String> {
+pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Option<&str>) -> Result<Value, String> {
     let dir = std::path::absolute(std::path::Path::new(path)).map_err(|e| e.to_string())?;
     if !dir.is_dir() {
         return Err(format!("{path}: not a folder"));
@@ -694,6 +723,15 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
     }
     let dir_s = dir.to_string_lossy().trim_end_matches(['/', '\\']).to_string();
     let subfolders = subfolders.unwrap_or_else(|| app.session.browse.as_ref().is_some_and(|b| b.subfolders));
+    // the quick filter: given, it wins; left out, a re-browse of the same folder keeps the choice
+    // and a new folder starts on Show Not Imported (the engine's library.browse applies the same
+    // rule with the choice as it stands)
+    let not_imported = match show {
+        Some("all") => false,
+        Some("notImported") | Some(_) => true,
+        // same folder keeps the choice; a new folder starts on Show Not Imported
+        None => app.session.browse.as_ref().is_none_or(|b| if b.path == dir_s { b.not_imported } else { true }),
+    };
     let running = app.scan.as_ref().is_some_and(|t| t.browse) || app.import.as_ref().is_some_and(|t| t.browse);
     if running && app.session.browse.as_ref().is_some_and(|b| b.path == dir_s && b.subfolders == subfolders) {
         // already reading this folder: clicking it again must not restart the progress
@@ -705,7 +743,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>) -> Result<
         t.progress.cancel.store(true, Ordering::Relaxed);
     }
     app.import = None;
-    app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders });
+    app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders, not_imported });
     app.session.source = lcc_engine::LibrarySource::Folder;
     // the photos the library already knows from this folder show at once: keep or pick the active one
     app.session.keep_active_in_view();
@@ -819,7 +857,10 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         }
         other => {
             app.ui.dialog = other;
-            ImportDialog::new(out.candidates)
+            let mut d = ImportDialog::new(out.candidates);
+            // the preset stack and camera profiles used last (the Import tab's, kept between sessions)
+            d.take_stack_of(&app.ui.settings.import_tab.opts);
+            d
         }
     };
     (d.scan_limited, d.unreadable, d.unsupported) = (out.truncated, out.unreadable, out.unsupported);
@@ -970,7 +1011,30 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
     let total = queue.len();
     app.import = Some(ImportTask::new(queue, params, undo0, false));
     app.renderer.forget_imports();
+    remember_stack(app, d);
     Ok(json!({"importing": total}))
+}
+
+/// Keep the preset stack and camera profile choices an import ran with for the next one (the
+/// Import tab and the review share them, kept between sessions).
+fn remember_stack(app: &mut LccApp, d: &ImportDialog) {
+    let kept = &mut app.ui.settings.import_tab;
+    let mut now = ImportDialog::default();
+    now.take_stack_of(d);
+    let same = kept.opts.preset.is_empty()
+        && kept.opts.presets == now.presets
+        && kept.opts.preset_profile == now.preset_profile
+        && kept.opts.camera_profile == now.camera_profile
+        && kept.opts.per_body == now.per_body;
+    if !same {
+        kept.opts.preset.clear();
+        kept.opts.presets = now.presets;
+        kept.opts.preset_profile = now.preset_profile;
+        kept.opts.camera_profile = now.camera_profile;
+        // (the review started from these, so other bodies' choices come back with it)
+        kept.opts.per_body = now.per_body;
+        kept.preset_name.clear();
+    }
 }
 
 /// Start importing `paths` (files or folders) in the background, e.g. dropped on the window.
@@ -1013,7 +1077,7 @@ fn dropped_import_params(app: &LccApp) -> Value {
 pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     ctx.request_repaint();
     if app.lightroom.is_some() {
-        app.toast(ctx, crate::i18n::tr("Finish Lightroom catalog import before adding photos"));
+        app.toast(ctx, crate::i18n::tr("Finish the catalog import before adding photos"));
         return;
     }
     // an import (or a scan, a review waiting behind a dialog) stays the one that runs: a drop
@@ -1420,7 +1484,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             register(ui.ctx(), "label:importSource", r.rect);
         });
         ui.label(
-            egui::RichText::new(crate::i18n::tr("Importing scans the source for photos; it doesn't add the folder to Local (use Local → Browse Folder… to work in a folder without importing)."))
+            egui::RichText::new(crate::i18n::tr("Importing scans the source for photos; it doesn't add the folder to Favorites."))
                 .color(t.text_dim)
                 .small(),
         );
@@ -1649,29 +1713,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             }
         });
     });
-    field(ui, "Preset", |ui| {
-        let cur = app
-            .session
-            .presets
-            .iter()
-            .find(|p| p.id == d.preset)
-            .map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string())
-            .unwrap_or_else(|| crate::i18n::tr("None").into());
-        crate::widgets::combo_box("import-preset")
-            .selected_text(cur)
-            .height(300.0)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(d.preset.is_empty(), crate::i18n::tr("None")).clicked() {
-                    d.preset.clear();
-                    ui.close();
-                }
-                let selected = (!d.preset.is_empty()).then_some(d.preset.as_str());
-                if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, selected) {
-                    d.preset = pid;
-                }
-            });
-    });
+    preset_stack_section(app, ui, d, false);
     camera_profile_section(app, ui, d, false);
     field(ui, "Metadata", |ui| metadata_preset_picker(app, ui, d));
     field(ui, "Keywords", |ui| {
@@ -2189,14 +2231,28 @@ fn camera_profile_options(camera: Option<&str>) -> Vec<(String, String)> {
     options
 }
 
+/// A camera profile menu across the column, its list as wide as its longest name (within the
+/// screen): a narrow menu cut "R5 C · 74 (4)"'s profiles to a few letters.
 fn profile_combo(ui: &mut egui::Ui, id: &str, options: &[(String, String)], value: &mut String) {
     let cur = options.iter().find(|(o, _)| o == value).map(|(_, n)| n.clone()).unwrap_or_else(|| value.clone());
-    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).height(300.0).show_ui(ui, |ui| {
+    let list_w = combo_list_width(ui, options.iter().map(|(_, n)| n.as_str()));
+    let width = ui.available_width().max(120.0);
+    let combo = crate::widgets::combo_box(id.to_string()).selected_text(cur).width(width).height(300.0).show_ui(ui, |ui| {
+        ui.set_min_width(list_w);
         for (o, name) in options {
             ui.selectable_value(value, o.clone(), name);
         }
     });
     register(ui.ctx(), format!("combo:{id}"), combo.response.rect);
+}
+
+/// The width a drop-down's list needs to show the longest of `names` whole, within the screen.
+pub(crate) fn combo_list_width<'a>(ui: &egui::Ui, names: impl Iterator<Item = &'a str>) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let t = Tokens::get(ui.ctx());
+    let widest = names.map(|n| ui.painter().layout_no_wrap(n.to_string(), font.clone(), t.text).size().x).fold(0.0_f32, f32::max);
+    let want = widest + ui.spacing().button_padding.x * 2.0 + ui.spacing().scroll.bar_width + 12.0;
+    want.min((ui.ctx().content_rect().width() - 32.0).max(120.0))
 }
 
 /// Camera Profile: automatic (each body's own, else the camera's default) with a row per camera
@@ -2212,6 +2268,12 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
         }
     };
     row(ui, "Camera Profile", &mut |ui| profile_combo(ui, "importCameraProfile", &camera_profile_options(None), &mut d.camera_profile));
+    // browsed photos preview the choice as the import will apply it (`Session::browse_profile`)
+    app.session.import_profile_choice = if d.camera_profile.is_empty() {
+        lcc_engine::profile_bodies::ImportProfile::PerBody(d.per_body.clone())
+    } else {
+        lcc_engine::profile_bodies::ImportProfile::All(d.camera_profile.clone())
+    };
     if !d.camera_profile.is_empty() {
         return;
     }
@@ -2257,6 +2319,114 @@ pub(crate) fn camera_profile_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mu
                 body_row(ui);
             }
         });
+    }
+}
+
+/// The develop presets the import applies, in order (ported from OneSlips' Import panel stack,
+/// LR-IMP-WINDOW / LR-PRESET-PICKER): one list, the first row being what a single `preset` named.
+/// Each row moves earlier or later or goes; Add puts a preset at the end. With presets on the
+/// list, "Presets may change the camera profile" (off: each raw keeps its body's profile).
+/// Shared by the Import tab, the full-window review and the review's form.
+pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog, screen: bool) {
+    let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
+        if screen {
+            crate::dialog_frame::form_row(ui, label, |ui| add(ui));
+        } else {
+            field(ui, label, |ui| add(ui));
+        }
+    };
+    d.fold_preset();
+    let t = Tokens::get(ui.ctx());
+    let n = d.presets.len();
+    // (index, -1 earlier / 1 later / 0 remove)
+    let mut action: Option<(usize, i32)> = None;
+    for i in 0..n {
+        let id = d.presets.get(i).cloned().unwrap_or_default();
+        let name = app
+            .session
+            .presets
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string())
+            .unwrap_or_else(|| crate::i18n::tr("(missing preset)").to_string());
+        row(ui, if i == 0 { "Presets" } else { "" }, &mut |ui: &mut egui::Ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let sz = vec2(22.0, 22.0);
+                if crate::widgets::icon_button(ui, &format!("importPresetUp-{i}"), Icon::ChevronUp, sz, false, i > 0, "Apply earlier").clicked() {
+                    action = Some((i, -1));
+                }
+                if crate::widgets::icon_button(ui, &format!("importPresetDown-{i}"), Icon::ChevronDown, sz, false, i + 1 < n, "Apply later").clicked()
+                {
+                    action = Some((i, 1));
+                }
+                if crate::widgets::icon_button(ui, &format!("importPresetRemove-{i}"), Icon::Close, sz, false, true, "Remove from the stack")
+                    .clicked()
+                {
+                    action = Some((i, 0));
+                }
+                ui.add_space(4.0);
+                let r = ui.add(egui::Label::new(egui::RichText::new(format!("{}. {name}", i + 1)).color(t.text)).truncate());
+                register(ui.ctx(), format!("label:importPreset-{i}"), r.rect);
+            });
+        });
+    }
+    match action {
+        Some((i, 0)) if i < d.presets.len() => {
+            d.presets.remove(i);
+        }
+        Some((i, -1)) if i > 0 && i < d.presets.len() => d.presets.swap(i, i - 1),
+        Some((i, 1)) if i + 1 < d.presets.len() => d.presets.swap(i, i + 1),
+        _ => {}
+    }
+    let add_label = crate::i18n::tr(if d.presets.is_empty() { "Add a preset…" } else { "Add another preset…" }).to_string();
+    let mut added: Option<String> = None;
+    let mut manage = false;
+    row(ui, if n == 0 { "Presets" } else { "" }, &mut |ui: &mut egui::Ui| {
+        let manage_w =
+            ui.painter().layout_no_wrap(crate::i18n::tr("Manage Presets…").to_string(), egui::TextStyle::Button.resolve(ui.style()), t.text).size().x
+                + ui.spacing().button_padding.x * 2.0;
+        let combo_w = (ui.available_width() - manage_w - ui.spacing().item_spacing.x - 2.0).max(120.0);
+        let combo = crate::widgets::combo_box("import-preset")
+            .selected_text(add_label.as_str())
+            .width(combo_w)
+            .height(300.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show_ui(ui, |ui| {
+                if let Some(pid) = crate::panels::presets::picker_rows(ui, "import-preset", &app.session, None) {
+                    added = Some(pid);
+                    ui.close();
+                }
+            });
+        register(ui.ctx(), "combo:importPresetAdd", combo.response.rect);
+        // the presets themselves: folders, hide, import (Presets Manager)
+        if crate::widgets::text_button(ui, "importPresetsManage", "Manage Presets…", false).clicked() {
+            manage = true;
+        }
+    });
+    if manage && let Err(e) = app.run("dialog.presetsManager", serde_json::json!({})) {
+        app.toast(ui.ctx(), e);
+    }
+    if let Some(pid) = added {
+        d.presets.push(pid);
+    }
+    let help = |ui: &mut egui::Ui, text: &str| {
+        if screen {
+            crate::dialog_frame::help(ui, text);
+        } else {
+            ui.label(egui::RichText::new(crate::i18n::tr(text)).color(t.text_dim).small());
+        }
+    };
+    if d.presets.len() > 1 {
+        help(ui, "Applied in this order: each sets its settings on top of the one before, as its own History step.");
+    }
+    if !d.presets.is_empty() {
+        let text = crate::i18n::tr("Presets may change the camera profile").to_string();
+        let r = if screen { crate::dialog_frame::checkbox(ui, &mut d.preset_profile, text) } else { ui.checkbox(&mut d.preset_profile, text) };
+        register(ui.ctx(), "check:importPresetProfile", r.rect);
+        if !d.preset_profile {
+            help(ui, "Each raw keeps its camera body's profile, whatever profile a preset names.");
+        }
     }
 }
 

@@ -151,6 +151,8 @@ fn huge_export_size_is_an_error() {
     let huge = usize::MAX >> 8;
     assert!(s.render_export(id, huge, huge, OutputSpace::Srgb, OutputDepth::U8).is_err());
     assert!(s.render_export(id, 70_000, 10, OutputSpace::Srgb, OutputDepth::U8).is_err());
+    assert!(s.render_now(id, huge, huge).is_err());
+    assert!(s.render_now(id, 10, 70_000).is_err());
 }
 
 // Given a photo's preview jobs, the grid thumbnail is made from the source the view decoded, not

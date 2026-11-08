@@ -1121,6 +1121,53 @@ fn album_folders_have_a_disclosure_triangle() {
     assert!(has(&h, &format!("albumToggle:{empty}")), "it gets one with its first child");
 }
 
+/// Survey's bottom bar has a filmstrip size slider that sets the filmstrip height within 100-240.
+#[test]
+fn survey_filmstrip_size_slider_sets_the_filmstrip_height() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "survey"}));
+    h.step();
+    h.step();
+    let r = h.app.widgets.iter().find(|(w, _)| w == "slider:filmSize").map(|(_, r)| *r).expect("the slider shows in Survey");
+    let y = r.center().y;
+    let r2 = h.request("ui.click", json!({"x": r.right() - 0.5, "y": y}), T);
+    assert_eq!(r2["ok"], true, "{r2}");
+    h.step();
+    assert!((h.app.ui.film_height - 240.0).abs() < 8.0, "{}", h.app.ui.film_height);
+    let r3 = h.request("ui.click", json!({"x": r.left() + 0.5, "y": y}), T);
+    assert_eq!(r3["ok"], true, "{r3}");
+    h.step();
+    assert!(h.app.ui.film_height <= 108.0 && h.app.ui.film_height >= 96.0, "{}", h.app.ui.film_height);
+}
+
+/// Alt-click on a triangle folds or opens the folder and everything inside it; a plain click still
+/// flips only that row.
+#[test]
+fn alt_click_on_a_triangle_opens_or_folds_the_whole_branch() {
+    let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
+    let make = |h: &mut Headless, params: serde_json::Value| h.app.session.execute("album.create", &params).unwrap()["id"].as_u64().unwrap();
+    let trips = make(&mut h, json!({"name": "Trips", "folder": true}));
+    let europe = make(&mut h, json!({"name": "Europe", "folder": true, "parent": trips}));
+    let best = make(&mut h, json!({"name": "Best", "parent": europe}));
+    h.step();
+    h.step();
+    let has = |h: &Headless, id: &str| h.app.widgets.iter().any(|(w, _)| w == id);
+    let click = |h: &mut Headless, id: u64, alt: bool| {
+        let r = h.request("ui.clickWidget", json!({"id": format!("albumToggle:{id}"), "alt": alt}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        for _ in 0..6 {
+            h.step();
+        }
+    };
+    assert!(has(&h, &format!("source:album:{best}")));
+    click(&mut h, trips, true);
+    assert!(!has(&h, &format!("source:folder:{europe}")), "the whole branch is folded");
+    click(&mut h, trips, false);
+    assert!(has(&h, &format!("source:folder:{europe}")) && !has(&h, &format!("source:album:{best}")), "the inner folder was folded too");
+    click(&mut h, trips, true);
+    click(&mut h, trips, true);
+    assert!(has(&h, &format!("source:album:{best}")), "Alt-click on a folded folder opens everything inside it");
+}
+
 /// A dialog that cannot do its job (here: the chosen parent is a plain album, as when the folder
 /// was deleted or turned out not to be one) stays open with the error shown, the typed name kept.
 #[test]
@@ -2732,7 +2779,11 @@ fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
 
     // in My Photos: the menu entries come on, the submenu opens, and the album takes the photo
     h.app.run("photo.addToLibrary", json!({"ids": [local.0]})).unwrap();
-    h.step();
+    // the photo joined the library, so the quick filter's not-imported view would leave it out:
+    // Show All keeps it in the folder view for the rest of the test
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy(), "show": "all"}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
     let nodes = add_to_album(&h.app);
     assert!(!matches!(nodes.first(), Some(crate::menubar::MenuNode::Item { id, .. }) if id == "photo.addToLibrary"), "{nodes:?}");
     assert_eq!(enabled_of(&nodes, "album.addPhotos"), Some(true), "{nodes:?}");

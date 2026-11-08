@@ -49,7 +49,7 @@ Choose the mode before painting a new repair.
 2. Check **Opacity**. At 0, a repair has no visible effect. Select the repair and raise it to 100.
 3. Check that the brush covers the distraction. Clicking an existing pin only selects a repair.
 4. Turn off **Visualize Spots (A)** to judge the normal photo. This black-and-white view helps reveal specks; it does not apply a repair.
-5. If **View** > **Show Original** is on, choose it again to return to the edited photo.
+5. If **View** > **Before/After** > **Show Before** is on, choose it again to return to the edited photo.
 6. If the copied patch is unsuitable, adjust its source or delete the repair and paint again.
 
 ### Is there an Apply button?
@@ -62,8 +62,8 @@ These mark the repaired area and, for a selected repair that uses one, its sourc
 
 ### How do I see the original?
 
-1. Choose **View** > **Show Original** to see the original.
-2. Choose **View** > **Show Original** again to return to the edited photo.
+1. Choose **View** > **Before/After** > **Show Before** to see the original.
+2. Choose **View** > **Before/After** > **Show Before** again to return to the edited photo.
 
 ### Is my original photo overwritten?
 

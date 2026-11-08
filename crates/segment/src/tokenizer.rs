@@ -1,5 +1,5 @@
 //! The CLIP byte-pair-encoding tokenizer (lower-cased, `</w>` word ends), padded to the
-//! 32-token context SAM 3's text encoder takes.
+//! 32-token context SAM 3's text encoder takes (or the 16 tokens of OWLv2's, [`Tokenizer::encode_padded`]).
 //!
 //! Modified work (Apache License 2.0, §4(b)): ported by the project contributors in 2026 from
 //! the Python/PyTorch SAM 3 code of Hugging Face Transformers (the CLIP tokenizer used by `models/sam3`), Copyright The HuggingFace
@@ -12,7 +12,8 @@ use crate::{Error, Result};
 
 pub const CONTEXT: usize = 32;
 const BOS: u32 = 49406;
-const EOS: u32 = 49407;
+/// The end-of-text token (the largest id).
+pub const EOS: u32 = 49407;
 
 pub struct Tokenizer {
     vocab: HashMap<String, u32>,
@@ -61,6 +62,13 @@ impl Tokenizer {
 
     /// Token ids (start, words, end, padding) and which positions are real tokens.
     pub fn encode(&self, text: &str) -> (Vec<u32>, Vec<bool>) {
+        self.encode_padded(text, CONTEXT, EOS)
+    }
+
+    /// [`Self::encode`] for a context of `context` tokens (at least 2), padded with `pad`
+    /// (OWLv2: 16 tokens, padded with `!`, id 0).
+    pub fn encode_padded(&self, text: &str, context: usize, pad: u32) -> (Vec<u32>, Vec<bool>) {
+        let context = context.max(2);
         let mut ids = vec![BOS];
         for word in pre_tokenize(&text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()) {
             let mapped: String = word.bytes().map(|b| self.byte_char.get(usize::from(b)).copied().unwrap_or('?')).collect();
@@ -68,11 +76,11 @@ impl Tokenizer {
                 ids.push(self.vocab.get(&piece).copied().unwrap_or(EOS));
             }
         }
-        ids.truncate(CONTEXT - 1);
+        ids.truncate(context - 1);
         ids.push(EOS);
         let n = ids.len();
-        ids.resize(CONTEXT, EOS);
-        let valid = (0..CONTEXT).map(|i| i < n).collect();
+        ids.resize(context, pad);
+        let valid = (0..context).map(|i| i < n).collect();
         (ids, valid)
     }
 
@@ -173,5 +181,12 @@ mod tests {
         assert_eq!(&ids[..3], &[BOS, 5, EOS]);
         assert_eq!(ids.len(), CONTEXT);
         assert_eq!(valid.iter().filter(|v| **v).count(), 3);
+        // OWLv2's context: 16 tokens padded with `!` (0); long text keeps its end token
+        let (ids, valid) = t.encode_padded("cat", 16, 0);
+        assert_eq!((&ids[..4], ids.len()), (&[BOS, 5, EOS, 0][..], 16));
+        assert_eq!(valid.iter().filter(|v| **v).count(), 3);
+        let (ids, _) = t.encode_padded(&"cat ".repeat(40), 16, 0);
+        assert_eq!((ids.len(), ids.last()), (16, Some(&EOS)));
+        assert_eq!(t.encode_padded("", 0, 0).0, vec![BOS, EOS]);
     }
 }

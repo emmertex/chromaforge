@@ -45,6 +45,9 @@ pub const LEGACY_FILES: &[&str] = &[
     "crates/engine/src/legacy.rs",
     // IndexedDB name holding users' browser libraries, cross-tab lock name
     "apps/web/src/legacy.rs",
+    // the earlier name's catalog format, read by File > More Imports, and that command's menu label
+    "crates/catalog/src/legacy.rs",
+    "crates/ui-egui/src/legacy.rs",
     // thumbnail-cache marker file written into existing preview folders
     "crates/preview/src/legacy.rs",
     // built-in slideshow templates carry the slideshow-template format tag (`crates/engine/src/legacy.rs`)
@@ -52,6 +55,11 @@ pub const LEGACY_FILES: &[&str] = &[
     // the intake ledger quotes upstream PR titles verbatim, and upstream titles name upstream
     "docs/upstream-pr-reviews/ledger.md",
 ];
+
+/// UI text that must name a previous identity, cut from the test build's output before it is searched for foreign
+/// names: the menu label of File > More Imports > Import (earlier name) Library, defined in
+/// `crates/ui-egui/src/legacy.rs` (a test keeps the two equal).
+const LEGACY_UI: &[&str] = &["Import LightCraft Library…"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -431,7 +439,11 @@ pub fn test(root: &Path) -> Result<(), String> {
     }
     let foreign_in = |what: &str, text: &str| -> Vec<String> {
         // the checkout's own path may contain a product name (e.g. a folder named after it)
-        let lower = text.replace(&*root.to_string_lossy(), "<root>").to_ascii_lowercase();
+        let mut text = text.replace(&*root.to_string_lossy(), "<root>");
+        for ui in LEGACY_UI {
+            text = text.replace(ui, "<legacy label>");
+        }
+        let lower = text.to_ascii_lowercase();
         foreign.iter().filter(|f| lower.contains(&f.to_ascii_lowercase())).map(|f| format!("{what}: contains `{f}`")).collect()
     };
 
@@ -591,6 +603,15 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_ui_labels_are_the_app_s_own() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let src = std::fs::read_to_string(root.join("crates/ui-egui/src/legacy.rs")).unwrap();
+        for ui in LEGACY_UI {
+            assert!(src.contains(&format!("\"{ui}\"")), "`{ui}` is no longer a label in crates/ui-egui/src/legacy.rs");
+        }
+    }
 
     const SAMPLE: &str = r#"
 [product]

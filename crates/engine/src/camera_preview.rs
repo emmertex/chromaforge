@@ -53,7 +53,9 @@ use lcc_raw::{
 /// RAF; other makes with a lens database), so the render no longer applies it twice, at the position a lens warp samples;
 /// the warped candidate's alignment leaves out the pixels outside the sensor instead of reading them as black (upstream
 /// #3402).
-pub const LOOK_VERSION: u32 = 21;
+/// 22: a camera profile without a tone curve of its own keeps the tone the photo has without it (its DNG tone curve,
+/// else the tone fitted to its camera JPEG) instead of the default tone (OneSlips).
+pub const LOOK_VERSION: u32 = 22;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraLook {
@@ -111,8 +113,9 @@ pub(crate) fn file_local_look(format: RawFormat) -> bool {
 /// the render applies it.
 /// `colour` is the photo's Profile option: [`CameraColour::Colorimetric`] skips the JPEG (fit and black-and-white tone)
 /// for a model with spectral matrices, which then give the colour with the app's default tone curve. `dcp`: an imported
-/// camera profile (`.dcp`) replaced the raw's colour model; its tone is its own tone curve, else the default tone,
-/// never one fitted to the camera's JPEG.
+/// camera profile (`.dcp`) replaced the raw's colour model; no tone is fitted to the camera's JPEG with the profile's
+/// colour. A profile with a tone curve of its own renders with it; one without (most chart-made profiles) keeps the tone
+/// the photo has without the profile ([`tone_without_profile`], `files::load_bytes_now`).
 pub(crate) fn starting_colour(
     raw: &mut RawImage,
     bytes: &[u8],
@@ -253,11 +256,44 @@ pub(crate) fn dng_tone_eligible(raw: &RawImage, t: &CameraTransform) -> bool {
     raw.format == RawFormat::Dng && !t.matrix_is_fallback && identity_tone_curve(p.tone_curve.as_ref()) && p.gain_table_map.is_none()
 }
 
-/// Whether a raw's tone is fitted to its camera JPEG ([`dng_tone_eligible`]). Never under a `.dcp`: the profile
-/// is rendered as its converter renders it, with its own tone curve, else the default tone (and a creative profile
-/// such as Eboda Colour on top); the camera JPEG's tone is the camera's look, not the profile's.
+/// Whether a raw's tone is fitted to its camera JPEG with the colour it has now ([`dng_tone_eligible`]). Never under
+/// a `.dcp`: a profile with a tone curve of its own renders with that curve; one without keeps the tone the photo has
+/// without the profile ([`tone_without_profile`]), fitted with the photo's own colour, not the profile's.
 fn jpeg_tone_fit_allowed(raw: &RawImage, t: &CameraTransform, dcp: bool) -> bool {
     !dcp && dng_tone_eligible(raw, t)
+}
+
+/// Whether a camera profile has no tone curve of its own (none, or the identity): most profiles made from a colour
+/// chart (a matrix, maybe a hue/saturation map or a look table). A chart pins colour, not a rendering, so such a
+/// profile keeps the contrast the photo has without it ([`tone_without_profile`]); a look table is colour, not tone.
+pub(crate) fn keeps_photo_tone(profile: &lcc_raw::dcp::Dcp) -> bool {
+    identity_tone_curve(profile.color.profile.tone_curve.as_ref())
+}
+
+/// The tone a raw has without its camera profile, for a profile without a tone curve of its own
+/// ([`keeps_photo_tone`]; ported from OneSlips): the file's own DNG tone curve, else the tone of the look
+/// [`starting_colour`] gives the photo with its own colour (`own`, its colour tags before the profile replaced them):
+/// the look fitted to its camera JPEG, a black-and-white JPEG's tone, a previewless CR3's measured Canon tone or a
+/// DNG's tone fit; else the file's identity curve, as without the profile. `raw` keeps the profile's colour; the
+/// colour still comes from the profile. `trace` says where the tone came from.
+pub(crate) fn tone_without_profile(
+    raw: &mut RawImage,
+    own: ColorData,
+    bytes: &[u8],
+    lens: Option<&LensGeometry>,
+    embedded: Option<&lcc_develop::EmbeddedLens>,
+    colour: CameraColour,
+    trace: &mut StartTrace,
+) -> Option<CameraTone> {
+    let file_curve = own.profile.tone_curve.clone();
+    if let Some(curve) = file_curve.as_ref().filter(|c| !identity_tone_curve(Some(c))) {
+        trace.tone = ToneSource::None;
+        return crate::files::dng_tone_curve(curve);
+    }
+    let profiled = std::mem::replace(&mut raw.color, own);
+    let (_, _, look) = starting_colour_traced(raw, bytes, lens, embedded, colour, false, trace);
+    raw.color = profiled;
+    look.map(|l| l.tone).or_else(|| file_curve.as_ref().and_then(crate::files::dng_tone_curve))
 }
 
 /// Whether a camera database entry gives matrices from the model's measured spectral sensitivities.
@@ -909,7 +945,10 @@ impl LogGrid {
 /// (`CameraTone::apply`): moving the second-last knot down steepens it, and the extended highlights
 /// would end up brighter than `own`'s. Raises `knots`' second-last knot until the rate is at most
 /// `own`'s, easing the raise into the knots below with a bell-shaped ramp (about a stop wide) so it
-/// doesn't bend the curve sharply either; no knot above `cap(x)`.
+/// doesn't bend the curve sharply either; no knot above `cap(x)`. The process V8 shoulder
+/// (`CameraTone::apply_rolloff`) is not part of this bound: V1 to V7 read the same curve, and a V8
+/// bound here would change their renders. It stays below `own`'s too when the last segment's slope
+/// over the squared gap to white is at most `own`'s (upstream #3783).
 fn ease_shoulder(knots: &mut [[f32; 2]; 32], own: &[[f32; 2]; 32], cap: impl Fn(f32) -> f32) {
     let [.., a, b] = *own;
     let [.., second_last, end] = *knots;
@@ -4101,6 +4140,30 @@ mod tests {
             let x = 0.001 * 1.005f32.powi(i);
             assert!(fixed.tone.apply(x) <= fitted.tone.apply(x) + 1e-5, "{what} at {x}: {} > {}", fixed.tone.apply(x), fitted.tone.apply(x));
         }
+        // The V8 shoulder stays below too whenever the lowered last segment's slope over its squared gap
+        // to white is at most the fitted one's (`dro_off` doesn't enforce it, so V1 to V7 keep their
+        // curve; upstream #3783)
+        if v8_bounded(&fixed.tone, &fitted.tone) {
+            assert!(v8_below(&fixed.tone, &fitted.tone), "{what}: brighter than the fitted curve under V8");
+        }
+    }
+
+    /// Whether the last segment of `a`, over its squared gap to white, is at most `b`'s: then `a`'s V8
+    /// shoulder ([`CameraTone::apply_rolloff`]) is nowhere above `b`'s (upstream #3783).
+    fn v8_bounded(a: &CameraTone, b: &CameraTone) -> bool {
+        let rate = |t: &CameraTone| {
+            let k = t.knots();
+            ((k[31][1] - k[30][1]) / (k[31][0] - k[30][0])).max(0.0) / (1.0 - k[31][1]).powi(2)
+        };
+        rate(a) <= rate(b)
+    }
+
+    /// Whether `a`'s V8 curve is nowhere brighter than `b`'s, from deep shadows to far past the last knot.
+    fn v8_below(a: &CameraTone, b: &CameraTone) -> bool {
+        (0..=2400).all(|i| {
+            let x = 0.001 * 1.005f32.powi(i);
+            a.apply_rolloff(x) <= b.apply_rolloff(x) + 1e-5
+        })
     }
 
     /// Issue #244: Sony's Dynamic Range Optimizer lifts the camera JPEG's shadows, not the raw's. A
@@ -4302,7 +4365,11 @@ mod tests {
     /// style) was shot with DRO Auto, so its curve comes down to Sony's without DRO in the shadows the
     /// camera lifted; the ILCE-7M4 sample (DRO Auto, Vivid) has deeper shadows than that curve and
     /// keeps them, only its brighter highlights come down. Both keep the colour fitted to their
-    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit.
+    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit. Each is compared with its fit as the
+    /// app has it before the DRO step: compared with the unsmoothed fit, the ILCE-7M4's curve was
+    /// 0.0002 brighter near its first knot, where the smoothing lifts it, and the test failed. The
+    /// points where a DRO curve must be well below take the fit before smoothing, the curve closest to
+    /// the JPEG's lifted shadows, which they were measured against.
     #[test]
     fn corpus_arw_with_dro_is_lowered_to_the_dro_off_tone() {
         let dir = lcc_brand::env_os("CORPUS")
@@ -4329,15 +4396,27 @@ mod tests {
             raw.opcodes.list3.retain(|op| !op.is_lens_correction());
             let transform = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
             let look = fit_preview(&raw, &bytes, &transform, None, None).0.expect("a camera look");
-            // the look fitted to the JPEG, as before this change
+            // the look fitted to the JPEG as `fit_preview` has it before the DRO step: smoothed
+            // (`with_smooth_tone`, which can lift a curve slightly where it bends) and carried on past
+            // its last knot with the camera's pooled curve
             let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
             let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
             let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
-            let fitted = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let unsmoothed = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let fitted = with_smooth_tone(unsmoothed.clone());
+            let fitted = match profile.as_ref().and_then(|p| p.tone) {
+                Some(pooled) => CameraLook { tone: extend_tone(&fitted.tone, &pooled), ..fitted },
+                None => fitted,
+            };
             if dro {
                 assert_lowered(&fitted, &look, name);
+                // the Sony DRO samples' lowered curves stay below their fitted ones under V8 as well
+                assert!(v8_below(&look.tone, &fitted.tone), "{name}: brighter than the fitted curve under V8");
+                // the shadows the camera JPEG lifts are gone: measured against the fit before smoothing, the curve
+                // closest to the JPEG (smoothing alone lowers the ILCE-7RM2's by about 7 % at 0.1)
                 for x in lowered {
-                    assert!(look.tone.apply(x) < 0.95 * fitted.tone.apply(x), "{name} at {x}: {} vs {}", look.tone.apply(x), fitted.tone.apply(x));
+                    let (got, jpeg) = (look.tone.apply(x), unsmoothed.tone.apply(x));
+                    assert!(got < 0.95 * jpeg, "{name} at {x}: {got} vs {jpeg} before smoothing");
                 }
             } else {
                 assert_eq!((look.matrix, &look.hue_sat, look.tone), (fitted.matrix, &fitted.hue_sat, fitted.tone), "{name}");
@@ -5047,6 +5126,43 @@ mod tests {
         assert!(monochrome_look(&raw, &tinted, &t, None, None).is_none(), "a tinted JPEG is not black and white");
     }
 
+    /// A raw whose colour comes from its camera JPEG (here an ILCE-7M4 ARW, as a Canon CR3 is) under a matrix-only
+    /// camera profile: the profile's colour fits no tone ([`starting_colour`] with `dcp`), and
+    /// [`tone_without_profile`] gives the tone the photo has without the profile, its camera JPEG's, leaving the
+    /// profile's colour in place.
+    #[test]
+    fn a_matrix_only_profile_keeps_the_camera_jpegs_tone() {
+        let (w, h) = (192usize, 128usize);
+        let level = |x: usize, y: usize| 0.01 + 0.5 * (x as f32 / w as f32) * (0.3 + 0.7 * y as f32 / h as f32);
+        let (mut raw, bytes) = grey_raw_with_jpeg((w, h), level, level, [1.0; 3]);
+        let m = Mat3([[0.7, -0.1, -0.05], [-0.5, 1.3, 0.2], [-0.1, 0.25, 0.65]]);
+        let dcp = lcc_raw::dcp::Dcp {
+            model: "SONY ILCE-7M4".into(),
+            name: "Chart".into(),
+            copyright: String::new(),
+            color: ColorData { illuminant: [21, 0], color_matrix: [Some(m), None], ..Default::default() },
+        };
+        assert!(keeps_photo_tone(&dcp) && !dcp.has_look());
+        let own = raw.color.clone();
+        dcp.apply(&mut raw.color);
+        let profiled = raw.color.clone();
+        let (_, _, look) = starting_colour(&mut raw.clone(), &bytes, None, None, CameraColour::Auto, true);
+        assert!(look.is_none(), "the profile's colour fits no tone of its own");
+        let mut trace = StartTrace::default();
+        let tone = tone_without_profile(&mut raw, own, &bytes, None, None, CameraColour::Auto, &mut trace).expect("the camera JPEG's tone");
+        assert_eq!(raw.color, profiled, "the colour stays the profile's");
+        assert_ne!(trace.tone, ToneSource::None, "{trace:?}");
+        let mid = ToneMap::camera(&tone, 0.0, 0.0, 0.0).apply(0.25);
+        assert!((mid - (1.0 - (-0.75f32).exp())).abs() < 0.05, "the camera's curve at 0.25: {mid}");
+        // a profile with a tone curve of its own keeps it
+        let mut curved = dcp.clone();
+        curved.color.profile.tone_curve = lcc_raw::profile::ToneCurve::from_tag(&[0.0, 0.0, 0.25, 0.42, 1.0, 1.0]);
+        assert!(!keeps_photo_tone(&curved));
+        let mut identity = dcp;
+        identity.color.profile.tone_curve = lcc_raw::profile::ToneCurve::from_tag(&[0.0, 0.0, 1.0, 1.0]);
+        assert!(keeps_photo_tone(&identity), "an identity curve is no tone of its own");
+    }
+
     /// A vignette and its gain at a pixel of a `w`x`h` image, for the fit tests below.
     fn test_vignette(w: usize, h: usize) -> (lcc_develop::EmbeddedVignette, impl Fn(usize, usize) -> f32) {
         let vignette = lcc_develop::EmbeddedVignette { k: [1.0, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point::new(0.5, 0.5), radius: 0.6 };
@@ -5339,7 +5455,8 @@ mod tests {
         let mut looked = color.clone();
         looked.profile.look_table = HsvTable::from_tags(&[1, 2, 1], &[0.0, 1.0, 1.0, 0.0, 1.0, 1.0], 0);
         assert!(looked.profile.look_table.is_some() && eligible(RawFormat::Dng, looked.clone()), "a look table defines colour, not tone");
-        // a `.dcp` (an Adobe Standard-style one: a look table, no tone curve) never takes the camera JPEG's tone
+        // under a `.dcp` no tone is fitted with the profile's colour (one without a tone curve of its own keeps the
+        // photo's tone fitted with its own colour instead: `tone_without_profile`)
         for format in [RawFormat::Dng, RawFormat::Nef] {
             for c in [color.clone(), looked.clone()] {
                 let raw = raw_of(format, "Make", "Model", c);

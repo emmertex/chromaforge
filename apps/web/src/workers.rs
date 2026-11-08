@@ -310,6 +310,7 @@ impl Workers {
                 let r = RenderResult {
                     request_id: b.request_id,
                     source_key: None,
+                    placement: None,
                     photo: b.photo,
                     level: b.level,
                     key: b.key,
@@ -403,6 +404,7 @@ impl Workers {
             RenderResult {
                 request_id: b.request_id,
                 source_key: None,
+                placement: None,
                 photo: b.photo,
                 level: b.level,
                 key: b.key,
@@ -459,6 +461,7 @@ impl RenderOffload for Workers {
             let r = RenderResult {
                 request_id: job.request_id,
                 source_key: job.source_key,
+                placement: job.placement,
                 photo: job.photo,
                 level: job.level,
                 key: job.key,

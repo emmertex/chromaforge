@@ -342,11 +342,7 @@ impl Scanned {
     }
 
     fn load(&mut self, path: &Path) {
-        let Ok(meta) = std::fs::metadata(path) else { return };
-        if meta.len() > SCAN_MAX_FILE {
-            return;
-        }
-        let Ok(bytes) = std::fs::read(path) else { return };
+        let Ok(bytes) = crate::bounded_read::read_bounded(path, SCAN_MAX_FILE) else { return };
         let head = self.header();
         let Some(rest) = bytes.strip_prefix(head.as_slice()) else { return };
         self.file_matches = true;

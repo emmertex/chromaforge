@@ -254,6 +254,10 @@ pub struct Merged {
     /// The remap was applied to the library's photos.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub remapped: bool,
+    /// An older install's camera profiles installed (`None`: not taken, merged by a build that
+    /// didn't take them: the next import takes them, once).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_profiles: Option<usize>,
 }
 
 /// `shared.json`.
@@ -272,6 +276,8 @@ struct SharedFile {
     merged: Vec<Merged>,
     /// Library folders whose named presets `store.gatherPresets` took already.
     gathered: Vec<String>,
+    /// Preparing photos in the background ([`crate::prep`]): the app-wide settings.
+    prep: crate::prep::PrepSettings,
 }
 
 /// The store-held parts of a library's `prefs.json` (read only).
@@ -332,10 +338,23 @@ pub struct MergeReport {
     pub presets: usize,
     pub profiles: usize,
     pub effects: usize,
+    /// Camera profiles (`.dcp`) installed (an older install's).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub camera_profiles: usize,
+    /// The file names of camera profiles that were there already.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub camera_already: Vec<String>,
+    /// Camera bodies that start with one of those camera profiles now.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub camera_bodies: usize,
     /// Problems (a profile file that couldn't be read…); nothing is lost: the library keeps its copy.
     pub problems: Vec<String>,
     /// Merged before: nothing done.
     pub skipped: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The store on disk.
@@ -379,6 +398,11 @@ impl AppStore {
     /// `library` (a folder) was merged already.
     pub fn has_merged(&self, library: &Path) -> bool {
         self.merged.iter().any(|m| same_path(Path::new(&m.library), library))
+    }
+
+    /// Older install `store` was merged already, its camera profiles too.
+    fn has_merged_cameras(&self, store: &Path) -> bool {
+        self.merged.iter().any(|m| m.camera_profiles.is_some() && same_path(Path::new(&m.library), store))
     }
 
     /// A store file, parsed; `None` when missing or damaged. A damaged file is kept as
@@ -501,6 +525,128 @@ pub(crate) fn read_library(dir: &Path) -> std::result::Result<Content, String> {
     let prefs: LibraryPrefs = parse_capped(&dir.join("prefs.json"), MAX_PREFS_FILE)?.unwrap_or_default();
     let presets: Option<PresetsFile> = parse_capped(&dir.join("presets.json"), MAX_PRESETS_FILE)?;
     Ok(Content::from_files(prefs, presets))
+}
+
+/// Whether `dir` holds an app store: an older install's `Library Store`, with its develop presets or
+/// its shared file.
+pub fn is_store_folder(dir: &Path) -> bool {
+    dir.join(PRESETS).is_file() || dir.join(SHARED).is_file()
+}
+
+/// The stores of this computer's older installs, under the app's earlier names: each earlier settings
+/// folder's `Library Store` that holds one (`[legacy] settings_dirs` in `brand.toml`).
+pub fn older_install_stores() -> Vec<PathBuf> {
+    stores_in(lcc_brand::legacy_settings_dirs())
+}
+
+/// The `Library Store` folders of `settings_dirs` that hold a store.
+pub(crate) fn stores_in(settings_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    settings_dirs.into_iter().map(|d| d.join(DIR_NAME)).filter(|d| is_store_folder(d)).collect()
+}
+
+/// `v` as a `T`, the parts that read: a key `T` can't take is left out and named in `problems`, so one
+/// list another build wrote differently costs only itself.
+fn lenient<T: DeserializeOwned + Default>(v: &Value, what: &str, problems: &mut Vec<String>) -> T {
+    if let Ok(t) = serde_json::from_value::<T>(v.clone()) {
+        return t;
+    }
+    let Some(o) = v.as_object() else {
+        if !v.is_null() {
+            problems.push(format!("{what}: not an object; left out"));
+        }
+        return T::default();
+    };
+    let mut kept = serde_json::Map::new();
+    for (k, x) in o {
+        let one: serde_json::Map<String, Value> = std::iter::once((k.clone(), x.clone())).collect();
+        if serde_json::from_value::<T>(Value::Object(one)).is_ok() {
+            kept.insert(k.clone(), x.clone());
+        } else {
+            problems.push(format!("{what}: {k} couldn't be read; left out"));
+        }
+    }
+    serde_json::from_value(Value::Object(kept)).unwrap_or_default()
+}
+
+/// A JSON file of at most `max` bytes (`Null` when missing); one that can't be read or parsed is named
+/// in `problems`.
+fn json_file(path: &Path, max: u64, problems: &mut Vec<String>) -> Value {
+    match read_capped(path, max) {
+        Ok(Some(b)) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+            problems.push(format!("{}: {e}", path.display()));
+            Value::Null
+        }),
+        Ok(None) => Value::Null,
+        Err(e) => {
+            problems.push(e);
+            Value::Null
+        }
+    }
+}
+
+/// The Presets Manager's choices as an older install's store keeps them (`presetState` in its
+/// `shared.json`).
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct OlderPresetState {
+    hidden: Vec<String>,
+    names: BTreeMap<String, String>,
+    groups: BTreeMap<String, String>,
+    for_import: Vec<String>,
+}
+
+/// An older install's store folder `dir`, read only: its develop presets with their favourites and
+/// At Import / hidden marks, local adjustment presets, LUT profiles, import defaults and habits. What
+/// can't be read is left out and named in `problems` (a preset that doesn't read costs only itself).
+pub(crate) fn read_store_folder(dir: &Path, problems: &mut Vec<String>) -> Content {
+    let shared = json_file(&dir.join(SHARED), MAX_PREFS_FILE, problems);
+    let prefs: LibraryPrefs = lenient(&shared, SHARED, problems);
+    let mut presets = match json_file(&dir.join(PRESETS), MAX_PRESETS_FILE, problems) {
+        Value::Object(mut o) => {
+            let user = o.remove("user");
+            let mut file: PresetsFile = lenient(&Value::Object(o), PRESETS, problems);
+            let mut unread = 0usize;
+            let items = match user {
+                Some(Value::Array(a)) => a,
+                _ => Vec::new(),
+            };
+            for item in items {
+                match serde_json::from_value::<Preset>(item) {
+                    Ok(p) => file.user.push(p),
+                    Err(_) => unread += 1,
+                }
+            }
+            if unread > 0 {
+                problems.push(format!("{PRESETS}: {unread} preset(s) couldn't be read; left out"));
+            }
+            file
+        }
+        Value::Null => PresetsFile::default(),
+        _ => {
+            problems.push(format!("{PRESETS}: not an object; left out"));
+            PresetsFile::default()
+        }
+    };
+    // the marks: in `presetMarks` (this app's store), or in `presetState` (an older install's Presets Manager)
+    let marks: PresetMarks = shared.get("presetMarks").map(|v| lenient(v, "presetMarks", problems)).unwrap_or_default();
+    let state: OlderPresetState = shared.get("presetState").map(|v| lenient(v, "presetState", problems)).unwrap_or_default();
+    for id in marks.at_import.into_iter().chain(state.for_import) {
+        if !presets.at_import.contains(&id) {
+            presets.at_import.push(id);
+        }
+    }
+    for id in marks.hidden.into_iter().chain(state.hidden) {
+        if !presets.hidden.contains(&id) {
+            presets.hidden.push(id);
+        }
+    }
+    for (id, n) in marks.names.into_iter().chain(state.names) {
+        presets.builtin_names.entry(id).or_insert(n);
+    }
+    for (id, g) in marks.groups.into_iter().chain(state.groups) {
+        presets.builtin_groups.entry(id).or_insert(g);
+    }
+    Content::from_files(prefs, Some(presets))
 }
 
 /// A free id: `base`, else `base-2`, `base-3`…
@@ -816,6 +962,8 @@ impl Session {
         let presets: PresetsFile = st.read(PRESETS).unwrap_or_default();
         st.merged = shared.merged;
         st.gathered = shared.gathered;
+        // (the app-wide background preparation settings: the session's own, not a library's content)
+        self.prep.app = shared.prep.sanitized();
         let mut marks = shared.preset_marks;
         // (read-old: marks a presets.json still carries join the store's)
         for id in presets.at_import.iter() {
@@ -845,11 +993,13 @@ impl Session {
 
     /// What the session holds of the store's content.
     pub(crate) fn content(&self) -> Content {
+        #[cfg(test)]
+        CONTENT_COPIES.with(|c| c.set(c.get() + 1));
         Content {
             lut_profiles: self.lut_profiles.clone(),
             mask_effects: self.mask_effects.clone(),
             mask_tool_effects: self.mask_tool_effects.clone(),
-            import: ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() },
+            import: self.store_import_defaults(),
             habits: self.habits(),
             marks: PresetMarks::of(self),
             presets: self.presets.iter().filter(|p| !p.builtin).cloned().collect(),
@@ -858,6 +1008,11 @@ impl Session {
             profile_favorites: self.profile_favorites.clone(),
             profile_recent: self.profile_recent.clone(),
         }
+    }
+
+    /// The import defaults the store keeps (auto import stays with each library).
+    fn store_import_defaults(&self) -> ImportDefaults {
+        ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() }
     }
 
     pub(crate) fn habits(&self) -> Habits {
@@ -939,17 +1094,19 @@ impl Session {
 
     fn shared_json(&self) -> Vec<u8> {
         let (merged, gathered) = self.app_store.as_ref().map(|s| (s.merged.clone(), s.gathered.clone())).unwrap_or_default();
-        let c = self.content();
+        // only what shared.json holds: never `content()`, which copies every preset (it runs after
+        // every command; 250 ms each with a ten-thousand-preset collection)
         let f = SharedFile {
             version: SHARED_VERSION,
-            lut_profiles: c.lut_profiles,
-            mask_effects: c.mask_effects,
-            mask_tool_effects: c.mask_tool_effects,
-            import: c.import,
-            preset_marks: c.marks,
-            habits: c.habits,
+            lut_profiles: self.lut_profiles.clone(),
+            mask_effects: self.mask_effects.clone(),
+            mask_tool_effects: self.mask_tool_effects.clone(),
+            import: self.store_import_defaults(),
+            preset_marks: PresetMarks::of(self),
+            habits: self.habits(),
             merged,
             gathered,
+            prep: self.prep.app,
         };
         serde_json::to_vec_pretty(&f).unwrap_or_default()
     }
@@ -1040,6 +1197,7 @@ impl Session {
             effects: r.effects,
             remap,
             remapped: false,
+            camera_profiles: None,
         });
         for p in &r.problems {
             log::warn!("store: merging {}: {p}", dir.display());
@@ -1076,6 +1234,79 @@ impl Session {
         crate::profile_refs::refresh(self);
         self.apply_store_remap();
         self.save_app_store()?;
+        Ok(out)
+    }
+
+    /// `store.importOlderInstalls`: the presets of older installs' stores (`dirs`; none given: every one
+    /// on this computer, [`older_install_stores`]) join the shared store, each folder once unless
+    /// `force`: develop presets with their favourites and At Import / hidden marks, local adjustment
+    /// presets, LUT profiles, import defaults and habits, and the camera profiles (`.dcp`) of their
+    /// `Profiles/` with the bodies they were bound to ([`crate::cmd::dcp_profiles::import_older`]).
+    /// The same preset or camera profile twice is kept once. Reads the folders only; saves the store.
+    pub fn merge_older_installs(&mut self, dirs: &[PathBuf], force: bool) -> Result<Vec<MergeReport>> {
+        self.merge_older_installs_in(dirs, force, None)
+    }
+
+    /// [`Self::merge_older_installs`] with the camera profiles going to `camera` (the camera-profiles
+    /// folder and its library; `None`: this computer's).
+    pub(crate) fn merge_older_installs_in(&mut self, dirs: &[PathBuf], force: bool, camera: Option<(&Path, &Path)>) -> Result<Vec<MergeReport>> {
+        self.check_store()?;
+        let dirs = if dirs.is_empty() { older_install_stores() } else { dirs.to_vec() };
+        if dirs.is_empty() {
+            let looked: Vec<String> = lcc_brand::legacy_settings_dirs().iter().map(|d| d.join(DIR_NAME).display().to_string()).collect();
+            return Err(EngineError::Other(format!("no older install's presets on this computer (looked in {})", looked.join(", "))));
+        }
+        let own = self.app_store.as_ref().map(|s| s.dir.clone());
+        let mut mine = self.content();
+        let store_profiles = self.app_store.as_ref().map(AppStore::profiles_dir);
+        let mut out = Vec::new();
+        let mut bound = 0usize;
+        for dir in &dirs {
+            let mut r = MergeReport { library: dir.display().to_string(), ..Default::default() };
+            if own.as_deref().is_some_and(|o| same_path(o, dir)) {
+                r.problems.push(format!("{} is this app's own store", dir.display()));
+            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged_cameras(dir)) {
+                r.skipped = true;
+            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
+                // merged by a build that left the camera profiles: those only, once
+                let cams = crate::cmd::dcp_profiles::import_older(self, dir, camera);
+                (r.camera_profiles, r.camera_already, r.camera_bodies, r.problems) = (cams.added, cams.already, cams.bound, cams.problems);
+                bound += cams.bound;
+                if let Some(m) = self.app_store.as_mut().and_then(|s| s.merged.iter_mut().find(|m| same_path(Path::new(&m.library), dir))) {
+                    m.camera_profiles = Some(cams.added);
+                }
+            } else if !is_store_folder(dir) {
+                r.problems.push(format!("{} holds no presets ({PRESETS} or {SHARED})", dir.display()));
+            } else {
+                let mut problems = Vec::new();
+                let theirs = read_store_folder(dir, &mut problems);
+                let (mut rr, remap) = merge_content(&mut mine, theirs, Some(&dir.join(PROFILES_DIR)), store_profiles.as_deref());
+                problems.append(&mut rr.problems);
+                // the camera profiles: installed now, with their bodies
+                let cams = crate::cmd::dcp_profiles::import_older(self, dir, camera);
+                problems.extend(cams.problems);
+                rr.problems = problems;
+                rr.camera_profiles = cams.added;
+                rr.camera_already = cams.already;
+                rr.camera_bodies = cams.bound;
+                bound += cams.bound;
+                rr.library = r.library.clone();
+                self.record_merge(dir, &rr, remap);
+                if let Some(m) = self.app_store.as_mut().and_then(|s| s.merged.last_mut()) {
+                    m.camera_profiles = Some(rr.camera_profiles);
+                }
+                r = rr;
+            }
+            out.push(r);
+        }
+        self.set_content(mine);
+        crate::profile_refs::refresh(self);
+        self.save_app_store()?;
+        if bound > 0
+            && let Err(e) = self.save_prefs()
+        {
+            log::error!("store: the camera bodies' profiles weren't saved: {e}");
+        }
         Ok(out)
     }
 
@@ -1274,4 +1505,15 @@ impl Session {
     pub(crate) fn take_store_warnings(&mut self) -> Vec<String> {
         self.app_store.as_mut().map(AppStore::take_warnings).unwrap_or_default()
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTENT_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How often this thread copied the store's whole content (every preset) since the last call.
+#[cfg(test)]
+pub(crate) fn content_copies() -> usize {
+    CONTENT_COPIES.with(|c| c.replace(0))
 }

@@ -49,6 +49,14 @@ pub(crate) fn begin(app: &mut LccApp, ctx: &egui::Context) -> bool {
     true
 }
 
+/// Mark the space hand as used (by a pointer button or navigation gesture), so letting go of Space
+/// does not toggle the zoom as a tap.
+pub(crate) fn mark_used(app: &mut LccApp) {
+    if let Some(hand) = app.space_hand.as_mut() {
+        hand.used = true;
+    }
+}
+
 /// Runs every frame before the shortcuts: ends the hold once Space is up and a drag it started has
 /// ended, or at once when the tool closes or a dialog opens. A quick tap with no click toggles the
 /// zoom as it ends.

@@ -3,12 +3,15 @@
 > Names in angle brackets (`<app>`, `<binary>`, `<cli>`, `<PREFIX>`, `<settings_dir>`, …) are the values set in
 > [`brand.toml`](../brand.toml); see the README.
 
-File → Import Lightroom Catalog… opens `.lrcat` directly. Lightroom, Python, DNG conversion
+File → Import Lightroom or Capture One Catalog… opens `.lrcat` directly. Lightroom, Python, DNG conversion
 and a C SQLite runtime are not required. The source database is read-only, including committed
 `-wal` pages; a catalog that changes during the read is rejected when the change is
 observable. Close Lightroom and every other catalog writer before inspection or import:
 the metadata, header and companion checks are best-effort change detection, not a
 transactional SQLite snapshot. The app owns subsequent edits.
+
+The same command also opens a Capture One catalog (`.cocatalogdb`, see *Capture One catalogs* below); the file
+dialog offers both kinds together and each on its own.
 
 File → Open Library… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
 doesn't make a library of the app there: it offers this import instead, with the catalog found
@@ -31,7 +34,7 @@ unless Settings says to always merge (*Turning the question off*, below):
 The window opens on *Merge* when the open library has no photos (there is nothing to merge with) and on *Create a
 new library* when it has some.
 
-**Turning the question off.** Settings → General → Library → *When importing a Lightroom catalog*: *Ask where to
+**Turning the question off.** Settings → General → Library → *When importing a Lightroom or Capture One catalog*: *Ask where to
 import it* (the default) or *Always merge into the open library* (how imports always worked before). The window's
 *Don't ask again (always merge into the open library)* checkbox, offered with *Merge*, picks the second; the window
 says where to turn the question back on. The choice is an app setting (`ui.json`, `settings.lightroomImport`:
@@ -181,9 +184,13 @@ public XMP documentation, 105 map (test `develop_field_coverage_over_public_crs_
 eight have no equivalent and are reported: `AutoWhiteVersion`, `LensProfileSetup`, `UprightPreview`,
 `UprightCenterMode`, `UprightFocalLength35mm`, the pre-2012 `Defringe`, `HDRMaxValue` and `SDRBlend`.
 A Custom white balance on a raw the app develops relative to its as-shot look (ARW, NEF, RW2,
-RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin: the catalog keeps no
-as-shot white for Custom photos, so the photo stays As Shot and `Temperature, Tint` are reported
-(issue #510; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
+RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin on its own. A Custom
+photo's develop settings keep no as-shot white, but its history does: the last
+`Adobe_libraryImageDevelopHistoryStep` that says As Shot with a `Temperature` and `Tint` gives the white
+the edit is the same mired shift from (read row by row, none kept, so a history table of any size gives it; a
+read that fails warns and keeps the whites found so far). With no such step the photo stays As Shot and
+`Temperature, Tint` are reported
+(issue #510, upstream #3906; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
 shifted by the same mired difference, see [xmp-interop.md](xmp-interop.md)). A raw whose camera has
 measured colour matrices (`lcc_raw::spectral`: ILCE-7M3, D850, EOS 5D Mark III…), or whose white-balance
 presets give a Kelvin scale (`lcc_raw::kelvin_presets`: ILCA-99M2, ILCA-77M2…), edits in Kelvin
@@ -225,6 +232,32 @@ share only when the catalog itself is on it; Chromaforge does not, see the READM
 folder or file name in the catalog is an absolute path, is not looked at: the import lists it as missing with a
 warning and leaves the photo and its virtual copies out of the library. A path that is not a path on this computer
 (a Windows drive or UNC path read on macOS or Linux) is not looked at either and stays catalogued as missing.
+
+## Capture One catalogs
+
+A Capture One catalog keeps its library in `<name>.cocatalogdb`, an SQLite database, which the same read-only
+reader opens (`crates/engine/src/capture_one_catalog.rs`) into the same import model, so the destination window,
+one undo step, reimport without duplicates and the result window are shared. Checked against catalogs written by
+Capture One 16.9.0 on Windows (catalog format 160906).
+
+- **Photos:** one per variant (`ZVARIANT`); the first variant of an image is the photo, later ones become virtual
+  copies ("Variant 2", …). Originals inside the catalog are found relative to the folder holding the database,
+  referenced ones by `ZPATHLOCATION` (`ZWINROOT` / `ZMACROOT` + `ZRELATIVEPATH`). Images in Capture One's trash
+  are left out, with a warning, and so is any image whose original is a file type the app doesn't read (a Nikon
+  `.NEFX`, say): it is named in the warnings and its file is never added.
+- **Offline originals** (a drive that isn't connected, a file that is gone) take the capture time (`ZEXP_DATE`, the
+  camera's clock, no offset), camera make, model and lens from the catalog; a file that is there keeps its own.
+  Capture One's stand-ins for a file without a camera ("Tiff File", "Jpeg File") are no camera.
+- **Ratings and colour tags** (`ZVARIANTMETADATA`): red, yellow, green, blue and purple become labels; orange and
+  pink have no label here and come in without one, with a warning.
+- **Keywords:** `ZCONTENT_KEYWORDS` lists each keyword as its full path with an order suffix
+  (`Animals|Birds|Owls||4`) and the parents of an assigned keyword as entries of their own; the parents are
+  dropped, as the path implies them.
+- **IPTC fields** become an XMP packet merged like a sidecar.
+- **Albums** keep their projects and groups (a group is a `VirtualFolderCollection`, as are Recent Imports and
+  Recent Captures; the folders the catalog itself names are system folders and stay out, with the albums under
+  them). Smart albums are not imported yet (a warning names each one); develop settings are not read yet.
+- The import's activity row, messages, result window, destination window and undo step say Capture One.
 
 ## Historical local validation
 

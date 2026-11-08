@@ -579,6 +579,12 @@ fn parse_one_region(item: &XmpValue, px_dims: Option<(f64, f64)>) -> Option<Regi
     Some(Region { rect, kind, name, description })
 }
 
+/// A finite, whole, non-negative number that fits `u32`; anything else (fractional, huge, NaN) is not a
+/// usable integer metadata value and is dropped rather than truncated or saturated.
+fn whole_u32(v: f64) -> Option<u32> {
+    (v.is_finite() && v >= 0.0 && v <= f64::from(u32::MAX) && v.fract() == 0.0).then_some(v as u32)
+}
+
 fn fmt_gps_coord(v: f64, pos: char, neg: char) -> String {
     let a = v.abs();
     let mut d = a.trunc();
@@ -625,8 +631,8 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         metering_mode: num("exif:MeteringMode").map(|v| v as u16),
         white_balance: num("exif:WhiteBalance").map(|v| v as u16),
         orientation: num("tiff:Orientation").filter(|v| (1.0..=8.0).contains(v) && v.fract() == 0.0).map(|v| Orientation::from_exif(v as u16)),
-        width: num("tiff:ImageWidth").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelXDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
-        height: num("tiff:ImageLength").filter(|v| *v >= 0.0).or_else(|| num("exif:PixelYDimension").filter(|v| *v >= 0.0)).map(|v| v as u32),
+        width: num("tiff:ImageWidth").and_then(whole_u32).or_else(|| num("exif:PixelXDimension").and_then(whole_u32)),
+        height: num("tiff:ImageLength").and_then(whole_u32).or_else(|| num("exif:PixelYDimension").and_then(whole_u32)),
         title: first("dc:title"),
         headline: first("photoshop:Headline"),
         caption: first("dc:description"),
@@ -638,6 +644,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         city: first("photoshop:City"),
         state: first("photoshop:State"),
         country: first("photoshop:Country"),
+        country_code: first("Iptc4xmpCore:CountryCode"),
         copyright: first("dc:rights"),
         copyright_marked: first("xmpRights:Marked").and_then(|s| match s.to_ascii_lowercase().as_str() {
             "true" => Some(true),
@@ -650,7 +657,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
         label: first("xmp:Label"),
         ..Default::default()
     };
-    m.iso = [num("exif:ISOSpeedRatings"), num("exifEX:PhotographicSensitivity")].into_iter().flatten().find(|v| *v > 0.0).map(|v| v as u32);
+    m.iso = [num("exif:ISOSpeedRatings"), num("exifEX:PhotographicSensitivity")].into_iter().flatten().filter(|v| *v > 0.0).find_map(whole_u32);
     if let Some(spec) = props.get("exifEX:LensSpecification").filter(|v| v.len() == 4) {
         let v: Vec<f64> = spec.iter().filter_map(|s| parse_number(s)).collect();
         if let &[a, b, c, d] = v.as_slice() {
@@ -878,6 +885,7 @@ pub fn write_xmp_filters(
     push("photoshop:City", meta.city.clone());
     push("photoshop:State", meta.state.clone());
     push("photoshop:Country", meta.country.clone());
+    push("Iptc4xmpCore:CountryCode", meta.country_code.clone());
     push("xmpRights:Marked", meta.copyright_marked.map(|m| if m { "True" } else { "False" }.to_string()));
     push("xmpRights:WebStatement", meta.copyright_url.clone());
     push("photoshop:AuthorsPosition", Some(meta.contact.job_title.trim().to_string()).filter(|v| !v.is_empty()));
@@ -1106,6 +1114,7 @@ mod tests {
             city: Some("Paris".into()),
             state: Some("Île-de-France".into()),
             country: Some("France".into()),
+            country_code: Some("FR".into()),
             contact: crate::CreatorContact { job_title: "Lead".into(), email: "a@b.c".into(), city: "Lyon & co".into(), ..Default::default() },
             keywords: vec!["tree".into(), "sky & sea".into()],
             hierarchical_keywords: vec!["Places|France|Paris".into()],
@@ -1313,6 +1322,45 @@ mod tests {
         assert_eq!(read(r#"exif:ISOSpeedRatings="-100""#), None);
         assert_eq!(read(r#"exif:ISOSpeedRatings="0""#), None);
         assert_eq!(read(r#"exif:ISOSpeedRatings="200""#), Some(200));
+    }
+
+    /// Fractional, oversized or non-finite ISO values are dropped (never truncated or saturated) and the
+    /// alternate property is still considered.
+    #[test]
+    fn invalid_iso_candidates_are_rejected() {
+        let read = |attrs: &str| {
+            let x = format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:exifEX="http://cipa.jp/exif/1.0/" {attrs}/>
+                </rdf:RDF></x:xmpmeta>"#
+            );
+            parse_xmp(&x).map(|d| d.metadata.iso).unwrap_or(None)
+        };
+        assert_eq!(read(r#"exif:ISOSpeedRatings="100.5""#), None);
+        assert_eq!(read(r#"exif:ISOSpeedRatings="4294967296""#), None);
+        assert_eq!(read(r#"exif:ISOSpeedRatings="1e100""#), None);
+        assert_eq!(read(r#"exif:ISOSpeedRatings="NaN""#), None);
+        assert_eq!(read(r#"exif:ISOSpeedRatings="100.5" exifEX:PhotographicSensitivity="400""#), Some(400));
+        assert_eq!(read(r#"exif:ISOSpeedRatings="200.0""#), Some(200));
+    }
+
+    /// Fractional, oversized or negative pixel dimensions are dropped, not truncated or saturated.
+    #[test]
+    fn invalid_pixel_dimensions_are_rejected() {
+        let read = |attrs: &str| {
+            let x = format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/" {attrs}/>
+                </rdf:RDF></x:xmpmeta>"#
+            );
+            parse_xmp(&x).map(|d| d.metadata.width).unwrap_or(None)
+        };
+        for bad in ["640.9", "4294967296", "-1", "1e100000", "NaN", "Infinity", "nope"] {
+            assert_eq!(read(&format!(r#"tiff:ImageWidth="{bad}""#)), None, "{bad}");
+            assert_eq!(read(&format!(r#"exif:PixelXDimension="{bad}""#)), None, "{bad}");
+        }
+        assert_eq!(read(r#"tiff:ImageWidth="640.5" exif:PixelXDimension="800""#), Some(800));
+        assert_eq!(read(r#"tiff:ImageWidth="640""#), Some(640));
     }
 
     #[test]

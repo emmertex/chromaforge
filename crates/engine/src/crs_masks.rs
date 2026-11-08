@@ -173,8 +173,11 @@ fn pt(x: f64, y: f64) -> Value {
 /// What Lightroom Classic does, from its exports of synthetic DNGs whose masks we wrote (issue #1815):
 /// - **`MaskGroupBasedCorrections`, `crs:Version` ≥ 2** (what Lightroom writes today): an ordinary
 ///   radial — effect inside — is written `Flipped="true"`, so `Flipped` is the "inside" flag.
-///   Inverting the mask is a separate field, `crs:MaskInverted` (see [`component`]). `Flipped="false"`
-///   is read as outside, the same sense as the legacy filter's; Lightroom never wrote one for us.
+///   Inverting the mask is a separate field, `crs:MaskInverted` (see [`component`]). Lightroom
+///   Classic 15.6 (Camera Raw 18.7) writes an inverted radial as `MaskInverted="true"` *with*
+///   `Flipped="false"`: so when `MaskInverted` is true, `Flipped` isn't read, or the two would cancel
+///   out. Otherwise `Flipped="false"` is read as outside, the same sense as the legacy filter's;
+///   Lightroom never wrote that combination for us.
 /// - **`MaskGroupBasedCorrections` without `crs:Version`**: Lightroom renders the effect inside
 ///   whatever `Flipped` says, and rewrites both `Flipped="false"` and `"true"` as `Flipped="true"`
 ///   with `Version="2"`. So `Flipped` is ignored here.
@@ -184,7 +187,8 @@ fn pt(x: f64, y: f64) -> Value {
 fn radial_inside(m: &XmpValue, container: &str) -> bool {
     let flipped = flag(m, "crs:Flipped");
     if container == "crs:MaskGroupBasedCorrections" {
-        if num(m, "crs:Version").is_some_and(|v| v >= 2.0) { flipped.unwrap_or(true) } else { true }
+        let inverted = flag(m, "crs:MaskInverted").unwrap_or(false);
+        if num(m, "crs:Version").is_some_and(|v| v >= 2.0) && !inverted { flipped.unwrap_or(true) } else { true }
     } else {
         flipped.unwrap_or(false)
     }
@@ -408,14 +412,19 @@ pub fn masks(values: &Values, aspect: f64) -> (Vec<Value>, Vec<String>) {
             skipped.extend(unmapped_local(c));
             // brush dabs of one correction are one brush component
             let mut merged: Vec<Value> = Vec::new();
+            // where the brush of each op sits in `merged` (no scan of it per dab)
+            let mut brush_at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             for p in parts {
                 let is_brush = p["shape"]["kind"] == "brush";
                 if is_brush
-                    && let Some(prev) = merged.iter_mut().find(|q| q["shape"]["kind"] == "brush" && q["op"] == p["op"])
+                    && let Some(prev) = brush_at.get(&p["op"].to_string()).and_then(|&i| merged.get_mut(i))
                     && let (Some(a), Some(b)) = (prev["shape"]["strokes"].as_array_mut(), p["shape"]["strokes"].as_array())
                 {
                     a.extend(b.iter().cloned());
                     continue;
+                }
+                if is_brush {
+                    brush_at.insert(p["op"].to_string(), merged.len());
                 }
                 merged.push(p);
             }
@@ -938,6 +947,21 @@ mod tests {
         // version 2 with Flipped="false": outside, the legacy sense of the flag
         let s = radial_settings("MaskGroupBasedCorrections", r#"crs:MaskInverted="false" crs:Feather="25" crs:Flipped="false" crs:Version="2""#);
         assert_eq!(radial_of(&s), (true, 25.0, false));
+    }
+
+    /// Lightroom Classic 15.6 (Camera Raw 18.7) writes an inverted radial with
+    /// `MaskInverted="true"` and `Flipped="false"`. Both read as "outside" cancelled out, so the mask
+    /// imported not inverted; the inversion is the component's, and the radial stays "inside".
+    #[test]
+    fn lightroom_15_inverted_radial_with_flipped_false_is_outside() {
+        // the reporter's mask, as Lightroom 15.6 saved it to the XMP
+        let s = radial_settings(
+            "MaskGroupBasedCorrections",
+            r#"crs:MaskInverted="true" crs:Midpoint="50" crs:Roundness="0" crs:Feather="38" crs:Flipped="false" crs:Version="2""#,
+        );
+        assert_eq!(radial_of(&s), (false, 38.0, true), "the inversion is the component's alone");
+        let (inside, outside) = lift_inside_outside(&s);
+        assert!(inside == 0 && outside > 20, "the effect is outside the circle: {inside} {outside}");
     }
 
     #[test]

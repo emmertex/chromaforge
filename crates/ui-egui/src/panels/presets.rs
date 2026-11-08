@@ -190,7 +190,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         }
         let active = app.session.active();
         let marked = AppliedByPhoto::of(ui.ctx(), &app.session, active);
-        let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
         let groups = grouped(ui.ctx(), &app.session, app.ui.settings.user_presets_first);
@@ -202,7 +201,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
             ui.spacing_mut().item_spacing.y = 0.0;
             let visible = ui.clip_rect().expand(row_h);
             for node in groups.iter() {
-                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, &current, thumbs, amt_id);
+                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, thumbs, amt_id);
             }
             let (space_r, space_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
             // (the empty space under the folders: a drop target and the create menu)
@@ -265,11 +264,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         let pointer_in_scroll = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|pos| scroll.inner_rect.contains(pos));
         if pointer_in_scroll {
             if app.hover_preview.is_none()
-                && let (Some(id), Some(curr)) = (active, current.as_ref())
+                && let Some(id) = active
                 && let Some((saved_id, saved_preset, saved_label)) = ui.data(|d| d.get_temp::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id))
                 && saved_id == id
+                && let Some(settings) = app.session.preset_applied(id, &saved_preset, 1.0)
             {
-                app.hover_preview = Some(HoverPreview { label: saved_label, settings: saved_preset.apply(curr, 1.0) });
+                app.hover_preview = Some(HoverPreview { label: saved_label, settings });
             }
         } else {
             ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id));
@@ -315,7 +315,6 @@ fn show_folder_node(
     visible: Rect,
     last: &Option<AppliedPreset>,
     marked: &Option<String>,
-    current: &Option<lcc_develop::DevelopSettings>,
     thumbs: bool,
     amt_id: egui::Id,
 ) {
@@ -416,7 +415,7 @@ fn show_folder_node(
     }
 
     for child in &node.children {
-        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, current, thumbs, amt_id);
+        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, thumbs, amt_id);
     }
 
     let active = app.session.active();
@@ -452,7 +451,8 @@ fn show_folder_node(
         } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
         }
-        let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
+        // the preview is what a click commits: the same composition as `preset.apply` (`Session::preset_applied`)
+        let look = if thumbs || resp.hovered() { active.and_then(|id| app.session.preset_applied(id, &pr, 1.0)) } else { None };
         let mut text_x = r.left() + 40.0 + indent;
         if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
             let tr = Rect::from_min_size(pos2(r.left() + 36.0 + indent, r.top() + 5.0), vec2(66.0, row_h - 10.0));
@@ -732,6 +732,10 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
         }
     };
     let row_h = ui.spacing().interact_size.y;
+    // wide enough for the longest name it can show (a narrow combo cut 10 000 names to "01 Ava Ce…"),
+    // within the screen
+    let want = picker_width(ui, session, row_h);
+    ui.set_min_width(want.min((ui.ctx().content_rect().width() - 2.0 * PICKER_MARGIN).max(160.0)));
     let mut out = None;
     let mut fold: Option<(String, bool)> = None;
     egui::ScrollArea::vertical().id_salt(("preset-picker", salt)).max_height(300.0).auto_shrink([false, true]).show_rows(
@@ -747,7 +751,7 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         register(ui.ctx(), format!("presetPickerGroup:{salt}:{key}"), r);
                         crate::widgets::announce(&resp, label.clone());
                         if resp.hovered() {
-                            ui.painter().rect_filled(r, 3.0, t.hover.gamma_multiply(0.5));
+                            ui.painter().rect_filled(r, t.radius(3.0), t.hover.gamma_multiply(0.5));
                         }
                         let chevron = Rect::from_center_size(pos2(r.left() + 8.0, r.center().y), vec2(9.0, 9.0));
                         paint(ui.painter(), chevron, if *open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
@@ -764,7 +768,10 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
                             let w = (ui.available_width() - row_h - 2.0).max(40.0);
-                            let resp = ui.add_sized(vec2(w, row_h), egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate());
+                            let resp = ui.add_sized(
+                                vec2(w, row_h),
+                                egui::Button::selectable(selected == Some(p.id.as_str()), label).truncate().right_text(""),
+                            );
                             register(ui.ctx(), format!("presetPick:{salt}:{}", p.id), resp.rect);
                             if resp.clicked() {
                                 out = Some(p.id.clone());
@@ -800,6 +807,45 @@ pub fn picker_rows(ui: &mut egui::Ui, salt: &str, session: &lcc_engine::Session,
     out
 }
 
+/// The room a picker keeps from the screen's edges.
+const PICKER_MARGIN: f32 = 16.0;
+/// How many of the longest names (by characters) a picker measures to find its width.
+const PICKER_MEASURED: usize = 48;
+
+/// The width a picker needs for its longest shown name (a preset with its star, or a group with
+/// its count), measured once per change of the presets: the [`PICKER_MEASURED`] longest names by
+/// characters are laid out, not all 10 000.
+pub(crate) fn picker_width(ui: &egui::Ui, session: &lcc_engine::Session, row_h: f32) -> f32 {
+    let key = (session.presets.generation(), session.preset_hidden.len(), row_h.to_bits());
+    let id = egui::Id::new("preset-picker-width");
+    if let Some((k, w)) = ui.ctx().data(|d| d.get_temp::<((u64, usize, u32), f32)>(id))
+        && k == key
+    {
+        return w;
+    }
+    let t = Tokens::get(ui.ctx());
+    let hidden: std::collections::HashSet<&str> = session.preset_hidden.iter().map(String::as_str).collect();
+    let shown = || session.presets.iter().filter(|p| !hidden.contains(p.id.as_str()));
+    let mut names: Vec<String> = shown().map(|p| crate::i18n::builtin_label(&p.name, p.builtin).to_string()).collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.chars().count()));
+    names.truncate(PICKER_MEASURED);
+    let mut groups: Vec<&str> = shown().map(|p| p.group.as_str()).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups.sort_by_key(|g| std::cmp::Reverse(g.chars().count()));
+    groups.truncate(PICKER_MEASURED);
+    let body = egui::TextStyle::Button.resolve(ui.style());
+    let pad = ui.spacing().button_padding.x * 2.0;
+    let measure = |text: String, font: egui::FontId| ui.painter().layout_no_wrap(text, font, t.text).size().x;
+    let name_w = names.into_iter().map(|n| measure(n, body.clone())).fold(0.0_f32, f32::max) + pad + row_h + 2.0;
+    // (a header: chevron, name and "  (12345)")
+    let group_w = groups.into_iter().map(|g| measure(format!("{g}  (00000)"), t.semibold(11.0))).fold(0.0_f32, f32::max) + 22.0;
+    // and the search field's least width
+    let w = name_w.max(group_w).max(160.0) + ui.spacing().scroll.bar_width + 8.0;
+    ui.ctx().data_mut(|d| d.insert_temp(id, (key, w)));
+    w
+}
+
 /// Where a picker leaves the preset the pointer rests on (frame, id, row) and the stars clicked
 /// this frame, for [`picker_frame`].
 const PICKER_HOVER: &str = "preset-picker-hover";
@@ -823,10 +869,10 @@ pub fn picker_frame(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let Some(active) = app.session.active() else { return };
-    let (Some(preset), Some(now)) = (app.session.presets.iter().find(|p| p.id == pid).cloned(), app.session.develop_of(active)) else {
+    // what a click commits (`Session::preset_applied`, as `preset.apply`)
+    let Some(look) = app.session.presets.iter().find(|p| p.id == pid).and_then(|preset| app.session.preset_applied(active, preset, 1.0)) else {
         return;
     };
-    let look = preset.apply(&now, 1.0);
     let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.id(), t.size));
     let t = Tokens::get(ctx);
     let side = 150.0;

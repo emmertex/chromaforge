@@ -260,6 +260,18 @@ pub fn analysis_input_framed(src: &Rgb32f, s: &DevelopSettings, max_edge: usize)
     analysis_input(&frame.sample(src, w, h), max_edge)
 }
 
+/// The photo as the crop tool shows it before cropping (orientation, flips, lens and perspective;
+/// no crop, no straighten), downsized to a long edge of at most `max_edge` (never blown up), in
+/// linear sRGB primaries: `(samples, width, height)`. A point's position in it, normalized, is
+/// where `crop.set` puts that point of the photo, which is what a plug-in that finds a crop needs.
+pub fn uncropped_input(src: &Rgb32f, s: &DevelopSettings, max_edge: usize) -> (Vec<f32>, usize, usize) {
+    let frame = crate::geometry::Frame::new(src.width, src.height, s, false);
+    let (nw, nh) = frame.native_size();
+    let edge = (nw.max(nh).round() as usize).clamp(1, max_edge.max(1));
+    let (w, h) = frame.fit(edge, edge);
+    analysis_input(&frame.sample(src, w, h), max_edge)
+}
+
 /// A downsized whole frame (long edge at most `max_edge`) in linear sRGB primaries, interleaved,
 /// for a filter's `pc_analyze`: `(samples, width, height)`.
 pub fn analysis_input(src: &Rgb32f, max_edge: usize) -> (Vec<f32>, usize, usize) {
@@ -303,5 +315,28 @@ mod tests_analysis_input {
         let (plain, pw, ph) = analysis_input_framed(&src, &DevelopSettings::default(), 1024);
         assert_eq!((pw, ph), (400, 200));
         assert!((mean(&plain) - mean(&whole)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_uncropped_input_ignores_the_crop_but_follows_orientation_and_flips() {
+        let src = halves(400, 200);
+        let mut s = DevelopSettings::default();
+        s.crop.geometry.rect = lcc_geom::Rect::new(0.55, 0.1, 0.95, 0.9);
+        s.crop.geometry.angle = 5.0;
+        let (data, w, h) = uncropped_input(&src, &s, 1024);
+        assert_eq!((w, h), (400, 200), "the whole frame at its own resolution, crop ignored");
+        assert!((mean(&data) - 0.45).abs() < 0.05);
+        // never blown up, and shrunk to the long edge asked for
+        assert_eq!(uncropped_input(&src, &s, 100).1, 100);
+        // a flip is shown uncropped too: the bright half moves to the left
+        s.crop.flip_h = true;
+        let (flipped, w, _) = uncropped_input(&src, &s, 1024);
+        let left: f64 = (0..w / 4).map(|x| f64::from(flipped[3 * (100 * w + x)])).sum::<f64>() / (w / 4) as f64;
+        assert!(left > 0.6, "the left quarter is bright after a horizontal flip: {left}");
+        // a quarter turn swaps the sides
+        s.crop.flip_h = false;
+        s.orientation = lcc_geom::Orientation::Rotate90;
+        let (_, w, h) = uncropped_input(&src, &s, 1024);
+        assert_eq!((w, h), (200, 400));
     }
 }

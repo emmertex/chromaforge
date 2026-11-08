@@ -1,5 +1,22 @@
 //! Photo Grid (justified rows) and Square Grid. Virtualized: only visible cells request thumbnails.
 
+/// A photo's exposure as a cell shows it: shutter · aperture · ISO · focal length, the parts the
+/// file has (`None`: none of them).
+pub(crate) fn exposure_line(m: &lcc_catalog::Meta) -> Option<String> {
+    let parts: Vec<String> = [
+        // whole seconds read "8 s"; the camera notation (1/250, 1.3″) already carries its unit
+        (!m.shutter.is_empty())
+            .then(|| if m.shutter.contains('/') || m.shutter.ends_with(['s', '″']) { m.shutter.clone() } else { format!("{} s", m.shutter) }),
+        m.aperture.map(|a| format!("f/{a:.1}").replace(".0", "")),
+        m.iso.map(|i| format!("ISO {i}")),
+        m.focal_mm.map(|f| format!("{f:.0} mm")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 #[cfg(test)]
 #[path = "grid_header_tests.rs"]
 mod header_tests;
@@ -55,7 +72,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t0 = web_time::Instant::now();
     // the filmstrip runs under the Grid too, as in Lightroom Classic (the fork's)
     let full = ui.max_rect();
-    let film_h = Tokens::get(ui.ctx()).film_h;
+    let film_h = app.ui.film_height();
     if crate::module::edge_visible(app, crate::module::Edge::Bottom) && !app.ui.fullscreen && full.height() > film_h * 2.0 {
         let grid = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
         ui.scope_builder(egui::UiBuilder::new().max_rect(grid), |ui| show_inner(app, ui));
@@ -86,7 +103,7 @@ const MAX_FOLLOWED: usize = 4096;
 pub struct GridCache {
     runs: Option<(RunsKey, Arc<Vec<DateRun>>)>,
     /// Layout by (runs key, width, thumbnail size, square).
-    layout: Option<((RunsKey, u32, u32, bool), Arc<GridLayout>)>,
+    layout: Option<((RunsKey, u32, u32, u32, bool), Arc<GridLayout>)>,
     /// Stack index by generation.
     stacks: Option<(u64, Arc<StackIndex>)>,
     /// How many of the photos are browsed (Local) ones, by generation.
@@ -485,7 +502,7 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
                 "A filter is hiding this view's photos: change it, or clear it (View → Clear Filters)",
             );
         } else if app.session.source == lcc_engine::LibrarySource::Folder {
-            super::empty_message(ui, ui.max_rect(), "No photos in this folder", "Turn on Include subfolders, or pick another folder under Local");
+            super::empty_message(ui, ui.max_rect(), "No photos in this folder", "Turn on Include subfolders, or pick another folder under Favorites");
         } else if super::empty_library::shown(&app.session) {
             super::empty_library::show(app, ui, ui.max_rect());
         } else {
@@ -504,13 +521,15 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
         _ => Some(app.session.sort.key),
     };
     let runs_key = (generation, group_key, by);
+    // Compact: the culling marks sit in a strip under each picture, which grows every cell
+    let footer = if app.compact() { BADGE_STRIP } else { 0.0 };
     let stats = &mut app.caches.grid_stats;
     // (read even for a published collection: the cell shapes the layout uses come with the runs)
     let date_runs = app.caches.grid.runs(stats, &app.session.catalog, &ids, runs_key, square);
     let runs = app.caches.grid.publish(&app.session, &ids, generation).unwrap_or(date_runs);
     // the layout only changes with the photos (and their shapes), the grouping, the width and
     // the thumbnail size
-    let lay_key = (runs_key, avail_w.to_bits(), target.to_bits(), square);
+    let lay_key = (runs_key, avail_w.to_bits(), target.to_bits(), footer.to_bits(), square);
     let lay = match &app.caches.grid.layout {
         Some((k, l)) if *k == lay_key => l.clone(),
         _ => {
@@ -523,7 +542,7 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
                 app.caches.grid.shapes()
             };
             let spans: Vec<(usize, usize)> = runs.iter().map(|r| (r.start, r.count)).collect();
-            let l = Arc::new(layout(shapes, &spans, avail_w, target, square));
+            let l = Arc::new(layout_with_footer(shapes, &spans, avail_w, target, square, footer));
             app.caches.grid.layout = Some((lay_key, l.clone()));
             l
         }
@@ -771,6 +790,14 @@ pub fn resolve_group(by: GroupBy, thumb_size: f32) -> GroupBy {
 /// below its header. Justified rows fill the width exactly except a group's last row, which keeps
 /// the target height.
 pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: f32, square: bool) -> GridLayout {
+    layout_with_footer(aspects, groups, avail_w, target, square, 0.0)
+}
+
+/// [`layout`] with a `footer` strip (points) under every cell's picture: the ratings, flags and
+/// labels the Compact layout shows under the thumbnails rather than over them. The pictures keep
+/// their sizes; each cell grows by the footer.
+pub fn layout_with_footer(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: f32, square: bool, footer: f32) -> GridLayout {
+    let footer = if footer.is_finite() { footer.max(0.0) } else { 0.0 };
     let n = aspects.len();
     let whole = [(0, n)];
     let (groups, headed) = if groups.is_empty() { (&whole[..], false) } else { (groups, true) };
@@ -792,15 +819,15 @@ pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: 
             for i in start..end {
                 let k = (i - start) as f32;
                 let (c, r) = (k % cols, (k / cols).floor());
-                out.cells[i] = Rect::from_min_size(pos2(4.0 + c * (cw + gap), y + r * (cw + gap)), vec2(cw, cw));
+                out.cells[i] = Rect::from_min_size(pos2(4.0 + c * (cw + gap), y + r * (cw + footer + gap)), vec2(cw, cw + footer));
             }
             let per_row = (cols as usize).max(1);
             for (r, row_start) in (start..end).step_by(per_row).enumerate() {
-                let top = y + r as f32 * (cw + gap);
-                out.rows.push(GridRow { top, bottom: top + cw, start: row_start, end: (row_start + per_row).min(end) });
+                let top = y + r as f32 * (cw + footer + gap);
+                out.rows.push(GridRow { top, bottom: top + cw + footer, start: row_start, end: (row_start + per_row).min(end) });
             }
             let rows = ((end - start) as f32 / cols).ceil();
-            y += rows * (cw + gap);
+            y += rows * (cw + footer + gap);
         } else {
             // justified rows: accumulate aspect ratios until the row is full
             let mut i = start;
@@ -820,11 +847,11 @@ pub fn layout(aspects: &[f32], groups: &[(usize, usize)], avail_w: f32, target: 
                 let mut x = 4.0;
                 for k in i..j {
                     let w = aspects[k].max(0.05) * h;
-                    out.cells[k] = Rect::from_min_size(pos2(x, y), vec2(w, h));
+                    out.cells[k] = Rect::from_min_size(pos2(x, y), vec2(w, h + footer));
                     x += w + gap;
                 }
-                out.rows.push(GridRow { top: y, bottom: y + h, start: i, end: j });
-                y += h + gap;
+                out.rows.push(GridRow { top: y, bottom: y + h + footer, start: i, end: j });
+                y += h + footer + gap;
                 i = j;
             }
         }
@@ -899,15 +926,22 @@ fn group_header(app: &mut LccApp, ui: &mut egui::Ui, run: &DateRun, ids: &[Photo
 /// [`lcc_engine::media::Session::embedded_thumb_is_final`]), which for a folder of raws on a
 /// network share is the difference between reading every file whole and reading a preview each.
 pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) {
-    // A slider drag changes the photo it edits every frame. Under the loupe its thumbnail follows
-    // once the drag ends, so its renders (a raw decode the first time) don't compete with the
-    // loupe's drafts. In a grid the thumbnail is what the user watches: it follows live, one render
-    // at a time (the newest settings when the last one is in).
-    if app.session.interaction.as_ref().is_some_and(|i| i.photo == id) {
+    // A slider drag changes the photos it edits every frame (the active one, the others of a
+    // multi-photo edit, and those Auto Sync carries along). Under the loupe their thumbnails follow
+    // once the drag ends, so their renders (a raw decode the first time) don't compete with the
+    // loupe's drafts. In a grid the thumbnails are what the user watches: they follow live, one
+    // render at a time per photo (the newest settings when the last one is in).
+    if drag_edits(app.session.interaction.as_ref(), id) {
         let loupe = matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare | ViewMode::Reference);
         if drag_waits(loupe, app.renderer.thumb(id).is_some(), app.renderer.is_pending(Slot::Thumb(id))) {
             return;
         }
+    }
+    // painting on the loupe: the other photos a stroke reached (Auto Sync) keep the thumbnail they have until the
+    // strokes pause, so their renders don't take the workers from the photo on screen (ported from OneSlips,
+    // NOTES-1028 note 29); one without any thumbnail still gets one
+    if app.paint_hold && app.session.active() != Some(id) && app.renderer.thumb(id).is_some() {
+        return;
     }
     // never less than the photo has or is getting: a smaller ask (the filmstrip beside a larger view) moving the
     // job up would otherwise swap it for a smaller one, and the larger view swap it back
@@ -1069,7 +1103,13 @@ pub(crate) fn click_mode(m: egui::Modifiers, on_picture: bool) -> &'static str {
     }
 }
 
-/// During a slider drag, whether the photo it edits skips asking for a new thumbnail this frame:
+/// Whether the running interaction (a slider drag, a turning dial) edits photo `id`: the active
+/// photo, the others of a multi-photo edit, or one Auto Sync moves along with it.
+pub(crate) fn drag_edits(interaction: Option<&lcc_engine::Interaction>, id: PhotoId) -> bool {
+    interaction.is_some_and(|i| i.photo == id || i.others.iter().chain(&i.along).any(|(x, _)| *x == id))
+}
+
+/// During a slider drag, whether a photo it edits skips asking for a new thumbnail this frame:
 /// under the loupe (`loupe`) while it has one, anywhere while one is being rendered (`pending`);
 /// in a grid it follows the drag.
 pub(crate) fn drag_waits(loupe: bool, has_thumb: bool, pending: bool) -> bool {
@@ -1141,12 +1181,27 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     spoken.push_str(&crate::video_ui::spoken_suffix(&photo));
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &spoken));
     let p = ui.painter();
+    // Compact: ratings, flags and labels in a strip under the picture (they cover nothing), the
+    // cell's level telling unselected, picked, rejected, selected and active apart
+    let under = app.compact();
+    let strip = if under { BADGE_STRIP.min(r.height() * 0.4) } else { 0.0 };
+    let pic = Rect::from_min_max(r.min, pos2(r.right(), r.bottom() - strip));
+    let bar = Rect::from_min_max(pos2(r.left(), pic.bottom()), r.max);
+    if under {
+        let base = if square { t.cell } else { t.canvas };
+        let fill = crate::theme::label_background(cell_fill(&t, state, photo.flag, resp.hovered(), base), photo.label, selected);
+        p.rect_filled(if square { r } else { bar }, 0.0, fill);
+        // the flag's glow behind the picture: it shows around and under it, never over it
+        flag_glow(p, &t, r, photo.flag);
+    }
     let img_rect = if square {
-        let base = if selected { t.cell_selected } else { t.cell };
-        p.rect_filled(r, 0.0, crate::theme::label_background(base, photo.label, selected));
-        super::cells::image_rect(app, r)
+        if !under {
+            let base = if selected { t.cell_selected } else { t.cell };
+            p.rect_filled(r, 0.0, crate::theme::label_background(base, photo.label, selected));
+        }
+        super::cells::image_rect(app, pic)
     } else {
-        r
+        pic
     };
     // thumbnail
     let size = thumb_px(img_rect.width().max(img_rect.height()), ppp);
@@ -1179,21 +1234,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     } else if square && app.ui.show_filenames {
         let m = &photo.meta;
         let name = match app.ui.grid_info.as_str() {
-            "exposure" => {
-                let parts: Vec<String> = [
-                    // whole seconds read "8 s"; the camera notation (1/250, 1.3″) already carries its unit
-                    (!m.shutter.is_empty()).then(|| {
-                        if m.shutter.contains('/') || m.shutter.ends_with(['s', '″']) { m.shutter.clone() } else { format!("{} s", m.shutter) }
-                    }),
-                    m.aperture.map(|a| format!("f/{a:.1}").replace(".0", "")),
-                    m.iso.map(|i| format!("ISO {i}")),
-                    m.focal_mm.map(|f| format!("{f:.0} mm")),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                if parts.is_empty() { "—".to_string() } else { parts.join(" · ") }
-            }
+            "exposure" => exposure_line(m).unwrap_or_else(|| "—".to_string()),
             "date" => photo.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into()),
             _ => photo.file_name.rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or(photo.file_name.clone()),
         };
@@ -1204,6 +1245,20 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         p.rect_filled(br, 2.0, Color32::from_gray(26));
         p.galley(br.min + vec2(4.0, 1.5), g, t.text_label);
     }
+    // the Import tab: what each frame was shot at, in a strip over the photo's top edge (the
+    // cull of a card reads shutter, aperture, ISO and focal length at a glance)
+    if crate::import_tab::showing(app)
+        && !(square && app.ui.show_filenames && app.ui.grid_info == "exposure")
+        && let Some(line) = exposure_line(&photo.meta)
+    {
+        let strip = Rect::from_min_max(img_rect.left_top(), pos2(img_rect.right(), (img_rect.top() + 17.0).min(img_rect.bottom())));
+        if strip.width() >= 60.0 {
+            p.rect_filled(strip, 0.0, Color32::from_black_alpha(140));
+            let g = crate::widgets::one_line(p, &line, t.font(10.5), Color32::from_gray(225), strip.width() - 10.0);
+            p.galley(pos2(strip.left() + 5.0, strip.center().y - g.size().y / 2.0), g, Color32::from_gray(225));
+            register(ui.ctx(), format!("cellInfo:{}", id.0), strip);
+        }
+    }
     let expanded = square && app.ui.lib.cell_style == crate::libtools::CellStyle::Expanded;
     let show_badges = expanded
         || match app.ui.settings.grid_badges {
@@ -1211,13 +1266,20 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             crate::state::GridBadges::Always => true,
             crate::state::GridBadges::Never => false,
         };
+    if under {
+        let marks = bar.shrink2(vec2(if square { 8.0 } else { 3.0 }, 1.0));
+        register(ui.ctx(), format!("cellmarks:{}", id.0), marks);
+        if show_badges || photo.label.is_some() {
+            paint_badges(p, &t, marks, &photo, false);
+        }
+    }
     let badge_bar = Rect::from_min_max(pos2(img_rect.left(), img_rect.bottom() - 24.0), img_rect.right_bottom());
-    if !square && photo.label.is_some() {
+    if !under && !square && photo.label.is_some() {
         // Justified photos fill the whole cell, so the label shows as a translucent tinted footer
         // over the photo's bottom edge (opaque, it would hide 24 px of every labelled photo).
         p.rect_filled(badge_bar, 0.0, crate::theme::label_background(t.cell, photo.label, selected).gamma_multiply(0.7));
     }
-    if show_badges {
+    if show_badges && !under {
         let bar = badge_bar;
         if (resp.hovered() || selected) && (square || photo.label.is_none()) {
             p.rect_filled(bar, 0.0, Color32::from_black_alpha(120));
@@ -1238,9 +1300,9 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             p.circle(pos2(right - 12.0, bar.center().y), 5.0, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
         }
     }
-    if let Some(name) = &photo.copy_name {
+    if let Some(name) = photo.virtual_copy_name() {
         // virtual copy: a folded-corner tag at the top right
-        let g = p.layout_no_wrap(name.clone(), t.semibold(10.5), Color32::WHITE);
+        let g = p.layout_no_wrap(name.to_string(), t.semibold(10.5), Color32::WHITE);
         let tr = if square { img_rect.right_top() + vec2(-6.0, 6.0) } else { img_rect.right_top() + vec2(-5.0, 5.0) };
         let br = Rect::from_min_max(pos2(tr.x - g.size().x - 26.0, tr.y), pos2(tr.x, tr.y + 20.0));
         p.rect_filled(br, 10.0, Color32::from_black_alpha(165));
@@ -1270,7 +1332,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     }
     #[cfg(not(target_arch = "wasm32"))]
     super::connections::grid_badge(app, ui, id, img_rect);
-    if photo.flag == Flag::Reject {
+    if photo.flag == Flag::Reject && !under {
         p.rect_filled(img_rect, 0.0, Color32::from_black_alpha(110));
     }
     // interaction
@@ -1297,6 +1359,149 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         reorder_drop(app, ui, id, r, &dragged);
     }
     crate::widgets::context_menu(&resp, |ui| context_menu(app, ui, id));
+}
+
+/// Height (points) of the strip under each thumbnail that holds its rating, flag and label in the
+/// Compact layout.
+pub const BADGE_STRIP: f32 = 16.0;
+
+/// Inset (points) of a picked or rejected cell's glow from the cell's sides and bottom edge, so a
+/// run of marked cells reads as separate cells rather than one border between rows.
+pub const FLAG_GLOW_INSET: f32 = 3.0;
+
+/// A Compact thumbnail cell's background (grid and filmstrip): one set of levels, as in
+/// Lightroom: unselected (a pick a touch lighter, a reject darker) < hovered < selected < the
+/// active photo, each step plainly visible in every theme, so a selection of picks still reads as
+/// selected. `base` is the unselected cell's colour. The levels step towards the theme's text
+/// colour, so a light theme darkens where a dark one brightens.
+pub fn cell_fill(t: &Tokens, state: lcc_engine::SelectionState, flag: Flag, hovered: bool, base: Color32) -> Color32 {
+    use lcc_engine::SelectionState;
+    let selected = t.cell.lerp_to_gamma(t.text, 0.24);
+    match state {
+        SelectionState::Active => t.cell.lerp_to_gamma(t.text, 0.38),
+        SelectionState::Selected => selected,
+        SelectionState::NotSelected if hovered => base.lerp_to_gamma(selected, 0.4),
+        SelectionState::NotSelected => flag_tint(base, flag),
+    }
+}
+
+/// A cell's background with its flag in it: a pick slightly lighter, a reject darker, both well
+/// short of the selection's level ([`cell_fill`]).
+pub fn flag_tint(base: Color32, flag: Flag) -> Color32 {
+    match flag {
+        Flag::Pick => base.lerp_to_gamma(Color32::WHITE, 0.05),
+        Flag::Reject => base.lerp_to_gamma(Color32::BLACK, 0.35),
+        Flag::None => base,
+    }
+}
+
+/// Where a flag's glow sits in `cell`: inset from its sides and bottom edge, rising about a third
+/// of the cell (12–56 points). `None` for a cell too small to hold one.
+pub fn flag_glow_rect(cell: Rect) -> Option<Rect> {
+    let inner = cell.shrink2(vec2(FLAG_GLOW_INSET, 0.0));
+    let bottom = cell.bottom() - FLAG_GLOW_INSET;
+    let h = (cell.height() * 0.33).clamp(12.0, 56.0).min(bottom - cell.top());
+    (inner.width() > 0.0 && h > 0.0).then(|| Rect::from_min_max(pos2(inner.left(), bottom - h), pos2(inner.right(), bottom)))
+}
+
+/// The flag's mark in a Compact `cell`: a glow rising from just inside the bottom edge and fading
+/// out upwards, white for a pick and red for a reject, none for an unflagged photo. Drawn before
+/// the thumbnail, so it sits behind it, soft enough that the white pick flag over it stays
+/// readable.
+pub fn flag_glow(p: &egui::Painter, t: &Tokens, cell: Rect, flag: Flag) {
+    let (colour, alpha) = match flag {
+        Flag::Pick => (Color32::WHITE, 0.42),
+        Flag::Reject => (t.reject, 0.6),
+        Flag::None => return,
+    };
+    let Some(g) = flag_glow_rect(cell) else { return };
+    let mut mesh = egui::Mesh::default();
+    // a fade in two steps (bright at the edge, quickly softer, then gone), so it reads as a glow
+    // from the bottom rather than a band
+    let mid_y = g.bottom() - g.height() * 0.35;
+    let rows = [(g.top(), Color32::TRANSPARENT), (mid_y, colour.gamma_multiply(alpha * 0.35)), (g.bottom(), colour.gamma_multiply(alpha))];
+    for (y, c) in rows {
+        mesh.colored_vertex(pos2(g.left(), y), c);
+        mesh.colored_vertex(pos2(g.right(), y), c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    mesh.add_triangle(2, 3, 4);
+    mesh.add_triangle(3, 5, 4);
+    p.add(egui::Shape::mesh(mesh));
+}
+
+/// The flag a Compact cell's strip shows (OneSlips LR-FLAGS cff75fcf5): one flag shape, solid for a pick, solid with a
+/// bold cross for a reject, so the two differ in shape as well as colour; none for an unflagged photo.
+pub fn flag_mark_icon(flag: Flag) -> Option<Icon> {
+    match flag {
+        Flag::Pick => Some(Icon::FlagMarkPick),
+        Flag::Reject => Some(Icon::FlagMarkReject),
+        Flag::None => None,
+    }
+}
+
+/// The colour of a reject's mark in the Compact strip: the theme's reject red, lightened so it
+/// stands out from the red glow ([`flag_glow`]) the strip sits in.
+pub fn reject_mark_colour(t: &Tokens) -> Color32 {
+    t.reject.lerp_to_gamma(Color32::WHITE, 0.55)
+}
+
+/// `icon` in `colour` with a one-point dark outline round it, so it reads on a background of a
+/// similar hue.
+fn paint_outlined(p: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
+    let outline = Color32::from_black_alpha(210);
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7), (0.7, 0.7)] {
+        paint(p, rect.translate(vec2(dx, dy)), icon, outline);
+    }
+    paint(p, rect, icon, colour);
+}
+
+/// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
+/// from the left, its colour label and edited mark from the right, sized to the bar's height so
+/// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
+pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool) {
+    let h = bar.height().clamp(10.0, 40.0);
+    let y = bar.center().y;
+    let star = (h * 0.62).round().max(8.0);
+    let flag = (h * 0.8).round().max(10.0);
+    // the pick flag is white over a picture whatever the theme (the theme's colour is for panels)
+    let pick = if on_photo { Color32::WHITE } else { t.pick };
+    let mut x = bar.left() + 2.0;
+    if let Some(icon) = flag_mark_icon(photo.flag) {
+        let at = Rect::from_min_size(pos2(x, y - flag / 2.0), vec2(flag, flag));
+        if photo.flag == Flag::Reject {
+            // the reject's strip glows red (`flag_glow`), so its red mark sat red on red: a lighter red
+            // with a dark outline reads on it (and over a picture)
+            paint_outlined(p, at, icon, reject_mark_colour(t));
+        } else {
+            paint(p, at, icon, pick);
+        }
+    }
+    if photo.flag != Flag::None {
+        x += flag + 4.0;
+    }
+    let room = (bar.right() - x - h * 1.6).max(0.0);
+    // every star where they fit; else one star and the number
+    if photo.rating > 0 && f32::from(photo.rating) * (star + 1.0) <= room {
+        for i in 0..photo.rating {
+            paint(p, Rect::from_min_size(pos2(x + f32::from(i) * (star + 1.0), y - star / 2.0), vec2(star, star)), Icon::StarFilled, t.star);
+        }
+    } else if photo.rating > 0 {
+        paint(p, Rect::from_min_size(pos2(x, y - star / 2.0), vec2(star, star)), Icon::StarFilled, t.star);
+        p.text(pos2(x + star + 2.0, y), Align2::LEFT_CENTER, photo.rating.to_string(), t.semibold(h * 0.46), t.star);
+    }
+    let mut right = bar.right() - 2.0;
+    if let Some(l) = photo.label {
+        let rad = (h * 0.22).max(4.0);
+        p.circle(pos2(right - rad, y), rad, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
+        right -= rad * 2.0 + 5.0;
+    }
+    if photo.is_edited() {
+        let s = (h * 0.5).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Sliders, colour);
+    }
 }
 
 /// A double-click on a grid photo: select it and show it in the loupe, or in Develop when the
@@ -1428,7 +1633,23 @@ fn folder_breadcrumbs(app: &mut LccApp, ui: &mut egui::Ui, path: &str) {
         paint(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 16.0)), Icon::ChevronRight, t.text_dim);
     };
     if skip > 0 {
-        ui.label(egui::RichText::new("…").color(t.text_dim)).on_hover_text(path);
+        // the folders "…" stands for: a click lists them, each one opens
+        let dots = ui.add(egui::Label::new(egui::RichText::new("…").size(13.0).color(t.text_dim)).sense(Sense::click()));
+        register(ui.ctx(), "crumb:more", dots.rect);
+        if dots.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let dots = dots.on_hover_text(path);
+        egui::Popup::menu(&dots).show(|ui| {
+            for (i, (name, to)) in crumbs.iter().enumerate().take(skip) {
+                let item = ui.button(*name);
+                register(ui.ctx(), format!("crumb:{i}"), item.rect);
+                if item.on_hover_text(to).clicked() {
+                    let _ = app.run("library.browse", json!({"path": to}));
+                    ui.close();
+                }
+            }
+        });
         separator(ui);
     }
     let separator_w = 16.0 + 2.0 * ui.spacing().item_spacing.x;
@@ -1519,9 +1740,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
 pub fn label_menu(app: &mut LccApp, ui: &mut egui::Ui) {
     let current = app.session.active().and_then(|id| app.session.catalog.photo(id)).and_then(|p| p.label);
     if let Some(l) = label_items(app, ui, current, "photoLabel") {
-        let mut params = json!({"label": label_param(l)});
-        crate::panels::compare::target_active(app, &mut params);
-        let _ = app.run("photo.label", params);
+        let _ = crate::menubar::run_item(app, "photo.label", json!({"label": label_param(l)}));
         ui.close();
     }
 }
@@ -1641,14 +1860,14 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Flag"), |ui| {
         for (l, f) in [("Pick", "pick"), ("Reject", "reject"), ("Unflagged", "none")] {
             if ui.button(crate::i18n::tr(l)).clicked() {
-                let _ = app.run("photo.flag", json!({"flag": f}));
+                let _ = crate::menubar::run_item(app, "photo.flag", json!({"flag": f}));
             }
         }
     });
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Rating"), |ui| {
         for r in 0..=5 {
             if ui.button(if r == 0 { crate::i18n::tr("No Stars").to_string() } else { "★".repeat(r) }).clicked() {
-                let _ = app.run("photo.rate", json!({"rating": r}));
+                let _ = crate::menubar::run_item(app, "photo.rate", json!({"rating": r}));
             }
         }
     });
@@ -1908,6 +2127,17 @@ fn quick_collection_item(app: &mut LccApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_exposure_line_names_the_parts_a_file_has() {
+        let mut m = lcc_catalog::Meta { shutter: "1/250".into(), aperture: Some(2.8), iso: Some(400), focal_mm: Some(85.0), ..Default::default() };
+        assert_eq!(super::exposure_line(&m).as_deref(), Some("1/250 · f/2.8 · ISO 400 · 85 mm"));
+        m.shutter = "8".into();
+        m.aperture = Some(4.0);
+        m.iso = None;
+        assert_eq!(super::exposure_line(&m).as_deref(), Some("8 s · f/4 · 85 mm"));
+        assert_eq!(super::exposure_line(&lcc_catalog::Meta::default()), None);
+    }
+
     use super::*;
 
     /// A grid's thumbnail follows a slider drag (one render at a time); under the loupe it waits
@@ -1918,6 +2148,27 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(1234), "1,234");
         assert_eq!(group_digits(2_233_000), "2,233,000");
+    }
+
+    /// Every photo a drag edits follows it the same way, not only the active one: the others of a
+    /// multi-photo edit and the photos Auto Sync carries along wait under the loupe and follow live
+    /// in a grid, one render at a time.
+    #[test]
+    fn every_photo_a_drag_edits_follows_it() {
+        let d = std::sync::Arc::new(lcc_develop::DevelopSettings::default());
+        let i = lcc_engine::Interaction {
+            label: "Exposure".into(),
+            photo: PhotoId(1),
+            original: d.clone(),
+            crop_edited: false,
+            others: vec![(PhotoId(2), d.clone())],
+            along: vec![(PhotoId(3), d)],
+        };
+        for id in [1, 2, 3] {
+            assert!(drag_edits(Some(&i), PhotoId(id)), "photo {id} is edited by the drag");
+        }
+        assert!(!drag_edits(Some(&i), PhotoId(4)), "a photo the drag doesn't edit");
+        assert!(!drag_edits(None, PhotoId(1)), "no drag");
     }
 
     #[test]
@@ -2071,5 +2322,149 @@ mod tests {
         assert_eq!(resolve_group(GroupBy::Auto, 90.0), GroupBy::Year);
         assert_eq!(resolve_group(GroupBy::None, 220.0), GroupBy::None);
         assert_eq!(resolve_group(GroupBy::Year, 400.0), GroupBy::Year);
+    }
+
+    /// The Compact strip under the thumbnails adds the same height to every cell and keeps the
+    /// pictures' widths: the marks sit under the picture, never over it.
+    #[test]
+    fn a_footer_grows_each_cell_under_its_picture() {
+        let aspects = [1.5, 0.66, 1.0, 1.5, 1.5];
+        for square in [false, true] {
+            let plain = layout(&aspects, &[], 600.0, 150.0, square);
+            let under = layout_with_footer(&aspects, &[], 600.0, 150.0, square, BADGE_STRIP);
+            for (a, b) in plain.cells.iter().zip(&under.cells) {
+                assert!((b.width() - a.width()).abs() < 1e-3);
+                assert!((b.height() - a.height() - BADGE_STRIP).abs() < 1e-3);
+            }
+            for w in under.rows.windows(2) {
+                assert!(w[1].top >= w[0].bottom, "rows don't overlap");
+            }
+            assert_eq!(layout_with_footer(&aspects, &[], 600.0, 150.0, square, f32::NAN).cells, plain.cells);
+        }
+    }
+
+    /// In every theme the Compact cell levels are unselected < pick < selected < active (a
+    /// selection of picks still reads as selected), each step plainly visible.
+    #[test]
+    fn cell_levels_keep_picks_below_the_selection_in_every_theme() {
+        use crate::theme::{ThemeKind, Tokens};
+        use lcc_engine::SelectionState as S;
+        for kind in ThemeKind::ALL {
+            let t = Tokens::for_kind(kind);
+            // distance from the unselected cell, whichever way the theme brightens
+            let d = |c: Color32| (i32::from(c.r()) - i32::from(t.cell.r())).abs();
+            let pick = d(cell_fill(&t, S::NotSelected, Flag::Pick, false, t.cell));
+            let selected = d(cell_fill(&t, S::Selected, Flag::Pick, false, t.cell));
+            let active = d(cell_fill(&t, S::Active, Flag::None, false, t.cell));
+            assert!(pick < 16, "{kind:?}: a pick is only a touch lighter ({pick})");
+            assert!(selected >= pick + 20, "{kind:?}: selected ({selected}) is well above a pick ({pick})");
+            assert!(active >= selected + 16, "{kind:?}: active ({active}) is above selected ({selected})");
+        }
+    }
+
+    /// A cell too small for a glow gets none; any other gets one inside it.
+    /// A rejected photo's mark sat red on its red-glowing strip and hardly showed: it is a lighter
+    /// red with a dark outline now, at least 3:1 against the strip, with the outline darker still.
+    #[test]
+    fn a_rejected_photos_mark_reads_on_its_red_strip() {
+        use serde_json::json;
+        let t = std::time::Duration::from_secs(20);
+        let app = crate::LccApp::new(lcc_engine::Session::with_demo(), crate::Services { png: None, ..Default::default() });
+        let mut h = crate::headless::Headless::new(app, [1400.0, 900.0], 1.0);
+        h.settle(std::time::Duration::from_secs(120));
+        for (method, params) in
+            [("engine.execute", json!({"command": "view.compactLayout", "params": {"on": true}})), ("ui.set", json!({"view": "photoGrid"}))]
+        {
+            let r = h.request(method, params, t);
+            assert_eq!(r["ok"], true, "{method}: {r}");
+        }
+        h.settle(std::time::Duration::from_secs(120));
+        h.step();
+        // a photo in the grid's top row that isn't the active one (its strip in plain view)
+        let active = h.app.session.active().map(|p| p.0);
+        let (id, _) = h
+            .app
+            .widgets
+            .iter()
+            .filter_map(|(w, r)| w.strip_prefix("cellmarks:").and_then(|n| n.parse::<u64>().ok()).map(|n| (n, *r)))
+            .filter(|(n, _)| Some(*n) != active)
+            .min_by(|a, b| (a.1.top(), a.1.left()).partial_cmp(&(b.1.top(), b.1.left())).unwrap_or(std::cmp::Ordering::Equal))
+            .expect("a photo's strip");
+        let r = h.request("engine.execute", json!({"command": "photo.flag", "params": {"flag": "reject", "ids": [id]}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(std::time::Duration::from_secs(120));
+        h.step();
+        let marks = h.app.widgets.iter().find(|(w, _)| *w == format!("cellmarks:{id}")).map(|(_, r)| *r).expect("the rejected photo's strip");
+        let image = h.paint();
+        let w = image.size[0];
+        let px = |x: f32, y: f32| image.pixels[y.round() as usize * w + x.round() as usize];
+        // relative luminance (WCAG)
+        let lum = |c: Color32| {
+            let lin = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        };
+        let hgt = marks.height().clamp(10.0, 40.0);
+        let flag = (hgt * 0.8).round().max(10.0);
+        let (x0, y) = (marks.left() + 2.0, marks.center().y);
+        let bg = lum(px(x0 + flag + 2.5, y));
+        let (mut bright, mut dark) = (0.0f32, 1.0f32);
+        for yy in (y - flag / 2.0).round() as i32..(y + flag / 2.0).round() as i32 {
+            for xx in (x0 - 1.0).round() as i32..(x0 + flag + 1.0).round() as i32 {
+                let l = lum(px(xx as f32, yy as f32));
+                bright = bright.max(l);
+                dark = dark.min(l);
+            }
+        }
+        let contrast = (bright + 0.05) / (bg + 0.05);
+        assert!(contrast >= 3.0, "the reject mark stands out from its strip ({contrast:.2}:1)");
+        assert!(dark < bg * 0.6, "a dark outline round it ({dark:.3} vs strip {bg:.3})");
+    }
+
+    #[test]
+    fn the_flag_glow_stays_inside_its_cell() {
+        let cell = Rect::from_min_size(pos2(10.0, 10.0), vec2(120.0, 90.0));
+        let g = flag_glow_rect(cell).expect("a glow");
+        assert!(cell.contains_rect(g));
+        assert!(g.bottom() < cell.bottom() && g.left() > cell.left() && g.right() < cell.right());
+        assert!(flag_glow_rect(Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 2.0))).is_none());
+    }
+
+    /// The Compact strip's flags are one shape (OneSlips LR-FLAGS): a pick is a solid flag, a reject the same solid
+    /// flag with a bold cross below its banner, so they differ in shape, not only in colour; both are bold enough to
+    /// read at a glance (the reject no longer a thin struck-through outline).
+    #[test]
+    fn compact_pick_and_reject_marks_differ_in_shape() {
+        // lit pixels of the mark drawn white at 40 points: the whole icon, and its lower right quarter (under the banner)
+        let ink = |icon: Icon| {
+            let mut view = crate::headless::HeadlessView::new();
+            let raw = crate::headless::HeadlessView::raw_input(vec2(40.0, 40.0), 1.0, 0.0, vec![]);
+            view.run(raw, |ui| {
+                ui.painter().rect_filled(ui.max_rect(), 0.0, Color32::BLACK);
+                paint(ui.painter(), Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 40.0)), icon, Color32::WHITE);
+            });
+            let image = view.paint(&Default::default());
+            let w = image.size[0];
+            let lit = |p: &Color32| p.r() > 100;
+            let all = image.pixels.iter().filter(|p| lit(p)).count();
+            let corner = image.pixels.iter().enumerate().filter(|(i, p)| i % w >= w / 2 && i / w >= image.size[1] * 6 / 10 && lit(p)).count();
+            // the middle of the banner (grid point 9, 6.4 of 20, at 2 pixels a point)
+            let middle = image.pixels.get(13 * w + 18).is_some_and(lit);
+            (all, corner, middle)
+        };
+        let pick = flag_mark_icon(Flag::Pick).expect("a pick has a mark");
+        let reject = flag_mark_icon(Flag::Reject).expect("a reject has a mark");
+        assert!(flag_mark_icon(Flag::None).is_none(), "an unflagged photo has no mark in the strip");
+        let (pick_all, pick_corner, pick_middle) = ink(pick);
+        let (reject_all, reject_corner, reject_middle) = ink(reject);
+        assert!(pick_corner < 5, "nothing under the pick's banner ({pick_corner})");
+        assert!(reject_corner > 30, "the reject's cross sits under its banner ({reject_corner})");
+        // the banner is solid in both, where an outline is hollow
+        let (outline, _, outline_middle) = ink(Icon::FlagMarkNone);
+        assert!(pick_middle && reject_middle && !outline_middle, "solid banners, a hollow outline");
+        assert!(pick_all > outline, "the pick's banner is filled ({pick_all} vs outline {outline})");
+        assert!(reject_all > pick_all, "the reject adds its cross to the solid flag");
     }
 }

@@ -204,6 +204,32 @@ fn dragging_a_point_between_close_neighbours_does_not_panic() {
     assert!(c[2].0 > 0.5 && c[2].0 < 0.515, "the dragged point stays between its neighbours: {c:?}");
 }
 
+/// Right-click on a point opens a menu that deletes it; the end points offer no Delete.
+#[test]
+fn right_click_delete_control_point_removes_the_point() {
+    let mut h = curve_open("master");
+    exec(&mut h, "develop.curve", json!({"channel": "master", "points": [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]}));
+    h.step();
+    // the lower-left end point: nothing to delete
+    let r = h.request("ui.clickWidget", json!({"id": "curve", "fx": 0.0, "fy": 1.0, "button": "right"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(h.app.widgets.iter().all(|(id, _)| id != "curveMenu:deletePoint"), "end points cannot be deleted");
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "curveMenu:resetAll"), "the menu itself is open");
+    let r = h.request("ui.key", json!({"key": "Escape"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    let r = h.request("ui.clickWidget", json!({"id": "curve", "fx": 0.5, "fy": 0.5, "button": "right"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    let r = h.request("ui.clickWidget", json!({"id": "curveMenu:deletePoint"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(pts(&develop(&h).curve.master), vec![(0.0, 0.0), (1.0, 1.0)]);
+}
+
 /// Points an agent sends out of order are stored in the order the curve runs, so the editor's
 /// neighbours are the curve's.
 #[test]

@@ -1,10 +1,12 @@
 //! Presets and copy/paste subsets.
 //!
-//! A preset is a *partial* settings object (JSON) — only the groups it includes. Applying merges it
-//! into the photo's settings; `amount` (0..200 %) blends between the current settings and the
-//! preset's: sliders and point curves continuously, switches and choices by a fixed rule (the
-//! preset's at any amount above 0, with the strength of a new choice fading in; see
-//! `scale_patch`). Copy/paste/sync use the same group selection ([`SettingsGroup`]).
+//! A preset is a *partial* settings object (JSON) — only the settings it names. Applying it changes
+//! exactly the settings it names; every other setting keeps the photo's value. `amount`
+//! (0..200 %) blends each named setting from its baseline (the photo's import look when one is
+//! recorded, else its current value; [`Preset::apply_on`]) towards the preset's: sliders and point
+//! curves continuously, switches and choices by a fixed rule (the preset's at any amount above 0,
+//! with the strength of a new choice fading in; see `scale_patch`). Copy/paste/sync use the same
+//! group selection ([`SettingsGroup`]) and blend from the current settings ([`apply_partial`]).
 //!
 //! The rendering process ([`crate::ProcessVersion`]) is in no group: copy, paste, sync and presets
 //! made from a photo never carry it, so the photos they change keep their own. A partial that names
@@ -28,6 +30,8 @@ pub enum SettingsGroup {
     Color,
     ColorMixer,
     ColorGrading,
+    /// The colourist primaries (the Witchcraft grading mode's wheels, beyond Lightroom).
+    Primaries,
     Effects,
     Vignette,
     Grain,
@@ -48,7 +52,7 @@ pub enum SettingsGroup {
 }
 
 impl SettingsGroup {
-    pub const ALL: [SettingsGroup; 22] = [
+    pub const ALL: [SettingsGroup; 23] = [
         SettingsGroup::Profile,
         SettingsGroup::Treatment,
         SettingsGroup::WhiteBalance,
@@ -57,6 +61,7 @@ impl SettingsGroup {
         SettingsGroup::Color,
         SettingsGroup::ColorMixer,
         SettingsGroup::ColorGrading,
+        SettingsGroup::Primaries,
         SettingsGroup::Effects,
         SettingsGroup::Vignette,
         SettingsGroup::Grain,
@@ -99,6 +104,7 @@ impl SettingsGroup {
             SettingsGroup::Color => "Color",
             SettingsGroup::ColorMixer => "Color Mixer",
             SettingsGroup::ColorGrading => "Color Grading",
+            SettingsGroup::Primaries => "Primaries",
             SettingsGroup::Effects => "Effects",
             SettingsGroup::Vignette => "Vignette",
             SettingsGroup::Grain => "Grain",
@@ -125,8 +131,9 @@ impl SettingsGroup {
             SettingsGroup::Light => &["light", "hdr"],
             SettingsGroup::ToneCurve => &["curve"],
             SettingsGroup::Color => &["color"],
-            SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors"],
+            SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors", "hsl_curves"],
             SettingsGroup::ColorGrading => &["grading"],
+            SettingsGroup::Primaries => &["primaries"],
             SettingsGroup::Effects => &["effects"],
             SettingsGroup::Vignette => &["vignette"],
             SettingsGroup::Grain => &["grain"],
@@ -291,6 +298,7 @@ impl SettingsGroup {
             SettingsGroup::Color => "color",
             SettingsGroup::ColorMixer => "colorMixer",
             SettingsGroup::ColorGrading => "colorGrading",
+            SettingsGroup::Primaries => "primaries",
             SettingsGroup::Effects => "effects",
             SettingsGroup::Vignette => "vignette",
             SettingsGroup::Grain => "grain",
@@ -631,19 +639,67 @@ pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> Devel
     if amount <= 0.0 {
         return s.clone();
     }
-    let patch = if (amount - 1.0).abs() < 1e-9 {
-        Cow::Borrowed(partial)
-    } else {
-        // the base with every group written out, also the ones serialization leaves out while at
-        // their defaults (HDR), so their numbers blend from the photo's values too
-        let mut base = s.to_json();
-        if let (Some(o), Ok(hdr)) = (base.as_object_mut(), serde_json::to_value(s.hdr)) {
-            o.entry("hdr").or_insert(hdr);
-        }
-        Cow::Owned(scale_patch(&base, partial, amount))
-    };
+    let patch = if (amount - 1.0).abs() < 1e-9 { Cow::Borrowed(partial) } else { Cow::Owned(scale_patch(&blend_base(s), partial, amount)) };
     // (a white balance without a scale keeps its old meaning: `DevelopSettings::merged`)
     s.merged(&patch).unwrap_or_else(|_| s.clone())
+}
+
+/// `s` as the base a partial's numbers blend from: every group written out, also the ones
+/// serialization leaves out while at their defaults (HDR), so their numbers blend from `s`'s
+/// values too.
+fn blend_base(s: &DevelopSettings) -> Value {
+    let mut base = s.to_json();
+    if let (Some(o), Ok(hdr)) = (base.as_object_mut(), serde_json::to_value(s.hdr)) {
+        o.entry("hdr").or_insert(hdr);
+    }
+    base
+}
+
+/// Top-level settings keys that hold the photo's own pixel repairs: a preset that names them blends
+/// from the photo's values, never from the import look's (masks are added by [`Preset::apply_on`]).
+const REPAIR_KEYS: [&str; 3] = ["masks", "spots", "red_eye"];
+
+/// The settings `partial` names, applied to `current` at `amount`, each blended from `original`
+/// (the photo's import look; `current` itself when none is recorded) towards the partial's value
+/// ([`scale_patch`]); every setting `partial` does not name keeps `current`'s value, edits
+/// included. At 100 % the partial's values apply as they are and `original` is not read; at 0 %
+/// each named setting takes `original`'s value. With `original` the same as `current` this is
+/// [`apply_partial`] (adapted from upstream #2207).
+fn compose_named(current: &DevelopSettings, original: &DevelopSettings, partial: &Value, amount: f64) -> DevelopSettings {
+    if (amount - 1.0).abs() < 1e-9 || std::ptr::eq(current, original) || current == original {
+        return apply_partial(current, partial, amount);
+    }
+    let mut base = blend_base(original);
+    let cur = current.to_json();
+    if let Some(b) = base.as_object_mut() {
+        for k in REPAIR_KEYS {
+            match cur.get(k) {
+                Some(v) => b.insert(k.to_string(), v.clone()),
+                None => b.remove(k),
+            };
+        }
+    }
+    let patch = if amount <= 0.0 { named_values(&base, partial) } else { scale_patch(&base, partial, amount) };
+    // `merged` deep-merges: the named settings replace, everything else stays as `current` has it
+    current.merged(&patch).unwrap_or_else(|_| current.clone())
+}
+
+/// `base`'s values at the places `patch` names (an object's keys, recursively; anything else is
+/// one setting). A setting `base` lacks is left out, so the photo keeps its own. A white balance
+/// number taken this way carries `base`'s scale with it, so it keeps its meaning.
+fn named_values(base: &Value, patch: &Value) -> Value {
+    let (Some(b), Some(p)) = (base.as_object(), patch.as_object()) else { return base.clone() };
+    let mut out = Map::new();
+    for (k, pv) in p {
+        let Some(bv) = b.get(k) else { continue };
+        out.insert(k.clone(), if pv.is_object() && bv.is_object() { named_values(bv, pv) } else { bv.clone() });
+    }
+    if (out.contains_key("temp") || out.contains_key("tint"))
+        && let Some(scale) = b.get("scale")
+    {
+        out.entry("scale").or_insert_with(|| scale.clone());
+    }
+    Value::Object(out)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -677,7 +733,20 @@ impl Preset {
     /// of the first preset adds a fresh set. Editing a provisional mask makes it the
     /// photographer's own too ([`settle_provisional`]). A mask with a placeholder name ("Mask 2")
     /// is named after the preset, or after the preset and what it selects when it brings several.
+    ///
+    /// `s` is both the photo's current settings and the baseline the amount blends from (see
+    /// [`Preset::apply_on`]): right for the import default preset and for scratch bases.
     pub fn apply(&self, s: &DevelopSettings, amount: f64) -> DevelopSettings {
+        self.apply_on(s, s, amount)
+    }
+
+    /// [`Preset::apply`] on `current`, with each setting the preset names blended from `original`
+    /// (the photo's import look, or `current` when the photo has none) towards the preset's value:
+    /// a preset at 50 % looks the same however the photo was edited before, and at 0 % the named
+    /// settings take `original`'s values. Every setting the preset does not name keeps `current`'s
+    /// value, and the photo's pixel repairs (masks, spots, red eye) blend from its own. Adapted
+    /// from upstream #2207.
+    pub fn apply_on(&self, current: &DevelopSettings, original: &DevelopSettings, amount: f64) -> DevelopSettings {
         let masks: Vec<crate::Mask> = self
             .settings
             .get("masks")
@@ -688,7 +757,7 @@ impl Preset {
         if let Some(o) = rest.as_object_mut() {
             o.remove("masks");
         }
-        let mut out = apply_partial(s, &rest, amount);
+        let mut out = compose_named(current, original, &rest, amount);
         if masks.is_empty() {
             return out;
         }
@@ -710,7 +779,7 @@ impl Preset {
                 };
             }
             // above every id the photo had, so a fresh mask never takes the id of the one it replaces
-            let top = s.masks.iter().chain(&out.masks).map(|m| m.id).max().unwrap_or(0);
+            let top = current.masks.iter().chain(&out.masks).map(|m| m.id).max().unwrap_or(0);
             m.id = top.checked_add(1).unwrap_or_else(|| out.next_mask_id());
             m.preset = Some(self.id.clone());
             m.strip_ai(crate::recipe::RECIPE_ASPECT);
@@ -805,6 +874,166 @@ mod tests {
         let mut same = once.clone();
         settle_provisional(&once, &mut same);
         assert!(same.masks[0].preset.is_some());
+    }
+
+    fn preset(settings: Value) -> Preset {
+        Preset { id: "p".into(), name: "P".into(), group: "G".into(), settings, favorite: false, builtin: false }
+    }
+
+    /// A preset changes only the settings it names: a setting in a group it styles but does not
+    /// name keeps the photo's value, and so does a whole group it leaves out, at any amount.
+    #[test]
+    fn apply_on_changes_only_the_settings_it_names() {
+        let mut current = DevelopSettings::default();
+        current.light.exposure = 2.0;
+        current.light.blacks = -30.0;
+        current.effects.clarity = 30.0;
+        let mut original = DevelopSettings::default();
+        original.light.blacks = -10.0;
+        original.effects.clarity = 5.0;
+        let p = preset(json!({"light": {"contrast": 12.0}}));
+        for amount in [1.0, 0.5, 0.0] {
+            let out = p.apply_on(&current, &original, amount);
+            assert!((out.light.contrast - 12.0 * amount).abs() < 1e-9, "amount {amount}: {}", out.light.contrast);
+            assert_eq!(out.light.exposure, 2.0, "amount {amount}: a setting the preset doesn't name keeps the photo's value");
+            assert_eq!(out.light.blacks, -30.0, "amount {amount}: a setting in the same group, not named, keeps the photo's value");
+            assert_eq!(out.effects.clarity, 30.0, "amount {amount}: a group the preset doesn't name is untouched");
+        }
+    }
+
+    /// A partial preset that names one colour of the mixer leaves the other colours, and the
+    /// unnamed settings of the colour it names, as the photo has them.
+    #[test]
+    fn apply_on_keeps_the_mixer_colours_it_does_not_name() {
+        let mut current = DevelopSettings::default();
+        current.mixer.red.sat = 20.0;
+        current.mixer.blue.hue = 15.0;
+        current.mixer.blue.sat = 5.0;
+        let original = DevelopSettings::default();
+        let p = preset(json!({"mixer": {"blue": {"sat": 15.0, "lum": -25.0}}}));
+        for amount in [1.0, 0.5] {
+            let out = p.apply_on(&current, &original, amount);
+            assert_eq!(out.mixer.red.sat, 20.0, "amount {amount}: a colour the preset doesn't name");
+            assert_eq!(out.mixer.blue.hue, 15.0, "amount {amount}: a setting of a named colour that the preset doesn't name");
+            assert_eq!((out.mixer.blue.sat, out.mixer.blue.lum), (15.0 * amount, -25.0 * amount), "amount {amount}");
+        }
+    }
+
+    /// The white balance is not one setting: a preset that names only the temperature keeps the
+    /// photo's tint.
+    #[test]
+    fn apply_on_keeps_the_white_balance_fields_it_does_not_name() {
+        let mut current = DevelopSettings::default();
+        current.wb.temp = 6000.0;
+        current.wb.tint = 12.0;
+        let original = DevelopSettings::default();
+        let p = preset(json!({"wb": {"temp": 5000.0}}));
+        let out = p.apply_on(&current, &original, 1.0);
+        assert_eq!((out.wb.temp, out.wb.tint), (5000.0, 12.0));
+    }
+
+    /// At 0 % a white balance number the preset names takes the original's value on the
+    /// original's scale, not a Kelvin number read on the relative scale.
+    #[test]
+    fn amount_zero_takes_the_originals_white_balance_on_its_scale() {
+        let mut original = DevelopSettings::for_raw(5000.0, 4.0);
+        original.wb.scale = crate::WbScale::Kelvin;
+        let mut current = original.clone();
+        current.wb.temp = 6200.0;
+        current.wb.tint = 10.0;
+        let out = preset(json!({"wb": {"temp": 7000.0}})).apply_on(&current, &original, 0.0);
+        assert_eq!((out.wb.temp, out.wb.tint, out.wb.scale), (5000.0, 10.0, crate::WbScale::Kelvin));
+    }
+
+    /// A preset's amount 0 changes nothing when the original is the photo's current settings (no
+    /// import state is recorded for the photo), and any other amount moves the named settings
+    /// from where the photo has them.
+    #[test]
+    fn apply_on_without_an_import_state_scales_from_the_current_settings() {
+        let mut current = DevelopSettings::default();
+        current.light.exposure = 2.0;
+        current.light.blacks = -30.0;
+        let p = preset(json!({"light": {"exposure": 0.45, "contrast": 12.0}}));
+        assert_eq!(p.apply_on(&current, &current, 0.0), current, "amount 0 applies nothing");
+        let half = p.apply_on(&current, &current.clone(), 0.5);
+        assert!((half.light.exposure - 1.225).abs() < 1e-9, "{}", half.light.exposure);
+        assert_eq!(half.light.blacks, -30.0);
+    }
+
+    /// An unresolved `crs:Look` reference (its profile object has no id; the importer leaves
+    /// `look` in it) changes nothing: the photo keeps its own profile.
+    #[test]
+    fn an_unresolved_profile_reference_keeps_the_photos_profile() {
+        let mut current = DevelopSettings::default();
+        current.profile.id = "lc.vivid".into();
+        current.profile.amount = 60.0;
+        let p = preset(json!({"profile": {"look": {"name": "Not imported", "amount": 100.0}}, "light": {"contrast": 12.0}}));
+        for amount in [1.0, 0.5] {
+            for original in [current.clone(), DevelopSettings::default()] {
+                let out = p.apply_on(&current, &original, amount);
+                assert_eq!((out.profile.id.as_str(), out.profile.amount), ("lc.vivid", 60.0), "amount {amount}");
+            }
+        }
+    }
+
+    /// The amount blends between the original and the preset, not between the visible values and
+    /// the preset: a preset at 50 % looks the same however the photo was edited before.
+    #[test]
+    fn apply_on_scales_against_the_original() {
+        let mut current = DevelopSettings::default();
+        current.light.exposure = 2.0;
+        let original = DevelopSettings::default();
+        let p = preset(json!({"light": {"exposure": 0.45}}));
+        let out = p.apply_on(&current, &original, 0.5);
+        assert!((out.light.exposure - 0.225).abs() < 1e-9, "{}", out.light.exposure);
+        assert_eq!(p.apply_on(&current, &original, 0.0).light.exposure, 0.0, "at 0 % the original's value");
+    }
+
+    /// Pixel repairs are the photo's own: a preset's are patched in, and one without them never
+    /// restores the original's, at any amount.
+    #[test]
+    fn apply_on_patches_pixel_repairs_into_the_current_ones() {
+        let spot = json!([{"mode": "heal", "points": [[0.5, 0.5]], "size": 0.05, "feather": 50.0, "opacity": 100.0}]);
+        let current = DevelopSettings { spots: serde_json::from_value(spot).unwrap(), ..Default::default() };
+        let original = DevelopSettings::default();
+        let none = preset(json!({"light": {"contrast": 10.0}}));
+        let clearing = preset(json!({"light": {"contrast": 10.0}, "spots": []}));
+        for amount in [1.0, 0.5, 0.0] {
+            assert_eq!(
+                none.apply_on(&current, &original, amount).spots.len(),
+                1,
+                "amount {amount}: the photo's spot survives a preset without spots"
+            );
+        }
+        assert_eq!(clearing.apply_on(&current, &original, 1.0).spots.len(), 0, "a preset that names spots replaces them, as before");
+        assert_eq!(clearing.apply_on(&current, &original, 0.0).spots.len(), 1, "at 0 % the photo's own spots are the baseline");
+    }
+
+    /// A null a preset writes into an option field (here a crop aspect: null is "free") is the
+    /// preset's value, so it clears the photo's aspect at any amount above 0, as any choice of the
+    /// preset does.
+    #[test]
+    fn a_preset_null_clears_an_option_field() {
+        let mut current = DevelopSettings::default();
+        current.crop.aspect = Some((3, 2));
+        let p = preset(json!({"crop": {"aspect": null}}));
+        for original in [DevelopSettings::default(), current.clone()] {
+            for amount in [1.0, 0.7, 0.3] {
+                assert_eq!(p.apply_on(&current, &original, amount).crop.aspect, None, "amount {amount}: the preset's null clears the aspect");
+            }
+        }
+    }
+
+    /// A null in the original (the import state had a free aspect) is the baseline at 0 %; above
+    /// it the preset's aspect applies (choices take the preset's at any amount above 0).
+    #[test]
+    fn a_null_in_the_original_is_the_baseline_at_amount_zero() {
+        let mut current = DevelopSettings::default();
+        current.crop.aspect = Some((3, 2));
+        let original = DevelopSettings::default();
+        let p = preset(json!({"crop": {"aspect": [16, 9]}}));
+        assert_eq!(p.apply_on(&current, &original, 0.0).crop.aspect, None, "0 %: the import baseline (no aspect) applies");
+        assert_eq!(p.apply_on(&current, &original, 0.4).crop.aspect, Some((16, 9)), "40 %: the preset's aspect applies");
     }
 
     #[test]

@@ -237,6 +237,12 @@ pub enum Process {
     /// with Size Variation, Clumping, Color and Response, calibrated against Lightroom Classic exports
     /// (OneSlips); V1–V6 keep their value-noise grain.
     V7,
+    /// 8-bit output is dithered with an 8×8 ordered (Bayer) pattern before it is rounded, so smooth
+    /// gradients (skies, vignettes) show no banding; black and white stay exact. Adapted from
+    /// upstream #3509. Colour noise reduction filters the linear colour differences R−Y and B−Y
+    /// jointly, leaving Y alone, with edge-aware weights from a denoised guide and a brake for
+    /// isolated colour specks (adapted from upstream #1348).
+    V8,
 }
 
 /// How much of the AI-denoised picture to mix in for a Denoise slider fraction `a` (0 to 1) under
@@ -246,14 +252,14 @@ pub fn denoise_weight(process: Process, a: f32) -> f32 {
     let a = if a.is_finite() { a.clamp(0.0, 1.0) } else { 0.0 };
     match process {
         Process::V1 | Process::V2 | Process::V3 | Process::V4 | Process::V5 => a,
-        Process::V6 | Process::V7 => 1.0 - (1.0 - a).powi(3),
+        Process::V6 | Process::V7 | Process::V8 => 1.0 - (1.0 - a).powi(3),
     }
 }
 
 impl Process {
     /// Every process, oldest first.
-    pub const ALL: [Process; 7] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6, Process::V7];
-    pub const LATEST: Process = Process::V7;
+    pub const ALL: [Process; 8] = [Process::V1, Process::V2, Process::V3, Process::V4, Process::V5, Process::V6, Process::V7, Process::V8];
+    pub const LATEST: Process = Process::V8;
 
     pub const fn version(self) -> ProcessVersion {
         match self {
@@ -264,6 +270,7 @@ impl Process {
             Process::V5 => ProcessVersion(5),
             Process::V6 => ProcessVersion(6),
             Process::V7 => ProcessVersion(7),
+            Process::V8 => ProcessVersion(8),
         }
     }
 }
@@ -294,6 +301,15 @@ pub struct DevelopSettings {
     pub point_colors: Vec<PointColor>,
     pub bw_mix: BwMix,
     pub grading: ColorGrading,
+    /// The colourist primaries (the Witchcraft grading mode): lift, gamma, gain and offset wheels
+    /// with the Log variant's range boundaries. Not written while it is the default, so settings
+    /// without them keep their JSON and `hash64` (and every cached preview stays valid).
+    #[serde(skip_serializing_if = "Primaries::is_default")]
+    pub primaries: Primaries,
+    /// Resolve-style HSL curves (the Witchcraft mode's Curves): free points over the hue circle,
+    /// one curve each for hue, saturation and luminance. Not written while neutral.
+    #[serde(default, skip_serializing_if = "HslCurves::is_neutral")]
+    pub hsl_curves: HslCurves,
     pub effects: Effects,
     pub vignette: Vignette,
     pub grain: Grain,
@@ -410,6 +426,8 @@ impl Default for DevelopSettings {
             point_colors: Vec::new(),
             bw_mix: BwMix::default(),
             grading: ColorGrading::default(),
+            primaries: Primaries::default(),
+            hsl_curves: HslCurves::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
             grain: Grain::default(),
@@ -916,6 +934,105 @@ impl Default for ColorGrading {
 impl ColorGrading {
     pub fn is_neutral(&self) -> bool {
         [self.shadows, self.midtones, self.highlights, self.global].iter().all(|w| w.sat == 0.0 && w.lum == 0.0)
+    }
+}
+
+/// The colourist primaries (the Witchcraft grading mode's wheels): two sets that both render, as
+/// Resolve's do — the **Color wheels** (lift, gamma, gain, offset; wide tonal overlap) establish
+/// the range, and the **Log wheels** (`log_wheels`; narrow ranges between `low` and `high`) refine
+/// it. Each wheel is a [`Wheel`]: hue/saturation is the puck, luminance the master wheel beneath.
+/// Semantics read from Blackmagic's *Colorist Guide to DaVinci Resolve 18* (pp. xviii, 12, 23–33);
+/// the maths is this codebase's own. (An older experimental shape of this group wrote a `log`
+/// switch into the same four wheels; that key is left unread.)
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Primaries {
+    pub lift: Wheel,
+    pub gamma: Wheel,
+    pub gain: Wheel,
+    pub offset: Wheel,
+    pub log_wheels: LogWheels,
+    /// Shadow/midtone boundary 0..1 (the Log wheels' ranges).
+    pub low: f64,
+    /// Midtone/highlight boundary 0..1 (the Log wheels' ranges).
+    pub high: f64,
+}
+
+/// The Log wheels: narrowly separated shadows / midtones / highlights with their own offset —
+/// complimentary to the Color wheels, not an alternative (both apply).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LogWheels {
+    pub shadow: Wheel,
+    pub midtone: Wheel,
+    pub highlight: Wheel,
+    pub offset: Wheel,
+}
+
+impl Default for Primaries {
+    fn default() -> Self {
+        Self {
+            lift: Wheel::default(),
+            gamma: Wheel::default(),
+            gain: Wheel::default(),
+            offset: Wheel::default(),
+            log_wheels: LogWheels::default(),
+            low: 0.35,
+            high: 0.7,
+        }
+    }
+}
+
+impl Primaries {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// No wheel moves anything (the range boundaries alone cannot).
+    pub fn is_neutral(&self) -> bool {
+        [&self.lift, &self.gamma, &self.gain, &self.offset]
+            .into_iter()
+            .chain([&self.log_wheels.shadow, &self.log_wheels.midtone, &self.log_wheels.highlight, &self.log_wheels.offset])
+            .all(|w| w.sat == 0.0 && w.lum == 0.0)
+    }
+}
+
+/// Resolve's HSL curves ("the first word prompts the selection, and the second word affects the
+/// change"): free points anywhere over the hue circle — the curve bends through them, not through
+/// fixed colour bands. `x` is hue 0..1 around the OkLCh hue circle (0 = the hue the colour mixer
+/// calls red), `y` −1..1 (the curve's own strength).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HslCurves {
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub hue: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub sat: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub lum: Vec<Point>,
+}
+
+impl HslCurves {
+    pub fn is_neutral(&self) -> bool {
+        self.hue.is_empty() && self.sat.is_empty() && self.lum.is_empty()
+    }
+
+    pub fn channel(&self, id: &str) -> Option<&Vec<Point>> {
+        match id {
+            "hue" => Some(&self.hue),
+            "sat" => Some(&self.sat),
+            "lum" => Some(&self.lum),
+            _ => None,
+        }
+    }
+
+    pub fn channel_mut(&mut self, id: &str) -> Option<&mut Vec<Point>> {
+        match id {
+            "hue" => Some(&mut self.hue),
+            "sat" => Some(&mut self.sat),
+            "lum" => Some(&mut self.lum),
+            _ => None,
+        }
     }
 }
 

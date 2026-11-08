@@ -1,7 +1,8 @@
 # Pulling upstream work: the intake runbook
 
-> **Last updated:** 2026-11-02 · **Change:** created (per-PR and per-commit intake, one PR per round, release-gated;
-> the merge routine is retired).
+> **Last updated:** 2026-11-08 · **Change:** an intake PR merges when it is ready, in any order with other PRs, as
+> every round so far has; it is no longer held for a release. Previously: 2026-11-02, created (per-PR and per-commit
+> intake, one PR per round, release-gated; the merge routine is retired).
 
 This page is the whole procedure for bringing work down from upstream. It is written so an agent can run one intake
 round end to end without asking questions. Read [`AGENTS.md`](../AGENTS.md) first: its clean-room, brand, never-crash,
@@ -44,9 +45,9 @@ themselves. A PR that is closed is not automatically out: read the closing comme
    doubt, leave it `PENDING`; a later round is cheap, a regressed release is not.
 5. **One round, one PR.** Every adopted PR and commit from a round goes into a single fork branch and a single PR. No
    stray pushes, no per-PR PRs.
-6. **Code lands at a version release.** The intake PR is opened ready for review but it merges only as part of a
-   release ([`docs/releasing.md`](releasing.md)). A round that only updates the ledger (no product code) may merge
-   immediately.
+6. **An intake PR merges when it is ready.** Once reviewed and green it merges like any other PR, before or after
+   other work; a round takes long enough that other PRs always land meanwhile. It isn't held for a release, and a
+   release doesn't wait for one ([Landing](#landing)).
 7. **The ledger is the memory.** Every decision, including the ones not taken, is recorded in
    [`docs/upstream-pr-reviews/ledger.md`](upstream-pr-reviews/ledger.md). An unrecorded decision did not happen.
 
@@ -156,8 +157,9 @@ for `PENDING`.
 
 Every item below must pass, or the row becomes `PENDING`/`SKIP`:
 
-- **Clean-room and licence.** No GPL/LGPL/AGPL/MPL code or data, no Adobe material, no vendor binary. An upstream PR
-  built on a GPL source is `LEARN` at most; re-implement it from a public spec.
+- **Clean-room and licence.** Third-party code, weights and data follow `AGENTS.md`'s licence policy (2026-11-05):
+  allowed when the licence permits derivatives, sharing and commercial use (GPL, CC BY, public domain, MIT-style),
+  credited in `NOTICE` / `LICENSE` in the same commit. No Adobe material, no vendor binary.
 - **Brand.** `cargo xtask brand check`; no legacy name, no upstream product strings; text goes through `tr()`.
 - **Never crash.** No new `unwrap`/`expect`/`panic!`/indexing on input-derived values in non-test code; no new `unsafe`
   outside the crates `AGENTS.md` names. Hostile-input tests where the change parses anything.
@@ -199,7 +201,7 @@ Open a single PR into `main` from `upstream-intake-<YYYY-MM-DD>`:
   Link the upstream PRs. Call out shared version numbers taken and anything unmeasured.
 - It is a normal PR by every other rule ([`CONTRIBUTING.md`](../CONTRIBUTING.md)): branched from the latest `main`,
   green `cargo xtask ci --fast`, docs and release notes in the same commits, no bundling of unrelated fork work.
-- **Do not merge it.** It waits for the release gate at the end of this page unless it contains no product code.
+- It merges when it is reviewed and green, like any other PR ([Landing](#landing)).
 
 ### 8. Close the round
 
@@ -213,12 +215,15 @@ cargo xtask ci --fast
 
 The round is done when the ledger is valid, every candidate has a row, and the PR links every `ADOPT`.
 
-## Landing at a version release
+## Landing
 
-The intake PR merges as part of a release, immediately before the changelog is gathered — one full CI run, one set of
-release notes, one place to look if a regression appears. [`docs/releasing.md`](releasing.md) has the step. Between
-releases the PR stays open; if `main` moves, merge `origin/main` into it and re-run the fast checks (do not rebase a
-shared branch). If the release is postponed, the PR is rebased by merge and re-checked; nothing lands early.
+An intake PR merges when it is reviewed and its checks are green, in any order with other PRs. (This page first held it
+for a release, as the last merge before the changelog is gathered; in practice every round merged within hours, and
+a round takes long enough that other work always lands meanwhile.) The full CI run before a release covers whatever
+rounds have landed since the last one, and the release notes name their upstream PRs
+([`docs/releasing.md`](releasing.md), step 2). Each merge into `main` leaves an open intake PR behind (branches must be
+up to date): merge `origin/main` into it when it is next to merge and re-run the fast checks; never rebase a shared
+branch.
 
 Security and data-loss fixes are the one place where the maintainer may choose to land a port sooner. Mark the ledger
 row `URGENT` in `Reason` and ask; do not decide it alone, and do not let an urgent fix bypass the gates.

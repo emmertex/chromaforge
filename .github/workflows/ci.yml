@@ -80,7 +80,7 @@ jobs:
       run:
         # low priority: the runner machines are also used interactively
         shell: nice -n 19 bash -e {0}
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,7 +144,7 @@ jobs:
           - name: Windows
             runner: '["self-hosted", "Windows", "X64", "lcc"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

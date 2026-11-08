@@ -193,6 +193,44 @@ pub enum LaunchLibrary {
     Ask,
 }
 
+/// The Edit panel's grading mode (Window ▸ Grading Mode, `view.gradingMode`): a presentation
+/// choice — both modes edit the same photo settings, they only lay the colour tools out
+/// differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GradingMode {
+    /// The Lightroom Classic panels, as the Edit panel always had them.
+    Eboda,
+    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes
+    /// (the default — the fork's own face, with Lightroom's panels one Settings row away).
+    #[default]
+    Witchcraft,
+}
+
+impl GradingMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            GradingMode::Eboda => "eboda",
+            GradingMode::Witchcraft => "witchcraft",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "eboda" => Some(GradingMode::Eboda),
+            "witchcraft" => Some(GradingMode::Witchcraft),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GradingMode::Eboda => GradingMode::Witchcraft,
+            GradingMode::Witchcraft => GradingMode::Eboda,
+        }
+    }
+}
+
 /// When grid cells show their rating / flag / edited badges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -456,6 +494,10 @@ pub struct AppSettings {
     /// The Settings section shown last: Settings… opens there again (LR-PREF-WINDOW).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub settings_tab: String,
+    /// The Settings window's size in points as the user left it (`None`: the default size; fitted
+    /// to the screen when the window opens; OneSlips, LR-PREF-WINDOW).
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub settings_size: Option<[f32; 2]>,
     /// GPU rendering allowed (`app.gpu`).
     pub gpu: bool,
     /// The graphics interface GPU rendering uses (Settings ▸ Performance; applies at next launch).
@@ -509,6 +551,10 @@ pub struct AppSettings {
     /// Exports sharing the GPU at once (0 = automatic).
     #[serde(deserialize_with = "lenient")]
     pub gpu_export_jobs: u32,
+    /// The graphics cards exports use when there is a second one (Settings ▸ Performance):
+    /// both (the default), the card for editing only, or the second card only (to measure it).
+    #[serde(deserialize_with = "lenient")]
+    pub export_cards: lcc_engine::export::ExportCards,
     /// The last "Test my machine" (Settings ▸ Performance): what it measured and chose.
     #[serde(deserialize_with = "lenient")]
     pub machine_test: Option<lcc_engine::machine_test::MachineReport>,
@@ -521,6 +567,8 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
+    pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
     pub wheel_resizes_brush: bool,
     /// View ▸ View Options ▸ Show message when loading or rendering photos: the loupe says
@@ -544,6 +592,11 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
+    /// The Edit panel's grading mode (`view.gradingMode`): Witchcraft, the DaVinci Resolve style
+    /// colour-grading palettes (the default), or Eboda, the Lightroom Classic panels. Both edit
+    /// the same photo; a value this version doesn't know reads as the default.
+    #[serde(deserialize_with = "lenient")]
+    pub grading_mode: GradingMode,
     /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
     /// whichever library is open and after a restart.
     pub auto_sync: bool,
@@ -582,7 +635,7 @@ pub struct AppSettings {
     /// View ▸ View Options: the lines the loupe's info overlay shows in Info 1 and Info 2.
     #[serde(deserialize_with = "lenient")]
     pub loupe_info: LoupeInfo,
-    /// File ▸ Import Lightroom Catalog…: ask whether the catalog merges into the open library or
+    /// File ▸ Import Lightroom or Capture One Catalog…: ask whether the catalog merges into the open library or
     /// gets a new one, or always merge (issue #2672; the window's "Don't ask again" picks that).
     #[serde(deserialize_with = "lenient")]
     pub lightroom_import: LightroomImport,
@@ -631,7 +684,7 @@ impl EditInMode {
     }
 }
 
-/// Where File ▸ Import Lightroom Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
+/// Where File ▸ Import Lightroom or Capture One Catalog… puts a catalog (Settings ▸ General ▸ Library). Saved as
 /// `"ask"` / `"alwaysMerge"`; anything else in a hand-edited `ui.json` reads as [`Self::Ask`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -683,6 +736,7 @@ impl Default for AppSettings {
             import_as_tab: true,
             import_tab: Default::default(),
             settings_tab: String::new(),
+            settings_size: None,
             gpu: true,
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
@@ -701,11 +755,13 @@ impl Default for AppSettings {
             export_cpu_only: false,
             gpu_export_mb: 0,
             gpu_export_jobs: 0,
+            export_cards: Default::default(),
             machine_test: None,
             film_names: true,
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
             keymap: Default::default(),
@@ -716,6 +772,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
+            grading_mode: GradingMode::Witchcraft,
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
@@ -941,8 +998,24 @@ impl PanelWidth {
 
 /// The left sidebar (sources, albums, folders).
 pub const LEFT_WIDTH: PanelWidth = PanelWidth { min: 200.0, default: 268.0, max: 480.0 };
+/// The filmstrip's height (points; 142 was its fixed height): small enough for a few rows of
+/// tiny thumbnails, large enough to judge expressions on them. Its top edge drags it.
+pub const FILM_HEIGHT: PanelWidth = PanelWidth { min: 96.0, default: 142.0, max: 360.0 };
 /// The right panel (Edit, Masking, Info, …).
 pub const RIGHT_WIDTH: PanelWidth = PanelWidth { min: 250.0, default: 270.0, max: 520.0 };
+/// The right panel's default width in the Compact layout (LAYOUT-DENSE, ported from OneSlips): the
+/// tool row stands in the panel, so it gets the old strip's 48 points, and the tracks are about as
+/// long as Lightroom's.
+pub const COMPACT_RIGHT_WIDTH: f32 = 318.0;
+
+/// The right panel's width `w` after the layout turned Compact (`compact`) or Classic: a width at
+/// the other layout's default moves to this one's, any other stays.
+pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
+    let (from, to) = if compact { (RIGHT_WIDTH.default, COMPACT_RIGHT_WIDTH) } else { (COMPACT_RIGHT_WIDTH, RIGHT_WIDTH.default) };
+    if (w - from).abs() < 0.5 { to } else { w }
+}
+/// The Import tab's settings column (Import Settings, on the right of the browsed photos).
+pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1075,6 +1148,16 @@ pub struct ToastAction {
     pub until: f64,
 }
 
+/// The crop-mask strengths (percent) the Crop panel and `view.cropMaskOpacity` offer; 0 is Off.
+pub const CROP_MASK_OPACITY_LEVELS: [u8; 6] = [0, 20, 50, 60, 80, 100];
+/// The strength a fresh settings file starts with (close to the former fixed alpha of 150).
+pub const DEFAULT_CROP_MASK_OPACITY: u8 = 60;
+
+/// The mask colour alpha (0..=255) for a strength in percent; anything above 100 counts as 100.
+pub fn crop_mask_alpha(percent: u8) -> u8 {
+    (u16::from(percent.min(100)) * 255 / 100) as u8
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -1126,6 +1209,14 @@ pub struct UiState {
     /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
     #[serde(skip)]
     pub import_was_browsing: bool,
+    /// Developing a browsed photo without importing it: the Library tab shows the Develop module
+    /// on the folder's active photo while the browse stays on ([`crate::import_tab::keep_in_step`]).
+    #[serde(skip)]
+    pub import_develop: bool,
+    /// The library filter the Import tab put aside on entering it (the tab has no filter bar and a
+    /// card's files must not hide behind a Library filter); restored when the Library tab returns.
+    #[serde(skip)]
+    pub import_shelved_filter: bool,
     pub left_panel: bool,
     pub right: RightPanel,
     /// The panel a toggle (a panel key or button: I, M, R, Q…) opened, with what the right column showed
@@ -1149,13 +1240,29 @@ pub struct UiState {
     /// Widths of the left sidebar and of the right panel in points (dragging their inner edge
     /// resizes them; within [`LEFT_WIDTH`] / [`RIGHT_WIDTH`]).
     pub left_width: f32,
+    /// The Presets Manager's size as the user left it (its content, in points); opened at it
+    /// again, capped to the screen (`panels::presets_manager::window_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presets_manager_size: Option<[f32; 2]>,
+    /// The Profile Manager's size as the user left it (as `presets_manager_size`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_manager_size: Option<[f32; 2]>,
     pub right_width: f32,
+    /// Width of the Import tab's settings column in points (its left edge is dragged to resize
+    /// it; within [`IMPORT_SETTINGS_WIDTH`]).
+    pub import_settings_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
     pub presets: bool,
     /// Presets column: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
+    /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
+    /// kept with the UI settings, so it comes back after a restart.
+    pub film_height: f32,
+    /// The shot info strip under the photo in the loupe (`view.shotInfo`): aperture, shutter,
+    /// ISO, focal length, lens, size in pixels.
+    pub shot_info: bool,
     pub zoom: Zoom,
     /// Pan offset of the loupe when zoomed (image-normalized centre).
     pub pan: (f32, f32),
@@ -1263,9 +1370,15 @@ pub struct UiState {
     /// Mask IDs whose sub-actions are collapsed in the masking panel.
     #[serde(default)]
     pub collapsed_masks: std::collections::HashSet<u32>,
+    /// Masks other than the selected one whose components are shown all the same (the chevron):
+    /// only the selected mask's branch is open by itself.
+    #[serde(skip)]
+    pub expanded_masks: std::collections::HashSet<u32>,
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
+    pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
     /// chosen yet) crops locked to the photo's own shape, as Lightroom starts (#991).
     pub crop_default_aspect: Option<serde_json::Value>,
@@ -1375,6 +1488,9 @@ pub struct UiState {
     #[serde(skip)]
     pub dragging_control: Option<String>,
     pub search: String,
+    /// Search box uses natural-language (semantic) search (`library.filter {"semantic": …}`) instead of text match.
+    #[serde(skip)]
+    pub semantic_search: bool,
     /// Focus the search field on the next frame (Edit → Find…).
     #[serde(skip)]
     pub focus_search: bool,
@@ -1441,6 +1557,11 @@ pub struct UiState {
     pub mixer_adjust: String,
     /// The HSL group shown: "hue" | "sat" | "lum" | "all".
     pub mixer_group: String,
+    /// The Witchcraft HSL Curves panel's curve: "hue" | "sat" | "lum".
+    pub hsl_curve: String,
+    /// The Primaries palette's wheels: "color" (Lift / Gamma / Gain / Offset) or "log"
+    /// (Shadow / Midtone / Highlight / Offset). Which set is edited; both always render.
+    pub primaries_tab: String,
     /// Selected colour grading tab: "3way" | "shadows" | "midtones" | "highlights".
     pub grading_mode: String,
     /// Colour grading wheels (shadows, midtones, highlights) hidden for viewing by their eye, and
@@ -1758,6 +1879,8 @@ pub enum Dialog {
         library: Option<String>,
         details: Vec<String>,
         first: Option<u64>,
+        /// The catalog was Capture One's (the same import reads it); the title and note say so.
+        capture_one: bool,
     },
     /// File ▸ Print…: the Print module. Its state is the session's (`print.*`); the page on show
     /// and the selected cell are [`UiState::print`].
@@ -2033,7 +2156,7 @@ pub enum Dialog {
         folder: String,
         catalog: Option<String>,
     },
-    /// File ▸ Import Lightroom Catalog…: where the catalog at `catalog` goes (issue #2672, see
+    /// File ▸ Import Lightroom or Capture One Catalog…: where the catalog at `catalog` goes (issue #2672, see
     /// [`crate::lightroom_destination`]). Merge into the open library `library` (`photos` in it), or
     /// (`new_library`) create the library `name` in the folder `location`, switch to it and import
     /// there. `dont_ask`: merge from now on without asking. `generation`: the library the window
@@ -2082,6 +2205,14 @@ pub enum Dialog {
         confirm: Option<String>,
         rename: Option<(String, String)>,
     },
+    /// The Profile Manager (LR-PROF-MANAGE): looks, LUT profiles and camera profiles in one
+    /// table. The search; the row whose Delete waits for a yes (`profile:<id>`, `group:<key>`);
+    /// the row renamed in place and its text (`profile:<id>`, `group:<key>`).
+    ProfileManager {
+        query: String,
+        confirm: Option<String>,
+        rename: Option<(String, String)>,
+    },
     /// Confirm deleting mask effect presets.
     DeleteEffects {
         names: Vec<String>,
@@ -2093,6 +2224,13 @@ pub enum Dialog {
         index: usize,
         prompt: String,
         variations: u32,
+    },
+    /// Stop a task whose stop throws work away (a plug-in's wait for a program: "Stop Waiting…" in the activity list).
+    /// `task` and `warning` are shown as given (translated, names in); confirming runs `activity.cancel` for `id`.
+    StopWaiting {
+        id: u64,
+        task: String,
+        warning: String,
     },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
@@ -2247,15 +2385,21 @@ impl Default for UiState {
             mask_held: None,
             mask_drawing: None,
             collapsed_masks: Default::default(),
+            expanded_masks: Default::default(),
             view: ViewMode::Detail,
             grid_style: ViewMode::PhotoGrid,
             modern: crate::modern::ModernUi::default(),
             tab: Default::default(),
             library_source: None,
             import_was_browsing: false,
+            import_develop: false,
+            import_shelved_filter: false,
             left_panel: false,
             left_width: LEFT_WIDTH.default,
+            presets_manager_size: None,
+            profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
+            import_settings_width: IMPORT_SETTINGS_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2266,13 +2410,17 @@ impl Default for UiState {
             presets: false,
             preset_thumbs: false,
             filmstrip: true,
+            film_height: FILM_HEIGHT.default,
+            shot_info: true,
             zoom: Zoom::Fit,
             pan: (0.5, 0.5),
             click_zoom: 100,
             zoom_anim: false,
             before_after: BeforeAfter::Off,
             thumb_size: 220.0,
-            open_sections: vec!["light".into()],
+            // "primaries" (the Witchcraft palette) opens with the app: in Eboda the section never
+            // renders, so the extra entry is invisible there; a user who closes it keeps that
+            open_sections: vec!["light".into(), "primaries".into()],
             open_flyouts: vec![],
             single_panel: false,
             show_clipping: false,
@@ -2297,6 +2445,7 @@ impl Default for UiState {
             crop_overlay: CropOverlay::Thirds,
             crop_default_aspect: None,
             crop_overlay_orient: 0,
+            crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
@@ -2331,6 +2480,7 @@ impl Default for UiState {
             sidecars_waiting: 0,
             known_cards: None,
             search: String::new(),
+            semantic_search: false,
             focus_search: false,
             renaming_mask: None,
             describe: None,
@@ -2354,6 +2504,8 @@ impl Default for UiState {
             mixer_mode: "red".into(),
             mixer_adjust: "hsl".into(),
             mixer_group: "hue".into(),
+            hsl_curve: "hue".into(),
+            primaries_tab: "color".into(),
             grading_mode: "3way".into(),
             grading_hidden: None,
             tool: String::new(),
@@ -2608,6 +2760,21 @@ impl UiState {
         }
     }
 
+    /// Whether a mask's components show under it in the Masking panel: the selected mask's unless
+    /// its chevron folded them, another mask's only when its chevron opened them.
+    pub fn mask_branch_open(&self, id: u32, selected: bool) -> bool {
+        if selected { !self.collapsed_masks.contains(&id) } else { self.expanded_masks.contains(&id) }
+    }
+
+    /// The chevron on a mask's row: folds or opens its components (see [`Self::mask_branch_open`]).
+    pub fn toggle_mask_branch(&mut self, id: u32, selected: bool) {
+        if selected {
+            self.toggle_mask_collapsed(id);
+        } else if !self.expanded_masks.remove(&id) {
+            self.expanded_masks.insert(id);
+        }
+    }
+
     pub fn section_open(&self, id: &str) -> bool {
         self.open_sections.iter().any(|s| s == id)
     }
@@ -2737,12 +2904,19 @@ impl UiState {
         }
     }
 
+    /// The filmstrip's height (points) every view that shows it leaves room for.
+    pub fn film_height(&self) -> f32 {
+        FILM_HEIGHT.clamp(self.film_height)
+    }
+
     /// Put the numeric and enumerated settings back in their valid ranges. Shared by loading a
     /// settings file ([`Self::sanitized`]) and `ui.set`, which merges values from a script.
     pub fn clamp_ranges(&mut self) {
         self.thumb_size = self.thumb_size.clamp(THUMB_SIZE_MIN, THUMB_SIZE_MAX);
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
+        self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
+        self.film_height = FILM_HEIGHT.clamp(self.film_height);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
             self.histogram_mode = lcc_raster::HistogramMode::default().name().into();

@@ -1,6 +1,6 @@
 //! The bottom bar: view modes, sort, rating/flags pill, copy/paste settings, zoom and view toggles.
 
-use egui::{Align2, Rect, Sense, pos2, vec2};
+use egui::{Align2, Color32, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use lcc_catalog::Flag;
 use serde_json::json;
 
@@ -19,6 +19,28 @@ const VIEW_MODES: &[(&str, Icon, ViewMode, &str)] = &[
     ("people", Icon::People, ViewMode::People, "People"),
 ];
 
+/// Where the bar keeps the room it had last frame for the Compact Auto Sync switch's name: the
+/// points left over with every other item in its full form and the switch unlabelled.
+const SWITCH_ROOM: &str = "bottomBarAutoSyncRoom";
+
+/// Whether the Compact Auto Sync switch carries its name: when the name fits next to every other
+/// item of the bar in its full form (the room measured last frame, see [`SWITCH_ROOM`]); otherwise
+/// the switch alone (its tooltip names it), so the rest of the bar keeps its room.
+fn auto_sync_labelled(room: Option<f32>, label_extra: f32) -> bool {
+    room.is_some_and(|room| room.is_finite() && room >= label_extra)
+}
+
+/// How much wider the Auto Sync switch is with its name: the name, measured, and its padding.
+fn auto_sync_label_extra(ui: &egui::Ui, t: &Tokens) -> f32 {
+    let label = crate::i18n::tr("Auto Sync");
+    ui.painter().layout_no_wrap(label.to_string(), t.font(12.0), t.text_label).size().x + SWITCH_LABEL_PAD
+}
+
+/// The labelled switch is its name plus this much wider than the bare switch.
+const SWITCH_LABEL_PAD: f32 = 8.0;
+/// The switch box's corner radius, the bar's icon buttons' own.
+pub(crate) const SWITCH_RADIUS: f32 = 4.0;
+
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     egui::Panel::bottom("bottom_bar")
@@ -27,7 +49,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             let full = ui.max_rect();
             let compact_zoom = full.width() < 360.0;
-            let right_start = right_side(app, ui, full, compact_zoom);
+            let room_id = egui::Id::new(SWITCH_ROOM);
+            let extra = auto_sync_label_extra(ui, &t);
+            let labelled = auto_sync_labelled(ui.ctx().data(|d| d.get_temp::<f32>(room_id)), extra);
+            let (right_start, label_drawn) = right_side(app, ui, full, compact_zoom, labelled);
+            // where the right group would start with the switch unlabelled
+            let right_start_bare = if label_drawn { right_start + extra } else { right_start };
             let left_rect = Rect::from_min_max(full.min, pos2((right_start - 12.0).max(full.left()), full.bottom()));
             let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left_rect));
             let left_end = left_ui
@@ -90,7 +117,31 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 .rect
                 .right();
             centre(app, ui, full, left_end + 12.0, right_start - 12.0);
+            // the room the switch's name would have next frame: what is left between the side groups,
+            // the switch unlabelled, once the left group and the centre have their full forms
+            let left_full = right_start_bare - 12.0 - full.left() >= if library_grid(app) { 520.0 } else { 270.0 };
+            let room = if left_full { right_start_bare - 12.0 - (left_end + 12.0) - centre_full_width(app, ui) } else { f32::NEG_INFINITY };
+            ui.ctx().data_mut(|d| d.insert_temp(room_id, room));
+            if auto_sync_labelled(Some(room), extra) != labelled {
+                ui.ctx().request_repaint();
+            }
         });
+}
+
+/// The centre's width in its full form: the rating/flag pill, then (outside the Library) the copy /
+/// paste settings buttons.
+fn centre_full_width(app: &LccApp, ui: &egui::Ui) -> f32 {
+    let (pill_w, copy) = centre_widths(app, ui);
+    if app.ui.module == crate::module::ModuleId::Library { pill_w } else { pill_w + copy }
+}
+
+/// The rating/flag pill's width and the copy / paste settings buttons' (with their gaps).
+fn centre_widths(app: &LccApp, ui: &egui::Ui) -> (f32, f32) {
+    let t = Tokens::get(ui.ctx());
+    let label = crate::i18n::tr(if app.session.clipboard.is_some() { "Paste Edit Settings" } else { "Copy Edit Settings" });
+    let copy_width = (ui.painter().layout_no_wrap(label.to_string(), t.font(13.0), t.text_label).size().x + 24.0).max(136.0);
+    let pill_w = if library_grid(app) { PILL_W + LABELS_W } else { PILL_W };
+    (pill_w, 10.0 + copy_width + 4.0 + 30.0)
 }
 
 /// Five 19-point stars, three 22-point flags, seven 3-point gaps, a 6-point group gap
@@ -126,10 +177,10 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     let t = Tokens::get(ui.ctx());
     let has_clip = app.session.clipboard.is_some();
     let label = crate::i18n::tr(if has_clip { "Paste Edit Settings" } else { "Copy Edit Settings" });
-    let copy_width = (ui.painter().layout_no_wrap(label.to_string(), t.font(13.0), t.text_label).size().x + 24.0).max(136.0);
     let labels = library_grid(app);
-    let pill_w = if labels { PILL_W + LABELS_W } else { PILL_W };
-    let centre_width = pill_w + 10.0 + copy_width + 4.0 + 30.0;
+    let (pill_w, copy_w) = centre_widths(app, ui);
+    let copy_width = copy_w - 10.0 - 4.0 - 30.0;
+    let centre_width = pill_w + copy_w;
     let room = to - from;
     if room < pill_w {
         return;
@@ -141,7 +192,7 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     let left = (full.center().x - 60.0 - pill_w / 2.0).clamp(from, to - w);
     let active = app.session.active().and_then(|id| app.session.catalog.photo(id).cloned());
     let pill = Rect::from_min_size(pos2(left, full.center().y - 15.0), vec2(pill_w, 30.0));
-    ui.painter().rect_filled(pill, 15.0, t.canvas);
+    ui.painter().rect_filled(pill, t.radius(15.0), t.canvas);
     let mut pill_ui =
         ui.new_child(egui::UiBuilder::new().max_rect(pill.shrink2(vec2(10.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     pill_ui.spacing_mut().item_spacing.x = 3.0;
@@ -200,7 +251,7 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
             let c = crate::theme::label_color(l);
             pill_ui.painter().rect_filled(r.shrink(1.0), 2.0, if current == Some(l) || resp.hovered() { c } else { c.gamma_multiply(0.75) });
             if current == Some(l) {
-                pill_ui.painter().rect_stroke(r, 3.0, egui::Stroke::new(1.5, t.text), egui::StrokeKind::Outside);
+                pill_ui.painter().rect_stroke(r, t.radius(3.0), egui::Stroke::new(1.5, t.text), egui::StrokeKind::Outside);
             }
             if resp.clicked() {
                 // a click on the photo's own label takes it off, as the label shortcuts do
@@ -218,7 +269,7 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     let cresp = ui.interact(copy_r, egui::Id::new("copy-settings"), Sense::click());
     crate::widgets::announce(&cresp, label.to_string());
     register(ui.ctx(), "button:copySettings", copy_r);
-    ui.painter().rect_filled(copy_r, 15.0, if cresp.hovered() { t.hover } else { t.canvas });
+    ui.painter().rect_filled(copy_r, t.radius(15.0), if cresp.hovered() { t.hover } else { t.canvas });
     ui.painter().text(copy_r.center(), Align2::CENTER_CENTER, label, t.font(13.0), if active.is_some() { t.text_label } else { t.text_disabled });
     if cresp.clicked() && active.is_some() {
         let _ = if has_clip { app.run("develop.paste", json!({})) } else { app.run("develop.copy", json!({})) };
@@ -229,22 +280,43 @@ fn centre(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, from: f32, to: f32) {
     let gresp = ui.interact(gear_r, egui::Id::new("copy-gear"), Sense::click());
     crate::widgets::announce(&gresp, crate::i18n::tr("Copy Settings…"));
     register(ui.ctx(), "icon:copyGear", gear_r);
-    ui.painter().rect_filled(gear_r, 15.0, if gresp.hovered() { t.hover } else { t.canvas });
+    ui.painter().rect_filled(gear_r, t.radius(15.0), if gresp.hovered() { t.hover } else { t.canvas });
     paint(ui.painter(), gear_r.shrink(7.0), Icon::Gear, t.icon);
     if gresp.clicked() {
         let _ = app.run("dialog.copySettings", json!({}));
     }
 }
 
-/// The right-hand group (zoom, view toggles or thumbnail size); returns its left edge.
-fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: bool) -> f32 {
+/// The right-hand group (zoom, view toggles or thumbnail size), the Auto Sync switch named when
+/// `labelled`; returns its left edge and whether the switch was drawn with its name.
+fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: bool, labelled: bool) -> (f32, bool) {
     let t = Tokens::get(ui.ctx());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(Rect::from_min_max(pos2((full.right() - 360.0).max(full.left()), full.top()), full.right_bottom()))
+            .max_rect(Rect::from_min_max(
+                pos2((full.right() - if app.compact() { 540.0 } else { 360.0 }).max(full.left()), full.top()),
+                full.right_bottom(),
+            ))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     child.spacing_mut().item_spacing.x = 6.0;
+    // Compact: Auto Sync at the far right in the library, so one glance says whether an edit goes to
+    // every selected photo (gone on a very narrow bar, its name too when it does not fit: Edit ▸ Auto
+    // Sync and the switch under the Edit panel are always there)
+    let mut label_drawn = false;
+    if app.compact() && !app.importing() && full.width() >= 360.0 {
+        let on = app.session.auto_sync;
+        label_drawn = labelled;
+        if auto_sync_switch(&mut child, &t, on, labelled).clicked()
+            && let Err(e) = app.run("develop.autoSync", json!({"on": !on}))
+        {
+            app.toast_error(child.ctx(), e);
+        }
+        child.add_space(10.0);
+        let (sep, _) = child.allocate_exact_size(vec2(1.0, 22.0), Sense::hover());
+        child.painter().rect_filled(sep, 0.0, t.button_border);
+        child.add_space(10.0);
+    }
     if matches!(app.ui.view, ViewMode::Compare | ViewMode::Survey)
         && icon_button(
             &mut child,
@@ -260,7 +332,8 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
         let _ = app.run("view.autoAdvance", json!({}));
     }
     if app.ui.view == ViewMode::Survey {
-        // no zoom or thumbnail size in Survey
+        // no zoom in Survey; the filmstrip size takes the thumbnail slider's place
+        survey_film_slider(app, &mut child, &t);
     } else if matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare) {
         if icon_button(&mut child, "beforeAfter", Icon::BeforeAfter, vec2(30.0, 30.0), app.ui.before_after.is_layout(), true, "Before/After (Y)")
             .clicked()
@@ -327,7 +400,61 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
             }
         }
     }
-    if child.min_rect().width() > 0.0 { child.min_rect().left() } else { full.right() }
+    (if child.min_rect().width() > 0.0 { child.min_rect().left() } else { full.right() }, label_drawn)
+}
+
+/// The Compact bottom bar's Auto Sync switch (widget `toggle:autoSync`): its name (when `labelled`)
+/// and a small switch, filled with the accent colour while on.
+fn auto_sync_switch(ui: &mut egui::Ui, t: &Tokens, on: bool, labelled: bool) -> egui::Response {
+    let label = crate::i18n::tr("Auto Sync");
+    let text = if on { Color32::WHITE } else { t.text_label };
+    let g = ui.painter().layout_no_wrap(if labelled { label.to_string() } else { String::new() }, t.font(12.0), text);
+    let knob_w = 22.0;
+    let w = if labelled { g.size().x + SWITCH_LABEL_PAD + knob_w + 14.0 } else { knob_w + 14.0 };
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
+    register(ui.ctx(), "toggle:autoSync", r);
+    let p = ui.painter();
+    let fill = if on {
+        t.accent
+    } else if resp.hovered() {
+        t.hover
+    } else {
+        t.button
+    };
+    // rounded as the bar's other buttons are (`icon_button`)
+    p.rect_filled(r, SWITCH_RADIUS, fill);
+    p.rect_stroke(r, SWITCH_RADIUS, Stroke::new(1.0, if on { t.accent } else { t.button_border }), StrokeKind::Inside);
+    if labelled {
+        p.galley(pos2(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, text);
+    }
+    // the switch: a track with its knob at the right when on
+    let track = Rect::from_center_size(pos2(r.right() - 8.0 - knob_w / 2.0, r.center().y), vec2(knob_w, 12.0));
+    p.rect_filled(track, 6.0, if on { Color32::from_white_alpha(90) } else { t.track });
+    let kx = if on { track.right() - 6.0 } else { track.left() + 6.0 };
+    p.circle_filled(pos2(kx, track.center().y), 5.0, if on { Color32::WHITE } else { t.thumb });
+    let tip = if on { "Auto Sync is on: edits change every selected photo" } else { "Auto Sync is off: edits change the active photo only" };
+    resp.on_hover_text(crate::i18n::tr(tip))
+}
+
+/// Survey's filmstrip size slider (widget `slider:filmSize`): the filmstrip's height, the one its
+/// top edge drags and the loupe views share, offered between 100 and 240 points.
+fn survey_film_slider(app: &mut LccApp, child: &mut egui::Ui, t: &Tokens) {
+    const RANGE: (f32, f32) = (100.0, 240.0);
+    let (r, resp) = child.allocate_exact_size(vec2(110.0, 20.0), Sense::click_and_drag());
+    crate::widgets::announce(&resp, crate::i18n::tr("Filmstrip size"));
+    register(child.ctx(), "slider:filmSize", r);
+    let p = child.painter();
+    let y = r.center().y;
+    p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], egui::Stroke::new(2.0, t.track));
+    let f = ((app.ui.film_height() - RANGE.0) / (RANGE.1 - RANGE.0)).clamp(0.0, 1.0);
+    p.rect_filled(Rect::from_center_size(pos2(r.left() + f * r.width(), y), vec2(3.0, 14.0)), 1.0, t.thumb_hover);
+    if let Some(pp) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked())
+    {
+        let f = ((pp.x - r.left()) / r.width()).clamp(0.0, 1.0);
+        app.ui.film_height = crate::state::FILM_HEIGHT.clamp(RANGE.0 + f * (RANGE.1 - RANGE.0));
+    }
 }
 
 /// The thumbnail size slider at the right end of a grid's toolbar.
