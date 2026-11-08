@@ -340,10 +340,11 @@ struct Frame {
     source: crate::media::SourceRef,
 }
 
-/// The photos a measurement acts on: `ids` as given, else the active photo. Each must be in the
-/// library and carry an entry of plug-in `plugin`; a photo without one is an error that names it,
-/// so a roll isn't measured with a frame missing.
-fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, plugin: &str, name: &str) -> Result<Vec<Frame>> {
+/// The photos a measurement acts on: `ids` as given, else the active photo. On the active photo
+/// it is entry `uid`, the one the caller named (a photo may carry several entries of a plug-in);
+/// every other photo must be in the library and carry an entry of plug-in `plugin`, its first, and
+/// a photo without one is an error that names it, so a roll isn't measured with a frame missing.
+fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, uid: u32, plugin: &str, name: &str) -> Result<Vec<Frame>> {
     let ids = super::photo_ids(p, c)?.unwrap_or_else(|| vec![active]);
     if ids.is_empty() {
         return Err(bad(c, "`ids` names no photo"));
@@ -361,7 +362,7 @@ fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, plugin: &str, na
         let entry = settings
             .plugin_filters
             .iter()
-            .find(|f| f.plugin == plugin)
+            .find(|f| if id == active { f.uid == uid } else { f.plugin == plugin })
             .cloned()
             .ok_or_else(|| bad(c, format!("photo {} has no {name} filter: apply it there first (develop.pluginFilter.applyTo)", id.0)))?;
         let source = s.media.source_ref(&photo, crate::media::SourceLevel::Preview);
@@ -383,7 +384,7 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     if roll && !filter.has_merge() {
         return Err(bad(c, format!("unsupported: plug-in {:?} can't measure a roll (no pc_merge)", f.plugin)));
     }
-    let frames = frames(s, p, c, id, &f.plugin, &f.name)?;
+    let frames = frames(s, p, c, id, f.uid, &f.plugin, &f.name)?;
     let keys: Vec<(PhotoId, u32)> = frames.iter().map(|fr| (fr.photo, fr.entry.uid)).collect();
     if keys.iter().any(|k| s.plugin_analyzing(k.0, k.1)) {
         return Ok(json!({ "started": false, "running": true }));

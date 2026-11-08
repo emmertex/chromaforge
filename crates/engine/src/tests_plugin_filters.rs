@@ -251,6 +251,35 @@ fn analyze_runs_in_the_background_and_lands_one_history_step() {
     s.execute("plugin.uninstall", &json!({"id": "test.engine.measure"})).unwrap();
 }
 
+/// Two entries of one plug-in on a photo: a measurement of the second is run on, stored on and
+/// shown running for the second, and leaves the first alone.
+#[test]
+fn a_measurement_lands_on_the_entry_it_names_when_a_plugin_has_two() {
+    let mut s = Session::with_demo();
+    let m = r#"{"id":"test.engine.twice","name":"Twice","kind":"filter"}"#;
+    install_bytes(&mut s, "test.engine.twice", &module(m, Some(r#"{"base":[0.8,0.5,0.3]}"#)));
+    let add = |s: &mut Session| s.execute("develop.pluginFilter.add", &json!({"plugin": "test.engine.twice"})).unwrap()["uid"].as_u64().unwrap();
+    let (first, second) = (add(&mut s), add(&mut s));
+    assert_ne!(first, second);
+    let photo = s.active().unwrap();
+    s.execute("develop.pluginFilter.analyze", &json!({"uid": second})).unwrap();
+    assert!(s.plugin_analyzing(photo, second as u32), "the entry named is the one running");
+    assert!(!s.plugin_analyzing(photo, first as u32));
+    pump_until_idle(&mut s);
+    let analysis = |s: &mut Session, uid: u64| {
+        let st = s.execute("develop.pluginFilter.list", &json!({})).unwrap();
+        st["filters"].as_array().unwrap().iter().find(|f| f["uid"] == uid).unwrap()["analysis"].clone()
+    };
+    assert_eq!(analysis(&mut s, second), json!({"base": [0.8, 0.5, 0.3]}));
+    assert!(analysis(&mut s, first).is_null(), "the first entry is left alone");
+    // `wait` does the same
+    s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": second, "analysis": null})).unwrap();
+    let r = s.execute("develop.pluginFilter.analyze", &json!({"uid": first, "wait": true})).unwrap();
+    assert_eq!(r["analyses"][0]["uid"], first);
+    assert!(analysis(&mut s, second).is_null());
+    s.execute("plugin.uninstall", &json!({"id": "test.engine.twice"})).unwrap();
+}
+
 #[test]
 fn a_batch_measures_each_selected_photo_and_a_roll_shares_one_measurement() {
     let mut s = Session::with_demo();
