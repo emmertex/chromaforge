@@ -195,33 +195,36 @@ fn local_point_colors(d: vec3<f32>, i: u32, n: u32) -> vec3<f32> {
     return oklab_inv(vec3<f32>(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z)));
 }
 
-// `PrimariesK::apply` (the colourist wheels): the Color wheels over their wide zones (lift and
-// gamma tilt additively, gain scales the highlights, offset moves everything), then the Log wheels
-// over their narrow zones between PRIM_LOW and PRIM_HIGH — both sets, complimentary as Resolve's.
+// `PrimariesK::apply` (the colourist wheels). The Color wheels are ASC CDL's SOP per channel —
+// lift's affine `x·(1−l)+l` pivots at white, gain's multiply at black, gamma a power, offset adds
+// last — then the Log wheels refine over their narrow zones between PRIM_LOW and PRIM_HIGH.
 fn primaries(rgb: vec3<f32>) -> vec3<f32> {
     if (pu(F_PRIMARIES) == 0u) {
         return rgb;
     }
     let t = clamp(lum2020(rgb), 0.0, 1.0);
-    // the Color wheels' wide zones, then the Log wheels' narrow ones
-    let cws = 1.0 - sstep(0.0, 0.9, t);
-    let cwh = sstep(0.1, 1.0, t);
-    let cwm = max(1.0 - cws - cwh, 0.0);
     let lm = clamp(pf(F_PRIM_LOW), 0.02, 0.9);
     let hm = clamp(pf(F_PRIM_HIGH), lm + 0.05, 0.98);
     let lws = 1.0 - sstep(lm - 0.10, lm + 0.10, t);
     let lwh = sstep(hm - 0.10, hm + 0.10, t);
     let lwm = max(1.0 - lws - lwh, 0.0);
-    var o = rgb;
-    o += (vec3<f32>(pf(F_PRIM_LIFT), pf(F_PRIM_LIFT + 1u), pf(F_PRIM_LIFT + 2u)) + vec3<f32>(pf(F_PRIM_LIFT + 3u))) * cws;
-    o += (vec3<f32>(pf(F_PRIM_GAMMA), pf(F_PRIM_GAMMA + 1u), pf(F_PRIM_GAMMA + 2u)) + vec3<f32>(pf(F_PRIM_GAMMA + 3u))) * cwm;
-    o *= vec3<f32>(1.0) + (vec3<f32>(pf(F_PRIM_GAIN), pf(F_PRIM_GAIN + 1u), pf(F_PRIM_GAIN + 2u)) + vec3<f32>(pf(F_PRIM_GAIN + 3u))) * cwh;
-    o += vec3<f32>(pf(F_PRIM_OFFSET), pf(F_PRIM_OFFSET + 1u), pf(F_PRIM_OFFSET + 2u)) + vec3<f32>(pf(F_PRIM_OFFSET + 3u));
-    o += (vec3<f32>(pf(F_PRIM_SHADOW), pf(F_PRIM_SHADOW + 1u), pf(F_PRIM_SHADOW + 2u)) + vec3<f32>(pf(F_PRIM_SHADOW + 3u))) * lws;
-    o += (vec3<f32>(pf(F_PRIM_MIDTONE), pf(F_PRIM_MIDTONE + 1u), pf(F_PRIM_MIDTONE + 2u)) + vec3<f32>(pf(F_PRIM_MIDTONE + 3u))) * lwm;
-    o *= vec3<f32>(1.0) + (vec3<f32>(pf(F_PRIM_HIGHLIGHT), pf(F_PRIM_HIGHLIGHT + 1u), pf(F_PRIM_HIGHLIGHT + 2u)) + vec3<f32>(pf(F_PRIM_HIGHLIGHT + 3u))) * lwh;
-    o += vec3<f32>(pf(F_PRIM_LOG_OFFSET), pf(F_PRIM_LOG_OFFSET + 1u), pf(F_PRIM_LOG_OFFSET + 2u)) + vec3<f32>(pf(F_PRIM_LOG_OFFSET + 3u));
-    return max(o, vec3<f32>(0.0));
+    var o = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        let l = pf(F_PRIM_LIFT + k) + pf(F_PRIM_LIFT + 3u);
+        let g = pf(F_PRIM_GAIN + k) + pf(F_PRIM_GAIN + 3u);
+        let p = pf(F_PRIM_GAMMA + k) + pf(F_PRIM_GAMMA + 3u);
+        var x = rgb[k] * (1.0 - l) + l;
+        x = max(x * (1.0 + g), 0.0);
+        let e = clamp(1.0 / (1.0 + p), 0.25, 4.0);
+        x = pow(max(x, 0.0), e);
+        x += pf(F_PRIM_OFFSET + k) + pf(F_PRIM_OFFSET + 3u);
+        x += (pf(F_PRIM_SHADOW + k) + pf(F_PRIM_SHADOW + 3u)) * lws;
+        x += (pf(F_PRIM_MIDTONE + k) + pf(F_PRIM_MIDTONE + 3u)) * lwm;
+        x *= 1.0 + (pf(F_PRIM_HIGHLIGHT + k) + pf(F_PRIM_HIGHLIGHT + 3u)) * lwh;
+        x += pf(F_PRIM_LOG_OFFSET + k) + pf(F_PRIM_LOG_OFFSET + 3u);
+        o[k] = max(x, 0.0);
+    }
+    return o;
 }
 
 // `ColorOps::apply`.
