@@ -418,6 +418,7 @@ pub fn read_with_progress(path: &Path, cancel: &AtomicBool, total: &AtomicUsize,
                 history: Vec::new(),
                 snapshots: Vec::new(),
                 original: original.clone(),
+                as_shot_white: None,
             });
             if master == 0 {
                 master = variant_pk;
