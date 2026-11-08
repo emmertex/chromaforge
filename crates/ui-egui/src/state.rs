@@ -529,6 +529,8 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
+    pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
     pub wheel_resizes_brush: bool,
     /// View ▸ View Options ▸ Show message when loading or rendering photos: the loupe says
@@ -716,6 +718,7 @@ impl Default for AppSettings {
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
             keymap: Default::default(),

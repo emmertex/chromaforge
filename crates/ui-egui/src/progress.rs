@@ -182,6 +182,8 @@ pub fn paint_spinner(p: &egui::Painter, rect: Rect, color: Color32, time: f64) {
     let size = rect.width().min(rect.height());
     let width = (size / 8.0).max(1.5);
     let radius = ((size - width) / 2.0).max(0.5);
+    // Reduce motion: the arc stands still
+    let time = if crate::motion::reduced(p.ctx()) { 0.0 } else { time };
     p.add(Shape::line(arc_points(rect.center(), radius, time), Stroke::new(width, color)));
 }
 
@@ -193,7 +195,9 @@ pub fn spinner(ui: &mut Ui, size: f32) -> Response {
     resp.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ProgressIndicator));
     if ui.is_rect_visible(rect) {
         paint_spinner(ui.painter(), rect, t.text_dim, ui.input(|i| i.time));
-        ui.ctx().request_repaint_after(FRAME);
+        if !crate::motion::reduced(ui.ctx()) {
+            ui.ctx().request_repaint_after(FRAME);
+        }
     }
     resp
 }

@@ -67,6 +67,7 @@ mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
+pub mod motion;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -2768,6 +2769,7 @@ impl LccApp {
         let ctx = ui.ctx().clone();
         widgets::sync_section_folds(&ctx, &mut self.ui.section_open);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        motion::set(&ctx, self.ui.settings.reduce_motion);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;

@@ -5958,6 +5958,22 @@ mod tests {
         assert_eq!(h.app.ui.settings.loupe_info.briefly, InfoOverlay::Off, "a refused change changes nothing");
     }
 
+    /// With Reduce motion on, a click-zoom lands at once: the animation flag clears on the next frame.
+    #[test]
+    fn reduce_motion_zooms_at_once() {
+        let mut h = demo([1000.0, 700.0]);
+        let t = Duration::from_secs(10);
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        h.app.ui.settings.reduce_motion = true;
+        h.step();
+        assert!(crate::motion::reduced(&h.view.ctx));
+        h.request("ui.clickWidget", json!({"id": "canvas:image", "fx": 0.5, "fy": 0.5}), t);
+        h.step();
+        h.step();
+        assert!(!h.app.ui.zoom_anim, "no glide with Reduce motion");
+    }
+
     /// A click on the image zooms to the chosen click-zoom ratio (1:1 by default), animating the
     /// loupe while rendering once at the final size; Z uses the same ratio; a second click returns to Fit.
     #[test]
