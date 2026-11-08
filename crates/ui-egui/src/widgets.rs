@@ -1803,8 +1803,13 @@ pub fn icon_button_named(ui: &mut Ui, id: &str, icon: Icon, size: egui::Vec2, ac
     let sq = Rect::from_center_size(r.center(), vec2(32.0f32.min(size.x), 32.0f32.min(size.y)));
     if active {
         p.rect_filled(sq, 4.0, t.tool_active);
+    } else if resp.is_pointer_button_down_on() && enabled {
+        p.rect_filled(sq, 4.0, t.pressed);
     } else if resp.hovered() && enabled {
-        p.rect_filled(sq, 4.0, t.hover.gamma_multiply(0.7));
+        p.rect_filled(sq, 4.0, t.hover);
+    }
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let c = if !enabled {
         t.text_disabled
