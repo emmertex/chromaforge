@@ -278,6 +278,9 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
     if m.lens.is_empty() {
         m.lens = src.lens.clone();
     }
+    if m.lens_make.is_empty() {
+        m.lens_make = src.lens_make.clone();
+    }
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
     }

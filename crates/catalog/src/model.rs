@@ -198,6 +198,9 @@ pub struct Meta {
     /// two bodies of one model apart for their own camera profiles ([`Meta::camera_model`] says the model).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub camera_serial: String,
+    /// The lens maker (Exif `LensMake`), written back on export. Left out of the catalog JSON when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lens_make: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
