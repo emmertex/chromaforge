@@ -938,9 +938,17 @@ fn a_filter_plugins_declared_key_adds_it_to_the_selection() {
     lcc_engine::filter_plugins::install_in_memory(&wat::parse_str(&src).unwrap()).unwrap();
     let id = format!("{}test.keymap.neg", crate::shortcuts::PLUGIN_ADD);
     let b = crate::shortcuts::find_bindable(&id).expect("an installed filter is bindable");
-    assert_eq!((b.label, b.default()), ("Add Neg", Some("Ctrl+Alt+N")));
+    // New Smart Collection has Cmd+Alt+N: the same press as Ctrl+Alt+N except on macOS, where the
+    // declared key is free; elsewhere the filter starts without one and the user gives it the key
+    let mac = cfg!(target_os = "macos");
+    assert_eq!((b.label, b.default()), ("Add Neg", if mac { Some("Ctrl+Alt+N") } else { None }));
 
     let mut h = demo();
+    if !mac {
+        // given the key, the filter takes it from New Smart Collection
+        let r = h.app.run("app.setShortcut", json!({"id": id, "shortcut": "Ctrl+Alt+N"})).unwrap();
+        assert!(r["removedFrom"].as_array().is_some_and(|l| l.iter().any(|c| c == "dialog.newSmartAlbum")), "{r}");
+    }
     let ids: Vec<u64> = h.app.session.catalog.photos().take(2).map(|p| p.id.0).collect();
     h.app.run("library.select", json!({"ids": ids})).unwrap();
     h.step();

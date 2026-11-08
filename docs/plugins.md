@@ -619,7 +619,9 @@ Hosts without the field show a flat list. `plugin.list` gives them as `sections`
 "Ctrl+Alt+N"` (`Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined with `+`; `Cmd` is ⌘ on macOS and
 Ctrl elsewhere, `Ctrl` the Control key everywhere). Every installed filter is a command *Add
 <name>* in Help ▸ Keyboard Shortcuts (id `pluginFilter.add:<plug-in id>`), with the manifest's
-key as its default when the key is free, else none; the user binds or changes it like any other.
+key as its default when the key is free on this platform's keyboard, else none (on Windows and
+Linux `Ctrl` is `Cmd`, so a key another command has as `Cmd+…` is taken there); the user binds or
+changes it like any other, and giving the filter a taken key moves the key to it.
 The key runs `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of the plug-in (its
 defaults, its stage) on every selected photo that has none, in one History step, then opens
 Develop ▸ Plug-in Filters and says what it did. `plugin.list` shows the manifest's key as

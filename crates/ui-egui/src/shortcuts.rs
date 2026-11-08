@@ -68,20 +68,33 @@ pub fn bindable() -> &'static [Bindable] {
     let filters: Vec<(String, String, Option<String>)> =
         registry.list().iter().map(|f| (f.id().to_string(), f.manifest().name.clone(), f.manifest().shortcut.clone())).collect();
     let mut v = fixed.clone();
-    let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).collect();
+    let fixed_keys: Vec<(Modifiers, Key)> = v.iter().filter_map(|b| b.default.and_then(parse)).map(same_key).collect();
     for (id, name, sc) in &filters {
         let bid = intern(&format!("{PLUGIN_ADD}{id}"));
         if v.iter().any(|b| b.id == bid) {
             continue;
         }
-        // a declared key another command declares too stays with that command: the user may bind it
-        let default = sc.as_deref().filter(|sc| parse(sc).is_some_and(|k| !fixed_keys.contains(&k))).map(intern);
+        // a declared key another command declares too, on this platform's keyboard (Ctrl+Alt+N is
+        // Cmd+Alt+N on Windows and Linux), stays with that command: the user may still give it to
+        // the filter in Keyboard Shortcuts, which takes it from the other command
+        let default = sc.as_deref().filter(|sc| parse(sc).is_some_and(|k| !fixed_keys.contains(&same_key(k)))).map(intern);
         v.push(Bindable { id: bid, label: intern(&format!("Add {name}")), default });
     }
     // rebuilt only when a filter is installed or removed: a few leaked strings per change
     let list: &'static [Bindable] = Box::leak(v.into_boxed_slice());
     *all = Some((generation, list));
     list
+}
+
+/// A key as the platform's keyboard presses it: on Windows and Linux `Ctrl` and `Cmd` are the one
+/// Control key, so `Ctrl+Alt+N` and `Cmd+Alt+N` are the same press there (on macOS they differ).
+/// Conflicts between shortcuts are judged on this, so giving one command `Ctrl+Alt+N` there takes
+/// `Cmd+Alt+N` from another.
+fn same_key((m, k): (Modifiers, Key)) -> (Modifiers, Key) {
+    if cfg!(target_os = "macos") || !m.ctrl {
+        return (m, k);
+    }
+    (Modifiers { ctrl: false, command: true, ..m }, k)
 }
 
 /// The id family of the *Add <filter>* shortcuts: `pluginFilter.add:<plug-in id>`, which runs
@@ -125,9 +138,10 @@ pub fn binding<'a>(keymap: &'a Keymap, id: &str, default: Option<&'a str>) -> Op
 /// Whether the keymap gives the key `sc` to a known command other than `id` and its contextual
 /// partner.
 fn assigned_elsewhere(keymap: &Keymap, id: &str, sc: &str) -> bool {
-    let Some(key) = parse(sc) else { return false };
-    saved_keys(keymap)
-        .any(|(other, k)| other != id && k == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other)))
+    let Some(key) = parse(sc).map(same_key) else { return false };
+    saved_keys(keymap).any(|(other, k)| {
+        other != id && same_key(k) == key && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == other) || (*y == id && *x == other))
+    })
 }
 
 /// The keys the keymap gives to known commands, with each command's id. Entries for commands this
@@ -148,11 +162,11 @@ pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"),
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
-    let Some(key) = parse(sc) else { return vec![] };
+    let Some(key) = parse(sc).map(same_key) else { return vec![] };
     bindable()
         .iter()
         .filter(|b| b.id != id && !CONTEXTUAL.iter().any(|(x, y)| (*x == id && *y == b.id) || (*y == id && *x == b.id)))
-        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse) == Some(key))
+        .filter(|b| binding(keymap, b.id, b.default()).and_then(parse).map(same_key) == Some(key))
         .map(|b| b.id)
         .collect()
 }
