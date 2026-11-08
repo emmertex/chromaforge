@@ -206,6 +206,12 @@ pub struct Meta {
     pub aperture: Option<f32>,
     pub shutter: String,
     pub iso: Option<u32>,
+    /// Whether the flash fired (Exif `Flash`); `None` when the file does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+    /// Exposure compensation in EV (Exif `ExposureBiasValue`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_bias: Option<f32>,
     /// The lens's focal range (mm, shortest and longest), from the file's LensSpecification: the loupe's shot info
     /// adds it to a lens name that doesn't say it (OneSlips PERF-CULL-7 a5f6da85e). Left out of the catalog JSON when
     /// unknown, so older catalogs read unchanged.
