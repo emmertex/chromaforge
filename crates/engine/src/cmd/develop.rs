@@ -13,6 +13,18 @@ fn active(s: &Session, c: &str) -> Result<PhotoId> {
 }
 
 /// Modify the active photo's settings with `f` and commit (or preview during an interaction).
+/// Auto's tone and colour numbers onto a photo's settings.
+fn set_auto_tone(d: &mut DevelopSettings, a: &lcc_pipeline::auto::AutoTone) {
+    d.light.exposure = a.exposure;
+    d.light.contrast = a.contrast;
+    d.light.highlights = a.highlights;
+    d.light.shadows = a.shadows;
+    d.light.whites = a.whites;
+    d.light.blacks = a.blacks;
+    d.color.vibrance = a.vibrance;
+    d.color.saturation = a.saturation;
+}
+
 fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut DevelopSettings) -> Result<()>) -> Result<Value> {
     let id = active(s, c)?;
     let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
@@ -727,20 +739,47 @@ pub fn specs() -> Vec<CommandSpec> {
             // Source plug-in filters (e.g. a negative conversion) change what the photo is
             let src = lcc_pipeline::plugin_filters::filtered_source(&src, &info, &d, 1024);
             let a = lcc_pipeline::auto::auto_tone(&src, &info, &d);
-            edit(s, "develop.auto", "Auto", |d| {
-                d.light.exposure = a.exposure;
-                d.light.contrast = a.contrast;
-                d.light.highlights = a.highlights;
-                d.light.shadows = a.shadows;
-                d.light.whites = a.whites;
-                d.light.blacks = a.blacks;
-                d.color.vibrance = a.vibrance;
-                d.color.saturation = a.saturation;
-                Ok(())
-            })?;
-            if let Some(d) = s.develop_of(id) {
-                let values = Session::auto_values(&d);
-                s.auto_applied.insert(id, values);
+            // With Auto Sync on, every other selected photo gets its own Auto (worked out on its own pixels), not
+            // the active photo's numbers (upstream #3808, in our own form); one undo step. A photo that can't
+            // be read keeps its settings.
+            if s.auto_sync_applies(id, "Auto") {
+                let others: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
+                let mut picks = vec![(id, a)];
+                for x in others {
+                    let Ok(xsrc) = s.source_now(x, SourceLevel::Thumb) else { continue };
+                    let (xinfo, xd) = (s.source_info(x), s.develop_of(x).unwrap_or_default());
+                    let xsrc = lcc_pipeline::plugin_filters::filtered_source(&xsrc, &xinfo, &xd, 1024);
+                    picks.push((x, lcc_pipeline::auto::auto_tone(&xsrc, &xinfo, &xd)));
+                }
+                let mut ops: Vec<Op> = Vec::new();
+                let mut done: Vec<PhotoId> = Vec::new();
+                for (x, ax) in picks {
+                    let mut nd = (*s.develop_of(x).unwrap_or_default()).clone();
+                    set_auto_tone(&mut nd, &ax);
+                    if let Some(op) = s.develop_op(x, nd, "Auto") {
+                        ops.push(op);
+                        done.push(x);
+                    }
+                }
+                s.end_interaction()?;
+                if !ops.is_empty() {
+                    s.commit("Auto", Op::Batch { ops })?;
+                }
+                for x in done {
+                    if let Some(d) = s.develop_of(x) {
+                        let values = Session::auto_values(&d);
+                        s.auto_applied.insert(x, values);
+                    }
+                }
+            } else {
+                edit(s, "develop.auto", "Auto", |d| {
+                    set_auto_tone(d, &a);
+                    Ok(())
+                })?;
+                if let Some(d) = s.develop_of(id) {
+                    let values = Session::auto_values(&d);
+                    s.auto_applied.insert(id, values);
+                }
             }
             let mut r = serde_json::to_value(a).unwrap_or_default();
             if let Some(o) = r.as_object_mut() {
