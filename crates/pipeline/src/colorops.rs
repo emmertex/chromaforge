@@ -370,12 +370,21 @@ pub struct PrimaryK {
     pub master: f32,
 }
 
-/// Puck strength: the per-channel offset (or, for gain, scale) a full-saturation wheel gives.
+/// Puck strength: the per-channel offset (or, for gain, scale) a full-saturation wheel gives at
+/// strength 1.
 pub const PRIMARY_PUCK: f32 = 0.15;
-/// Master-wheel strength of the additive wheels (lift, gamma, offset).
+/// Master-wheel strength of the additive wheels (lift, gamma, offset) at strength 1.
 pub const PRIMARY_MASTER: f32 = 0.15;
-/// Master-wheel strength of gain, which multiplies and so needs more to read at a glance.
+/// Gain's master wheel, which multiplies and so starts at twice the additive base, at strength 1.
 pub const PRIMARY_GAIN_MASTER: f32 = 0.3;
+
+/// How much stronger each wheel reads, by variant — (lift, gamma, gain, offset), tuned by eye on
+/// rendered photos: the additive lift and offset overshoot quickly (halved), gamma needs reach
+/// (×5), gain's highlights want pull (×3), and the Log variant's narrow highlights barely showed
+/// without ×10 (its shadows, like lift, halved; the midtones stay as tuned).
+pub fn primary_strength(log: bool) -> [f32; 4] {
+    if log { [0.5, 1.0, 10.0, 0.5] } else { [0.5, 5.0, 3.0, 0.5] }
+}
 
 /// The colourist primaries resolved once per render: lift, gamma, gain and offset wheels and the
 /// Log variant's range boundaries (see [`lcc_develop::Primaries`]). `None` when the wheels are
@@ -400,11 +409,12 @@ impl PrimariesK {
         if p.is_neutral() {
             return None;
         }
+        let f = primary_strength(p.log);
         Some(PrimariesK {
-            lift: primary_wheel(&p.lift, PRIMARY_MASTER),
-            gamma: primary_wheel(&p.gamma, PRIMARY_MASTER),
-            gain: primary_wheel(&p.gain, PRIMARY_GAIN_MASTER),
-            offset: primary_wheel(&p.offset, PRIMARY_MASTER),
+            lift: primary_wheel(&p.lift, PRIMARY_PUCK * f[0], PRIMARY_MASTER * f[0]),
+            gamma: primary_wheel(&p.gamma, PRIMARY_PUCK * f[1], PRIMARY_MASTER * f[1]),
+            gain: primary_wheel(&p.gain, PRIMARY_PUCK * f[2], PRIMARY_GAIN_MASTER * f[2]),
+            offset: primary_wheel(&p.offset, PRIMARY_PUCK * f[3], PRIMARY_MASTER * f[3]),
             log: p.log,
             low: p.low.clamp(0.0, 1.0) as f32,
             high: p.high.clamp(0.0, 1.0) as f32,
@@ -458,11 +468,13 @@ impl PrimariesK {
 
 /// A wheel's puck as a linear-Rec.2020 colour direction: the pure hue scaled by its saturation,
 /// and the master wheel scaled by `master_amt`.
-fn primary_wheel(w: &lcc_develop::Wheel, master_amt: f32) -> PrimaryK {
+/// A wheel's puck as a linear-Rec.2020 colour direction: the pure hue scaled by its saturation
+/// (`puck_amt`), and the master wheel scaled by `master_amt` ([`primary_strength`] tunes both).
+fn primary_wheel(w: &lcc_develop::Wheel, puck_amt: f32, master_amt: f32) -> PrimaryK {
     let c = hsv_to_rgb(w.hue.clamp(0.0, 360.0) as f32, 1.0, 1.0);
     let lin = c.map(lcc_color::transfer::srgb_to_linear);
     let v = SRGB.to_space(&REC2020).apply_f32(lin);
-    let s = (w.sat.clamp(0.0, 100.0) / 100.0) as f32 * PRIMARY_PUCK;
+    let s = (w.sat.clamp(0.0, 100.0) / 100.0) as f32 * puck_amt;
     PrimaryK { rgb: v.map(|k| k * s), master: (w.lum.clamp(-100.0, 100.0) / 100.0) as f32 * master_amt }
 }
 
@@ -729,6 +741,29 @@ mod tests {
         assert_eq!(a.exposure, 0.5);
         assert!(a.grading_wheels().iter().all(|w| w.hue == 0.0 && w.sat == 0.0 && w.lum == 0.0));
         assert!(local_grade_terms(&a).iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn the_wheels_strengths_match_their_variant() {
+        // the calibration the palette was tuned with: lift and offset halved, gamma ×5, gain ×3,
+        // and the Log variant's highlights ×10 of the Color ones (its midtones unchanged)
+        let full = lcc_develop::Wheel { hue: 0.0, sat: 100.0, lum: 100.0 };
+        let s = lcc_develop::Primaries { lift: full, gamma: full, gain: full, offset: full, ..Default::default() };
+        let color = PrimariesK::new(&s).unwrap();
+        let log = PrimariesK::new(&lcc_develop::Primaries { log: true, ..s }).unwrap();
+        let f = primary_strength(false);
+        // the master wheels carry no hue, so their amounts are exact; the puck goes by ratio
+        assert!((color.gain.master - PRIMARY_GAIN_MASTER * f[2]).abs() < 1e-6);
+        assert!((color.offset.master - PRIMARY_MASTER * f[3]).abs() < 1e-6);
+        assert!((color.gamma.rgb[0] / color.lift.rgb[0] - f[1] / f[0]).abs() < 1e-3);
+        let fl = primary_strength(true);
+        assert!((log.gain.master - PRIMARY_GAIN_MASTER * fl[2]).abs() < 1e-6);
+        assert!((log.gamma.rgb[0] - color.gamma.rgb[0] * fl[1] / f[1]).abs() < 1e-6, "the Log midtones keep the base strength");
+        // a full-saturation Log-gain puck is strong but stays finite on real values
+        for c in [[0.0, 0.0, 0.0], [0.9, 0.9, 0.9]] {
+            let out = log.apply(c);
+            assert!(out.iter().all(|v| v.is_finite()), "{c:?} -> {out:?}");
+        }
     }
 
     #[test]
