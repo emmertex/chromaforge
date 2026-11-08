@@ -3410,6 +3410,20 @@ mod tests {
         assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
     }
 
+    /// The crop mask strength is a setting that rejects unknown levels.
+    #[test]
+    fn crop_mask_opacity_command() {
+        let mut h = demo([1200.0, 800.0]);
+        let t = Duration::from_secs(10);
+        assert_eq!(h.app.ui.crop_mask_opacity, 60);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 20}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 33}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
+        assert_eq!(crate::state::crop_mask_alpha(100), 255);
+        assert_eq!(crate::state::crop_mask_alpha(0), 0);
+    }
+
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
     #[test]
     fn crop_keys() {

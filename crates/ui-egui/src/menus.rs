@@ -155,6 +155,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("crop.lockAspect", "Lock Aspect Ratio", Some("A"), ""),
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View>Tool Overlay"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View>Tool Overlay"),
+    ("view.cropMaskOpacity", "Crop Mask Opacity", None, ""),
     ("view.back", "Back to Grid", Some("Escape"), ""),
     ("tool.done", "Done", Some("Enter"), ""),
     ("view.filterBar", "Filter Bar", Some("Shift+F"), "Library>Filters"),
@@ -1643,6 +1644,18 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 None => Thirds,
             };
             Ok(json!({"overlay": app.ui.crop_overlay}))
+        }
+        "view.cropMaskOpacity" => {
+            let level = p
+                .get("opacity")
+                .and_then(Value::as_u64)
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| crate::state::CROP_MASK_OPACITY_LEVELS.contains(v));
+            let Some(opacity) = level else {
+                return Some(Err("view.cropMaskOpacity: opacity must be 0, 20, 50, 60, 80 or 100".into()));
+            };
+            app.ui.crop_mask_opacity = opacity;
+            Ok(json!({"opacity": opacity}))
         }
         "view.cropOverlayOrientation" => {
             app.ui.crop_overlay_orient = (app.ui.crop_overlay_orient + 1) % 4;

@@ -1101,6 +1101,16 @@ pub struct ToastAction {
     pub until: f64,
 }
 
+/// The crop-mask strengths (percent) the Crop panel and `view.cropMaskOpacity` offer; 0 is Off.
+pub const CROP_MASK_OPACITY_LEVELS: [u8; 6] = [0, 20, 50, 60, 80, 100];
+/// The strength a fresh settings file starts with (close to the former fixed alpha of 150).
+pub const DEFAULT_CROP_MASK_OPACITY: u8 = 60;
+
+/// The mask colour alpha (0..=255) for a strength in percent; anything above 100 counts as 100.
+pub fn crop_mask_alpha(percent: u8) -> u8 {
+    (u16::from(percent.min(100)) * 255 / 100) as u8
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -1320,6 +1330,8 @@ pub struct UiState {
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
+    pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
     /// chosen yet) crops locked to the photo's own shape, as Lightroom starts (#991).
     pub crop_default_aspect: Option<serde_json::Value>,
@@ -2379,6 +2391,7 @@ impl Default for UiState {
             crop_overlay: CropOverlay::Thirds,
             crop_default_aspect: None,
             crop_overlay_orient: 0,
+            crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
