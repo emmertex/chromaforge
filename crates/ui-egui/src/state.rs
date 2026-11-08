@@ -202,7 +202,7 @@ pub enum GradingMode {
     /// The Lightroom Classic panels, as the Edit panel always had them.
     Eboda,
     /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes
-    /// (the default — Chromaforge's own face, with Lightroom's panels one Settings row away).
+    /// (the default — the fork's own face, with Lightroom's panels one Settings row away).
     #[default]
     Witchcraft,
 }

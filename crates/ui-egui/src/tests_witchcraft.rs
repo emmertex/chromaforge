@@ -20,7 +20,7 @@ fn demo() -> Headless {
     assert_eq!(r["ok"], true, "{r}");
     let r = h.request("engine.execute", json!({"command": "view.gradingMode", "params": {"mode": "witchcraft"}}), T);
     assert_eq!(r["ok"], true, "{r}");
-    // the Primaries palette, on its own (Chromaforge's Resolve-style panels)
+    // the Primaries palette, on its own (the fork's Resolve-style panels)
     h.app.ui.solo_section("primaries");
     h.settle(SETTLE);
     h
