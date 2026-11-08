@@ -88,6 +88,8 @@ fn copy_delete_many_and_guarded_folder_delete() {
     assert_eq!((r["ids"].as_array().unwrap().len(), r["skipped"].clone()), (0, json!(1)));
     assert!(s.execute("preset.copy", &json!({"ids": ["no.such"], "group": "Mine"})).is_err());
     assert!(s.execute("preset.copy", &json!({"ids": [b.id]})).is_err());
+    assert!(s.execute("preset.deleteGroup", &json!({"group": "Mine", "expect": 5})).is_err());
+    assert!(s.presets.iter().any(|p| p.id == copy.id), "a wrong count deletes nothing");
     let r = s.execute("preset.deleteMany", &json!({"ids": [copy.id, b.id, "no.such"]})).unwrap();
     assert_eq!((r["deleted"].clone(), r["skipped"].clone()), (json!(1), json!(2)));
     assert!(s.presets.iter().any(|p| p.id == b.id), "built-ins stay");

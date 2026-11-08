@@ -1856,11 +1856,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"deleted": gone.len(), "skipped": ids.len().saturating_sub(gone.len())}))
             }
         ),
-        cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group}", always, |s, p| {
+        cmd!("preset.deleteGroup", "Delete Preset Folder", [], None, "{group, expect?: how many presets it should hold} — refused when `expect` is given and wrong", always, |s, p| {
             let c = "preset.deleteGroup";
             let group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
             if s.presets.iter().any(|q| q.builtin && in_group(q, group)) {
                 return Err(bad(c, "the group holds built-in presets, which can't be deleted: hide the group instead"));
+            }
+            if let Some(expect) = p.get("expect").and_then(Value::as_u64) {
+                let held = s.presets.iter().filter(|q| in_group(q, group)).count() as u64;
+                if held != expect {
+                    return Err(bad(c, format!("the folder holds {held} presets, not {expect}: nothing deleted")));
+                }
             }
             let prefix = format!("{group}/");
             s.preset_folders.retain(|f| f != group && !f.starts_with(&prefix));
