@@ -32,6 +32,7 @@
   "Choose SAM 3 Model Folder": "SAM 3 მოდელის საქაღალდის არჩევა",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "აშორებს ხმაურს raw ფოტოებიდან და, მათთვის შექმნილი მოდელით, JPEG-ისა და სხვა მზა სურათებიდანაც (AI ხმაურის მოცილების რაოდენობის სლაიდერი დეტალში). მოდელის გარეშე ჩაშენებული ხმაურის მომცილებელი გამოიყენება.",
   "Click a node to open its panel; click its number to bypass that stage.": "კვანძზე დაწკაპუნება ხსნის მის პანელს; ნომერზე დაწკაპუნება ამოღამებს ამ ეტაპს.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "დაწკაპუნება ამატებს წერტილს — გადაათრიეთ იქ, სადაც კორექციაა საჭირო. ორმაგი დაწკაპუნება წერტილს შლის.",
   "Click to dismiss": "დააწკაპუნეთ დასახურად",
   "Click to hide the overlay": "დააწკაპუნეთ ზედდების დასამალად",
   "Click to update it.": "დააწკაპუნეთ განსაახლებლად.",

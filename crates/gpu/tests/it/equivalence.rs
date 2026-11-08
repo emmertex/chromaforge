@@ -280,6 +280,11 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.primaries.low = 0.25;
             s.primaries.high = 0.8;
         }),
+        ("hsl curves", |s| {
+            s.hsl_curves.hue = vec![Point::new(0.55, -0.4), Point::new(0.8, 0.3)];
+            s.hsl_curves.sat = vec![Point::new(0.3, -0.6)];
+            s.hsl_curves.lum = vec![Point::new(0.65, 0.5)];
+        }),
         ("tone curves", |s| {
             s.curve.highlights = -30.0;
             s.curve.shadows = 25.0;

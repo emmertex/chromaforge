@@ -28,6 +28,7 @@
   "Choose a folder or card to browse first": "Valitse ensin selattava kansio tai kortti",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Poistaa kohinaa raw-kuvista ja niille tehdyllä mallilla myös JPEG- ja muista valmiista kuvista (Yksityiskohdat-osion tekoälykohinanpoiston määrä -liukusäädin). Ilman mallia käytetään sisäänrakennettua kohinanpoistoa.",
   "Click a node to open its panel; click its number to bypass that stage.": "Napsauta solmua avataksesi sen paneelin; napsauta numeroa ohittaaksesi vaiheen.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Lisää piste napsauttamalla ja vedä se sinne, jossa korjaus kuuluu. Kaksoisnapsautus poistaa pisteen.",
   "Click to dismiss": "Sulje napsauttamalla",
   "Click to hide the overlay": "Piilota peittokuva napsauttamalla",
   "Click to update it.": "Päivitä napsauttamalla.",

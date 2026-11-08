@@ -28,6 +28,7 @@
   "Choose a folder or card to browse first": "Pilih dulu folder atau kartu untuk dijelajahi",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Membersihkan noise dari foto raw dan, dengan model yang dibuat untuknya, dari JPEG dan gambar jadi lainnya (penggeser Jumlah pengurangan noise AI di Detail). Tanpa model, pengurang noise bawaan dipakai.",
   "Click a node to open its panel; click its number to bypass that stage.": "Klik simpul untuk membuka panelnya; klik nomornya untuk melewati tahap itu.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Klik untuk menambahkan titik dan seret ke tempat koreksinya. Klik ganda pada titik menghapusnya.",
   "Click to dismiss": "Klik untuk menutup",
   "Click to hide the overlay": "Klik untuk menyembunyikan overlay",
   "Click to update it.": "Klik untuk memperbaruinya.",

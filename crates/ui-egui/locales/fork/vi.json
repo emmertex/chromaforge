@@ -26,6 +26,7 @@
   "Choose a folder or card to browse first": "Hãy chọn trước thư mục hoặc thẻ để duyệt",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Khử nhiễu ảnh raw và, với mô hình dành cho chúng, cả JPEG và các ảnh hoàn thiện khác (thanh trượt Mức khử nhiễu AI trong Chi tiết). Không có mô hình thì dùng bộ khử nhiễu tích hợp.",
   "Click a node to open its panel; click its number to bypass that stage.": "Bấm vào một nút để mở bảng điều khiển của nó; bấm vào số để bỏ qua giai đoạn đó.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Bấm để thêm một điểm và kéo nó đến nơi cần chỉnh. Bấm đôi vào một điểm để xóa nó.",
   "Click to dismiss": "Nhấp để đóng",
   "Click to hide the overlay": "Nhấp để ẩn lớp phủ",
   "Click to update it.": "Nhấp để cập nhật.",

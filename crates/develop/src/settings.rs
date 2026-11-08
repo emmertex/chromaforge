@@ -306,6 +306,10 @@ pub struct DevelopSettings {
     /// without them keep their JSON and `hash64` (and every cached preview stays valid).
     #[serde(skip_serializing_if = "Primaries::is_default")]
     pub primaries: Primaries,
+    /// Resolve-style HSL curves (the Witchcraft mode's Curves): free points over the hue circle,
+    /// one curve each for hue, saturation and luminance. Not written while neutral.
+    #[serde(default, skip_serializing_if = "HslCurves::is_neutral")]
+    pub hsl_curves: HslCurves,
     pub effects: Effects,
     pub vignette: Vignette,
     pub grain: Grain,
@@ -423,6 +427,7 @@ impl Default for DevelopSettings {
             bw_mix: BwMix::default(),
             grading: ColorGrading::default(),
             primaries: Primaries::default(),
+            hsl_curves: HslCurves::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
             grain: Grain::default(),
@@ -966,6 +971,45 @@ impl Primaries {
     /// The wheels move nothing (the range boundaries alone cannot).
     pub fn is_neutral(&self) -> bool {
         [self.lift, self.gamma, self.gain, self.offset].iter().all(|w| w.sat == 0.0 && w.lum == 0.0)
+    }
+}
+
+/// Resolve's HSL curves ("the first word prompts the selection, and the second word affects the
+/// change"): free points anywhere over the hue circle — the curve bends through them, not through
+/// fixed colour bands. `x` is hue 0..1 around the OkLCh hue circle (0 = the hue the colour mixer
+/// calls red), `y` −1..1 (the curve's own strength).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HslCurves {
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub hue: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub sat: Vec<Point>,
+    #[serde(deserialize_with = "capped::<MAX_CURVE_POINTS, _, _>")]
+    pub lum: Vec<Point>,
+}
+
+impl HslCurves {
+    pub fn is_neutral(&self) -> bool {
+        self.hue.is_empty() && self.sat.is_empty() && self.lum.is_empty()
+    }
+
+    pub fn channel(&self, id: &str) -> Option<&Vec<Point>> {
+        match id {
+            "hue" => Some(&self.hue),
+            "sat" => Some(&self.sat),
+            "lum" => Some(&self.lum),
+            _ => None,
+        }
+    }
+
+    pub fn channel_mut(&mut self, id: &str) -> Option<&mut Vec<Point>> {
+        match id {
+            "hue" => Some(&mut self.hue),
+            "sat" => Some(&mut self.sat),
+            "lum" => Some(&mut self.lum),
+            _ => None,
+        }
     }
 }
 

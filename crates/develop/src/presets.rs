@@ -131,7 +131,7 @@ impl SettingsGroup {
             SettingsGroup::Light => &["light", "hdr"],
             SettingsGroup::ToneCurve => &["curve"],
             SettingsGroup::Color => &["color"],
-            SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors"],
+            SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors", "hsl_curves"],
             SettingsGroup::ColorGrading => &["grading"],
             SettingsGroup::Primaries => &["primaries"],
             SettingsGroup::Effects => &["effects"],

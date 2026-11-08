@@ -154,6 +154,64 @@ pub fn mask_point_ks(s: &DevelopSettings) -> Vec<Vec<PointK>> {
 /// Words of a resolved colour mixer ([`MixerK::words`]): hue, saturation, luminance of the 8 bands.
 pub const MIXER_WORDS: usize = 24;
 
+/// Entries in each HSL-curve LUT ([`HslK`]): hue positions around the OkLCh circle, plenty for a
+/// smooth spline read on the GPU as on the CPU.
+pub const HSL_LUT_N: usize = 128;
+/// f32s the GPU kernel reads for [`HslK`]: the hue, saturation and luminance LUTs in turn.
+pub const HSL_WORDS: usize = 3 * HSL_LUT_N;
+
+/// One HSL curve's value at hue position `x` (0..1 around the OkLCh hue circle): the monotone
+/// spline through the user's points, with the circle's ends pinned at neutral (0 = red, where the
+/// mixer's hue axis also starts). The curve a point anywhere shapes, not fixed colour bands.
+pub fn hsl_curve_at(points: &[lcc_geom::Point], x: f64) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let at = |p: &lcc_geom::Point| (p.x, p.y);
+    let mut all: Vec<(f64, f64)> = points.iter().map(at).collect();
+    all.push((0.0, 0.0));
+    all.push((1.0, 0.0));
+    lcc_color::spline::MonotoneCurve::new(&all).eval(x.clamp(0.0, 1.0))
+}
+
+/// The HSL curves resolved once per render: three LUTs of engine-unit deltas over the hue circle —
+/// hue in radians (±0.5 at ±1, the mixer's own hue scale), saturation as a scale (±1), luminance
+/// as an OkLab lightness shift (±0.18, the mixer's own). `None` when every curve is empty (and in
+/// a black-and-white rendition, as the colour mixer).
+#[derive(Clone, Debug)]
+pub struct HslK {
+    pub hue: [f32; HSL_LUT_N],
+    pub sat: [f32; HSL_LUT_N],
+    pub lum: [f32; HSL_LUT_N],
+}
+
+impl HslK {
+    pub fn new(c: &lcc_develop::HslCurves) -> Option<HslK> {
+        if c.is_neutral() {
+            return None;
+        }
+        let lut = |points: &[lcc_geom::Point], scale: f64| {
+            std::array::from_fn(|i| (hsl_curve_at(points, i as f64 / (HSL_LUT_N - 1) as f64) * scale) as f32)
+        };
+        Some(HslK { hue: lut(&c.hue, 0.5), sat: lut(&c.sat, 1.0), lum: lut(&c.lum, 0.18) })
+    }
+
+    /// The words the GPU kernel reads: hue, saturation and luminance LUTs in turn.
+    pub fn words(&self) -> Vec<f32> {
+        self.hue.iter().chain(&self.sat).chain(&self.lum).copied().collect()
+    }
+
+    /// The three curves' deltas at hue position `x` (0..1), as the per-pixel stage applies them.
+    #[inline]
+    pub fn at(&self, x: f32) -> [f32; 3] {
+        let f = (x.clamp(0.0, 1.0) * (HSL_LUT_N - 1) as f32).min((HSL_LUT_N - 2) as f32);
+        let i = f.floor() as usize;
+        let t = f - i as f32;
+        let lerp = |a: &[f32; HSL_LUT_N]| a[i] + (a[i + 1] - a[i]) * t;
+        [lerp(&self.hue), lerp(&self.sat), lerp(&self.lum)]
+    }
+}
+
 /// A colour mixer resolved for the per-pixel stage: per band, the hue shift (radians), the
 /// saturation scale and the luminance shift. The global mixer ([`ColorOps`]) and each mask's local
 /// one use the same maths ([`mixer_apply`]).
@@ -238,6 +296,8 @@ pub struct ColorOps {
     /// The colourist primaries ([`PrimariesK`]), applied before the colour tools: balance first,
     /// look after.
     pub primaries: Option<PrimariesK>,
+    /// The HSL curves ([`HslK`]), applied after the colour mixer on the same OkLCh values.
+    pub hsl: Option<HslK>,
     /// OkLCh hue of skin tones (protected by vibrance).
     pub skin: f32,
 }
@@ -269,6 +329,7 @@ impl ColorOps {
                 )
             }),
             primaries: PrimariesK::new(&s.primaries),
+            hsl: if crate::is_bw(s) { None } else { HslK::new(&s.hsl_curves) },
             skin: oklch_hue_of_srgb_hue(25.0),
         }
     }
@@ -281,6 +342,7 @@ impl ColorOps {
             && self.bw.is_none()
             && self.grading.is_none()
             && self.primaries.is_none()
+            && self.hsl.is_none()
     }
 
     /// `local_sat` (−1..1) and `local_hue` (radians) come from masks.
@@ -292,7 +354,7 @@ impl ColorOps {
         let lab = oklab_from_2020(rgb);
         // only chroma changes (vibrance / saturation, maybe grading): scale a, b directly — the same
         // result as the OkLCh round trip without its sin / cos (and atan2 unless vibrance needs the hue)
-        if !self.mixer && self.points.is_empty() && self.bw.is_none() && local_hue == 0.0 {
+        if !self.mixer && self.points.is_empty() && self.bw.is_none() && self.hsl.is_none() && local_hue == 0.0 {
             let mut lab = lab;
             let c0 = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
             let mut c = c0;
@@ -314,6 +376,16 @@ impl ColorOps {
         let [mut l, mut c, mut h] = lab_to_lch(lab);
         if self.mixer {
             [l, c, h] = mixer_apply(&self.hue, &self.sat, &self.lum, [l, c, h], 1.0);
+        }
+        // the HSL curves: the hue picks the place on each curve, the mixer's own scales apply the
+        // deltas (hue and luminance fading out towards neutrals, as the mixer's do)
+        if let Some(hsl) = &self.hsl {
+            let x = (h / TAU).rem_euclid(1.0);
+            let [dh, ds, dl] = hsl.at(x);
+            let chroma_w = (c / 0.12).min(1.0);
+            h += dh * chroma_w;
+            c *= (1.0 + ds).max(0.0);
+            l += dl * chroma_w * l.max(0.05).sqrt();
         }
         for p in &self.points {
             [l, c, h] = p.apply([l, c, h]);
@@ -764,6 +836,60 @@ mod tests {
             let out = log.apply(c);
             assert!(out.iter().all(|v| v.is_finite()), "{c:?} -> {out:?}");
         }
+    }
+
+    #[test]
+    fn hsl_curves_neutral_when_empty_and_targeted_when_not() {
+        assert!(HslK::new(&lcc_develop::HslCurves::default()).is_none());
+        // a curve on one channel only still counts
+        let mut s = DevelopSettings::default();
+        s.hsl_curves.sat = vec![lcc_geom::Point::new(0.5, 1.0)];
+        assert!(!ColorOps::new(&s).is_identity());
+        // in a black-and-white rendition the curves sit out, as the mixer does
+        let bw = DevelopSettings { treatment: lcc_develop::Treatment::Bw, ..s.clone() };
+        assert!(ColorOps::new(&bw).hsl.is_none());
+        // the spline passes through the point itself; the LUT samples it
+        let pts = [lcc_geom::Point::new(0.25, -1.0)];
+        assert!((hsl_curve_at(&pts, 0.25) + 1.0).abs() < 1e-9);
+        assert!((hsl_curve_at(&pts, 0.0)).abs() < 1e-9, "the hue axis's ends stay neutral");
+        let k = HslK::new(&lcc_develop::HslCurves { sat: pts.to_vec(), ..Default::default() }).unwrap();
+        let [_, ds, _] = k.at(0.25);
+        assert!(ds < -0.9, "the LUT reads the point: {ds}");
+        let [_, ds0, _] = k.at(0.02);
+        assert!(ds0.abs() < 0.3, "away from the point the curve eases out: {ds0}");
+    }
+
+    #[test]
+    fn an_hsl_saturation_curve_touches_only_its_hue() {
+        // a bump pinned between two flat points: the hue inside gains, a hue well outside stays
+        let mut s = DevelopSettings::default();
+        s.hsl_curves.sat = vec![lcc_geom::Point::new(0.3, 0.0), lcc_geom::Point::new(0.55, 0.9)];
+        let ops = ColorOps::new(&s);
+        let of_hue = |x: f32| {
+            let lab = lch_to_lab([0.5, 0.15, x * std::f32::consts::TAU]);
+            oklab_to_2020(lab)
+        };
+        let inside = of_hue(0.55);
+        let outside = of_hue(0.05);
+        let chroma = |rgb: [f32; 3]| lab_to_lch(oklab_from_2020(rgb))[1];
+        let i = chroma(ops.apply(inside, 0.0, 0.0));
+        let o = chroma(ops.apply(outside, 0.0, 0.0));
+        assert!(i > chroma(inside) * 1.5, "the hue under the point gains: {} -> {i}", chroma(inside));
+        assert!((o - chroma(outside)).abs() < 1e-3, "a hue beyond the pinned flat stays: {o}");
+    }
+
+    #[test]
+    fn hsl_curve_points_from_outside_clamp_and_cap() {
+        let v = DevelopSettings::from_untrusted_json(&serde_json::json!({
+            "hsl_curves": {"hue": [[-1.0, 5.0], [2.0, -9.0]], "lum": [[0.5, 0.25]]}
+        }))
+        .unwrap();
+        let hue = &v.hsl_curves.hue;
+        assert!(hue.iter().all(|p| (0.0..=1.0).contains(&p.x) && (-1.0..=1.0).contains(&p.y)), "{hue:?}");
+        // a hostile pile of points is capped on read, as the tone curve's are
+        let many: Vec<[f64; 2]> = (0..600).map(|i| [i as f64 / 600.0, 0.5]).collect();
+        let v = DevelopSettings::from_untrusted_json(&serde_json::json!({"hsl_curves": {"sat": many}})).unwrap();
+        assert!(v.hsl_curves.sat.len() <= lcc_develop::MAX_CURVE_POINTS);
     }
 
     #[test]

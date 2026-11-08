@@ -1541,6 +1541,8 @@ pub struct UiState {
     pub mixer_adjust: String,
     /// The HSL group shown: "hue" | "sat" | "lum" | "all".
     pub mixer_group: String,
+    /// The Witchcraft HSL Curves panel's curve: "hue" | "sat" | "lum".
+    pub hsl_curve: String,
     /// Selected colour grading tab: "3way" | "shadows" | "midtones" | "highlights".
     pub grading_mode: String,
     /// Colour grading wheels (shadows, midtones, highlights) hidden for viewing by their eye, and
@@ -2482,6 +2484,7 @@ impl Default for UiState {
             mixer_mode: "red".into(),
             mixer_adjust: "hsl".into(),
             mixer_group: "hue".into(),
+            hsl_curve: "hue".into(),
             grading_mode: "3way".into(),
             grading_hidden: None,
             tool: String::new(),

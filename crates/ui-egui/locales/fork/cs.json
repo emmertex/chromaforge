@@ -42,6 +42,7 @@
   "Choose a folder or card to browse first": "Nejprve vyberte složku nebo kartu k procházení",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Odstraňuje šum z fotografií raw a s modelem k tomu určeným i z JPEG a jiných hotových obrázků (posuvník Množství redukce šumu AI v části Detail). Bez modelu se použije vestavěný odšumovač.",
   "Click a node to open its panel; click its number to bypass that stage.": "Kliknutím na uzel otevřete jeho panel; kliknutím na číslo fázi obejdete.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Kliknutím přidáte bod a přetáhnete ho tam, kam korekce patří. Dvojklik bod odstraní.",
   "Click to dismiss": "Kliknutím zavřete",
   "Click to hide the overlay": "Klepnutím skryjete překrytí",
   "Click to update it.": "Kliknutím ho aktualizujete.",

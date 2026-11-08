@@ -23,6 +23,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("curve", "curve"),
     ("color", "color"),
     ("mixer", "color"),
+    ("hsl_curves", "color"),
     ("point_colors", "color"),
     ("bw_mix", "color"),
     ("bw", "color"),

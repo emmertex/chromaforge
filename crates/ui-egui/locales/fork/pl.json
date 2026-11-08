@@ -40,6 +40,7 @@
   "Choose a folder or card to browse first": "Najpierw wybierz folder lub kartę do przeglądania",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Usuwa szum ze zdjęć raw oraz, z modelem do tego przeznaczonym, z plików JPEG i innych gotowych obrazów (suwak Ilość odszumiania AI w sekcji Szczegóły). Bez modelu używany jest wbudowany odszumiacz.",
   "Click a node to open its panel; click its number to bypass that stage.": "Kliknięcie węzła otwiera jego panel; kliknięcie numeru pomija ten etap.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Kliknij, aby dodać punkt, i przeciągnij go tam, gdzie ma działać korekcja. Dwuklik usuwa punkt.",
   "Click to dismiss": "Kliknij, aby zamknąć",
   "Click to hide the overlay": "Kliknij, aby ukryć nakładkę",
   "Click to update it.": "Kliknij, aby je zaktualizować.",

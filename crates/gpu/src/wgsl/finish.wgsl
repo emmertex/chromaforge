@@ -248,6 +248,24 @@ fn color_ops(rgb: vec3<f32>, local_sat: f32, local_hue: f32) -> vec3<f32> {
         c *= max(1.0 + ds, 0.0);
         l += dl * chroma_w * sqrt(max(l, 0.05));
     }
+    // `HslK` (the HSL curves): the hue picks the place on each LUT — hue[128], sat[128], lum[128]
+    // in that order (HSL_WORDS in `lcc_pipeline::colorops`) — and the mixer's own scales apply the
+    // deltas, fading hue and luminance towards neutrals as the mixer does
+    if (pu(F_HSL) != 0u) {
+        let n = 128u;
+        let x = rem_euclid(h / TAU, 1.0);
+        let f = clamp(x, 0.0, 0.999999) * f32(n - 1u);
+        let i0 = u32(f);
+        let i1 = min(i0 + 1u, n - 1u);
+        let t = f - f32(i0);
+        let dh = mix(pf(F_HSL_LUT + i0), pf(F_HSL_LUT + i1), t);
+        let ds = mix(pf(F_HSL_LUT + n + i0), pf(F_HSL_LUT + n + i1), t);
+        let dl = mix(pf(F_HSL_LUT + 2u * n + i0), pf(F_HSL_LUT + 2u * n + i1), t);
+        let chroma_w = min(c / 0.12, 1.0);
+        h += dh * chroma_w;
+        c *= max(1.0 + ds, 0.0);
+        l += dl * chroma_w * sqrt(max(l, 0.05));
+    }
     for (var k = 0u; k < pu(F_NPC); k++) {
         let r = point_color(k, vec3<f32>(l, c, h));
         l = r.x;

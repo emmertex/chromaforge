@@ -9,7 +9,8 @@
   — with the same drag holds as the Color Grading wheels (Shift keeps the hue, Cmd/Ctrl the saturation, Alt
   fine-adjusts, double-click resets). The palette's own switch picks the variant: **Color** wheels (wide tonal
   overlap) or **Log** wheels (Shadows / Midtones / Highlights with **Low Range** and **High Range** boundaries).
-- **HSL Curves**: Hue vs Hue, Hue vs Sat and Hue vs Lum, drawn as curves over the colour mixer's bands — drag the
-  curve, the band under the pointer follows. A view of the Color Mixer's own controls, so the two always agree.
+- **HSL Curves**: Hue vs Hue, Hue vs Sat and Hue vs Lum, each a curve you draw yourself — click anywhere to
+  add a point, drag it where the edit belongs, double-click a point to remove it. The smooth curve through
+  your points (neutral at the hue axis's ends) is exactly what renders, on CPU and GPU alike.
 - Everything works in Eboda too: the wheels, curves and scopes are ordinary develop controls (`primaries.*`,
   `develop.primaries`), so presets, history, XMP sidecars, the CLI and agents see one edit like any other.

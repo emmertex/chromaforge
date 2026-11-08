@@ -73,23 +73,36 @@ fn the_log_variant_shows_the_range_boundaries() {
 }
 
 #[test]
-fn the_hsl_curves_write_the_mixer_bands() {
+fn the_hsl_curves_hold_points_anywhere() {
     let mut h = demo();
     h.app.ui.solo_section("hsl");
     h.settle(SETTLE);
     assert!(has(&h, "curve:hsl"), "the curves plot");
-    assert!(has(&h, "button:hslCurves-sat"), "the Hue vs Sat tab");
+    run(&mut h, "develop.hslCurves", json!({"channel": "sat", "points": [[0.6, 0.8], [0.3, -0.5]]}));
+    h.step();
+    let id = h.app.session.active().unwrap();
+    let c = &h.app.session.develop_of(id).unwrap_or_default().hsl_curves;
+    // stored in the order the curve runs, y kept in −1..1
+    assert_eq!(c.sat.len(), 2);
+    assert!((c.sat[0].x - 0.3).abs() < 1e-9 && (c.sat[0].y + 0.5).abs() < 1e-9);
+    // the panel shows the points of its tab's own curve (the sat one), not the mixer's choice
     let r = h.request("ui.clickWidget", json!({"id": "button:hslCurves-sat"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.step();
     h.step();
-    assert_eq!(h.app.ui.mixer_group, "sat");
-    run(&mut h, "develop.set", json!({"control": "mixer.blue.sat", "value": -55.0}));
-    let id = h.app.session.active().unwrap();
-    let bands = h.app.session.develop_of(id).unwrap_or_default().mixer.bands();
-    assert_eq!(bands[5].sat, -55.0, "the curves sit on the mixer's own controls");
-    // the tabs are the mixer's own choice, so the Color Mixer panel follows
-    assert_eq!(h.app.ui.mixer_group, "sat");
+    assert_eq!(h.app.ui.hsl_curve, "sat");
+    assert!(has(&h, "hslPoint:sat-0") && has(&h, "hslPoint:sat-1"));
+    let r = h.request("ui.clickWidget", json!({"id": "button:hslCurves-hue"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert_eq!(h.app.ui.hsl_curve, "hue");
+    assert!(!has(&h, "hslPoint:sat-0"), "the hue tab shows the hue curve's points");
+    // each channel is its own curve; clearing one leaves the others
+    run(&mut h, "develop.hslCurves", json!({"channel": "hue", "points": [[0.2, 0.4]]}));
+    run(&mut h, "develop.hslCurves", json!({"channel": "sat", "points": []}));
+    let c = &h.app.session.develop_of(id).unwrap_or_default().hsl_curves;
+    assert!(c.sat.is_empty() && c.hue.len() == 1 && c.hue[0].y == 0.4);
 }
 
 #[test]

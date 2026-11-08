@@ -28,6 +28,7 @@
   "Choose a folder or card to browse first": "Välj först en mapp eller ett kort att bläddra i",
   "Cleans noise out of raw photos and, with a model made for them, JPEG and other finished pictures (the AI Denoise Amount slider under Detail). Without a model the built-in denoiser is used.": "Tar bort brus från raw-foton och, med en modell gjord för dem, från JPEG och andra färdiga bilder (reglaget Mängd AI-brusreducering under Detalj). Utan modell används den inbyggda brusreduceringen.",
   "Click a node to open its panel; click its number to bypass that stage.": "En klickning på en nod öppnar dess panel; en klickning på dess nummer kringgår steget.",
+  "Click to add a point and drag it where the edit belongs. Double-click a point to remove it.": "Klicka för att lägga till en punkt och dra den dit korrigeringen hör hemma. Dubbelklicka på en punkt för att ta bort den.",
   "Click to dismiss": "Klicka för att stänga",
   "Click to hide the overlay": "Klicka för att dölja överlägget",
   "Click to update it.": "Klicka för att uppdatera den.",

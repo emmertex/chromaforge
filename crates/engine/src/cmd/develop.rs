@@ -1147,6 +1147,31 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"log": log}))
             }
         ),
+        cmd!(
+            "develop.hslCurves",
+            "Set HSL Curve",
+            [],
+            None,
+            "{channel: hue|sat|lum, points: [[x,y],...] — x hue position 0..1 around the hue circle, y −1..1}",
+            has_active,
+            |s, p| {
+                let ch = str_param(p, "channel").ok_or_else(|| bad("develop.hslCurves", "missing channel"))?.to_string();
+                let mut pts: Vec<Point> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| bad("develop.hslCurves", "missing points"))?
+                    .iter()
+                    .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?.clamp(0.0, 1.0), q.get(1)?.as_f64()?.clamp(-1.0, 1.0))))
+                    .collect();
+                // stored in the order the curve runs, as the editor draws and drags them
+                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                edit(s, "develop.hslCurves", "HSL Curves", |d| {
+                    let c = d.hsl_curves.channel_mut(&ch).ok_or_else(|| bad("develop.hslCurves", format!("unknown channel `{ch}`")))?;
+                    *c = pts;
+                    Ok(())
+                })
+            }
+        ),
         // ---- geometry: Upright
         cmd!(
             "geometry.upright",

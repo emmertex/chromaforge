@@ -3,7 +3,7 @@
 
 use lcc_color::spline::Lut1;
 use lcc_develop::VignetteStyle;
-use lcc_pipeline::colorops::{MIXER_WORDS, POINT_WORDS};
+use lcc_pipeline::colorops::{HSL_WORDS, MIXER_WORDS, POINT_WORDS};
 use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 
 use crate::ctx::{FailKind, fail};
@@ -83,6 +83,9 @@ const FIELDS: &[(&str, usize)] = &[
     ("PRIM_LOW", 1),
     ("PRIM_HIGH", 1),
     ("PRIM_LOG", 1),
+    // the HSL curves (`HslK`): the hue, saturation and luminance LUTs over the hue circle
+    ("HSL", 1),
+    ("HSL_LUT", HSL_WORDS),
     ("VIG", 1),
     ("VIG_AMOUNT", 1),
     ("VIG_START", 1),
@@ -364,6 +367,10 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.f("PRIM_LOW", pr.low);
         p.f("PRIM_HIGH", pr.high);
         p.b("PRIM_LOG", pr.log);
+    }
+    if let Some(hsl) = &ops.hsl {
+        p.b("HSL", true);
+        p.fs("HSL_LUT", &hsl.words());
     }
     p.f("SKIN", ops.skin);
     p.fs("BANDH", lcc_pipeline::colorops::band_hues());

@@ -96,6 +96,10 @@ impl DevelopSettings {
         for p in [&mut c.master, &mut c.red, &mut c.green, &mut c.blue].into_iter().flatten() {
             *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0));
         }
+        let hsl = &mut self.hsl_curves;
+        for p in [&mut hsl.hue, &mut hsl.sat, &mut hsl.lum].into_iter().flatten() {
+            *p = lcc_geom::Point::new(p.x.clamp(0.0, 1.0), p.y.clamp(-1.0, 1.0));
+        }
         let g = &mut self.crop.geometry;
         g.angle = if g.angle.is_finite() { g.angle.clamp(-45.0, 45.0) } else { 0.0 };
         if g.angle == 0.0 {

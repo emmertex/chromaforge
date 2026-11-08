@@ -234,85 +234,135 @@ fn wheel(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, key: &str, c:
 }
 
 /// Resolve's HSL curves — "the first word prompts the selection, and the second word affects the
-/// change" — over the colour mixer's own 8 bands (colour photos; the B&W mix has its own panel):
-/// the curve drawn is the smooth response the mixer's bands give between their centres, a drag
-/// writes the band under the pointer, a double-click puts that band back, and the tabs are the
-/// mixer's own hue / saturation / luminance choice.
+/// change" — as free points anywhere over the hue circle (colour photos; the B&W mix has its own
+/// panel): click to add a point and drag it where the edit belongs; the monotone curve through the
+/// points (neutral at both ends of the hue axis) is what renders, the same spline the engine's LUTs
+/// sample. A double-click removes the point under it. `develop.hslCurves` writes the curve's whole
+/// point list, one drag one undo step.
 pub(crate) fn hsl_curves(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     let t = Tokens::get(ui.ctx());
     const CURVES: [(&str, &str); 3] = [("Hue vs Hue", "hue"), ("Hue vs Sat", "sat"), ("Hue vs Lum", "lum")];
-    let group = if CURVES.iter().any(|(_, k)| *k == app.ui.mixer_group) { app.ui.mixer_group.clone() } else { "hue".into() };
+    let channel = if CURVES.iter().any(|(_, k)| *k == app.ui.hsl_curve) { app.ui.hsl_curve.clone() } else { "hue".into() };
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            let active = CURVES.iter().position(|(_, k)| *k == group);
+            let active = CURVES.iter().position(|(_, k)| *k == channel);
             if let Some((_, k)) = crate::widgets::segmented(ui, "hslCurves", &CURVES, active, 3).and_then(|i| CURVES.get(i)) {
-                app.ui.mixer_group = k.to_string();
+                app.ui.hsl_curve = k.to_string();
             }
         });
     });
-    let bands = d.mixer.bands();
-    let val = |i: usize| match group.as_str() {
-        "sat" => bands[i].sat,
-        "lum" => bands[i].lum,
-        _ => bands[i].hue,
-    } as f32;
-    // the plot: x across the 8 band centres, y −100..100; the curve eases between bands as the
-    // mixer's own raised-cosine weights do
+    let points: Vec<lcc_geom::Point> = d.hsl_curves.channel(&channel).cloned().unwrap_or_default();
     let w = ui.available_width();
-    let (r, resp) = ui.allocate_exact_size(vec2(w, 116.0), Sense::click_and_drag());
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 128.0), Sense::click_and_drag());
+    let resp = resp.on_hover_text(crate::i18n::tr("Click to add a point and drag it where the edit belongs. Double-click a point to remove it."));
     crate::widgets::announce(&resp, crate::i18n::tr("HSL Curves"));
     register(ui.ctx(), "curve:hsl", r);
     let p = ui.painter();
     let plot = Rect::from_min_max(r.min + vec2(4.0, 4.0), r.max - vec2(4.0, 16.0));
     p.rect_filled(plot, 4.0, t.button);
-    let y_of = |v: f32| plot.bottom() - (v.clamp(-100.0, 100.0) + 100.0) / 200.0 * plot.height();
-    let x_of = |i: f32| plot.left() + (i + 0.5) / 8.0 * plot.width();
-    // the neutral line and ±50 guides
-    for (v, strong) in [(0.0, true), (50.0, false), (-50.0, false)] {
+    let at = |x: f32| lcc_pipeline::colorops::hsl_curve_at(&points, x as f64) as f32;
+    let y_of = |v: f32| plot.bottom() - (v.clamp(-1.0, 1.0) + 1.0) / 2.0 * plot.height();
+    let x_of = |x: f32| plot.left() + x * plot.width();
+    // the neutral line and ±0.5 guides
+    for (v, strong) in [(0.0, true), (0.5, false), (-0.5, false)] {
         let y = y_of(v);
         let color = if strong { Color32::from_white_alpha(60) } else { Color32::from_white_alpha(22) };
         p.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], egui::Stroke::new(1.0, color));
     }
-    // the curve: raised-cosine ease between adjacent band values
-    let mut pts: Vec<Pos2> = Vec::new();
-    let n = 64;
-    for k in 0..=n {
-        let x01 = k as f32 / n as f32;
-        let t8 = (x01 * 8.0 - 0.5).clamp(0.0, 7.0);
-        let i = t8.floor() as usize;
-        let f = 0.5 - 0.5 * (std::f32::consts::PI * (t8 - i as f32)).cos();
-        let v = val(i) + (val((i + 1).min(7)) - val(i)) * f;
-        pts.push(pos2(plot.left() + x01 * plot.width(), y_of(v)));
+    // the hue strip under the axis: each cell the colour of its own OkLCh hue, so the curve's
+    // x axis is the hue it edits
+    let cells = 48;
+    for k in 0..cells {
+        let x0 = k as f32 / cells as f32;
+        let lab = lcc_color::perceptual::lch_to_lab([0.62, 0.13, x0 * std::f32::consts::TAU]);
+        let wide = lcc_color::perceptual::oklab_to_2020(lab);
+        let srgb = lcc_color::REC2020.to_space(&lcc_color::SRGB).apply_f32(wide).map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
+        p.rect_filled(
+            Rect::from_min_max(pos2(x_of(x0), plot.bottom() + 2.0), pos2(x_of((k + 1) as f32 / cells as f32), r.bottom())),
+            0.0,
+            Color32::from_rgb(srgb[0], srgb[1], srgb[2]),
+        );
     }
-    p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.5, t.text_label)));
-    // each band as a dot on its centre, in its colour, with its value readable by position
-    for (i, color) in crate::widgets::BAND_COLORS.iter().enumerate() {
-        let c = pos2(x_of(i as f32), y_of(val(i)));
-        p.circle_filled(c, 3.5, crate::widgets::hex(color));
-        // the hue strip under the axis
-        let left = plot.left() + i as f32 / 8.0 * plot.width();
-        let right = plot.left() + (i + 1) as f32 / 8.0 * plot.width();
-        p.rect_filled(Rect::from_min_max(pos2(left, plot.bottom() + 2.0), pos2(right, r.bottom())), 0.0, crate::widgets::hex(color));
+    // the curve, sampled exactly as the engine's LUT samples it
+    let curve: Vec<Pos2> = (0..=64).map(|k| pos2(x_of(k as f32 / 64.0), y_of(at(k as f32 / 64.0)))).collect();
+    p.add(egui::Shape::line(curve, egui::Stroke::new(1.5, t.text_label)));
+    // the points themselves
+    let pos_of = |q: &lcc_geom::Point| pos2(x_of(q.x as f32), y_of(q.y as f32));
+    for (i, q) in points.iter().enumerate() {
+        let c = pos_of(q);
+        p.circle_filled(c, 4.5, Color32::WHITE);
+        p.circle_stroke(c, 4.5, egui::Stroke::new(1.0, Color32::BLACK));
+        register(ui.ctx(), format!("hslPoint:{channel}-{i}"), Rect::from_center_size(c, vec2(14.0, 14.0)));
     }
-    // a drag writes the band under the pointer (the mixer's own control); double-click resets it
-    let band_of = |q: Pos2| (((q.x - plot.left()) / plot.width() * 8.0).round() as i64).clamp(0, 7) as usize;
-    let value_of = |q: Pos2| ((plot.bottom() - q.y).clamp(0.0, plot.height()) / plot.height() * 200.0 - 100.0).round();
+    // the pointer's curve coordinates
+    let to_point = |q: Pos2| {
+        lcc_geom::Point::new(
+            ((q.x - plot.left()) / plot.width()).clamp(0.0, 1.0) as f64,
+            ((plot.bottom() - q.y) / plot.height() * 2.0 - 1.0).clamp(-1.0, 1.0) as f64,
+        )
+    };
+    let nearest = |q: Pos2| {
+        points
+            .iter()
+            .enumerate()
+            .min_by(|(i, a), (j, b)| pos_of(a).distance(q).total_cmp(&pos_of(b).distance(q)).then(i.cmp(j)))
+            .filter(|(_, a)| pos_of(a).distance(q) < 12.0)
+    };
+    // the point a drag holds, and whether this interaction opened an undo window
+    let grab_id = egui::Id::new(("hslPointGrab", channel.as_str()));
+    let write = |app: &mut LccApp, pts: &[lcc_geom::Point]| {
+        let _ = app.run("develop.hslCurves", json!({"channel": channel, "points": pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>()}));
+    };
+    let pointer = resp.interact_pointer_pos();
     if resp.drag_started() {
+        // an empty spot grows a point; an existing one is grabbed
+        let mut pts = points.clone();
+        let held = match pointer.map(nearest) {
+            Some(Some((i, _))) => Some(i),
+            Some(None) => {
+                let at = to_point(pointer.unwrap_or(plot.left_top()));
+                pts.push(lcc_geom::Point::new(at.x, at.y));
+                pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+                pts.iter().position(|q| q.x == at.x)
+            }
+            None => None,
+        };
+        ui.data_mut(|m| m.insert_temp(grab_id, (held, true)));
+        write(app, &pts);
         let _ = app.run("develop.beginInteraction", json!({"label": crate::i18n::tr("HSL Curves")}));
     }
-    if (resp.dragged() || resp.clicked())
-        && let Some(q) = resp.interact_pointer_pos()
+    if resp.dragged()
+        && let Some(held) = ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).and_then(|(h, _)| h)
+        && held < points.len()
     {
-        let band = lcc_develop::MIXER_BANDS[band_of(q)];
-        let _ = app.run("develop.set", json!({"values": {format!("mixer.{band}.{group}"): value_of(q)}}));
+        let mut pts = points.clone();
+        let prev = if held > 0 { pts[held - 1].x + 0.003 } else { 0.0 };
+        let next = if held + 1 < pts.len() { pts[held + 1].x - 0.003 } else { 1.0 };
+        let to = to_point(pointer.unwrap_or(pos_of(&pts[held])));
+        pts[held].x = to.x.clamp(prev.min(next), prev.max(next));
+        pts[held].y = to.y;
+        write(app, &pts);
     }
-    if resp.drag_stopped() || resp.clicked() {
-        let _ = app.run("develop.endInteraction", json!({}));
+    if resp.drag_stopped() {
+        if ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).is_some_and(|(_, began)| began) {
+            let _ = app.run("develop.endInteraction", json!({}));
+        }
+        ui.data_mut(|m| m.remove::<(Option<usize>, bool)>(grab_id));
+    }
+    // a click on an empty spot plants one point (one undo step of its own); a click on a point
+    // does nothing — drags and double-clicks are the point's tools
+    if resp.clicked() && pointer.is_some_and(|q| nearest(q).is_none()) && ui.data(|m| m.get_temp::<(Option<usize>, bool)>(grab_id)).is_none() {
+        let mut pts = points.clone();
+        let at = to_point(pointer.unwrap_or(plot.left_top()));
+        pts.push(lcc_geom::Point::new(at.x, at.y));
+        pts.sort_by(|a, b| a.x.total_cmp(&b.x));
+        write(app, &pts);
     }
     if resp.double_clicked()
-        && let Some(q) = resp.interact_pointer_pos()
+        && let Some((i, _)) = pointer.and_then(nearest)
     {
-        let band = lcc_develop::MIXER_BANDS[band_of(q)];
-        let _ = app.run("develop.set", json!({"values": {format!("mixer.{band}.{group}"): 0}}));
+        let mut pts = points.clone();
+        pts.remove(i);
+        write(app, &pts);
     }
 }
