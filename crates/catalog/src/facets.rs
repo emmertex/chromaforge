@@ -8,7 +8,7 @@ use crate::{Catalog, Flag, MediaKind, Photo};
 
 /// Every field a Metadata column can show: camera to year have filter fields of their own (only their "no value"
 /// pick goes through [`crate::Filter::facets`]), the rest are picked through it.
-pub const FIELDS: [&str; 23] = [
+pub const FIELDS: [&str; 25] = [
     "camera",
     "lens",
     "keyword",
@@ -20,6 +20,8 @@ pub const FIELDS: [&str; 23] = [
     "year",
     "iso",
     "focal",
+    "aperture",
+    "shutter",
     "format",
     "title",
     "headline",
@@ -105,6 +107,8 @@ pub fn values(p: &Photo, cat: &Catalog, field: &str) -> Vec<String> {
         }
         "iso" => p.meta.iso.map(|i| i.to_string()).into_iter().collect(),
         "focal" => p.meta.focal_mm.filter(|f| f.is_finite() && *f > 0.0).map(|f| format!("{}", (f * 10.0).round() / 10.0)).into_iter().collect(),
+        "aperture" => p.meta.aperture.and_then(aperture_label).into_iter().collect(),
+        "shutter" => crate::parse_shutter_seconds(&p.meta.shutter).and_then(shutter_label).into_iter().collect(),
         "format" => text(&p.format.to_uppercase()),
         "title" => text(&p.meta.title),
         "headline" => text(&p.meta.headline),
@@ -119,6 +123,38 @@ pub fn values(p: &Photo, cat: &Catalog, field: &str) -> Vec<String> {
         "ai" => ai_tools(p),
         _ => Vec::new(),
     }
+}
+
+/// An f-number as a Metadata column lists it: `f/2.8`, `f/8`, `f/1.4` (one decimal, a whole number without
+/// it). `None` for anything that isn't a positive, finite f-number.
+pub fn aperture_label(f: f32) -> Option<String> {
+    let f = f64::from(f);
+    (f.is_finite() && f > 0.0).then(|| format!("f/{}", (f * 10.0).round() / 10.0))
+}
+
+/// An exposure time (seconds) as a Metadata column lists it: `1/250 s` below 0.4 s (the nearest whole
+/// denominator), else seconds to one decimal (`0.5 s`, `2 s`, `30 s`). `None` for anything that isn't a
+/// positive, finite time.
+pub fn shutter_label(secs: f64) -> Option<String> {
+    if !(secs.is_finite() && secs > 0.0) {
+        return None;
+    }
+    if secs < 0.4 {
+        let denom = (1.0 / secs).round().max(1.0);
+        return Some(format!("1/{denom} s"));
+    }
+    Some(format!("{} s", (secs * 10.0).round() / 10.0))
+}
+
+/// The number a numeric Metadata column's value sorts by: the value itself, an aperture's f-number, a
+/// shutter speed's seconds. `None` when it isn't one.
+pub fn sort_key(field: &str, value: &str) -> Option<f64> {
+    match field {
+        "aperture" => value.strip_prefix("f/").and_then(|v| v.parse().ok()),
+        "shutter" => crate::parse_shutter_seconds(value),
+        _ => value.parse().ok(),
+    }
+    .filter(|v: &f64| v.is_finite())
 }
 
 /// The named ratios an aspect is shown as, width first (a portrait photo turns them round).
@@ -210,6 +246,49 @@ mod tests {
 
     fn photo() -> Photo {
         Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpg", 6000, 4000, "2026-09-20T10:00:00")
+    }
+
+    #[test]
+    fn exposure_columns_pick_photos_by_aperture_shutter_and_iso() {
+        let cat = Catalog::new();
+        let mut p = photo();
+        p.meta.aperture = Some(2.8);
+        p.meta.shutter = "1/250".into();
+        p.meta.iso = Some(400);
+        let pick = |field: &str, v: &str| FacetPick { field: field.into(), values: vec![v.into()], none: false };
+        for field in ["aperture", "shutter", "iso"] {
+            let have = values(&p, &cat, field);
+            assert_eq!(have.len(), 1, "{field} has one value");
+            assert!(pick(field, &have[0]).matches(&p, &cat), "{field}: its own value picks it");
+            assert!(sort_key(field, &have[0]).is_some(), "{field}: its value sorts as a number");
+        }
+        assert!(pick("aperture", "F/2.8").matches(&p, &cat), "any case");
+        assert!(!pick("aperture", "f/4").matches(&p, &cat));
+        assert!(!pick("shutter", "1/125 s").matches(&p, &cat));
+        // a camera's spelling of a long exposure lands on the same value as a typed one
+        let mut q = photo();
+        q.meta.shutter = "2″".into();
+        let mut r = photo();
+        r.meta.shutter = "2".into();
+        assert_eq!(values(&q, &cat, "shutter"), values(&r, &cat, "shutter"));
+        // no value, or a hostile one, lists nothing and is picked by "none"
+        let mut bad = photo();
+        bad.meta.aperture = Some(f32::NAN);
+        bad.meta.shutter = "-1/0".into();
+        let none = |field: &str| FacetPick { field: field.into(), values: vec![], none: true };
+        assert!(none("aperture").matches(&bad, &cat) && none("shutter").matches(&bad, &cat));
+    }
+
+    #[test]
+    fn exposure_values_sort_by_their_number() {
+        let mut ap = vec!["f/16", "f/2.8", "f/8"];
+        ap.sort_by(|a, b| sort_key("aperture", a).unwrap_or(f64::MAX).total_cmp(&sort_key("aperture", b).unwrap_or(f64::MAX)));
+        assert_eq!(ap, ["f/2.8", "f/8", "f/16"]);
+        let mut sh: Vec<String> = [2.0, 1.0 / 250.0, 1.0 / 30.0, 0.5].into_iter().filter_map(shutter_label).collect();
+        sh.sort_by(|a, b| sort_key("shutter", a).unwrap_or(f64::MAX).total_cmp(&sort_key("shutter", b).unwrap_or(f64::MAX)));
+        let secs: Vec<f64> = sh.iter().filter_map(|v| sort_key("shutter", v)).collect();
+        assert!(secs.windows(2).all(|w| w[0] < w[1]), "{sh:?} runs fastest to slowest");
+        assert!(shutter_label(f64::INFINITY).is_none() && shutter_label(0.0).is_none() && aperture_label(-1.0).is_none());
     }
 
     #[test]

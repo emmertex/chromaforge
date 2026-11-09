@@ -3058,3 +3058,27 @@ fn o_turns_off_the_all_masks_overlay() {
     assert_eq!(overlay(&h), Overlay::None, "O hid the All overlay");
     assert!(!h.app.widgets.iter().any(|(w, _)| w == "loupe:allMasks"), "the pill goes with it");
 }
+
+/// Issue #867: resizing the brush with a trackpad keeps the brush cursor (no flicker to the
+/// pointer), and a short swipe changes the size noticeably.
+#[test]
+fn trackpad_brush_resize_keeps_cursor_and_is_quick() {
+    let mut h = detail("panel.masking");
+    h.settle(SETTLE);
+    exec(&mut h, "tool.brush", json!({"new": true}));
+    pointer(&mut h, json!([{"kind": "move", "x": 0.5, "y": 0.5}]));
+    h.settle(SETTLE);
+    let hover_cursor = h.last_cursor;
+    let size0 = h.app.ui.brush_size;
+    for _ in 0..5 {
+        h.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 20.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        assert_eq!(h.last_cursor, hover_cursor, "the brush cursor stays shown while it resizes");
+    }
+    assert!(h.app.ui.brush_size > size0 * 1.2, "one swipe grows the brush noticeably: {size0} -> {}", h.app.ui.brush_size);
+}
