@@ -13,10 +13,5 @@
     "sharp": "^0.34.0",
     "starlight-image-zoom": "^0.13.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp"
-    ]
-  }
+  "packageManager": "pnpm@12.17.0"
 }
