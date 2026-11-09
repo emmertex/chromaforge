@@ -448,11 +448,11 @@ pub fn masks(values: &Values, aspect: f64) -> (Vec<Value>, Vec<String>) {
 
 /// Put a Lightroom packet's spots and mask shapes (mapped by [`spots`] and [`masks`]) in the app's frame. Lightroom
 /// normalizes them to the stored image, before its orientation `o`; the app to the oriented one. `stored_aspect` is the
-/// stored image's width / height, `upright_aspect` the oriented one's: radial sizes are refitted from the stored frame
-/// and left as [`DEFAULT_ASPECT`]-based values again, since [`crate::sidecar::merge_into`] refits them to the photo.
-/// Points map with the image; a radial's sizes swap on a quarter turn and its angle turns (a mirror reverses it); a
-/// spot's source offset turns as a vector. Range and AI masks carry no geometry.
-pub fn orient_geometry(partial: &mut Value, o: lcc_geom::Orientation, stored_aspect: f64, upright_aspect: f64) {
+/// stored image's width / height; radial sizes come in fitted to it and leave fitted to the oriented image (its aspect
+/// inverted on a quarter turn). Points map with the image; a radial's sizes swap on a quarter turn and its angle turns
+/// (a mirror reverses it); a spot's source offset turns as a vector. Range and AI masks carry no geometry, and
+/// Lightroom's Upright guides and matrix aren't imported.
+pub fn orient_geometry(partial: &mut Value, o: lcc_geom::Orientation, stored_aspect: f64) {
     if o == lcc_geom::Orientation::Normal || !(stored_aspect.is_finite() && stored_aspect > 0.0) {
         return;
     }
@@ -481,7 +481,6 @@ pub fn orient_geometry(partial: &mut Value, o: lcc_geom::Orientation, stored_asp
         }
     }
     let (flip, turns) = o.to_parts();
-    refit_radials(partial, DEFAULT_ASPECT, stored_aspect);
     for m in partial.get_mut("masks").and_then(Value::as_array_mut).into_iter().flatten() {
         for c in m["components"].as_array_mut().into_iter().flatten() {
             let s = &mut c["shape"];
@@ -514,7 +513,6 @@ pub fn orient_geometry(partial: &mut Value, o: lcc_geom::Orientation, stored_asp
             }
         }
     }
-    refit_radials(partial, upright_aspect, DEFAULT_ASPECT);
 }
 
 /// The containers spot removal is stored in: `RetouchAreas` (current, one struct per spot with a

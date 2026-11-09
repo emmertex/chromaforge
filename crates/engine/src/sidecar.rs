@@ -548,14 +548,31 @@ impl SidecarData {
             && h > 0
         {
             let o = self.turned_to.unwrap_or(file);
-            let stored = f64::from(w) / f64::from(h);
-            crate::lightroom_catalog::catalog_crop(v, o, stored);
-            // spots and masks are on the stored image too
-            crate::crs_masks::orient_geometry(v, o, stored, f64::from(upright.0) / f64::from(upright.1));
+            orient_lightroom_patch(v, o, f64::from(w) / f64::from(h), f64::from(upright.0) / f64::from(upright.1));
         }
         self
     }
+}
 
+/// Put a Lightroom patch's crop, spots and mask shapes (on the stored image, of aspect `stored`) in the app's frame
+/// for orientation `o`. `photo_aspect` is the photo record's width / height: [`merge_into`] refits radials from
+/// [`crate::crs_masks::DEFAULT_ASPECT`] to it, so they are left in those terms, fitted to the turned image once it has.
+pub(crate) fn orient_lightroom_patch(v: &mut Value, o: lcc_meta::Orientation, stored: f64, photo_aspect: f64) {
+    if !(stored.is_finite() && stored > 0.0) {
+        return;
+    }
+    crate::lightroom_catalog::catalog_crop(v, o, stored);
+    if o != lcc_meta::Orientation::Normal {
+        use crate::crs_masks::{DEFAULT_ASPECT, orient_geometry, refit_radials};
+        refit_radials(v, DEFAULT_ASPECT, stored);
+        orient_geometry(v, o, stored);
+        if photo_aspect.is_finite() && photo_aspect > 0.0 {
+            refit_radials(v, photo_aspect, DEFAULT_ASPECT);
+        }
+    }
+}
+
+impl SidecarData {
     /// Read the label through the catalog's label names: other editors write the label's name
     /// (a custom set's "To Do" as well as "Red"); unknown names clear the label.
     pub fn resolve_label(mut self, cat: &lcc_catalog::Catalog) -> Self {

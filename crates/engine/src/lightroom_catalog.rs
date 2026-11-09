@@ -1121,7 +1121,14 @@ fn mapped_settings_from(
         props.entry("crs:AsShotTemperature".into()).or_insert_with(|| vec![temperature.to_string()]);
         props.entry("crs:AsShotTint".into()).or_insert_with(|| vec![tint.to_string()]);
     }
-    let (mut partial, mut unknown) = crate::crs::to_partial_report(&props, Some(&values), target, aspect);
+    // Lightroom's spots and mask shapes are on the stored image, before the photo's orientation: on a turned photo
+    // they are read in that frame (spot sizes and radials fitted to it), then turned into the app's
+    let turned = orientation != Orientation::Normal && stored_aspect.is_finite() && stored_aspect > 0.0;
+    let frame = if turned { stored_aspect } else { aspect };
+    let (mut partial, mut unknown) = crate::crs::to_partial_report(&props, Some(&values), target, frame);
+    if turned {
+        crate::crs_masks::orient_geometry(&mut partial, orientation, stored_aspect);
+    }
     catalog_crop(&mut partial, orientation, stored_aspect);
     if deferred > 0 {
         unknown.push("Deferred Lightroom adjustments (-999999)".into());
@@ -1475,6 +1482,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 Ok(mut sc) => {
                     if let Some(crate::sidecar::DevelopPatch::Partial(partial)) = &mut sc.develop {
                         strip_xmp_sentinels(partial);
+                        // its crop, spots and masks are on the stored image, as in the develop text
+                        let photo_aspect = f64::from(p.width) / f64::from(p.height);
+                        crate::sidecar::orient_lightroom_patch(partial, orientation, stored_aspect, photo_aspect);
                     }
                     crate::sidecar::merge_into(&mut p, &sc, &now);
                 }
@@ -2846,6 +2856,39 @@ pub(crate) mod tests {
         assert!(partial.get("crop").is_none());
     }
 
+    /// Lightroom stores a catalog photo's spots, masks and brush strokes on the stored image; a raw it shows turned
+    /// (portrait from a landscape sensor) has them land where Lightroom shows them, at the sizes it shows.
+    #[test]
+    fn catalog_spots_and_masks_on_a_turned_raw_land_where_lightroom_shows_them() {
+        let settings = r#"s = {
+            RetouchAreas = { { SpotType = "heal", SourceState = "sourceSetExplicitly", SourceX = 0.6, OffsetY = 0.9,
+                Masks = { { What = "Mask/Ellipse", X = 0.69, Y = 0.9, SizeX = 0.02 } } } },
+            CircularGradientBasedCorrections = { { What = "Correction", CorrectionAmount = 1, LocalExposure2012 = 0.25,
+                CorrectionMasks = { { What = "Mask/CircularGradient", Top = 0.2, Left = 0.1, Bottom = 0.4, Right = 0.3,
+                    Angle = 10, Feather = 50, MaskValue = 1 } } } },
+            PaintBasedCorrections = { { What = "Correction", LocalExposure2012 = 0.25, CorrectionMasks = {
+                { What = "Mask/Paint", Radius = 0.05, CenterWeight = 0, Flow = 1, MaskValue = 1, Dabs = { "d 0.69 0.9" } } } } } }"#;
+        let near = |v: &serde_json::Value, x: f64, y: f64| (v["x"].as_f64().unwrap() - x).abs() < 1e-9 && (v["y"].as_f64().unwrap() - y).abs() < 1e-9;
+        // a 3:2 sensor, shown a quarter turn counter-clockwise (Lightroom's "DA"): (x, y) → (y, 1 − x)
+        let (turned, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 2.0 / 3.0, Orientation::Rotate270, 1.5).unwrap();
+        let spot = &turned["spots"][0];
+        assert!(near(&spot["points"][0], 0.9, 0.31), "{spot}");
+        assert!(near(&spot["source_offset"], 0.0, 0.09), "the source turns with it: {spot}");
+        assert!((spot["size"].as_f64().unwrap() - 0.02).abs() < 1e-9, "a spot keeps its size on the long edge: {spot}");
+        let radial = &turned["masks"][0]["components"][0]["shape"];
+        let brush = &turned["masks"][1]["components"][0]["shape"];
+        let (radial, brush) = if radial["kind"] == "radial" { (radial, brush) } else { (brush, radial) };
+        assert!(near(&radial["center"], 0.3, 0.8), "{radial}");
+        // 0.2 of the sensor's width (its long edge) wide → 0.2 of the shown height tall
+        let (rx, ry) = (radial["rx"].as_f64().unwrap(), radial["ry"].as_f64().unwrap());
+        assert!((rx - 0.2 / 3.0).abs() < 1e-9 && (ry - 0.1).abs() < 1e-9, "{radial}");
+        assert!(near(&brush["strokes"][0]["points"][0], 0.9, 0.31), "{brush}");
+        // an upright photo keeps them as stored
+        let (upright, _) = mapped_settings(settings, crate::crs::Target::RawAbsolute, 1.5, Orientation::Normal, 1.5).unwrap();
+        assert!(near(&upright["spots"][0]["points"][0], 0.69, 0.9));
+        assert_eq!(upright["masks"].as_array().map(Vec::len), Some(2));
+    }
+
     /// The `crs` corners and angle Lightroom would store for the app crop `g` on a stored image
     /// of aspect `w` (height 1) shown with orientation `o`.
     fn lightroom_crop(g: CropGeometry, o: Orientation, w: f64) -> String {
@@ -2919,6 +2962,41 @@ pub(crate) mod tests {
         let g = s.catalog.photos().next().unwrap().develop.crop.geometry;
         let r = [g.rect.x0, g.rect.y0, g.rect.x1, g.rect.y1].map(|v| (v * 1e9).round() / 1e9);
         assert_eq!(r, [0.1, 0.1, 0.8, 0.6]);
+    }
+
+    /// The XMP a catalog keeps beside a photo's develop text holds its spots and masks on the stored image too: on a
+    /// photo Lightroom shows turned they land where it shows them.
+    #[test]
+    fn catalog_xmp_spots_and_masks_follow_the_catalog_orientation() {
+        let mut data = sample();
+        data.photos.truncate(1);
+        data.photos[0].image.remove("masterImage");
+        data.photos[0].image.insert("orientation".into(), json!("DA"));
+        data.photos[0].image.insert("fileWidth".into(), json!(3000));
+        data.photos[0].image.insert("fileHeight".into(), json!(2000));
+        data.photos[0].settings = "s = { Exposure2012 = 0.5 }".into();
+        data.photos[0].xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/">
+ <crs:RetouchAreas><rdf:Seq><rdf:li><rdf:Description crs:SpotType="clone" crs:SourceState="sourceSetExplicitly" crs:SourceX="0.6" crs:OffsetY="0.9">
+  <crs:Masks><rdf:Seq><rdf:li crs:What="Mask/Ellipse" crs:X="0.69" crs:Y="0.9" crs:SizeX="0.02"/></rdf:Seq></crs:Masks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:RetouchAreas>
+ <crs:CircularGradientBasedCorrections><rdf:Seq><rdf:li><rdf:Description crs:What="Correction" crs:CorrectionAmount="1" crs:LocalExposure2012="0.25">
+  <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/CircularGradient" crs:Top="0.2" crs:Left="0.1" crs:Bottom="0.4" crs:Right="0.3" crs:Angle="0" crs:Feather="50" crs:MaskValue="1"/></rdf:Seq></crs:CorrectionMasks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:CircularGradientBasedCorrections>
+</rdf:Description></rdf:RDF></x:xmpmeta>"#
+            .into();
+        let mut s = crate::Session::new();
+        apply(&mut s, data, false).unwrap();
+        let p = s.catalog.photos().next().unwrap();
+        let near = |a: lcc_geom::Point, x: f64, y: f64| (a.x - x).abs() < 1e-6 && (a.y - y).abs() < 1e-6;
+        let spot = p.develop.spots.first().expect("the spot came in");
+        // (x, y) of the stored image → (y, 1 − x) shown a quarter turn counter-clockwise
+        assert!(near(spot.points[0], 0.9, 0.31), "{spot:?}");
+        let offset = spot.source_offset.expect("an explicit source");
+        assert!(near(offset, 0.0, 0.09), "the source turns with it: {offset:?}");
+        let comp = p.develop.masks.first().and_then(|m| m.components.first()).expect("the radial came in");
+        let lcc_develop::MaskShape::Radial { center, .. } = &comp.shape else { panic!("not radial: {:?}", comp.shape) };
+        assert!(near(*center, 0.3, 0.8), "{center:?}");
     }
 
     #[test]
