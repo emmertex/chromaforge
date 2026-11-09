@@ -1015,7 +1015,10 @@ mod tests {
                 Ok(())
             }
         }
-        let settings = lcc_surface::SurfaceSettings { enabled: true, ..Default::default() };
+        // a 1:1 dial feel and no per-value tuning: 25 ticks are 25 steps of 0.01 EV (the shipped
+        // feel is slower); this test checks the round trip, not the shipped speed
+        let motion = lcc_surface::settings::MotionSettings { speed: 1.0, acceleration: 1.0, ..Default::default() };
+        let settings = lcc_surface::SurfaceSettings { enabled: true, motion, tuning: Default::default(), ..Default::default() };
         let services = Services { png: None, surface_store: Some(Box::new(Store(Mutex::new(Some(settings.to_json()))))), ..Default::default() };
         let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1200.0, 800.0], 1.0);
         h.settle(Duration::from_secs(20));
@@ -1140,7 +1143,9 @@ mod tests {
             token_sha256: lcc_surface::protocol::token_hash(TOKEN),
             approved_at: 0,
         });
-        // no acceleration: every tick is one step (0.01 EV), so the sum is exact
+        // a 1:1 step (the shipped feel is slower) and no acceleration: every tick is one step
+        // (0.01 EV), so the sum is exact
+        settings.motion.speed = 1.0;
         settings.motion.acceleration = 0.1;
         let services = Services { png: None, surface_store: Some(Box::new(Store(Mutex::new(Some(settings.to_json()))))), ..Default::default() };
         let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1200.0, 800.0], 1.0);
