@@ -447,6 +447,9 @@ pub struct Session {
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
     /// from it and from the folders inside it.
     pub library_folder: Option<String>,
+    /// Whether the [`LibrarySource::LibraryFolder`] view also shows the photos of the folders
+    /// inside the chosen one (Show Photos in Subfolders, on by default).
+    pub folder_subfolders: bool,
     /// Copied metadata (`photo.copyMetadata`): photo.setMeta params.
     pub meta_clipboard: Option<Value>,
     /// The photo that was active before the current one (Paste Settings from Previous).
@@ -807,6 +810,7 @@ impl Session {
             meta_clipboard: None,
             browse: None,
             library_folder: None,
+            folder_subfolders: true,
             previous_active: None,
             dialogs: Default::default(),
             preset_undo: None,
@@ -2038,8 +2042,10 @@ impl Session {
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
         self.reconcile_view();
-        let mut key =
-            (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
+        let mut key = (
+            self.catalog.revision,
+            format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}", self.source, self.filter, self.sort, self.browse, self.library_folder, self.folder_subfolders),
+        );
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
         // changed ask something else). Not the checks of Missing Photos below: they fill the view in, they are
         // no other view.
@@ -2236,6 +2242,7 @@ impl Session {
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+            f.library_folder_only = !self.folder_subfolders;
         }
         if source == LibrarySource::PreviousExport {
             let exported = self.previous_export_filter();
@@ -2308,7 +2315,7 @@ impl Session {
                 return Some(ids.len());
             }
         }
-        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}", self.source, self.browse, self.library_folder));
+        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}|{}", self.source, self.browse, self.library_folder, self.folder_subfolders));
         let key_changed = self.total.as_ref().map(|total| &total.0) != Some(&key);
         let cached_minute = self.total.as_ref().and_then(|total| total.2.as_deref());
         let current_now = cached_minute.map(|_| (self.clock)());
@@ -2329,6 +2336,7 @@ impl Session {
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+                f.library_folder_only = !self.folder_subfolders;
             }
             if self.source == LibrarySource::PreviousExport {
                 f.only = self.previous_export_filter();
