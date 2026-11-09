@@ -986,7 +986,15 @@ fn a_found_photo_reads_the_exposure_its_record_never_had() {
         let file = dir.join("found").join(name);
         write_png_with_metadata(&file, seed, Some(&block), None);
         let id = s.catalog.alloc_photo_id();
-        let mut p = Photo::new(id, Source::File { path: dir.join("gone").join(name).to_string_lossy().to_string() }, name, "PNG", 48, 32, "2026-01-01T00:00:00");
+        let mut p = Photo::new(
+            id,
+            Source::File { path: dir.join("gone").join(name).to_string_lossy().to_string() },
+            name,
+            "PNG",
+            48,
+            32,
+            "2026-01-01T00:00:00",
+        );
         p.file_size = std::fs::metadata(&file).unwrap().len();
         s.commit("Add", Op::AddPhoto { photo: Box::new(p) }).unwrap();
         ids.push(id);
