@@ -1651,7 +1651,7 @@ fn type_panel(ui: &mut egui::Ui, app: &mut LccApp) {
         }
     });
     let mut tr = s.tracking;
-    if ui.add(egui::Slider::new(&mut tr, -200.0..=1000.0).text(crate::i18n::tr("Tracking"))).changed() {
+    if ui.add(egui::Slider::new(&mut tr, -200.0..=1000.0).text(crate::i18n::tr("book text|Tracking"))).changed() {
         set(app, json!({"tracking": tr}));
     }
     let mut bl = s.baseline;
@@ -1770,7 +1770,9 @@ fn background_panel(ui: &mut egui::Ui, app: &mut LccApp) {
     if ui.add(egui::Slider::new(&mut po, 0.0..=100.0).suffix(" %").text(crate::i18n::tr("Photo Opacity"))).changed() {
         set(app, json!({"photoOpacity": po / 100.0}));
     }
-    if let Some(g) = combo(ui, "book-graphic", "Graphic", bg.graphic, &lcc_book::Graphic::ALL, |g| g.label().into()) {
+    // (`Frame` here is a border, not a video frame: its own context)
+    let graphic_label = |g: lcc_book::Graphic| if g == lcc_book::Graphic::Frame { "book graphic|Frame".into() } else { g.label().into() };
+    if let Some(g) = combo(ui, "book-graphic", "Graphic", bg.graphic, &lcc_book::Graphic::ALL, graphic_label) {
         set(app, json!({"graphic": enum_key(g)}));
     }
     let mut gc = bg.graphic_color;

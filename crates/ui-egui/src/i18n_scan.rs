@@ -169,9 +169,10 @@ struct Helper {
     method: bool,
 }
 
-/// Functions whose `&str` (or `Option<&str>`, `impl Into<String>`) parameter is passed to `tr(`.
+/// Functions whose `&str` (or `Option<&str>`, `impl Into<String>`) parameter is passed to `tr(`,
+/// and a file's macros that pass one of their fragments to it ([`macro_helpers`]).
 fn helpers(sources: &[Source]) -> Vec<Helper> {
-    let mut out = Vec::new();
+    let mut out = macro_helpers(sources);
     for source in sources {
         let code = &source.code;
         let mut rest = 0;
@@ -213,6 +214,58 @@ fn helpers(sources: &[Source]) -> Vec<Helper> {
                 if calls_tr {
                     let arg = if method { i.saturating_sub(1) } else { i };
                     out.push(Helper { name: name.clone(), file: source.file.clone(), public, arg, method });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A file's own `macro_rules!` whose first arm passes one of its fragments to `tr(` (`trf!("Immich:
+/// {}", e)`, which formats the translated literal): named with its `!`, called in that file only, the
+/// argument at the fragment's place among the arm's top-level fragments.
+fn macro_helpers(sources: &[Source]) -> Vec<Helper> {
+    let mut out = Vec::new();
+    for source in sources {
+        let code = &source.code;
+        for (at, _) in code.match_indices("macro_rules!") {
+            let after = code[at + "macro_rules!".len()..].trim_start();
+            let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            // the first arm: its matcher `( … )`, then `=> { … }`
+            let Some(open) = after.find('(') else { continue };
+            let matcher = args(&after[open + 1..]).join(",");
+            let rest = &after[open + 1 + matcher.len()..];
+            let Some(arrow) = rest.find("=>") else { continue };
+            let Some(body_open) = rest[arrow..].find(['{', '(', '[']) else { continue };
+            let body = args(&rest[arrow + body_open + 1..]).join(",");
+            // the matcher's top-level fragments (`$t:literal`), not those inside a repetition `$( … )*`
+            let mut fragments = Vec::new();
+            let mut depth = 0usize;
+            for (i, c) in matcher.char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                    '$' if depth == 0 => {
+                        let fragment: String = matcher[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                        if !fragment.is_empty() {
+                            fragments.push(fragment);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for (arg, fragment) in fragments.iter().enumerate() {
+                let calls_tr = body.match_indices("tr(").any(|(j, _)| {
+                    let before_ok = !body[..j].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                    let passed = body[j + 3..].trim_start().trim_start_matches('&');
+                    before_ok
+                        && passed
+                            .strip_prefix('$')
+                            .and_then(|p| p.strip_prefix(fragment.as_str()))
+                            .is_some_and(|tail| !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+                });
+                if !name.is_empty() && calls_tr {
+                    out.push(Helper { name: format!("{name}!"), file: source.file.clone(), public: false, arg, method: false });
                 }
             }
         }
@@ -365,6 +418,10 @@ fn the_scan_reads_calls_helpers_and_buttons() {
     for (text, why) in [("Install from File…", "crate Button"), ("Map Style", "access helper"), ("No horizon or vertical lines to level by", "tr")]
     {
         assert!(texts.contains_key(text), "{why}: {text:?} not found");
+    }
+    // a file's own macro that translates its literal (`trf!` in the Connections and Peer Sync panels)
+    for (text, file) in [("Immich: {}", "panels/connections.rs"), ("Last synced {} min ago", "panels/peer_sync.rs")] {
+        assert!(texts.get(text).is_some_and(|files| files.contains(file)), "trf! in {file}: {text:?} not found");
     }
     // `super::row(…, "previousExport", …)` in a panel is the panels' own row, whose id isn't text
     assert!(!texts.contains_key("previousExport"), "a path call resolves to its own module's helper");
