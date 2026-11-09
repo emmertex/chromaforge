@@ -98,7 +98,7 @@ impl Tab {
             Tab::Settings => "Settings",
             Tab::Permissions => "Permissions",
             Tab::About => "About",
-            Tab::Log => "Log",
+            Tab::Log => "plug-in tab|Log",
         }
     }
 

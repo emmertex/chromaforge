@@ -754,6 +754,14 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     let root = dir_s.clone();
     let sort = app.session.sort;
     let job = move || {
+        // a folder that can't be listed (no permission: macOS asks per folder; gone; offline) is
+        // said so, not shown as an empty folder (issue #966)
+        if let Err(e) = std::fs::read_dir(&root) {
+            log::warn!("browse {root}: {e}");
+            let error = lcc_engine::import::ImportCandidate { path: root, error: Some(e.to_string()), ..Default::default() };
+            let _ = tx.send(lcc_engine::import::ScanOutput { candidates: vec![error], unreadable: 1, ..Default::default() });
+            return;
+        }
         let files: Vec<String> = if subfolders {
             lcc_engine::import::expand(&[root], None)
         } else {
@@ -822,6 +830,14 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
     }
     app.session.import_probes = out.probes;
     if task.browse {
+        // the folder couldn't be listed: said so (the photos the library knows from there stay)
+        if out.unreadable > 0
+            && let [c] = out.candidates.as_slice()
+            && let Some(e) = &c.error
+        {
+            app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
+            return;
+        }
         // the folder and the ones its photos are in count as browsed now, as `library.browse` records them, so
         // their untouched Local photos aren't forgotten while the folder is in use
         if let Some(root) = app.session.browse.as_ref().map(|b| b.path.clone()) {
