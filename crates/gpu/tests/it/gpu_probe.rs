@@ -51,7 +51,7 @@ fn adapters(name: &str) -> String {
     desc.backends = *set;
     desc.backend_options = backend::backend_options();
     desc.flags = backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = lcc_gpu::new_instance(desc);
     let adapters: Vec<String> = pollster::block_on(instance.enumerate_adapters(*set))
         .iter()
         .map(|a| {
