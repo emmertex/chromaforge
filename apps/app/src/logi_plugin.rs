@@ -1,8 +1,8 @@
 //! The the app plugin for Logi Options+ (MX Creative Console): finding it, installing it
 //! through Logi's own installer and removing it again (Settings ▸ Controls).
 //!
-//! The plugin is built from its own repository (C#, the Logi Actions SDK) into
-//! `the app.lplug4`. A the app release carries that file next to its executable
+//! The plugin's source is in `packaging/logi` (C#, the Logi Actions SDK); its
+//! `scripts/package.ps1` builds `the app.lplug4`. A the app release carries that file next to its executable
 //! (`the app.lplug4` or `plugins/the app.lplug4`); `<PREFIX>_LOGI_PLUGIN` points at another
 //! copy. Installing hands it to `LogiPluginServiceTool install-plugin` — what double-clicking a
 //! `.lplug4` does — so Logi Options+ asks the user to confirm, installs the plugin and its default

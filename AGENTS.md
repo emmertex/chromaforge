@@ -114,6 +114,9 @@ of it. Full standard: `../craftrules/standards/never-crash.md`
   dispatch on the commit that then goes to `release`). One `ci` runs at a time per machine; others wait their turn
   (`xtask/src/ci_lock.rs`). See [`docs/ci.md`](docs/ci.md).
 - **Commits:** one task id per commit (`M2.3: local Laplacian highlights/shadows`). Only green states. End messages with the attribution line required by the environment.
+- **Localized UI text:** built-in text goes through `tr` / `tr_format!` (or a helper that translates), and
+  Chromaforge's messages go in `crates/ui-egui/locales/fork/`, translated into every language; the tests fail on a
+  message any language lacks. Details: [`docs/localization.md`](docs/localization.md).
 - **Release notes, one file per change:** a user-visible change adds `docs/whats-new/<YYYY-MM-DD>-<slug>.md` (one
   `### Title` and its bullets, for Help ▸ What's New) and, when the release's changelog should mention it,
   `docs/changelog/unreleased/<YYYY-MM-DD>-<slug>.md` (one `## Section` and its bullets); the READMEs there say how.
