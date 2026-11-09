@@ -157,6 +157,21 @@ fn num(props: &Props, k: &str) -> Option<f64> {
     s.parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
+/// Lightroom's stored Upright matrix for `mode` (`crs:UprightTransform_<mode>`, 9 comma-separated numbers, row
+/// major), scaled so its last entry is 1; `None` unless all 9 are finite and the matrix is invertible.
+fn lrc_upright_matrix(props: &Props, mode: i64) -> Option<[f64; 9]> {
+    let s = first(props, &format!("crs:UprightTransform_{mode}"))?;
+    let v: Vec<f64> = s.split(',').map(|x| x.trim().parse::<f64>().ok().filter(|v| v.is_finite())).collect::<Option<_>>()?;
+    let m: [f64; 9] = v.try_into().ok()?;
+    let z = m[8];
+    if z.abs() < 1e-12 {
+        return None;
+    }
+    let m = m.map(|x| x / z);
+    let h = lcc_geom::Homography(m);
+    (h.inverse().is_some() && m.iter().all(|x| x.is_finite())).then_some(m)
+}
+
 fn boolean(props: &Props, k: &str) -> Option<bool> {
     first(props, k).map(|s| s.eq_ignore_ascii_case("true") || s == "1")
 }
@@ -463,11 +478,15 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
     }
 
     // ---- Optics (manual corrections; lens profiles are ours, only the switch carries over).
-    // Our profile corrections are the file's own (DNG-embedded) ones, which Lightroom applies
-    // whatever its "Enable Profile Corrections" box says [inferred]: so only an enabling switch
-    // carries over, and `LensProfileEnable=0` (the default in most presets) leaves ours as it is.
-    if boolean(props, "crs:LensProfileEnable") == Some(true) {
-        put(o, "optics.lens_profile", json!(true));
+    // Our profile corrections are the file's own embedded ones. A photo's own edit (sidecar or
+    // catalog) with "Enable Profile Corrections" off renders without them in Lightroom Classic:
+    // measured on Canon R5 C CR3 exports (8 Nov 2026), whose corners stayed dark and whose framing
+    // kept the lens's distortion. So there the switch carries over both ways. A preset's
+    // `LensProfileEnable=0` (the default in most presets) leaves ours as it is: only enabling does.
+    match boolean(props, "crs:LensProfileEnable") {
+        Some(true) => put(o, "optics.lens_profile", json!(true)),
+        Some(false) if target != Target::Any => put(o, "optics.lens_profile", json!(false)),
+        _ => {}
     }
     if let Some(b) = boolean(props, "crs:AutoLateralCA") {
         put(o, "optics.remove_ca", json!(b));
@@ -513,6 +532,18 @@ pub fn to_partial(props: &Props, target: Target) -> Value {
             _ => "off",
         };
         put(o, "geometry.upright", json!(mode));
+        // Lightroom stores the correction it solved for each mode (`UprightTransform_<mode>`, Auto = 1 …
+        // Full = 4): apply that one exactly instead of detecting lines afresh, so the photo and its crop
+        // match. A preset carries Upright as a recipe, never one photo's matrix.
+        if target != Target::Any {
+            let stored = (1..=4).contains(&(u as i64)).then(|| lrc_upright_matrix(props, u as i64)).flatten();
+            if let Some(m) = stored {
+                put(o, "geometry.lrc_upright", json!(m));
+                put(o, "geometry.upright_transform", Value::Null);
+            } else {
+                put(o, "geometry.lrc_upright", Value::Null);
+            }
+        }
     }
 
     // ---- Crop (normalized edges of the unrotated image + straighten angle)
@@ -632,8 +663,8 @@ pub fn keep_chosen_dcp(base: &lcc_develop::DevelopSettings, out: &mut lcc_develo
     }
 }
 
-/// Whether an XMP packet contains a saved Lightroom Upright matrix. Lightroom's matrix uses a
-/// coordinate convention that the app does not currently import.
+/// Whether an XMP packet contains a saved Lightroom Upright matrix. Auto, Level, Vertical and Full apply
+/// it (`geometry.lrc_upright`); Guided's guides are not imported.
 pub fn has_saved_upright_transform(props: &Props) -> bool {
     props.keys().any(|key| {
         key.strip_prefix("crs:").is_some_and(|name| {
@@ -1108,10 +1139,77 @@ mod tests {
         assert_eq!(unmapped(&scaled), Vec::<String>::new());
     }
 
+    /// A photo's own edit with "Enable Profile Corrections" off, as Lightroom Classic writes it next to a raw.
+    fn sidecar_lens_off() -> Props {
+        props(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+             crs:ProcessVersion="15.4" crs:Exposure2012="0.00" crs:LensProfileEnable="0" crs:VignetteAmount="0"/>
+          </rdf:RDF></x:xmpmeta>"#,
+        )
+    }
+
+    /// Render a light grid of 300 × 200 with `lens` embedded: as a new import (profile corrections on, CF's
+    /// default for a file with lens data) and then with the sidecar `props` applied for `target`.
+    fn render_with_lens(lens: lcc_develop::EmbeddedLens, props: &Props, target: Target) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
+        let (w, h) = (300usize, 200usize);
+        let src = lcc_raster::Rgb32f::from_fn(w, h, |x, y| {
+            let v = if x % 30 < 3 || y % 30 < 3 { 0.1 } else { 0.7 };
+            [v; 3]
+        });
+        let info = lcc_pipeline::SourceInfo { lens: Some(lens), ..Default::default() };
+        let mut imported = DevelopSettings::default();
+        imported.optics.lens_profile = true;
+        let edited = apply_partial(&imported, &to_partial(props, target), 1.0);
+        let plain = DevelopSettings::default();
+        let req = lcc_pipeline::RenderRequest::fit(w, h);
+        let with_edit = lcc_pipeline::render(&src, &info, &edited, &req).image.data;
+        let without_lens = lcc_pipeline::render(&src, &lcc_pipeline::SourceInfo::default(), &plain, &req).image.data;
+        (with_edit, without_lens)
+    }
+
+    #[test]
+    fn sidecar_with_profile_corrections_off_skips_embedded_vignetting() {
+        let lens = lcc_develop::EmbeddedLens {
+            vignette: Some(lcc_develop::EmbeddedVignette { k: [0.5, 0.0, 0.0, 0.0, 0.0], center: lcc_geom::Point::new(0.5, 0.5), radius: 0.6 }),
+            ..Default::default()
+        };
+        for target in [Target::RawAbsolute, Target::RawRelative] {
+            let (edited, plain) = render_with_lens(lens, &sidecar_lens_off(), target);
+            assert_eq!(edited, plain, "{target:?}: corners must stay as shot, as in Lightroom Classic");
+        }
+    }
+
+    #[test]
+    fn sidecar_with_profile_corrections_off_skips_embedded_distortion() {
+        let lens = lcc_develop::EmbeddedLens {
+            warp: Some(lcc_develop::EmbeddedWarp {
+                planes: [[1.0, -0.08, 0.0, 0.0, 0.0, 0.0]; 3],
+                center: lcc_geom::Point::new(0.5, 0.5),
+                radius: 0.6,
+            }),
+            ..Default::default()
+        };
+        for target in [Target::RawAbsolute, Target::RawRelative] {
+            let (edited, plain) = render_with_lens(lens, &sidecar_lens_off(), target);
+            assert_eq!(edited, plain, "{target:?}: framing must keep the lens's distortion, as in Lightroom Classic");
+        }
+    }
+
+    #[test]
+    fn profile_corrections_switch_off_maps_only_for_a_photos_own_edit() {
+        let p = sidecar_lens_off();
+        assert_eq!(to_partial(&p, Target::RawAbsolute)["optics"]["lens_profile"], json!(false));
+        assert!(to_partial(&p, Target::Any).pointer("/optics/lens_profile").is_none(), "a preset leaves it alone");
+        // a packet without the switch leaves the photo's own default (on for a file with lens data) alone
+        let none = props(&preset_packet("", "").replace(r#"crs:LensProfileEnable="0""#, ""));
+        assert!(to_partial(&none, Target::RawAbsolute).pointer("/optics/lens_profile").is_none());
+    }
+
     #[test]
     fn disabled_lens_profile_switch_keeps_embedded_corrections() {
-        // Lightroom applies a file's built-in lens corrections regardless of its profile switch,
-        // and ours are only those: a preset's `LensProfileEnable=0` must not turn them off
+        // a preset's `LensProfileEnable=0` (the default in most presets) must not turn a photo's built-in
+        // lens corrections off: only a photo's own edit does (above)
         let p = props(&preset_packet("", ""));
         let mut d = DevelopSettings::default();
         d.optics.lens_profile = true;
@@ -1145,5 +1243,45 @@ mod tests {
         assert!(report.iter().any(|r| r.contains("ProfileGainTableMap below 100")), "{report:?}");
         let (none, _) = partial("");
         assert!(none.pointer("/profile/camera_local_tone").is_none(), "{none}");
+    }
+
+    /// Lightroom's solved Upright matrix of an Auto edit (a reception room, 8 Nov 2026), as it writes it.
+    const LRC_AUTO: &str = "0.957894731,-0.045975785,0.001016560,-0.051529458,0.923672939,-0.020471191,-0.035187515,-0.133181893,1.000000000";
+
+    fn upright_sidecar(mode: &str, transform_1: &str) -> String {
+        SIDECAR.replace(
+            "crs:PerspectiveUpright=\"2\"",
+            &format!(
+                "crs:PerspectiveUpright=\"{mode}\" crs:UprightTransformCount=\"6\" crs:UprightTransform_0=\"1,0,0,0,1,0,0,0,1\" \
+                 crs:UprightTransform_1=\"{transform_1}\" crs:UprightTransform_2=\"2,0,0,0,2,0,0,0,2\""
+            ),
+        )
+    }
+
+    fn lrc_upright_of(xmp: &str, target: Target) -> Option<lcc_geom::Homography> {
+        apply_partial(&DevelopSettings::default(), &to_partial(&props(xmp), target), 1.0).geometry.lrc_upright
+    }
+
+    #[test]
+    fn reads_lightrooms_stored_upright_matrix_for_its_mode() {
+        let m = lrc_upright_of(&upright_sidecar("1", LRC_AUTO), Target::RawAbsolute).expect("Auto keeps Lightroom's matrix");
+        let want: Vec<f64> = LRC_AUTO.split(',').map(|v| v.parse().unwrap()).collect();
+        for (a, b) in m.0.iter().zip(&want) {
+            assert!((a - b).abs() < 1e-12, "{:?}", m.0);
+        }
+        // Level reads its own matrix (_2), scaled so its last entry is 1
+        let level = lrc_upright_of(&upright_sidecar("2", LRC_AUTO), Target::RawAbsolute).expect("Level's matrix");
+        assert_eq!(level.0, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_bad_or_unusable_upright_matrix_is_left_out() {
+        for bad in ["1,2,3", "NaN,0,0,0,1,0,0,0,1", "1,2,0,2,4,0,0,0,1", "1,0,0,0,1,0,0,0,0", "x,0,0,0,1,0,0,0,1"] {
+            assert_eq!(lrc_upright_of(&upright_sidecar("1", bad), Target::RawAbsolute), None, "{bad}");
+        }
+        // Off and Guided apply no stored matrix; a preset carries Upright as a recipe, not one photo's matrix
+        assert_eq!(lrc_upright_of(&upright_sidecar("0", LRC_AUTO), Target::RawAbsolute), None);
+        assert_eq!(lrc_upright_of(&upright_sidecar("5", LRC_AUTO), Target::RawAbsolute), None);
+        assert_eq!(lrc_upright_of(&upright_sidecar("1", LRC_AUTO), Target::Any), None);
     }
 }

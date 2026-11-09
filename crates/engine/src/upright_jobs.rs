@@ -31,6 +31,7 @@ use crate::media::SourceLevel;
 pub(crate) fn needs_analysis(d: &DevelopSettings) -> bool {
     matches!(d.geometry.upright, Upright::Auto | Upright::Level | Upright::Vertical | Upright::Full)
         && d.geometry.upright_transform.is_none()
+        && d.geometry.lrc_upright.is_none()
         && d.section_enabled("geometry")
 }
 
@@ -41,16 +42,18 @@ pub(crate) fn needs_analysis(d: &DevelopSettings) -> bool {
 /// decision 2026-10-25 item 12).
 pub(crate) fn as_recipe(own: &DevelopSettings, synced: &mut DevelopSettings) {
     let (a, b) = (&own.geometry, &synced.geometry);
-    if a.upright == b.upright && a.upright_transform == b.upright_transform && a.guides == b.guides {
+    if a.upright == b.upright && a.upright_transform == b.upright_transform && a.lrc_upright == b.lrc_upright && a.guides == b.guides {
         return;
     }
     if b.upright == Upright::Guided {
         synced.geometry.upright = a.upright;
         synced.geometry.upright_transform = a.upright_transform;
+        synced.geometry.lrc_upright = a.lrc_upright;
         synced.geometry.guides = a.guides.clone();
         return;
     }
     synced.geometry.upright_transform = None;
+    synced.geometry.lrc_upright = None;
     synced.geometry.guides = a.guides.clone();
 }
 
@@ -138,7 +141,7 @@ impl Session {
         };
         let Some(photo) = self.catalog.photo(f.id) else { return };
         let mut d = (*photo.develop).clone();
-        if d.geometry.upright != f.mode || d.geometry.upright_transform.is_some() {
+        if d.geometry.upright != f.mode || d.geometry.upright_transform.is_some() || d.geometry.lrc_upright.is_some() {
             return;
         }
         d.geometry.upright_transform = Some(t);

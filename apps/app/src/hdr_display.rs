@@ -190,6 +190,13 @@ fn read_compositor_levels() -> Option<(f32, f32)> {
 /// Linux / BSD, a Vulkan device that can carry HDR metadata, set on every new swapchain.
 pub fn configure(options: &mut eframe::egui_wgpu::WgpuConfiguration) {
     options.hdr_output = wanted();
+    let present = PresentChoice::from_env();
+    let wayland = cfg!(all(unix, not(target_os = "macos"))) && std::env::var_os("WAYLAND_DISPLAY").is_some();
+    options.choose_present_mode = Some(std::sync::Arc::new(move |adapter, color_space, offered| {
+        let mode = present_mode_for(present, wayland, adapter.vendor, color_space, offered);
+        log::debug!("window surface: present mode {mode:?} ({present:?}, wayland {wayland}, vendor {:#x})", adapter.vendor);
+        mode
+    }));
     if !options.hdr_output || !cfg!(all(unix, not(target_os = "macos"))) {
         return;
     }
@@ -205,6 +212,57 @@ pub fn configure(options: &mut eframe::egui_wgpu::WgpuConfiguration) {
         }
     }));
     set_metadata_for(levels(Platform::current(), None, env_f32("HDR_HEADROOM").or(read_compositor_headroom()), paper_white()));
+}
+
+/// PCI vendor id of NVIDIA (`wgpu::AdapterInfo::vendor`).
+const NVIDIA: u32 = 0x10DE;
+
+/// `<PREFIX>_PRESENT`: how the window surface presents (issue #633).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentChoice {
+    /// Mailbox only where FIFO is known to miss vblank (HDR on Wayland + NVIDIA), else FIFO.
+    Auto,
+    Fifo,
+    Mailbox,
+}
+
+impl PresentChoice {
+    fn parse(v: Option<&str>) -> PresentChoice {
+        match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("fifo" | "vsync") => PresentChoice::Fifo,
+            Some("mailbox") => PresentChoice::Mailbox,
+            _ => PresentChoice::Auto,
+        }
+    }
+
+    fn from_env() -> PresentChoice {
+        PresentChoice::parse(lcc_brand::env("PRESENT").as_deref())
+    }
+}
+
+/// The window surface's present mode, `None` for the configured default (FIFO).
+///
+/// With HDR output on Wayland, NVIDIA drops to idle clocks between sparse frames and the
+/// heavier float frames then miss vblank under FIFO (95 instead of 144 fps on a 144 Hz
+/// display, issue #633). Mailbox lets a late frame replace the queued one instead of waiting a
+/// whole refresh. Only there, only when the surface offers it; everything else keeps FIFO. When
+/// idle the app draws nothing, so Mailbox costs no power then.
+pub fn present_mode_for(
+    choice: PresentChoice,
+    wayland: bool,
+    vendor: u32,
+    color_space: ColorSpace,
+    offered: &[wgpu::PresentMode],
+) -> Option<wgpu::PresentMode> {
+    let mailbox = offered.contains(&wgpu::PresentMode::Mailbox).then_some(wgpu::PresentMode::Mailbox);
+    match choice {
+        PresentChoice::Fifo => None,
+        PresentChoice::Mailbox => mailbox,
+        PresentChoice::Auto => {
+            let hdr = matches!(color_space, ColorSpace::ExtendedSrgbLinear | ColorSpace::Bt2100Pq);
+            if hdr && wayland && vendor == NVIDIA { mailbox } else { None }
+        }
+    }
 }
 
 /// Keep the swapchain metadata in step with `l` (taken at the next surface configure).
@@ -492,6 +550,33 @@ mod tests {
         assert!(!wanted(None, true), "no facts: SDR on Windows");
         // macOS EDR / Wayland: unchanged, the surface's offer decides.
         assert!(wanted(None, false) && wanted(Some(&sdr), false));
+    }
+
+    /// Mailbox only for HDR on Wayland + NVIDIA when offered; FIFO everywhere else (#633).
+    #[test]
+    fn present_mode_is_mailbox_only_for_hdr_wayland_nvidia() {
+        use wgpu::PresentMode::{Fifo, Mailbox};
+        let both = [Fifo, Mailbox];
+        let fifo_only = [Fifo];
+        let hdr = ColorSpace::ExtendedSrgbLinear;
+        let a = PresentChoice::Auto;
+        assert_eq!(present_mode_for(a, true, NVIDIA, hdr, &both), Some(Mailbox));
+        assert_eq!(present_mode_for(a, true, NVIDIA, ColorSpace::Bt2100Pq, &both), Some(Mailbox));
+        assert_eq!(present_mode_for(a, true, NVIDIA, hdr, &fifo_only), None, "not offered");
+        assert_eq!(present_mode_for(a, false, NVIDIA, hdr, &both), None, "X11");
+        assert_eq!(present_mode_for(a, true, 0x1002, hdr, &both), None, "AMD");
+        assert_eq!(present_mode_for(a, true, NVIDIA, ColorSpace::Auto, &both), None, "SDR");
+        assert_eq!(present_mode_for(PresentChoice::Fifo, true, NVIDIA, hdr, &both), None);
+        assert_eq!(present_mode_for(PresentChoice::Mailbox, false, 0, ColorSpace::Auto, &both), Some(Mailbox));
+        assert_eq!(present_mode_for(PresentChoice::Mailbox, false, 0, ColorSpace::Auto, &fifo_only), None);
+    }
+
+    #[test]
+    fn present_choice_parses_the_override() {
+        assert_eq!(PresentChoice::parse(Some(" FIFO ")), PresentChoice::Fifo);
+        assert_eq!(PresentChoice::parse(Some("mailbox")), PresentChoice::Mailbox);
+        assert_eq!(PresentChoice::parse(Some("nonsense")), PresentChoice::Auto);
+        assert_eq!(PresentChoice::parse(None), PresentChoice::Auto);
     }
 
     #[test]

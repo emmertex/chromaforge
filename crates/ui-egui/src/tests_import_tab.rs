@@ -656,3 +656,39 @@ fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
     assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
     let _ = std::fs::remove_dir_all(&deep_root);
 }
+
+/// Hides Local's built-in places (Pictures, Desktop, Downloads, Home), so a test's own Local row
+/// sits where the test expects it. On Windows the temporary folder is inside Home: browsing a
+/// test folder opens Home's tree down to it, and Home's subfolders on that machine push the
+/// test's row past the window's bottom, where a click can't land.
+fn hide_home_places(h: &mut Headless) {
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        h.app.ui.hidden_locations.extend(
+            ["Pictures", "Desktop", "Downloads", ""]
+                .map(|sub| if sub.is_empty() { home.clone() } else { std::path::Path::new(&home).join(sub).to_string_lossy().to_string() }),
+        );
+    }
+}
+
+/// Issue #881: the Import tab's Show Not Imported stays with that tab. Browsing the same folder
+/// from the sidebar's Local afterwards shows its library photos too, as Folders does.
+#[test]
+fn local_shows_a_library_folders_photos_after_show_not_imported() {
+    let dir = folder("local881", 2);
+    let path = dir.to_string_lossy().to_string();
+    let mut h = app([1400.0, 900.0], "classic");
+    hide_home_places(&mut h);
+    h.settle(SETTLE);
+    exec(&mut h, "library.import", json!({"paths": [path]}));
+    exec(&mut h, "library.browse", json!({"path": path, "show": "notImported"}));
+    assert_eq!(h.app.session.visible().len(), 0, "every file is in the library already");
+    exec(&mut h, "local.addRoot", json!({"path": path}));
+    let row = format!("source:local:{path}");
+    assert!(h.step_until(T, |h| h.app.widgets.iter().any(|(w, _)| *w == row)), "the Local row");
+    let r = h.request("ui.clickWidget", json!({"id": row}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.session.browse.as_ref().is_some_and(|b| !b.not_imported));
+    assert_eq!(h.app.session.visible().len(), 2, "the library photos show");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -439,7 +439,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     let warnings = r["warnings"].as_array().unwrap();
     assert!(warnings.iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful"), "{r}");
-    assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{r}");
+    // Auto with Lightroom's stored matrix is applied as Lightroom solved it: nothing to warn about
+    assert!(!warnings.iter().any(|w| w["code"] == "uprightGeometry"), "{r}");
     assert!(warnings.iter().all(|w| w.get("fields").is_none()), "{r}");
     let import_warnings: Vec<crate::import::ImportWarning> =
         warnings.iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
@@ -447,11 +448,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     assert_eq!(import_profile.path, photo_path);
     assert_eq!(import_profile.profile.as_deref(), Some("Camera Faithful"));
     assert!(import_profile.fields.is_empty());
-    let import_upright = import_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
-    assert_eq!(import_upright.path, photo_path);
-    assert_eq!(import_upright.mode, Some(crate::import::ImportUprightMode::Auto));
-    assert!(import_upright.fields.is_empty());
     let p = s.catalog.photos().next().unwrap().clone();
+    assert!(p.develop.geometry.lrc_upright.is_some(), "Lightroom's Upright matrix is kept");
     assert_eq!(import_profile.photo, Some(p.id.0), "a warning names the photo it was imported as");
     assert_eq!(p.develop.profile.id, "lc.color");
     assert_eq!(p.develop.light.exposure, 1.68);
@@ -467,10 +465,7 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     assert_eq!(reread_profile.path, photo_path);
     assert_eq!(reread_profile.profile.as_deref(), Some("Camera Faithful"));
     assert!(reread_profile.fields.is_empty());
-    let reread_upright = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
-    assert_eq!(reread_upright.path, photo_path);
-    assert_eq!(reread_upright.mode, Some(crate::import::ImportUprightMode::Auto));
-    assert!(reread_upright.fields.is_empty());
+    assert!(!reread_warnings.iter().any(|w| w.code == crate::import::ImportWarningCode::UprightGeometry), "{reread}");
     assert!(
         reread["warnings"]
             .as_array()
@@ -479,7 +474,20 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
             .any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful" && w["path"] == photo_path),
         "{reread}"
     );
-    assert!(reread["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{reread}");
+    // Auto whose stored matrix can't be used (singular): we detect our own, so the warning names the mode
+    let no_matrix = xmp.replace(
+        "0.897233402,-0.013204641,-0.030578613,-0.096087436,0.953621255,0.003270197,-0.157075841,-0.043520282,1.000000000",
+        "1,2,3,2,4,6,0,0,1",
+    );
+    std::fs::write(&sidecar, &no_matrix).unwrap();
+    let reread = s.execute("photo.readMetadataFromFile", &json!({"ids": [p.id.0]})).unwrap();
+    let reread_warnings: Vec<crate::import::ImportWarning> =
+        reread["warnings"].as_array().unwrap().iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
+    let reread_upright = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
+    assert_eq!(reread_upright.path, photo_path);
+    assert_eq!(reread_upright.mode, Some(crate::import::ImportUprightMode::Auto));
+    assert!(reread_upright.fields.is_empty());
+    // the other modes have no stored matrix in this sidecar (only `_1`), so they warn too
     for (source, mode) in [("2", "level"), ("3", "vertical"), ("4", "full"), ("5", "guided"), ("9", "unknown")] {
         let mode_xmp = xmp.replace("crs:PerspectiveUpright=\"1\"", &format!("crs:PerspectiveUpright=\"{source}\""));
         std::fs::write(&sidecar, mode_xmp).unwrap();
@@ -524,7 +532,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let clean_report = s.execute("library.import", &json!({"paths": [clean.to_string_lossy()]})).unwrap();
     assert!(clean_report.get("warnings").is_none(), "{clean_report}");
     let repeat = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
-    assert_eq!(repeat["warnings"].as_array().unwrap().len(), 2, "{repeat}");
+    // the profile only: the Upright matrix is applied as Lightroom saved it
+    assert_eq!(repeat["warnings"].as_array().unwrap().len(), 1, "{repeat}");
     let _ = std::fs::remove_dir_all(&src);
 }
 

@@ -29,7 +29,7 @@ use std::sync::{Mutex, PoisonError};
 use serde_json::{Value, json};
 
 use crate::manifest::Field;
-use crate::permissions::Permissions;
+use crate::permissions::{Group, Permissions, Request};
 use crate::settings::SettingsStore;
 use crate::store::NamespaceStore;
 
@@ -181,6 +181,14 @@ pub(crate) struct CallContext<'a> {
     pub read_only: bool,
     /// The job this call is part of (`None`: not a job; the `job.*` calls are refused).
     pub job: Option<&'a dyn JobReporter>,
+    /// What the user may be asked to allow: the manifest's request, less what no one may grant.
+    pub askable: &'a Permissions,
+    /// What the user said no to: refused quietly.
+    pub denied: &'a [Request],
+    /// The user can be asked: a request never asked about goes in `needs`.
+    pub asking: bool,
+    /// What calls were refused for that the user was never asked about.
+    pub needs: &'a mut Vec<Request>,
 }
 
 /// Whether host call `method` with `p` changes something: refused in a read-only call.
@@ -231,6 +239,48 @@ impl CallContext<'_> {
         }
     }
 
+    /// The error for a call that needs `r`, which isn't granted. Denied: refused quietly. Never
+    /// asked, with the user there to ask: noted in `needs`, for the host to ask once the call
+    /// ends. Never asked, with nobody to ask (a headless run, a job, an agent's request): the
+    /// error says where to allow it.
+    fn refuse(&mut self, r: Request) -> String {
+        if self.denied.contains(&r) {
+            return denied(&r);
+        }
+        if self.asking {
+            if !self.needs.contains(&r) {
+                self.needs.push(r.clone());
+            }
+            return denied(&r);
+        }
+        format!("needs `{r}`, not granted to this plug-in; allow it in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…)")
+    }
+
+    /// `path` resolved for reading (or writing) under a granted folder, or a file (`lent`: and a
+    /// folder) lent for this call. Outside them, a folder the manifest asks for that holds it is
+    /// what the call needs ([`CallContext::refuse`]).
+    fn path(&mut self, path: &str, write: bool, lent: bool) -> Result<PathBuf, String> {
+        let (files, dirs): (&[PathBuf], &[PathBuf]) = match (lent, write) {
+            (false, _) => (&[], &[]),
+            (true, true) => (self.lent, &[]),
+            (true, false) => (self.lent, self.lent_dirs),
+        };
+        let e = match self.perms.check_path_in(path, write, files, dirs) {
+            Ok(p) => return Ok(p),
+            Err(e) => e,
+        };
+        let root = self
+            .askable
+            .fs
+            .iter()
+            .find(|r| Permissions { fs: vec![(*r).clone()], ..Default::default() }.check_path(path, write, &[]).is_ok())
+            .map(|r| r.path.clone());
+        Err(match root {
+            Some(root) => format!("{path}: {}", self.refuse(Request::value(Group::Fs, root))),
+            None => e,
+        })
+    }
+
     pub fn dispatch(&mut self, method: &str, p: &Value) -> Result<Value, String> {
         if self.read_only && writes(method, p) {
             return Err(format!("{method}: a prepare step can only read"));
@@ -252,19 +302,19 @@ impl CallContext<'_> {
         match method {
             "catalog.query" | "photo.inspect" | "catalog.stats" | "keyword.list" => {
                 if !self.perms.catalog {
-                    return Err(denied("catalog"));
+                    return Err(self.refuse(Request::group(Group::Catalog)));
                 }
                 self.host.catalog(method, p)
             }
             "metadata.setStandard" => {
                 if !self.perms.metadata_write {
-                    return Err(denied("metadataWrite"));
+                    return Err(self.refuse(Request::group(Group::MetadataWrite)));
                 }
                 self.host.set_metadata(p)
             }
             "library.add" => {
                 if !self.perms.library_add {
-                    return Err(denied("libraryAdd"));
+                    return Err(self.refuse(Request::group(Group::LibraryAdd)));
                 }
                 if !p.is_object() {
                     return Err("library.add: params must be {path, from, stack?, album?}".into());
@@ -273,7 +323,7 @@ impl CallContext<'_> {
             }
             "photo.pixels" => {
                 if !self.perms.pixels {
-                    return Err(denied("pixels"));
+                    return Err(self.refuse(Request::group(Group::Pixels)));
                 }
                 let photo = str_arg(p, "photo")?;
                 let edge = match p.get("longEdge") {
@@ -289,7 +339,7 @@ impl CallContext<'_> {
             }
             "develop.setCrop" => {
                 if !self.perms.crop {
-                    return Err(denied("crop"));
+                    return Err(self.refuse(Request::group(Group::Crop)));
                 }
                 let photo = str_arg(p, "photo")?;
                 let rect = crop_rect(p)?;
@@ -301,7 +351,7 @@ impl CallContext<'_> {
             }
             "photo.virtualCopy" => {
                 if !self.perms.virtual_copy {
-                    return Err(denied("virtualCopy"));
+                    return Err(self.refuse(Request::group(Group::VirtualCopy)));
                 }
                 let photo = str_arg(p, "photo")?;
                 let name = match p.get("name") {
@@ -331,12 +381,12 @@ impl CallContext<'_> {
                 Ok(v.unwrap_or_else(|| f.default_value()))
             }
             "fs.readText" => {
-                let path = self.perms.check_path_in(str_arg(p, "path")?, false, self.lent, self.lent_dirs)?;
+                let path = self.path(str_arg(p, "path")?, false, true)?;
                 let bytes = crate::safe_io::read_checked(&path, MAX_IO_BYTES as u64).map_err(|e| format!("{}: {e}", path.display()))?;
                 String::from_utf8(bytes).map(Value::from).map_err(|_| format!("{}: not UTF-8 text", path.display()))
             }
             "fs.writeText" => {
-                let path = self.perms.check_path(str_arg(p, "path")?, true, self.lent)?;
+                let path = self.path(str_arg(p, "path")?, true, true)?;
                 let text = str_arg(p, "text")?;
                 if text.len() > MAX_IO_BYTES {
                     return Err(format!("larger than {MAX_IO_BYTES} bytes"));
@@ -344,13 +394,13 @@ impl CallContext<'_> {
                 crate::safe_io::write_checked(&path, text.as_bytes()).map(|_| Value::Null).map_err(|e| format!("{}: {e}", path.display()))
             }
             "fs.readBytes" => {
-                let path = self.perms.check_path_in(str_arg(p, "path")?, false, self.lent, self.lent_dirs)?;
+                let path = self.path(str_arg(p, "path")?, false, true)?;
                 crate::safe_io::read_checked(&path, MAX_IO_BYTES as u64)
                     .map(|b| Value::from(crate::b64::encode(&b)))
                     .map_err(|e| format!("{}: {e}", path.display()))
             }
             "fs.writeBytes" => {
-                let path = self.perms.check_path(str_arg(p, "path")?, true, self.lent)?;
+                let path = self.path(str_arg(p, "path")?, true, true)?;
                 let text = str_arg(p, "base64")?;
                 if text.len() > MAX_IO_BYTES / 3 * 4 + 4 {
                     return Err(format!("larger than {MAX_IO_BYTES} bytes"));
@@ -359,18 +409,18 @@ impl CallContext<'_> {
                 crate::safe_io::write_checked(&path, &bytes).map(|_| Value::Null).map_err(|e| format!("{}: {e}", path.display()))
             }
             "fs.remove" => {
-                let path = self.perms.check_path(str_arg(p, "path")?, true, &[])?;
+                let path = self.path(str_arg(p, "path")?, true, false)?;
                 if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
                     return Err(format!("{}: not a file", path.display()));
                 }
                 std::fs::remove_file(&path).map(|_| Value::Null).map_err(|e| format!("{}: {e}", path.display()))
             }
             "fs.exists" => {
-                let path = self.perms.check_path_in(str_arg(p, "path")?, false, self.lent, self.lent_dirs)?;
+                let path = self.path(str_arg(p, "path")?, false, true)?;
                 Ok(Value::from(path.exists()))
             }
             "fs.list" => {
-                let path = self.perms.check_path_in(str_arg(p, "path")?, false, self.lent, self.lent_dirs)?;
+                let path = self.path(str_arg(p, "path")?, false, true)?;
                 let rd = std::fs::read_dir(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let mut names: Vec<Value> = rd
                     .filter_map(|e| e.ok())
@@ -460,7 +510,7 @@ impl CallContext<'_> {
         if self.requested.program(id).is_none() {
             return Err(format!("{id:?} is not one of this plug-in's programs"));
         }
-        let decl = self.perms.program(id).ok_or_else(|| format!("{id}: {}", denied("programs")))?.clone();
+        let Some(decl) = self.perms.program(id).cloned() else { return Err(self.refuse(Request::value(Group::Programs, id))) };
         let files = match p.get("files") {
             None | Some(Value::Null) => serde_json::Map::new(),
             Some(Value::Object(m)) => m.clone(),
@@ -506,7 +556,12 @@ impl CallContext<'_> {
         let url = str_arg(p, "url")?;
         let parsed = Url::parse(url).map_err(|e| e.to_string())?;
         if !self.perms.allows_host(&parsed.host) {
-            return Err(format!("{}: {}", parsed.host, denied("network")));
+            let asked =
+                self.askable.network.iter().find(|h| Permissions { network: vec![(*h).clone()], ..Default::default() }.allows_host(&parsed.host));
+            return Err(match asked.cloned() {
+                Some(h) => format!("{}: {}", parsed.host, self.refuse(Request::value(Group::Network, h))),
+                None => format!("{}: not one of the `network` hosts this plug-in asks for", parsed.host),
+            });
         }
         let method = match p.get("method").and_then(Value::as_str).unwrap_or("GET").to_ascii_uppercase().as_str() {
             "GET" => Method::Get,
@@ -565,6 +620,6 @@ fn installs(decl: &crate::ProgramDecl, mut found: Vec<crate::Found>) -> Vec<crat
     found
 }
 
-fn denied(cap: &str) -> String {
-    format!("permission `{cap}` not granted to this plug-in")
+fn denied(r: &Request) -> String {
+    format!("permission `{r}` not granted to this plug-in")
 }

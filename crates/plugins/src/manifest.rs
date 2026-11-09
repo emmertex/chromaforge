@@ -2,7 +2,7 @@
 //! the plug-in contributes (commands with declarative dialogs, hooks, a publish service, settings).
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::permissions::Permissions;
 use crate::{Error, Result};
@@ -92,6 +92,10 @@ pub struct Manifest {
     /// with `prepare` has its options filled by the `settings.prepare` hook.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<Field>,
+    /// Fields of the manifest JSON the host doesn't know, by path ([`ignored_fields`]): a typo, or
+    /// a field from a newer host. Set by [`Manifest::parse`].
+    #[serde(skip)]
+    pub unknown_fields: Vec<String>,
     /// A square icon the host may show for the plug-in (`"icon": "<svg…>"`, drawn on the host's
     /// own background, so it suits dark and light themes), as a pixel filter's. Read by
     /// [`Manifest::parse`]; a picture that isn't an SVG document of at most [`MAX_PICTURE_BYTES`]
@@ -291,9 +295,116 @@ fn short(s: &str) -> String {
     s.chars().take(64).collect()
 }
 
+/// Most fields [`ignored_fields`] reports, most it tests (known fields left out of the
+/// serialised manifest at their defaults are candidates too, so it looks past 32), and how deep.
+const MAX_IGNORED: usize = 32;
+const MAX_CANDIDATES: usize = 256;
+const MAX_IGNORED_DEPTH: usize = 16;
+
+/// A step of a path into JSON.
+#[derive(Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// The fields of manifest JSON `raw` that `parse` ignores, by path (`commands[2].lable`), at most
+/// 32. A field is ignored when the manifest parsed from `raw` doesn't serialise it, and setting it
+/// to a value no field takes (`[[[]]]`) still parses to the same manifest; so a known field at its
+/// default isn't reported. `lenient`: paths (`*` for any key) of fields that drop a value they
+/// can't use instead of failing, which that test can't tell from unknown ones; never reported.
+/// Plug-in and pixel-filter manifests both use it (`serde(deny_unknown_fields)` doesn't work with
+/// their `serde(flatten)`ed fields).
+pub fn ignored_fields<T: Serialize + PartialEq>(raw: &Value, lenient: &[&str], parse: impl Fn(&Value) -> Option<T>) -> Vec<String> {
+    let Some(base) = parse(raw) else { return Vec::new() };
+    let Ok(ser) = serde_json::to_value(&base) else { return Vec::new() };
+    let mut candidates = Vec::new();
+    unserialised(raw, &ser, &mut Vec::new(), &mut candidates);
+    candidates
+        .into_iter()
+        .filter(|path| !lenient.iter().any(|l| path_matches(l, path)))
+        .filter(|path| {
+            let mut probe = raw.clone();
+            match value_at(&mut probe, path) {
+                Some(slot) => *slot = json!([[[]]]),
+                None => return false,
+            }
+            parse(&probe).is_some_and(|m| m == base)
+        })
+        .take(MAX_IGNORED)
+        .map(|path| show_path(&path))
+        .collect()
+}
+
+/// Paths of `raw`'s object keys that `ser` (the parsed manifest, serialised) lacks.
+fn unserialised(raw: &Value, ser: &Value, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
+    if path.len() >= MAX_IGNORED_DEPTH {
+        return;
+    }
+    match (raw, ser) {
+        (Value::Object(r), Value::Object(s)) => {
+            for (k, v) in r {
+                if out.len() >= MAX_CANDIDATES {
+                    return;
+                }
+                path.push(Step::Key(k.clone()));
+                match s.get(k) {
+                    Some(sv) => unserialised(v, sv, path, out),
+                    None => out.push(path.clone()),
+                }
+                path.pop();
+            }
+        }
+        (Value::Array(r), Value::Array(s)) if r.len() == s.len() => {
+            for (i, (rv, sv)) in r.iter().zip(s).enumerate() {
+                path.push(Step::Index(i));
+                unserialised(rv, sv, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_at<'a>(v: &'a mut Value, path: &[Step]) -> Option<&'a mut Value> {
+    path.iter().try_fold(v, |v, step| match step {
+        Step::Key(k) => v.get_mut(k.as_str()),
+        Step::Index(i) => v.get_mut(*i),
+    })
+}
+
+/// Whether `pattern` (`params.*.label`; `*` is any key or index) names `path`.
+fn path_matches(pattern: &str, path: &[Step]) -> bool {
+    let parts: Vec<&str> = pattern.split('.').collect();
+    parts.len() == path.len()
+        && parts.iter().zip(path).all(|(p, step)| match step {
+            Step::Key(k) => *p == "*" || p == k,
+            Step::Index(_) => *p == "*",
+        })
+}
+
+fn show_path(path: &[Step]) -> String {
+    let mut s = String::new();
+    for step in path {
+        match step {
+            Step::Key(k) if s.is_empty() => s.push_str(&short(k)),
+            Step::Key(k) => {
+                s.push('.');
+                s.push_str(&short(k));
+            }
+            Step::Index(i) => s.push_str(&format!("[{i}]")),
+        }
+    }
+    s
+}
+
 pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
+
+/// Plug-in manifest fields read leniently (a picture the host can't use is dropped, not an
+/// error): never reported as unknown.
+const LENIENT: &[&str] = &["icon", "header"];
 
 impl Manifest {
     /// Parses and validates a manifest.
@@ -301,12 +412,14 @@ impl Manifest {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Manifest(format!("{} bytes (limit {MAX_MANIFEST_BYTES})", bytes.len())));
         }
-        let raw: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
-        let mut m: Manifest = serde_json::from_value(raw.clone()).map_err(|e| Error::Manifest(e.to_string()))?;
+        // the struct first: it refuses a key given twice, which a `Value` would keep the last of
+        let mut m: Manifest = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        let raw: Value = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
         // pictures are optional: one the host can't use is dropped, never an error
         m.icon = svg_document(raw.get("icon"));
         m.header = raw.get("header").and_then(Header::parse);
         m.validate()?;
+        m.unknown_fields = ignored_fields(&raw, LENIENT, |v| serde_json::from_value::<Manifest>(v.clone()).ok());
         Ok(m)
     }
 

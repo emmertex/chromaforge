@@ -157,9 +157,7 @@ impl Net {
         require_faster: bool,
     ) -> std::result::Result<(), String> {
         self.detach();
-        let started = web_time::Instant::now();
         let cpu = self.run(probe.clone()).map_err(|e| e.to_string())?;
-        let cpu_time = started.elapsed();
         *self.accelerator.write().unwrap_or_else(PoisonError::into_inner) = Some(accelerator);
         // the first run also uploads the weights and builds the kernels: time a second one
         let fast = self.run(probe.clone()).map_err(|e| e.to_string());
@@ -169,18 +167,33 @@ impl Net {
             Ok(fast) => agree(&cpu, &fast, tolerance),
         };
         if verdict.is_ok() && require_faster {
-            let started = web_time::Instant::now();
-            let again = self.run(probe.clone()).map_err(|e| e.to_string());
-            let fast_time = started.elapsed();
+            // Measure batch throughput rather than single-face driver launch latency.
+            // Face recognition in production batches faces (up to 16 per dispatch).
+            const BENCH_BATCH: usize = 8;
+            let batch = vec![probe.clone(); BENCH_BATCH];
+            let fast_started = web_time::Instant::now();
+            let again = self.run_batch(batch.clone()).map_err(|e| e.to_string());
+            let fast_time = fast_started.elapsed();
             verdict = match again {
                 Err(e) => Err(e),
                 Ok(_) if self.accelerator().is_none() => Err("the device failed on the test input".into()),
-                Ok(_) if fast_time >= cpu_time => Err(format!(
-                    "the device is not faster for this model ({:.0} ms against {:.0} ms on the CPU)",
-                    fast_time.as_secs_f64() * 1000.0,
-                    cpu_time.as_secs_f64() * 1000.0
-                )),
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    let cpu_started = web_time::Instant::now();
+                    for input in batch {
+                        self.run_one(input).map_err(|e| e.to_string())?;
+                    }
+                    let cpu_time = cpu_started.elapsed();
+                    if fast_time >= cpu_time {
+                        Err(format!(
+                            "the device is not faster for this model ({:.0} ms against {:.0} ms on the CPU for {} faces)",
+                            fast_time.as_secs_f64() * 1000.0,
+                            cpu_time.as_secs_f64() * 1000.0,
+                            BENCH_BATCH
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }
             };
         }
         if verdict.is_err() {

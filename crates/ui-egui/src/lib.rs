@@ -775,6 +775,12 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// This frame's input carries synthetic events (an agent's or a script's, [`Self::synthetic`]):
+    /// what only the user may do (allow a plug-in's permission) ignores a click in it.
+    pub(crate) synthetic_frame: bool,
+    /// Input the test harness gives as the user's ([`headless::Headless::click_as_user`]): one
+    /// event per frame, never marked synthetic. Nothing outside the harness fills it.
+    pub(crate) user_events: Vec<egui::Event>,
     /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
     /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
     /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
@@ -942,6 +948,7 @@ pub struct LccApp {
     gpu_applied: Option<bool>,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
+    ml_device_applied: Option<String>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -1143,6 +1150,8 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            synthetic_frame: false,
+            user_events: vec![],
             paint_hold_until: f64::NEG_INFINITY,
             paint_hold: false,
             mask_landing: Default::default(),
@@ -1221,6 +1230,7 @@ impl LccApp {
             preview_window: None,
             gpu_applied: None,
             gpu_cards_applied: None,
+            ml_device_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -1377,6 +1387,17 @@ impl LccApp {
         }
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
+        }
+        if let Ok(v) = &r
+            && id == "ml.status"
+            && (params.get("device").is_some() || params.get("preference").is_some())
+            && let Some(dev_choice) = v.get("deviceChoice").and_then(Value::as_str)
+        {
+            let choice = if dev_choice.eq_ignore_ascii_case("auto") { "" } else { dev_choice.trim() };
+            if self.ui.settings.ml_device != choice {
+                self.ui.settings.ml_device = choice.to_string();
+            }
+            self.ml_device_applied = Some(choice.to_string());
         }
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
@@ -2451,6 +2472,34 @@ impl LccApp {
             }
             self.gpu_cards_applied = Some(cards);
         }
+        let ml_device = self.ui.settings.ml_device.clone();
+        if self.ml_device_applied.is_none() && ml_device.is_empty() {
+            if let Ok(st) = self.session.execute("ml.status", &serde_json::json!({})) {
+                let adopted = st
+                    .get("deviceChoice")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("")
+                    .to_string();
+                if !adopted.is_empty() {
+                    self.ui.settings.ml_device = adopted.clone();
+                }
+                self.ml_device_applied = Some(adopted);
+            }
+        } else if self.ml_device_applied.as_ref() != Some(&ml_device)
+            && self
+                .session
+                .execute(
+                    "ml.status",
+                    &serde_json::json!({
+                        "device": ml_device,
+                    }),
+                )
+                .is_ok()
+        {
+            self.ml_device_applied = Some(ml_device);
+        }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
             // not the `app.gpu` command: its answer (`available`, `adapter`) waits for the device, and
@@ -2610,7 +2659,15 @@ impl LccApp {
         if !self.drop_hover.is_empty() {
             raw.hovered_files = self.drop_hover.iter().map(|p| egui::HoveredFile { path: file(p), ..Default::default() }).collect();
         }
+        self.synthetic_frame = !self.synthetic.is_empty();
         if self.synthetic.is_empty() {
+            if !self.user_events.is_empty() {
+                let e = self.user_events.remove(0);
+                if let egui::Event::PointerButton { pos, .. } = &e {
+                    raw.events.push(egui::Event::PointerMoved(*pos));
+                }
+                raw.events.push(e);
+            }
             shell::defer_tabs(self, raw);
             return;
         }
@@ -3186,6 +3243,9 @@ pub struct Caches {
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
     pub unnamed: Option<(u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
+    /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another
+    /// year, folder or album, they are asked for again.
+    pub faces_filter: Option<lcc_catalog::Filter>,
     /// The most photos the face scan has had left at once since it last finished (the progress bar's whole).
     pub faces_peak: u64,
     person_names: Option<(u64, std::sync::Arc<Vec<String>>)>,
