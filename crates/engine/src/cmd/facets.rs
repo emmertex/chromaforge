@@ -260,7 +260,7 @@ fn values(s: &Session, field: &str, p: &Photo) -> Vec<String> {
 
 /// Numeric fields sort by value; the rest by count, most first, then by name.
 fn numeric(field: &str) -> bool {
-    matches!(field, "rating" | "year" | "iso" | "focal")
+    matches!(field, "rating" | "year" | "iso" | "focal" | "aperture" | "shutter")
 }
 
 fn facets(s: &mut Session, p: &Value) -> Result<Value> {
@@ -308,7 +308,8 @@ fn facets(s: &mut Session, p: &Value) -> Result<Value> {
         let mut rows: Vec<(String, usize)> = counts.into_iter().collect();
         if numeric(field) {
             rows.sort_by(|a, b| {
-                a.0.parse::<f64>().unwrap_or(f64::MAX).total_cmp(&b.0.parse::<f64>().unwrap_or(f64::MAX)).then_with(|| a.0.cmp(&b.0))
+                let key = |v: &str| lcc_catalog::facets::sort_key(field, v).unwrap_or(f64::MAX);
+                key(&a.0).total_cmp(&key(&b.0)).then_with(|| a.0.cmp(&b.0))
             });
         } else {
             rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
