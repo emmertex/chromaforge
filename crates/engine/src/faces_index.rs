@@ -588,6 +588,8 @@ mod tests {
 /// What the recognition commands keep between calls: the loaded model and the embeddings made with it.
 #[derive(Default)]
 pub(crate) struct FacesState {
+    /// `<model id>@<sha256>` and the chosen model's manifest (reused without loading the ONNX network).
+    pub manifest: Option<(String, lcc_faces::ModelManifest)>,
     /// `<model id>@<sha256>` and the loaded model.
     pub embedder: Option<(String, Arc<lcc_faces::runtime::Embedder>)>,
     pub index: Index,
@@ -626,6 +628,7 @@ impl FacesState {
         self.index.reset("", 0, None);
         self.scanned.reset(None);
         self.scan_failed.clear();
+        self.manifest = None;
         self.embedder = None;
         self.checked = None;
         self.queue.clear();
