@@ -713,7 +713,9 @@ fn focus(ui: &mut egui::Ui, p: &Photo) {
 /// Tracking"), or `None` when the photo has no focus point.
 pub(crate) fn focus_text(f: Option<&lcc_meta::FocusPoint>) -> Option<String> {
     let f = f?;
-    let words: Vec<&str> = f.words().into_iter().map(crate::i18n::tr).collect();
+    // (the AF area `Tracking`, not the book's letter spacing: its own context)
+    let words: Vec<&str> =
+        f.words().into_iter().map(|w| if w == "Tracking" { crate::i18n::tr("focus|Tracking") } else { crate::i18n::tr(w) }).collect();
     Some(if words.is_empty() { crate::i18n::tr("Focus point").to_string() } else { words.join(" · ") })
 }
 
