@@ -33,6 +33,10 @@ const ALLOWED: &[&str] = &[
     "xtask/src/rename.rs",
     // upstream contributor credits (attribution)
     "contributors/",
+    // the Logi Options+ plugin: a separate C# package whose identity is the app it drives (package and
+    // assembly names, namespaces, the window-matching exe pattern) and which migrates the earlier name's
+    // plugin data (`LegacyData.cs`); C# has no build-time brand, so a rebrand renames this package
+    "packaging/logi/",
 ];
 
 /// `[legacy]` handling: files that must name a previous identity to migrate from it (settings folders, env vars,
