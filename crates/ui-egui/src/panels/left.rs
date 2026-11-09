@@ -2497,6 +2497,12 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
                 }
             }
         }
+        if row == FolderRow::Library {
+            if drawn {
+                ui.separator();
+            }
+            super::folders::subfolder_photos_item(app, ui);
+        }
     });
 }
 
