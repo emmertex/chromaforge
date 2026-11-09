@@ -247,6 +247,8 @@ mod tests_import_body_profiles;
 #[cfg(test)]
 mod tests_import_drives;
 #[cfg(test)]
+mod tests_import_loupe;
+#[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
 mod tests_import_recipe;
