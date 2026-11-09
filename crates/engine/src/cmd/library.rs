@@ -655,6 +655,21 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "library.showSubfolderPhotos",
+            "Show Photos in Subfolders",
+            [],
+            None,
+            "{on?: bool (default: toggle)} — whether a folder chosen in Folders also shows the photos of the folders inside it → {on, count}",
+            always,
+            |s, p| {
+                let on = bool_or(p, "on", !s.folder_subfolders);
+                s.folder_subfolders = on;
+                s.keep_active_in_view();
+                s.save_view();
+                Ok(json!({"on": on, "count": s.visible().len()}))
+            }
+        ),
+        cmd!(
             "library.filter",
             "Filter",
             [],
