@@ -460,6 +460,20 @@ pub fn set_batch_limits(bytes: Option<u64>, jobs: Option<usize>) {
     let _ = (bytes, jobs);
 }
 
+/// Pin the bytes the joint colour noise reduction's bands may take on the device, for every render
+/// from now on (`None`: plan them from the device's memory and the renders on it again). Planned from
+/// the device, the plan follows the renders in flight, and when no band fits the step runs on the CPU,
+/// which agrees with the device only to within an 8-bit level; a pinned plan stays put, so two renders
+/// of one photo take the same path. For tests that compare renders bit for bit
+/// (`<PREFIX>_NR_GPU_BAND_MB` pins it from outside).
+#[doc(hidden)]
+pub fn set_nr_band_budget(bytes: Option<usize>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    render::NR_BAND_BUDGET.store(bytes.map_or(0, |b| b.max(1)), Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = bytes;
+}
+
 /// Batch work on the GPU now and so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BatchUsage {
