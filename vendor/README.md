@@ -9,6 +9,11 @@ own licences, and change as little as possible so that an upgrade is a re-copy p
 Source: crates.io `egui-wgpu` 0.36.2 (<https://github.com/emilk/egui>), copyright Emil
 Ernerfeldt and the egui contributors; licence texts in `LICENSE-MIT` / `LICENSE-APACHE`.
 
+Patch: present mode (issue #633). `WgpuConfiguration::choose_present_mode` (copied to
+`RenderState`) lets the app pick the window surface's present mode from the adapter, the surface's
+colour space and the offered modes at every configure; `configure_surface` falls back to
+`AutoVsync` (FIFO) when the chosen mode isn't offered. Marked `Patch (present mode)`.
+
 Patch: HDR display output (LR-VIEW-HDR-DISPLAY). Upstream egui-wgpu always picks an
 8-bit surface in the default colour space and never hands the surface to the app. The changes,
 each marked `Patch (HDR display output)` in the source:
