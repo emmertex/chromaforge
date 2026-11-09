@@ -132,6 +132,9 @@ fn hidden_spot_pins_are_not_grabbed_and_the_tool_still_works() {
 #[test]
 fn shift_h_and_the_command_cycle_the_tool_overlay() {
     let mut h = three_spots();
+    // Classic gives Shift+H to HDR Edit Mode; the cycle key can be set back in Keyboard Shortcuts
+    assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.toolOverlay"), None);
+    crate::shortcuts::assign(&mut h.app.ui.settings.keymap, "view.toolOverlay", Some("Shift+H")).unwrap();
     // Shift+H steps Auto → Always → Selected → Never → Auto
     for want in [ToolOverlay::Always, ToolOverlay::Selected, ToolOverlay::Never, ToolOverlay::Auto] {
         let r = h.request("ui.key", json!({"key": "h", "shift": true}), T);
@@ -164,17 +167,17 @@ fn shift_h_and_the_command_cycle_the_tool_overlay() {
     assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.toolOverlay"), Some("Shift+H"));
 }
 
-/// View ▸ Tool Overlay lists the modes (the current one checked) and the cycle item with its key;
-/// the Remove panel's dropdown sets the mode.
+/// Tools ▸ Tool Overlay (Develop; View ▸ in Library) lists the modes (the current one checked) and
+/// the cycle item, which has no key in the Classic set; the Remove panel's dropdown sets the mode.
 #[test]
 fn view_menu_and_remove_panel_choose_the_tool_overlay() {
     let mut h = three_spots();
     exec(&mut h, "view.toolOverlay", json!({"mode": "never"}));
     let bar = crate::menubar::menu_bar(&h.app);
-    let view = &bar.iter().find(|(t, _)| t == "View").unwrap().1;
-    let Some(MenuNode::Submenu { children, .. }) = view.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Tool Overlay"))
+    let tools = &bar.iter().find(|(t, _)| t == "Tools").expect("Develop's Tools menu").1;
+    let Some(MenuNode::Submenu { children, .. }) = tools.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Tool Overlay"))
     else {
-        panic!("View ▸ Tool Overlay")
+        panic!("Tools ▸ Tool Overlay")
     };
     let items: Vec<(String, serde_json::Value, Option<bool>, Option<String>)> = children
         .iter()
@@ -189,7 +192,7 @@ fn view_menu_and_remove_panel_choose_the_tool_overlay() {
     let checked: Vec<&serde_json::Value> = items.iter().filter(|i| i.2 == Some(true)).map(|i| &i.1).collect();
     assert_eq!(checked, vec![&json!({"mode": "never"})]);
     assert_eq!(items[4].1, serde_json::Value::Null, "the last item cycles");
-    assert_eq!(items[4].3.as_deref(), Some("Shift+H"));
+    assert_eq!(items[4].3, None, "Shift+H is HDR Edit Mode in the Classic set");
     // the menu items run the command like the shortcut does
     let r = h.request("ui.menu.invoke", json!({"id": "view.toolOverlay", "params": {"mode": "always"}}), T);
     assert_eq!(r["ok"], true, "{r}");
