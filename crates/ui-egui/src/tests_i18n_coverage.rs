@@ -1,9 +1,6 @@
-//! P6.3 localisation coverage: every complete catalog carries the same messages (a message missing
-//! from one language fails, it doesn't quietly show English), and every text the UI passes to
-//! `tr` (directly, or through a helper that translates; read by `i18n_scan`) is in every complete catalog.
-//!
-//! The languages in [`PARTIAL`] are catching up: what they lack is reported, not failed, as
-//! upstream's `display_label_gaps_are_reported` does for every language.
+//! P6.3 localisation coverage: every catalog carries the same messages (a message missing from one
+//! language fails, it doesn't quietly show English), and every text the UI passes to `tr`
+//! (directly, or through a helper that translates; read by `i18n_scan`) is in every catalog.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,12 +17,6 @@ fn catalog(code: &str, formats: bool) -> BTreeMap<String, String> {
     }
     messages
 }
-
-/// Languages upstream added after the fork's own UI: their catalogs (upstream's rows plus the
-/// fork overlay's few rows) don't yet carry the fork's messages. Their gaps are reported; the
-/// messages upstream's own tests require in every language (the smart-album rule words) are in
-/// their overlays. A language leaves this list once its overlay catches up.
-pub(crate) const PARTIAL: &[Locale] = &[Locale::Pl, Locale::Cs, Locale::It, Locale::Ka, Locale::Sv, Locale::Fi, Locale::Id, Locale::Vi];
 
 /// Every message a fork overlay (`locales/fork/`) carries, in any language.
 fn fork_keys(formats: bool) -> BTreeSet<String> {
@@ -54,25 +45,17 @@ fn translated() -> impl Iterator<Item = Locale> {
     Locale::ALL.iter().copied().filter(|l| *l != Locale::En)
 }
 
-fn complete() -> impl Iterator<Item = Locale> {
-    translated().filter(|l| !PARTIAL.contains(l))
-}
-
-/// Print what a partial language lacks (a report, not a failure).
+/// Print upstream's own translation gaps (a report, not a failure).
 fn report(what: &str, gaps: &[String]) {
     if !gaps.is_empty() {
-        eprintln!(
-            "{} {what} (reported only: partial languages); first ones:\n{}",
-            gaps.len(),
-            gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
-        );
+        eprintln!("{} {what} (reported only); first ones:\n{}", gaps.len(), gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n"));
     }
 }
 
 #[test]
 fn every_catalog_carries_every_message() {
     for formats in [false, true] {
-        let all: Vec<(Locale, BTreeMap<String, String>)> = complete().map(|l| (l, catalog(l.code(), formats))).collect();
+        let all: Vec<(Locale, BTreeMap<String, String>)> = translated().map(|l| (l, catalog(l.code(), formats))).collect();
         // Help ▸ What's New's lines are upstream's release notes, translated as each language gets
         // to them (a language with them all, another with none): the translation gap report counts
         // them (`i18n`), they don't fail here
@@ -93,47 +76,27 @@ fn every_catalog_carries_every_message() {
         }
         assert!(missing.is_empty(), "{} message(s) missing (formats: {formats}):\n{}", missing.len(), missing.join("\n"));
         report("upstream messages missing", &upstream_gaps);
-        // the partial languages: every runtime format (a missing one would show English text with
-        // values in it), the rest reported
-        let mut gaps = Vec::new();
-        for l in PARTIAL {
-            let c = catalog(l.code(), formats);
-            for key in &union {
-                if !c.contains_key(*key) {
-                    if formats {
-                        missing.push(format!("{} lacks {key:?}", l.code()));
-                    } else {
-                        gaps.push(format!("{} lacks {key:?}", l.code()));
-                    }
-                }
-            }
-        }
-        assert!(missing.is_empty(), "{} format message(s) missing:\n{}", missing.len(), missing.join("\n"));
-        report("messages missing", &gaps);
     }
 }
 
 /// Every text the UI hands to `tr` (directly, or through a helper that translates), in every
-/// non-test source file (`i18n_scan`), is in every complete catalog: a failure for a complete
-/// language, a report for a [`PARTIAL`] one.
+/// non-test source file (`i18n_scan`), is in every catalog.
 #[test]
 fn ui_text_is_in_every_catalog() {
     let texts = crate::i18n_scan::translated_texts();
     assert!(texts.len() > 2000, "the scan finds the UI's text ({} messages)", texts.len());
     assert!(texts.contains_key("Map Style") && texts.contains_key("Zoom In"), "helpers and access names are scanned");
-    let (mut missing, mut gaps) = (Vec::new(), Vec::new());
+    let mut missing = Vec::new();
     for l in translated() {
         let (plain, formats) = (catalog(l.code(), false), catalog(l.code(), true));
         for (text, files) in &texts {
             if !plain.contains_key(text) && !formats.contains_key(text) {
                 let files: Vec<&str> = files.iter().map(String::as_str).collect();
-                let gap = format!("{}: {text:?} ({})", l.code(), files.join(", "));
-                if PARTIAL.contains(&l) { gaps.push(gap) } else { missing.push(gap) }
+                missing.push(format!("{}: {text:?} ({})", l.code(), files.join(", ")));
             }
         }
     }
     assert!(missing.is_empty(), "{} untranslated message(s):\n{}", missing.len(), missing.join("\n"));
-    report("untranslated messages", &gaps);
 }
 
 /// `build.rs` writes each format message's macro arm as JSON spells it, and `macro_rules!` matches a
