@@ -2664,6 +2664,7 @@ fn quick_name(q: lcc_engine::media::QuickSource) -> &'static str {
         QuickSource::Small => "small",
         QuickSource::Last => "last",
         QuickSource::Draft => "draft",
+        QuickSource::Kept => "kept",
     }
 }
 
@@ -6797,6 +6798,7 @@ mod tests {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {

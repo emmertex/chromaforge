@@ -391,6 +391,18 @@ pub enum SourceRef {
 }
 
 impl SourceRef {
+    /// Whether the photo's original isn't there: its drive isn't mounted, or it was moved or deleted. A file (a
+    /// photo or a clip) asks the file system: for render workers, never the UI thread. A smart preview is only ever
+    /// the source when its original is known to be missing. Never in the browser build (no file system there: its
+    /// originals are always "there").
+    pub fn original_missing(&self) -> bool {
+        match self {
+            SourceRef::File { path, .. } | SourceRef::Video { path, .. } => !cfg!(target_arch = "wasm32") && !std::path::Path::new(path).exists(),
+            SourceRef::Smart { .. } => !cfg!(target_arch = "wasm32"),
+            _ => false,
+        }
+    }
+
     pub fn load(&self) -> Result<Arc<Rgb32f>, String> {
         self.load_source().map(|s| s.image)
     }
@@ -649,6 +661,9 @@ pub struct MediaCache {
     profile_facts: HashMap<PhotoId, ProfileFacts>,
     /// The camera bodies' corrections the decoded sources were made with ([`crate::sensor_maps::generation`]).
     sensor_generation: u64,
+    /// The renderer version in grid thumbnails' keys: [`RENDER_CACHE_VERSION`] (tests change it to stand for an
+    /// update that bumps it).
+    pub(crate) thumb_version: u64,
 }
 
 /// File facts that decide whether the Edit panel's Profile section shows an option: a camera model with measured
@@ -732,6 +747,7 @@ impl Default for MediaCache {
             denoise: DenoiseIndex::default(),
             profile_facts: HashMap::new(),
             sensor_generation: 0,
+            thumb_version: RENDER_CACHE_VERSION,
         }
     }
 }
@@ -1123,6 +1139,9 @@ pub struct RenderJob {
     /// [`latest_thumb_key`]): what an edited photo shows while the render for its current settings
     /// is on its way, never the unedited camera JPEG.
     pub latest: Option<(Arc<PreviewCache>, Hash128)>,
+    /// A grid thumbnail of the photo's own settings: kept as the photo's last thumbnail too, and shown in its place
+    /// when the original is missing ([`KeptThumb`]). `None` for every other job.
+    pub kept: Option<KeptThumb>,
     /// Where the result lies in its photo and the look it has ([`crate::placement`]): what lets it
     /// stand in, at once, for the photo with another crop. Set for the photo's own renders; `None`
     /// for others (a variant, a face tile, a hover preview).
@@ -1320,6 +1339,7 @@ impl RenderJob {
         if overlay != lcc_pipeline::Overlay::None {
             self.view_cache = None;
             self.latest = None;
+            self.kept = None;
         }
         self
     }
@@ -1335,6 +1355,7 @@ impl RenderJob {
         if proof.is_some() {
             self.view_cache = None;
             self.latest = None;
+            self.kept = None;
         }
         self
     }
@@ -1359,6 +1380,7 @@ impl RenderJob {
         self.cache = None;
         self.view_cache = None;
         self.latest = None;
+        self.kept = None;
         self.preview_cut = None;
         self
     }
@@ -1467,6 +1489,9 @@ impl RenderJob {
         if let Some((cache, key)) = &self.cache
             && let Some(img) = cache.get_at(self.cache_generation, *key)
         {
+            if let Some(kept) = &self.kept {
+                kept.keep(*key, img.clone());
+            }
             let image = Arc::unwrap_or_clone(img);
             let histogram = Histogram::of_srgb8(&image);
             return RenderResult {
@@ -1630,6 +1655,9 @@ impl RenderJob {
                 if let Some((cache, key)) = &self.cache {
                     let img = Arc::new(rendered.image.clone());
                     cache.put_at(self.cache_generation, *key, img.clone());
+                    if let Some(kept) = self.kept.as_ref().filter(|_| full_quality) {
+                        kept.keep(*key, img.clone());
+                    }
                     if let Some((latest, alias)) = self.latest.as_ref().filter(|_| full_quality && self.view_cache.is_none()) {
                         latest.put_latest_with(self.cache_generation, *alias, *key, img, false, meta.as_deref());
                     }
@@ -1670,7 +1698,30 @@ impl RenderJob {
                     frame: None,
                 }
             }
-            Err(e) => self.failed(e),
+            Err(e) => self.kept_or_failed(e),
+        }
+    }
+
+    /// A grid thumbnail whose original is missing shows the photo's kept thumbnail ([`KeptThumb`]), fitted to the
+    /// cell; a photo with none, or whose file is there but could not be read, fails with `e`. The picture is not
+    /// cached under this job's key: once the original is back, its thumbnail renders afresh.
+    fn kept_or_failed(&self, e: String) -> RenderResult {
+        let Some(img) = self.kept.as_ref().filter(|_| self.source.original_missing()).and_then(KeptThumb::picture) else {
+            return self.failed(e);
+        };
+        let (w, h) = (self.request.max_w, self.request.max_h);
+        let image = if img.width > w.max(1) || img.height > h.max(1) {
+            fit_cached(&img, w, h).unwrap_or_else(|| Arc::unwrap_or_clone(img))
+        } else {
+            Arc::unwrap_or_clone(img)
+        };
+        let histogram = Histogram::of_srgb8(&image);
+        RenderResult {
+            rendered: Ok(Rendered { image, histogram, deep: None, warnings: Vec::new(), coverage: None, alpha: None }),
+            quick: Some(QuickSource::Kept),
+            // (made with the look and crop the photo had then, which may not be its current ones)
+            placement: None,
+            ..self.failed(String::new())
         }
     }
 }
@@ -1836,6 +1887,9 @@ pub enum QuickSource {
     /// the sensor data (crop, tone and colour edits as they will look, white balance as shot): what
     /// an edited photo that was never rendered shows at once, until its render arrives.
     Draft,
+    /// The photo's kept grid thumbnail ([`KeptThumb`]): its original is missing. Shown until the original is
+    /// back; made with whatever look and crop the photo had then.
+    Kept,
 }
 
 /// Something to show *now* for a photo while its real render is prepared. Tried in order: cached
@@ -1873,6 +1927,10 @@ pub struct QuickJob {
     /// view ([`crate::placement::may_stand_in`]: never the browse-time preview of a photo imported
     /// with a preset); `None`: any latest picture does.
     pub want: Option<crate::placement::Placement>,
+    /// The grid thumbnail job's kept thumbnail ([`KeptThumb`]): a thumbnail of the photo's own settings shown from
+    /// `cached` or `embedded` is kept as it. Set by [`crate::Session::quick_thumb_job`] only (`None`: the loupe's
+    /// stand-ins, whose `cached` are views, never a grid thumbnail).
+    pub kept: Option<KeptThumb>,
 }
 
 impl QuickJob {
@@ -1924,8 +1982,12 @@ impl QuickJob {
             Some((w, h)) if img.width > w.max(1) || img.height > h.max(1) => fit_cached(&img, w, h).unwrap_or_else(|| Arc::unwrap_or_clone(img)),
             _ => Arc::unwrap_or_clone(img),
         };
+        let kept = self.kept.as_ref();
         for (cache, k) in &self.cached {
             if let Some(img) = cache.get(*k) {
+                if let Some(kept) = kept {
+                    kept.keep(*k, img.clone());
+                }
                 return done(rendered(fitted(img)), Some(QuickSource::Cached), want);
             }
         }
@@ -1970,12 +2032,19 @@ impl QuickJob {
             if let Some((cache, k)) = &self.embedded_cache
                 && let Some(img) = if self.embedded_on_disk { cache.get(*k) } else { cache.get_in_memory(*k) }
             {
+                if let Some(kept) = kept.filter(|_| self.embedded_on_disk) {
+                    kept.keep(*k, img.clone());
+                }
                 return done(rendered(Arc::unwrap_or_clone(img)), Some(QuickSource::Embedded), want);
             }
             if let Some(image) = loader(path, *edge) {
                 if let Some((cache, k)) = &self.embedded_cache {
                     if self.embedded_on_disk {
-                        cache.put_deferred(*k, Arc::new(image.clone()));
+                        let img = Arc::new(image.clone());
+                        cache.put_deferred(*k, img.clone());
+                        if let Some(kept) = kept {
+                            kept.keep(*k, img);
+                        }
                     } else {
                         cache.put_memory(*k, Arc::new(image.clone()));
                     }
@@ -1985,6 +2054,10 @@ impl QuickJob {
         }
         if let Some(job) = self.small {
             let r = job.run();
+            // (the photo's kept thumbnail, its original missing, says so and claims no placement)
+            if r.quick == Some(QuickSource::Kept) {
+                return RenderResult { request_id, key, ..r };
+            }
             return RenderResult { request_id, key, quick: Some(QuickSource::Small), placement: want.or(r.placement), ..r };
         }
         done(Err("no quick preview".into()), None, None)
@@ -2029,6 +2102,7 @@ fn draft_from_camera_jpeg(path: &str, loader: &PreviewLoader, edge: usize, job: 
     job.cache = None;
     job.view_cache = None;
     job.latest = None;
+    job.kept = None;
     job.stages = None;
     job.on_screen = false;
     job.preview_cut = None;
@@ -2049,6 +2123,93 @@ pub fn latest_view_key(p: &Photo, apply_crop: bool) -> Hash128 {
 /// The alias of photo `p`'s latest grid thumbnail, whatever settings it was rendered with.
 pub fn latest_thumb_key(p: &Photo) -> Hash128 {
     Hasher128::new().str(&pixels_key(p)).str("latest-thumb").u64(RENDER_CACHE_VERSION).finish()
+}
+
+/// The alias of photo `p`'s last grid thumbnail whatever made it: its settings, the renderer version, the camera
+/// profiles and the sensor maps ([`KeptThumb`]). Its picture is read only when the original is missing (the record
+/// kept with it is read whenever a thumbnail is kept). The photo's id is in it: a virtual copy shares its master's
+/// pixels, not its look.
+pub fn kept_thumb_key(p: &Photo) -> Hash128 {
+    Hasher128::new().str(&pixels_key(p)).str("kept-thumb").u64(p.id.0).finish()
+}
+
+/// A grid thumbnail's cache key: the photo's pixels (`content_key`), its settings, the bucket, the renderer
+/// `version`, the camera profiles and sensor maps, and (a render from a denoised picture) its `salt`.
+fn thumb_key(content_key: &str, settings_hash: u64, bucket: usize, version: u64, salt: u64) -> Hash128 {
+    let mut k = Hasher128::new();
+    k.str(content_key)
+        .u64(settings_hash)
+        .u64(bucket as u64)
+        .u64(version)
+        .u64(crate::camera_profiles::cache_key())
+        .u64(crate::sensor_maps::generation());
+    // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
+    if salt != 0 {
+        k.u64(salt);
+    }
+    k.finish()
+}
+
+/// How many renderer versions back a missing photo's thumbnail is looked for ([`KeptThumb::picture`]).
+pub(crate) const KEPT_VERSIONS: u64 = 8;
+
+/// Where a grid thumbnail of the photo's own settings keeps its photo's last picture, and how to find one an
+/// earlier version of the app rendered: what the cell shows while the original is missing (a drive that isn't
+/// mounted), when an update or a camera profile has changed the thumbnail's key since the photo was last seen.
+/// Never read for a photo whose original is there: that one renders afresh.
+#[derive(Clone)]
+pub struct KeptThumb {
+    cache: Arc<PreviewCache>,
+    /// The cache's generation when the job was made: a job from before a clear writes nothing.
+    generation: u64,
+    /// [`kept_thumb_key`].
+    alias: Hash128,
+    content_key: String,
+    settings_hash: u64,
+    bucket: usize,
+    version: u64,
+    salt: u64,
+}
+
+impl KeptThumb {
+    /// `img`, this job's thumbnail kept under `real` (just rendered, or shown from the cache), is also the photo's
+    /// kept thumbnail, unless the kept one has this look already at this size or larger. So a cell shown from the
+    /// cache keeps what it shows (a thumbnail cached before photos kept one; a look an undo or a reset went back to),
+    /// without a write on every visit or when the filmstrip shows the photo smaller: the record kept with the copy
+    /// names its look and size. (The copy itself is looked for too: the disk cache may have let it go and kept the
+    /// record.)
+    fn keep(&self, real: Hash128, img: Arc<Rgba8>) {
+        let mut record = thumb_key(&self.content_key, self.settings_hash, 0, self.version, self.salt).0.to_le_bytes().to_vec();
+        let look = record.clone();
+        record.extend_from_slice(&(self.bucket as u64).to_le_bytes());
+        let has = self.cache.latest_meta(self.alias);
+        let same_look = has.as_deref().and_then(|r| r.get(..16)) == Some(&look[..]);
+        let size = has.as_deref().and_then(|r| r.get(16..24)).and_then(|b| <[u8; 8]>::try_from(b).ok()).map(u64::from_le_bytes);
+        if same_look && size.is_some_and(|s| s >= self.bucket as u64) && self.cache.has(self.alias) {
+            return;
+        }
+        self.cache.put_latest_with(self.generation, self.alias, real, img, false, Some(&record));
+    }
+
+    /// The picture to show for a photo whose original is missing: its kept thumbnail, else a thumbnail of these
+    /// settings cached by this version or one of the [`KEPT_VERSIONS`] before it (this bucket first, then the
+    /// others), rendered or the camera JPEG kept in its place. Those older ones are looked for under today's camera
+    /// profiles and sensor maps: one cached before either changed is not found. `None`: nothing of this photo is
+    /// cached.
+    fn picture(&self) -> Option<Arc<Rgba8>> {
+        if let Some(img) = self.cache.get_latest(self.alias) {
+            return Some(img);
+        }
+        let buckets = std::iter::once(self.bucket).chain(THUMB_SIZES.into_iter().filter(|b| *b != self.bucket));
+        let buckets: Vec<usize> = buckets.collect();
+        (0..=KEPT_VERSIONS)
+            .filter_map(|back| self.version.checked_sub(back))
+            .flat_map(|v| buckets.iter().map(move |b| (v, *b)))
+            .map(|(v, b)| thumb_key(&self.content_key, self.settings_hash, b, v, self.salt))
+            .flat_map(|k| [k, embedded_thumb_key(k)])
+            .filter(|k| self.cache.has(*k))
+            .find_map(|k| self.cache.get(k))
+    }
 }
 
 /// A placement as the record kept with a latest picture ([`PreviewCache::put_latest_with`]).
@@ -2195,22 +2356,21 @@ impl crate::Session {
             ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ content.rotate_left(17)
             ^ salt;
-        let cache = thumb_bucket.map(|b| {
-            let mut k = Hasher128::new();
-            k.str(&content_key)
-                .u64(settings_hash)
-                .u64(b as u64)
-                .u64(RENDER_CACHE_VERSION)
-                .u64(crate::camera_profiles::cache_key())
-                .u64(crate::sensor_maps::generation());
-            // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
-            if salt != 0 {
-                k.u64(salt);
-            }
-            (self.media.rendered.clone(), k.finish())
-        });
-        // a thumbnail of the photo's own settings is its latest grid picture too
+        let version = self.media.thumb_version;
+        let cache = thumb_bucket.map(|b| (self.media.rendered.clone(), thumb_key(&content_key, settings_hash, b, version, salt)));
+        // a thumbnail of the photo's own settings is its latest grid picture too, and the one its cell
+        // keeps showing while the original is missing
         let latest = cache.as_ref().filter(|_| !before).map(|(c, _)| (c.clone(), latest_thumb_key(&p)));
+        let kept = cache.as_ref().zip(thumb_bucket).filter(|_| !before && apply_crop).map(|((c, _), bucket)| KeptThumb {
+            cache: c.clone(),
+            generation: c.generation(),
+            alias: kept_thumb_key(&p),
+            content_key: content_key.clone(),
+            settings_hash,
+            bucket,
+            version,
+            salt,
+        });
         let placement = (!before).then(|| self.placement_with(&p, &settings, apply_crop));
         Some(RenderJob {
             drawn_view_cache: false,
@@ -2230,6 +2390,7 @@ impl crate::Session {
             stages: None,
             view_cache: None,
             latest,
+            kept,
             placement,
             display: None,
             slide: None,
@@ -2268,6 +2429,7 @@ impl crate::Session {
         let mut job = self.render_job(id, max_w, max_h, false, apply_crop)?;
         job.settings = Arc::new(settings.clone());
         job.latest = None;
+        job.kept = None;
         job.placement = None;
         job.key = settings.hash64() ^ ((max_w as u64) << 40) ^ ((max_h as u64) << 20) ^ (apply_crop as u64) ^ (job.level as u64) << 60;
         Some(job)
@@ -2321,6 +2483,7 @@ impl crate::Session {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
         })
     }
@@ -2382,6 +2545,7 @@ impl crate::Session {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
         })
     }
@@ -2613,6 +2777,7 @@ impl crate::Session {
             fit: None,
             draft,
             want: Some(want),
+            kept: None,
         })
     }
 
@@ -2640,6 +2805,7 @@ impl crate::Session {
             fit: None,
             draft: None,
             want: None,
+            kept: None,
         })
     }
 
@@ -2678,6 +2844,7 @@ impl crate::Session {
                     let mut j = job.clone();
                     j.cache = None;
                     j.latest = None;
+                    j.kept = None;
                     (path, l, edge, Box::new(j))
                 })
             };
@@ -2694,6 +2861,7 @@ impl crate::Session {
                 fit: Some((edge, edge)),
                 draft,
                 want: job.placement,
+                kept: job.kept.clone(),
             });
         }
         let (path, l) = self.embedded_stand_in_of(&p)?;
@@ -2712,6 +2880,7 @@ impl crate::Session {
             fit: None,
             draft: None,
             want: None,
+            kept: job.kept.clone(),
         })
     }
 
@@ -3364,6 +3533,7 @@ mod thumbnail_hash_tests {
             fit: None,
             draft: None,
             want: None,
+            kept: None,
         };
         let r = quick.run();
         assert_eq!((r.request_id, r.key), (7, 9));

@@ -2247,6 +2247,7 @@ impl Session {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
         };
         let embedded = match (&self.media.preview_loader, c.kind) {
@@ -2266,6 +2267,7 @@ impl Session {
             fit: None,
             draft: None,
             want: None,
+            kept: None,
         })
     }
 
