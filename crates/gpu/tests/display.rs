@@ -15,7 +15,7 @@ fn window_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::Adapter)> {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = lcc_gpu::backend::window_backends();
     desc.backend_options = lcc_gpu::backend::backend_options();
-    let instance = wgpu::Instance::new(desc);
+    let instance = lcc_gpu::new_instance(desc);
     let adapter = pollster::block_on(
         instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
     )

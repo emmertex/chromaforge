@@ -92,9 +92,9 @@ fn recent_submenu(app: &LccApp) -> Vec<crate::menubar::MenuNode> {
     use crate::menubar::MenuNode;
     let bar = crate::menubar::menu_bar(app);
     let file = &bar.iter().find(|(t, _)| t == "File").unwrap().1;
-    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Libraries")) {
+    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Open Recent")) {
         Some(MenuNode::Submenu { children, .. }) => children.clone(),
-        _ => panic!("no Libraries submenu in {file:?}"),
+        _ => panic!("no Open Recent submenu in {file:?}"),
     }
 }
 

@@ -991,7 +991,27 @@ fn surface_store() -> Option<Box<dyn lcc_ui_egui::surface::SurfaceStore>> {
     if lcc_brand::env_is_set("NO_PREFS") {
         return None;
     }
-    config_dir().map(|d| Box::new(SurfaceFile(d.join("control-surfaces.json"))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+    config_dir().map(|d| Box::new(SurfaceFile(d.join(SURFACE_FILE))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+}
+
+/// The control-surface settings file's name in the settings folder.
+const SURFACE_FILE: &str = "control-surfaces.json";
+
+/// Control-surface layouts a previous name kept: a settings folder that existed before the first start under
+/// this name is not copied as a whole ([`lcc_brand::migrate_legacy_settings`]), so its `control-surfaces.json`
+/// is brought over on its own, when this one has none. Only into the platform settings folder the legacy ones
+/// sit beside: not into a `<PREFIX>_CONFIG_DIR` override or a portable data folder, which stay isolated. A
+/// failed copy is logged; the app starts without the layouts.
+fn migrate_legacy_surface_file() {
+    let (Some(current), Some(platform)) = (config_dir(), lcc_brand::settings_dir()) else { return };
+    if current != platform {
+        return;
+    }
+    match lcc_brand::migrate_legacy_settings_file(SURFACE_FILE) {
+        Ok(Some(from)) => log::info!("control-surface settings copied from {}", from.display()),
+        Ok(None) => {}
+        Err(e) => log::warn!("could not copy the previous control-surface settings: {e}"),
+    }
 }
 
 /// A session with no library yet (one opens later), with the folders face models and slideshow
@@ -1320,6 +1340,8 @@ fn main() -> eframe::Result {
             Ok(None) => {}
             Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
         }
+        // a settings folder that already existed: its control-surface layouts still come over
+        migrate_legacy_surface_file();
     }
     // The log file: opened after the arguments, so `--version`, `--help` and a usage error leave
     // no file behind. Records logged until now are written to it first.

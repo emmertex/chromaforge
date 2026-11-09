@@ -1149,8 +1149,8 @@ mod tests {
         )
     }
 
-    /// Render a light grid of 300 × 200 with `lens` embedded: as a new import (profile corrections on, CF's
-    /// default for a file with lens data) and then with the sidecar `props` applied for `target`.
+    /// Render a light grid of 300 × 200 with `lens` embedded: as a photo with profile corrections on (a DNG,
+    /// RW2 or RAF import with its own correction) and then with the sidecar `props` applied for `target`.
     fn render_with_lens(lens: lcc_develop::EmbeddedLens, props: &Props, target: Target) -> (Vec<[u8; 4]>, Vec<[u8; 4]>) {
         let (w, h) = (300usize, 200usize);
         let src = lcc_raster::Rgb32f::from_fn(w, h, |x, y| {
@@ -1201,7 +1201,7 @@ mod tests {
         let p = sidecar_lens_off();
         assert_eq!(to_partial(&p, Target::RawAbsolute)["optics"]["lens_profile"], json!(false));
         assert!(to_partial(&p, Target::Any).pointer("/optics/lens_profile").is_none(), "a preset leaves it alone");
-        // a packet without the switch leaves the photo's own default (on for a file with lens data) alone
+        // a packet without the switch leaves the photo's own default (`Photo::lens_correction_built_in`) alone
         let none = props(&preset_packet("", "").replace(r#"crs:LensProfileEnable="0""#, ""));
         assert!(to_partial(&none, Target::RawAbsolute).pointer("/optics/lens_profile").is_none());
     }

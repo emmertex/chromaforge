@@ -1053,7 +1053,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         });
                         crate::widgets::register(ui.ctx(), "combo:timelapseSize", c.response.rect);
                     });
-                    choices(ui, "Frame", "timelapseFit", &[(false, "Fit (letterbox)"), (true, "Fill (crop)")], fill);
+                    choices(ui, "time-lapse|Frame", "timelapseFit", &[(false, "Fit (letterbox)"), (true, "Fill (crop)")], fill);
                     choices(ui, "Frame Rate", "timelapseFps", &[(24, "24"), (25, "25"), (30, "30"), (50, "50"), (60, "60")], fps);
                     field(ui, "Frames per Photo", |ui| { ui.add(egui::DragValue::new(hold).range(1..=lcc_engine::timelapse::MAX_HOLD)); });
                     field(ui, "Cross-Fade Frames", |ui| { ui.add(egui::DragValue::new(crossfade).range(0..=lcc_engine::timelapse::MAX_HOLD)); });

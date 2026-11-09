@@ -1021,6 +1021,9 @@ pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
 }
 /// The Import tab's settings column (Import Settings, on the right of the browsed photos).
 pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
+/// The Import tab's Folders panel (the cards, drives and folders on the left of the browsed photos): its right edge
+/// drags it wider to read long folder names.
+pub const IMPORT_SOURCES_WIDTH: PanelWidth = PanelWidth { min: 180.0, default: 230.0, max: 640.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1256,6 +1259,9 @@ pub struct UiState {
     /// Width of the Import tab's settings column in points (its left edge is dragged to resize
     /// it; within [`IMPORT_SETTINGS_WIDTH`]).
     pub import_settings_width: f32,
+    /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
+    /// [`IMPORT_SOURCES_WIDTH`]).
+    pub import_sources_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
     pub presets: bool,
@@ -2405,6 +2411,7 @@ impl Default for UiState {
             profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
             import_settings_width: IMPORT_SETTINGS_WIDTH.default,
+            import_sources_width: IMPORT_SOURCES_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2921,6 +2928,7 @@ impl UiState {
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
         self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
+        self.import_sources_width = IMPORT_SOURCES_WIDTH.clamp(self.import_sources_width);
         self.film_height = FILM_HEIGHT.clamp(self.film_height);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {

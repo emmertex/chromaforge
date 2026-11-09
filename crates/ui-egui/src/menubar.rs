@@ -117,204 +117,9 @@ pub fn native_menu_structure(bar: &[(String, Vec<MenuNode>)], keymap: &crate::sh
     s
 }
 
-/// Top-level menus in order (the macOS app menu is added by the host).
+/// The Library module's menus in order (the macOS app menu is added by the host); [`menus`] gives
+/// the module on screen's.
 pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "View", "Window", "Help"];
-
-/// Order and grouping per menu: command ids, `---` separators and `@Submenu` placeholders.
-/// Entries with a menu path that aren't listed are appended at the end of their menu, before any
-/// [`LAST`] item. Each menu keeps to about fifteen top-level rows (Lightroom Classic's grouping):
-/// what is used less goes one level down, into a submenu named by the second part of its path.
-const LAYOUT: &[(&str, &[&str])] = &[
-    (
-        "File",
-        &[
-            "dialog.import",
-            "file.addFolder",
-            "@Import from Device",
-            "@More Imports",
-            "@Tethered Capture",
-            "---",
-            "@Libraries",
-            "---",
-            "file.export",
-            "app.exportPrevious",
-            "@Export with Preset",
-            "@More Exports",
-            "---",
-            "dialog.print",
-            "@Plug-ins",
-            "---",
-            "app.quit",
-        ],
-    ),
-    (
-        "Edit",
-        &[
-            "edit.undo",
-            "edit.redo",
-            "---",
-            "library.selectAll",
-            "library.selectNone",
-            "library.selectOnlyActive",
-            "@Select by",
-            "---",
-            "dialog.watermark",
-            "dialog.identityPlateSetup",
-            "---",
-            "dialog.catalogSettings",
-            "app.settings",
-            "@Keymap",
-            "@Language",
-        ],
-    ),
-    (
-        "Library",
-        &[
-            "dialog.newAlbum",
-            "dialog.newFolder",
-            "dialog.smartAlbum",
-            "dialog.newSmartAlbum",
-            "---",
-            "view.focusSearch",
-            "library.findSimilar",
-            "@Filters",
-            "@Filter by Rating",
-            "---",
-            "dialog.cull",
-            "tool.painter",
-            "faces.detect",
-            "faces.clearAndRescan",
-            "---",
-            "dialog.rename",
-            "file.findMissing",
-            "@Previews",
-            "---",
-            "@Immich",
-        ],
-    ),
-    (
-        "Photo",
-        &[
-            "@Add to Collection",
-            "---",
-            "@Set Flag",
-            "@Set Rating",
-            "@Set Color Label",
-            "view.autoAdvance",
-            "---",
-            "@Rotate & Flip",
-            "photo.virtualCopy",
-            "@Stack",
-            "@Photo Merge",
-            "dialog.enhance",
-            "@Edit In",
-            "@Video",
-            "---",
-            "develop.auto",
-            "develop.reset",
-            "@Develop Settings",
-            "---",
-            "@File",
-            "album.removePhotos",
-            "photo.delete",
-            "photo.restore",
-            "photo.deletePermanently",
-        ],
-    ),
-    (
-        "Metadata",
-        &[
-            "@Metadata Preset",
-            "---",
-            "photo.copyMetadata",
-            "photo.pasteMetadata",
-            "photo.syncMetadata",
-            "dialog.captureTime",
-            "dialog.allMetadata",
-            "---",
-            "photo.saveMetadataToFile",
-            "photo.readMetadataFromFile",
-            "library.toggleAutoWriteXmp",
-            "photo.readFocusPoints",
-            "---",
-            "dialog.keywordShortcut",
-            "keyword.toggleShortcut",
-            "---",
-            "photo.tagFromTracklog",
-            "metadata.reverseGeocode",
-            "metadata.downloadPlaceNames",
-        ],
-    ),
-    (
-        "View",
-        &[
-            "view.photoGrid",
-            "view.detail",
-            "view.compare",
-            "view.survey",
-            "view.people",
-            "@Grid View Style",
-            "---",
-            "@Loupe Info",
-            "@Loupe Overlay",
-            "@Tool Overlay",
-            "---",
-            "@Before/After",
-            "@Zoom",
-            "---",
-            "view.clipping",
-            "view.softProof",
-            "---",
-            "@Sort",
-            "---",
-            "compare.swap",
-            "compare.makeSelect",
-        ],
-    ),
-    (
-        "Window",
-        &[
-            "@Modules",
-            "module.previous",
-            "---",
-            "@Edit Panels",
-            "@Edit Sections",
-            "@Tools",
-            "@Panels",
-            "@Sidebar Sections",
-            "---",
-            "@Screen Mode",
-            "@Lights Out",
-            "@Appearance",
-            "@Slideshow",
-            "---",
-            "view.secondWindow",
-            "@Secondary Display",
-        ],
-    ),
-    (
-        "Help",
-        &[
-            "app.help",
-            "app.whatsNew",
-            "app.shortcuts",
-            "module.help",
-            "---",
-            "app.feedback",
-            "app.website",
-            "app.github",
-            "app.discord",
-            "---",
-            "app.checkForUpdates",
-            "app.installUpdate",
-            "---",
-            "app.systemInfo",
-            "app.openLogFolder",
-            "---",
-            "app.about",
-        ],
-    ),
-];
 
 /// Order inside submenus whose items come from the registry: (menu, submenu, ids and `---`).
 /// Items not listed follow in registry order, dialogs (labels ending in `…`) last.
@@ -496,6 +301,8 @@ const HIDDEN: &[&str] = &[
     // the Loupe Overlay submenu lists them with its opacity and matte choices
     "view.chooseLayoutImage",
     "view.layoutImage",
+    // the same dialog as File ▸ Import Photos and Video… (it was listed twice)
+    "file.addPhotos",
 ];
 
 /// The selection includes a photo in Recently Deleted.
@@ -605,6 +412,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.keywords" => panel(RightPanel::Keywords),
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
+        "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
         _ => None,
     }
 }
@@ -624,6 +432,8 @@ fn live_label(app: &LccApp, id: &str, label: &str) -> String {
         "dialog.rename" if n > 1 => crate::i18n::tr_format!("Rename {n} Photos…", n = n),
         "dialog.rename" => crate::i18n::tr("Rename Photo…").to_string(),
         "app.showInFinder" => crate::i18n::tr(crate::menus::reveal_label()).to_string(),
+        // Classic names the module: "Develop Shortcuts"
+        "module.help" => crate::i18n::tr_format!("{module} Shortcuts", module = crate::i18n::tr(app.ui.module.label())),
         _ => label.to_string(),
     }
 }
@@ -965,6 +775,47 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             v.push(item("dialog.saveMetadataPreset", Value::Null, "Save Metadata Preset…", None, has, None));
             v
         }
+        // Classic's three Edit ▸ Select by submenus (the "Select by" list split up)
+        "Select by Flag" => [("pick", "Flagged"), ("none", "Unflagged"), ("reject", "Rejected")]
+            .into_iter()
+            .map(|(f, label)| item("library.selectBy", json!({"flag": f}), label, None, true, None))
+            .collect(),
+        "Select by Rating" => {
+            let stars = |r: u8| if r == 1 { crate::i18n::tr("1 Star").to_string() } else { crate::i18n::tr_format!("{n} Stars", n = r) };
+            let mut v: Vec<MenuNode> =
+                (1..=5u8).map(|r| item("library.selectBy", json!({"rating": r, "ratingOp": "eq"}), stars(r), None, true, None)).collect();
+            v.push(MenuNode::Separator);
+            v.extend((1..=4u8).map(|r| {
+                item("library.selectBy", json!({"rating": r}), crate::i18n::tr_format!("{stars} and Higher", stars = stars(r)), None, true, None)
+            }));
+            v.push(MenuNode::Separator);
+            v.push(item("library.selectBy", json!({"rating": 0, "ratingOp": "eq"}), "Unrated", None, true, None));
+            v
+        }
+        "Select by Color Label" => lcc_catalog::ColorLabel::ALL
+            .iter()
+            .map(|l| {
+                let name = format!("{l:?}");
+                item("library.selectBy", json!({"label": name.to_lowercase()}), name, None, true, None)
+            })
+            .collect(),
+        // Classic's Metadata ▸ Color Label Set: the sets, then Edit
+        "Color Label Set" => {
+            let sets = lcc_engine::cmd::manage::label_sets_json(&app.session);
+            let current = sets["current"].as_str().map(str::to_string);
+            let mut v: Vec<MenuNode> = sets["sets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|set| {
+                    let name = set["name"].as_str().unwrap_or_default();
+                    item("label.applySet", json!({"name": name}), name, None, true, Some(current.as_deref() == Some(name)))
+                })
+                .collect();
+            v.push(MenuNode::Separator);
+            v.push(item("dialog.labelNames", Value::Null, "Edit…", None, true, None));
+            v
+        }
         "Select by" => {
             let mut v: Vec<MenuNode> = [("pick", "Picks"), ("reject", "Rejects"), ("none", "Unflagged")]
                 .into_iter()
@@ -1079,86 +930,241 @@ fn tidy(v: Vec<MenuNode>) -> Vec<MenuNode> {
     out
 }
 
-/// The whole menu bar: (title, items) per menu in [`MENUS`] order.
+/// Every command a layout slot may name, whatever its own menu path (none, too): the UI commands,
+/// then the engine's.
+fn all_commands(app: &LccApp) -> Vec<MenuEntry> {
+    let keymap = &app.ui.settings.keymap;
+    let mut v: Vec<MenuEntry> = crate::menus::ui_commands()
+        .filter(|c| !crate::lrc_menus::is_coming_soon(c.0))
+        .map(|(id, label, _, m)| MenuEntry {
+            id: id.to_string(),
+            label: label.to_string(),
+            menu: if m.is_empty() { Vec::new() } else { m.split('>').map(str::to_string).collect() },
+            shortcut: crate::shortcuts::shortcut_of(keymap, id).map(str::to_string),
+            enabled: crate::menus::ui_enabled(app, id),
+        })
+        .collect();
+    for c in app.session.commands() {
+        if v.iter().any(|e| e.id == c.id) {
+            continue;
+        }
+        v.push(MenuEntry {
+            id: c.id.into(),
+            label: c.label.into(),
+            menu: c.menu.iter().map(|s| s.to_string()).collect(),
+            shortcut: crate::shortcuts::shortcut_of(keymap, c.id).map(str::to_string),
+            enabled: c.enabled,
+        });
+    }
+    v
+}
+
+/// The key the module binds to `id` with `params` (Classic set), which the menu shows instead of
+/// the global one: ⌘N is New Collection in Library, New Snapshot in Develop.
+fn module_shortcut(app: &LccApp, id: &str, params: &Value) -> Option<String> {
+    let want = if params.is_null() { json!({}) } else { params.clone() };
+    crate::shortcuts::module_keys_of(app.ui.module)
+        .iter()
+        .chain(crate::shortcuts::classic_extra_keys())
+        .filter(|(sc, ..)| !app.ui.settings.keymap.values().any(|user| user == sc))
+        .find(|(_, kid, kp)| *kid == id && serde_json::from_str::<Value>(kp).unwrap_or_else(|_| json!({})) == want)
+        .map(|(sc, ..)| sc.to_string())
+}
+
+/// The keys any command has now (the greyed "Coming soon" items show Classic's key only while it
+/// is free).
+fn taken_keys(app: &LccApp) -> Vec<(egui::Modifiers, egui::Key)> {
+    let keymap = &app.ui.settings.keymap;
+    let mut v: Vec<_> = crate::shortcuts::bindable()
+        .iter()
+        .filter_map(|b| crate::shortcuts::binding(keymap, b.id, b.default()))
+        .filter_map(crate::shortcuts::parse)
+        .collect();
+    v.extend(
+        crate::shortcuts::module_keys_of(app.ui.module)
+            .iter()
+            .chain(crate::shortcuts::classic_extra_keys())
+            .filter_map(|(sc, ..)| crate::shortcuts::parse(sc)),
+    );
+    v.extend(crate::shortcuts::ALIASES.iter().filter_map(|(sc, ..)| crate::shortcuts::parse(sc)));
+    v
+}
+
+/// What the menus are built from: every command once, the registry's (with a menu path) for the
+/// leftovers, and whether an entry has been placed yet.
+struct Build<'a> {
+    app: &'a LccApp,
+    all: Vec<MenuEntry>,
+    /// Indices into `all` of entries with a menu path that are offered (not hidden, the host has them).
+    listed: Vec<usize>,
+    used: Vec<bool>,
+    taken: Option<Vec<(egui::Modifiers, egui::Key)>>,
+}
+
+impl Build<'_> {
+    /// A "Coming soon" row: greyed, Classic's key shown while it's free, never run.
+    fn soon(&mut self, id: &str) -> Option<MenuNode> {
+        let c = crate::lrc_menus::coming_soon(id)?;
+        let app = self.app;
+        let taken = self.taken.get_or_insert_with(|| taken_keys(app));
+        let hint = c.hint.filter(|sc| crate::shortcuts::parse(sc).is_some_and(|k| !taken.contains(&k)));
+        Some(item(c.id, Value::Null, c.label, hint, false, None))
+    }
+
+    /// The row for a command slot (`label`: Classic's name for it).
+    fn command(&mut self, id: &str, params: Option<&str>, label: Option<&str>) -> Option<MenuNode> {
+        if crate::lrc_menus::is_coming_soon(id) {
+            return self.soon(id);
+        }
+        if !host_supports(self.app, id) {
+            return None;
+        }
+        let i = self.all.iter().position(|e| e.id == id)?;
+        if let Some(u) = self.listed.iter().position(|l| *l == i) {
+            self.used[u] = true;
+        }
+        let app = self.app;
+        let e = &self.all[i];
+        let mut n = node(app, e);
+        if let MenuNode::Item { label: l, params: p, shortcut, checked, .. } = &mut n {
+            // Classic's name, unless the label follows the state ("Undo Exposure") or macOS names it
+            if let Some(label) = label
+                && *l == e.label
+                && !(id == "app.quit" && cfg!(target_os = "macos"))
+            {
+                *l = label.to_string();
+            }
+            if let Some(json) = params {
+                *p = serde_json::from_str(json).unwrap_or(Value::Null);
+                // a parameterized row is one choice: no command-wide key or check
+                *shortcut = None;
+                *checked = None;
+            }
+            if let Some(sc) = module_shortcut(app, id, p) {
+                *shortcut = Some(sc);
+            }
+        }
+        Some(n)
+    }
+
+    /// The items of a submenu shown as `label` in menu `title`, gathering path `menu>path`.
+    fn submenu(&mut self, title: &str, label: &str, menu: &str, path: &str) -> Vec<MenuNode> {
+        // Zoom's generated choices (Space Zooms To) follow its commands
+        let after = path == "Zoom";
+        let generated = expanded(self.app, path).unwrap_or_default();
+        let mut children = if after { Vec::new() } else { generated.clone() };
+        children.push(MenuNode::Separator);
+        let here = |e: &MenuEntry| e.menu.len() == 2 && e.menu[0] == menu && e.menu[1] == path;
+        // a generated row stands for its registry entry (Previews listed Discard Preview Cache twice)
+        for n in &generated {
+            if let MenuNode::Item { id, .. } = n {
+                for u in 0..self.listed.len() {
+                    if self.all[self.listed[u]].id == *id && here(&self.all[self.listed[u]]) {
+                        self.used[u] = true;
+                    }
+                }
+            }
+        }
+        let classic = crate::lrc_menus::sub_layout(title, label);
+        let order = classic.or_else(|| SUB_LAYOUT.iter().find(|(m, s, _)| *m == menu && *s == path).map(|(_, _, o)| *o)).unwrap_or(&[]);
+        for slot in order {
+            match crate::lrc_menus::parse(slot) {
+                crate::lrc_menus::Slot::Separator => children.push(MenuNode::Separator),
+                crate::lrc_menus::Slot::Submenu(..) => {}
+                crate::lrc_menus::Slot::Item(id, params, l) => {
+                    // the registry's own order (no Classic layout) takes only this path's unplaced entries
+                    if classic.is_none() && !self.listed.iter().zip(&self.used).any(|(i, u)| !u && self.all[*i].id == id && here(&self.all[*i])) {
+                        continue;
+                    }
+                    children.extend(self.command(id, params, l));
+                }
+            }
+        }
+        let mut dialogs = Vec::new();
+        for u in 0..self.listed.len() {
+            let e = &self.all[self.listed[u]];
+            if !self.used[u] && here(e) {
+                self.used[u] = true;
+                // commands that open a dialog go last, after a separator
+                if e.label.ends_with('…') { dialogs.push(node(self.app, e)) } else { children.push(node(self.app, e)) }
+            }
+        }
+        if after {
+            children.push(MenuNode::Separator);
+            children.extend(generated);
+        }
+        if !dialogs.is_empty() {
+            // Tethered Capture opens with Start Tethered Capture… (as in Classic); elsewhere
+            // the dialog commands close the submenu
+            if path == "Tethered Capture" {
+                dialogs.push(MenuNode::Separator);
+                dialogs.extend(children);
+                return dialogs;
+            }
+            children.push(MenuNode::Separator);
+            children.extend(dialogs);
+        }
+        children
+    }
+}
+
+/// The menus of the module on screen, in order (Lightroom Classic's per-module menu bar).
+pub fn menus(app: &LccApp) -> &'static [&'static str] {
+    crate::lrc_menus::titles(app.ui.module)
+}
+
+/// The whole menu bar: (title, items) per menu of the module on screen ([`menus`]), laid out as
+/// Lightroom Classic's ([`crate::lrc_menus`]); a shared menu (and Library's) then lists the other
+/// commands whose menu path names it.
 pub fn menu_bar(app: &LccApp) -> Vec<(String, Vec<MenuNode>)> {
-    let entries: Vec<MenuEntry> =
-        crate::menus::menu_entries(app).into_iter().filter(|e| !HIDDEN.contains(&e.id.as_str()) && host_supports(app, &e.id)).collect();
-    let mut used = vec![false; entries.len()];
+    let all = all_commands(app);
+    let listed: Vec<usize> = (0..all.len())
+        .filter(|i| {
+            let e = &all[*i];
+            !e.menu.is_empty() && !HIDDEN.contains(&e.id.as_str()) && host_supports(app, &e.id)
+        })
+        .collect();
+    let used = vec![false; listed.len()];
+    let mut b = Build { app, all, listed, used, taken: None };
+    let module = app.ui.module;
     let mut bar = Vec::new();
-    for title in MENUS {
-        let layout = LAYOUT.iter().find(|(t, _)| t == title).map(|(_, l)| *l).unwrap_or(&[]);
+    for title in crate::lrc_menus::titles(module) {
         let mut items = Vec::new();
         let mut last = Vec::new();
-        let sub = |name: &str, used: &mut [bool]| -> Vec<MenuNode> {
-            // Zoom's generated choices (Space Zooms To) follow its commands
-            let after = name == "Zoom";
-            let generated = expanded(app, name).unwrap_or_default();
-            let mut children = if after { Vec::new() } else { generated.clone() };
-            // the registry's items follow the generated ones in their own group
-            children.push(MenuNode::Separator);
-            let here = |e: &MenuEntry| e.menu.len() == 2 && e.menu[0] == *title && e.menu[1] == name;
-            let order = SUB_LAYOUT.iter().find(|(m, s, _)| m == title && *s == name).map(|(_, _, o)| *o).unwrap_or(&[]);
-            for slot in order {
-                if *slot == "---" {
-                    children.push(MenuNode::Separator);
-                } else if let Some(i) = entries.iter().enumerate().position(|(i, e)| !used[i] && e.id == *slot && here(e)) {
-                    used[i] = true;
-                    children.push(node(app, &entries[i]));
+        for slot in crate::lrc_menus::layout(module, title) {
+            match crate::lrc_menus::parse(slot) {
+                crate::lrc_menus::Slot::Separator => items.push(MenuNode::Separator),
+                crate::lrc_menus::Slot::Submenu(label, menu, path) => {
+                    let children = b.submenu(title, label, menu.unwrap_or(title), path);
+                    items.push(MenuNode::Submenu { label: label.to_string(), children });
                 }
-            }
-            let mut dialogs = Vec::new();
-            for (i, e) in entries.iter().enumerate() {
-                if !used[i] && here(e) {
-                    used[i] = true;
-                    // commands that open a dialog go last, after a separator
-                    if e.label.ends_with('…') { dialogs.push(node(app, e)) } else { children.push(node(app, e)) }
+                crate::lrc_menus::Slot::Item(id, params, label) => {
+                    if let Some(n) = b.command(id, params, label) {
+                        if LAST.contains(&id) { last.push(n) } else { items.push(n) }
+                    }
                 }
-            }
-            if after {
-                children.push(MenuNode::Separator);
-                children.extend(generated);
-            }
-            if !dialogs.is_empty() {
-                // Tethered Capture opens with Start Tethered Capture… (as in Classic); elsewhere
-                // the dialog commands close the submenu
-                if name == "Tethered Capture" {
-                    dialogs.push(MenuNode::Separator);
-                    dialogs.extend(children);
-                    return dialogs;
-                }
-                children.push(MenuNode::Separator);
-                children.extend(dialogs);
-            }
-            children
-        };
-        for slot in layout {
-            if *slot == "---" {
-                items.push(MenuNode::Separator);
-            } else if let Some(name) = slot.strip_prefix('@') {
-                let children = sub(name, &mut used);
-                items.push(MenuNode::Submenu { label: name.to_string(), children });
-            } else if let Some(i) = entries.iter().position(|e| e.id == *slot && e.menu.first().map(String::as_str) == Some(title)) {
-                used[i] = true;
-                if LAST.contains(slot) { last.push(node(app, &entries[i])) } else { items.push(node(app, &entries[i])) }
             }
         }
-        // everything else that names this menu
-        items.push(MenuNode::Separator);
-        let mut extra_subs: Vec<String> = Vec::new();
-        for (i, e) in entries.iter().enumerate() {
-            if used[i] || e.menu.first().map(String::as_str) != Some(title) {
-                continue;
+        if !crate::lrc_menus::strict(module, title) {
+            // everything else that names this menu
+            items.push(MenuNode::Separator);
+            let mut extra_subs: Vec<String> = Vec::new();
+            for u in 0..b.listed.len() {
+                let e = &b.all[b.listed[u]];
+                if b.used[u] || e.menu.first().map(String::as_str) != Some(title) {
+                    continue;
+                }
+                if e.menu.len() == 1 {
+                    b.used[u] = true;
+                    items.push(node(app, e));
+                } else if !extra_subs.contains(&e.menu[1]) {
+                    extra_subs.push(e.menu[1].clone());
+                }
             }
-            if e.menu.len() == 1 {
-                used[i] = true;
-                items.push(node(app, e));
-            } else if !extra_subs.contains(&e.menu[1]) {
-                extra_subs.push(e.menu[1].clone());
+            for name in extra_subs {
+                let children = b.submenu(title, &name, title, &name);
+                items.push(MenuNode::Submenu { label: name, children });
             }
-        }
-        for name in extra_subs {
-            let children = sub(&name, &mut used);
-            items.push(MenuNode::Submenu { label: name, children });
         }
         if !last.is_empty() {
             items.push(MenuNode::Separator);
@@ -1311,9 +1317,12 @@ fn paint_title(ui: &egui::Ui, r: &egui::Response, galley: std::sync::Arc<egui::G
 }
 
 /// Width of the in-window menu bar's titles at their full spacing.
-pub fn bar_width(ui: &egui::Ui) -> f32 {
+pub fn bar_width(ui: &egui::Ui, module: crate::module::ModuleId) -> f32 {
     let t = crate::theme::Tokens::get(ui.ctx());
-    MENUS.iter().map(|m| ui.painter().layout_no_wrap(crate::i18n::tr(m).to_string(), t.font(13.0), t.text).size().x + TITLE_GAP).sum::<f32>()
+    crate::lrc_menus::titles(module)
+        .iter()
+        .map(|m| ui.painter().layout_no_wrap(crate::i18n::tr(m).to_string(), t.font(13.0), t.text).size().x + TITLE_GAP)
+        .sum::<f32>()
 }
 
 /// The in-window menu bar (hosts without a native one): one dropdown per menu, or a single
@@ -1373,7 +1382,7 @@ pub fn show_in_window(app: &mut LccApp, ui: &mut egui::Ui, max_width: f32) -> f3
         egui::Popup::menu(&r).gap(MENU_GAP).show(|ui| {
             crate::menu_level::level(ui, 1, bar_bottom, |ui| {
                 for (title, items) in &bar {
-                    submenu(ui, title, crate::i18n::tr(title).to_string(), 1, bar_bottom, |ui| nodes_ui(ui, items, mac, &mut clicked, 2, bar_bottom));
+                    submenu(ui, title, menu_text(crate::i18n::tr(title)), 1, bar_bottom, |ui| nodes_ui(ui, items, mac, &mut clicked, 2, bar_bottom));
                 }
             });
         });
@@ -1435,12 +1444,29 @@ fn switch_open_title(ctx: &egui::Context, titles: &[egui::Response]) -> Option<e
 /// A submenu row showing `text` at `depth`, whose rows `children` draws one level deeper,
 /// bounded like every level. The row is registered as `menusub:<label>` (the untranslated
 /// label), and while its submenu is open it is the anchor the next frame's room is measured from.
-fn submenu(ui: &mut egui::Ui, label: &str, text: String, depth: usize, bar_bottom: Option<f32>, children: impl FnOnce(&mut egui::Ui)) {
+fn submenu(ui: &mut egui::Ui, label: &str, text: egui::RichText, depth: usize, bar_bottom: Option<f32>, children: impl FnOnce(&mut egui::Ui)) {
     let r = crate::widgets::menu_button(ui, text, |ui| crate::menu_level::level(ui, depth + 1, bar_bottom, children));
     crate::widgets::register(ui.ctx(), format!("menusub:{label}"), r.response.rect);
     if r.inner.is_some() {
         crate::menu_level::set_anchor(ui.ctx(), depth + 1, r.response.rect);
     }
+}
+
+/// Menu text: Inter at its regular weight, a touch larger and with a little more room between the
+/// letters than the panels' text, so the rows read open and crisp like a native menu's rather than
+/// condensed (egui draws Inter unhinted, and at 13 pt its default tracking runs letters together).
+pub const MENU_TEXT_SIZE: f32 = 13.5;
+pub const MENU_LETTER_SPACING: f32 = 0.3;
+/// Room kept between an item's name and its shortcut.
+const SHORTCUT_GAP: &str = "        ";
+
+fn menu_text(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text).size(MENU_TEXT_SIZE).extra_letter_spacing(MENU_LETTER_SPACING)
+}
+
+/// A native menu's row: about 27 pt tall, the text inset from the highlight's edges.
+fn menu_text_style(ui: &mut egui::Ui) {
+    ui.spacing_mut().button_padding = egui::vec2(10.0, 4.0);
 }
 
 /// `depth` is 1 for a top-level menu's rows; `bar_bottom` is where the menu bar ends.
@@ -1453,23 +1479,29 @@ pub(crate) fn nodes_ui(
     bar_bottom: Option<f32>,
 ) {
     ui.set_min_width(220.0);
+    menu_text_style(ui);
     for n in nodes {
         match n {
             MenuNode::Separator => {
                 ui.separator();
             }
             MenuNode::Submenu { label, children } => {
-                submenu(ui, label, format!("      {}", crate::i18n::tr(label)), depth, bar_bottom, |ui| {
+                submenu(ui, label, menu_text(format!("      {}", crate::i18n::tr(label))), depth, bar_bottom, |ui| {
                     nodes_ui(ui, children, mac, clicked, depth + 1, bar_bottom)
                 });
             }
             MenuNode::Item { id, params, label, shortcut, enabled, checked } => {
                 // a gutter for check marks, like native menus
-                let mut b = egui::Button::new(format!("      {}", display_item_label(id, params, label)));
+                let mut b = egui::Button::new(menu_text(format!("      {}", display_item_label(id, params, label))));
                 if let Some(sc) = shortcut {
-                    b = b.shortcut_text(shortcut_text(sc, mac));
+                    // a native menu's gap between the name and its key
+                    b = b.shortcut_text(menu_text(format!("{SHORTCUT_GAP}{}", shortcut_text(sc, mac))));
                 }
-                let r = ui.add_enabled(*enabled, b);
+                let mut r = ui.add_enabled(*enabled, b);
+                // a Classic item still to build: greyed, and says so on hover
+                if crate::lrc_menus::is_coming_soon(id) {
+                    r = r.on_disabled_hover_text(crate::i18n::tr(crate::lrc_menus::COMING_SOON_HINT));
+                }
                 crate::widgets::register(ui.ctx(), format!("menuitem:{id}"), r.rect);
                 if *checked == Some(true) {
                     let t = crate::theme::Tokens::get(ui.ctx());
@@ -1493,16 +1525,18 @@ mod tests {
         LccApp::new(lcc_engine::Session::with_demo(), Default::default())
     }
 
-    /// Every menu fits a laptop screen without scrolling: about fifteen top-level rows (one more
-    /// where a state adds an item, like Remove from Collection in a collection), and submenus never
-    /// open a third level.
+    /// Every menu fits a laptop screen without scrolling: no more top-level rows than Lightroom
+    /// Classic's longest menus (File, Photo) plus the app's own, and submenus never open a
+    /// third level.
     #[test]
     fn menus_stay_short_and_two_levels_deep() {
+        // (Library ▸ View in Compare: Classic's rows, Compare's two, the app's six)
+        const MAX_ROWS: usize = 38;
         let mut a = app();
         let check = |a: &LccApp| {
             for (title, items) in menu_bar(a) {
                 let rows = items.iter().filter(|n| **n != MenuNode::Separator).count();
-                assert!(rows <= 17, "{title} has {rows} top-level rows");
+                assert!(rows <= MAX_ROWS, "{title} has {rows} top-level rows");
                 for n in &items {
                     if let MenuNode::Submenu { label, children } = n {
                         assert!(!children.iter().any(|c| matches!(c, MenuNode::Submenu { .. })), "{title} ▸ {label} nests a submenu");
@@ -1510,7 +1544,19 @@ mod tests {
                 }
             }
         };
-        check(&a);
+        for m in [
+            crate::module::ModuleId::Library,
+            crate::module::ModuleId::Develop,
+            crate::module::ModuleId::Map,
+            crate::module::ModuleId::Book,
+            crate::module::ModuleId::Slideshow,
+            crate::module::ModuleId::Print,
+            crate::module::ModuleId::Web,
+        ] {
+            a.ui.module = m;
+            check(&a);
+        }
+        a.ui.module = crate::module::ModuleId::Library;
         a.ui.view = ViewMode::Compare;
         check(&a);
     }
@@ -1669,7 +1715,8 @@ mod tests {
     #[test]
     fn library_menu_offers_the_hold_and_the_refresh_and_checks_the_hold_while_it_is_on() {
         let mut a = app();
-        let view = |a: &LccApp| menu_bar(a).into_iter().find(|(t, _)| t == "Library").expect("Library menu").1;
+        // (File ▸ Library Filters holds them, as in Classic)
+        let view = |a: &LccApp| -> Vec<MenuNode> { menu_bar(a).into_iter().flat_map(|(_, v)| v).collect() };
         let items = view(&a);
         assert!(matches!(find(&items, "library.refresh"), Some(MenuNode::Item { enabled: true, .. })));
         assert!(matches!(find(&items, "library.holdView"), Some(MenuNode::Item { checked: Some(false), .. })), "off unless asked for");
@@ -1713,23 +1760,25 @@ mod tests {
         assert!(dir_checked(&sort_children(&menu_bar(&a))).iter().all(Option::is_some), "checks come back for other keys");
     }
 
-    /// File opens with the import entry points, worded as importing (not as adding a sidebar
-    /// folder): Import… (⇧⌘I, the dialog that also takes folders), Import from Folder…, Import from Device ▸.
+    /// File's import group (after the catalog items, as in Classic) is worded as importing, not as
+    /// adding a sidebar folder: Import Photos and Video… (⇧⌘I, the dialog that also takes
+    /// folders), then the app's Import from Folder… and Import from Device ▸ in the same group.
     #[test]
-    fn file_menu_starts_with_the_import_entry_points() {
+    fn file_menu_import_group_is_worded_as_importing() {
         let bar = menu_bar(&app());
         let file = &bar.iter().find(|(t, _)| t == "File").expect("File menu").1;
         let labels: Vec<String> = file
             .iter()
-            .take(3)
             .map(|n| match n {
                 MenuNode::Item { label, shortcut, .. } => format!("{label}{}", shortcut.as_deref().map(|s| format!(" [{s}]")).unwrap_or_default()),
                 MenuNode::Submenu { label, .. } => format!("{label} ▸"),
                 MenuNode::Separator => "---".into(),
             })
             .collect();
-        assert_eq!(labels[0], "Import… [Cmd+Shift+I]");
-        assert_eq!(labels[1..], ["Import from Folder…".to_string(), "Import from Device ▸".to_string()]);
+        let at = labels.iter().position(|l| l == "Import Photos and Video… [Cmd+Shift+I]").expect("Import Photos and Video…");
+        assert_eq!(labels.get(at.saturating_sub(1)).map(String::as_str), Some("---"), "it opens a group");
+        let group: Vec<&str> = labels[at..].iter().take_while(|l| *l != "---").map(String::as_str).collect();
+        assert!(group.contains(&"Import from Folder…") && group.contains(&"Import from Device ▸"), "{group:?}");
         let all: Vec<MenuNode> = bar.iter().flat_map(|(_, v)| v.clone()).collect();
         let text = serde_json::to_string(&all).unwrap();
         assert!(!text.contains("Add Folder") && !text.contains("\"Add Photos"), "no add-folder wording left in the menus");
@@ -1818,7 +1867,13 @@ mod tests {
     fn quit_ends_the_file_menu_after_unlisted_entries() {
         let app = app();
         // the File menu has registry entries the layout doesn't list (appended as fallbacks)
-        let listed = LAYOUT.iter().find(|(t, _)| *t == "File").unwrap().1;
+        let listed: Vec<&str> = crate::lrc_menus::layout(crate::module::ModuleId::Library, "File")
+            .iter()
+            .filter_map(|s| match crate::lrc_menus::parse(s) {
+                crate::lrc_menus::Slot::Item(id, ..) => Some(id),
+                _ => None,
+            })
+            .collect();
         let unlisted: Vec<String> = crate::menus::menu_entries(&app)
             .into_iter()
             .filter(|e| {
@@ -1896,11 +1951,12 @@ mod tests {
         let mut app = app();
         let bar = menu_bar(&app);
         let edit = &bar.iter().find(|(t, _)| t == "Edit").unwrap().1;
-        let Some(MenuNode::Submenu { children, .. }) = edit.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Select by"))
+        let Some(MenuNode::Submenu { children, .. }) =
+            edit.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Select by Rating"))
         else {
-            panic!("no Select by submenu")
+            panic!("no Select by Rating submenu")
         };
-        let Some(MenuNode::Item { id, params, .. }) = children.first() else { panic!() };
+        let Some(MenuNode::Item { id, params, .. }) = children.iter().rev().find(|n| matches!(n, MenuNode::Item { .. })) else { panic!() };
         let r = run_item(&mut app, id, params.clone()).unwrap();
         assert!(r["selected"].as_u64().is_some_and(|n| n > 0), "{r}");
         // the one-field prompt runs its command with the typed value
@@ -1927,9 +1983,10 @@ mod tests {
         }
         let bar = menu_bar(&app);
         let edit = &bar.iter().find(|(t, _)| t == "Edit").unwrap().1;
-        let Some(MenuNode::Submenu { children, .. }) = edit.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Select by"))
+        let Some(MenuNode::Submenu { children, .. }) =
+            edit.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Select by Rating"))
         else {
-            panic!("no Select by submenu")
+            panic!("no Select by Rating submenu")
         };
         let exact = |r: u8| {
             children.iter().find_map(|n| match n {
@@ -2059,7 +2116,7 @@ mod tests {
         h.step();
         h.step();
         let rect = |id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("{id} is on screen"));
-        let titles: Vec<_> = MENUS.iter().map(|t| rect(&format!("menu:{t}"))).collect();
+        let titles: Vec<_> = menus(&h.app).iter().map(|t| rect(&format!("menu:{t}"))).collect();
         for pair in titles.windows(2) {
             let gap = pair[1].left() - pair[0].right();
             // (the registered rects are the titles' highlights, TITLE_PAD wider than the text)
@@ -2079,8 +2136,8 @@ mod tests {
         let mut h = crate::headless::Headless::new(app, [1400.0, 900.0], 1.0);
         let t = std::time::Duration::from_secs(30);
         h.settle(t);
-        // (the fork keeps Back Up Library in File ▸ Libraries)
-        for id in ["menu:File", "menusub:Libraries", "menuitem:file.backupLibrary"] {
+        // (Back Up Catalog… sits in File's catalog group)
+        for id in ["menu:File", "menuitem:file.backupLibrary"] {
             let r = h.request("ui.clickWidget", json!({"id": id}), t);
             assert_eq!(r["ok"], true, "{id}: {r}");
             h.step();

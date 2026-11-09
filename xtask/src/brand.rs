@@ -254,7 +254,7 @@ fn is_rendered_doc(root: &Path, path: &str) -> bool {
 /// Markdown docs may name the product by its display name (maintainer decision 2026-10-25: docs say the
 /// fork's name literally); binary names, the env prefix and legacy names stay out of them.
 fn doc_may_name(path: &str, what: &str) -> bool {
-    (path.ends_with(".md") || path.ends_with(".md.in")) && what == "display_name"
+    (path.ends_with(".md") || path.ends_with(".mdx") || path.ends_with(".md.in")) && what == "display_name"
 }
 
 pub fn is_allowed(path: &str) -> bool {

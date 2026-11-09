@@ -54,6 +54,7 @@ pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
 pub mod loupe_timing;
+pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -247,6 +248,8 @@ mod tests_import_body_profiles;
 #[cfg(test)]
 mod tests_import_drives;
 #[cfg(test)]
+mod tests_import_loupe;
+#[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
 mod tests_import_recipe;
@@ -290,6 +293,8 @@ mod tests_libtools;
 mod tests_lightroom_destination;
 #[cfg(test)]
 mod tests_loading_cell;
+#[cfg(test)]
+mod tests_lrc_menus;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
@@ -2818,7 +2823,11 @@ impl LccApp {
         // an older install's presets (the app under an earlier name, on this computer) join too, once
         // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
         // asks again
-        // (its camera profiles too, bound to the bodies the older install started with them)
+        // (its camera profiles too, bound to the bodies the older install started with them).
+        // No older install on this computer: nothing to ask, and no error at startup (issue #965).
+        if lcc_engine::app_store::older_install_stores().is_empty() {
+            return;
+        }
         if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
             let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
             let (n, m) = (sum("presets"), sum("cameraProfiles"));

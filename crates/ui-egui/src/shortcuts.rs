@@ -13,7 +13,10 @@ use crate::LccApp;
 #[path = "keymap_classic.rs"]
 mod classic;
 pub(crate) use classic::tab_bound;
-pub use classic::{CLASSIC, KeymapSet, active_set, choose_set, default_in, export_file, import_file, import_value, keymap_file, set_active};
+pub use classic::{
+    CLASSIC, KeymapSet, active_set, choose_set, classic_extra_keys, default_in, export_file, import_file, import_value, keymap_file, module_keys_of,
+    set_active,
+};
 
 /// The user's changes to the keymap: command id → shortcut (`""` = no shortcut). Saved with the
 /// app settings (`ui.json`); commands not listed keep their declared shortcut.
@@ -42,7 +45,8 @@ pub fn bindable() -> &'static [Bindable] {
     let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
-            if !v.iter().any(|b| b.id == *id) {
+            // a greyed "Coming soon" menu item can't take a key: it never runs
+            if !v.iter().any(|b| b.id == *id) && !crate::lrc_menus::is_coming_soon(id) {
                 v.push(Bindable { id, label, default: *sc });
             }
         }
@@ -593,6 +597,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         // an unmodified H no assignment has claimed (the Masking panel's pin toggle, below)
         h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !taken.contains(&(Modifiers::NONE, Key::H));
         classic::module_key_presses(i, module_keys, keymap, &mut consumed, &mut aliased);
+        classic::module_key_presses(i, classic_extra_keys(), keymap, &mut consumed, &mut aliased);
         // Enter opens the active grid photo; widgets, popups and custom bindings keep the key.
         if grid
             && app.session.active().is_some()

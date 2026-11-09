@@ -2799,7 +2799,7 @@ mod thumbnail_tests {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
             desc.backend_options = lcc_engine::gpu::backend::backend_options();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("test window"), ..Default::default() })).ok()
         })();
@@ -2868,7 +2868,7 @@ mod thumbnail_tests {
         let device = (|| {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
         })();

@@ -487,8 +487,18 @@ const DEVELOP_RIGHT: &[PanelId] = &[PanelId::Edit, PanelId::Crop, PanelId::Remov
 /// Library: (`[` / `]` rate in the grids, see `shortcuts::grid_bracket_command`); `\` the filter bar (in a loupe
 /// it stays Show Original, see `shortcuts::handle`); Home / End the first and last photo. `=` / `-`
 /// (thumbnail size) are the grids' `view.thumbSizeUp` / `view.thumbSizeDown`, not module keys.
-pub const LIBRARY_KEYS: &[ModuleKey] =
-    &[("\\", "view.filterBar", "{}"), ("Home", "library.first", "{}"), ("End", "library.last", "{}"), crate::help_overlay::KEY];
+/// As in Lightroom Classic's Library: ⇧⌘U Auto White Balance, O the People view, ⌘← / ⌘→ the
+/// previous / next selected photo.
+pub const LIBRARY_KEYS: &[ModuleKey] = &[
+    ("\\", "view.filterBar", "{}"),
+    ("Home", "library.first", "{}"),
+    ("End", "library.last", "{}"),
+    ("Cmd+Shift+U", "develop.wb", r#"{"mode": "auto"}"#),
+    ("O", "view.people", "{}"),
+    ("Cmd+Left", "library.previous", "{}"),
+    ("Cmd+Right", "library.next", "{}"),
+    crate::help_overlay::KEY,
+];
 
 /// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⇧Q cycles the selected spot's mode
 /// (Remove → Heal → Clone), Home / End the first and last photo.
@@ -498,6 +508,13 @@ pub const DEVELOP_KEYS: &[ModuleKey] = &[
     ("Shift+Q", "spot.cycleMode", "{}"),
     ("Home", "library.first", "{}"),
     ("End", "library.last", "{}"),
+    // Lightroom Classic's Develop menu: ⌘N New Snapshot, ⇧⌘N New Preset, ⌘← / ⌘→ the previous /
+    // next photo; Tools ▸ Tool Overlay ▸ Always Show
+    ("Cmd+N", "version.create", "{}"),
+    ("Cmd+Shift+N", "dialog.createPreset", "{}"),
+    ("Cmd+Left", "library.previous", "{}"),
+    ("Cmd+Right", "library.next", "{}"),
+    ("Cmd+Shift+H", "view.toolOverlay", r#"{"mode": "always"}"#),
     crate::help_overlay::KEY,
 ];
 

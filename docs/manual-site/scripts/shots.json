@@ -1,0 +1,25 @@
+{
+  "layouts": {
+    "classic": { "size": "1600x1000", "steps": [
+      { "method": "engine.execute", "params": { "command": "view.modernLayout", "params": { "on": false } } },
+      { "method": "engine.execute", "params": { "command": "view.compactLayout", "params": { "on": false } } } ] },
+    "modern": { "size": "1280x800", "steps": [
+      { "method": "engine.execute", "params": { "command": "view.modernLayout", "params": { "on": true } } } ] },
+    "compact": { "size": "1600x1000", "steps": [
+      { "method": "engine.execute", "params": { "command": "view.compactLayout", "params": { "on": true } } } ] }
+  },
+  "shots": [
+    { "name": "library", "steps": [
+      { "method": "engine.execute", "params": { "command": "module.library" } },
+      { "method": "engine.execute", "params": { "command": "view.squareGrid" } },
+      { "method": "ui.set", "params": { "leftPanel": true, "thumbSize": 150 } } ] },
+    { "name": "develop", "steps": [
+      { "method": "engine.execute", "params": { "command": "library.select", "params": { "ids": [1] } } },
+      { "method": "engine.execute", "params": { "command": "module.develop" } },
+      { "method": "engine.execute", "params": { "command": "develop.set", "params": { "values": { "light.highlights": -55, "light.shadows": 35, "color.vibrance": 25, "effects.clarity": 15 } } } } ] },
+    { "name": "masking", "steps": [
+      { "method": "engine.execute", "params": { "command": "panel.masking" } },
+      { "method": "engine.execute", "params": { "command": "mask.add", "params": { "kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.45], "name": "Sky" } } },
+      { "method": "engine.execute", "params": { "command": "mask.adjust", "params": { "values": { "exposure": -0.6, "temp": 25, "saturation": 20, "dehaze": 20 } } } } ] }
+  ]
+}

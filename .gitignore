@@ -26,3 +26,7 @@
 # aider
 .aider*
 __pycache__/
+# manual site (docs/manual-site)
+/docs/manual-site/node_modules
+/docs/manual-site/dist
+/docs/manual-site/.astro

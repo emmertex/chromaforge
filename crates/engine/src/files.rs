@@ -3541,10 +3541,11 @@ pub(crate) mod tests {
         TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
     }
 
-    /// Sony's embedded distortion correction is on by default: an ARW of a verified body imports with "Enable Lens
-    /// Corrections" on and still counts as unedited; another body's tables aren't read, so its correction is off.
+    /// Sony's embedded distortion correction is read (a verified body's tables) but starts off, as for every raw
+    /// outside the built-in formats: the ARW imports with "Enable Profile Corrections" off and counts as unedited;
+    /// another body's tables aren't read at all.
     #[test]
-    fn arw_with_lens_data_imports_with_profile_corrections_on() {
+    fn arw_with_lens_data_imports_with_profile_corrections_off() {
         let dir = std::env::temp_dir().join(format!("lc-arw-lens-default-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3554,7 +3555,7 @@ pub(crate) mod tests {
             std::fs::write(&path, sony_arw(model)).unwrap();
             let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
             let p = s.catalog.photo(lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
-            assert_eq!((p.format.as_str(), p.embedded_lens.is_some(), p.develop.optics.lens_profile), ("ARW", on, on), "{model}");
+            assert_eq!((p.format.as_str(), p.embedded_lens.is_some(), p.develop.optics.lens_profile), ("ARW", on, false), "{model}");
             assert!(!p.is_edited(), "{model}: as imported");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -3577,6 +3578,59 @@ pub(crate) mod tests {
                 assert_eq!(p.develop.optics.lens_profile, embedded.is_some(), "{format} {embedded:?}");
             }
         }
+    }
+
+    /// A Canon CR3 whose lens the database matches (or any raw outside the built-in formats with lens data) starts
+    /// with "Enable Profile Corrections" off and unedited, so browsing and culling never warp it; its own XMP
+    /// with `LensProfileEnable=1` turns the correction on, and with the switch absent leaves it off.
+    #[test]
+    fn database_matched_raw_starts_with_profile_corrections_off() {
+        use lcc_catalog::{Photo, PhotoId, Source};
+        let s = crate::Session::new();
+        let lens = lcc_develop::EmbeddedLens { warp: Some(Default::default()), ..Default::default() };
+        let xmp = |switch: &str| {
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+                   crs:ProcessVersion="15.4" crs:Exposure2012="+0.50" {switch}/></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        for format in ["CR3", "CR2", "NEF", "ARW", "ORF", "PEF"] {
+            let new = || {
+                let name = format!("x.{format}");
+                let mut p = Photo::new(PhotoId(1), Source::File { path: format!("/{name}") }, &name, format, 64, 48, "");
+                p.kind = MediaKind::Raw;
+                p.embedded_lens = Some(Box::new(lens));
+                crate::import::apply_import_defaults(&s, &mut p);
+                p
+            };
+            let p = new();
+            assert!(!p.develop.optics.lens_profile, "{format}: a new photo starts with the correction off");
+            assert!(!p.is_edited() && *p.develop == p.camera_defaults(), "{format}");
+            for (switch, on) in [(r#"crs:LensProfileEnable="1""#, true), ("", false), (r#"crs:LensProfileEnable="0""#, false)] {
+                let mut p = new();
+                let sc = crate::sidecar::parse_sidecar(&xmp(switch), crate::crs::Target::RawAbsolute).unwrap();
+                crate::sidecar::merge_into(&mut p, &sc, "now");
+                assert_eq!(p.develop.optics.lens_profile, on, "{format} {switch:?}");
+            }
+        }
+    }
+
+    /// A photo catalogued when import still turned every raw's lens correction on (a database match too) and never
+    /// edited since counts as unedited; one with a history keeps counting its settings as edits.
+    #[test]
+    fn a_photo_imported_with_the_old_default_is_still_unedited() {
+        use lcc_catalog::{HistoryStep, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::File { path: "/x.CR3".into() }, "x.CR3", "CR3", 64, 48, "");
+        p.kind = MediaKind::Raw;
+        p.embedded_lens = Some(Box::new(lcc_develop::EmbeddedLens { warp: Some(Default::default()), ..Default::default() }));
+        let mut d = p.camera_defaults();
+        assert!(!d.optics.lens_profile);
+        d.optics.lens_profile = true;
+        p.develop = std::sync::Arc::new(d.clone());
+        assert!(!p.is_edited(), "as an older build imported it");
+        p.history.push(HistoryStep { label: "Lens Corrections".into(), settings: std::sync::Arc::new(d), batch: None });
+        assert!(p.is_edited(), "turned on by the user");
     }
 
     /// Stored settings stay as they are when the library opens again: an ARW catalogued before its lens data was read
