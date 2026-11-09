@@ -43,7 +43,9 @@ impl SurfaceStore for MemStore {
 
 fn demo_with(store: MemStore, enabled: bool) -> Headless {
     if enabled {
-        let s = lcc_surface::SurfaceSettings { enabled: true, ..Default::default() };
+        // a 1:1 dial feel and no per-value tuning: these tests count steps, not the shipped feel
+        let motion = lcc_surface::settings::MotionSettings { speed: 1.0, acceleration: 1.0, ..Default::default() };
+        let s = lcc_surface::SurfaceSettings { enabled: true, motion, tuning: Default::default(), ..Default::default() };
         store.save(&s.to_json()).unwrap();
     }
     let services = Services { png: None, surface_store: Some(Box::new(store)), ..Default::default() };
@@ -200,8 +202,8 @@ fn pages_follow_crop_and_keys_run_commands() {
     h.settle(T);
     let s = state(&mut h);
     assert_eq!((s["context"].as_str(), s["keyPage"].as_str(), s["dialPage"].as_str()), (Some("crop"), Some("Crop"), Some("Crop")), "{s}");
-    // the dial straightens
-    assert_eq!(input(&mut h, json!([{"control": "dial", "ticks": 50}]))["ok"], true);
+    // the roller straightens (the shipped layout keeps Zoom on the dial)
+    assert_eq!(input(&mut h, json!([{"control": "roller", "ticks": 50}]))["ok"], true);
     finish_gesture(&mut h);
     let id = h.app.session.active().unwrap();
     assert!(h.app.session.develop_of(id).unwrap().crop.geometry.angle.abs() > 0.1);
