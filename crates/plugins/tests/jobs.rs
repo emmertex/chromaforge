@@ -157,7 +157,7 @@ fn installed(bytes: &[u8], limits: Limits) -> Manager {
     let mut m = Manager::in_memory();
     m.set_limits(limits);
     let all = Permissions { catalog: true, metadata_write: true, library_add: true, ..Default::default() };
-    m.install_bytes(bytes, Some(all), false).unwrap();
+    m.install_bytes_by_user(bytes, Some(all), false).unwrap();
     m
 }
 
@@ -367,7 +367,7 @@ fn what_a_job_wrote_is_saved_before_its_next_call() {
         ],
         Some(r#"{"ok":{"continue":1}}"#),
     );
-    m.install_bytes(&bytes, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
     let peek = Peek { file: dir.join("data").join("test.job.json"), seen: RefCell::default(), items: Cell::new(0) };
     let e = run_job(&mut m, &mut NoHost, &peek).unwrap_err();
     assert_eq!(e, Error::Cancelled);
@@ -428,7 +428,7 @@ fn a_change_made_while_a_job_runs_reaches_its_next_call() {
         (
             "updated with less granted",
             Box::new(|m: &mut Manager| {
-                m.install_bytes(&bytes, Some(less.clone()), false).unwrap();
+                m.install_bytes_by_user(&bytes, Some(less.clone()), false).unwrap();
             }),
         ),
     ];
@@ -452,7 +452,7 @@ fn a_job_running_through_a_rollback_keeps_its_permissions() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut m = Manager::open(&dir).unwrap();
     let all = Permissions { catalog: true, metadata_write: true, library_add: true, ..Default::default() };
-    m.install_bytes(&reads_twice(&manifest(true).replace("1.0.0", "0.9.0")), Some(all), false).unwrap();
+    m.install_bytes_by_user(&reads_twice(&manifest(true).replace("1.0.0", "0.9.0")), Some(all), false).unwrap();
     m.install_bytes(&reads_twice(&manifest(true)), None, false).unwrap();
     let Begun::Call(mut call) = m.begin_command("test.job", "go", &json!({}), &[], &Value::Null, &mut NoHost).unwrap() else { panic!() };
     let change: Change = Box::new(|m: &mut Manager| {

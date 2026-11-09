@@ -53,7 +53,7 @@ fn mutated_modules_never_panic() {
         }
         let mut m = Manager::in_memory();
         m.set_limits(limits());
-        let Ok(p) = m.install_bytes(b, Some(grant()), false) else { return };
+        let Ok(p) = m.install_bytes_by_user(b, Some(grant()), false) else { return };
         let id = p.plugin.id().to_string();
         let _ = m.set_enabled(&id, true);
         let _ = m.run_command(&id, "go", &json!({}), &["1".into()], &mut NoHost);
@@ -113,7 +113,7 @@ fn hostile_replies_never_panic() {
     lcc_fuzzkit::run_json("plugins.reply", &seeds, 150, |reply| {
         let mut m = Manager::in_memory();
         m.set_limits(limits());
-        if m.install_bytes(&module(MANIFEST, reply), Some(grant()), false).is_err() {
+        if m.install_bytes_by_user(&module(MANIFEST, reply), Some(grant()), false).is_err() {
             return;
         }
         let _ = m.set_enabled("test.plugin", true);

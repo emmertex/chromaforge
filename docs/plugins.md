@@ -83,13 +83,41 @@ These need the host feature **`settings`**: a plug-in that uses any of them says
 
 ## Permissions
 
-A plug-in gets nothing it did not ask for in `permissions`, and nothing the user did not approve.
-Installing shows every requested permission with a checkbox, unticked, and grants only the ones the
-user ticks; an update shows what it newly asks for and keeps nothing beyond the previous grant
-unless approved. Through the engine, `plugin.install` without `grant` grants nothing new, and
-`plugin.install` and `plugin.grant` never add `programs` (below). The Plug-in Manager can revoke a permission at any
-time, and the change applies from the next call. In every call, the plug-in's effective rights
-are the granted permissions intersected with the requested ones.
+A plug-in gets nothing it did not ask for in `permissions`, and nothing the user did not allow.
+The manifest lists everything a plug-in may ask for; installing grants none of it. The install
+dialog lists those requests for information, with nothing to tick. The first call that needs one
+asks the user:
+
+- **From a command the user started** (a menu item, a plug-in's dialog, the Plug-in Manager),
+  its prepare step included, the call fails, the command ends, and a prompt names the plug-in and
+  the permission: *Allow* grants it and runs the same command again, once (after a prepare step,
+  the command starts again as from its menu, so its dialog may open); *Deny* is remembered with
+  its date, and later calls that need it fail with "permission `X` not granted to this plug-in",
+  asking nothing. A command that does something before the call that fails does it twice when
+  the user allows: ask early (make the call that needs the permission first).
+- **With nobody to ask** (the command line, `mcp` without `--connect`, an agent's `plugin.run`, a
+  [job](#jobs-long-commands-with-progress) on a worker, and every hook: export hooks and
+  destinations, publish services, metadata providers, `program.end`, settings' prepare steps,
+  even after an export the user started) the call fails with "needs `X`, not granted to this
+  plug-in; allow it in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…)", and nothing is
+  recorded as asked.
+
+The Plug-in Manager's Permissions tab shows each request as allowed, denied on a date, not asked
+yet, or refused (below), with *Allow* and *Revoke*. Only the user allows: commands
+(`plugin.install {grant}`, `plugin.grant`), whoever calls them (MCP, the control channel, an
+action, the command line), may repeat or leave out what is granted, and refuse a grant that adds
+anything, changing nothing; `plugin.revoke {id, group, value?}` takes one permission (or one
+host, folder or program) away. The control channel's input requests (`ui.pointer`,
+`ui.clickWidget`, `ui.key`) can't allow: *Allow* in the prompt or on the Permissions tab ignores
+them and says so, and through them *Install* and *Go Back* act as `plugin.install` and
+`plugin.rollback`. Revoking, disabling and removing work from anywhere, and a change applies from
+the next call. An update or `plugin.rollback` keeps what was allowed for what the new version
+still asks for, never more, and keeps the denials. `plugins.json` from before this model loads
+unchanged, its grants as allowed.
+
+A folder (`fs`) root that contains the settings folder or the plug-ins folder, or lies inside the
+plug-ins folder, is never granted, by any path: the Permissions tab shows it as refused, with the
+reason. A plug-in with such a root would be able to rewrite its own grant or another plug-in.
 
 | Permission | Allows |
 |---|---|
@@ -101,7 +129,7 @@ are the granted permissions intersected with the requested ones.
 | `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
-| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plug-in Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
+| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Each program is allowed on its own, by the user, as any other permission. |
 
 Every plug-in can always use its own **metadata namespace** (`ns.get {photo}`,
 `ns.set {photo, key, value}`, `ns.photos`). The namespace is stored next to the module, never in
@@ -134,15 +162,13 @@ drive); a copy in the Trash never is. A
 lookup that takes more than 3 seconds is stopped and finds nothing. The install dialog and the
 Plug-in Manager show each entry as a permission row with what it names on this system (the bundle
 ids, or the executable) and where it is installed ("not installed" if nowhere, "checking…" while
-the app looks; the dialog never waits for a lookup). An update that widens a granted entry shows it
-unticked and marked new. An update keeps a granted entry when
+the app looks; the dialog never waits for a lookup). An update keeps an allowed entry when
 it names no more than before: renaming it, reordering or removing bundle ids and dropping an
-executable keep the grant. An update that adds a bundle id or changes an executable unticks the
-entry, with a line in the plug-in's log, until the user ticks it again: the user allowed
-particular programs, not whatever the entry names later. An install from a command
-(`plugin.install`) whose module differs from the installed one keeps none of the plug-in's
-programs, with a line in its log: the user allowed them for the code they had. Installing the same
-module again keeps them.
+executable keep it. An update that adds a bundle id or changes an executable drops the entry, with
+a line in the plug-in's log, until the user allows it again: the user allowed particular programs,
+not whatever the entry names later. An install from a command (`plugin.install`) whose module
+differs from the installed one keeps none of the plug-in's programs, with a line in its log: the
+user allowed them for the code they had. Installing the same module again keeps them.
 
 **What a grant covers:** the user allows a program, not a particular use of it. The plug-in chooses
 the arguments and the files it hands the program on every run (`program.start {args, files}`); the
@@ -585,18 +611,19 @@ The manifest fields:
 - Everything a plug-in returns is **checked**: dialog values are coerced to their fields before
   the plug-in sees them, `metadataFields` values that no longer fit the field show as empty, and a
   reply that is not JSON, too large or late is an error. Nothing a plug-in does can crash the app.
-- **Permissions are the user's**: each requested capability is a separate checkbox on install,
-  unticked; an update that asks for more gets nothing new until approved; the user can revoke any
-  permission later. Handle `permission … not granted` errors with a clear message.
+- **Permissions are the user's**: nothing is granted at install; the first call that needs one
+  asks the user, from a command they started, and fails with nobody to ask. Make that call early
+  (Allow runs the command again), and handle `not granted` errors with a clear message: the user
+  may have said no, and may revoke any permission later.
 - Paths must be **absolute** without `..`; links can't lead out of a root.
-- **Programs** start only once the user has ticked them, one run per program at a time, and their
+- **Programs** start only once the user has allowed them, one run per program at a time, and their
   folder lives only until the run is over: copy what you need out of it in `program.end`.
 
 ### 6. Test and ship
 
 - Unit-test your logic natively (`cargo test`; the host calls answer "no host" off wasm).
 - Build `--release --target wasm32-unknown-unknown`, then install from File ▸ Plug-ins ▸ Plug-in Manager…
-  (*Install…* shows every permission for approval) or `<cli> commands plugin.install`.
+  (*Install…* lists what it may ask for) or `<cli> commands plugin.install`.
 - Drive it without the UI: `plugin.run`, `plugin.exportTo`, `plugin.setField`, `plugin.log` from
   the CLI, the control channel or MCP.
 - Raise `version` with every release you hand out, and list in `requires` each host feature you
@@ -607,7 +634,7 @@ The manifest fields:
 ## Engine commands
 
 `plugin.list`, `plugin.inspectFile {path}`, `plugin.install {path, grant?, allowDowngrade?}`,
-`plugin.uninstall {id | file, keepData?}`, `plugin.rollback {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}`,
+`plugin.uninstall {id | file, keepData?}`, `plugin.rollback {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}` (revokes only), `plugin.revoke {id, group, value?}`,
 `plugin.log {id}`, `plugin.commands`, `plugin.prepare {plugin, command, ids?, source?}`,
 `plugin.run {plugin, command, args?, ids?, source?, wait?}` (a job: `{job}` at once, or its result with `wait`), `plugin.settings {id}`, `plugin.setSettings {id, values}`,
 `plugin.suggestMetadata {ids?}`, `plugin.postExport {files}`, `plugin.publishServices`,
@@ -636,7 +663,7 @@ plug-in's own icon when its manifest carries one), its name, version and a mark:
 right:
 
 - **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), and tabs: Settings (when it declares settings), Permissions (each
-  one it asks for, granted or revoked by its box), About (description, what it adds, its commands
+  one it may ask for: allowed, denied on a date, not asked yet or refused, with Allow / Revoke), About (description, what it adds, its commands
   to run, the module's size) and Log.
 - **A pixel filter:** Remove, its stage, whether it measures the photo (the cropped photo or the
   whole one), its base tone, parameters, and the module's size and hash. Filters have no Enabled
@@ -647,8 +674,8 @@ Remove asks first, on every page, and Cancel changes nothing; for a plug-in the 
 keep its data and settings for a later install. `plugin.uninstall` doesn't ask.
 
 *Install from File…* opens the file picker for a `.wasm` module, and dropping one `.wasm` file on
-the app while the window is open installs it too; either way the install dialog asks for the
-permissions first. One install at a time: while the dialog waits, another module is refused with a
+the app while the window is open installs it too; either way the install dialog lists the
+permissions it may ask for first. One install at a time: while the dialog waits, another module is refused with a
 note to finish or cancel the first. A module that is exactly what is installed (the same id,
 version and code) opens no dialog: its entry is selected, with a note that it is already
 installed. Other code under the installed version (a repair) and a newer version open the dialog.

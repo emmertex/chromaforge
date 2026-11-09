@@ -1,6 +1,6 @@
 //! Example plug-in. Build: `cargo build --release --target wasm32-unknown-unknown`, then install
-//! `target/wasm32-unknown-unknown/release/program_tools.wasm` from the Plug-in Manager and tick
-//! "Start the program Example Converter".
+//! `target/wasm32-unknown-unknown/release/program_tools.wasm` from the Plug-in Manager; the first
+//! run asks to "Start the program Example Converter".
 //!
 //! - **Send to Converter** (menu command): writes the selected photos' ids and original files into
 //!   the run's folder, one `<photo id>\t<original>` line each, and the album the command was

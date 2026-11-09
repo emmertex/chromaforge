@@ -60,7 +60,7 @@ fn run(bytes: &[u8], limits: Limits) -> (lcc_plugins::Result<Value>, Duration) {
     let mut m = Manager::in_memory();
     m.set_limits(limits.clone());
     let r = Plugin::load(bytes, limits).and_then(|_| {
-        m.install_bytes(bytes, Some(all()), false)?;
+        m.install_bytes_by_user(bytes, Some(all()), false)?;
         m.run_command("test.plugin", "go", &json!({}), &[], &mut NoHost)
     });
     (r, t.elapsed())
@@ -84,15 +84,15 @@ fn host_calls_follow_the_grant() {
     }
     let bytes = forward(r#"{"method":"catalog.stats","params":{}}"#);
     let mut m = Manager::in_memory();
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     // the plug-in returns the host's reply envelope as its own
     assert_eq!(m.run_command("test.plugin", "go", &json!({}), &[], &mut Cat).unwrap(), json!({"photos": 3}));
     m.set_grant("test.plugin", Permissions::default()).unwrap();
     let e = m.run_command("test.plugin", "go", &json!({}), &[], &mut Cat).unwrap_err();
-    assert!(e.to_string().contains("permission `catalog`"), "{e}");
+    assert!(e.to_string().contains("`catalog`"), "{e}");
     // a grant beyond the request is cut back to it
     let g = m
-        .set_grant(
+        .set_grant_by_user(
             "test.plugin",
             Permissions { catalog: true, metadata_write: true, network: vec!["x.com".into()], fs: vec![], programs: vec![], ..Default::default() },
         )
@@ -162,7 +162,7 @@ fn dialog_arguments_are_checked() {
     let manifest = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","commands":[{"id":"go","label":"Go","dialog":[{"key":"n","label":"N","type":"number","min":0,"max":1,"default":0.5}]}]}"#;
     let bytes = module(manifest, 1, "(i64.or (i64.shl (i64.const 2) (i64.const 32)) (i64.const 8192))", "", "{}");
     let mut m = Manager::in_memory();
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     assert!(m.run_command("test.plugin", "go", &json!({"n": "x"}), &[], &mut NoHost).is_err());
     assert!(m.run_command("test.plugin", "nope", &json!({}), &[], &mut NoHost).is_err());
     assert!(m.run_command("test.plugin", "go", &json!({"n": 7}), &[], &mut NoHost).is_ok());
@@ -177,7 +177,7 @@ fn install_grants_only_what_was_approved_and_updates_gain_nothing() {
     let bytes = forward(r#"{"method":"catalog.stats","params":{}}"#);
     let mut m = Manager::in_memory();
     assert!(m.install_bytes(&bytes, None, false).unwrap().effective().is_empty(), "nothing approved, nothing granted");
-    m.set_grant("test.plugin", all()).unwrap();
+    m.set_grant_by_user("test.plugin", all()).unwrap();
     // an update without a new approval keeps the old grant, never more
     let v2 = module(&MANIFEST.replace(r#""catalog":true"#, r#""catalog":true,"metadataWrite":true"#), 1, "(i64.const 0)", "", "");
     let g = m.install_bytes(&v2, None, false).unwrap().effective();
@@ -253,7 +253,7 @@ fn programs_are_granted_only_by_the_user() {
     let e = m.install_bytes(&bytes, Some(programs_grant(&["conv"])), false).unwrap_err().to_string();
     assert!(e.contains("Plug-in Manager"), "an install that grants a program points to the Plug-in Manager: {e}");
     assert!(m.get("test.plugin").is_none(), "nothing is installed");
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     let e = m.set_grant("test.plugin", programs_grant(&["conv"])).unwrap_err().to_string();
     assert!(e.contains("Plug-in Manager"), "{e}");
     assert_eq!(m.get("test.plugin").unwrap().effective(), Permissions { catalog: true, ..Default::default() }, "the other permissions are unchanged");
@@ -370,7 +370,7 @@ fn program_start_refuses_bad_requests_and_starts_nothing() {
     let many: serde_json::Map<String, Value> = (0..65).map(|i| (format!("f{i}.txt"), json!(""))).collect();
     for (params, needle) in [
         (json!({"program": "nope"}), "not one of this plug-in's programs"),
-        (json!({"program": "other"}), "permission `programs`"),
+        (json!({"program": "other"}), "`programs other`"),
         (json!({"program": "conv", "files": {"../escape.txt": "x"}}), "plain file name"),
         (json!({"program": "conv", "files": {"a/b.txt": "x"}}), "plain file name"),
         (json!({"program": "conv", "files": {"..": "x"}}), "plain file name"),
@@ -401,7 +401,7 @@ fn program_start_refuses_bad_requests_and_starts_nothing() {
     m.install_bytes(&bytes, None, false).unwrap();
     let mut host = Programs { installed: true, ..Default::default() };
     let e = m.run_command("test.plugin", "go", &json!({}), &[], &mut host).unwrap_err().to_string();
-    assert!(e.contains("permission `programs`"), "{e}");
+    assert!(e.contains("`programs conv`"), "{e}");
     assert!(host.started.is_empty());
 }
 
@@ -597,7 +597,7 @@ impl lcc_plugins::HostApi for Seen {
 fn commands_and_prepare_steps_get_their_source() {
     let manifest = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","requires":["libraryAdd"],"permissions":{"catalog":true},"commands":[{"id":"go","label":"Go"},{"id":"ask","label":"Ask","prepare":true}]}"#;
     let mut m = Manager::in_memory();
-    m.install_bytes(&request_echo(manifest), Some(all()), false).unwrap();
+    m.install_bytes_by_user(&request_echo(manifest), Some(all()), false).unwrap();
     let album = json!({"kind": "album", "id": "7", "name": "Trip"});
     let mut host = Seen::default();
     m.run_command_from("test.plugin", "go", &json!({}), &["1".into()], &album, &mut host).unwrap();
@@ -639,7 +639,7 @@ fn pixels_and_crop_requests_are_checked_before_the_host_sees_them() {
             len = req.len()
         );
         let mut m = Manager::in_memory();
-        m.install_bytes(&module(LOOKS, 1, &handle, "", req), Some(grant), false).unwrap();
+        m.install_bytes_by_user(&module(LOOKS, 1, &handle, "", req), Some(grant), false).unwrap();
         let mut host = Looks::default();
         let r = m.run_command("test.plugin", "go", &json!({}), &[], &mut host);
         (r, host.0)
@@ -705,7 +705,7 @@ fn virtual_copy_requests_are_checked_before_the_host_sees_them() {
             len = req.len()
         );
         let mut m = Manager::in_memory();
-        m.install_bytes(&module(COPIES, 1, &handle, "", req), Some(grant), false).unwrap();
+        m.install_bytes_by_user(&module(COPIES, 1, &handle, "", req), Some(grant), false).unwrap();
         let mut host = Copies::default();
         let r = m.run_command("test.plugin", "go", &json!({}), &[], &mut host);
         (r, host.0)
