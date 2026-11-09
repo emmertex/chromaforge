@@ -1,0 +1,4 @@
+# Workflow changes need a review from one of these people (main's ruleset requires code-owner review).
+# See docs/releasing.md, "Who can start a release".
+/.github/workflows/ @emmertex @clydecbrown @OneSlips
+/.github/CODEOWNERS @emmertex @clydecbrown @OneSlips
