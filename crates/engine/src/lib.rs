@@ -525,6 +525,15 @@ pub struct Session {
     /// The stable id of the open library as plug-ins' data is kept (`""`: none). The plug-in
     /// manager is process-wide; each call made for this session points it at this library first.
     pub(crate) plugin_library: String,
+    /// The UI is running a plug-in command the user started (`plugin.run`): what it needs that the
+    /// user was never asked about goes in `plugin_asks`, instead of an error that says to go to
+    /// the Plug-in Manager. Set by the UI only, around its own runs; never by a request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_ask_user: bool,
+    /// Permissions plug-in commands the user started need, for the UI to ask about (Allow runs the
+    /// command again).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_asks: Vec<cmd::plugins::PluginAsk>,
     /// XMP sidecar preferences (persisted with the library).
     pub xmp: sidecar::XmpPrefs,
     /// The library's shared-stem owners with the catalog revision they were built at
@@ -833,6 +842,10 @@ impl Session {
             library: None,
             library_identity: Arc::new(()),
             plugin_library: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_ask_user: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_asks: Vec::new(),
             xmp: sidecar::XmpPrefs::default(),
             last_export: None,
             previous_export: Vec::new(),

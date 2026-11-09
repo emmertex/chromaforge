@@ -411,6 +411,24 @@ impl Headless {
             || !self.events.is_empty()
     }
 
+    /// Clicks widget `id` (as `ui.widgets` names it) as the user would: input the app doesn't mark
+    /// as an agent's, so it reaches what only the user may do (allowing a plug-in's permission).
+    /// The control channel has no such path. False when the widget isn't on screen.
+    pub fn click_as_user(&mut self, id: &str) -> bool {
+        let Some(at) = self.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.center()) else { return false };
+        let (button, modifiers) = (egui::PointerButton::Primary, egui::Modifiers::NONE);
+        self.app.user_events.extend([
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton { pos: at, button, pressed: true, modifiers },
+            egui::Event::PointerButton { pos: at, button, pressed: false, modifiers },
+        ]);
+        while !self.app.user_events.is_empty() {
+            self.step();
+        }
+        self.settle(Duration::from_secs(5));
+        true
+    }
+
     /// Run frames until nothing is pending (renders finished, input consumed) for a few frames in
     /// a row, or `timeout` passes. Returns whether it settled.
     pub fn settle(&mut self, timeout: Duration) -> bool {

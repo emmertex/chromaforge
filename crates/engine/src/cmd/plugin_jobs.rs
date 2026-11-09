@@ -377,7 +377,7 @@ mod tests {
         let _turn = turn();
         let bytes = job_module("test.boom", &[r#"{"method":"catalog.query","params":{}}"#], r#"{"ok":{"message":"never"}}"#);
         let read = lcc_plugins::Permissions { catalog: true, ..Default::default() };
-        manager().get_or_insert_with(Manager::in_memory).install_bytes(&bytes, Some(read), false).unwrap();
+        manager().get_or_insert_with(Manager::in_memory).install_bytes_by_user(&bytes, Some(read), false).unwrap();
         let mut s = Session::with_demo();
         let begin =
             |s: &mut Session| manager().as_mut().unwrap().begin_command("test.boom", "go", &json!({}), &[], &Value::Null, &mut SessionHost(s));

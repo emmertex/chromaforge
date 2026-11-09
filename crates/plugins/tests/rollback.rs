@@ -78,7 +78,7 @@ fn an_update_keeps_the_version_it_replaces_and_going_back_restores_it() {
     let v1 = version("1.0.0", &["a", "b"], json!({"catalog": true, "metadataWrite": true}));
     let v2 = version("1.1.0", &["b", "c"], json!({"catalog": true}));
     let mut m = Manager::open(&dir).unwrap();
-    m.install_bytes(&v1, Some(Permissions { catalog: true, metadata_write: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&v1, Some(Permissions { catalog: true, metadata_write: true, ..Default::default() }), false).unwrap();
     assert_eq!(m.previous_version(ID), None, "a first install has nothing to go back to");
     m.set_settings(ID, &json!({"a": "A", "b": "B"}), &mut NoHost).unwrap();
     m.install_bytes(&v2, None, false).unwrap();
@@ -179,8 +179,12 @@ fn a_rollback_that_cant_be_written_changes_nothing() {
     for read_only in ["", "settings"] {
         let dir = folder(&format!("read-only-{}", read_only.len()));
         let mut m = Manager::open(&dir).unwrap();
-        m.install_bytes(&version("1.0.0", &["a"], json!({"catalog": true})), Some(Permissions { catalog: true, ..Default::default() }), false)
-            .unwrap();
+        m.install_bytes_by_user(
+            &version("1.0.0", &["a"], json!({"catalog": true})),
+            Some(Permissions { catalog: true, ..Default::default() }),
+            false,
+        )
+        .unwrap();
         m.set_settings(ID, &json!({"a": "old"}), &mut NoHost).unwrap();
         m.install_bytes(&version("1.1.0", &["a"], json!({"catalog": true})), None, false).unwrap();
         m.set_settings(ID, &json!({"a": "new"}), &mut NoHost).unwrap();

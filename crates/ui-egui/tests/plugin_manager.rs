@@ -303,13 +303,13 @@ fn the_list_has_sections_and_each_entry_its_page() {
     assert_eq!(r["tab"], "settings", "{r}");
     assert!(has_widget(&mut h, "button:pluginSettingsSave"));
 
-    // the Permissions tab grants and revokes
+    // the Permissions tab allows (the user's click only, plugin_permissions.rs) and revokes
     click(&mut h, "button:pluginPage-permissions");
     assert!(painted(&h, "Read the catalog") && painted(&h, "example.com"), "{:?}", h.painted_text());
-    click(&mut h, "pluginPermission:test.mgr.full:0");
-    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], true, "ticking grants it");
-    click(&mut h, "pluginPermission:test.mgr.full:0");
-    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], false, "unticking revokes it");
+    assert!(h.click_as_user("pluginAllow:test.mgr.full:0"));
+    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], true, "Allow grants it");
+    click(&mut h, "pluginRevoke:test.mgr.full:0");
+    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], false, "Revoke takes it back");
     // About: what it is, its commands, its size; Log
     click(&mut h, "button:pluginPage-about");
     assert!(painted(&h, "Does everything.") && painted(&h, "Go Now") && painted(&h, "KB"), "{:?}", h.painted_text());
@@ -723,7 +723,8 @@ fn the_page_goes_back_to_the_previous_version() {
     }
     ui_cmd(&mut h, "plugins.page", json!({"id": id}));
     assert!(painted(&h, "Go Back to Version 1.0.0"), "{:?}", h.painted_text());
-    click(&mut h, &button);
+    // the user's click (an agent's acts as plugin.rollback, which drops the programs)
+    assert!(h.click_as_user(&button));
     let after = listed(&mut h, id).unwrap();
     assert!(!has_widget(&mut h, &button), "one level deep");
     exec(&mut h, "plugin.uninstall", json!({"id": id}));

@@ -72,7 +72,8 @@ fn plugins_json(dir: &Path) -> Value {
 fn a_plugin_needing_features_the_host_lacks_is_not_installed() {
     let dir = folder("requires");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    let e = m.install_bytes(&plugin("t.needs", "1.0.0", &["settings", "jobs", "programs"], false), Some(catalog_and_write()), false).unwrap_err();
+    let e =
+        m.install_bytes_by_user(&plugin("t.needs", "1.0.0", &["settings", "jobs", "programs"], false), Some(catalog_and_write()), false).unwrap_err();
     assert_eq!(e, Error::Unsupported(vec!["settings".into(), "programs".into()]), "every missing feature, and only those");
     let msg = e.to_string();
     assert!(msg.contains("`settings`") && msg.contains("`programs`") && !msg.contains("`jobs`"), "{msg}");
@@ -116,7 +117,7 @@ fn a_malformed_requires_is_a_manifest_error() {
 fn a_plugin_that_stops_loading_keeps_its_entry_and_data() {
     let dir = folder("kept");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     m.install_bytes(&plugin("t.other", "1.0.0", &[], false), None, false).unwrap();
     m.set_enabled("t.other", false).unwrap();
@@ -198,7 +199,7 @@ fn a_module_already_installed_without_a_valid_version_still_loads() {
 fn a_downgrade_needs_confirming() {
     let dir = folder("downgrade");
     let mut m = Manager::open(&dir).unwrap();
-    m.install_bytes(&plugin("t.dg", "1.4.0", &[], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.dg", "1.4.0", &[], true), Some(catalog_and_write()), false).unwrap();
     let installed = std::fs::read(dir.join("t.dg.wasm")).unwrap();
     let state = std::fs::read(dir.join("plugins.json")).unwrap();
 
@@ -245,7 +246,7 @@ fn the_install_check_reports_what_would_stop_an_install() {
 fn a_plugin_that_did_not_load_can_be_removed() {
     let dir = folder("remove");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     m.install_bytes(&plugin("t.other", "1.0.0", &[], false), None, false).unwrap();
     drop(m);
@@ -285,7 +286,7 @@ fn a_failed_removal_forgets_nothing() {
     use std::os::unix::fs::PermissionsExt;
     let dir = folder("readonly");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     drop(m);
     let entry = plugins_json(&dir)["plugins"]["t.jobs"].clone();
