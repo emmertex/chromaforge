@@ -56,6 +56,8 @@ mod gate;
 mod helper;
 #[cfg(not(target_arch = "wasm32"))]
 mod init;
+#[cfg(not(target_arch = "wasm32"))]
+mod instance;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,6 +77,9 @@ pub use render::{DisplayFrame, GpuStages};
 #[cfg(not(target_arch = "wasm32"))]
 pub use wgpu;
 
+/// Every wgpu instance comes from here: one at a time, with the Vulkan loader kept loaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub use instance::new_instance;
 #[cfg(not(target_arch = "wasm32"))]
 pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
 

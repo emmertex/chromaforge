@@ -167,7 +167,7 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     desc.backends = backends;
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = crate::new_instance(desc);
     // the second graphics card (none: `Err`), or the card for editing (`crate::ai_adapter_on`)
     let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
     let info = adapter.get_info();
