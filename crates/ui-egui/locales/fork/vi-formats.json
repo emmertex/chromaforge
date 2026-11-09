@@ -3,6 +3,8 @@
   "A profile “{name}” is already there.": "Hồ sơ “{name}” đã tồn tại.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "Khoảng ${usd} · {requests} yêu cầu, tính vào tài khoản {name} của bạn",
   "About ${usd}, billed to your {name} account.": "Khoảng ${usd}, tính vào tài khoản {name} của bạn.",
+  "Active: CPU · {why}": "Hoạt động: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "Hoạt động: {name} (tăng tốc GPU)",
   "Add your {} API key in Settings → Generative Fill first.": "Hãy thêm khóa API {} của bạn trong Cài đặt → Tô màu tạo sinh trước.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "Hãy thêm khóa API {} của bạn trong Cài đặt ▸ Tô màu tạo sinh trước.",
   "Add {n} New Photos…": "Add {n} New Photos…",

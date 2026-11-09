@@ -2,6 +2,8 @@
   ", ": ", ",
   "A profile “{name}” is already there.": "Profil „{name}” już istnieje.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "Około ${usd} · żądania: {requests}, opłata z konta {name}",
+  "Active: CPU · {why}": "Aktywny: Procesor · {why}",
+  "Active: {name} (GPU accelerated)": "Aktywny: {name} (akceleracja GPU)",
   "Add your {} API key in Settings → Generative Fill first.": "Najpierw dodaj klucz API {} w Ustawieniach → Wypełnienie generatywne.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "Najpierw dodaj klucz API {} w Ustawieniach ▸ Wypełnienie generatywne.",
   "Add {n} New Photos…": "Dodaj nowe zdjęcia ({n})…",

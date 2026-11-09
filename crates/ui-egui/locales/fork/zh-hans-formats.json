@@ -2,6 +2,8 @@
   " · {queued} waiting": " · {queued} 张等待中",
   ", ": "、",
   "A profile “{name}” is already there.": "配置文件“{name}”已存在。",
+  "Active: CPU · {why}": "活动：CPU · {why}",
+  "Active: {name} (GPU accelerated)": "活动：{name}（GPU 加速）",
   "Add {n} New Photos…": "添加 {n} 张新照片…",
   "Alternatives to {name}": "{name} 的备选",
   "Apply to {n} Selected Photos": "应用到 {n} 张所选照片",

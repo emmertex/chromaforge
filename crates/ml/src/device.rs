@@ -55,15 +55,21 @@ pub struct Device {
     pub name: String,
     /// Why the jobs run on the CPU (no GPU, switched off, the GPU failed), when they do.
     pub why_cpu: Option<String>,
+    /// Device ordinal / index when multiple GPUs are present (0-indexed).
+    pub index: usize,
 }
 
 impl Device {
     pub fn cpu(why: Option<String>) -> Device {
-        Device { kind: Kind::Cpu, name: "CPU".into(), why_cpu: why }
+        Device { kind: Kind::Cpu, name: "CPU".into(), why_cpu: why, index: 0 }
     }
 
     pub fn gpu(name: impl Into<String>) -> Device {
-        Device { kind: Kind::Gpu, name: name.into(), why_cpu: None }
+        Device { kind: Kind::Gpu, name: name.into(), why_cpu: None, index: 0 }
+    }
+
+    pub fn gpu_with_index(name: impl Into<String>, index: usize) -> Device {
+        Device { kind: Kind::Gpu, name: name.into(), why_cpu: None, index }
     }
 
     pub fn is_gpu(&self) -> bool {
@@ -80,7 +86,14 @@ pub fn select(preference: Preference, probe: &(dyn Fn() -> Result<String, String
     match preference {
         Preference::Cpu => Device::cpu(Some("the AI device preference is the CPU".into())),
         Preference::Auto => match catch_unwind(AssertUnwindSafe(probe)) {
-            Ok(Ok(name)) => Device::gpu(name),
+            Ok(Ok(name)) => {
+                if let Some((base, idx_str)) = name.rsplit_once('#')
+                    && let Ok(idx) = idx_str.trim().parse::<usize>()
+                {
+                    return Device::gpu_with_index(base.trim(), idx);
+                }
+                Device::gpu(name)
+            }
             Ok(Err(why)) => Device::cpu(Some(why)),
             Err(_) => Device::cpu(Some("looking for a GPU failed".into())),
         },
@@ -96,6 +109,15 @@ mod tests {
         let d = select(Preference::Auto, &|| Ok("Test GPU (Vulkan)".into()));
         assert!(d.is_gpu());
         assert_eq!(d.why_cpu, None);
+        assert_eq!(d.index, 0);
+    }
+
+    #[test]
+    fn auto_parses_device_index_from_probe() {
+        let d = select(Preference::Auto, &|| Ok("Apple M4 Pro (Metal)#1".into()));
+        assert!(d.is_gpu());
+        assert_eq!(d.name, "Apple M4 Pro (Metal)");
+        assert_eq!(d.index, 1);
     }
 
     #[test]

@@ -3,6 +3,8 @@
   "A profile “{name}” is already there.": "Det finns redan en profil ”{name}”.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "Cirka ${usd} · {requests} begäran/begäranden, debiteras ditt {name}-konto",
   "About ${usd}, billed to your {name} account.": "Cirka ${usd}, debiteras ditt {name}-konto.",
+  "Active: CPU · {why}": "Aktiv: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "Aktiv: {name} (GPU-accelererad)",
   "Add your {} API key in Settings → Generative Fill first.": "Lägg först till din API-nyckel för {} i Inställningar → Generativ fyllning.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "Lägg först till din API-nyckel för {} i Inställningar ▸ Generativ fyllning.",
   "Add {n} New Photos…": "Add {n} New Photos…",

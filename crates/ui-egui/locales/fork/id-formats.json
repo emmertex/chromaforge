@@ -3,6 +3,8 @@
   "A profile “{name}” is already there.": "Profil “{name}” sudah ada.",
   "About ${usd} · {requests} request(s), billed to your {name} account": "Sekitar ${usd} · {requests} permintaan, ditagihkan ke akun {name} Anda",
   "About ${usd}, billed to your {name} account.": "Sekitar ${usd}, ditagihkan ke akun {name} Anda.",
+  "Active: CPU · {why}": "Aktif: CPU · {why}",
+  "Active: {name} (GPU accelerated)": "Aktif: {name} (diakselerasi GPU)",
   "Add your {} API key in Settings → Generative Fill first.": "Tambahkan dulu kunci API {} Anda di Pengaturan → Isian Generatif.",
   "Add your {} API key in Settings ▸ Generative Fill first.": "Tambahkan dulu kunci API {} Anda di Pengaturan ▸ Isian Generatif.",
   "Add {n} New Photos…": "Add {n} New Photos…",

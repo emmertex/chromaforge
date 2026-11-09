@@ -1,6 +1,8 @@
 {
   ", ": ", ",
   "A profile “{name}” is already there.": "Профіль «{name}» уже існує.",
+  "Active: CPU · {why}": "Активно: ЦП · {why}",
+  "Active: {name} (GPU accelerated)": "Активно: {name} (GPU-прискорення)",
   "Add {n} New Photos…": "Додати нові фото ({n})…",
   "Alternatives to {name}": "Альтернативи для {name}",
   "Apply to {n} Selected Photos": "Застосувати до {n} вибраних фото",

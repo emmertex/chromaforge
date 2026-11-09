@@ -2,6 +2,8 @@
   " · {queued} waiting": " · {queued} 張等待中",
   ", ": "、",
   "A profile “{name}” is already there.": "描述檔「{name}」已存在。",
+  "Active: CPU · {why}": "使用中：CPU · {why}",
+  "Active: {name} (GPU accelerated)": "使用中：{name}（GPU 加速）",
   "Add {n} New Photos…": "加入 {n} 張新照片…",
   "Alternatives to {name}": "{name} 的替代項目",
   "Apply to {n} Selected Photos": "套用到 {n} 張所選相片",

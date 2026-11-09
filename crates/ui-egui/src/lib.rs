@@ -938,6 +938,7 @@ pub struct LccApp {
     gpu_applied: Option<bool>,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
+    ml_device_applied: Option<String>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -1217,6 +1218,7 @@ impl LccApp {
             preview_window: None,
             gpu_applied: None,
             gpu_cards_applied: None,
+            ml_device_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -1373,6 +1375,17 @@ impl LccApp {
         }
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
+        }
+        if let Ok(v) = &r
+            && id == "ml.status"
+            && (params.get("device").is_some() || params.get("preference").is_some())
+            && let Some(dev_choice) = v.get("deviceChoice").and_then(Value::as_str)
+        {
+            let choice = if dev_choice.eq_ignore_ascii_case("auto") { "" } else { dev_choice.trim() };
+            if self.ui.settings.ml_device != choice {
+                self.ui.settings.ml_device = choice.to_string();
+            }
+            self.ml_device_applied = Some(choice.to_string());
         }
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
@@ -2442,6 +2455,34 @@ impl LccApp {
                 lcc_engine::gpu::set_helper(&cards.1);
             }
             self.gpu_cards_applied = Some(cards);
+        }
+        let ml_device = self.ui.settings.ml_device.clone();
+        if self.ml_device_applied.is_none() && ml_device.is_empty() {
+            if let Ok(st) = self.session.execute("ml.status", &serde_json::json!({})) {
+                let adopted = st
+                    .get("deviceChoice")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("")
+                    .to_string();
+                if !adopted.is_empty() {
+                    self.ui.settings.ml_device = adopted.clone();
+                }
+                self.ml_device_applied = Some(adopted);
+            }
+        } else if self.ml_device_applied.as_ref() != Some(&ml_device)
+            && self
+                .session
+                .execute(
+                    "ml.status",
+                    &serde_json::json!({
+                        "device": ml_device,
+                    }),
+                )
+                .is_ok()
+        {
+            self.ml_device_applied = Some(ml_device);
         }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);

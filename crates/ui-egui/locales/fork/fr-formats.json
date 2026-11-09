@@ -1,6 +1,8 @@
 {
   ", ": ", ",
   "A profile “{name}” is already there.": "Un profil « {name} » existe déjà.",
+  "Active: CPU · {why}": "Actif : Processeur · {why}",
+  "Active: {name} (GPU accelerated)": "Actif : {name} (accéléré par GPU)",
   "Add {n} New Photos…": "Ajouter {n} nouvelles photos…",
   "Alternatives to {name}": "Alternatives à {name}",
   "Apply to {n} Selected Photos": "Appliquer à {n} photos sélectionnées",
