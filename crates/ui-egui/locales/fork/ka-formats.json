@@ -87,6 +87,7 @@
   "Rendered {ok} of {total} to DNG": "DNG-ში დარენდერდა {ok} / {total}",
   "Restore Built-in Looks ({n})": "ჩაშენებული იერსახეების აღდგენა ({n})",
   "Second graphics card not used: {why}": "მეორე გრაფიკული ბარათი არ გამოიყენება: {why}",
+  "Selected cell {n}": "მონიშნული უჯრა {n}",
   "Sends this area to {name}, in {} pieces.": "ეს არე გაეგზავნება {name}-ს {} ნაწილად.",
   "Sends this {} × {} px area to {name}.": "ეს {} × {} px არე გაეგზავნება {name}-ს.",
   "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "გაიგზავნა ერთ ნაწილად ფოტოს გარჩევადობის {}%-ზე: დანარჩენზე რბილია.",

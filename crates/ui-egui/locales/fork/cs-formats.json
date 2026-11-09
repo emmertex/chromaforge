@@ -84,6 +84,7 @@
   "Rendered {ok} of {total} to DNG": "Do DNG vykresleno {ok} z {total}",
   "Restore Built-in Looks ({n})": "Obnovit vestavěné vzhledy ({n})",
   "Second graphics card not used: {why}": "Druhá grafická karta se nepoužívá: {why}",
+  "Selected cell {n}": "Vybraná buňka {n}",
   "Sent {n} page(s) to the printer (job {j})": "Na tiskárnu odesláno stran: {n} (úloha {j})",
   "Slideshow {n}": "Prezentace {n}",
   "Stop waiting: {task}?": "Přestat čekat: {task}?",

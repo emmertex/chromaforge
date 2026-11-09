@@ -84,6 +84,7 @@
   "Rendered {ok} of {total} to DNG": "{ok} di {total} renderizzate in DNG",
   "Restore Built-in Looks ({n})": "Ripristina look integrati ({n})",
   "Second graphics card not used: {why}": "Seconda scheda grafica non usata: {why}",
+  "Selected cell {n}": "Cella selezionata {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} pagine inviate alla stampante (lavoro {j})",
   "Slideshow {n}": "Presentazione {n}",
   "Stop waiting: {task}?": "Smettere di attendere: {task}?",

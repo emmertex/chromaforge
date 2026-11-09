@@ -78,6 +78,7 @@
   "Running on the processor: {}.": "Läuft auf dem Prozessor: {}.",
   "Running on {}.": "Läuft auf {}.",
   "Second graphics card not used: {why}": "Zweite Grafikkarte nicht genutzt: {why}",
+  "Selected cell {n}": "Ausgewählte Zelle {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} Seite(n) an den Drucker gesendet (Auftrag {j})",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "Zeigt die Bedingungen des Modells, lädt dann {} von {host} herunter, installiert es und verwendet es. Sonst wird nichts gesendet.",
   "Slideshow {n}": "Diashow {n}",

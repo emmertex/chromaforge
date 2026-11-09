@@ -72,6 +72,7 @@
   "Remove {what} from the library for good?": "Retirer définitivement {what} de la bibliothèque ?",
   "Restore Built-in Looks ({n})": "Restaurer les looks intégrés ({n})",
   "Second graphics card not used: {why}": "Deuxième carte graphique non utilisée : {why}",
+  "Selected cell {n}": "Cellule sélectionnée {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} page(s) envoyée(s) à l'imprimante (tâche {j})",
   "Slideshow {n}": "Diaporama {n}",
   "Stop waiting: {task}?": "Arrêter d’attendre : {task} ?",

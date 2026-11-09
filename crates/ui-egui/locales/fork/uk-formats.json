@@ -72,6 +72,7 @@
   "Remove {what} from the library for good?": "Остаточно вилучити {what} з бібліотеки?",
   "Restore Built-in Looks ({n})": "Відновити вбудовані стилі ({n})",
   "Second graphics card not used: {why}": "Друга відеокарта не використовується: {why}",
+  "Selected cell {n}": "Вибрана комірка {n}",
   "Sent {n} page(s) to the printer (job {j})": "Надіслано сторінок на принтер: {n} (завдання {j})",
   "Slideshow {n}": "Слайд-шоу {n}",
   "Stop waiting: {task}?": "Припинити очікування: {task}?",

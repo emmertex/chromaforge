@@ -78,6 +78,7 @@
   "Running on the processor: {}.": "Работает на процессоре: {}.",
   "Running on {}.": "Работает на {}.",
   "Second graphics card not used: {why}": "Вторая видеокарта не используется: {why}",
+  "Selected cell {n}": "Выбранная ячейка {n}",
   "Sent {n} page(s) to the printer (job {j})": "Отправлено страниц на принтер: {n} (задание {j})",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "Показывает условия модели, затем загружает {} с {host}, устанавливает её и начинает использовать. Больше ничего не отправляется.",
   "Slideshow {n}": "Слайд-шоу {n}",

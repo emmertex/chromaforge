@@ -88,6 +88,7 @@
   "Rendered {ok} of {total} to DNG": "Rendered {ok} of {total} to DNG",
   "Restore Built-in Looks ({n})": "Palauta sisäiset tyylit ({n})",
   "Second graphics card not used: {why}": "Toista näytönohjainta ei käytetä: {why}",
+  "Selected cell {n}": "Valittu solu {n}",
   "Sends this area to {name}, in {} pieces.": "Lähettää tämän alueen palveluun {name} {} osana.",
   "Sends this {} × {} px area to {name}.": "Lähettää tämän {} × {} px:n alueen palveluun {name}.",
   "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Lähetetty yhtenä osana {} %:n tarkkuudella kuvasta: pehmeämpi kuin muu kuva.",
