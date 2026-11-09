@@ -3414,6 +3414,8 @@ fn lightroom_spots_and_masks_on_a_turned_raw_land_where_lightroom_shows_them() {
         assert_eq!(ids(&r, "imported"), 1, "{r}");
         let p = s.catalog.photos().next().unwrap();
         let spot = p.develop.spots.first().expect("the spot came in");
+        // Content-Aware Remove comes in as our content-aware fill, not a heal from an automatic source
+        assert_eq!(spot.mode, lcc_develop::SpotMode::Fill);
         let at = spot.points.first().expect("its path");
         assert!(near(at.x, spot_at.0) && near(at.y, spot_at.1), "orientation {exif}: spot at {at:?}, want {spot_at:?}");
         let comp = p.develop.masks.first().and_then(|m| m.components.first()).expect("the radial mask came in");

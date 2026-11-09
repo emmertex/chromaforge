@@ -528,6 +528,9 @@ pub const SPOT_CONTAINERS: [&str; 2] = ["crs:RetouchAreas", "crs:RetouchInfo"];
 fn spot(item: &XmpValue, aspect: f64) -> Result<Value, String> {
     let mode = match text(item, "crs:SpotType") {
         Some("clone") => "clone",
+        // Lightroom's Content-Aware Remove (its fill is stored in Lightroom's own cache, not in the packet): ours
+        // rebuilds the area from its surroundings too
+        Some("heal_patchmatch") => "fill",
         _ => "heal",
     };
     let comps = item.field("crs:Masks").map(XmpValue::items).unwrap_or_default();
