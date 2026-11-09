@@ -348,3 +348,71 @@ fn v14_analysis_json_gains_optional_score_fields() {
     assert!(a.eyes_open.is_none() && a.aesthetic.is_none() && a.cull_score.is_none());
     assert_eq!(a.sharpness, 50.0);
 }
+
+/// Upstream #3962: `catalog.snap` at stamp `version` holding `base`, with `extra` spliced in as
+/// more top-level members (empty: an ordinary snapshot).
+fn snap_at(version: u32, base: &Catalog, extra: &str) -> Vec<u8> {
+    format!("{{\"format\":\"lcc-catalog\",\"version\":{version},{extra}\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes()
+}
+
+/// A snapshot at a readable stamp with a top-level key this format never writes, or with a
+/// `segments` folder beside it (or no snapshot at all), is refused untouched instead of loading
+/// part of the library and saving over the rest.
+#[test]
+fn unknown_layout_is_refused_untouched() {
+    let (base, log, _) = legacy_parts();
+    for version in [VERSION, VERSION - 1] {
+        let m = MemStore::new();
+        m.set(SNAPSHOT, snap_at(version, &base, r#""segments":["0001.seg"],"#));
+        m.set(LOG, log.clone().into_bytes());
+        let before = m.files.lock().unwrap().clone();
+        let e = Journal::open(Box::new(m.clone())).err().expect("refused");
+        assert!(matches!(e, CatalogError::Newer(_)), "{e:?}");
+        assert!(e.to_string().contains("layout isn't one this version reads"), "{e}");
+        assert_eq!(*m.files.lock().unwrap(), before);
+
+        let m = MemStore::new();
+        m.set(SNAPSHOT, snap_at(version, &base, ""));
+        m.set(LOG, log.clone().into_bytes());
+        m.set("segments/0001.seg", b"photos live here".to_vec());
+        let before = m.files.lock().unwrap().clone();
+        let e = Journal::open(Box::new(m.clone())).err().expect("refused");
+        assert!(matches!(e, CatalogError::Newer(_)), "{e:?}");
+        assert_eq!(*m.files.lock().unwrap(), before);
+    }
+    let m = MemStore::new();
+    m.set("segments/0001.seg", b"photos live here".to_vec());
+    let before = m.files.lock().unwrap().clone();
+    assert!(Journal::open(Box::new(m.clone())).is_err());
+    assert_eq!(*m.files.lock().unwrap(), before);
+}
+
+/// Controls: an ordinary library still opens (a `segments` file is no folder), and a malformed
+/// snapshot is an error, not a panic.
+#[test]
+fn ordinary_layout_still_opens_and_hostile_snapshots_do_not_panic() {
+    let (base, log, full) = legacy_parts();
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(VERSION, &base, ""));
+    m.set(LOG, log.into_bytes());
+    m.set("segments", b"not a folder".to_vec());
+    let (_, c, _) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(c.to_snapshot(), full.to_snapshot());
+    for bad in [&b"[]"[..], b"null", b"{\"format\":\"lcc-catalog\",\"version\":", b"\xff\xfe"] {
+        let m = MemStore::new();
+        m.set(SNAPSHOT, bad.to_vec());
+        assert!(Journal::open(Box::new(m)).is_err());
+    }
+}
+
+/// The native store reports a real directory as a folder, and a missing one as none.
+#[test]
+fn fs_store_reports_folders() {
+    let dir = std::env::temp_dir().join(format!("lcc-layout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("segments")).unwrap();
+    let mut s = FsStore::open(&dir).unwrap();
+    assert!(Store::has_folder(&mut s, "segments").unwrap());
+    assert!(!Store::has_folder(&mut s, "nothing").unwrap());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
