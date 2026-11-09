@@ -239,9 +239,31 @@ pub(crate) fn translations(language: Locale) -> std::collections::BTreeSet<&'sta
     language.catalog().values().map(String::as_str).collect()
 }
 
-/// [`tr`] for a message whose translation depends on where it appears: a catalog entry keyed
-/// `"<context>|<source>"` wins, else the plain message. A language adds the contextual entry only
-/// where its shared translation reads wrongly there (Japanese はい / いいえ as a rule's value).
+/// The messages whose translation depends on where they appear, as (context, English message): one
+/// English word with two meanings in the UI (`Tracking`: the book's letter spacing and the camera's
+/// AF area). Such a place asks for `"<context>|<English>"`, through [`tr`] or any helper that
+/// translates; a catalog entry keyed that way wins there, else the plain message is shown. A language
+/// adds the contextual entry only where its plain translation reads wrongly in that place, so every
+/// language carries the plain message and only some carry a contextual one.
+pub(crate) const CONTEXTUAL: &[(&str, &str)] = &[
+    (BOOL_CONTEXT, "Yes"),
+    (BOOL_CONTEXT, "No"),
+    ("book text", "Tracking"),
+    ("focus", "Tracking"),
+    ("book graphic", "Frame"),
+    ("time-lapse", "Frame"),
+    ("color wheels", "Log"),
+    ("plug-in tab", "Log"),
+];
+
+/// `"<context>|<English>"` split into its context and English message, when it is one of
+/// [`CONTEXTUAL`]'s (other text with a `|` in it is a plain message).
+pub(crate) fn contextual(source: &str) -> Option<(&str, &str)> {
+    source.split_once('|').filter(|pair| CONTEXTUAL.contains(pair))
+}
+
+/// [`tr`] for a message whose translation depends on where it appears ([`CONTEXTUAL`]): a catalog
+/// entry keyed `"<context>|<source>"` wins, else the plain message.
 fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
     match language.catalog().get(&format!("{context}|{source}")) {
         Some(translation) => translation.as_str(),
@@ -252,6 +274,9 @@ fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
 /// Catalog values are `'static` (they live in the embedded file), so a translation can be handed
 /// out for as long as the `'static` key it was looked up by.
 fn tr_in(language: Locale, source: &str) -> &str {
+    if let Some((context, plain)) = contextual(source) {
+        return tr_ctx_in(language, context, plain);
+    }
     if language.catalog().is_empty() {
         return filled_source(source);
     }
@@ -1026,6 +1051,48 @@ mod tests {
         assert_eq!(restored.language, Locale::ZhHans);
     }
 
+    /// A word with two meanings in the UI is asked for with a context in each place, and a contextual
+    /// entry changes only its own place: where a language has `focus|Tracking`, the Focus row shows it
+    /// while the book's letter-spacing slider keeps the plain translation, and the other way round with
+    /// `book text|Tracking`. A language without a contextual entry shows the plain translation there.
+    /// (Every place asks with its key: `every_contextual_lookup_is_asked_for_in_the_code`.)
+    #[test]
+    fn contextual_entries_change_only_their_own_place() {
+        let tracking_area = lcc_meta::FocusPoint {
+            rect: lcc_geom::Rect { x0: 0.4, y0: 0.4, x1: 0.6, y1: 0.6 },
+            mode: None,
+            area: Some("Tracking".into()),
+            tracking: None,
+        };
+        let (mut focus_only, mut book_only) = (0, 0);
+        for language in Locale::ALL {
+            let catalog = language.catalog();
+            let plain = language.tr("Tracking");
+            let (focus, book) = (catalog.get("focus|Tracking"), catalog.get("book text|Tracking"));
+            set_language(*language);
+            let shown = crate::panels::metadata::focus_text(Some(&tracking_area));
+            set_language(Locale::En);
+            assert_eq!(shown.as_deref(), Some(focus.map_or(plain, String::as_str)), "{}: the Focus row", language.code());
+            assert_eq!(tr_in(*language, "book text|Tracking"), book.map_or(plain, String::as_str), "{}: the book's slider", language.code());
+            focus_only += usize::from(focus.is_some_and(|f| f != plain) && book.is_none());
+            book_only += usize::from(book.is_some_and(|b| b != plain) && focus.is_none());
+        }
+        assert!(focus_only > 0 && book_only > 0, "some language words each place apart from the plain translation ({focus_only}, {book_only})");
+        assert_eq!(tr_in(Locale::En, "book text|Tracking"), "Tracking", "English shows the word as is");
+        // every pair: its own entry where the language has one, else the plain message; and each word's
+        // places read differently in some language, or the contexts change nothing
+        for (context, source) in CONTEXTUAL {
+            let key = format!("{context}|{source}");
+            for language in Locale::ALL {
+                let expected = language.catalog().get(&key).map_or(language.tr(source), String::as_str);
+                assert_eq!(tr_in(*language, &key), expected, "{}: {key:?}", language.code());
+            }
+            for other in CONTEXTUAL.iter().filter(|(c, s)| s == source && c != context).map(|(c, s)| format!("{c}|{s}")) {
+                assert!(Locale::ALL.iter().any(|l| tr_in(*l, &key) != tr_in(*l, &other)), "{key:?} and {other:?} read alike in every language");
+            }
+        }
+    }
+
     /// Smart-album choice values read as words in every language (English "Public Domain"), never as
     /// rule ids like `publicDomain`; an id the field doesn't know shows as written. A yes/no value
     /// reads Yes / No, or the language's contextual entry for it where it has one.
@@ -1686,8 +1753,8 @@ mod tests {
         assert!(missing.is_empty(), "{} translation(s) missing, shown in English:\n{}", missing.len(), missing.join("\n"));
     }
 
-    /// Every plain message: the keys of every catalog (but contextual entries, which a language adds
-    /// only where it needs one) and the labels the UI translates from tables.
+    /// Every plain message: the keys of every catalog (but contextual entries, [`CONTEXTUAL`], which a
+    /// language adds only where it needs one) and the labels the UI translates from tables.
     fn plain_messages() -> std::collections::BTreeSet<String> {
         use lcc_catalog::rules;
         let mut labels: Vec<&str> = lcc_engine::command_specs().iter().map(|spec| spec.label).collect();
@@ -1723,15 +1790,17 @@ mod tests {
             "Imported Photos",
         ]);
         labels.extend(crate::panels::keyword_list::VARIABLE_LABELS);
-        let contextual = format!("{BOOL_CONTEXT}|");
         // and every literal the source hands to `tr` or a helper that translates (`tr_format!`
-        // messages are the formats' list)
+        // messages are the formats' list); a place that asks with a context needs the plain message
         let formats = format_messages();
-        let scanned = crate::i18n_scan::translated_texts().into_keys().filter(|text| !formats.contains(text));
+        let scanned = crate::i18n_scan::translated_texts()
+            .into_keys()
+            .filter(|text| !formats.contains(text))
+            .map(|text| contextual(&text).map_or(text.clone(), |(_, plain)| plain.to_string()));
         Locale::ALL
             .iter()
             .flat_map(|language| language.catalog().keys())
-            .filter(|key| !key.starts_with(&contextual))
+            .filter(|key| contextual(key).is_none())
             .cloned()
             .chain(labels.into_iter().map(str::to_string))
             .chain(scanned)
