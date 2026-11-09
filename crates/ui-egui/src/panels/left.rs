@@ -1036,7 +1036,7 @@ fn local_rows(app: &mut LccApp, ui: &mut egui::Ui, now: &LocalNow) {
     {
         let picked = app.services.pick_folder.as_mut().and_then(|f| f());
         if let Some(path) = picked {
-            match app.run("library.browse", json!({"path": path})) {
+            match app.run("library.browse", json!({"path": path, "show": "all"})) {
                 // the picked folder stays in Local (and comes back if it was hidden)
                 Ok(r) => {
                     let dir = r["path"].as_str().unwrap_or(&path).to_string();
@@ -1307,7 +1307,9 @@ pub(crate) fn folder_tree(
     let tr = tree_toggle(app, ui, &resp, indent, &key, open_id, &mut open, format!("folderToggle:{path}"));
     if !tr.clicked()
         && resp.clicked()
-        && let Err(e) = app.run("library.browse", json!({"path": path}))
+        // every photo of the folder, library ones too: the Import tab's Show Not Imported is
+        // that tab's alone, and kept it would hide a library folder's photos here (#881)
+        && let Err(e) = app.run("library.browse", json!({"path": path, "show": "all"}))
     {
         app.toast(ui.ctx(), e);
     }
