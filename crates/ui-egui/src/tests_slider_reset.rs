@@ -119,3 +119,21 @@ fn a_typed_value_still_applies_after_a_reset() {
     assert_eq!(value(&h, "light.exposure"), 0.5);
     assert_eq!(h.app.session.undo.len() - undo, 1, "one undo step");
 }
+
+/// After a click on a slider, Left / Right still move to the next and previous photo (#880), while
+/// Up / Down keep nudging the selected slider.
+#[test]
+fn arrows_still_change_the_photo_after_a_slider_edit() {
+    let mut h = edit_panel();
+    let first = h.app.session.selection.active.unwrap();
+    ask(&mut h, "ui.clickWidget", json!({"id": "slider:light.exposure", "fx": 0.75}));
+    assert!(crate::widgets::slider_has_focus(&h.view.ctx), "the click selects the slider");
+    let before = value(&h, "light.exposure");
+    ask(&mut h, "ui.key", json!({"key": "ArrowUp"}));
+    assert!(value(&h, "light.exposure") > before, "Up still nudges the selected slider");
+    ask(&mut h, "ui.key", json!({"key": "ArrowRight"}));
+    let next = h.app.session.selection.active.unwrap();
+    assert_ne!(next, first, "Right shows the next photo after a develop edit");
+    ask(&mut h, "ui.key", json!({"key": "ArrowLeft"}));
+    assert_eq!(h.app.session.selection.active.unwrap(), first, "Left goes back");
+}
