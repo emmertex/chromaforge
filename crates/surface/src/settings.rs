@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 7981;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Tuning {
-    /// Multiplies the step per tick (0.1–5).
+    /// Multiplies the step per tick (0.01–5).
     pub speed: f64,
     /// Multiplies the acceleration ceiling (0.1–4).
     pub acceleration: f64,
@@ -59,7 +59,7 @@ impl Tuning {
         let fast = self.fast_ms.clamp(5, 250);
         let min = clamp(self.acceleration_min, 0.1, 10.0, d.acceleration_min);
         Tuning {
-            speed: clamp(self.speed, 0.1, 5.0, d.speed),
+            speed: clamp(self.speed, 0.01, 5.0, d.speed),
             acceleration: clamp(self.acceleration, 0.1, 4.0, d.acceleration),
             acceleration_min: min,
             acceleration_max: clamp(self.acceleration_max, min, 15.0, d.acceleration_max.max(min)),
@@ -95,7 +95,7 @@ pub fn tuning_presets() -> Vec<(&'static str, &'static str, Tuning)> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MotionSettings {
-    /// Multiplies every step (0.1–5).
+    /// Multiplies every step (0.01–5).
     pub speed: f64,
     /// Multiplies every acceleration ceiling (0.1–4).
     pub acceleration: f64,
@@ -108,8 +108,12 @@ pub struct MotionSettings {
 }
 
 impl Default for MotionSettings {
+    /// The shipped dial feel: speed 0.3, the TactileBridge author's working setting (with the
+    /// shipped profiles, `defaults`), slower and finer than a 1:1 step, and acceleration 0.2, so a
+    /// fast spin moves at most 2× (the 10× ceiling made a quick eighth of a turn cross a whole
+    /// slider on a high-resolution dial).
     fn default() -> Self {
-        MotionSettings { speed: 1.0, acceleration: 1.0, invert: false, fine: 0.25, coarse: 4.0 }
+        MotionSettings { speed: 0.3, acceleration: 0.2, invert: false, fine: 0.25, coarse: 4.0 }
     }
 }
 
@@ -281,6 +285,12 @@ pub struct SurfaceSettings {
     pub merged_mask_pages: Vec<crate::defaults::MaskPagesMerged>,
 }
 
+/// The shipped per-value tuning (with [`MotionSettings::default`]'s speed): white balance
+/// temperature turns slowly, with little acceleration, so a dial sets Kelvin precisely.
+pub fn default_tuning() -> BTreeMap<String, Tuning> {
+    BTreeMap::from([("wb.temp".to_string(), Tuning { speed: 0.1, acceleration_max: 2.0, ..Tuning::default() })])
+}
+
 impl Default for SurfaceSettings {
     fn default() -> Self {
         SurfaceSettings {
@@ -293,7 +303,7 @@ impl Default for SurfaceSettings {
             follow_context: true,
             apply_to_selected: false,
             motion: MotionSettings::default(),
-            tuning: BTreeMap::new(),
+            tuning: default_tuning(),
             transport: TransportSettings::default(),
             osd: OsdSettings::default(),
             look: DeviceLook::default(),
@@ -367,7 +377,7 @@ impl SurfaceSettings {
         if self.port < 1024 {
             self.port = DEFAULT_PORT;
         }
-        self.motion.speed = clamp(self.motion.speed, 0.1, 5.0, d.speed);
+        self.motion.speed = clamp(self.motion.speed, 0.01, 5.0, d.speed);
         self.motion.acceleration = clamp(self.motion.acceleration, 0.1, 4.0, d.acceleration);
         self.motion.fine = clamp(self.motion.fine, 0.01, 1.0, d.fine);
         self.motion.coarse = clamp(self.motion.coarse, 1.0, 20.0, d.coarse);

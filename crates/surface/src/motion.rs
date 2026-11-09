@@ -74,7 +74,7 @@ pub fn delta(ticks: i32, step: f64, acceleration: f64, modifier: f64, tuning: &T
     let invert = motion.invert ^ t.invert;
     let ticks = f64::from(if invert { -ticks } else { ticks });
     let global = if motion.speed.is_finite() { motion.speed } else { 1.0 };
-    let speed = (global * t.speed).clamp(0.1, 5.0);
+    let speed = (global * t.speed).clamp(0.01, 5.0);
     let d = ticks * step * speed * acceleration * modifier;
     if !d.is_finite() {
         return 0.0;
@@ -87,9 +87,14 @@ pub fn delta(ticks: i32, step: f64, acceleration: f64, modifier: f64, tuning: &T
 mod tests {
     use super::*;
 
+    /// A 1:1 dial feel: the tests check the arithmetic, not the shipped speed.
+    fn unit() -> MotionSettings {
+        MotionSettings { speed: 1.0, acceleration: 1.0, ..MotionSettings::default() }
+    }
+
     #[test]
     fn first_and_slow_ticks_get_the_floor_fast_ticks_the_ceiling() {
-        let (t, m) = (Tuning::default(), MotionSettings::default());
+        let (t, m) = (Tuning::default(), unit());
         let mut a = Accelerator::default();
         assert_eq!(a.acceleration("x", 0.0, &t, &m), 1.0, "first tick");
         assert_eq!(a.acceleration("x", 1000.0, &t, &m), 1.0, "slow");
@@ -106,7 +111,7 @@ mod tests {
     #[test]
     fn ceiling_scales_with_both_multipliers_and_is_capped() {
         let t = Tuning { acceleration: 4.0, acceleration_max: 15.0, ..Tuning::default() };
-        let m = MotionSettings { acceleration: 4.0, ..MotionSettings::default() };
+        let m = MotionSettings { acceleration: 4.0, ..unit() };
         let mut a = Accelerator::default();
         a.acceleration("x", 0.0, &t, &m);
         assert_eq!(a.acceleration("x", 1.0, &t, &m), MAX_ACCELERATION);
@@ -117,7 +122,7 @@ mod tests {
 
     #[test]
     fn time_going_backwards_or_nan_is_harmless() {
-        let (t, m) = (Tuning::default(), MotionSettings::default());
+        let (t, m) = (Tuning::default(), unit());
         let mut a = Accelerator::default();
         a.acceleration("x", 100.0, &t, &m);
         assert_eq!(a.acceleration("x", 50.0, &t, &m), 10.0, "negative gap counts as fast");
@@ -127,7 +132,7 @@ mod tests {
 
     #[test]
     fn deltas_speed_invert_modifiers_and_limits() {
-        let (t, m) = (Tuning::default(), MotionSettings::default());
+        let (t, m) = (Tuning::default(), unit());
         assert!((delta(3, 0.01, 1.0, 1.0, &t, &m, 10.0) - 0.03).abs() < 1e-12);
         let slow = Tuning { speed: 0.5, ..t.clone() };
         assert!((delta(2, 1.0, 1.0, 1.0, &slow, &m, 100.0) - 1.0).abs() < 1e-12);
@@ -144,5 +149,19 @@ mod tests {
         assert_eq!(delta(1, 1.0, 1.0, 1.0, &t, &m, f64::NAN), 0.0);
         let fast_global = MotionSettings { speed: 100.0, ..m.clone() };
         assert_eq!(delta(1, 1.0, 1.0, 1.0, &t, &fast_global, 100.0), 5.0, "speed product capped at 5");
+    }
+
+    #[test]
+    fn slow_speeds_are_not_raised_to_a_floor() {
+        // 0.3 overall × 0.1 for this value: 0.03 of a step per tick, as set (it used to become 0.1)
+        let m = MotionSettings { speed: 0.3, ..unit() };
+        let t = Tuning { speed: 0.1, ..Tuning::default() };
+        let d = delta(1, 1.0, 1.0, 1.0, &t, &m, 100.0);
+        assert!((d - 0.03).abs() < 1e-9, "{d}");
+        // the shipped acceleration lets a fast spin move at most 2×
+        let mut a = Accelerator::default();
+        let shipped = MotionSettings::default();
+        a.acceleration("wb.tint", 0.0, &Tuning::default(), &shipped);
+        assert!((a.acceleration("wb.tint", 1.0, &Tuning::default(), &shipped) - 2.0).abs() < 1e-9);
     }
 }
