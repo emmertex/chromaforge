@@ -1,7 +1,7 @@
 {
   "AI Sharpen": "Doostření AI",
   "AI Super Resolution": "Superrozlišení AI",
-  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Superrozlišení AI a Doostření AI potřebují zvětšovač AI, v Nastavení ▸ Modely AI.",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Superrozlišení AI a Doostření AI potřebují zvětšovač AI, v Nastavení → Modely AI.",
   "Add Folder to Favorites": "Přidat složku do oblíbených",
   "Add a preset…": "Přidat předvolbu…",
   "Add another preset…": "Přidat další předvolbu…",
@@ -70,7 +70,7 @@
   "Enhance Preview": "Náhled vylepšení",
   "Enhancements": "Vylepšení",
   "Enhance…": "Vylepšit…",
-  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Zvětší nebo doostří fotografii přes Fotografie ▸ Vylepšit…: Superrozlišení AI a Doostření AI. Bez modelu je k dispozici jen klasické Superrozlišení.",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Zvětší nebo doostří fotografii přes Fotografie → Vylepšit…: Superrozlišení AI a Doostření AI. Bez modelu je k dispozici jen klasické Superrozlišení.",
   "Estimating time…": "Odhaduje se čas…",
   "Every selected photo is edited the same way.": "Všechny vybrané fotky se upraví stejně.",
   "Exact 1:1 pixel copy": "Přesná kopie pixelů 1:1",

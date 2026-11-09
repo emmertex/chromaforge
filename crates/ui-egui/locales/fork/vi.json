@@ -1,7 +1,7 @@
 {
   "AI Sharpen": "Làm nét AI",
   "AI Super Resolution": "Siêu phân giải AI",
-  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Siêu phân giải AI và Làm nét AI cần một bộ phóng to AI, trong Cài đặt ▸ Mô hình AI.",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Siêu phân giải AI và Làm nét AI cần một bộ phóng to AI, trong Cài đặt → Mô hình AI.",
   "Add Folder to Favorites": "Thêm thư mục vào Yêu thích",
   "Adding Capture One photos…": "Đang thêm ảnh Capture One…",
   "All Photographs": "Tất cả ảnh",
@@ -45,7 +45,7 @@
   "Edit Photo": "Sửa ảnh",
   "Edit a Copy": "Sửa bản sao",
   "Edit a Copy with Adjustments": "Sửa bản sao kèm điều chỉnh",
-  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Phóng to hoặc làm nét ảnh qua Ảnh ▸ Tăng cường…: Siêu phân giải AI và Làm nét AI. Không có mô hình thì chỉ có Siêu phân giải cổ điển.",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Phóng to hoặc làm nét ảnh qua Ảnh → Tăng cường…: Siêu phân giải AI và Làm nét AI. Không có mô hình thì chỉ có Siêu phân giải cổ điển.",
   "Every selected photo is edited the same way.": "Mọi ảnh đã chọn được sửa theo cùng một cách.",
   "Exports, previews and thumbnails use the graphics card for editing.": "Xuất, bản xem trước và hình thu nhỏ dùng card đồ họa chỉnh sửa.",
   "Face Count": "Số khuôn mặt",

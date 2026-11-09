@@ -1,7 +1,7 @@
 {
   "AI Sharpen": "Tekoälyterävöinti",
   "AI Super Resolution": "Tekoälyn superresoluutio",
-  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Tekoälyn superresoluutio ja Tekoälyterävöinti tarvitsevat tekoälysuurentimen: Asetukset ▸ Tekoälymallit.",
+  "AI Super Resolution and AI Sharpen need an AI upscaler, under Settings ▸ AI Models.": "Tekoälyn superresoluutio ja Tekoälyterävöinti tarvitsevat tekoälysuurentimen: Asetukset → Tekoälymallit.",
   "Add Folder to Favorites": "Lisää kansio suosikkeihin",
   "Add Locations": "Lisää sijainnit",
   "Add Print Cell": "Lisää tulostussolu",
@@ -87,7 +87,7 @@
   "Edit Photo": "Muokkaa kuvaa",
   "Edit a Copy": "Muokkaa kopiota",
   "Edit a Copy with Adjustments": "Muokkaa kopiota säädöin",
-  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Suurentaa tai terävöittää kuvan kohdassa Kuva ▸ Paranna…: Tekoälyn superresoluutio ja Tekoälyterävöinti. Ilman mallia tarjolla on vain perinteinen superresoluutio.",
+  "Enlarges or sharpens a photo with Photo ▸ Enhance…: AI Super Resolution and AI Sharpen. Without a model only the classical Super Resolution is offered.": "Suurentaa tai terävöittää kuvan kohdassa Kuva → Paranna…: Tekoälyn superresoluutio ja Tekoälyterävöinti. Ilman mallia tarjolla on vain perinteinen superresoluutio.",
   "Every selected photo is edited the same way.": "Kaikki valitut kuvat muokataan samalla tavalla.",
   "Export Mask Effects": "Vie maskitehosteet",
   "Exports, previews and thumbnails use the graphics card for editing.": "Viennit, esikatselut ja pikkukuvat käyttävät muokkauksen näytönohjainta.",

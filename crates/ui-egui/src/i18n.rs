@@ -964,7 +964,9 @@ mod tests {
     #[test]
     fn translated_catalogs_do_not_use_missing_menu_triangles() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
-        for entry in std::fs::read_dir(dir).unwrap() {
+        // upstream's catalogs and the fork's rows the build merges over them (`locales/fork/`)
+        let entries = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("fork")).unwrap());
+        for entry in entries {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
