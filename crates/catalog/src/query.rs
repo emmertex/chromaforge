@@ -67,6 +67,9 @@ pub struct Filter {
     /// the folders inside it (see [`crate::folders`]). Photos only browsed in Local are never part
     /// of it, unlike [`Filter::folder`].
     pub library_folder: Option<String>,
+    /// With [`Filter::library_folder`]: only the photos imported from that very folder, not from
+    /// the folders inside it (the Folders panel's Show Photos in Subfolders turned off).
+    pub library_folder_only: bool,
     /// A keyword; hierarchical keywords match their children too (`travel` finds `travel|italy`).
     pub keyword: Option<String>,
     /// A person: photos with a named face region of this name (case-insensitive), as read from XMP.
@@ -1104,7 +1107,7 @@ impl Filter {
             return false;
         }
         if let Some(root) = prepared.root.as_deref()
-            && !photo_in_root(p, root)
+            && !(photo_in_root(p, root) && (!self.library_folder_only || photo_directly_in(p, root)))
         {
             return false;
         }
@@ -1529,6 +1532,11 @@ pub(crate) fn photo_in_root(p: &Photo, root: &str) -> bool {
         return path.strip_prefix(r).is_some_and(|rest| rest.starts_with('/'));
     }
     crate::local::folder_of(p).is_some_and(|f| key_within(&f, root))
+}
+
+/// Whether `p` lies in the folder `root` itself (a [`folder_key`]), not in a folder inside it.
+pub(crate) fn photo_directly_in(p: &Photo, root: &str) -> bool {
+    crate::local::folder_of(p).is_some_and(|f| f.trim_end_matches('/') == root.trim_end_matches('/'))
 }
 
 /// [`folder_within`] for two paths already turned into their [`folder_key`].
