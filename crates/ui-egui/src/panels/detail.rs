@@ -1375,7 +1375,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             && let Some(job) =
                 app.session.region_job(id, native[0], native[1], lcc_engine::pipeline::PixelWindow { x: 0, y: 0, w: 1, h: 1 }, !crop_tool)
         {
-            app.renderer.prefetch(Slot::Prefetch(2), job, PREFETCH_PRIORITY - 1);
+            app.renderer.prefetch(Slot::Prefetch(crate::render::FULL_SOURCE_PREFETCH), job, PREFETCH_PRIORITY - 1);
         } else if now - since < WARM_FULL_AFTER_S {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((WARM_FULL_AFTER_S - (now - since)).max(0.05)));
         }
