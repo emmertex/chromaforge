@@ -81,9 +81,15 @@ pub fn rank_top(query: &[f32], gallery: &[(&str, &[f32])], top: usize) -> Vec<Ra
     let mut out: Vec<Ranked> = people
         .into_iter()
         .map(|(_, name, mut sims)| {
-            sims.sort_by(|a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
-            let top = sims.get(..sims.len().min(top)).unwrap_or(&[]);
-            Ranked { name, score: top.iter().sum::<f32>() / top.len().max(1) as f32, faces: top.len() }
+            // only the best `top` count, so they are picked out rather than every similarity sorted: a person may
+            // have thousands of faces (similarities are finite, `cosine` sees to it). Those few are then summed best
+            // first, as `person_score` sums them, so both give the very same score
+            if sims.len() > top {
+                sims.select_nth_unstable_by(top - 1, |a, b| b.total_cmp(a));
+                sims.truncate(top);
+            }
+            sims.sort_unstable_by(|a, b| b.total_cmp(a));
+            Ranked { name, score: sims.iter().sum::<f32>() / sims.len().max(1) as f32, faces: sims.len() }
         })
         .collect();
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal).then_with(|| a.name.cmp(&b.name)));
@@ -208,6 +214,22 @@ mod tests {
         let g2: Vec<(&str, &[f32])> = vec![("Cy", &c_good), ("Cy", &c_bad), ("Di", &a1), ("Di", &a2)];
         let r2 = rank(&unit(&[1.0, 0.0, 0.0]), &g2);
         assert_eq!(r2[0].name, "Di", "{r2:?}");
+    }
+
+    #[test]
+    fn only_the_best_faces_count_and_a_person_with_fewer_is_scored_on_all_of_theirs() {
+        let q = unit(&[1.0, 0.0, 0.0]);
+        let faces: Vec<Vec<f32>> = (0..12).map(|i| unit(&[1.0, i as f32 * 0.3, 0.0])).collect();
+        let gallery: Vec<(&str, &[f32])> = faces.iter().map(|f| ("Ann", f.as_slice())).collect();
+        let mut sims: Vec<f32> = faces.iter().filter_map(|f| cosine(&q, f)).collect();
+        sims.sort_unstable_by(|a, b| b.total_cmp(a));
+        for top in 1..=MAX_TOP_FACES {
+            let want = sims.iter().take(top).sum::<f32>() / top as f32;
+            let got = rank_top(&q, &gallery, top);
+            assert_eq!((got[0].faces, got[0].score), (top, want), "{top}");
+        }
+        let few = rank_top(&q, &gallery[..3], MAX_TOP_FACES);
+        assert_eq!(few[0].faces, 3);
     }
 
     #[test]
