@@ -1130,6 +1130,7 @@ pub fn offer_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &w
     }
     let info = adapter.get_info();
     cards::set_screen(cards::ScreenCard::of(&info));
+    backend::note_window_backend(info.backend);
     let vram = lcc_gpumem::adapter_memory(adapter);
     *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
 }
