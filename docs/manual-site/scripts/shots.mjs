@@ -29,16 +29,22 @@ try {
   for (const [layout, cfg] of Object.entries(spec.layouts)) {
     const out = join(site, 'src/assets/shots', layout);
     mkdirSync(out, { recursive: true });
+    const vars = cfg.vars ?? {};
+    const sub = (v) => typeof v === 'string' ? (vars[v] ?? v) : Array.isArray(v) ? v.map(sub)
+      : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x)])) : v;
     const lines = [...cfg.steps];
-    for (const s of shots) {
-      lines.push(...s.steps, settle, { method: 'ui.screenshot', params: { path: join(work, `${layout}-${s.name}.png`) } });
+    for (const s of shots.filter((x) => !x.layouts || x.layouts.includes(layout))) {
+      // A step with `only: [layout, …]` runs in those layouts alone.
+      const steps = s.steps.filter((st) => !st.only || st.only.includes(layout)).map(({ only, ...st }) => sub(st));
+      lines.push(...steps, settle, { method: 'ui.screenshot', params: { path: join(work, `${layout}-${s.name}.png`) } });
     }
     const script = join(work, `${layout}.jsonl`);
     writeFileSync(script, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-    // An empty face-model folder keeps the face scan (and its activity row) out of the shots.
-    const env = { ...process.env, ...Object.fromEntries(envFaceModels(work)) };
+    // A throw-away settings folder and no shared prefs: the run never reads or writes the real settings,
+    // and an empty face-model folder keeps the face scan (and its activity row) out of the shots.
+    const env = { ...process.env, ...isolatedEnv(work) };
     execFileSync(cli, ['snapshot', '--demo', '--script', script, '--size', cfg.size], { cwd: repo, env, stdio: 'inherit' });
-    for (const s of shots) {
+    for (const s of shots.filter((x) => !x.layouts || x.layouts.includes(layout))) {
       execFileSync('magick', [join(work, `${layout}-${s.name}.png`), '-resize', '1280x>', '-strip', '-sampling-factor', '4:2:0', '-quality', '82', join(out, `${s.name}.jpg`)]);
     }
   }
@@ -46,12 +52,20 @@ try {
   rmSync(work, { recursive: true, force: true });
 }
 
-// `<PREFIX>_FACE_MODELS`: the prefix comes from brand.toml's env_prefix.
-function envFaceModels(dir) {
+// `<PREFIX>_…` variables: the prefix comes from brand.toml's env_prefix.
+function isolatedEnv(dir) {
   const toml = readFileSync(join(repo, 'brand.toml'), 'utf8');
   const prefix = /env_prefix\s*=\s*"([^"]+)"/.exec(toml)?.[1];
   if (!prefix) throw new Error('env_prefix not found in brand.toml');
   const empty = join(dir, 'no-face-models');
+  const home = join(dir, 'home');
   mkdirSync(empty, { recursive: true });
-  return [[`${prefix}_FACE_MODELS`, empty]];
+  mkdirSync(home, { recursive: true });
+  return {
+    [`${prefix}_FACE_MODELS`]: empty,
+    [`${prefix}_NO_PREFS`]: '1',
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, '.config'),
+    APPDATA: join(home, 'AppData'),
+  };
 }

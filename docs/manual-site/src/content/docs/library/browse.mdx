@@ -4,11 +4,17 @@ description: Grid, loupe, compare and survey.
 ---
 
 import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 <Shot name="library" alt="Library grid with thumbnails" />
 
 - **Grid**: scale thumbnails with the slider; badges show flags, stars and edits.
-- **Loupe**: one photo, full size; zoom with scroll or `Z`.
+- **Loupe**: one photo, full size.
 - **Compare** two photos; **Survey** many at once.
 - Rate `1`–`5`, flag `P`, reject `X`.
 - Filter by rating, flag, label, keyword, camera or date.
+- **Stacks**, **Photo Merge** (HDR, panorama, focus stack) and **Edit In** an external editor.
+
+<Aside type="note" title="Modern layout">
+  Stacks, Photo Merge, Edit In: **Photo** menu. Sort and grid style: **View** menu. See [Three layouts](../../start/layouts/).
+</Aside>

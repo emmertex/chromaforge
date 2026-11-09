@@ -1,11 +1,12 @@
 ---
 // One screenshot in all three layouts, as tabs. The chosen layout is remembered
 // and shared by every Shot on the site (syncKey), so a reader picks once.
+// `menu`: where to find the feature in a layout that has no picture of it (menu-only there).
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 import { Image } from 'astro:assets';
 
-interface Props { name: string; alt: string }
-const { name, alt } = Astro.props;
+interface Props { name: string; alt: string; menu?: string }
+const { name, alt, menu } = Astro.props;
 
 const files = import.meta.glob<{ default: ImageMetadata }>('../assets/shots/*/*.{jpg,png}', { eager: true });
 const layouts = [
@@ -23,7 +24,9 @@ const pick = (layout: string) => {
     const img = pick(l.id);
     return (
       <TabItem label={l.label}>
-        {img ? <Image src={img} alt={`${alt} (${l.label} layout)`} widths={[800, 1280]} sizes="(min-width: 50rem) 800px, 100vw" /> : <p><em>Screenshot not generated yet.</em></p>}
+        {img
+          ? <Image src={img} alt={`${alt} (${l.label} layout)`} widths={[800, 1280]} sizes="(min-width: 50rem) 800px, 100vw" />
+          : <p><strong>Menu only in {l.label}:</strong> {menu ?? 'see the menu bar'}.</p>}
       </TabItem>
     );
   })}

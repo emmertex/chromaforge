@@ -16,7 +16,8 @@ permissions:
 
 concurrency:
   group: manual-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a Pages deploy half way; superseded pull-request builds may be cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
