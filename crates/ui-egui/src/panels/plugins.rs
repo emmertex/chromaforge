@@ -1351,7 +1351,7 @@ impl Row {
                 }
             }
             Row::Flag("catalog") => tr("Read the catalog").to_string(),
-            Row::Flag("libraryAdd") => tr("Add files made from photos to the library").to_string(),
+            Row::Flag("libraryAdd") => tr("Add files made from photos to the catalog").to_string(),
             Row::Flag("pixels") => tr("Look at downsized copies of photos").to_string(),
             Row::Flag("crop") => tr("Change the crop of photos").to_string(),
             Row::Flag("virtualCopy") => tr("Make virtual copies of photos").to_string(),

@@ -933,13 +933,13 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                 })
                 .collect();
             if v.is_empty() {
-                v.push(item("app.clearRecentLibraries", Value::Null, "No Recent Libraries", None, false, None));
+                v.push(item("app.clearRecentLibraries", Value::Null, "No Recent Catalogs", None, false, None));
             } else {
                 v.push(MenuNode::Separator);
                 // one entry at a time, missing ones too: only the list forgets it (issue #1290)
                 let forget = recent.iter().map(|r| item("app.recentLibraries", json!({"remove": r}), label(r), None, true, None)).collect();
                 v.push(MenuNode::Submenu { label: "Remove from List".into(), children: forget });
-                v.push(item("app.clearRecentLibraries", Value::Null, "Clear Recent Libraries", None, true, None));
+                v.push(item("app.clearRecentLibraries", Value::Null, "Clear Recent Catalogs", None, true, None));
             }
             v
         }

@@ -89,7 +89,7 @@ impl Hub {
             let activity = self.activity.clone();
             px::exchange(ch, initiator, &local, &mut |n| {
                 if n > 0 && task.is_none() {
-                    task = Some(activity.start("sync", "Syncing library", Cancel::No));
+                    task = Some(activity.start("sync", "Syncing catalog", Cancel::No));
                 }
             })
         };
@@ -330,7 +330,7 @@ fn library_status(s: &Session) -> Value {
 
 /// Shares (or stops sharing) the open library with a paired device.
 pub(crate) fn share(s: &mut Session, device: &str, on: bool) -> Result<Value> {
-    let dir = library_dir(s).ok_or_else(|| EngineError::Other("only a library on disk can be shared".into()))?;
+    let dir = library_dir(s).ok_or_else(|| EngineError::Other("only a catalog on disk can be shared".into()))?;
     if on && !s.peers.stored().is_some_and(|st| st.peer(device).is_some()) {
         return Err(EngineError::Other(format!("not paired with `{device}`")));
     }
@@ -352,11 +352,11 @@ pub(crate) fn share(s: &mut Session, device: &str, on: bool) -> Result<Value> {
 
 /// Takes up (or turns down) a library another device offered: this library becomes the same catalog.
 pub(crate) fn answer_offer(s: &mut Session, device: &str, accept: bool) -> Result<Value> {
-    let dir = library_dir(s).ok_or_else(|| EngineError::Other("only a library on disk can be shared".into()))?;
-    let hub = s.peers.hub.clone().ok_or_else(|| EngineError::Other("no library was offered".into()))?;
+    let dir = library_dir(s).ok_or_else(|| EngineError::Other("only a catalog on disk can be shared".into()))?;
+    let hub = s.peers.hub.clone().ok_or_else(|| EngineError::Other("no catalog was offered".into()))?;
     let offer = {
         let mut offers = lock(&hub.offers);
-        let i = offers.iter().position(|(p, _)| p.device_id == device).ok_or_else(|| EngineError::Other("that device offered no library".into()))?;
+        let i = offers.iter().position(|(p, _)| p.device_id == device).ok_or_else(|| EngineError::Other("that device offered no catalog".into()))?;
         offers.remove(i).1
     };
     let mut sync = LibrarySync::load(&dir);

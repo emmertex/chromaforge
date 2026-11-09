@@ -2173,13 +2173,13 @@ pub enum Dialog {
         library: String,
         /// The photos in the open library.
         photos: usize,
-        /// "Create a new library" is chosen (else "Merge into the open library").
+        /// "Create a new catalog" is chosen (else "Merge into the open library").
         new_library: bool,
         /// The new library's name (prefilled from the catalog's file name).
         name: String,
         /// The folder the new library goes in (prefilled with the open library's parent folder).
         location: String,
-        /// "Don't ask again (always merge into the open library)".
+        /// "Don't ask again (always merge into the open catalog)".
         dont_ask: bool,
         /// `Session::library_generation` when the window opened.
         generation: u64,
@@ -2330,7 +2330,7 @@ pub struct SyncCounts {
     pub new: usize,
     /// Files whose content a photo already has.
     pub duplicates: usize,
-    /// Of those, the ones "Don't import files already in the library" unticked brings in (not copies
+    /// Of those, the ones "Don't import files already in the catalog" unticked brings in (not copies
     /// of a photo in Recently Deleted: see `lcc_engine::sync::FolderChanges::importable_duplicates`).
     #[serde(default)]
     pub copies: usize,

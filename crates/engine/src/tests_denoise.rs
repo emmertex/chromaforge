@@ -482,7 +482,7 @@ fn only_raw_photos_on_disk_are_denoised_and_nothing_is_queued_without_a_model() 
     let id = demo.active().unwrap();
     assert_eq!(demo.denoise_photo_state(id), PhotoState::NotApplicable, "a generated photo has no sensor data");
     let e = demo.execute("denoise.queue", &json!({})).unwrap_err().to_string();
-    assert!(e.contains("open a library on disk first"), "no model is needed, a place for the pictures is: {e}");
+    assert!(e.contains("open a catalog on disk first"), "no model is needed, a place for the pictures is: {e}");
     // no models folder at all (the web build): the commands say so, nothing panics
     let mut web = Session::with_demo();
     for cmd in ["denoise.models.install", "denoise.models.select", "denoise.models.remove", "denoise.settings"] {
@@ -495,7 +495,7 @@ fn only_raw_photos_on_disk_are_denoised_and_nothing_is_queued_without_a_model() 
     bare.set_denoise_models_dir(Some(x.dir.join("denoise-models")));
     assert!(bare.denoise_products_dir().is_none());
     let e = bare.execute("denoise.queue", &json!({})).unwrap_err().to_string();
-    assert!(e.contains("open a library on disk first"), "{e}");
+    assert!(e.contains("open a catalog on disk first"), "{e}");
     assert_eq!(bare.execute("denoise.pump", &json!({})).unwrap()["queued"], 0);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&x.dir);
@@ -741,7 +741,7 @@ fn a_photo_waits_for_its_turn_unless_pictures_are_not_made_on_their_own_or_have_
         l.on_disk = false;
     }
     match x.s.denoise_photo_state(id) {
-        PhotoState::Failed { why, unsupported } => assert!(unsupported && why.contains("library folder"), "{why}"),
+        PhotoState::Failed { why, unsupported } => assert!(unsupported && why.contains("catalog folder"), "{why}"),
         other => panic!("{other:?}"),
     }
     let _ = std::fs::remove_dir_all(&x.dir);

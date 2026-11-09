@@ -24,11 +24,11 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     hint(
         ui,
         t,
-        "Raws from a body start with its camera profile when they are imported. Apply to Photos gives it to the body's photos already in the library.",
+        "Raws from a body start with its camera profile when they are imported. Apply to Photos gives it to the body's photos already in the catalog.",
     );
     let bodies: Vec<Value> = m["bodies"].as_array().cloned().unwrap_or_default();
     if bodies.is_empty() {
-        hint(ui, t, "No raw photos with a known camera body in this library yet.");
+        hint(ui, t, "No raw photos with a known camera body in this catalog yet.");
     }
     for (i, b) in bodies.iter().enumerate() {
         let Some(key) = b["body"].as_str() else { continue };

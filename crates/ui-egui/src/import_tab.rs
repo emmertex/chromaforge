@@ -241,7 +241,7 @@ pub fn start(app: &mut LccApp, p: &Value) -> Result<Value, String> {
         return Err(crate::i18n::tr(match take {
             Take::Picks => "No picks to import: flag the photos you want with P first",
             Take::Selected => "No photos selected to import",
-            Take::All => "Every photo here is in the library already",
+            Take::All => "Every photo here is in the catalog already",
         })
         .to_string());
     }

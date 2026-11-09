@@ -4107,7 +4107,7 @@ mod tests {
     }
 
     /// File → Import from Folder… on a folder that was browsed in Local offers its photos, adding
-    /// them in place (they aren't "In library" yet), and confirming brings them into the library.
+    /// them in place (they aren't "In catalog" yet), and confirming brings them into the library.
     #[test]
     fn import_from_folder_offers_the_photos_browsed_in_local() {
         let mut h = demo([1300.0, 900.0]);

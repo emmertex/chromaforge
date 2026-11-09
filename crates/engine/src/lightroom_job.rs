@@ -41,7 +41,7 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
     // The import index, unlike the archive, is required, and it is written only after the photos
     // are imported: refuse a folder it can't be written to here, rather than import and then fail
     // (a retry could duplicate virtual copies).
-    require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this library: {e}")))?;
+    require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this catalog: {e}")))?;
     let limit = MAX_ARCHIVE_BYTES >> 20;
     // the warning names the program the catalog comes from
     let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
@@ -344,7 +344,7 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
     }
     if !prepared.token.matches(s) {
         prepared.normal.rollback();
-        return Err(error("Lightroom import belongs to a different open library"));
+        return Err(error("Lightroom import belongs to a different open catalog"));
     }
     // A command-scoped Lightroom import must never rewrite source XMP sidecars.  Direct depth-0
     // callers do not set this transient flag, so they cannot affect a later command.

@@ -104,7 +104,7 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let downloads = cached_downloads(app, &ctx);
     crate::dialog_frame::group_begin(ui, Some("Semantic search"));
     ui.label(tr(
-        "Searches the library by description (for example “moody studio portraits”) using image-text embeddings computed in the background.",
+        "Searches the catalog by description (for example “moody studio portraits”) using image-text embeddings computed in the background.",
     ));
     let mut enabled = status["enabled"].as_bool() == Some(true);
     if check(ui, "mlEnable", &mut enabled, "Index photos in the background for natural-language search") {

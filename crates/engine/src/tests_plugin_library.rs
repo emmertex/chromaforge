@@ -279,7 +279,7 @@ fn library_add_refuses_and_adds_nothing() {
         (json!({"path": f.dir.join("missing.png"), "from": from}), "can't be found"),
         (json!({"path": f.dir.join("notes.png"), "from": from}), "could not be added"),
         (json!({"path": f.dir.join("beach.png"), "from": from}), "own original"),
-        (json!({"path": ok, "from": "999999"}), "not in the library"),
+        (json!({"path": ok, "from": "999999"}), "not in the catalog"),
         (json!({"path": ok, "from": "beach"}), "not an id"),
         (json!({"path": ok}), "from"),
         (json!({"from": from}), "path"),
@@ -306,7 +306,7 @@ fn library_add_refuses_and_adds_nothing() {
     f.s.execute("photo.delete", &json!({"ids": [f.photo.0]})).unwrap();
     let photos = f.s.catalog.len();
     let e = f.add(json!({"path": ok, "from": from})).unwrap_err();
-    assert!(e.contains("not in the library"), "{e}");
+    assert!(e.contains("not in the catalog"), "{e}");
     assert_eq!(f.s.catalog.len(), photos);
     let _ = std::fs::remove_dir_all(&elsewhere);
 }

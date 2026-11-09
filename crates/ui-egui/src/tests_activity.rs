@@ -907,8 +907,8 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
     h.step();
     let text = h.painted_text().join("\n");
-    assert!(text.lines().any(|l| l == "Back up the library?"), "the prompt is titled for the library:\n{text}");
-    assert!(text.contains("Disable backups in Edit ▸ Library Settings…"), "the prompt says where the schedule is set:\n{text}");
+    assert!(text.lines().any(|l| l == "Back up the catalog?"), "the prompt is titled for the catalog:\n{text}");
+    assert!(text.contains("Disable backups in Edit ▸ Catalog Settings…"), "the prompt says where the schedule is set:\n{text}");
     click(&mut h, "button:quitCancel");
     assert!(h.app.quit_prompt.is_none() && !h.quit_requested(), "Cancel keeps the app open");
     assert!(!crate::panels::notices::may_close(&mut h.app), "and the next quit asks again");
@@ -930,8 +930,8 @@ fn the_backup_prompt_is_translated_with_its_menu_path() {
     h.step();
     let text = h.painted_text().join("\n");
     crate::i18n::set_language(crate::i18n::Locale::En);
-    assert!(text.lines().any(|l| l == "Bibliothek sichern?"), "the title is translated:\n{text}");
-    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Bibliothekseinstellungen… abschalten"), "{text}");
+    assert!(text.lines().any(|l| l == "Katalog sichern?"), "the title is translated:\n{text}");
+    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Katalogeinstellungen… abschalten"), "{text}");
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -943,7 +943,7 @@ fn wait(h: &Headless) -> (lcc_engine::activity::TaskGuard, std::sync::Arc<std::s
     g.name("program", "Converter");
     g.name("plugin", "Prog");
     g.detail("The results come back when {program} closes");
-    g.warn_on_stop("What {program} makes from now on won't come back to the library, and {program} keeps running.");
+    g.warn_on_stop("What {program} makes from now on won't come back to the catalog, and {program} keeps running.");
     (g, flag)
 }
 

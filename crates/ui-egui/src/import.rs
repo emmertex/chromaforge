@@ -966,7 +966,7 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
         return crate::panels::connections::start_import(app);
     }
     if !d.in_library(app) {
-        return Err("another library was opened since the photos were scanned: nothing was imported".into());
+        return Err("another catalog was opened since the photos were scanned: nothing was imported".into());
     }
     // a browse scan that finishes starts its own import, replacing this one
     if app.import.is_some() || app.scan.as_ref().is_some_and(|t| t.browse) {
@@ -1323,10 +1323,10 @@ fn show_existing(app: &mut LccApp, ctx: &egui::Context, existing: &[u64]) -> boo
     let n = ids.len();
     let plural = if n == 1 { "" } else { "s" };
     let msg = if kind == "all" {
-        crate::i18n::tr_format!("Already in the library: {} photo{} selected in All Photos", n, plural)
+        crate::i18n::tr_format!("Already in the catalog: {} photo{} selected in All Photos", n, plural)
     } else {
         crate::i18n::tr_format!(
-            "Already in the library, in Recently Deleted: {} photo{} selected · right-click ▸ Restore, or Delete Permanently to import afresh",
+            "Already in the catalog, in Recently Deleted: {} photo{} selected · right-click ▸ Restore, or Delete Permanently to import afresh",
             n,
             plural
         )
@@ -1401,7 +1401,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} found · {sel} selected", n = n, sel = sel)).color(t.text));
         if dups > 0 {
-            ui.label(egui::RichText::new(crate::i18n::tr_format!("· {dups} already in the library", dups = dups)).color(t.text_dim));
+            ui.label(egui::RichText::new(crate::i18n::tr_format!("· {dups} already in the catalog", dups = dups)).color(t.text_dim));
         }
         if in_source > 0 {
             ui.label(egui::RichText::new(crate::i18n::tr_format!("· {in_source} identical copies", in_source = in_source)).color(t.text_dim))
@@ -1501,13 +1501,13 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
         let can_copy = app.session.library.as_ref().is_some_and(|l| l.on_disk) || app.services.pick_folder.is_some();
         let r =
             ui.add_enabled_ui(can_copy, |ui| crate::widgets::text_button(ui, "importCopy", crate::i18n::tr("Copy"), d.copy && !d.move_files)).inner;
-        if r.on_hover_text(crate::i18n::tr("Copy the files (into the library's Originals/, or a folder you choose)")).clicked() {
+        if r.on_hover_text(crate::i18n::tr("Copy the files (into the catalog's Originals/, or a folder you choose)")).clicked() {
             d.copy = true;
             d.move_files = false;
         }
         let r =
             ui.add_enabled_ui(can_copy, |ui| crate::widgets::text_button(ui, "importMove", crate::i18n::tr("Move"), d.copy && d.move_files)).inner;
-        if r.on_hover_text(crate::i18n::tr("Move the files (into the library's Originals/, or a folder you choose), removing them from the source"))
+        if r.on_hover_text(crate::i18n::tr("Move the files (into the catalog's Originals/, or a folder you choose), removing them from the source"))
             .clicked()
         {
             d.copy = true;
@@ -1517,12 +1517,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     let r = ui.label(
         egui::RichText::new(crate::i18n::tr(match (d.copy, d.move_files) {
             (true, false) => {
-                "Copy: the files are copied to the folder below and the library uses the copies; the originals are left as they are."
+                "Copy: the files are copied to the folder below and the catalog uses the copies; the originals are left as they are."
             }
             (true, true) => {
                 "Move: the files are moved to the folder below; each original (and its XMP sidecar) is removed from the source only after its copy is verified. Duplicates and files that fail stay where they are."
             }
-            _ => "Add in place: the library references the files where they are; nothing is copied or moved.",
+            _ => "Add in place: the catalog references the files where they are; nothing is copied or moved.",
         }))
         .color(if d.copy && d.move_files { t.caution } else { t.text_dim })
         .small(),
@@ -1531,7 +1531,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     if d.copy {
         field(ui, if d.move_files { "Move to" } else { "Copy to" }, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Library Originals").to_string() } else { d.destination.clone() };
+            let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Catalog Originals").to_string() } else { d.destination.clone() };
             ui.label(egui::RichText::new(shown).color(Tokens::get(ui.ctx()).text_label));
             if app.services.pick_folder.is_some()
                 && crate::widgets::text_button(ui, "importDest", crate::i18n::tr("Choose…"), false).clicked()
@@ -1781,7 +1781,7 @@ pub(crate) fn recipe_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
     }
     ui.label(
         egui::RichText::new(crate::i18n::tr(
-            "Set on every photo this import adds, after its XMP sidecar and the preset above; photos the library already has are left alone. A slider left at its default changes nothing. Nothing is saved unless you save it as a preset.",
+            "Set on every photo this import adds, after its XMP sidecar and the preset above; photos the catalog already has are left alone. A slider left at its default changes nothing. Nothing is saved unless you save it as a preset.",
         ))
         .color(t.text_dim)
         .small(),
@@ -1959,8 +1959,8 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         // checked with "Leave them", the file goes without `onDeleted`: the engine restores it
         (Some(_), _) if in_trash && on => Some(if d.on_deleted == "fresh" { "Will be replaced" } else { "Will be restored" }),
         (Some(_), _) if in_trash => Some("In Recently Deleted"),
-        (Some(r), _) if r == "path" => Some("In library"),
-        (None, None) if d.copy && d.is_browsed(i) => Some("In library"),
+        (Some(r), _) if r == "path" => Some("In catalog"),
+        (None, None) if d.copy && d.is_browsed(i) => Some("In catalog"),
         (Some(_), _) if on => Some("Will be copied"),
         (Some(_), _) => Some("Duplicate"),
         (None, Some(_)) => Some("Unreadable"),

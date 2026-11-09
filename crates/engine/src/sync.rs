@@ -202,7 +202,7 @@ impl SyncInput {
         let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
         let ids = s.catalog.query(&f, &Sort::default());
         if ids.is_empty() {
-            return Err(invalid(format!("{path}: no photo in the library was imported from it")));
+            return Err(invalid(format!("{path}: no photo in the catalog was imported from it")));
         }
         if !disk && (lcc_catalog::folders::is_disk_root(path) || crate::cmd::library::covers_other_disks(s, path, &ids)) {
             return Err(invalid(format!("{path} is a whole disk or holds disks: pass `disk: true` to synchronize it")));
@@ -912,7 +912,7 @@ impl SyncCommit {
     pub fn apply(&mut self, s: &mut Session, step: SyncStep) {
         if !Arc::ptr_eq(&self.library, &s.library_identity) {
             self.hold = None;
-            self.report.failed.push((String::new(), "another library was opened: the rest of the synchronize was dropped".into()));
+            self.report.failed.push((String::new(), "another catalog was opened: the rest of the synchronize was dropped".into()));
             return;
         }
         let commits = s.commits();
