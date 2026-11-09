@@ -2,7 +2,7 @@
 // Renders every manual screenshot in each layout, headless, from the procedural demo library.
 //   node scripts/shots.mjs [--cli path/to/app-cli] [shot-name ...]
 // Output: src/assets/shots/<layout>/<shot>.jpg (1280 px wide, compressed).
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
@@ -21,7 +21,12 @@ for (let i = 0; i < args.length; i++) {
 if (!cli) throw new Error('pass --cli <path to the app-cli binary> or set MANUAL_CLI');
 
 const spec = JSON.parse(readFileSync(join(here, 'shots.json'), 'utf8'));
-const shots = spec.shots.filter((s) => only.length === 0 || only.includes(s.name));
+// Layout config is scripts/shots.json; the shots themselves live one array per area in scripts/shots.d/*.json.
+const dir = join(here, 'shots.d');
+const all = readdirSync(dir).filter((f) => f.endsWith('.json')).sort().flatMap((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
+const names = new Set();
+for (const s of all) { if (names.has(s.name)) throw new Error(`duplicate shot name: ${s.name}`); names.add(s.name); }
+const shots = all.filter((s) => only.length === 0 || only.includes(s.name));
 const work = mkdtempSync(join(tmpdir(), 'manual-shots-'));
 const settle = { method: 'ui.settle', params: { timeoutMs: 30000 } };
 
