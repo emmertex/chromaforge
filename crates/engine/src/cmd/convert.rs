@@ -338,16 +338,22 @@ pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Phot
 
 /// Ops that give a photo the lens data its file carries now (`info`, a fresh probe), or none when
 /// it already has them. A catalog from before the lens data was read at import has none, so such a
-/// photo's correction stayed off. When the photo gains lens data and its develop settings are still
-/// what import gave it, the lens correction is turned on as import would; an edited photo keeps
-/// its settings.
+/// photo's correction stayed off. When the photo gains lens data that import would have turned on
+/// ([`lcc_catalog::Photo::lens_correction_built_in`]) and its develop settings are still what
+/// import gave it, the correction is turned on as import would; an edited photo keeps its settings.
 pub(crate) fn lens_ops(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     if info.embedded_lens == ph.embedded_lens.as_deref().copied() {
         return Vec::new();
     }
     let mut ops = vec![Op::SetEmbeddedLens { id, lens: info.embedded_lens.map(Box::new) }];
     // (a photo with a default-preset look keeps it: that look is its import state)
-    if ph.embedded_lens.is_none() && info.embedded_lens.is_some() && ph.import_look.is_none() && !ph.is_edited() && !ph.develop.optics.lens_profile {
+    if ph.embedded_lens.is_none()
+        && info.embedded_lens.is_some()
+        && ph.import_look.is_none()
+        && !ph.is_edited()
+        && !ph.develop.optics.lens_profile
+        && lcc_catalog::lens_built_in_format(&ph.format)
+    {
         let mut d = (*ph.develop).clone();
         d.optics.lens_profile = true;
         ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Lens Corrections".into(), edited: ph.edited.clone() });

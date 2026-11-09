@@ -54,6 +54,7 @@ pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
 pub mod loupe_timing;
+pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -247,6 +248,8 @@ mod tests_import_body_profiles;
 #[cfg(test)]
 mod tests_import_drives;
 #[cfg(test)]
+mod tests_import_loupe;
+#[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
 mod tests_import_recipe;
@@ -290,6 +293,8 @@ mod tests_libtools;
 mod tests_lightroom_destination;
 #[cfg(test)]
 mod tests_loading_cell;
+#[cfg(test)]
+mod tests_lrc_menus;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]

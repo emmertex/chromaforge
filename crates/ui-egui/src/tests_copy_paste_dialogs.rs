@@ -41,11 +41,13 @@ fn copy_dialog(h: &mut Headless) {
     assert!(matches!(h.app.ui.dialog, Some(Dialog::CopySettings { .. })), "dialog not open: {:?}", h.app.ui.dialog);
 }
 
-/// Copies light and colour from the first photo, selects the second and opens ⇧⌘V.
+/// Copies light and colour from the first photo, selects the second and opens Paste Selected
+/// Settings… (⇧⌘V pastes at once in the Classic set, as in Lightroom Classic).
 fn paste_dialog(h: &mut Headless, ids: [u64; 2]) {
     exec(h, "develop.copy", json!({"groups": ["light", "color"]}));
     exec(h, "library.select", json!({"ids": [ids[1]]}));
-    key(h, json!({"key": "V", "cmd": true, "shift": true}));
+    exec(h, "dialog.pasteSettings", json!({}));
+    h.settle(SETTLE);
     assert!(matches!(h.app.ui.dialog, Some(Dialog::PasteSettings { .. })), "dialog not open: {:?}", h.app.ui.dialog);
 }
 

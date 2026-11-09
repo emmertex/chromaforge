@@ -1001,8 +1001,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let Some(photo) = app.session.catalog.photo(id).cloned() else { return };
     brief_info(app, ui.ctx(), id);
     let d = (*photo.develop).clone();
-    // the full-screen preview shows the photo only: no tool overlays
-    let right = if fullscreen { RightPanel::None } else { app.ui.right };
+    // the full-screen preview shows the photo only: no tool overlays; nor does the Import tab's loupe, which has no
+    // Develop panel (a tool left open there drew its overlays and notes over a browsed photo)
+    let browsing = crate::import_tab::showing(app);
+    let right = if fullscreen || browsing { RightPanel::None } else { app.ui.right };
     let crop_tool = right == RightPanel::Crop;
     let frame = Frame::with_lens(photo.width.max(1) as usize, photo.height.max(1) as usize, &d, !crop_tool, photo.embedded_lens.as_deref());
     let aspect = frame.aspect() as f32;
@@ -1836,7 +1838,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     (true, Some(before), Some(q)) if before.contains(q) => (CanvasMap::new(&frame, before_img), before_img, *before),
                     _ => (map, img_rect, main_area),
                 };
-                general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                if browsing {
+                    // no Develop picker works on a browsed photo: a click only zooms, as in Library
+                    click_zoom_and_pan(app, &resp, img, pane);
+                } else {
+                    general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                }
             }
         }
     }
