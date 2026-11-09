@@ -157,7 +157,7 @@ fn installed(bytes: &[u8], limits: Limits) -> Manager {
     let mut m = Manager::in_memory();
     m.set_limits(limits);
     let all = Permissions { catalog: true, metadata_write: true, library_add: true, ..Default::default() };
-    m.install_bytes(bytes, Some(all), false).unwrap();
+    m.install_bytes_by_user(bytes, Some(all), false).unwrap();
     m
 }
 
@@ -367,7 +367,7 @@ fn what_a_job_wrote_is_saved_before_its_next_call() {
         ],
         Some(r#"{"ok":{"continue":1}}"#),
     );
-    m.install_bytes(&bytes, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
     let peek = Peek { file: dir.join("data").join("test.job.json"), seen: RefCell::default(), items: Cell::new(0) };
     let e = run_job(&mut m, &mut NoHost, &peek).unwrap_err();
     assert_eq!(e, Error::Cancelled);
@@ -395,9 +395,9 @@ impl HostApi for Changer<'_> {
     }
 }
 
-#[test]
-fn a_change_made_while_a_job_runs_reaches_its_next_call() {
-    // each call reads the catalog; the first asks to go on, the second replies with what it got
+/// A job with `manifest` whose calls each read the catalog: the first asks to go on, the second
+/// replies with what it got.
+fn reads_twice(manifest: &str) -> Vec<u8> {
     let (stats, s1, c1) = (r#"{"method":"catalog.stats","params":{}}"#, r#""state":1"#, r#"{"ok":{"continue":1}}"#);
     let body = format!(
         "(local.set $n (call $call (i32.const 8192) (i32.const {sl})))
@@ -409,7 +409,12 @@ fn a_change_made_while_a_job_runs_reaches_its_next_call() {
         l1 = s1.len(),
         c1 = ret(6144, c1),
     );
-    let bytes = module(&manifest(true), &[(8192, stats), (7424, s1), (6144, c1)], &body);
+    module(manifest, &[(8192, stats), (7424, s1), (6144, c1)], &body)
+}
+
+#[test]
+fn a_change_made_while_a_job_runs_reaches_its_next_call() {
+    let bytes = reads_twice(&manifest(true));
     let less = Permissions { metadata_write: true, ..Default::default() };
     let changes: Vec<(&str, Change)> = vec![
         (
@@ -423,7 +428,7 @@ fn a_change_made_while_a_job_runs_reaches_its_next_call() {
         (
             "updated with less granted",
             Box::new(|m: &mut Manager| {
-                m.install_bytes(&bytes, Some(less.clone()), false).unwrap();
+                m.install_bytes_by_user(&bytes, Some(less.clone()), false).unwrap();
             }),
         ),
     ];
@@ -437,4 +442,26 @@ fn a_change_made_while_a_job_runs_reaches_its_next_call() {
         let e = m.end(*call, Some(outcome)).unwrap_err().to_string();
         assert!(e.contains("not granted"), "{what} during the first call: the job's next call has no catalog permission: {e}");
     }
+}
+
+/// Going back to the previous version while a job runs keeps the job's permissions (those the old
+/// version asks for), as an update does: its next call still reads the catalog.
+#[test]
+fn a_job_running_through_a_rollback_keeps_its_permissions() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("plugin-jobs-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut m = Manager::open(&dir).unwrap();
+    let all = Permissions { catalog: true, metadata_write: true, library_add: true, ..Default::default() };
+    m.install_bytes_by_user(&reads_twice(&manifest(true).replace("1.0.0", "0.9.0")), Some(all), false).unwrap();
+    m.install_bytes(&reads_twice(&manifest(true)), None, false).unwrap();
+    let Begun::Call(mut call) = m.begin_command("test.job", "go", &json!({}), &[], &Value::Null, &mut NoHost).unwrap() else { panic!() };
+    let change: Change = Box::new(|m: &mut Manager| {
+        m.rollback("test.job").unwrap();
+    });
+    let mut host = Changer { m: &mut m, change, calls: 0 };
+    let outcome = call.run_with(&mut host, &Rec::default());
+    assert_eq!(host.calls, 2, "the second call read the catalog too");
+    drop(host);
+    assert_eq!(m.end(*call, Some(outcome)).unwrap(), json!({"photos": 3}));
+    assert_eq!(m.get("test.job").unwrap().plugin.manifest().version, "0.9.0");
 }

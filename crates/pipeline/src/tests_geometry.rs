@@ -534,3 +534,81 @@ fn alpha_follows_the_pixels_through_every_frame() {
         }
     }
 }
+
+// ------------------------------------------------------------------------------- Lightroom's stored Upright
+
+/// Lightroom's Auto Upright matrix for a reception-room photo (8 Nov 2026, 8192 × 5464), as its XMP stores it.
+const LRC_AUTO: [f64; 9] = [0.957894731, -0.045975785, 0.001016560, -0.051529458, 0.923672939, -0.020471191, -0.035187515, -0.133181893, 1.0];
+/// That edit's crop (left, top, right, bottom).
+const LRC_CROP: [f64; 4] = [0.031074, 0.0, 0.921448, 0.890374];
+/// Measured independently: the homography from Lightroom's export of that edit (`u, v` in 0..1) to the uncropped,
+/// uncorrected render of the same raw (`x / width, y / height`), fitted by image correlation (NCC 0.986).
+const MEASURED_EXPORT_TO_SOURCE: [f64; 9] = [0.92756, 0.04614, 0.03257, 0.05262, 0.96491, 0.02404, 0.0393, 0.12998, 1.0];
+
+fn lrc_auto_settings() -> DevelopSettings {
+    let mut s = DevelopSettings::default();
+    s.geometry.upright = Upright::Auto;
+    s.geometry.lrc_upright = Some(lcc_geom::Homography(LRC_AUTO));
+    let [l, t, r, b] = LRC_CROP;
+    s.crop.geometry.rect = lcc_geom::Rect::new(l, t, r, b);
+    s
+}
+
+/// Where an export pixel `(u, v)` of Lightroom's edit comes from in the source (`x / width, y / height`), by the
+/// independent measurement.
+fn measured_source_of(u: f64, v: f64) -> Point {
+    lcc_geom::Homography(MEASURED_EXPORT_TO_SOURCE).apply(Point::new(u, v))
+}
+
+#[test]
+fn lightrooms_stored_upright_matrix_maps_like_lightroom() {
+    let (w, h) = (8192.0, 5464.0);
+    let s = lrc_auto_settings();
+    let hm = crate::upright::homography(&s.geometry, w, h).inverse().expect("invertible");
+    let l = w.max(h) / 2.0;
+    let [cl, ct, cr, cb] = LRC_CROP;
+    for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)] {
+        // export → Lightroom's corrected frame (the crop is in it) → centred → source
+        let r = Point::new(cl + (cr - cl) * u, ct + (cb - ct) * v);
+        let c = hm.apply(Point::new((r.x * w - w / 2.0) / l, (r.y * h - h / 2.0) / l));
+        let got = Point::new((c.x * l + w / 2.0) / w, (c.y * l + h / 2.0) / h);
+        let want = measured_source_of(u, v);
+        assert!(got.dist(want) < 2e-3, "({u}, {v}): {got:?} vs measured {want:?}");
+    }
+}
+
+#[test]
+fn a_render_with_lightrooms_matrix_shows_lightrooms_frame() {
+    // a grid source, 3:2 like the photo; the output is Lightroom's cropped, corrected frame
+    let (w, h) = (600usize, 400usize);
+    let pattern = |p: Point| grid_value(p, 24.0);
+    let src = synth(w, h, |p| p, |p| [pattern(p); 3]);
+    let s = lrc_auto_settings();
+    let out = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(w, h)).image;
+    // what Lightroom shows at each output pixel: the grid at the measured source point
+    let (ow, oh) = (out.width, out.height);
+    let (mut got, mut want, mut blank) = (Vec::new(), Vec::new(), 0usize);
+    for y in (0..oh).step_by(2) {
+        for x in (0..ow).step_by(2) {
+            let q = measured_source_of((x as f64 + 0.5) / ow as f64, (y as f64 + 0.5) / oh as f64);
+            want.push(f64::from(pattern(Point::new(q.x * w as f64, q.y * h as f64))));
+            let px = out.get(x, y);
+            got.push(f64::from(px[1]));
+            if px[3] < 255 || px[0..3].iter().all(|&c| c == 0) {
+                blank += 1;
+            }
+        }
+    }
+    let ncc = {
+        let (mg, mw) = (got.iter().sum::<f64>() / got.len() as f64, want.iter().sum::<f64>() / want.len() as f64);
+        let (mut sgw, mut sgg, mut sww) = (0.0, 0.0, 0.0);
+        for (g, v) in got.iter().zip(&want) {
+            sgw += (g - mg) * (v - mw);
+            sgg += (g - mg) * (g - mg);
+            sww += (v - mw) * (v - mw);
+        }
+        sgw / (sgg * sww).sqrt().max(1e-12)
+    };
+    assert!(ncc > 0.8, "the render follows Lightroom's stored correction: NCC {ncc:.3}");
+    assert_eq!(blank, 0, "Lightroom's crop shows no blank corner");
+}

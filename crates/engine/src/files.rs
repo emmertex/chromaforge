@@ -3471,6 +3471,51 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An unedited raw's grid thumbnail is its camera JPEG, never rendered: that JPEG is what the photo keeps showing
+    /// once its original is missing and an update has changed the thumbnails' keys; with the file back, the camera
+    /// JPEG is read from it again.
+    #[test]
+    fn a_missing_raw_keeps_its_camera_jpeg_thumbnail_through_an_update() {
+        use crate::media::QuickSource;
+        let dir = std::env::temp_dir().join(format!("lc-kept-raw-{}", std::process::id()));
+        let (src, lib) = (dir.join("card"), dir.join("lib"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&src).unwrap();
+        let path = src.join("a.cr3");
+        std::fs::write(&path, cr3_with_preview(96, 64)).unwrap();
+        let id = {
+            let mut s = crate::Session::new().with_fs();
+            s.open_library(&lib, false).unwrap();
+            let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+            let id = lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap());
+            let job = s.thumb_job(id, 128).unwrap();
+            assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+            let t = std::time::Instant::now();
+            while s.media.rendered.queued_bytes() > 0 && t.elapsed() < std::time::Duration::from_secs(30) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            id
+        };
+        // the card is out, and the next start comes after more updates than earlier versions' thumbnails are
+        // looked for under: only the thumbnail the photo kept can show
+        std::fs::rename(&src, dir.join("card-out")).unwrap();
+        let mut s = crate::Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+        let job = s.thumb_job(id, 128).unwrap();
+        let q = s.quick_thumb_job(&job).unwrap().run();
+        assert_eq!((q.quick, q.placement), (Some(QuickSource::Kept), None), "the kept thumbnail, claiming no placement");
+        let img = q.rendered.expect("the kept camera JPEG").image;
+        assert_eq!((img.width, img.height), (96, 64), "the camera JPEG it showed before");
+        // the card is back with another picture in the file: its camera JPEG is read again
+        std::fs::rename(dir.join("card-out"), &src).unwrap();
+        std::fs::write(&path, cr3_with_preview(80, 40)).unwrap();
+        let q = s.quick_thumb_job(&job).unwrap().run();
+        assert_eq!(q.quick, Some(QuickSource::Embedded));
+        assert_eq!(q.rendered.unwrap().image.width, 80, "read from the file, not the kept thumbnail");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A Sony ARW of `model`: a 64 × 48 uncompressed 14-bit CFA strip in a SubIFD (as `crates/raw/tests/it/vendor_robust.rs`
     /// lays it out) whose IFD carries the full-frame 16–35 mm distortion table (tag 0x7037).
     fn sony_arw(model: &str) -> Vec<u8> {

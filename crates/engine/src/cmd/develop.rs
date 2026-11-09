@@ -1266,6 +1266,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     d.geometry.upright = mode;
                     d.geometry.upright_transform = transform;
+                    d.geometry.lrc_upright = None;
                     Ok(())
                 })?;
                 // say why when the mode can't do what it says, instead of nothing happening
@@ -1308,6 +1309,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     d.geometry.upright = Upright::Guided;
                     d.geometry.upright_transform = None;
+                    d.geometry.lrc_upright = None;
                     Ok(())
                 })
             }

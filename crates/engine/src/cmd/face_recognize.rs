@@ -259,6 +259,25 @@ fn rename_person(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"faces": faces, "photos": photos, "from": from, "to": to, "merged": other}))
 }
 
+/// Photos to look in, from `scope`: absent, the whole library; `"filter"`, the photos the library filter shows (a year,
+/// a folder, an album picked in the sidebar), any person filter aside, so People and a person's page follow the sidebar.
+type Scope = Option<std::collections::HashSet<u64>>;
+
+fn scope_of(s: &Session, cmd: &str, p: &Value) -> Result<Scope> {
+    match p.get("scope") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(v)) if v == "filter" => {
+            let f = lcc_catalog::Filter { person: None, people: Vec::new(), ..s.filter.clone() };
+            Ok(Some(s.catalog.query(&f, &lcc_catalog::Sort::default()).into_iter().map(|id| id.0).collect()))
+        }
+        Some(_) => Err(bad(cmd, "`scope` must be \"filter\" or left out")),
+    }
+}
+
+fn in_scope(scope: &Scope, photo: u64) -> bool {
+    scope.as_ref().is_none_or(|v| v.contains(&photo))
+}
+
 /// Most faces `faces.unnamed` lists.
 const MAX_UNNAMED: usize = 3000;
 
@@ -266,18 +285,19 @@ const MAX_UNNAMED: usize = 3000;
 struct Arranged {
     /// Faces that look alike are next to each other (only the ones already embedded can be).
     ordered: bool,
-    /// Recognition is on and a model is loaded.
+    /// A recognition model is chosen and its face index is available.
     ready: bool,
     /// A name for some faces, when the faces already named say so with confidence: `(photo, index)` to `(name, score)`.
     suggestions: std::collections::HashMap<(u64, usize), (String, f32)>,
 }
 
-/// `faces.unnamed {limit?: 600}`: the faces nobody has named, to be named a group at a time. With recognition running,
-/// faces that look alike are next to each other, and a face the named faces recognise carries the name they suggest.
+/// `faces.unnamed {limit?: 600}`: the faces nobody has named, to be named a group at a time. With a recognition model
+/// chosen, faces that look alike are next to each other, and a face the named faces recognise carries the name they suggest.
 fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
     let limit = p.get("limit").and_then(Value::as_u64).map_or(600, |n| usize::try_from(n).unwrap_or(600)).clamp(1, MAX_UNNAMED);
+    let scope = scope_of(s, "faces.unnamed", p)?;
     let mut all: Vec<(u64, usize, lcc_geom::Rect)> = Vec::new();
-    for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
+    for ph in s.catalog.photos().filter(|ph| ph.in_library() && in_scope(&scope, ph.id.0)) {
         for (index, r) in ph.meta.regions.iter().enumerate() {
             if r.kind == lcc_meta::RegionKind::Face && r.name.is_none() {
                 all.push((ph.id.0, index, r.rect));
@@ -303,7 +323,7 @@ fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
 struct Similar {
     /// `{photo, index, rect, score}` of unnamed faces, the most alike first.
     items: Vec<serde_json::Value>,
-    /// Recognition is on and a model is loaded, so an empty list means "none yet" rather than "not looking".
+    /// A recognition model is chosen and its face index is available, so an empty list means "none yet" rather than "not set up".
     ready: bool,
     /// Photos the background scan has still to do.
     pending: usize,
@@ -316,13 +336,14 @@ fn rect_json(r: &lcc_geom::Rect) -> Value {
 /// Most confirmed faces `faces.person` lists.
 const MAX_CONFIRMED: usize = 5000;
 
-/// `faces.person {name, more?}`: the faces named `name` (case-insensitively) across the library, and, when recognition is
-/// running, the unnamed faces that look most like them, to be confirmed one by one.
+/// `faces.person {name, more?}`: the faces named `name` (case-insensitively) across the library, and, when a recognition
+/// model is chosen, the unnamed faces that look most like them, to be confirmed one by one.
 fn person(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "faces.person";
     let name = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(C, "missing `name`"))?;
     let key = name.to_lowercase();
     let limit = p.get("more").and_then(Value::as_u64).map_or(120, |n| usize::try_from(n).unwrap_or(120)).min(1000);
+    let scope = scope_of(s, C, p)?;
     let (mut shown, mut total, mut confirmed) = (name.to_string(), 0usize, Vec::new());
     for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
         for (index, r) in ph.meta.regions.iter().enumerate() {
@@ -333,12 +354,13 @@ fn person(s: &mut Session, p: &Value) -> Result<Value> {
                 shown = n.trim().to_string();
             }
             total += 1;
-            if confirmed.len() < MAX_CONFIRMED {
+            // the count is the whole library's; the faces shown follow the scope
+            if confirmed.len() < MAX_CONFIRMED && in_scope(&scope, ph.id.0) {
                 confirmed.push(json!({"photo": ph.id.0, "index": index, "rect": rect_json(&r.rect), "view": rect_json(&s.face_view(ph.id, r.rect))}));
             }
         }
     }
-    let similar = if total > 0 { imp::similar(s, &key, limit) } else { Similar { items: Vec::new(), ready: false, pending: 0 } };
+    let similar = if total > 0 { imp::similar(s, &key, limit, &scope) } else { Similar { items: Vec::new(), ready: false, pending: 0 } };
     Ok(
         json!({"name": shown, "total": total, "confirmed": confirmed, "more": similar.items, "ready": similar.ready, "pendingPhotos": similar.pending}),
     )
@@ -374,45 +396,68 @@ mod imp {
     /// writes a minute, and a session that ends writes the rest).
     const SAVE_EVERY: Duration = Duration::from_secs(3);
 
-    /// The chosen recognition model, loaded, with the index reset to it when it changed. `fresh` looks at the models
-    /// folder again; otherwise a look made in the last second is trusted (the UI asks every frame).
-    fn current_with(s: &mut Session, cmd: &str, fresh: bool) -> Result<Arc<Embedder>> {
-        if !fresh
-            && let Some((_, e)) = &s.faces.embedder
-            && s.faces.checked.is_some_and(|t| t.elapsed() < RECHECK)
-        {
-            return Ok(e.clone());
+    /// The chosen recognition model's manifest, with the face index reset to it when it changed, without loading the
+    /// ONNX network. `fresh` looks at the models folder again; otherwise a look made in the last second is trusted.
+    fn current_manifest(s: &mut Session, cmd: &str, fresh: bool) -> Result<lcc_faces::ModelManifest> {
+        if !fresh && s.faces.checked.is_some_and(|t| t.elapsed() < RECHECK) {
+            return s
+                .faces
+                .manifest
+                .as_ref()
+                .map(|(_, m)| m.clone())
+                .ok_or_else(|| bad(cmd, "no recognition model is chosen: add one in Settings > Faces and press Use"));
         }
-        let dir = s.face_models_dir.clone().ok_or_else(|| bad(cmd, "this build has nowhere to keep face models"))?;
-        let id = read_settings(&dir).embedder.ok_or_else(|| bad(cmd, "no recognition model is chosen: add one in Settings > Faces and press Use"))?;
-        let installed = installed_models(&dir)
-            .into_iter()
-            .find(|i| i.manifest.id == id)
-            .ok_or_else(|| bad(cmd, "the chosen recognition model is not installed"))?;
-        let tag = format!("{id}@{}", installed.manifest.sha256.as_deref().unwrap_or("unknown"));
         s.faces.checked = Some(Instant::now());
+        let dir = s.face_models_dir.clone().ok_or_else(|| {
+            s.faces.manifest = None;
+            bad(cmd, "this build has nowhere to keep face models")
+        })?;
+        let id = read_settings(&dir).embedder.ok_or_else(|| {
+            s.faces.manifest = None;
+            bad(cmd, "no recognition model is chosen: add one in Settings > Faces and press Use")
+        })?;
+        let installed = installed_models(&dir).into_iter().find(|i| i.manifest.id == id).ok_or_else(|| {
+            s.faces.manifest = None;
+            bad(cmd, "the chosen recognition model is not installed")
+        })?;
+        let dim = match installed.manifest.output {
+            lcc_faces::OutputSpec::Embedding { dim } => dim as usize,
+            _ => {
+                s.faces.manifest = None;
+                return Err(bad(cmd, "the chosen model is not a recognition model"));
+            }
+        };
+        let tag = format!("{id}@{}", installed.manifest.sha256.as_deref().unwrap_or("unknown"));
         // which photos the detector has searched is kept beside the library (or in memory when it is not on disk)
         let scan_path = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("face-scanned.bin"));
         if s.faces.scanned.path() != scan_path.as_deref() {
             s.faces.scanned.reset(scan_path);
         }
+        let cache = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join(format!("face-embeddings-{id}.bin")));
+        if s.faces.index.tag != tag || s.faces.index.path != cache {
+            s.faces.index.reset(&tag, dim, cache);
+            s.faces.queue.clear();
+            s.faces.queue_stamp = None;
+            s.faces.in_flight.clear();
+        }
+        s.faces.manifest = Some((tag, installed.manifest.clone()));
+        Ok(installed.manifest)
+    }
+
+    /// The chosen recognition model, loaded, with the index reset to it when it changed. `fresh` looks at the models
+    /// folder again; otherwise a look made in the last second is trusted (the UI asks every frame).
+    fn current_with(s: &mut Session, cmd: &str, fresh: bool) -> Result<Arc<Embedder>> {
+        let manifest = current_manifest(s, cmd, fresh)?;
+        let tag = s.faces.index.tag.clone();
         if let Some((have, e)) = &s.faces.embedder
             && *have == tag
         {
             return Ok(e.clone());
         }
-        let embedder = Arc::new(Embedder::load(&dir.join(&id).join("model.onnx"), &installed.manifest).map_err(|e| bad(cmd, e.to_string()))?);
+        let dir = s.face_models_dir.clone().ok_or_else(|| bad(cmd, "this build has nowhere to keep face models"))?;
+        let embedder = Arc::new(Embedder::load(&dir.join(&manifest.id).join("model.onnx"), &manifest).map_err(|e| bad(cmd, e.to_string()))?);
         let net = embedder.clone();
         super::super::face_detect::offer_gpu(s, "recognition", move |gpu| net.accelerate(gpu, true).map_err(|e| e.to_string()));
-        let dim = match installed.manifest.output {
-            lcc_faces::OutputSpec::Embedding { dim } => dim as usize,
-            _ => return Err(bad(cmd, "the chosen model is not a recognition model")),
-        };
-        let cache = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join(format!("face-embeddings-{id}.bin")));
-        s.faces.index.reset(&tag, dim, cache);
-        s.faces.queue.clear();
-        s.faces.queue_stamp = None;
-        s.faces.in_flight.clear();
         s.faces.embedder = Some((tag, embedder.clone()));
         Ok(embedder)
     }
@@ -717,7 +762,27 @@ mod imp {
         let enabled = s.face_models_dir.clone().is_some_and(|d| enabled_cached(s, &d));
         if !enabled {
             track(s, 0);
-            return Ok(json!({"active": false}));
+            if let Some(w) = &s.faces.worker {
+                w.allow(0, Pace::Pause);
+            }
+            let _ = current_manifest(s, C, false);
+            collect(s);
+            if (s.faces.index.has_unsaved() || s.faces.scanned.has_unsaved()) && s.faces.saved_at.is_none_or(|t| t.elapsed() >= SAVE_EVERY) {
+                if let Err(e) = s.faces.index.save() {
+                    log::warn!("could not save the face embeddings: {e}");
+                }
+                if let Err(e) = s.faces.scanned.save() {
+                    log::warn!("could not save the list of searched photos: {e}");
+                }
+                s.faces.saved_at = Some(Instant::now());
+            }
+            return Ok(json!({
+                "active": false,
+                "inFlight": 0,
+                "pendingPhotos": 0,
+                "peak": 0,
+                "indexedFaces": s.faces.index.len(),
+            }));
         }
         if s.faces.retry_at.is_some_and(|t| Instant::now() < t) {
             track(s, 0);
@@ -791,14 +856,11 @@ mod imp {
     /// The unnamed faces that look most like the person whose lower-cased name is `key`, best first, at most `limit`: each
     /// is scored like a suggestion (the mean of its two closest faces of theirs) and kept above four fifths of the
     /// model's suggestion bar, since a person looks at these before anything is named. Only faces already embedded can be
-    /// found; `ready` says whether recognition is running at all.
-    pub fn similar(s: &mut Session, key: &str, limit: usize) -> Similar {
+    /// found; `ready` says whether a recognition model is chosen and its index is available.
+    pub fn similar(s: &mut Session, key: &str, limit: usize, scope: &super::Scope) -> Similar {
         let none = Similar { items: Vec::new(), ready: false, pending: 0 };
-        let Some(dir) = s.face_models_dir.clone() else { return none };
-        if !enabled_cached(s, &dir) {
-            return none;
-        }
-        let Ok(embedder) = current_with(s, "faces.person", false) else { return none };
+        let Some(_) = s.face_models_dir.clone() else { return none };
+        let Ok(manifest) = current_manifest(s, "faces.person", false) else { return none };
         let pending = s.faces.queue.len() + s.faces.in_flight.len();
         let (mut gallery, mut candidates): (Vec<Arc<[f32]>>, Vec<(u64, usize, Rect, Arc<[f32]>)>) = (Vec::new(), Vec::new());
         for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
@@ -807,7 +869,9 @@ mod imp {
                 match r.name.as_deref() {
                     Some(n) if n.trim().to_lowercase() == key => gallery.push(e.clone()),
                     Some(_) => {}
-                    None => candidates.push((ph.id.0, index, r.rect, e.clone())),
+                    // their faces anywhere teach the match; only faces in scope are offered
+                    None if super::in_scope(scope, ph.id.0) => candidates.push((ph.id.0, index, r.rect, e.clone())),
+                    None => {}
                 }
             }
         }
@@ -815,7 +879,7 @@ mod imp {
         if gallery.is_empty() {
             return ready;
         }
-        let bar = embedder.manifest().thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD) * 0.8;
+        let bar = manifest.thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD) * 0.8;
         let refs: Vec<&[f32]> = gallery.iter().map(|e| &e[..]).collect();
         let top = top_faces(s);
         // every unnamed face against every face of theirs: hundreds of millions of comparisons in a large
@@ -875,11 +939,8 @@ mod imp {
     /// find a name for those the named faces recognise, for the first `limit` of them.
     pub fn arrange_unnamed(s: &mut Session, all: &mut Vec<(u64, usize, Rect)>, limit: usize) -> super::Arranged {
         let none = super::Arranged { ordered: false, ready: false, suggestions: Default::default() };
-        let Some(dir) = s.face_models_dir.clone() else { return none };
-        if !enabled_cached(s, &dir) {
-            return none;
-        }
-        let Ok(embedder) = current_with(s, "faces.unnamed", false) else { return none };
+        let Some(_) = s.face_models_dir.clone() else { return none };
+        let Ok(manifest) = current_manifest(s, "faces.unnamed", false) else { return none };
         let (mut embedded, mut plain) = (Vec::new(), Vec::new());
         for f in all.drain(..) {
             match s.faces.index.get(f.0, &f.2) {
@@ -905,7 +966,7 @@ mod imp {
             })
             .collect();
         let refs: Vec<(&str, &[f32])> = gallery.iter().map(|(n, e)| (n.as_str(), &e[..])).collect();
-        let threshold = embedder.manifest().thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
+        let threshold = manifest.thresholds.match_cosine.unwrap_or(DEFAULT_THRESHOLD);
         let top = top_faces(s);
         let mut suggestions = std::collections::HashMap::new();
         if !refs.is_empty() {
@@ -957,26 +1018,28 @@ mod imp {
 
     pub fn suggest(s: &mut Session, p: &Value) -> Result<Value> {
         const C: &str = "faces.suggest";
-        let embedder = current(s, C)?;
+        let budget = Duration::from_millis(p.get("budgetMs").and_then(Value::as_u64).unwrap_or(1500).min(600_000));
+        let manifest = current_manifest(s, C, !budget.is_zero())?;
         collect(s);
         let targets = s.targets(p)?;
-        let model_threshold = embedder.manifest().thresholds.match_cosine;
+        let model_threshold = manifest.thresholds.match_cosine;
         let num = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).map(|v| v as f32);
         let threshold = num("threshold").or(model_threshold).unwrap_or(DEFAULT_THRESHOLD);
         let margin = num("margin").unwrap_or(DEFAULT_MARGIN);
         let top = top_faces_param(s, C, p)?;
         // the photos asked about are embedded first, then the named faces they are compared with, within the budget
-        let budget = Duration::from_millis(p.get("budgetMs").and_then(Value::as_u64).unwrap_or(1500).min(600_000));
         let started = Instant::now();
         let todo = pending(s, &targets, false);
         let mut done = 0;
-        for id in &todo {
-            // a budget of zero only looks at what is already embedded
-            if budget.is_zero() || (done > 0 && started.elapsed() >= budget) {
-                break;
+        if !budget.is_zero() && !todo.is_empty() {
+            let embedder = current(s, C)?;
+            for id in &todo {
+                if done > 0 && started.elapsed() >= budget {
+                    break;
+                }
+                embed_photo(s, *id, &embedder)?;
+                done += 1;
             }
-            embed_photo(s, *id, &embedder)?;
-            done += 1;
         }
         let pending_photos: Vec<u64> = todo.iter().skip(done).map(|id| id.0).collect();
         let gallery: Vec<(String, Arc<[f32]>)> = s
@@ -1175,13 +1238,13 @@ mod imp {
             put(&mut s, b, 0.1, unit(&[(0, 0.95), (1, 0.05)])); // looks just like Ann
             put(&mut s, b, 0.5, unit(&[(1, 1.0)])); // looks like Bob, not Ann
             put(&mut s, c, 0.3, unit(&[(0, 0.8), (1, 0.6)])); // somewhat like Ann
-            let r = similar(&mut s, "ann", 10);
+            let r = similar(&mut s, "ann", 10, &None);
             assert!(r.ready);
             let found: Vec<(u64, u64)> = r.items.iter().map(|i| (i["photo"].as_u64().unwrap(), i["index"].as_u64().unwrap())).collect();
             assert_eq!(found, vec![(b.0, 0), (c.0, 0)], "best first; the face that looks like Bob is left out");
             assert!(r.items[0]["score"].as_f64().unwrap() > r.items[1]["score"].as_f64().unwrap());
-            assert_eq!(similar(&mut s, "ann", 1).items.len(), 1, "capped");
-            assert!(similar(&mut s, "nobody", 10).items.is_empty());
+            assert_eq!(similar(&mut s, "ann", 1, &None).items.len(), 1, "capped");
+            assert!(similar(&mut s, "nobody", 10, &None).items.is_empty());
             let _ = std::fs::remove_dir_all(&d);
         }
     }
@@ -1210,7 +1273,7 @@ mod imp {
         Ok(serde_json::json!({"active": false}))
     }
 
-    pub fn similar(_: &mut Session, _: &str, _: usize) -> super::Similar {
+    pub fn similar(_: &mut Session, _: &str, _: usize, _: &super::Scope) -> super::Similar {
         super::Similar { items: Vec::new(), ready: false, pending: 0 }
     }
 
@@ -1273,7 +1336,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unnamed Faces",
             [],
             None,
-            "{limit?: 600} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready} — the faces nobody has named; with recognition running, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
+            "{limit?: 600, scope?: \"filter\"} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready} — the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
             super::always,
             unnamed
         ),
@@ -1291,7 +1354,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Faces of a Person",
             [],
             None,
-            "{name, more?: 120} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos} — the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once recognition is on); confirm one with `faces.setName`",
+            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos} — the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library filter shows (any person filter aside); `total` still counts the whole library",
             super::always,
             person
         ),

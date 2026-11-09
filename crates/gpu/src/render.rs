@@ -1452,6 +1452,10 @@ const FIXED_BAND_BUDGET: usize = 2048 << 20;
 /// plans its noise reduction bands, each of the others may still allocate the buffers of its other stages.
 static RENDERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// The bytes the joint colour noise reduction's bands may take when pinned with
+/// [`crate::set_nr_band_budget`] (0: not pinned, planned from the device by [`band_budget_from`]).
+pub(crate) static NR_BAND_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Held while a noise reduction plans its bands and runs them: two plans made at once from the same
 /// memory would together ask for more than there is.
 static BANDS: Bands = Bands::new();
@@ -1608,8 +1612,14 @@ fn color_nr_joint(
     // 12 values per pixel (guide 3, two chroma buffers 2 + 2, paths 2, weights 2; up to 12 while the
     // speck brake and the guide run). The budget for both together is `band_budget_from` the device's
     // memory where its backend reports it (`lcc_gpumem`, `Gpu::vram`), else a fixed 2 GB;
-    // `<PREFIX>_NR_GPU_BAND_MB` overrides it.
-    let fixed = budget.or_else(|| lcc_brand::env("NR_GPU_BAND_MB").and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb.saturating_mul(1 << 20)));
+    // a budget pinned with `set_nr_band_budget`, else `<PREFIX>_NR_GPU_BAND_MB`, overrides it.
+    let pinned = match NR_BAND_BUDGET.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        bytes => Some(bytes),
+    };
+    let from_env = || lcc_brand::env("NR_GPU_BAND_MB").and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb.saturating_mul(1 << 20));
+    let pinned_used = budget.is_none() && pinned.is_some();
+    let fixed = budget.or(pinned).or_else(from_env);
     let renders = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
     let memory = crate::ctx::memory();
     let measured = cx.gpu.vram.map(|vram| band_budget_from(vram, memory.allocated, memory.pooled, renders));
@@ -1618,7 +1628,9 @@ fn color_nr_joint(
         eprintln!(
             "  gpu joint budget: {} MB ({}, {renders} render(s) on the device)",
             budget >> 20,
-            if fixed.is_some() {
+            if pinned_used {
+                "pinned"
+            } else if fixed.is_some() {
                 "NR_GPU_BAND_MB"
             } else if measured.is_some() {
                 "device memory"

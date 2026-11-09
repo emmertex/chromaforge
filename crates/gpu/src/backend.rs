@@ -4,8 +4,12 @@
 //! wgpu loads the system driver of *every* backend in the instance's set while it enumerates
 //! adapters, even when it then picks another one: with Vulkan in the set, a broken Vulkan driver
 //! can crash the process (an access violation inside the driver DLL, which nothing can catch)
-//! although DX12 would have been used. So Windows defaults to DX12 alone. macOS uses Metal, Linux
-//! Vulkan (plus GL for the window when the build has it).
+//! although DX12 would have been used. So each backend is tried on its own, in order: on Windows
+//! Vulkan first and DX12 as the fallback (issue #934: DX12 compiles every kernel with FXC, which on
+//! a cold shader cache took 31 s on an RTX 2060; Vulkan builds them in a fraction of that). The
+//! window probes Vulkan under its crash marker (`window_renderer_order`): a start that dies in it
+//! tries Vulkan last next time, and the compute devices follow the window's backend. macOS uses
+//! Metal, Linux Vulkan (plus GL for the window when the build has it).
 //!
 //! Overrides, read once per process:
 //! - `{ENV_PREFIX}_GPU_BACKEND` = `dx12` | `vulkan` | `metal` | `gl` (comma lists allowed), `auto`
@@ -72,20 +76,68 @@ pub fn choose(app: Option<&str>, wgpu: Option<&str>) -> BackendChoice {
     BackendChoice::Auto
 }
 
-/// The backends compute devices use when nothing is asked for on `os` (`std::env::consts::OS`).
+/// The backends compute devices use when nothing is asked for on `os` (`std::env::consts::OS`):
+/// the first of [`compute_backend_order`].
 pub fn default_compute_backends(os: &str) -> Backends {
+    compute_backend_order(os).first().copied().unwrap_or(Backends::PRIMARY)
+}
+
+/// The backends tried, one at a time, for the compute devices on `os` when nothing is asked for:
+/// on Windows Vulkan, then DX12 (issue #934).
+pub fn compute_backend_order(os: &str) -> Vec<Backends> {
     match os {
-        // never touch the Vulkan driver unless asked: see the module docs (issue #136)
-        "windows" => Backends::DX12,
-        "macos" | "ios" => Backends::METAL,
-        _ => Backends::PRIMARY,
+        "windows" => vec![Backends::VULKAN, Backends::DX12],
+        "macos" | "ios" => vec![Backends::METAL],
+        _ => vec![Backends::PRIMARY],
     }
+}
+
+/// The automatic compute backend: the window's when it runs on one of `order` (it already loaded
+/// that driver safely, and the editing device shares it), else the first of `order` in `compiled`
+/// that `has_adapter` (a hardware graphics card on it), else the first of `order` in the build.
+pub fn pick_compute_backend(order: &[Backends], compiled: Backends, window: Option<Backends>, has_adapter: impl Fn(Backends) -> bool) -> Backends {
+    let usable: Vec<Backends> = order.iter().copied().filter(|b| !b.is_empty() && compiled.contains(*b)).collect();
+    if let Some(w) = window.filter(|w| usable.contains(w)) {
+        return w;
+    }
+    usable
+        .iter()
+        .copied()
+        .find(|b| has_adapter(*b))
+        .or_else(|| usable.first().copied())
+        .unwrap_or_else(|| order.first().copied().unwrap_or(Backends::PRIMARY))
+}
+
+/// The backend the window's renderer runs on (set by [`crate::offer_window_device`]).
+static WINDOW_BACKEND: Mutex<Option<Backends>> = Mutex::new(None);
+
+pub(crate) fn note_window_backend(b: wgpu::Backend) {
+    *WINDOW_BACKEND.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Backends::from(b));
+}
+
+/// Whether `backends` offers a hardware graphics card (not a software adapter).
+fn has_hardware_adapter(backends: Backends) -> bool {
+    let instance = crate::ctx::instance(backends);
+    let adapters = with_marker(&format!("adapter probe ({backends:?})"), || pollster::block_on(instance.enumerate_adapters(backends)));
+    adapters.iter().any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu)
+}
+
+/// The automatic compute backend for this process ([`pick_compute_backend`]), decided once.
+fn auto_compute_backends() -> Backends {
+    static AUTO: std::sync::OnceLock<Backends> = std::sync::OnceLock::new();
+    *AUTO.get_or_init(|| {
+        let os = std::env::consts::OS;
+        let window = *WINDOW_BACKEND.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let b = pick_compute_backend(&compute_backend_order(os), wgpu::Instance::enabled_backend_features(), window, has_hardware_adapter);
+        log::info!("gpu: compute backend {b:?} (window {window:?})");
+        b
+    })
 }
 
 /// The backends the window uses when nothing is asked for on `os`.
 pub fn default_window_backends(os: &str) -> Backends {
     match os {
-        "windows" => Backends::DX12,
+        "windows" => Backends::VULKAN,
         "macos" | "ios" => Backends::METAL,
         // eframe's default (GL only when the build has it)
         _ => Backends::PRIMARY | Backends::GL,
@@ -143,7 +195,11 @@ fn env_choice() -> BackendChoice {
 /// The backends of the compute device (`None`: `{ENV_PREFIX}_GPU_BACKEND=off`).
 pub fn compute_backends() -> Option<Backends> {
     let choice = compute_choice(env_choice(), env_is_set(), COMPUTE_PREFERENCE.get().copied());
-    resolve(choice, default_compute_backends(std::env::consts::OS), wgpu::Instance::enabled_backend_features())
+    let compiled = wgpu::Instance::enabled_backend_features();
+    match choice {
+        BackendChoice::Auto => Some(auto_compute_backends()),
+        c => resolve(c, default_compute_backends(std::env::consts::OS), compiled),
+    }
 }
 
 /// The backends for the desktop window's renderer (eframe/egui-wgpu). The window always needs
@@ -457,10 +513,9 @@ pub fn forced_window_renderer(app: Option<&str>, wgpu: Option<&str>) -> Option<W
 
 /// The order in which the window's renderers are tried on `os`: the forced one (environment)
 /// first, then the one remembered from the last good start, then the platform chain — on Windows
-/// DX12, GL, then glow. On Windows Vulkan is used only when the environment asks for it: with
-/// Vulkan loaded, a broken Vulkan driver can crash the process uncatchably (issue #136), so it is
-/// never in the automatic chain, and the renderer remembered from the last run cannot put it
-/// first either.
+/// Vulkan, DX12, GL, then glow (issue #934: Vulkan builds the kernels much faster than DX12's FXC).
+/// A broken Vulkan driver can crash the process uncatchably (issue #136): the start's marker then
+/// names it, and the next start tries it last.
 /// `failed` (the renderer the last start died in) goes last, as a last resort only. Backends not
 /// in `compiled`, and glow without `glow`, are left out; the list is never empty.
 pub fn window_renderer_order(
@@ -472,8 +527,7 @@ pub fn window_renderer_order(
     glow: bool,
 ) -> Vec<WindowRenderer> {
     let platform = match os {
-        // no Vulkan on Windows: its driver can crash the process uncatchably (issue #136)
-        "windows" => vec![Backends::DX12, Backends::GL],
+        "windows" => vec![Backends::VULKAN, Backends::DX12, Backends::GL],
         "macos" | "ios" => vec![Backends::METAL],
         _ => vec![Backends::VULKAN, Backends::GL],
     };
@@ -483,15 +537,7 @@ pub fn window_renderer_order(
         WindowRenderer::Wgpu(b) => !b.is_empty() && compiled.contains(*b),
     };
     let not_failed = |r: &WindowRenderer| Some(*r) != failed;
-    // On Windows the Vulkan driver is loaded only when the environment asks for it (the forced
-    // renderer): a broken one crashes the process uncatchably (issue #136). So neither the
-    // renderer remembered from the last run nor the one the last start died in can bring it back.
-    let no_vulkan = |r: &WindowRenderer| os != "windows" || !matches!(r, WindowRenderer::Wgpu(b) if b.contains(Backends::VULKAN));
-    let candidates = forced
-        .into_iter()
-        .chain(remembered.filter(|r| not_failed(r) && no_vulkan(r)))
-        .chain(chain.filter(not_failed))
-        .chain(failed.filter(no_vulkan));
+    let candidates = forced.into_iter().chain(remembered.filter(not_failed)).chain(chain.filter(not_failed)).chain(failed);
     let mut out: Vec<WindowRenderer> = Vec::new();
     for r in candidates {
         if usable(&r) && !out.contains(&r) {
@@ -632,51 +678,69 @@ mod tests {
     }
 
     /// The window's renderer fallback: forced, remembered, the platform chain, the failed one last.
-    /// On Windows Vulkan is not in the chain (issue #136) — see
-    /// `windows_never_uses_vulkan_unless_it_is_asked_for`.
     #[test]
     fn window_renderer_fallback_order() {
         use WindowRenderer::{Glow, Wgpu};
         let all = Backends::DX12 | Backends::VULKAN | Backends::GL | Backends::METAL;
         let (dx, vk, gl) = (Wgpu(Backends::DX12), Wgpu(Backends::VULKAN), Wgpu(Backends::GL));
-        assert_eq!(window_renderer_order(None, None, None, "windows", all, true), [dx, gl, Glow]);
-        assert_eq!(window_renderer_order(None, None, None, "windows", all, false), [dx, gl]);
+        assert_eq!(window_renderer_order(None, None, None, "windows", all, true), [vk, dx, gl, Glow]);
+        assert_eq!(window_renderer_order(None, None, None, "windows", all, false), [vk, dx, gl]);
         // a build without GL
-        assert_eq!(window_renderer_order(None, None, None, "windows", Backends::DX12 | Backends::VULKAN, true), [dx, Glow]);
+        assert_eq!(window_renderer_order(None, None, None, "windows", Backends::DX12 | Backends::VULKAN, true), [vk, dx, Glow]);
+        // a build without Vulkan: DX12 first
+        assert_eq!(window_renderer_order(None, None, None, "windows", Backends::DX12, false), [dx]);
         // remembered from the last good start goes first
-        assert_eq!(window_renderer_order(None, Some(gl), None, "windows", all, true), [gl, dx, Glow]);
+        assert_eq!(window_renderer_order(None, Some(gl), None, "windows", all, true), [gl, vk, dx, Glow]);
         // the environment wins over the remembered one
-        assert_eq!(window_renderer_order(Some(gl), Some(dx), None, "windows", all, true), [gl, dx, Glow]);
+        assert_eq!(window_renderer_order(Some(gl), Some(dx), None, "windows", all, true), [gl, dx, vk, Glow]);
         assert_eq!(window_renderer_order(Some(Glow), None, None, "windows", all, true)[0], Glow);
-        // the last start died in DX12: tried last only (also when it was remembered)
-        assert_eq!(window_renderer_order(None, Some(dx), Some(dx), "windows", all, true), [gl, Glow, dx]);
         // a forced backend that is not in the build is skipped
         assert_eq!(window_renderer_order(Some(Wgpu(Backends::METAL)), None, None, "windows", Backends::DX12, false), [dx]);
         // never empty
         assert!(!window_renderer_order(None, None, None, "windows", Backends::empty(), false).is_empty());
         assert_eq!(window_renderer_order(None, None, None, "macos", all, true), [Wgpu(Backends::METAL), Glow]);
-        // Vulkan is asked for on Windows: it is used
-        assert_eq!(window_renderer_order(Some(vk), None, None, "windows", all, true), [vk, dx, gl, Glow]);
     }
 
-    /// Issue #136: on Windows the Vulkan driver is never loaded unless it is asked for — a
-    /// broken one crashes the process uncatchably. The renderer remembered from the last run
-    /// must not put Vulkan before DX12 either.
+    /// Issue #934: Windows tries Vulkan first and falls back to DX12; a start that died in Vulkan
+    /// (a broken driver, issue #136) tries it last, also when it was remembered.
     #[test]
-    fn windows_never_uses_vulkan_unless_it_is_asked_for() {
-        let all = Backends::DX12 | Backends::VULKAN | Backends::GL | Backends::METAL;
-        let dx = WindowRenderer::Wgpu(Backends::DX12);
-        let vk = WindowRenderer::Wgpu(Backends::VULKAN);
-        // the automatic chain: DX12 first, no Vulkan in it
-        let automatic = window_renderer_order(None, None, None, "windows", all, true);
-        assert!(!automatic.contains(&vk), "the automatic Windows chain must not contain Vulkan: {automatic:?}");
-        assert_eq!(automatic.first(), Some(&dx));
-        // the renderer remembered from the last run does not put Vulkan first either
-        let remembered = window_renderer_order(None, Some(vk), None, "windows", all, true);
-        assert!(!remembered.contains(&vk), "a remembered Vulkan must not be tried: {remembered:?}");
-        assert_eq!(remembered.first(), Some(&dx));
-        // asked for explicitly (the environment), Vulkan is used
-        assert_eq!(window_renderer_order(Some(vk), None, None, "windows", all, true).first(), Some(&vk));
+    fn windows_tries_vulkan_first_and_a_vulkan_crash_puts_it_last() {
+        use WindowRenderer::{Glow, Wgpu};
+        let all = Backends::DX12 | Backends::VULKAN | Backends::GL;
+        let (dx, vk, gl) = (Wgpu(Backends::DX12), Wgpu(Backends::VULKAN), Wgpu(Backends::GL));
+        assert_eq!(window_renderer_order(None, None, None, "windows", all, true).first(), Some(&vk));
+        assert_eq!(window_renderer_order(None, Some(vk), Some(vk), "windows", all, true), [dx, gl, Glow, vk]);
+        assert_eq!(window_renderer_order(None, None, Some(vk), "windows", all, true).first(), Some(&dx));
+    }
+
+    /// Issue #934: the automatic compute backend on Windows is Vulkan, DX12 when Vulkan has no
+    /// graphics card or isn't built in, and the window's backend when it runs on one of them.
+    #[test]
+    fn compute_backend_prefers_vulkan_then_dx12() {
+        let (vk, dx) = (Backends::VULKAN, Backends::DX12);
+        let order = compute_backend_order("windows");
+        assert_eq!(order, [vk, dx]);
+        assert_eq!(default_compute_backends("windows"), vk);
+        let all = vk | dx | Backends::GL;
+        assert_eq!(pick_compute_backend(&order, all, None, |_| true), vk);
+        // no Vulkan card (or no Vulkan driver): DX12
+        assert_eq!(pick_compute_backend(&order, all, None, |b| b == dx), dx);
+        // Vulkan not in the build: DX12, without probing Vulkan
+        assert_eq!(
+            pick_compute_backend(&order, dx, None, |b| {
+                assert_ne!(b, vk);
+                true
+            }),
+            dx
+        );
+        // the window fell back to DX12 (Vulkan failed there): compute follows it, never probing
+        assert_eq!(pick_compute_backend(&order, all, Some(dx), |_| panic!("probed")), dx);
+        // a window on GL is not a compute backend: the order decides
+        assert_eq!(pick_compute_backend(&order, all, Some(Backends::GL), |_| true), vk);
+        // no card anywhere: still the first in the build (creation then reports why)
+        assert_eq!(pick_compute_backend(&order, all, None, |_| false), vk);
+        assert_eq!(compute_backend_order("macos"), [Backends::METAL]);
+        assert_eq!(compute_backend_order("linux"), [Backends::PRIMARY]);
     }
 
     /// An orderly quit while the device is still being created removes the marker, so the next

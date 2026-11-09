@@ -303,13 +303,13 @@ fn the_list_has_sections_and_each_entry_its_page() {
     assert_eq!(r["tab"], "settings", "{r}");
     assert!(has_widget(&mut h, "button:pluginSettingsSave"));
 
-    // the Permissions tab grants and revokes
+    // the Permissions tab allows (the user's click only, plugin_permissions.rs) and revokes
     click(&mut h, "button:pluginPage-permissions");
     assert!(painted(&h, "Read the catalog") && painted(&h, "example.com"), "{:?}", h.painted_text());
-    click(&mut h, "pluginPermission:test.mgr.full:0");
-    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], true, "ticking grants it");
-    click(&mut h, "pluginPermission:test.mgr.full:0");
-    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], false, "unticking revokes it");
+    assert!(h.click_as_user("pluginAllow:test.mgr.full:0"));
+    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], true, "Allow grants it");
+    click(&mut h, "pluginRevoke:test.mgr.full:0");
+    assert_eq!(listed(&mut h, "test.mgr.full").unwrap()["granted"]["catalog"], false, "Revoke takes it back");
     // About: what it is, its commands, its size; Log
     click(&mut h, "button:pluginPage-about");
     assert!(painted(&h, "Does everything.") && painted(&h, "Go Now") && painted(&h, "KB"), "{:?}", h.painted_text());
@@ -327,8 +327,16 @@ fn the_list_has_sections_and_each_entry_its_page() {
     assert!(has_widget(&mut h, "button:pluginPage-about"));
     assert!(fails(&mut h, "plugins.page", json!({"id": "test.mgr.plain", "tab": "settings"})).contains("no settings"));
     assert!(fails(&mut h, "plugins.page", json!({"id": "test.mgr.plain", "tab": "nowhere"})).contains("nowhere"));
-    // Remove takes it out of the list
+    // Remove asks first, offering to keep its data; Cancel changes nothing
     click(&mut h, "button:pluginRemove:test.mgr.plain");
+    assert!(listed(&mut h, "test.mgr.plain").is_some(), "nothing removed before the answer");
+    assert!(painted(&h, "Remove Plain?") && has_widget(&mut h, "pluginKeepData:test.mgr.plain"), "{:?}", h.painted_text());
+    click(&mut h, "button:pluginRemoveCancel:test.mgr.plain");
+    assert!(listed(&mut h, "test.mgr.plain").is_some(), "Cancel keeps it");
+    assert!(!has_widget(&mut h, "button:pluginRemoveConfirm:test.mgr.plain"), "and the question goes");
+    // confirmed, Remove takes it out of the list
+    click(&mut h, "button:pluginRemove:test.mgr.plain");
+    click(&mut h, "button:pluginRemoveConfirm:test.mgr.plain");
     assert!(listed(&mut h, "test.mgr.plain").is_none());
     assert!(!has_widget(&mut h, "pluginEntry:test.mgr.plain"));
 
@@ -361,6 +369,8 @@ fn the_list_has_sections_and_each_entry_its_page() {
     click(&mut h, "pluginEntry:test.mgr.badplugin");
     assert!(painted(&h, "It didn't load.") && painted(&h, "test.mgr.badplugin needs a newer app") && painted(&h, "test-missing-feature"));
     click(&mut h, "button:pluginRemoveFailed:test.mgr.badplugin");
+    assert!(has_widget(&mut h, "pluginEntry:test.mgr.badplugin"), "it asks first");
+    click(&mut h, "button:pluginRemoveConfirm:test.mgr.badplugin");
     assert!(!has_widget(&mut h, "pluginEntry:test.mgr.badplugin"), "removed");
     click(&mut h, "pluginEntry:test.mgr.badfilter");
     let failed = exec(&mut h, "plugin.list", json!({}))["failed"].clone();
@@ -368,10 +378,15 @@ fn the_list_has_sections_and_each_entry_its_page() {
     assert!(!why.contains("needs a newer app"), "the filter registry's reason, not the plug-in manager's: {why}");
     assert!(painted(&h, "It didn't load.") && painted(&h, &why), "{why}: {:?}", h.painted_text());
     click(&mut h, "button:pluginRemoveFailed:test.mgr.badfilter");
+    assert!(!has_widget(&mut h, "pluginKeepData:test.mgr.badfilter"), "a filter keeps no data");
+    click(&mut h, "button:pluginRemoveConfirm:test.mgr.badfilter");
     assert!(!has_widget(&mut h, "pluginEntry:test.mgr.badfilter"), "removed");
 
     click(&mut h, "pluginEntry:test.mgr.filter");
     click(&mut h, "button:pluginRemove:test.mgr.filter");
+    assert!(listed(&mut h, "test.mgr.filter").is_some(), "it asks first");
+    assert!(!has_widget(&mut h, "pluginKeepData:test.mgr.filter"), "a filter keeps no data");
+    click(&mut h, "button:pluginRemoveConfirm:test.mgr.filter");
     assert!(listed(&mut h, "test.mgr.filter").is_none());
     exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.full"}));
     *lcc_engine::cmd::plugins::manager() = before;
@@ -642,4 +657,135 @@ fn an_open_settings_tab_follows_its_plugin() {
     exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.follow"}));
     ui_cmd(&mut h, "plugins.manager", json!({"open": false}));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module another one with its id stands in for has a row of its own, and removing it leaves the
+/// plug-in that loaded; modules past the most the folder loads get a line above the list.
+#[test]
+fn a_duplicate_module_has_its_own_row_and_skipped_modules_a_line() {
+    let _turn = turn();
+    let dir = folder("duplicate");
+    let mut h = app();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::in_memory());
+    let plugin = json!({"id": "test.mgr.dup", "name": "Dup", "version": "1.0.0"});
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "dup", &plugin)}));
+    {
+        let mut g = lcc_engine::cmd::plugins::manager();
+        let m = g.as_mut().unwrap();
+        m.failed.push(lcc_plugins::Failed {
+            file: "z-copy.wasm".into(),
+            error: lcc_plugins::duplicate_error("dup.wasm"),
+            missing: vec![],
+            id: "test.mgr.dup".into(),
+            path: None,
+        });
+        m.skipped = vec![dir.join("x1.wasm"), dir.join("x2.wasm"), dir.join("x3.wasm")];
+    }
+    ui_cmd(&mut h, "plugins.manager", json!({"open": true}));
+    assert!(painted(&h, "3 modules in the plug-ins folder weren't loaded"), "{:?}", h.painted_text());
+    assert!(has_widget(&mut h, "pluginEntry:test.mgr.dup") && has_widget(&mut h, "pluginEntry:z-copy.wasm"), "a row each");
+    click(&mut h, "pluginEntry:z-copy.wasm");
+    assert!(painted(&h, "another module has this id"), "{:?}", h.painted_text());
+    click(&mut h, "button:pluginRemoveFailed:z-copy.wasm");
+    click(&mut h, "button:pluginRemoveConfirm:z-copy.wasm");
+    assert!(!has_widget(&mut h, "pluginEntry:z-copy.wasm"), "its row is gone");
+    assert!(listed(&mut h, "test.mgr.dup").is_some(), "the plug-in that loaded stays");
+    exec(&mut h, "plugin.uninstall", json!({"id": "test.mgr.dup"}));
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// After an update, the plug-in's page offers to go back to the version it replaced; going back
+/// from there keeps the programs the user granted (a command's rollback drops them). With no
+/// previous version, there is no button.
+#[test]
+fn the_page_goes_back_to_the_previous_version() {
+    let _turn = turn();
+    let dir = folder("rollback");
+    let plugins = dir.join("plugins");
+    let _ = std::fs::remove_dir_all(&plugins);
+    let mut h = app();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&plugins).unwrap());
+    let id = "test.mgr.rollback";
+    let manifest = |v: &str| {
+        json!({"id": id, "name": "Back", "version": v, "requires": ["programs"],
+            "permissions": {"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]}})
+    };
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "back-1", &manifest("1.0.0"))}));
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    let button = format!("button:pluginRollback:{id}");
+    assert!(!has_widget(&mut h, &button), "no version to go back to yet");
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "back-2", &manifest("2.0.0"))}));
+    {
+        let grant = lcc_plugins::Manifest::parse(manifest("2.0.0").to_string().as_bytes()).unwrap().permissions;
+        let mut g = lcc_engine::cmd::plugins::manager();
+        g.as_mut().unwrap().set_grant_by_user(id, grant).unwrap();
+    }
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    assert!(painted(&h, "Go Back to Version 1.0.0"), "{:?}", h.painted_text());
+    // the user's click (an agent's acts as plugin.rollback, which drops the programs)
+    assert!(h.click_as_user(&button));
+    let after = listed(&mut h, id).unwrap();
+    assert!(!has_widget(&mut h, &button), "one level deep");
+    exec(&mut h, "plugin.uninstall", json!({"id": id}));
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(after["version"], "1.0.0");
+    assert_eq!(after["granted"]["programs"].as_array().map(Vec::len), Some(1), "the page keeps the programs granted: {after}");
+}
+
+/// Ticking "Keep its data and settings" before confirming Remove keeps the settings file.
+#[test]
+fn remove_keeps_the_settings_when_asked() {
+    let _turn = turn();
+    let dir = folder("keepdata");
+    let plugins = dir.join("plugins");
+    let _ = std::fs::remove_dir_all(&plugins);
+    let mut h = app();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&plugins).unwrap());
+    let id = "test.mgr.keepdata";
+    let manifest = json!({"id": id, "name": "Keeper", "version": "1.0.0", "settings": [{"key": "t", "label": "T", "type": "text", "default": "d"}]});
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "keeper", &manifest)}));
+    {
+        let mut g = lcc_engine::cmd::plugins::manager();
+        g.as_mut().unwrap().set_settings(id, &json!({"t": "kept"}), &mut lcc_plugins::NoHost).unwrap();
+    }
+    let file = plugins.join("settings").join(format!("{id}.json"));
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    click(&mut h, &format!("button:pluginRemove:{id}"));
+    click(&mut h, &format!("pluginKeepData:{id}"));
+    click(&mut h, &format!("button:pluginRemoveConfirm:{id}"));
+    let removed = listed(&mut h, id).is_none();
+    let kept = file.exists();
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(removed, "the plug-in went");
+    assert!(kept, "its settings stayed");
+}
+
+/// Going back to a version without a header picture: the page shows the plug-in's name again, not
+/// the newer version's picture.
+#[test]
+fn going_back_drops_a_picture_the_old_version_lacks() {
+    let _turn = turn();
+    let dir = folder("rollback-pictures");
+    let plugins = dir.join("plugins");
+    let _ = std::fs::remove_dir_all(&plugins);
+    let mut h = app();
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&plugins).unwrap());
+    let id = "test.mgr.pictured";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 2'><rect width='8' height='2'/></svg>";
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "pictured-1", &json!({"id": id, "name": "Pictured", "version": "1.0.0"}))}));
+    let v2 = json!({"id": id, "name": "Pictured", "version": "2.0.0", "icon": svg, "header": svg});
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "pictured-2", &v2)}));
+    let names = |h: &Headless| h.painted_text().iter().filter(|t| t.as_str() == "Pictured").count();
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    let with_header = names(&h);
+    click(&mut h, &format!("button:pluginRollback:{id}"));
+    ui_cmd(&mut h, "plugins.page", json!({"id": id}));
+    let after = names(&h);
+    exec(&mut h, "plugin.uninstall", json!({"id": id}));
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(after, with_header + 1, "the page's name comes back in place of the header ({with_header} before, {after} after)");
 }
