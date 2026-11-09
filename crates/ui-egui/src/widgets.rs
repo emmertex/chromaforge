@@ -417,6 +417,12 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
         resp.request_focus();
         ui.data_mut(|d| d.insert_temp(focused_slider_key(), id));
     }
+    // egui's arrow-key focus moves must not carry the focus to a neighbouring widget: the slider
+    // keeps Up / Down and Left / Right reach the photo shortcuts (#880)
+    if resp.has_focus() {
+        let lock = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() };
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, lock));
+    }
     // A drag that leaves the row disarms too (it keeps dragging: that needs no wheel selection),
     // and one that only starts once the pointer is outside doesn't arm it again.
     if selected && pointer_in_row && !left_row {
@@ -849,6 +855,12 @@ fn pill_slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label
     });
     if enabled && (resp.clicked() || resp.drag_started()) {
         resp.request_focus();
+    }
+    // egui's arrow-key focus moves must not carry the focus to a neighbouring widget: the slider
+    // keeps Up / Down and Left / Right reach the photo shortcuts (#880)
+    if resp.has_focus() {
+        let lock = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() };
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, lock));
     }
     let mut out = SliderOut::default();
     if more && enabled {

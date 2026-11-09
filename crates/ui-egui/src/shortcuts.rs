@@ -448,9 +448,10 @@ fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
         return ctx.input(|input| input.key_pressed(Key::Escape))
             && app.widgets.iter().any(|(widget, _)| widget.starts_with("sliderField:") && crate::text_field::was_editing(ctx, widget));
     }
-    // a selected slider keeps its arrow keys; everything else is a shortcut
+    // a selected slider keeps the keys that nudge it (Up / Down); Left / Right still change the
+    // photo, so a click or drag on a slider doesn't stop the arrows from browsing (#880)
     if crate::widgets::slider_has_focus(ctx) {
-        return ctx.input(|input| [Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown].iter().any(|key| input.key_pressed(*key)));
+        return ctx.input(|input| [Key::ArrowUp, Key::ArrowDown].iter().any(|key| input.key_pressed(*key)));
     }
     // a handle on the photo keeps the arrows (it moves) and Return / Space (it acts)
     if crate::canvas_keys::has_focus(ctx) {
