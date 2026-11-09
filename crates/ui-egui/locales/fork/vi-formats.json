@@ -84,6 +84,7 @@
   "Rendered {ok} of {total} to DNG": "Rendered {ok} of {total} to DNG",
   "Restore Built-in Looks ({n})": "Khôi phục giao diện tích hợp ({n})",
   "Second graphics card not used: {why}": "Không dùng card đồ họa thứ hai: {why}",
+  "Selected cell {n}": "Ô đã chọn {n}",
   "Sends this area to {name}, in {} pieces.": "Gửi vùng này tới {name} thành {} phần.",
   "Sends this {} × {} px area to {name}.": "Gửi vùng {} × {} px này tới {name}.",
   "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Đã gửi thành một phần ở {}% độ phân giải ảnh: mềm hơn phần còn lại.",

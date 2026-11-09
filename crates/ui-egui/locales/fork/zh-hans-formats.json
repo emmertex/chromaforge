@@ -74,6 +74,7 @@
   "Running on the processor: {}.": "在处理器上运行：{}。",
   "Running on {}.": "在 {} 上运行。",
   "Second graphics card not used: {why}": "未使用第二块显卡：{why}",
+  "Selected cell {n}": "所选单元格 {n}",
   "Sent {n} page(s) to the printer (job {j})": "已向打印机发送 {n} 页（作业 {j}）",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "先显示模型条款，然后从 {host} 下载 {}、安装并开始使用。不会发送任何其他数据。",
   "Slideshow {n}": "幻灯片 {n}",

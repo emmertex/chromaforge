@@ -84,6 +84,7 @@
   "Rendered {ok} of {total} to DNG": "Rendered {ok} of {total} to DNG",
   "Restore Built-in Looks ({n})": "Återställ inbyggda looks ({n})",
   "Second graphics card not used: {why}": "Andra grafikkortet används inte: {why}",
+  "Selected cell {n}": "Markerad cell {n}",
   "Sends this area to {name}, in {} pieces.": "Skickar detta område till {name} i {} delar.",
   "Sends this {} × {} px area to {name}.": "Skickar detta område på {} × {} px till {name}.",
   "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Skickat som en del i {} % av fotots upplösning: mjukare än resten.",

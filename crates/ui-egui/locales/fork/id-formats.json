@@ -84,6 +84,7 @@
   "Rendered {ok} of {total} to DNG": "Rendered {ok} of {total} to DNG",
   "Restore Built-in Looks ({n})": "Pulihkan Tampilan Bawaan ({n})",
   "Second graphics card not used: {why}": "Kartu grafis kedua tidak dipakai: {why}",
+  "Selected cell {n}": "Sel terpilih {n}",
   "Sends this area to {name}, in {} pieces.": "Mengirim area ini ke {name} dalam {} bagian.",
   "Sends this {} × {} px area to {name}.": "Mengirim area {} × {} px ini ke {name}.",
   "Sent as one piece at {}% of the photo's resolution: softer than the rest.": "Dikirim sebagai satu bagian pada {}% resolusi foto: lebih lembut dari bagian lain.",
