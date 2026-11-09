@@ -4472,7 +4472,8 @@ mod tests {
         exec(&mut h, "develop.set", json!({"values": {"light.exposure": 1.0, "color.vibrance": 30}}));
         exec(&mut h, "develop.copy", json!({"groups": ["light", "color"]}));
         exec(&mut h, "library.select", json!({"ids": [ids[1]]}));
-        h.request("ui.key", json!({"key": "V", "cmd": true, "shift": true}), t);
+        // (⇧⌘V pastes at once in the Classic set; the dialog is Paste Selected Settings…)
+        exec(&mut h, "dialog.pasteSettings", json!({}));
         h.settle(SETTLE);
         let Some(crate::state::Dialog::PasteSettings { groups }) = &h.app.ui.dialog else { panic!("dialog not open: {:?}", h.app.ui.dialog) };
         assert_eq!(lcc_develop::SettingsPick::from_ids(groups), lcc_develop::SettingsPick::from_ids(&["light", "color"]));
