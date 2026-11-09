@@ -446,6 +446,77 @@ pub fn masks(values: &Values, aspect: f64) -> (Vec<Value>, Vec<String>) {
     (out, skipped)
 }
 
+/// Put a Lightroom packet's spots and mask shapes (mapped by [`spots`] and [`masks`]) in the app's frame. Lightroom
+/// normalizes them to the stored image, before its orientation `o`; the app to the oriented one. `stored_aspect` is the
+/// stored image's width / height, `upright_aspect` the oriented one's: radial sizes are refitted from the stored frame
+/// and left as [`DEFAULT_ASPECT`]-based values again, since [`crate::sidecar::merge_into`] refits them to the photo.
+/// Points map with the image; a radial's sizes swap on a quarter turn and its angle turns (a mirror reverses it); a
+/// spot's source offset turns as a vector. Range and AI masks carry no geometry.
+pub fn orient_geometry(partial: &mut Value, o: lcc_geom::Orientation, stored_aspect: f64, upright_aspect: f64) {
+    if o == lcc_geom::Orientation::Normal || !(stored_aspect.is_finite() && stored_aspect > 0.0) {
+        return;
+    }
+    let (w, h) = (stored_aspect, 1.0);
+    let (ow, oh) = if o.swaps_axes() { (h, w) } else { (w, h) };
+    let map = |x: f64, y: f64| {
+        let (u, v) = o.map(x * w, y * h, w, h);
+        (u / ow, v / oh)
+    };
+    let map_pt = |p: &mut Value| {
+        if let (Some(x), Some(y)) = (p["x"].as_f64(), p["y"].as_f64()) {
+            let (u, v) = map(x, y);
+            *p = pt(u, v);
+        }
+    };
+    if let Some(spots) = partial.get_mut("spots").and_then(Value::as_array_mut) {
+        for s in spots {
+            let first = s["points"].get(0).and_then(|p| Some((p["x"].as_f64()?, p["y"].as_f64()?)));
+            if let (Some((x, y)), Some(dx), Some(dy)) = (first, s["source_offset"]["x"].as_f64(), s["source_offset"]["y"].as_f64()) {
+                let ((u0, v0), (u1, v1)) = (map(x, y), map(x + dx, y + dy));
+                s["source_offset"] = pt(u1 - u0, v1 - v0);
+            }
+            for p in s["points"].as_array_mut().into_iter().flatten() {
+                map_pt(p);
+            }
+        }
+    }
+    let (flip, turns) = o.to_parts();
+    refit_radials(partial, DEFAULT_ASPECT, stored_aspect);
+    for m in partial.get_mut("masks").and_then(Value::as_array_mut).into_iter().flatten() {
+        for c in m["components"].as_array_mut().into_iter().flatten() {
+            let s = &mut c["shape"];
+            match s["kind"].as_str() {
+                Some("linear") => {
+                    map_pt(&mut s["start"]);
+                    map_pt(&mut s["end"]);
+                }
+                Some("radial") => {
+                    map_pt(&mut s["center"]);
+                    if turns % 2 == 1 {
+                        let (rx, ry) = (s["rx"].clone(), s["ry"].clone());
+                        s["rx"] = ry;
+                        s["ry"] = rx;
+                    }
+                    if let Some(a) = s["angle"].as_f64() {
+                        // an ellipse looks the same half a turn on, so the turn's direction doesn't matter
+                        let a = if flip { -a } else { a } + 90.0 * f64::from(turns);
+                        s["angle"] = json!((a + 180.0).rem_euclid(360.0) - 180.0);
+                    }
+                }
+                Some("brush") => {
+                    for st in s["strokes"].as_array_mut().into_iter().flatten() {
+                        for p in st["points"].as_array_mut().into_iter().flatten() {
+                            map_pt(p);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    refit_radials(partial, upright_aspect, DEFAULT_ASPECT);
+}
+
 /// The containers spot removal is stored in: `RetouchAreas` (current, one struct per spot with a
 /// mask component) and `RetouchInfo` (older, one `key = value, …` line per spot; still written
 /// beside `RetouchAreas` for older readers and read on its own when that is all there is).

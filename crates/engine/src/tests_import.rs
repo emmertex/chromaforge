@@ -3376,6 +3376,55 @@ fn an_import_names_the_files_it_left_as_still_being_copied() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Lightroom keeps spots and mask shapes on the stored image, before its orientation, as it does the crop; the app
+/// keeps them on the oriented photo. A brushed Content-Aware Remove on a raw turned to portrait (8) comes in where
+/// Lightroom shows it: (0.69, 0.9) on the stored frame is (0.9, 0.31) on the photo turned a quarter counter-clockwise.
+/// Before, it landed on the stored-frame spot of the turned photo (sunset g04: on the stairs, not the camera rig).
+#[test]
+fn lightroom_spots_and_masks_on_a_turned_raw_land_where_lightroom_shows_them() {
+    use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+    let px: Vec<u8> = (0..60 * 40).flat_map(|i| [(i % 251) as u8, 90, 200]).collect();
+    let j = encode_jpeg(&EncodeImage::new(60, 40, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+    let off = 8 + 2 + 24 + 4;
+    let mut nef = b"II*     ".to_vec();
+    for (tag, v) in [(513u16, off as u32), (514, j.len() as u32)] {
+        nef.extend_from_slice(&tag.to_le_bytes());
+        nef.extend_from_slice(&[4, 0, 1, 0, 0, 0]);
+        nef.extend_from_slice(&v.to_le_bytes());
+    }
+    nef.extend_from_slice(&[0, 0, 0, 0]);
+    nef.extend_from_slice(&j);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    for (exif, spot_at, centre_at, swapped) in [("8", (0.9, 0.31), (0.3, 0.8), true), ("1", (0.69, 0.9), (0.2, 0.3), false)] {
+        let src = temp_dir("lr-turned-spots");
+        std::fs::write(src.join("DSC_0003.NEF"), &nef).unwrap();
+        let xmp = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" tiff:Orientation="{exif}" crs:Version="17.0" crs:ProcessVersion="15.4" crs:HasSettings="True">
+ <crs:RetouchAreas><rdf:Seq><rdf:li><rdf:Description crs:SpotType="heal_patchmatch" crs:SourceState="sourceAutoComputed" crs:Opacity="1">
+  <crs:Masks><rdf:Seq><rdf:li><rdf:Description crs:What="Mask/Paint" crs:Radius="0.03" crs:MaskValue="1"><crs:Dabs><rdf:Seq><rdf:li>d 0.69 0.9</rdf:li><rdf:li>d 0.7 0.88</rdf:li></rdf:Seq></crs:Dabs></rdf:Description></rdf:li></rdf:Seq></crs:Masks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:RetouchAreas>
+ <crs:MaskGroupBasedCorrections><rdf:Seq><rdf:li><rdf:Description crs:What="Correction" crs:CorrectionAmount="1" crs:CorrectionActive="true" crs:LocalExposure2012="0.5">
+  <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/CircularGradient" crs:Top="0.2" crs:Left="0.1" crs:Bottom="0.4" crs:Right="0.3" crs:Angle="10" crs:Feather="50" crs:Version="2"/></rdf:Seq></crs:CorrectionMasks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:MaskGroupBasedCorrections>
+</rdf:Description></rdf:RDF></x:xmpmeta>"#
+        );
+        std::fs::write(src.join("DSC_0003.xmp"), xmp).unwrap();
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        assert_eq!(ids(&r, "imported"), 1, "{r}");
+        let p = s.catalog.photos().next().unwrap();
+        let spot = p.develop.spots.first().expect("the spot came in");
+        let at = spot.points.first().expect("its path");
+        assert!(near(at.x, spot_at.0) && near(at.y, spot_at.1), "orientation {exif}: spot at {at:?}, want {spot_at:?}");
+        let comp = p.develop.masks.first().and_then(|m| m.components.first()).expect("the radial mask came in");
+        let lcc_develop::MaskShape::Radial { center, rx, ry, .. } = &comp.shape else { panic!("not radial: {:?}", comp.shape) };
+        assert!(near(center.x, centre_at.0) && near(center.y, centre_at.1), "orientation {exif}: radial at {center:?}, want {centre_at:?}");
+        // the ellipse was wider than tall on the stored frame (0.2 × 0.2 of a 3:2 image): turned, it is taller
+        assert_eq!(rx < ry, swapped, "orientation {exif}: rx {rx}, ry {ry}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
 /// A photo turned in Lightroom comes in turned: Lightroom writes the whole orientation as the sidecar's
 /// `tiff:Orientation`, and the photo takes what it adds to the file's own (none here, so a half turn for 3).
 #[test]

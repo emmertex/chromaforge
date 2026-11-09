@@ -535,7 +535,7 @@ impl SidecarData {
         self
     }
 
-    /// The patch with a Lightroom crop put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
+    /// The patch with a Lightroom crop, spots and mask shapes put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
     /// of the straightened crop on the stored image, before its orientation (the sidecar's whole orientation, else
     /// the file's) and the straighten turn, as in a Lightroom catalog
     /// ([`crate::lightroom_catalog::catalog_crop`]). `upright` is the photo's size turned by the file's orientation.
@@ -547,7 +547,11 @@ impl SidecarData {
             && w > 0
             && h > 0
         {
-            crate::lightroom_catalog::catalog_crop(v, self.turned_to.unwrap_or(file), f64::from(w) / f64::from(h));
+            let o = self.turned_to.unwrap_or(file);
+            let stored = f64::from(w) / f64::from(h);
+            crate::lightroom_catalog::catalog_crop(v, o, stored);
+            // spots and masks are on the stored image too
+            crate::crs_masks::orient_geometry(v, o, stored, f64::from(upright.0) / f64::from(upright.1));
         }
         self
     }
