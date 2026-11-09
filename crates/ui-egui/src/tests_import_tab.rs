@@ -656,3 +656,24 @@ fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
     assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
     let _ = std::fs::remove_dir_all(&deep_root);
 }
+
+/// Issue #881: the Import tab's Show Not Imported stays with that tab. Browsing the same folder
+/// from the sidebar's Local afterwards shows its library photos too, as Folders does.
+#[test]
+fn local_shows_a_library_folders_photos_after_show_not_imported() {
+    let dir = folder("local881", 2);
+    let path = dir.to_string_lossy().to_string();
+    let mut h = app([1400.0, 900.0], "classic");
+    h.settle(SETTLE);
+    exec(&mut h, "library.import", json!({"paths": [path]}));
+    exec(&mut h, "library.browse", json!({"path": path, "show": "notImported"}));
+    assert_eq!(h.app.session.visible().len(), 0, "every file is in the library already");
+    exec(&mut h, "local.addRoot", json!({"path": path}));
+    let row = format!("source:local:{path}");
+    assert!(h.step_until(T, |h| h.app.widgets.iter().any(|(w, _)| *w == row)), "the Local row");
+    assert_eq!(h.request("ui.clickWidget", json!({"id": row}), T)["ok"], true);
+    h.settle(SETTLE);
+    assert!(h.app.session.browse.as_ref().is_some_and(|b| !b.not_imported));
+    assert_eq!(h.app.session.visible().len(), 2, "the library photos show");
+    let _ = std::fs::remove_dir_all(&dir);
+}
