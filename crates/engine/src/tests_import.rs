@@ -962,6 +962,59 @@ fn find_missing_does_not_take_a_look_alike_for_a_file_name_with_a_backslash() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A record made without its file being read (a Lightroom catalog import whose original wasn't
+/// there) has no exposure information. Locating the file, by hand or with Find Missing Photos,
+/// reads it from the file; undo takes the record back to what it was (adapted from upstream #3969).
+#[test]
+fn a_found_photo_reads_the_exposure_its_record_never_had() {
+    use lcc_catalog::{Op, Photo, Source};
+    use lcc_tiff::{ByteOrder, IfdBuilder, TiffWriter, Value as Tv};
+    let dir = temp_dir("found-reads-exposure");
+    let mut exif = IfdBuilder::new();
+    exif.set(0x829a, Tv::Rational(vec![(1, 250)]));
+    exif.set(0x829d, Tv::Rational(vec![(28, 10)]));
+    exif.set(0x8827, Tv::Short(vec![400]));
+    exif.set(0x920a, Tv::Rational(vec![(50, 1)]));
+    let mut ifd0 = IfdBuilder::new();
+    ifd0.set(0x010f, Tv::Ascii("Canon".into()));
+    ifd0.set(0x0110, Tv::Ascii("Canon EOS 5D".into()));
+    ifd0.set_child(0x8769, exif);
+    let block = TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap();
+    let mut s = Session::new().with_fs();
+    let mut ids = Vec::new();
+    for (name, seed) in [("a.png", 1), ("b.png", 2)] {
+        let file = dir.join("found").join(name);
+        write_png_with_metadata(&file, seed, Some(&block), None);
+        let id = s.catalog.alloc_photo_id();
+        let mut p = Photo::new(
+            id,
+            Source::File { path: dir.join("gone").join(name).to_string_lossy().to_string() },
+            name,
+            "PNG",
+            48,
+            32,
+            "2026-01-01T00:00:00",
+        );
+        p.file_size = std::fs::metadata(&file).unwrap().len();
+        s.commit("Add", Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        ids.push(id);
+    }
+    let exposure = |p: &Photo| (p.meta.shutter.clone(), p.meta.aperture, p.meta.iso, p.meta.focal_mm);
+    assert_eq!(exposure(s.catalog.photo(ids[0]).unwrap()), (String::new(), None, None, None));
+    s.execute("photo.relink", &json!({"id": ids[0].0, "path": dir.join("found/a.png").to_string_lossy()})).unwrap();
+    let a = s.catalog.photo(ids[0]).unwrap();
+    assert_eq!(exposure(a), ("1/250".into(), Some(2.8), Some(400), Some(50.0)), "Locate reads the file's exposure");
+    let r = s.execute("library.findMissing", &json!({"folder": dir.join("found").to_string_lossy()})).unwrap();
+    assert_eq!(r["found"].as_array().map(Vec::len), Some(1), "{r}");
+    let b = s.catalog.photo(ids[1]).unwrap();
+    assert_eq!(exposure(b), ("1/250".into(), Some(2.8), Some(400), Some(50.0)), "Find Missing Photos reads the file's exposure");
+    s.execute("edit.undo", &json!({})).unwrap();
+    let b = s.catalog.photo(ids[1]).unwrap();
+    assert_eq!(exposure(b), (String::new(), None, None, None));
+    assert!(matches!(&b.source, Source::File { path } if path.contains("gone")), "{:?}", b.source);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn missing_files_are_found_and_relinked() {
     let dir = std::env::temp_dir().join(format!("lc-missing-{}", std::process::id()));
@@ -4280,4 +4333,115 @@ fn before_is_the_import_state_and_set_before_is_kept() {
     let missing = lcc_catalog::Op::SetBefore { id: lcc_catalog::PhotoId(u64::MAX), before: None };
     assert!(s.commit("Set Before", missing).is_err());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reload_relinked_virtual_copy_reads_its_own_file() {
+    reload_relinked_virtual_copy(true);
+}
+
+#[test]
+fn reload_original_leaves_relinked_virtual_copy_unchanged() {
+    reload_relinked_virtual_copy(false);
+}
+
+#[test]
+fn reload_copy_refreshes_family_and_keeps_the_metadata_target() {
+    reload_copy_family_metadata(false);
+}
+
+#[test]
+fn reload_selected_copies_fill_metadata_after_deduplication() {
+    reload_copy_family_metadata(true);
+}
+
+fn reload_copy_family_metadata(select_sibling: bool) {
+    use crate::cmd::reload;
+    let dir = temp_dir(&format!("reload-copy-family-{select_sibling}"));
+    let path = dir.join("original.png");
+    write_png(&path, 10);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let original = s.active().unwrap();
+    let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+    let copy = lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap());
+    let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+    let sibling = lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap());
+    s.execute("develop.set", &json!({"ids": [copy.0], "control": "light.exposure", "value": 0.7})).unwrap();
+    let before: Vec<_> = [original, copy, sibling].map(|id| s.catalog.photo(id).unwrap().clone()).into();
+    let old_items = reload::plan(&mut s, &json!({"ids": [original.0]})).unwrap();
+    let old_info = reload::file_probe(&s).unwrap()(&path.to_string_lossy()).unwrap();
+    write_png(&path, 200);
+    let targets = if select_sibling { vec![copy.0, sibling.0] } else { vec![copy.0] };
+    let items = reload::plan(&mut s, &json!({"ids": targets})).unwrap();
+    assert_eq!(items.len(), 1, "one probe per shared file");
+    assert_eq!(items[0].id, copy, "keep the explicit metadata target");
+    let mut info = reload::file_probe(&s).unwrap()(&path.to_string_lossy()).unwrap();
+    info.meta.camera = "new camera metadata".into();
+    let changed = reload::apply(&mut s, items, vec![Ok(info)]).unwrap();
+    assert_eq!(changed.len(), 3);
+    for old in &before {
+        let new = s.catalog.photo(old.id).unwrap();
+        assert_ne!(new.content_hash, old.content_hash);
+        assert_eq!(new.develop, old.develop);
+        assert_eq!(new.meta.camera, if old.id == copy || (select_sibling && old.id == sibling) { "new camera metadata" } else { "" });
+    }
+    assert!(reload::apply(&mut s, old_items, vec![Ok(old_info)]).unwrap().is_empty(), "the newer copy reload supersedes its original's old result");
+    s.execute("edit.undo", &json!({})).unwrap();
+    for old in &before {
+        assert_eq!(s.catalog.photo(old.id).unwrap(), old);
+    }
+    s.execute("edit.redo", &json!({})).unwrap();
+    for old in &before {
+        assert_ne!(s.catalog.photo(old.id).unwrap().content_hash, old.content_hash);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn reload_relinked_virtual_copy(from_copy: bool) {
+    let dir = temp_dir(&format!("reload-relinked-copy-{from_copy}"));
+    let original_path = dir.join("original.png");
+    let copy_path = dir.join("other.png");
+    write_png(&original_path, 10);
+    write_png(&copy_path, 20);
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [original_path.to_string_lossy()]})).unwrap();
+    let original = lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap());
+    let mut copies = Vec::new();
+    for _ in 0..2 {
+        let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+        copies.push(lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap()));
+    }
+    let (copy, sibling) = (copies[0], copies[1]);
+    s.execute("photo.relink", &json!({"id": copy.0, "path": copy_path.to_string_lossy()})).unwrap();
+    assert_eq!(s.catalog.photo(copy).unwrap().copy_of, Some(original));
+    let before: Vec<_> = [original, sibling, copy].into_iter().map(|id| s.catalog.photo(id).unwrap().clone()).collect();
+    write_png(&original_path, 100);
+    write_png(&copy_path, 200);
+
+    if from_copy {
+        // A relinked copy keeps its own probe; same-file siblings still share one original probe.
+        let items = crate::cmd::reload::plan(&mut s, &json!({"ids": [copy.0, original.0, sibling.0]})).unwrap();
+        assert_eq!(items.iter().map(|item| item.id).collect::<Vec<_>>(), vec![copy, original]);
+        assert_eq!(items[0].path, copy_path.to_string_lossy());
+        assert_eq!(items[1].path, original_path.to_string_lossy());
+    }
+    let target = if from_copy { copy } else { original };
+    let changed = if from_copy { vec![copy] } else { vec![original, sibling] };
+    let r = s.execute("photo.reload", &json!({"ids": [target.0]})).unwrap();
+    assert_eq!(r["reloaded"], json!(changed.iter().map(|id| id.0).collect::<Vec<_>>()));
+    for old in &before {
+        let new = s.catalog.photo(old.id).unwrap();
+        if changed.contains(&old.id) {
+            assert_ne!(new.content_hash, old.content_hash);
+            assert_eq!(new.develop, old.develop);
+        } else {
+            assert_eq!(new, old, "a photo using another file stays unchanged");
+        }
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
+    for old in &before {
+        assert_eq!(s.catalog.photo(old.id).unwrap(), old, "reload remains one undo step");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }

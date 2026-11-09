@@ -84,6 +84,12 @@ impl Files {
         self.lock().files.get(name).cloned()
     }
 
+    /// Is there a stored entry under `name/` (the mirror's way of holding a folder's files)?
+    pub fn has_folder(&self, name: &str) -> bool {
+        let prefix = format!("{name}/");
+        self.lock().files.keys().any(|k| k.starts_with(&prefix))
+    }
+
     /// Replace a file.
     pub fn write(&self, name: &str, data: &[u8]) {
         let mut m = self.lock();
@@ -192,6 +198,11 @@ impl Store for FilesStore {
     }
     fn describe(&self) -> String {
         "browser storage".into()
+    }
+    /// Without this the trait default (`false`) would let a library with a `segments` folder open
+    /// and be overwritten (upstream #3962).
+    fn has_folder(&mut self, name: &str) -> io::Result<bool> {
+        Ok(self.0.has_folder(name))
     }
 }
 
