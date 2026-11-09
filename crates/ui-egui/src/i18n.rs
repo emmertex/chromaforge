@@ -964,7 +964,9 @@ mod tests {
     #[test]
     fn translated_catalogs_do_not_use_missing_menu_triangles() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
-        for entry in std::fs::read_dir(dir).unwrap() {
+        // upstream's catalogs and the fork's rows the build merges over them (`locales/fork/`)
+        let entries = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("fork")).unwrap());
+        for entry in entries {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
@@ -1668,16 +1670,15 @@ mod tests {
         )
     }
 
-    /// A language outside `tests_i18n_coverage::PARTIAL` lacks none of the messages and formats the
-    /// gaps report knows (Help ▸ What's New's lines aside, upstream's release notes): a gap would show
-    /// English text.
+    /// No language lacks any of the messages and formats the gaps report knows (Help ▸ What's New's
+    /// lines aside, upstream's release notes): a gap would show English text.
     #[test]
-    fn complete_languages_have_no_translation_gaps() {
+    fn no_language_has_translation_gaps() {
         let notes = whats_new_lines();
         let messages: std::collections::BTreeSet<String> = plain_messages().into_iter().filter(|m| !notes.contains(&m.as_str())).collect();
         let formats = format_messages();
         let mut missing = Vec::new();
-        for language in Locale::ALL.iter().filter(|language| **language != Locale::En && !crate::tests_i18n_coverage::PARTIAL.contains(language)) {
+        for language in Locale::ALL.iter().filter(|language| **language != Locale::En) {
             let (plain, format) = gaps(*language, &messages, &formats);
             missing.extend(plain.iter().map(|m| format!("{} lacks {m:?}", language.code())));
             missing.extend(format.iter().map(|m| format!("{} lacks the format {m:?}", language.code())));
