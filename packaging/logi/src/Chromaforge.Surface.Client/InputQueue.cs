@@ -1,16 +1,16 @@
-// Console input waiting to go to LightCraft: dial ticks merged, repeated presses dropped.
+// Console input waiting to go to Chromaforge: dial ticks merged, repeated presses dropped.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 // Portions from TactileBridge (the author's Capture One plugin, CaptureOneAdjustment.cs): a dial
 // that reverses takes the new direction at once instead of finishing the old one.
 
 using System.Text.Json.Nodes;
 
-namespace LightCraft.Surface.Client;
+namespace Chromaforge.Surface.Client;
 
 /// <summary>
 /// The input events not sent yet, in order. The client sends them as ONE <c>surface.input</c>
-/// request and only while no other is waiting for its reply, so when LightCraft is slow the
-/// events pile up here, merged, instead of as hundreds of requests that LightCraft then replays
+/// request and only while no other is waiting for its reply, so when Chromaforge is slow the
+/// events pile up here, merged, instead of as hundreds of requests that Chromaforge then replays
 /// in a burst ("the knob freezes, then clicks itself five times"):
 /// <list type="bullet">
 /// <item>ticks of the same dial add up into one event (unless a press came in between, which
@@ -37,7 +37,7 @@ public sealed class InputQueue
     /// Keys whose repeated press was dropped: their next release is dropped too.
     private readonly HashSet<string> _swallowRelease = new(StringComparer.Ordinal);
 
-    /// <summary>The most events one request carries (LightCraft takes at most 256).</summary>
+    /// <summary>The most events one request carries (Chromaforge takes at most 256).</summary>
     public const int MaxBatch = 200;
 
     /// <summary>The most events kept waiting; beyond it the oldest presses give way.</summary>

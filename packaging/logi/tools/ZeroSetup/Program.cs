@@ -1,14 +1,14 @@
-// Zero-setup check: LightCraft trusts the plugin it finds installed by writing a token and the
+// Zero-setup check: Chromaforge trusts the plugin it finds installed by writing a token and the
 // port into the plugin's data folder. This connects exactly as the plugin does, from that folder,
 // and checks it is live without any pairing, and that the keys follow Settings > Controls.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 //
-//   dotnet run --project tools/ZeroSetup -- <plugin data folder> <LightCraft --control port>
+//   dotnet run --project tools/ZeroSetup -- <plugin data folder> <Chromaforge --control port>
 
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
-using LightCraft.Surface.Client;
+using Chromaforge.Surface.Client;
 
 if (args.Length < 2) { Console.WriteLine("usage: ZeroSetup <plugin data folder> <control port>"); return 2; }
 var dir = args[0];
@@ -23,10 +23,10 @@ int Port()
 }
 var t0 = DateTime.UtcNow;
 while (!File.Exists(Path.Combine(dir, "token.txt")) && DateTime.UtcNow - t0 < TimeSpan.FromSeconds(20)) Thread.Sleep(100);
-Check(File.Exists(Path.Combine(dir, "token.txt")), "LightCraft wrote a token into the plugin's data folder");
+Check(File.Exists(Path.Combine(dir, "token.txt")), "Chromaforge wrote a token into the plugin's data folder");
 Check(File.Exists(Path.Combine(dir, "config.json")), $"and its port ({(File.Exists(Path.Combine(dir, "config.json")) ? Port() : 0)})");
 
-using var client = new SurfaceClient("127.0.0.1", Port, "lightcraft-logi", "LightCraft plugin for Logi Options+", "mx-creative-console",
+using var client = new SurfaceClient("127.0.0.1", Port, "chromaforge-logi", "Chromaforge plugin for Logi Options+", "mx-creative-console",
     new FileTokenStore(Path.Combine(dir, "token.txt")), s => Console.WriteLine($"      client: {s}"));
 client.Start();
 t0 = DateTime.UtcNow;

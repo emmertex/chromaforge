@@ -1,0 +1,30 @@
+type: plugin4
+name: Chromaforge
+displayName: Chromaforge
+version: 1.1.0
+author: RAD Films - Roman Alurkoff
+copyright: Copyright (c) 2026 RAD Films - Roman Alurkoff (MIT License)
+description: Control Chromaforge (photo library and raw developer) with your MX Creative Console or Loupedeck+. Chromaforge decides what every key and dial does; set it up in Chromaforge, Settings, Controls.
+
+backgroundColor: 4278190080
+foregroundColor: 4294967295
+
+pluginFileName: ChromaforgePlugin.dll
+pluginFolderWin: .
+
+supportedDevices:
+    - LoupedeckCtFamily
+    - LoupedeckPlusFamily
+
+minimumLoupedeckVersion: 6.0
+
+pluginCapabilities:
+    - HasApplication
+
+applicationPatterns:
+    executablePathPattern: '(?i)(\\chromaforge\.exe|\\(chromaforge|cf-[^\\]*)\\(target\\release\\)?app\.exe)$'
+
+license: MIT
+licenseUrl: https://github.com/emmertex/chromaforge/blob/main/packaging/logi/LICENSE
+supportPageUrl: https://github.com/emmertex/chromaforge/issues
+homePageUrl: https://github.com/emmertex/chromaforge/tree/main/packaging/logi

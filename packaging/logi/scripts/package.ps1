@@ -1,31 +1,31 @@
-# Build the LightCraft plugin package for Logi Options+ (dist\LightCraft.lplug4).
+# Build the Chromaforge plugin package for Logi Options+ (dist\Chromaforge.lplug4).
 # Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 #
 # A .lplug4 is a ZIP of the plugin folder (the DLL, metadata\ and profiles\). Logi's supported
 # install path takes it: double-click it, or
-#   "%ProgramFiles%\Logi\LogiPluginService\LogiPluginServiceTool.exe" install-plugin dist\LightCraft.lplug4
-# which is also what LightCraft's Settings, Controls, "Install the Logi plugin" runs. LightCraft
-# looks for the package next to its executable (LightCraft.lplug4) or at LIGHTCRAFT_LOGI_PLUGIN.
+#   "%ProgramFiles%\Logi\LogiPluginService\LogiPluginServiceTool.exe" install-plugin dist\Chromaforge.lplug4
+# which is also what Chromaforge's Settings, Controls, "Install the Logi plugin" runs. Chromaforge
+# looks for the package next to its executable (Chromaforge.lplug4) or at CHROMAFORGE_LOGI_PLUGIN.
 
 param([string]$Out = '')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-if ($Out -eq '') { $Out = Join-Path $repo 'dist\LightCraft.lplug4' }
+if ($Out -eq '') { $Out = Join-Path $repo 'dist\Chromaforge.lplug4' }
 
 Write-Host 'Generating the default profiles...'
-dotnet run --project (Join-Path $repo 'tools\GenerateProfiles') -c Release -- (Join-Path $repo 'src\LightCraftPlugin\profiles') | Out-Null
+dotnet run --project (Join-Path $repo 'tools\GenerateProfiles') -c Release -- (Join-Path $repo 'src\ChromaforgePlugin\profiles') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Profile generation failed.' }
 Write-Host 'Building the plugin...'
-dotnet build (Join-Path $repo 'src\LightCraftPlugin\LightCraftPlugin.csproj') -c Release -v q
+dotnet build (Join-Path $repo 'src\ChromaforgePlugin\ChromaforgePlugin.csproj') -c Release -v q
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-$bin = Join-Path $repo 'src\LightCraftPlugin\bin\Release\net8.0'
+$bin = Join-Path $repo 'src\ChromaforgePlugin\bin\Release\net8.0'
 
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("lightcraft-lplug4-" + [guid]::NewGuid().ToString('N'))
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("chromaforge-lplug4-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
 try {
-    foreach ($item in 'LightCraftPlugin.dll', 'LightCraftPlugin.deps.json', 'metadata', 'profiles') {
+    foreach ($item in 'ChromaforgePlugin.dll', 'ChromaforgePlugin.deps.json', 'metadata', 'profiles') {
         Copy-Item (Join-Path $bin $item) $stage -Recurse -Force
     }
     Copy-Item (Join-Path $repo 'LICENSE') $stage -Force

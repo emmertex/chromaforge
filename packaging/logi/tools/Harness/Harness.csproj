@@ -6,6 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\LightCraft.Surface.Client\LightCraft.Surface.Client.csproj" />
+    <ProjectReference Include="..\..\src\Chromaforge.Surface.Client\Chromaforge.Surface.Client.csproj" />
   </ItemGroup>
 </Project>

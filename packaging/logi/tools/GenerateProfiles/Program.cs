@@ -1,10 +1,10 @@
-// Generates the default Logi Options+ profiles shipped with the LightCraft plugin.
+// Generates the default Logi Options+ profiles shipped with the Chromaforge plugin.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 // Ported from TactileBridge's tools/GenerateProfiles.cs (the author's own): the Logi profile
 // package format (.lp5: a ZIP of ProfileInfo.json, ApplicationInfo.json and metadata).
 //
-// The keys and dials only forward to LightCraft, which decides what they do, so one profile per
-// device covers every LightCraft profile (Default, Wedding, Portrait, …): nothing to assign by hand.
+// The keys and dials only forward to Chromaforge, which decides what they do, so one profile per
+// device covers every Chromaforge profile (Default, Wedding, Portrait, …): nothing to assign by hand.
 //   DefaultProfile70.lp5  MX Creative Keypad: pages 1-3, keys p{page}k{key}
 //   DefaultProfile71.lp5  MX Creative Dialpad: buttons pad1-4, the dial and the roller
 //   DefaultProfile72.lp5  Actions Ring (Logi Options+' on-screen ring): slots ring1-8
@@ -17,17 +17,17 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-const string Plugin = "LightCraft";
-const string App = "@_lightcraft";
+const string Plugin = "Chromaforge";
+const string App = "@_chromaforge";
 
-var outDir = args.Length > 0 ? args[0] : Path.Combine("src", "LightCraftPlugin", "profiles");
+var outDir = args.Length > 0 ? args[0] : Path.Combine("src", "ChromaforgePlugin", "profiles");
 Directory.CreateDirectory(outDir);
 
-string Key(string param) => $"${Plugin}___LightCraftKey___{param}";
-string Dial(string param) => $"${Plugin}___LightCraftDial___{param}";
+string Key(string param) => $"${Plugin}___ChromaforgeKey___{param}";
+string Dial(string param) => $"${Plugin}___ChromaforgeDial___{param}";
 
 // stable ids: reinstalling never adds a second copy
-string Id(string seed) => Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes("lightcraft-logi/" + seed)));
+string Id(string seed) => Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes("chromaforge-logi/" + seed)));
 
 Dictionary<string, object?> D(params (string k, object? v)[] p) => p.ToDictionary(x => x.k, x => x.v);
 
@@ -83,14 +83,14 @@ void Write(string file, string device, Dictionary<string, object?> layout)
     var profile = Id("profile/" + device);
     var opts = new JsonSerializerOptions { WriteIndented = true };
     var appInfo = D(("$type", "Loupedeck.Service.SupportedApplicationInfo, LoupedeckService"),
-        ("name", App), ("displayName", "LightCraft"), ("description", null), ("deviceType", device),
-        ("nativePluginName", Plugin), ("hasNativePlugin", true), ("processOrBundleName", "lightcraft"),
+        ("name", App), ("displayName", "Chromaforge"), ("description", null), ("deviceType", device),
+        ("nativePluginName", Plugin), ("hasNativePlugin", true), ("processOrBundleName", "chromaforge"),
         ("modes", new object[] { D(("$type", "Loupedeck.Service.ApplicationMode, LoupedeckService"), ("name", "Main"), ("parentModeName", null), ("displayName", "Main")) }),
         ("defaultProfileName", profile), ("isEnabled", true));
     var info = D(
         ("$type", "Loupedeck.Service.ApplicationProfile, LoupedeckService"),
-        ("name", profile), ("profileFlags", "None"), ("displayName", "LightCraft"),
-        ("description", "Every key and dial is set in LightCraft: Settings, Controls"),
+        ("name", profile), ("profileFlags", "None"), ("displayName", "Chromaforge"),
+        ("description", "Every key and dial is set in Chromaforge: Settings, Controls"),
         ("deviceType", device), ("applicationName", App), ("nativePluginName", Plugin), ("hasNativePlugin", true),
         ("additionalNativePluginNames", Array.Empty<string>()),
         ("lastModifiedTimeUtc", "2026-10-14T00:00:00.0000000Z"),
@@ -100,7 +100,7 @@ void Write(string file, string device, Dictionary<string, object?> layout)
         ("macroCommands", Array.Empty<object>()), ("macroAdjustments", Array.Empty<object>()),
         ("profileCommands", Array.Empty<object>()), ("profileAdjustments", Array.Empty<object>()),
         ("conversionHistory", ""), ("profileActions", Array.Empty<object>()));
-    var yaml = $"type: Profile5\nname: {profile}\ndisplayName: LightCraft\nversion: 0.1.0\ndescription: ''\nauthor: RAD Films - Roman Alurkoff\n";
+    var yaml = $"type: Profile5\nname: {profile}\ndisplayName: Chromaforge\nversion: 0.1.0\ndescription: ''\nauthor: RAD Films - Roman Alurkoff\n";
     var path = Path.Combine(outDir, file);
     if (File.Exists(path)) File.Delete(path);
     using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
@@ -132,12 +132,12 @@ var pads = Page("dialpad/buttons", "Buttons", Enumerable.Range(1, 4).Select(i =>
 var dials = Page("dialpad/dials", "Dials", new() { Control(0, rotate: Dial("dial")), Control(1, rotate: Dial("roller")) });
 Write("DefaultProfile71.lp5", "Loupedeck71", Layout7("Loupedeck71", new() { pads }, new() { dials }));
 
-// Actions Ring: eight slots, the same on every LightCraft page (set in LightCraft)
+// Actions Ring: eight slots, the same on every Chromaforge page (set in Chromaforge)
 var ring = Page("ring/slots", "Page (1)", Enumerable.Range(1, 8).Select(i => Control(i - 1, press: Key($"ring{i}"))).ToList());
 Write("DefaultProfile72.lp5", "Loupedeck72", Layout7("Loupedeck72", new() { ring }, new()));
 
-// Loupedeck+: each knob and button forwards its number; LightCraft knows what it does. Picked
-// by itself when LightCraft is the app in front (the application's process name).
+// Loupedeck+: each knob and button forwards its number; Chromaforge knows what it does. Picked
+// by itself when Chromaforge is the app in front (the application's process name).
 var ldPress = new string?[127];
 var ldRotate = new string?[127];
 foreach (var n in Enumerable.Range(1, 48).Where(n => n != 43)) ldRotate[n] = $"${Plugin}___LoupedeckPlusKnob___r{n}";

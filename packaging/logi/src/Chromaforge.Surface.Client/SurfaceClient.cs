@@ -1,4 +1,4 @@
-// LightCraft surface-protocol client (docs/control-surfaces.md in the LightCraft repository).
+// Chromaforge surface-protocol client (docs/control-surfaces.md in the Chromaforge repository).
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 
 using System.Net.Sockets;
@@ -6,25 +6,25 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace LightCraft.Surface.Client;
+namespace Chromaforge.Surface.Client;
 
-/// <summary>Where the connection to LightCraft stands.</summary>
+/// <summary>Where the connection to Chromaforge stands.</summary>
 public enum SurfaceState
 {
-    /// LightCraft isn't running, or isn't listening for surfaces.
+    /// Chromaforge isn't running, or isn't listening for surfaces.
     Disconnected,
-    /// Connected, waiting for the user to approve pairing in LightCraft (Settings, Controls).
+    /// Connected, waiting for the user to approve pairing in Chromaforge (Settings, Controls).
     Pairing,
-    /// LightCraft refused: control surfaces are switched off, or pairing was denied.
+    /// Chromaforge refused: control surfaces are switched off, or pairing was denied.
     Refused,
     /// Paired and subscribed: layouts arrive, input goes out.
     Live,
 }
 
 /// <summary>
-/// A JSON-lines connection to LightCraft's control-surface port: pairs (once), subscribes to a
+/// A JSON-lines connection to Chromaforge's control-surface port: pairs (once), subscribes to a
 /// device's layout, sends dial ticks and key presses, and raises <see cref="LayoutChanged"/> when
-/// LightCraft pushes a new layout. Reconnects by itself. Never throws to the caller.
+/// Chromaforge pushes a new layout. Reconnects by itself. Never throws to the caller.
 /// </summary>
 public sealed class SurfaceClient : IDisposable
 {
@@ -54,18 +54,18 @@ public sealed class SurfaceClient : IDisposable
     private string[] _watch = Array.Empty<string>();
     private SurfaceState _state = SurfaceState.Disconnected;
     private string? _pairCode;
-    private string _status = "Waiting for LightCraft";
+    private string _status = "Waiting for Chromaforge";
     private readonly Dictionary<string, string> _icons = new(StringComparer.Ordinal);
 
     /// <summary>A new layout arrived (or the connection state changed).</summary>
     public event Action? LayoutChanged;
 
-    /// <summary>LightCraft sent a different action catalogue (see <see cref="Catalog"/>).</summary>
+    /// <summary>Chromaforge sent a different action catalogue (see <see cref="Catalog"/>).</summary>
     public event Action? CatalogChanged;
 
     /// <param name="cacheDir">Where the last layout, the icons and the action catalogue are kept
-    /// between runs, so keys and the plugin's action list show LightCraft's icons and names even
-    /// before LightCraft is started (null: nothing is kept).</param>
+    /// between runs, so keys and the plugin's action list show Chromaforge's icons and names even
+    /// before Chromaforge is started (null: nothing is kept).</param>
     public SurfaceClient(string host, int port, string clientId, string clientName, string device, ITokenStore tokens, Action<string>? log = null, string? cacheDir = null)
         : this(host, () => port, clientId, clientName, device, tokens, log, cacheDir) { }
 
@@ -92,13 +92,13 @@ public sealed class SurfaceClient : IDisposable
     /// <summary>A short status line for keys when not live.</summary>
     public string Status { get { lock (_lock) return _status; } }
 
-    /// <summary>The last layout LightCraft pushed (null until live).</summary>
+    /// <summary>The last layout Chromaforge pushed (null until live).</summary>
     /// Read-only: the same snapshot is handed to every caller (a key redraw must not copy the whole
     /// layout: 40 keys each cloning it on every push stalled the Logi service). Never modify it.
     public JsonNode? Layout { get { lock (_lock) return _layout; } }
 
     /// <summary>The live layout, else the last everyday one seen (also from an earlier run), to
-    /// draw the keys dimmed while LightCraft is not there.</summary>
+    /// draw the keys dimmed while Chromaforge is not there.</summary>
     public JsonNode? LastLayout { get { lock (_lock) return _layout ?? _lastLayout; } }
 
     /// <summary>The last everyday layout (never a dialog's or a tool's page), live or kept.</summary>
@@ -117,7 +117,7 @@ public sealed class SurfaceClient : IDisposable
 
     private long _savedAt;
 
-    /// <summary>A layout worth keeping for when LightCraft is closed: the profile's everyday pages,
+    /// <summary>A layout worth keeping for when Chromaforge is closed: the profile's everyday pages,
     /// not a dialog's OK / Cancel or a tool's page that happened to be up.</summary>
     public static bool IsEverydayLayout(JsonNode? layout)
     {
@@ -165,16 +165,16 @@ public sealed class SurfaceClient : IDisposable
         }
     }
 
-    /// <summary>LightCraft's action catalogue (<c>surface.catalog</c>: <c>groups</c>, <c>entries</c>
+    /// <summary>Chromaforge's action catalogue (<c>surface.catalog</c>: <c>groups</c>, <c>entries</c>
     /// with <c>key</c>, <c>group</c>, <c>label</c>, <c>icon</c>, <c>value</c>), live or from the
-    /// last run; null if LightCraft was never reached.</summary>
+    /// last run; null if Chromaforge was never reached.</summary>
     public JsonNode? Catalog { get { lock (_lock) return _catalog?.DeepClone(); } }
 
     /// <summary>Goes up whenever icons arrive (keys whose icon came late redraw).</summary>
     public long IconsVersion => Interlocked.Read(ref _iconsVersion);
     private long _iconsVersion;
 
-    /// <summary>An icon's SVG, if LightCraft has sent it.</summary>
+    /// <summary>An icon's SVG, if Chromaforge has sent it.</summary>
     public string? Icon(string name)
     {
         lock (_lock) return _icons.TryGetValue(name, out var s) ? s : null;
@@ -199,9 +199,9 @@ public sealed class SurfaceClient : IDisposable
     public void Start()
     {
         if (_thread != null) return;
-        _thread = new Thread(Run) { IsBackground = true, Name = "LightCraft surface client" };
+        _thread = new Thread(Run) { IsBackground = true, Name = "Chromaforge surface client" };
         _thread.Start();
-        _sender = new Thread(SendLoop) { IsBackground = true, Name = "LightCraft surface input" };
+        _sender = new Thread(SendLoop) { IsBackground = true, Name = "Chromaforge surface input" };
         _sender.Start();
     }
 
@@ -211,7 +211,7 @@ public sealed class SurfaceClient : IDisposable
     private readonly AutoResetEvent _inputReady = new(false);
     private Thread? _sender;
 
-    /// <summary>How long the sender waits for LightCraft's reply before it sends the next batch
+    /// <summary>How long the sender waits for Chromaforge's reply before it sends the next batch
     /// anyway (a lost reply never stalls the console for long).</summary>
     public static readonly TimeSpan InFlightLimit = TimeSpan.FromSeconds(2);
 
@@ -273,7 +273,7 @@ public sealed class SurfaceClient : IDisposable
 
     /// <summary>Sends what is queued as one request, then waits for its reply (at most
     /// <see cref="InFlightLimit"/>) before the next: one request in flight, so input merges here
-    /// while LightCraft is busy instead of queuing up in the socket. Never throws.</summary>
+    /// while Chromaforge is busy instead of queuing up in the socket. Never throws.</summary>
     private void SendLoop()
     {
         while (!Stopping)
@@ -369,7 +369,7 @@ public sealed class SurfaceClient : IDisposable
                 Close();
                 if (Stopping) break;
                 if (State != SurfaceState.Refused)
-                    SetState(SurfaceState.Disconnected, "Start LightCraft");
+                    SetState(SurfaceState.Disconnected, "Start Chromaforge");
             }
             catch (Exception e)
             {
@@ -409,15 +409,15 @@ public sealed class SurfaceClient : IDisposable
             _tcp = tcp;
             _stream = stream;
         }
-        var reader = new Thread(() => ReadLoop(stream)) { IsBackground = true, Name = "LightCraft surface reader" };
+        var reader = new Thread(() => ReadLoop(stream)) { IsBackground = true, Name = "Chromaforge surface reader" };
         reader.Start();
 
         var token = _tokens.Load();
         var hello = Call("surface.hello", new JsonObject { ["protocol"] = Protocol, ["client"] = _clientId, ["name"] = _clientName, ["token"] = token });
         if (hello?["ok"]?.GetValue<bool>() != true)
         {
-            var error = hello?["error"]?.ToString() ?? "LightCraft refused";
-            // LightCraft is starting or its window is hidden: not a refusal, try again shortly
+            var error = hello?["error"]?.ToString() ?? "Chromaforge refused";
+            // Chromaforge is starting or its window is hidden: not a refusal, try again shortly
             if (error.Contains("drew no frame", StringComparison.Ordinal)) { Log($"busy: {error}"); return; }
             SetState(SurfaceState.Refused, error);
             return;
@@ -448,13 +448,13 @@ public sealed class SurfaceClient : IDisposable
             _layout = Snapshot(sub["result"]?["layout"]);
             Remember(_layout);
         }
-        SetState(SurfaceState.Live, "LightCraft");
+        SetState(SurfaceState.Live, "Chromaforge");
         SendWatch();
         Raise();
         reader.Join();
     }
 
-    /// <summary>Ask to pair and wait (polling) until the user answers in LightCraft.</summary>
+    /// <summary>Ask to pair and wait (polling) until the user answers in Chromaforge.</summary>
     private bool PairAndReconnect()
     {
         var ask = Call("surface.pair", new JsonObject { ["client"] = _clientId, ["name"] = _clientName });
@@ -466,17 +466,17 @@ public sealed class SurfaceClient : IDisposable
         var request = ask["result"]?["request"]?.ToString();
         var code = ask["result"]?["code"]?.ToString();
         if (request == null) return false;
-        SetState(SurfaceState.Pairing, "Approve in LightCraft", code);
+        SetState(SurfaceState.Pairing, "Approve in Chromaforge", code);
         var tokenBefore = _tokens.Load();
         while (!Stopping)
         {
             Pause(TimeSpan.FromSeconds(1));
-            // LightCraft trusted this plugin meanwhile (it wrote a token into the plugin's data
+            // Chromaforge trusted this plugin meanwhile (it wrote a token into the plugin's data
             // folder): connect with it instead of waiting for the code to be approved
             var token = _tokens.Load();
             if (!string.IsNullOrEmpty(token) && token != tokenBefore)
             {
-                Log("trusted by LightCraft");
+                Log("trusted by Chromaforge");
                 return true;
             }
             var poll = Call("surface.pair", new JsonObject { ["request"] = request });
@@ -495,7 +495,7 @@ public sealed class SurfaceClient : IDisposable
             }
             if (status == "denied")
             {
-                SetState(SurfaceState.Refused, "Pairing denied in LightCraft");
+                SetState(SurfaceState.Refused, "Pairing denied in Chromaforge");
                 return false;
             }
         }

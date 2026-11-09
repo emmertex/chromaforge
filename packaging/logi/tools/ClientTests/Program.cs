@@ -1,5 +1,5 @@
-// Tests of the surface client's input path, without LightCraft or Logi: the input queue's merging
-// rules, and the client against a fake LightCraft that answers slowly (a stall), checking input
+// Tests of the surface client's input path, without Chromaforge or Logi: the input queue's merging
+// rules, and the client against a fake Chromaforge that answers slowly (a stall), checking input
 // never piles up into hundreds of requests that replay later.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 //
@@ -10,7 +10,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
-using LightCraft.Surface.Client;
+using Chromaforge.Surface.Client;
 
 int failures = 0;
 void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")}  {what}"); if (!ok) failures++; }
@@ -56,16 +56,16 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
     Check(q.Count == 0 && q.Take() == null, "Clear forgets everything");
 }
 
-// ------------------------------------------------------------------ the client against a slow LightCraft
+// ------------------------------------------------------------------ the client against a slow Chromaforge
 {
-    var server = new FakeLightCraft(replyDelayMs: 0);
+    var server = new FakeChromaforge(replyDelayMs: 0);
     var client = new SurfaceClient("127.0.0.1", server.Port, "tests", "Tests", "mx-creative-console", new MemTokens("t"), null);
     client.Start();
-    Check(Wait(() => client.State == SurfaceState.Live, 5000), "connects to the fake LightCraft");
+    Check(Wait(() => client.State == SurfaceState.Live, 5000), "connects to the fake Chromaforge");
 
     // fast: 300 ticks in a burst
     for (int i = 0; i < 300; i++) client.Turn("dial", 1);
-    Check(Wait(() => server.Ticks("dial") == 300, 3000), $"a fast LightCraft gets every tick ({server.Ticks("dial")} of 300)");
+    Check(Wait(() => server.Ticks("dial") == 300, 3000), $"a fast Chromaforge gets every tick ({server.Ticks("dial")} of 300)");
     Check(server.InputRequests < 300, $"in fewer requests than ticks ({server.InputRequests})");
 
     // a stall: each reply takes 400 ms; 1000 ticks spread over a second, plus five presses
@@ -79,7 +79,7 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
     }
     // five quick presses while a request is still waiting for its reply
     for (int i = 0; i < 5; i++) { client.Press("key.3"); client.Release("key.3"); Thread.Sleep(5); }
-    Check(Wait(() => server.Ticks("dial") == 1300, 6000), $"a stalled LightCraft still gets the sum of the ticks, once ({server.Ticks("dial")} of 1300)");
+    Check(Wait(() => server.Ticks("dial") == 1300, 6000), $"a stalled Chromaforge still gets the sum of the ticks, once ({server.Ticks("dial")} of 1300)");
     long sent = server.InputRequests - before;
     Check(sent <= 12, $"one request in flight while it stalls: {sent} requests for 1000 ticks over {sw.ElapsedMilliseconds} ms (not 1000 queued)");
     Check(Wait(() => server.Presses("key.3") >= 1, 3000) && server.Presses("key.3") == 1, $"presses during the stall are not replayed in a burst ({server.Presses("key.3")} of 5 sent)");
@@ -99,21 +99,21 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
 // ------------------------------------------------------------------ the Loupedeck+ profile repair
 {
     var repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    var profiles = Path.Combine(repo, "src", "LightCraftPlugin", "profiles");
-    var defaults = LightCraft.Logi.ProfileRepair.DefaultSlots(Path.Combine(profiles, "DefaultProfile15.lp5"));
-    Check(defaults != null && defaults["pressActions"][33] == "$LightCraft___LoupedeckPlusButton___b33" && defaults["rotateActions"][1] == "$LightCraft___LoupedeckPlusKnob___r1",
+    var profiles = Path.Combine(repo, "src", "ChromaforgePlugin", "profiles");
+    var defaults = Chromaforge.Logi.ProfileRepair.DefaultSlots(Path.Combine(profiles, "DefaultProfile15.lp5"));
+    Check(defaults != null && defaults["pressActions"][33] == "$Chromaforge___LoupedeckPlusButton___b33" && defaults["rotateActions"][1] == "$Chromaforge___LoupedeckPlusKnob___r1",
         "reads the Loupedeck+ default profile's pass-through actions");
 
     // a profile the service made before the plugin had a Loupedeck+ default: empty, except a knob
-    // assigned by hand to a LightCraft value (the workaround) and a button with a keyboard shortcut
+    // assigned by hand to a Chromaforge value (the workaround) and a button with a keyboard shortcut
     var tmp = Path.Combine(Path.GetTempPath(), "lc-profile-repair-" + Guid.NewGuid().ToString("N"));
     var apps = Path.Combine(tmp, "Applications");
-    var dir = Path.Combine(apps, "Loupedeck15", "@_lightcraft", "Profiles", "ABC");
+    var dir = Path.Combine(apps, "Loupedeck15", "@_chromaforge", "Profiles", "ABC");
     Directory.CreateDirectory(dir);
     JsonArray Nulls(int n) { var a = new JsonArray(); for (int i = 0; i < n; i++) a.Add(null); return a; }
     var ws = new JsonObject { ["$type"] = "Workspace", ["name"] = "W", ["pressActions"] = Nulls(128), ["rotateActions"] = Nulls(128) };
-    ws["rotateActions"]![1] = "$LightCraft___LightCraftAdjust___v.light.exposure";
-    ws["pressActions"]![33] = "$LightCraft___ResetLightCraftAdjust___v.light.exposure";
+    ws["rotateActions"]![1] = "$Chromaforge___ChromaforgeAdjust___v.light.exposure";
+    ws["pressActions"]![33] = "$Chromaforge___ResetChromaforgeAdjust___v.light.exposure";
     ws["pressActions"]![95] = "$DefaultWin___KeyboardKey___Ctrl+Z";
     var profile = new JsonObject
     {
@@ -122,29 +122,29 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
     };
     File.WriteAllText(Path.Combine(dir, "ProfileInfo.json"), profile.ToJsonString());
     var backups = Path.Combine(tmp, "backups");
-    var done = LightCraft.Logi.ProfileRepair.Run(apps, profiles, backups, null);
+    var done = Chromaforge.Logi.ProfileRepair.Run(apps, profiles, backups, null);
     var after = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "ProfileInfo.json")));
     var w0 = after?["layout"]?["layoutModes"]?[0]?["workspaces"]?[0];
     var w1 = after?["layout"]?["layoutModes"]?[0]?["workspaces"]?[1];
     Check(done.Count == 1, $"the empty profile is repaired ({done.FirstOrDefault()})");
-    Check(w0?["rotateActions"]?[1]?.ToString() == "$LightCraft___LoupedeckPlusKnob___r1" && w0?["pressActions"]?[33]?.ToString() == "$LightCraft___LoupedeckPlusButton___b33",
-        "every control gets the pass-through, also the knob assigned to a LightCraft value by hand");
+    Check(w0?["rotateActions"]?[1]?.ToString() == "$Chromaforge___LoupedeckPlusKnob___r1" && w0?["pressActions"]?[33]?.ToString() == "$Chromaforge___LoupedeckPlusButton___b33",
+        "every control gets the pass-through, also the knob assigned to a Chromaforge value by hand");
     Check(w0?["pressActions"]?[95]?.ToString() == "$DefaultWin___KeyboardKey___Ctrl+Z", "a control with another action (a keyboard shortcut) is left alone");
-    Check(w1?["rotateActions"]?[48]?.ToString() == "$LightCraft___LoupedeckPlusKnob___r48", "in every workspace");
+    Check(w1?["rotateActions"]?[48]?.ToString() == "$Chromaforge___LoupedeckPlusKnob___r48", "in every workspace");
     Check(after?["$type"]?.ToString() == "Loupedeck.Service.ApplicationProfile, LoupedeckService", "the rest of the file is kept");
-    Check(Directory.Exists(backups) && Directory.GetFiles(backups).Length == 1 && File.ReadAllText(Directory.GetFiles(backups)[0]).Contains("ResetLightCraftAdjust"),
+    Check(Directory.Exists(backups) && Directory.GetFiles(backups).Length == 1 && File.ReadAllText(Directory.GetFiles(backups)[0]).Contains("ResetChromaforgeAdjust"),
         "the original is backed up first");
-    Check(LightCraft.Logi.ProfileRepair.Run(apps, profiles, backups, null).Count == 0 && Directory.GetFiles(backups).Length == 1, "a second run changes nothing");
+    Check(Chromaforge.Logi.ProfileRepair.Run(apps, profiles, backups, null).Count == 0 && Directory.GetFiles(backups).Length == 1, "a second run changes nothing");
 
     // the user's real profile, copied (never touched in place)
-    var real = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Logi", "LogiPluginService", "Applications", "Loupedeck15", "@_lightcraft", "Profiles");
+    var real = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Logi", "LogiPluginService", "Applications", "Loupedeck15", "@_chromaforge", "Profiles");
     var realFile = Directory.Exists(real) ? Directory.EnumerateFiles(real, "ProfileInfo.json", SearchOption.AllDirectories).FirstOrDefault() : null;
     if (realFile != null)
     {
         var text = File.ReadAllText(realFile);
-        var (fixedText, changed) = LightCraft.Logi.ProfileRepair.Repair(text, defaults!);
-        var n = fixedText == null ? 0 : fixedText.Split("$LightCraft___LoupedeckPlus").Length - 1;
-        Console.WriteLine($"      this PC's Loupedeck+ LightCraft profile (a copy): {changed} controls would change; pass-through slots after: {n}");
+        var (fixedText, changed) = Chromaforge.Logi.ProfileRepair.Repair(text, defaults!);
+        var n = fixedText == null ? 0 : fixedText.Split("$Chromaforge___LoupedeckPlus").Length - 1;
+        Console.WriteLine($"      this PC's Loupedeck+ Chromaforge profile (a copy): {changed} controls would change; pass-through slots after: {n}");
         Check(fixedText == null || JsonNode.Parse(fixedText) != null, "the repaired copy of this PC's profile is valid JSON");
     }
     try { Directory.Delete(tmp, true); } catch (Exception) { }
@@ -153,9 +153,9 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
 // ------------------------------------------------------------------ the Actions Ring profile repair
 {
     var repo = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    var profiles = Path.Combine(repo, "src", "LightCraftPlugin", "profiles");
-    var defaults = LightCraft.Logi.ProfileRepair.DefaultSlots(Path.Combine(profiles, "DefaultProfile72.lp5"));
-    Check(defaults != null && defaults.TryGetValue("pressPages/0/pressAction", out var ringSlots) && ringSlots[0] == "$LightCraft___LightCraftKey___ring1" && ringSlots[7] == "$LightCraft___LightCraftKey___ring8",
+    var profiles = Path.Combine(repo, "src", "ChromaforgePlugin", "profiles");
+    var defaults = Chromaforge.Logi.ProfileRepair.DefaultSlots(Path.Combine(profiles, "DefaultProfile72.lp5"));
+    Check(defaults != null && defaults.TryGetValue("pressPages/0/pressAction", out var ringSlots) && ringSlots[0] == "$Chromaforge___ChromaforgeKey___ring1" && ringSlots[7] == "$Chromaforge___ChromaforgeKey___ring8",
         "reads the Actions Ring default profile's eight slots");
     // the empty ring profile the service made: a page of eight controls with no action, and a
     // dial page; one slot set by hand to another plugin's action
@@ -167,21 +167,43 @@ void Check(bool ok, string what) { Console.WriteLine($"{(ok ? "PASS" : "FAIL")} 
         ["rotatePages"] = new JsonArray(new JsonObject { ["displayName"] = "Dial Page", ["controls"] = new JsonArray(Ctl(0, null)) }),
     };
     var profile = new JsonObject { ["layout"] = new JsonObject { ["layoutModes"] = new JsonArray(new JsonObject { ["workspaces"] = new JsonArray(ws) }) } };
-    var (text, changed) = LightCraft.Logi.ProfileRepair.Repair(profile.ToJsonString(), defaults!);
+    var (text, changed) = Chromaforge.Logi.ProfileRepair.Repair(profile.ToJsonString(), defaults!);
     var after = JsonNode.Parse(text ?? "{}")?["layout"]?["layoutModes"]?[0]?["workspaces"]?[0]?["pressPages"]?[0]?["controls"];
     Check(changed == 7, $"seven empty ring slots get the pass-through ({changed})");
-    Check(after?[0]?["pressAction"]?.ToString() == "$LightCraft___LightCraftKey___ring1" && after?[7]?["pressAction"]?.ToString() == "$LightCraft___LightCraftKey___ring8",
+    Check(after?[0]?["pressAction"]?.ToString() == "$Chromaforge___ChromaforgeKey___ring1" && after?[7]?["pressAction"]?.ToString() == "$Chromaforge___ChromaforgeKey___ring8",
         "slot 1 → ring1 … slot 8 → ring8");
     Check(after?[5]?["pressAction"]?.ToString() == "$DefaultWin___KeyboardKey___F5", "a slot with another action is left alone");
 
-    var real = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Logi", "LogiPluginService", "Applications", "Loupedeck72", "@_lightcraft", "Profiles");
+    var real = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Logi", "LogiPluginService", "Applications", "Loupedeck72", "@_chromaforge", "Profiles");
     var realFile = Directory.Exists(real) ? Directory.EnumerateFiles(real, "ProfileInfo.json", SearchOption.AllDirectories).FirstOrDefault() : null;
     if (realFile != null)
     {
-        var (fixedText, n) = LightCraft.Logi.ProfileRepair.Repair(File.ReadAllText(realFile), defaults!);
-        Console.WriteLine($"      this PC's Actions Ring LightCraft profile (a copy): {n} slots would change");
+        var (fixedText, n) = Chromaforge.Logi.ProfileRepair.Repair(File.ReadAllText(realFile), defaults!);
+        Console.WriteLine($"      this PC's Actions Ring Chromaforge profile (a copy): {n} slots would change");
         Check(fixedText == null || JsonNode.Parse(fixedText) != null, "the repaired copy of this PC's ring profile is valid JSON");
     }
+}
+
+// the plugin's name before the rename: its pairing and port carry over, once, never overwriting
+{
+    var root = Path.Combine(Path.GetTempPath(), "cf-logi-legacy-" + Guid.NewGuid().ToString("N"));
+    var oldDir = Path.Combine(root, "LightCraft");
+    var newDir = Path.Combine(root, "Chromaforge");
+    Directory.CreateDirectory(oldDir);
+    File.WriteAllText(Path.Combine(oldDir, "token.txt"), "old-token");
+    File.WriteAllText(Path.Combine(oldDir, "config.json"), "{\"port\": 18532}");
+    var copied = Chromaforge.Logi.LegacyData.Migrate(newDir, null);
+    Check(copied.Count == 2 && File.ReadAllText(Path.Combine(newDir, "token.txt")) == "old-token"
+        && File.ReadAllText(Path.Combine(newDir, "config.json")).Contains("18532"),
+        "the LightCraft plugin's token and port carry over to the Chromaforge plugin");
+    File.WriteAllText(Path.Combine(newDir, "token.txt"), "new-token");
+    File.WriteAllText(Path.Combine(oldDir, "token.txt"), "older-token");
+    Check(Chromaforge.Logi.LegacyData.Migrate(newDir, null).Count == 0 && File.ReadAllText(Path.Combine(newDir, "token.txt")) == "new-token",
+        "a token the Chromaforge plugin already has is never overwritten");
+    Check(File.Exists(Path.Combine(oldDir, "config.json")), "the old folder is left as it is");
+    var lone = Path.Combine(root, "nothing-here", "Chromaforge");
+    Check(Chromaforge.Logi.LegacyData.Migrate(lone, null).Count == 0 && !Directory.Exists(lone), "no old folder: nothing happens");
+    try { Directory.Delete(root, true); } catch (Exception) { }
 }
 
 Console.WriteLine(failures == 0 ? "\nall passed" : $"\n{failures} FAILED");
@@ -203,7 +225,7 @@ sealed class MemTokens(string? token) : ITokenStore
 
 /// <summary>Speaks just enough of the surface protocol: hello (paired), catalog, icons, subscribe,
 /// watch, and input (counting ticks and presses; replies after a delay, or never when -1).</summary>
-sealed class FakeLightCraft
+sealed class FakeChromaforge
 {
     private readonly TcpListener _l = new(IPAddress.Loopback, 0);
     private readonly Dictionary<string, long> _ticks = new();
@@ -214,7 +236,7 @@ sealed class FakeLightCraft
     public int Port { get; }
     public long InputRequests => Interlocked.Read(ref _inputRequests);
 
-    public FakeLightCraft(int replyDelayMs)
+    public FakeChromaforge(int replyDelayMs)
     {
         ReplyDelayMs = replyDelayMs;
         _l.Start();
@@ -278,7 +300,7 @@ sealed class FakeLightCraft
                     }
                     var delay = ReplyDelayMs;
                     if (delay < 0) continue; // never answers
-                    if (delay > 0) Thread.Sleep(delay); // LightCraft busy: this connection waits
+                    if (delay > 0) Thread.Sleep(delay); // Chromaforge busy: this connection waits
                 }
                 Send(new JsonObject { ["id"] = id, ["ok"] = true, ["result"] = result });
             }

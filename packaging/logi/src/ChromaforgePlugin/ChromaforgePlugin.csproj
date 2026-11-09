@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    The LightCraft plugin for Logi Options+ (Logi Actions SDK).
+    The Chromaforge plugin for Logi Options+ (Logi Actions SDK).
 
     The current Logi Plugin Service runs on .NET 10 and its PluginApi.dll references System.Runtime 10,
     which the .NET 8 SDK refuses as a reference (CS1705). So the plugin is compiled against the
@@ -11,8 +11,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>LightCraft.Logi</RootNamespace>
-    <AssemblyName>LightCraftPlugin</AssemblyName>
+    <RootNamespace>Chromaforge.Logi</RootNamespace>
+    <AssemblyName>ChromaforgePlugin</AssemblyName>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
     <LogiDir Condition="'$(LogiDir)' == ''">C:\Program Files\Logi\LogiPluginService</LogiDir>
@@ -30,11 +30,13 @@
 
   <ItemGroup>
     <!-- the protocol client, compiled in (it has no Logi dependency) -->
-    <Compile Include="..\LightCraft.Surface.Client\*.cs" Link="Client\%(Filename)%(Extension)" />
+    <Compile Include="..\Chromaforge.Surface.Client\*.cs" Link="Client\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="metadata\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- the icon is Chromaforge's own app icon (assets/app-icon, generated from brand/icon.svg) -->
+    <None Include="$(MSBuildThisFileDirectory)../../../../assets/app-icon/hicolor/256x256/apps/app.png" Link="metadata\Icon256x256.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="profiles\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -1,17 +1,17 @@
-// LightCraft keys, buttons and dials for Logi Options+.
+// Chromaforge keys, buttons and dials for Logi Options+.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 // Portions from TactileBridge: the focused-key rounded border and the key image layout.
 
 using System.Text.Json.Nodes;
 using Loupedeck;
-using LightCraft.Surface.Client;
+using Chromaforge.Surface.Client;
 
-namespace LightCraft.Logi;
+namespace Chromaforge.Logi;
 
 /// <summary>Action groups in the Options+ actions panel (numbered: Options+ sorts them by name).</summary>
 internal static class Groups
 {
-    public const string Keys = "0. Keys and dials set in LightCraft";
+    public const string Keys = "0. Keys and dials set in Chromaforge";
 }
 
 /// <summary>
@@ -34,7 +34,7 @@ internal static class Renderer
             : fallback;
     }
 
-    /// <summary>The SVG wrapped in a faded group (LightCraft not running).</summary>
+    /// <summary>The SVG wrapped in a faded group (Chromaforge not running).</summary>
     private static string Faded(string svg)
     {
         var open = svg.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
@@ -44,7 +44,7 @@ internal static class Renderer
         return svg[..(tagEnd + 1)] + "<g opacity=\"0.35\">" + svg[(tagEnd + 1)..close] + "</g>" + svg[close..];
     }
 
-    /// <summary>An icon of LightCraft's pack as a vector image (cached; <paramref name="dim"/>: faded).</summary>
+    /// <summary>An icon of Chromaforge's pack as a vector image (cached; <paramref name="dim"/>: faded).</summary>
     public static BitmapImage? Icon(SurfaceClient client, string? name, bool dim = false)
     {
         if (string.IsNullOrEmpty(name)) return null;
@@ -208,8 +208,8 @@ internal static class Renderer
         At(0, 0, fg);
     }
 
-    /// <summary>How a key is lit: <c>focus</c>, <c>on</c>, <c>held</c> or none (see LightCraft's
-    /// KeyView.state; older LightCraft sends only <c>active</c>: focus).</summary>
+    /// <summary>How a key is lit: <c>focus</c>, <c>on</c>, <c>held</c> or none (see Chromaforge's
+    /// KeyView.state; older Chromaforge sends only <c>active</c>: focus).</summary>
     public static string? LitState(JsonNode? view, bool dim)
     {
         if (dim || view?["active"]?.GetValue<bool>() != true) return null;
@@ -240,7 +240,7 @@ internal static class Renderer
 
     /// <summary>A key's title: its live value when it shows one (as TactileBridge's value keys), else
     /// its name; empty when the image already says it (no icon) or the key does nothing.</summary>
-    public static string Title(LightCraftPlugin plugin, JsonNode? view, bool dim)
+    public static string Title(ChromaforgePlugin plugin, JsonNode? view, bool dim)
     {
         // An empty name makes Options+ show the parameter's own name ("Keypad page 1, key 1"):
         // a blank title (a space) keeps the key icon-only, which also lets the icon fill the key.
@@ -264,7 +264,7 @@ internal static class Renderer
     }
 
     /// <summary>A catalogue action's image: its icon, or its name when it has none.</summary>
-    public static BitmapImage Action(LightCraftPlugin plugin, string? iconName, string label, PluginImageSize size)
+    public static BitmapImage Action(ChromaforgePlugin plugin, string? iconName, string label, PluginImageSize size)
     {
         var layout = plugin.Client.LastLayout;
         var bg = Color(layout?["background"]?.ToString(), BitmapColor.Black);
@@ -313,7 +313,7 @@ internal static class Renderer
         return null;
     }
 
-    /// <summary>The key (1–9) that carries the one status hint while LightCraft can't be used: the
+    /// <summary>The key (1–9) that carries the one status hint while Chromaforge can't be used: the
     /// first key of the everyday layout's first page that does nothing, else key 1.</summary>
     public static int HintKey(SurfaceClient c)
     {
@@ -327,27 +327,27 @@ internal static class Renderer
 
 /// <summary>
 /// Keys and buttons. Parameters: <c>p1k1</c>…<c>p3k9</c> (the Keypad's key 1–9 on its own page
-/// 1–3), <c>k1</c>…<c>k9</c> (the current LightCraft key page), <c>pad1</c>…<c>pad4</c> (the
+/// 1–3), <c>k1</c>…<c>k9</c> (the current Chromaforge key page), <c>pad1</c>…<c>pad4</c> (the
 /// Dialpad's buttons), <c>ring1</c>…<c>ring8</c> (the Actions Ring's slots). Presses and releases go to
-/// LightCraft; it decides what they do.
+/// Chromaforge; it decides what they do.
 /// </summary>
-public class LightCraftKey : PluginDynamicCommand
+public class ChromaforgeKey : PluginDynamicCommand
 {
     // The parameterless base constructor makes every parameter an action of its own in Options+
     // (the display-name constructor registers one action without parameters, and profiles that
     // name a parameter then show a warning triangle instead of the key).
     private readonly List<string> _params = new();
 
-    public LightCraftKey() : base()
+    public ChromaforgeKey() : base()
     {
-        Name = "LightCraftKey";
-        DisplayName = "LightCraft Key";
-        Description = "A key whose action is set in LightCraft (Settings, Controls)";
+        Name = "ChromaforgeKey";
+        DisplayName = "Chromaforge Key";
+        Description = "A key whose action is set in Chromaforge (Settings, Controls)";
         for (int page = 1; page <= 3; page++)
             for (int k = 1; k <= 9; k++)
                 Add($"p{page}k{k}", $"Keypad page {page}, key {k}");
         for (int k = 1; k <= 9; k++)
-            Add($"k{k}", $"Key {k} of LightCraft's current page");
+            Add($"k{k}", $"Key {k} of Chromaforge's current page");
         for (int pad = 1; pad <= 4; pad++)
             Add($"pad{pad}", $"Dialpad button {pad}");
         for (int slot = 1; slot <= 8; slot++)
@@ -360,7 +360,7 @@ public class LightCraftKey : PluginDynamicCommand
         _params.Add(name);
     }
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override bool OnLoad()
     {
@@ -419,7 +419,7 @@ public class LightCraftKey : PluginDynamicCommand
 
     /// <summary>What to show now: (view, dimmed, hint). Live: the layout. Not live: the everyday
     /// layout dimmed, and one key (<see cref="Renderer.HintKey"/>) says what to do.</summary>
-    private static (JsonNode? view, bool dim, string? hint) Now(LightCraftPlugin p, string param)
+    private static (JsonNode? view, bool dim, string? hint) Now(ChromaforgePlugin p, string param)
     {
         var c = p.Client;
         if (c.State == SurfaceState.Live) return (Renderer.View(c.Layout, param), false, null);
@@ -453,26 +453,26 @@ public class LightCraftKey : PluginDynamicCommand
 /// (<c>DefaultProfile71.lp5</c>), which binds Logi's encoder 0 to <c>dial</c> and encoder 1 to
 /// <c>roller</c>; but on the MX Creative Dialpad encoder 0 is the ROLLER and encoder 1 the big
 /// DIAL (TactileBridge's Wedding layout: Exposure on encoder 0, the roller). So parameter
-/// <c>dial</c> drives LightCraft's <c>roller</c> and parameter <c>roller</c> its <c>dial</c>; the
+/// <c>dial</c> drives Chromaforge's <c>roller</c> and parameter <c>roller</c> its <c>dial</c>; the
 /// profiles already installed keep working.
 /// </summary>
-public class LightCraftDial : PluginDynamicAdjustment
+public class ChromaforgeDial : PluginDynamicAdjustment
 {
-    public LightCraftDial() : base(hasReset: true)
+    public ChromaforgeDial() : base(hasReset: true)
     {
-        Name = "LightCraftDial";
-        DisplayName = "LightCraft Dial";
-        Description = "A dial whose value is set in LightCraft (Settings, Controls)";
+        Name = "ChromaforgeDial";
+        DisplayName = "Chromaforge Dial";
+        Description = "A dial whose value is set in Chromaforge (Settings, Controls)";
         AddParameter("dial", "Dialpad roller (encoder 0)", Groups.Keys);
         AddParameter("roller", "Dialpad dial (encoder 1)", Groups.Keys);
     }
 
     private readonly Redraw _drawn = new();
 
-    /// <summary>LightCraft's control for a parameter (see the class comment).</summary>
+    /// <summary>Chromaforge's control for a parameter (see the class comment).</summary>
     internal static string Control(string param) => param == "dial" ? "roller" : "dial";
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override bool OnLoad()
     {
@@ -510,7 +510,7 @@ public class LightCraftDial : PluginDynamicAdjustment
 
     protected override void RunCommand(string actionParameter)
     {
-        // an encoder press: LightCraft resets the value it moves (or runs `dial.press`)
+        // an encoder press: Chromaforge resets the value it moves (or runs `dial.press`)
         if (Owner is not { } p) return;
         var control = Control(actionParameter);
         p.Client.Press(control);
@@ -561,7 +561,7 @@ internal sealed class Redraw
     }
 
     /// <summary>Everything a key's image and title are drawn from.</summary>
-    public static string Signature(LightCraftPlugin p, JsonNode? view, bool dim, string? hint)
+    public static string Signature(ChromaforgePlugin p, JsonNode? view, bool dim, string? hint)
     {
         var layout = p.Client.LastLayout;
         return string.Join("\u0001", view?.ToJsonString() ?? "", dim ? "1" : "0", hint ?? "", p.BlankTitle, Renderer.Contrast,

@@ -1,4 +1,4 @@
-// Test harness: drives a running LightCraft (started with --control PORT) through the same
+// Test harness: drives a running Chromaforge (started with --control PORT) through the same
 // protocol client the plugin uses, and checks what happens in the app.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 //
@@ -13,10 +13,10 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
-using LightCraft.Surface.Client;
+using Chromaforge.Surface.Client;
 
 int port = args.Length > 0 && int.TryParse(args[0], out var p) ? p : 7980;
-const string ClientId = "lightcraft-logi-harness";
+const string ClientId = "chromaforge-logi-harness";
 int failures = 0;
 void Check(bool ok, string what)
 {
@@ -47,10 +47,10 @@ JsonNode? Exec(string command, JsonObject? prm = null) =>
     Ctl("engine.execute", new JsonObject { ["command"] = command, ["params"] = prm ?? new JsonObject() });
 
 var state = Exec("surface.state");
-Check(state?["ok"]?.GetValue<bool>() == true, "LightCraft answers on the control port");
+Check(state?["ok"]?.GetValue<bool>() == true, "Chromaforge answers on the control port");
 if (state?["result"]?["enabled"]?.GetValue<bool>() != true)
 {
-    Console.WriteLine("Control surfaces are off in this LightCraft: turn them on in Settings, Controls.");
+    Console.WriteLine("Control surfaces are off in this Chromaforge: turn them on in Settings, Controls.");
     return 2;
 }
 // a photo open in Detail
@@ -60,8 +60,8 @@ Exec("view.detail");
 double Exposure() => Exec("photo.inspect")?["result"]?["develop"]?["light"]?["exposure"]?.GetValue<double>() ?? double.NaN;
 long? Active() => Exec("library.state")?["result"]?["selection"]?["active"]?.GetValue<long>();
 
-var tokenFile = Path.Combine(Path.GetTempPath(), $"lightcraft-harness-token-{Environment.ProcessId}.txt");
-using var client = new SurfaceClient("127.0.0.1", port, ClientId, "LightCraft harness", "mx-creative-console", new FileTokenStore(tokenFile), s => Console.WriteLine($"      client: {s}"));
+var tokenFile = Path.Combine(Path.GetTempPath(), $"chromaforge-harness-token-{Environment.ProcessId}.txt");
+using var client = new SurfaceClient("127.0.0.1", port, ClientId, "Chromaforge harness", "mx-creative-console", new FileTokenStore(tokenFile), s => Console.WriteLine($"      client: {s}"));
 var layouts = 0;
 client.LayoutChanged += () => Interlocked.Increment(ref layouts);
 client.Start();
@@ -72,7 +72,7 @@ while (client.State != SurfaceState.Pairing && client.State != SurfaceState.Live
 Check(client.State == SurfaceState.Pairing && client.PairCode?.Length == 6, $"the client asks to pair (code {client.PairCode})");
 Exec("app.settings", new JsonObject { ["tab"] = "controls" });
 var shown = Exec("surface.state")?["result"]?["pairing"]?.AsArray().Any(r => r?["code"]?.ToString() == client.PairCode) == true;
-Check(shown, "LightCraft lists the request with the same code");
+Check(shown, "Chromaforge lists the request with the same code");
 bool IsPaired() => Exec("surface.state")?["result"]?["paired"]?.AsArray().Any(c => c?["client"]?.ToString() == ClientId) == true;
 bool Waiting() => Exec("surface.state")?["result"]?["pairing"]?.AsArray().Any(r => r?["code"]?.ToString() == client.PairCode) == true;
 // the dialog fades in for a few frames: click Approve until the request is answered
@@ -131,7 +131,7 @@ Thread.Sleep(500);
 if (profileBefore != null) Exec("surface.profile", new JsonObject { ["profile"] = profileBefore });
 
 // 5. forget the harness again (the real plugin keeps its own pairing)
-Check(IsPaired(), "LightCraft lists the harness as paired");
+Check(IsPaired(), "Chromaforge lists the harness as paired");
 Exec("app.settings", new JsonObject { ["tab"] = "controls" });
 for (int i = 0; i < 10 && IsPaired(); i++)
 {

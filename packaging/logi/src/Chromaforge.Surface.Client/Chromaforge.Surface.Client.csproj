@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The LightCraft surface-protocol client: no Logi dependency, shared by the plugin and the harness. -->
+  <!-- The Chromaforge surface-protocol client: no Logi dependency, shared by the plugin and the harness. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>LightCraft.Surface.Client</RootNamespace>
+    <RootNamespace>Chromaforge.Surface.Client</RootNamespace>
     <Authors>RAD Films - Roman Alurkoff</Authors>
     <Copyright>Copyright (c) 2026 RAD Films - Roman Alurkoff</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

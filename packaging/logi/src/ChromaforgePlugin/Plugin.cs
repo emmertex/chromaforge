@@ -1,18 +1,18 @@
-// The LightCraft plugin for Logi Options+.
+// The Chromaforge plugin for Logi Options+.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 // Portions from TactileBridge (the author's Capture One plugin): plugin lifecycle and colour
 // handling, the focused-key border, the coalesced SDK refresh timer.
 
 using Loupedeck;
-using LightCraft.Surface.Client;
+using Chromaforge.Surface.Client;
 
-namespace LightCraft.Logi;
+namespace Chromaforge.Logi;
 
 /// <summary>
-/// Entry point (found by the Logi Plugin Service by convention). Owns the connection to LightCraft;
+/// Entry point (found by the Logi Plugin Service by convention). Owns the connection to Chromaforge;
 /// the key command and the dial adjustment only forward input to it and draw what it pushes.
 /// </summary>
-public class LightCraftPlugin : Plugin
+public class ChromaforgePlugin : Plugin
 {
     public override bool UsesApplicationApiOnly => true;
     public override bool HasNoApplication => false;
@@ -25,14 +25,14 @@ public class LightCraftPlugin : Plugin
 
     private volatile bool _dirty = true;
     private long _hintAt;
-    private volatile string _hint = "Start\nLightCraft";
+    private volatile string _hint = "Start\nChromaforge";
 
     /// <summary>The title of an icon-only key (see <c>Renderer.Title</c>): a space unless
     /// config.json's <c>blankTitle</c> says otherwise (re-read every few seconds).</summary>
     internal string BlankTitle => _blank;
     private volatile string _blank = " ";
 
-    /// <summary>The one line a key shows while LightCraft can't be used (one key only, the rest show
+    /// <summary>The one line a key shows while Chromaforge can't be used (one key only, the rest show
     /// their icons dimmed).</summary>
     internal string Hint() => Client.State switch
     {
@@ -43,77 +43,104 @@ public class LightCraftPlugin : Plugin
     private string ComputeHint()
     {
         // short lines, so the key can show them large
-        var off = "LightCraft:\nturn on\ncontrol\nsurfaces";
+        var off = "Chromaforge:\nturn on\ncontrol\nsurfaces";
         if (Client.State == SurfaceState.Refused)
-            return Client.Status.Contains("switched off", StringComparison.OrdinalIgnoreCase) ? off : "LightCraft:\nsee\nSettings";
+            return Client.Status.Contains("switched off", StringComparison.OrdinalIgnoreCase) ? off : "Chromaforge:\nsee\nSettings";
         if (Client.State == SurfaceState.Disconnected)
         {
-            // LightCraft runs but doesn't listen: its control surfaces are off
+            // Chromaforge runs but doesn't listen: its control surfaces are off
             bool running;
-            try { running = System.Diagnostics.Process.GetProcessesByName("lightcraft").Length > 0; }
-            catch (Exception) { running = false; }
-            return running ? off : "Start\nLightCraft";
+            running = ChromaforgeRunning();
+            return running ? off : "Start\nChromaforge";
         }
         return "";
     }
     private Timer? _refresh;
 
-    public LightCraftPlugin()
+    /// <summary>A packaged build runs as <c>chromaforge.exe</c>; a build from source as <c>app.exe</c>
+    /// inside a Chromaforge folder. Never throws.</summary>
+    private static bool ChromaforgeRunning()
     {
+        try
+        {
+            if (System.Diagnostics.Process.GetProcessesByName("chromaforge").Length > 0) return true;
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("app"))
+            {
+                try
+                {
+                    var path = p.MainModule?.FileName ?? "";
+                    if (path.Contains("chromaforge", StringComparison.OrdinalIgnoreCase) || path.Contains("\\cf-", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                catch (Exception) { /* another user's process: no access to its path */ }
+            }
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    public ChromaforgePlugin()
+    {
+        MigrateFromLightCraft();
         Config = PluginConfig.Load(DataDir());
         Client = NewClient();
         RepairProfiles();
     }
 
-    /// <summary>Zero setup: the LightCraft profiles the Logi service made before this plugin had
+    /// <summary>Zero setup: the Chromaforge profiles the Logi service made before this plugin had
     /// a default for the device get its pass-through actions (see <see cref="ProfileRepair"/>).
     /// Runs while the plugin loads, before the service reads the application profiles.</summary>
     private void RepairProfiles()
     {
         try
         {
-            var pluginDir = Path.GetDirectoryName(typeof(LightCraftPlugin).Assembly.Location) ?? "";
-            // ...\LogiPluginService\Plugins\LightCraft → ...\LogiPluginService\Applications
+            var pluginDir = Path.GetDirectoryName(typeof(ChromaforgePlugin).Assembly.Location) ?? "";
+            // ...\LogiPluginService\Plugins\Chromaforge → ...\LogiPluginService\Applications
             var service = Path.GetDirectoryName(Path.GetDirectoryName(pluginDir));
             if (string.IsNullOrEmpty(service)) return;
             var apps = Path.Combine(service, "Applications");
             if (!Directory.Exists(apps)) return;
             ProfileRepair.Run(apps, Path.Combine(pluginDir, "profiles"), Path.Combine(DataDir(), "profile-backups"), s =>
             {
-                try { Log?.Info($"[LightCraft] {s}"); } catch (Exception) { }
+                try { Log?.Info($"[Chromaforge] {s}"); } catch (Exception) { }
             });
         }
         catch (Exception e)
         {
-            try { Log?.Warning($"[LightCraft] profile repair: {e.Message}"); } catch (Exception) { }
+            try { Log?.Warning($"[Chromaforge] profile repair: {e.Message}"); } catch (Exception) { }
         }
     }
+
+    /// <summary>The pairing and port of the plugin's earlier name (see <see cref="LegacyData"/>).</summary>
+    private void MigrateFromLightCraft() => LegacyData.Migrate(DataDir(), s =>
+    {
+        try { Log?.Info($"[Chromaforge] {s}"); } catch (Exception) { }
+    });
 
     private string DataDir()
     {
         try { return GetPluginDataDirectory(); }
-        catch (Exception) { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LightCraftLogi"); }
+        catch (Exception) { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ChromaforgeLogi"); }
     }
 
     private SurfaceClient NewClient()
     {
         var tokens = new FileTokenStore(Path.Combine(DataDir(), "token.txt"));
-        // the port is read again before every connection attempt: editing config.json (or LightCraft's
+        // the port is read again before every connection attempt: editing config.json (or Chromaforge's
         // Install / Reinstall writing it) takes effect without restarting anything
         var dir = DataDir();
-        return new SurfaceClient(Config.Host, () => PluginConfig.Load(dir).Port, "lightcraft-logi", "LightCraft plugin for Logi Options+", "mx-creative-console", tokens, s => Log?.Info($"[LightCraft] {s}"), Path.Combine(DataDir(), "cache"));
+        return new SurfaceClient(Config.Host, () => PluginConfig.Load(dir).Port, "chromaforge-logi", "Chromaforge plugin for Logi Options+", "mx-creative-console", tokens, s => Log?.Info($"[Chromaforge] {s}"), Path.Combine(DataDir(), "cache"));
     }
 
     public override void Load()
     {
-        PluginEvents.AddEvent(Haptics.KeyPressed, "Key pressed", "A LightCraft key was pressed");
+        PluginEvents.AddEvent(Haptics.KeyPressed, "Key pressed", "A Chromaforge key was pressed");
         PluginEvents.AddEvent(Haptics.ValueReset, "Value reset", "A dial value went back to its default");
         PluginEvents.AddEvent(Haptics.AtLimit, "Value at its limit", "A dial value reached the end of its range");
         Client.LayoutChanged += () => _dirty = true;
         _refresh = new Timer(_ =>
         {
             try { Tick(); }
-            catch (Exception e) { Log?.Warning($"[LightCraft] refresh: {e.Message}"); }
+            catch (Exception e) { Log?.Warning($"[Chromaforge] refresh: {e.Message}"); }
         }, null, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(50));
         Client.Start();
     }
@@ -135,7 +162,7 @@ public class LightCraftPlugin : Plugin
             }
             if (!_dirty) return;
             _dirty = false;
-            try { Refresh?.Invoke(); } catch (Exception e) { Log?.Warning($"[LightCraft] refresh: {e.Message}"); }
+            try { Refresh?.Invoke(); } catch (Exception e) { Log?.Warning($"[Chromaforge] refresh: {e.Message}"); }
         }
     }
 
@@ -145,7 +172,7 @@ public class LightCraftPlugin : Plugin
         Client.Dispose();
     }
 
-    /// <summary>A haptic event, when LightCraft says haptics are on.</summary>
+    /// <summary>A haptic event, when Chromaforge says haptics are on.</summary>
     internal void Haptic(string name)
     {
         try
@@ -160,12 +187,12 @@ public class LightCraftPlugin : Plugin
 /// <summary>Haptic event names (Logi Options+ maps them to waveforms on devices that have them).</summary>
 internal static class Haptics
 {
-    public const string KeyPressed = "lightcraftKeyPressed";
-    public const string ValueReset = "lightcraftValueReset";
-    public const string AtLimit = "lightcraftAtLimit";
+    public const string KeyPressed = "chromaforgeKeyPressed";
+    public const string ValueReset = "chromaforgeValueReset";
+    public const string AtLimit = "chromaforgeAtLimit";
 }
 
-/// <summary>Where LightCraft listens (the plugin data folder's <c>config.json</c>; defaults to 127.0.0.1:7981).</summary>
+/// <summary>Where Chromaforge listens (the plugin data folder's <c>config.json</c>; defaults to 127.0.0.1:7981).</summary>
 internal sealed class PluginConfig
 {
     public string Host { get; init; } = "127.0.0.1";
@@ -179,7 +206,8 @@ internal sealed class PluginConfig
         var c = new PluginConfig();
         try
         {
-            var env = Environment.GetEnvironmentVariable("LIGHTCRAFT_SURFACE_PORT");
+            // LIGHTCRAFT_SURFACE_PORT: the name before the rename, still read
+            var env = Environment.GetEnvironmentVariable("CHROMAFORGE_SURFACE_PORT") ?? Environment.GetEnvironmentVariable("LIGHTCRAFT_SURFACE_PORT");
             var path = Path.Combine(dir, "config.json");
             int port = c.Port;
             var blank = c.BlankTitle;
@@ -198,11 +226,11 @@ internal sealed class PluginConfig
     }
 }
 
-public class LightCraftApplication : ClientApplication
+public class ChromaforgeApplication : ClientApplication
 {
-    public LightCraftApplication() { }
+    public ChromaforgeApplication() { }
 
-    protected override string GetProcessName() => "lightcraft";
+    protected override string GetProcessName() => "chromaforge";
 
-    public override string GetDisplayName() => "LightCraft";
+    public override string GetDisplayName() => "Chromaforge";
 }

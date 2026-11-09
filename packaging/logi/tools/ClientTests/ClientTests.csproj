@@ -7,7 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- the profile repair has no Logi dependency: tested here -->
-    <Compile Include="..\..\src\LightCraftPlugin\ProfileRepair.cs" Link="ProfileRepair.cs" />
-    <ProjectReference Include="..\..\src\LightCraft.Surface.Client\LightCraft.Surface.Client.csproj" />
+    <Compile Include="..\..\src\ChromaforgePlugin\ProfileRepair.cs" Link="ProfileRepair.cs" />
+    <Compile Include="..\..\src\ChromaforgePlugin\LegacyData.cs" Link="LegacyData.cs" />
+    <ProjectReference Include="..\..\src\Chromaforge.Surface.Client\Chromaforge.Surface.Client.csproj" />
   </ItemGroup>
 </Project>

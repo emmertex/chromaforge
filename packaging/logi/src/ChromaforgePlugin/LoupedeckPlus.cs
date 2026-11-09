@@ -1,17 +1,17 @@
-// The Loupedeck+ console: its knobs and buttons forwarded to LightCraft by Loupedeck's own numbers.
+// The Loupedeck+ console: its knobs and buttons forwarded to Chromaforge by Loupedeck's own numbers.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 //
 // The default profile (DefaultProfile15.lp5) puts each of these on the control with the same
-// number; LightCraft decides what it does (Settings, Controls, Loupedeck+): by default what the
+// number; Chromaforge decides what it does (Settings, Controls, Loupedeck+): by default what the
 // console's label says, or the layout imported from the user's own Loupedeck profile.
 
 using Loupedeck;
 
-namespace LightCraft.Logi;
+namespace Chromaforge.Logi;
 
 internal static class LoupedeckPlusControls
 {
-    public const string Group = "1. Loupedeck+ (set in LightCraft)";
+    public const string Group = "1. Loupedeck+ (set in Chromaforge)";
 
     /// <summary>The turns Loupedeck numbers: P1-P8 in their four modes (1-32), the labelled knobs
     /// (33-47, no 43) and the Control Dial (48).</summary>
@@ -30,19 +30,19 @@ internal static class LoupedeckPlusControls
         param.Length > 1 && param[0] == prefix && int.TryParse(param.AsSpan(1), out var n) && n is > 0 and < 128 ? n : null;
 }
 
-/// <summary>A Loupedeck+ button (or a knob's press): <c>b95</c> is LightCraft's <c>ld.b95</c>.</summary>
+/// <summary>A Loupedeck+ button (or a knob's press): <c>b95</c> is Chromaforge's <c>ld.b95</c>.</summary>
 public class LoupedeckPlusButton : PluginDynamicCommand
 {
     public LoupedeckPlusButton() : base()
     {
         Name = "LoupedeckPlusButton";
-        DisplayName = "LightCraft: Loupedeck+ button";
-        Description = "A Loupedeck+ button whose action is set in LightCraft (Settings, Controls, Loupedeck+)";
+        DisplayName = "Chromaforge: Loupedeck+ button";
+        Description = "A Loupedeck+ button whose action is set in Chromaforge (Settings, Controls, Loupedeck+)";
         foreach (var n in LoupedeckPlusControls.Buttons())
             AddParameter($"b{n}", $"Loupedeck+ button {n}", LoupedeckPlusControls.Group);
     }
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override bool ProcessButtonEvent2(string actionParameter, DeviceButtonEvent2 buttonEvent)
     {
@@ -60,19 +60,19 @@ public class LoupedeckPlusButton : PluginDynamicCommand
     }
 }
 
-/// <summary>A Loupedeck+ knob: <c>r33</c> is LightCraft's <c>ld.r33</c>.</summary>
+/// <summary>A Loupedeck+ knob: <c>r33</c> is Chromaforge's <c>ld.r33</c>.</summary>
 public class LoupedeckPlusKnob : PluginDynamicAdjustment
 {
     public LoupedeckPlusKnob() : base(hasReset: false)
     {
         Name = "LoupedeckPlusKnob";
-        DisplayName = "LightCraft: Loupedeck+ knob";
-        Description = "A Loupedeck+ knob whose value is set in LightCraft (Settings, Controls, Loupedeck+)";
+        DisplayName = "Chromaforge: Loupedeck+ knob";
+        Description = "A Loupedeck+ knob whose value is set in Chromaforge (Settings, Controls, Loupedeck+)";
         foreach (var n in LoupedeckPlusControls.Knobs())
             AddParameter($"r{n}", $"Loupedeck+ knob {n}", LoupedeckPlusControls.Group);
     }
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override void ApplyAdjustment(string actionParameter, int diff)
     {

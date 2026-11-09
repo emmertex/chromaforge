@@ -1,25 +1,25 @@
-// Zero setup for the Loupedeck+: its LightCraft profile gets the plugin's pass-through actions.
+// Zero setup for the Loupedeck+: its Chromaforge profile gets the plugin's pass-through actions.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 
 using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace LightCraft.Logi;
+namespace Chromaforge.Logi;
 
 /// <summary>
 /// The Logi Plugin Service sends a control's turns and presses to the plugin only when one of the
 /// plugin's actions is assigned to that control in the device's profile. The plugin ships default
 /// profiles (<c>profiles/DefaultProfileNN.lp5</c>) that assign the pass-through actions to every
 /// control, but the service uses a default profile only when it creates the application's
-/// profile, the first time it sees the plugin. A LightCraft profile created by an older plugin
+/// profile, the first time it sees the plugin. A Chromaforge profile created by an older plugin
 /// (one without a Loupedeck+ default) stays empty forever: nothing on the Loupedeck+ reached
-/// LightCraft until the user assigned each control by hand.
+/// Chromaforge until the user assigned each control by hand.
 ///
 /// So, when the plugin loads (before the service reads the application profiles), every
-/// LightCraft profile of a device the plugin has a default for gets the default's pass-through
-/// actions on the controls that have none, or that hold one of LightCraft's own per-value actions
-/// (assigned by hand only to get a knob working; LightCraft maps the knob itself). Controls with
+/// Chromaforge profile of a device the plugin has a default for gets the default's pass-through
+/// actions on the controls that have none, or that hold one of Chromaforge's own per-value actions
+/// (assigned by hand only to get a knob working; Chromaforge maps the knob itself). Controls with
 /// any other action (another plugin, a keyboard shortcut) are left as they are. The original file
 /// is copied to the plugin's data folder first (<c>profile-backups</c>). Never throws.
 /// </summary>
@@ -29,8 +29,8 @@ internal static class ProfileRepair
     /// defaults came after the first release; the Keypad's and the Dialpad's were in it).</summary>
     public static readonly string[] Devices = { "Loupedeck15", "Loupedeck72" };
 
-    /// <summary>LightCraft actions a control may hold only as a stand-in for the pass-through.</summary>
-    private static readonly string[] StandIns = { "$LightCraft___LightCraftAdjust___", "$LightCraft___ResetLightCraftAdjust___" };
+    /// <summary>Chromaforge actions a control may hold only as a stand-in for the pass-through.</summary>
+    private static readonly string[] StandIns = { "$Chromaforge___ChromaforgeAdjust___", "$Chromaforge___ResetChromaforgeAdjust___" };
 
     private const int MaxProfileBytes = 32 << 20;
 
@@ -48,7 +48,7 @@ internal static class ProfileRepair
                 var number = device["Loupedeck".Length..];
                 var defaults = DefaultSlots(Path.Combine(profilesDir, $"DefaultProfile{number}.lp5"));
                 if (defaults == null) continue;
-                var dir = Path.Combine(applications, device, "@_lightcraft", "Profiles");
+                var dir = Path.Combine(applications, device, "@_chromaforge", "Profiles");
                 if (!Directory.Exists(dir)) continue;
                 foreach (var profile in Directory.EnumerateDirectories(dir))
                 {
@@ -60,10 +60,10 @@ internal static class ProfileRepair
                     Directory.CreateDirectory(backupDir);
                     var backup = Path.Combine(backupDir, $"{device}-{Path.GetFileName(profile)}-{DateTime.Now:yyyyMMdd-HHmmss}.json");
                     File.WriteAllText(backup, text);
-                    var tmp = file + ".lightcraft.tmp";
+                    var tmp = file + ".chromaforge.tmp";
                     File.WriteAllText(tmp, fixedText);
                     File.Move(tmp, file, true);
-                    var line = $"{device} profile {Path.GetFileName(profile)}: {changed} controls now reach LightCraft (original kept in {backup})";
+                    var line = $"{device} profile {Path.GetFileName(profile)}: {changed} controls now reach Chromaforge (original kept in {backup})";
                     done.Add(line);
                     log?.Invoke(line);
                 }

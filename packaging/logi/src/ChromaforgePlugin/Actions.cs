@@ -1,13 +1,13 @@
-// LightCraft's actions in the Logi Options+ actions panel, by category.
+// Chromaforge's actions in the Logi Options+ actions panel, by category.
 // Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 // Portions from TactileBridge: numbered action categories so Options+ keeps their order.
 
 using System.Text.Json.Nodes;
 using Loupedeck;
 
-namespace LightCraft.Logi;
+namespace Chromaforge.Logi;
 
-/// <summary>One action of LightCraft's catalogue (<c>surface.catalog</c>).</summary>
+/// <summary>One action of Chromaforge's catalogue (<c>surface.catalog</c>).</summary>
 internal sealed record CatalogEntry(string Key, string Group, string Label, string? Icon, bool Value);
 
 /// <summary>The catalogue as the actions panel lists it: numbered categories.</summary>
@@ -41,22 +41,22 @@ internal static class CatalogView
 }
 
 /// <summary>
-/// LightCraft's key actions (ratings, labels, browsing, tools, masks, view…), one Options+ action
-/// each, for putting them on keys in Options+ directly. The list comes from LightCraft and is
-/// kept from the last run, so it is there before LightCraft starts.
+/// Chromaforge's key actions (ratings, labels, browsing, tools, masks, view…), one Options+ action
+/// each, for putting them on keys in Options+ directly. The list comes from Chromaforge and is
+/// kept from the last run, so it is there before Chromaforge starts.
 /// </summary>
-public class LightCraftAction : PluginDynamicCommand
+public class ChromaforgeAction : PluginDynamicCommand
 {
     private readonly Dictionary<string, CatalogEntry> _entries = new(StringComparer.Ordinal);
 
-    public LightCraftAction() : base()
+    public ChromaforgeAction() : base()
     {
-        Name = "LightCraftAction";
-        DisplayName = "LightCraft Action";
-        Description = "A LightCraft action";
+        Name = "ChromaforgeAction";
+        DisplayName = "Chromaforge Action";
+        Description = "A Chromaforge action";
     }
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override bool OnLoad()
     {
@@ -69,7 +69,7 @@ public class LightCraftAction : PluginDynamicCommand
         return true;
     }
 
-    private void Fill(LightCraftPlugin p)
+    private void Fill(ChromaforgePlugin p)
     {
         lock (_entries)
         {
@@ -125,25 +125,25 @@ public class LightCraftAction : PluginDynamicCommand
 }
 
 /// <summary>
-/// LightCraft's values (every develop slider, mask, brush and view value), one Options+ dial
+/// Chromaforge's values (every develop slider, mask, brush and view value), one Options+ dial
 /// action each: turning moves the value on the open photo (one undo step per turn), pressing
 /// resets it, and the display shows the live value.
 /// </summary>
-public class LightCraftAdjust : PluginDynamicAdjustment
+public class ChromaforgeAdjust : PluginDynamicAdjustment
 {
     private readonly Dictionary<string, CatalogEntry> _entries = new(StringComparer.Ordinal);
     private readonly HashSet<string> _shown = new(StringComparer.Ordinal);
     private readonly Redraw _values = new();
     private readonly Redraw _images = new();
 
-    public LightCraftAdjust() : base(hasReset: true)
+    public ChromaforgeAdjust() : base(hasReset: true)
     {
-        Name = "LightCraftAdjust";
-        DisplayName = "LightCraft Value";
-        Description = "A LightCraft value";
+        Name = "ChromaforgeAdjust";
+        DisplayName = "Chromaforge Value";
+        Description = "A Chromaforge value";
     }
 
-    private LightCraftPlugin? Owner => Plugin as LightCraftPlugin;
+    private ChromaforgePlugin? Owner => Plugin as ChromaforgePlugin;
 
     protected override bool OnLoad()
     {
@@ -151,7 +151,7 @@ public class LightCraftAdjust : PluginDynamicAdjustment
         {
             Fill(p);
             p.Client.CatalogChanged += () => Fill(p);
-            // the values on show change: redraw those (each by name; see LightCraftKey)
+            // the values on show change: redraw those (each by name; see ChromaforgeKey)
             p.Refresh += () =>
             {
                 string[] shown;
@@ -168,7 +168,7 @@ public class LightCraftAdjust : PluginDynamicAdjustment
         return true;
     }
 
-    private void Fill(LightCraftPlugin p)
+    private void Fill(ChromaforgePlugin p)
     {
         lock (_entries)
         {
@@ -188,8 +188,8 @@ public class LightCraftAdjust : PluginDynamicAdjustment
         lock (_entries) return _entries.TryGetValue(key, out var e) ? e : null;
     }
 
-    /// <summary>Ask LightCraft for the live value of every value the device shows.</summary>
-    private void Shown(LightCraftPlugin p, string key)
+    /// <summary>Ask Chromaforge for the live value of every value the device shows.</summary>
+    private void Shown(ChromaforgePlugin p, string key)
     {
         if (CatalogView.Target(key) is not { } t) return;
         string[] all;
@@ -201,7 +201,7 @@ public class LightCraftAdjust : PluginDynamicAdjustment
         p.Client.Watch(all);
     }
 
-    private static JsonNode? Live(LightCraftPlugin p, string key) =>
+    private static JsonNode? Live(ChromaforgePlugin p, string key) =>
         CatalogView.Target(key) is { } t ? p.Client.Layout?["values"]?[t] : null;
 
     protected override void ApplyAdjustment(string actionParameter, int diff)

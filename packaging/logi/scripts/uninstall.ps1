@@ -1,10 +1,10 @@
-# Remove the LightCraft plugin from Logi Options+ (Logi Plugin Service) on this PC.
+# Remove the Chromaforge plugin from Logi Options+ (Logi Plugin Service) on this PC.
 # Copyright (c) 2026 RAD Films - Roman Alurkoff. MIT License.
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 [-NoRestart]
 #
-# Removes only LightCraft's own folders (the plugin, its data and pairing token, its Options+
-# profiles). Other plugins, their profiles and Options+ settings are not touched. In LightCraft,
+# Removes only Chromaforge's own folders (the plugin, its data and pairing token, its Options+
+# profiles). Other plugins, their profiles and Options+ settings are not touched. In Chromaforge,
 # Settings, Controls, Forget the paired plugin as well.
 
 param([switch]$NoRestart)
@@ -18,9 +18,9 @@ if (-not $NoRestart) {
     }
 }
 $targets = @(
-    (Join-Path $logi 'Plugins\LightCraft'),
-    (Join-Path $logi 'PluginData\LightCraft')
-) + (Get-ChildItem (Join-Path $logi 'Applications') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName '@_lightcraft' })
+    (Join-Path $logi 'Plugins\Chromaforge'),
+    (Join-Path $logi 'PluginData\Chromaforge')
+) + (Get-ChildItem (Join-Path $logi 'Applications') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName '@_chromaforge' })
 foreach ($t in $targets) {
     if (Test-Path $t) { Remove-Item $t -Recurse -Force; Write-Host "removed $t" }
 }
@@ -33,4 +33,4 @@ if (-not $NoRestart) {
         Start-Process -FilePath $serviceExe -WorkingDirectory (Split-Path $serviceExe)
     }
 }
-Write-Host 'The LightCraft plugin is removed.'
+Write-Host 'The Chromaforge plugin is removed.'
