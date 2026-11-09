@@ -355,7 +355,7 @@ fn persist_reported(app: &mut LccApp, ctx: Option<&egui::Context>) {
     if let Err(e) = persist(app) {
         log::warn!("print settings not saved: {e}");
         if let (Some(ctx), Some((_, SAVE_ATTEMPTS))) = (ctx, &app.print.save_failed) {
-            app.toast(ctx, format!("Print settings not saved: {e}"));
+            app.toast(ctx, crate::i18n::tr_format!("Print settings not saved: {e}", e = e));
         }
     }
 }

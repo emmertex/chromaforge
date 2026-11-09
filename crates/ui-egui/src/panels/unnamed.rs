@@ -273,7 +273,7 @@ pub fn tile(app: &mut LccApp, ui: &mut egui::Ui, list: &Unnamed, i: usize, r: Re
         p.text(pos2(r.left() + 5.0, strip.center().y), Align2::LEFT_CENTER, format!("{label}?"), t.font(11.5), Color32::from_gray(225));
     }
     if let (Some(a), Some(who)) = (&accept, &f.suggestion)
-        && a.clone().on_hover_text(format!("Name this face {who}")).clicked()
+        && a.clone().on_hover_text(crate::i18n::tr_format!("Name this face {who}", who = who)).clicked()
     {
         name(app, &[key], who);
         return;

@@ -109,6 +109,8 @@ pub mod widgets;
 pub mod window_place;
 
 #[cfg(test)]
+mod i18n_scan;
+#[cfg(test)]
 mod tests_access;
 #[cfg(test)]
 mod tests_activity;
@@ -236,6 +238,8 @@ mod tests_histogram_modes;
 mod tests_hover_pointer;
 #[cfg(test)]
 mod tests_i18n_coverage;
+#[cfg(test)]
+mod tests_i18n_sweep;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
@@ -1529,7 +1533,11 @@ impl LccApp {
             }
             Ok(v) if matches!(id, "faces.detect" | "faces.clearAndRescan") && v["done"] == false => {
                 let n = v["photos"].as_u64().unwrap_or(0);
-                self.ui.status = if n == 1 { "Detecting faces…".to_string() } else { format!("Detecting faces in {n} photos…") };
+                self.ui.status = if n == 1 {
+                    crate::i18n::tr("Detecting faces…").to_string()
+                } else {
+                    crate::i18n::tr_format!("Detecting faces in {n} photos…", n = n)
+                };
             }
             Ok(v) if id == "faces.detect" => self.ui.status = detect_summary(v),
             Ok(v) if id == "faces.renamePerson" => {

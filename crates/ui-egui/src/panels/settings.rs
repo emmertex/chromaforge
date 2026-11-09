@@ -1016,7 +1016,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         row(ui, t, label, |ui| {
             let id = egui::Id::new(("settingsMeta", key));
             let mut text: String = ui.data(|m| m.get_temp(id)).unwrap_or(value.clone());
-            let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(hint_text).desired_width(240.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(crate::i18n::tr(hint_text)).desired_width(240.0));
             register(ui.ctx(), format!("field:settings.{key}"), r.rect);
             if r.lost_focus() && text.trim() != value {
                 let _ = app.run("library.preferences", json!({"import": {key: text.trim()}}));
@@ -1777,10 +1777,10 @@ fn smart_previews(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             &path,
             egui::TextStyle::Body.resolve(ui.style()),
             if available { t.text } else { t.reject },
-            if custom { 0.0 } else { label_width(ui, "(library default)", egui::TextStyle::Body) },
+            if custom { 0.0 } else { label_width(ui, crate::i18n::tr("(library default)"), egui::TextStyle::Body) },
         );
         if !custom {
-            let r = ui.label(RichText::new("(library default)").color(t.text));
+            let r = ui.label(RichText::new(crate::i18n::tr("(library default)")).color(t.text));
             register(ui.ctx(), "text:settingsSmartDefault", r.rect);
         }
     });

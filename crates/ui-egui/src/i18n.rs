@@ -232,6 +232,13 @@ pub fn tr(source: &str) -> &str {
     tr_in(language(), source)
 }
 
+/// Every translation in `language`'s catalog (a painted text that is one is translated, even when
+/// it is also some English message: German "Profile" for "Profiles").
+#[cfg(test)]
+pub(crate) fn translations(language: Locale) -> std::collections::BTreeSet<&'static str> {
+    language.catalog().values().map(String::as_str).collect()
+}
+
 /// [`tr`] for a message whose translation depends on where it appears: a catalog entry keyed
 /// `"<context>|<source>"` wins, else the plain message. A language adds the contextual entry only
 /// where its shared translation reads wrongly there (Japanese はい / いいえ as a rule's value).
@@ -1688,12 +1695,17 @@ mod tests {
         ]);
         labels.extend(crate::panels::keyword_list::VARIABLE_LABELS);
         let contextual = format!("{BOOL_CONTEXT}|");
+        // and every literal the source hands to `tr` or a helper that translates (`tr_format!`
+        // messages are the formats' list)
+        let formats = format_messages();
+        let scanned = crate::i18n_scan::translated_texts().into_keys().filter(|text| !formats.contains(text));
         Locale::ALL
             .iter()
             .flat_map(|language| language.catalog().keys())
             .filter(|key| !key.starts_with(&contextual))
             .cloned()
             .chain(labels.into_iter().map(str::to_string))
+            .chain(scanned)
             .collect()
     }
 

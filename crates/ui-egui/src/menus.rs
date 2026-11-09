@@ -1144,7 +1144,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             li.path = path;
             li.show = true;
             li.revision = li.revision.wrapping_add(1);
-            app.toast(&ctx, "Layout Image On");
+            app.toast(&ctx, crate::i18n::tr("Layout Image On"));
             Ok(json!({"layoutImage": app.ui.layout_image}))
         }
         "view.layoutImage" => {
@@ -1154,7 +1154,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 return run_ui_command(app, "view.chooseLayoutImage", &json!({}));
             }
             app.ui.layout_image.show = show;
-            app.toast(&ctx, if show { "Layout Image On" } else { "Layout Image Off" });
+            app.toast(&ctx, crate::i18n::tr(if show { "Layout Image On" } else { "Layout Image Off" }));
             Ok(json!({"layoutImage": app.ui.layout_image}))
         }
         "view.layoutImageOpacity" | "view.layoutImageMatte" => {
