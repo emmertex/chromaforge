@@ -31,7 +31,7 @@ pub(crate) fn primaries(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 6, bottom: 2 }, 3, 2)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let active = usize::from(log_view);
-            if let Some(i) = crate::widgets::segmented(ui, "primariesWheels", &[("Color", "color"), ("Log", "log")], Some(active), 2) {
+            if let Some(i) = crate::widgets::segmented(ui, "primariesWheels", &[("Color", "color"), ("color wheels|Log", "log")], Some(active), 2) {
                 app.ui.primaries_tab = if i == 1 { "log".into() } else { "color".into() };
             }
         });
