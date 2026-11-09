@@ -210,11 +210,11 @@ impl eframe::App for App {
 /// a second; anything slower gives way to quitting.
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The window's renderer (egui-wgpu): eframe's defaults, with the app's backend choice — DX12
-/// alone on Windows unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
-/// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12) — and DX12
+/// The window's renderer (egui-wgpu): eframe's defaults, with the app's backend choice — one backend
+/// alone on Windows (Vulkan; the chain falls back to DX12) unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
+/// with two in the set, wgpu loads both drivers even when it then picks one) — and DX12
 /// shaders compiled with FXC, never a stray `dxcompiler.dll` (issue #471).
-/// The fallback chain on top of it (DX12 → GL → glow; Vulkan only when asked for) is in `window_gpu`.
+/// The fallback chain on top of it (Vulkan → DX12 → GL → glow) is in `window_gpu`.
 #[cfg(test)]
 fn window_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     window_gpu::base_options()
@@ -1123,7 +1123,7 @@ OPTIONS:
 ENVIRONMENT:
   {P}_CONFIG_DIR=DIR   use this settings folder instead of the platform default (empty = no settings folder).
                    Without it, a portable.txt file next to the program puts the folder beside it
-  {P}_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: DX12 on Windows, Metal on macOS,
+  {P}_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: Vulkan then DX12 on Windows, Metal on macOS,
                    Vulkan on Linux; off = render on the CPU); else WGPU_BACKEND. {P}_GPU=0: CPU rendering.
   {P}_HDR_DISPLAY=0   keep the window SDR. {P}_HDR_HEADROOM=X / {P}_HDR_PAPER_WHITE=NITS: the display's headroom
                    (× SDR white) and SDR white where the system doesn't report them (Wayland)
@@ -2119,14 +2119,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Issue #136: Windows windows render with DX12 alone (no Vulkan driver loaded) by default.
+    /// Issues #136 and #934: Windows windows start on Vulkan alone (one driver loaded) by default.
     #[test]
     fn window_backends_follow_the_platform_default() {
         let eframe::egui_wgpu::WgpuSetup::CreateNew(n) = window_wgpu_options().wgpu_setup else { panic!("expected CreateNew") };
         let b = n.instance_descriptor.backends;
         if !lcc_brand::env_is_set("GPU_BACKEND") && std::env::var_os("WGPU_BACKEND").is_none() {
             if cfg!(windows) {
-                assert_eq!(b, eframe::wgpu::Backends::DX12);
+                assert_eq!(b, eframe::wgpu::Backends::VULKAN);
             } else if cfg!(target_os = "macos") {
                 assert_eq!(b, eframe::wgpu::Backends::METAL);
             }

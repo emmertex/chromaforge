@@ -38,7 +38,7 @@ means to use (`lcc_gpu::backend`), for its compute device *and* for the desktop 
 
 | platform | default (window and compute) |
 |---|---|
-| Windows | DX12 only — the Vulkan driver is never loaded unless asked for |
+| Windows | Vulkan, DX12 as the fallback (each tried on its own; issue #934: DX12's FXC took 31 s to build the kernels on a cold shader cache). Compute follows the window's backend, else the first with a graphics card |
 | macOS | Metal |
 | Linux / BSD | Vulkan (the window also lists GL, eframe's default; no GL backend is compiled in) |
 
@@ -153,12 +153,12 @@ device and every kernel build; a crash while the window's renderer starts is avo
 or worked around with `<PREFIX>_GPU_BACKEND`.
 
 **The window's renderer and its fallback (Windows).** Before the window opens, each renderer is probed in
-order: DX12, GL, then eframe's OpenGL renderer (glow); Vulkan only when `<PREFIX>_GPU_BACKEND=vulkan` asks for it,
-since a broken Vulkan driver can crash the process before any window. A probe creates a device and builds egui's
+order: Vulkan, DX12, GL, then eframe's OpenGL renderer (glow). A broken Vulkan driver can crash the process before
+any window (#136): the marker below then puts Vulkan last. A probe creates a device and builds egui's
 pipeline inside wgpu error scopes, so a driver that cannot compile egui's shaders ("The parameter is
 incorrect. (0x80070057)" in `egui_pipeline`) is logged and skipped instead of killing the app; no pop-up
 unless that renderer was forced (#1624). The renderer
-that worked is remembered in the settings folder (`window-renderer`); a start that dies before the window is up
+that worked is remembered in the settings folder (`window-renderer-2`); a start that dies before the window is up
 leaves `window-init.marker`, and the next start (relaunched automatically, at most 4 times) tries that
 renderer last. `<PREFIX>_GPU_BACKEND=dx12 | vulkan | gl | glow` (or `WGPU_BACKEND`) forces one; DX12 stays
 first because a broken Vulkan driver can crash the process uncatchably (#136). Compute keeps its own
