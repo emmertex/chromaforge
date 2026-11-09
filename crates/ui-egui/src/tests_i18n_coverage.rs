@@ -25,7 +25,7 @@ fn catalog(code: &str, formats: bool) -> BTreeMap<String, String> {
 /// fork overlay's few rows) don't yet carry the fork's messages. Their gaps are reported; the
 /// messages upstream's own tests require in every language (the smart-album rule words) are in
 /// their overlays. A language leaves this list once its overlay catches up.
-const PARTIAL: &[Locale] = &[Locale::Pl, Locale::Cs, Locale::It, Locale::Ka, Locale::Sv, Locale::Fi, Locale::Id, Locale::Vi];
+pub(crate) const PARTIAL: &[Locale] = &[Locale::Pl, Locale::Cs, Locale::It, Locale::Ka, Locale::Sv, Locale::Fi, Locale::Id, Locale::Vi];
 
 /// Every message a fork overlay (`locales/fork/`) carries, in any language.
 fn fork_keys(formats: bool) -> BTreeSet<String> {
@@ -62,7 +62,7 @@ fn complete() -> impl Iterator<Item = Locale> {
 fn report(what: &str, gaps: &[String]) {
     if !gaps.is_empty() {
         eprintln!(
-            "{} {what} (reported only: partial languages, files outside STRICT); first ones:\n{}",
+            "{} {what} (reported only: partial languages); first ones:\n{}",
             gaps.len(),
             gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
         );
@@ -113,41 +113,9 @@ fn every_catalog_carries_every_message() {
     }
 }
 
-/// The files whose text every complete catalog must carry today. The scan reads every file; the
-/// rest of the UI's text is reported until the catalogs catch up, and then this list goes.
-const STRICT: &[&str] = &[
-    "map/mod.rs",
-    "map/side.rs",
-    "map/view.rs",
-    "book.rs",
-    "slideshow_ui.rs",
-    "print_ui.rs",
-    "web_module.rs",
-    "creations_ui.rs",
-    "edit_in.rs",
-    "module.rs",
-    "plate.rs",
-    "help_overlay.rs",
-    "access.rs",
-    "panels/publish.rs",
-    "panels/ai_models.rs",
-    "panels/retouch.rs",
-    "panels/tether_bar.rs",
-    "panels/connections.rs",
-    "panels/peer_sync.rs",
-    "folder_poll.rs",
-    "panels/plugins.rs",
-    "panels/classic.rs",
-    "panels/navigator.rs",
-    "panels/metadata.rs",
-    "panels/cells.rs",
-    "video_ui.rs",
-    "video_view.rs",
-];
-
 /// Every text the UI hands to `tr` (directly, or through a helper that translates), in every
-/// non-test source file (`i18n_scan`), is in every complete catalog: a failure for the [`STRICT`]
-/// files, a report for the others.
+/// non-test source file (`i18n_scan`), is in every complete catalog: a failure for a complete
+/// language, a report for a [`PARTIAL`] one.
 #[test]
 fn ui_text_is_in_every_catalog() {
     let texts = crate::i18n_scan::translated_texts();
@@ -160,7 +128,7 @@ fn ui_text_is_in_every_catalog() {
             if !plain.contains_key(text) && !formats.contains_key(text) {
                 let files: Vec<&str> = files.iter().map(String::as_str).collect();
                 let gap = format!("{}: {text:?} ({})", l.code(), files.join(", "));
-                if PARTIAL.contains(&l) || !files.iter().any(|f| STRICT.contains(f)) { gaps.push(gap) } else { missing.push(gap) }
+                if PARTIAL.contains(&l) { gaps.push(gap) } else { missing.push(gap) }
             }
         }
     }

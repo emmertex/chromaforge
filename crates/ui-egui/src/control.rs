@@ -87,6 +87,12 @@ fn wrap(r: Result<Value, String>) -> Outcome {
     }
 }
 
+/// Labels are source keys with `{app}` / `{upstream}` placeholders (the UI translates them by key); a listing for
+/// an agent reports them as the user sees them.
+fn brand_filled(listing: Value) -> Value {
+    serde_json::from_str(&lcc_brand::fill(&listing.to_string())).unwrap_or(listing)
+}
+
 pub fn all_commands(app: &LccApp) -> Value {
     let keymap = &app.ui.settings.keymap;
     let mut v: Vec<Value> = app
@@ -278,13 +284,12 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             ctx.request_repaint();
             wrap(r)
         }
-        "engine.commands" => ok(all_commands(app)),
-        "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_entries(app)).unwrap_or_default()),
+        "engine.commands" => ok(brand_filled(all_commands(app))),
+        "ui.menu.list" => ok(brand_filled(serde_json::to_value(crate::menus::menu_entries(app)).unwrap_or_default())),
         "ui.menu.tree" => {
             let tree =
                 Value::Array(crate::menubar::menu_bar(app).into_iter().map(|(title, items)| json!({"label": title, "children": items})).collect());
-            // labels are source keys with `{app}` placeholders; report them as the user sees them
-            ok(serde_json::from_str(&lcc_brand::fill(&tree.to_string())).unwrap_or(tree))
+            ok(brand_filled(tree))
         }
         "ui.inspect" => ok(inspect(app, ctx)),
         "ui.widgets" => {
