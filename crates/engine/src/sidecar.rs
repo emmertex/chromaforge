@@ -365,8 +365,10 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
                     })
                     .unwrap_or(crate::import::ImportUprightMode::Unknown);
                 // Lightroom keeps its Upright analysis when Upright is Off but doesn't apply it:
-                // nothing is lost then
-                if mode != crate::import::ImportUprightMode::Off {
+                // nothing is lost then; Auto, Level, Vertical and Full apply Lightroom's own matrix
+                // (`geometry.lrc_upright`), so only a mode without a usable one is redone here
+                let applied = partial.pointer("/geometry/lrc_upright").is_some_and(|v| !v.is_null());
+                if mode != crate::import::ImportUprightMode::Off && !applied {
                     out.warnings.push(crate::import::ImportWarning {
                         path: String::new(),
                         code: crate::import::ImportWarningCode::UprightGeometry,

@@ -883,11 +883,29 @@ pub fn resolve<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings) -> C
 /// Whether [`resolve`] has an automatic transform to solve (a mode without its stored analysis).
 pub fn pending(s: &DevelopSettings) -> bool {
     let g = &s.geometry;
-    !(matches!(g.upright, Upright::Off | Upright::Guided) || g.upright_transform.is_some() || !s.section_enabled("geometry"))
+    !(matches!(g.upright, Upright::Off | Upright::Guided)
+        || g.upright_transform.is_some()
+        || g.lrc_upright.is_some()
+        || !s.section_enabled("geometry"))
 }
 
-/// The Upright homography in effect for settings (stored automatic transform, or solved from guides).
-/// `ow × oh` is the oriented image size (guides are normalized to it).
+/// Lightroom's stored Upright matrix `m` (lens-corrected → transformed, in normalized coordinates `x / width`,
+/// `y / height` of the `ow × oh` oriented image) in our centred coordinates (`(p − centre) / (long edge / 2)`):
+/// `S · m · S⁻¹`. Measured on a Lightroom Classic export of an Auto Upright edit (8 Nov 2026): the export maps to
+/// the source as `m⁻¹ · crop` within 0.0004. `None` for a size or matrix that gives no usable transform.
+pub fn from_lrc(m: &Homography, ow: f64, oh: f64) -> Option<Homography> {
+    if !(ow.is_finite() && oh.is_finite() && ow > 0.0 && oh > 0.0) {
+        return None;
+    }
+    let l = ow.max(oh) / 2.0;
+    let s = Homography([ow / l, 0.0, -ow / (2.0 * l), 0.0, oh / l, -oh / (2.0 * l), 0.0, 0.0, 1.0]);
+    let c = s.mul(m).mul(&s.inverse()?);
+    let z = c.0[8];
+    (z.is_finite() && z.abs() > 1e-12 && c.inverse().is_some() && c.0.iter().all(|v| v.is_finite())).then(|| Homography(c.0.map(|v| v / z)))
+}
+
+/// The Upright homography in effect for settings (stored automatic transform, Lightroom's stored one, or
+/// solved from guides). `ow × oh` is the oriented image size (guides are normalized to it).
 pub fn homography(g: &Geometry, ow: f64, oh: f64) -> Homography {
     match g.upright {
         Upright::Off => Homography::IDENTITY,
@@ -897,6 +915,6 @@ pub fn homography(g: &Geometry, ow: f64, oh: f64) -> Homography {
             let segs: Vec<Segment> = g.guides.iter().map(|(a, b)| Segment { a: c(*a), b: c(*b) }).collect();
             solve_guided(&segs)
         }
-        _ => g.upright_transform.unwrap_or(Homography::IDENTITY),
+        _ => g.upright_transform.or_else(|| g.lrc_upright.as_ref().and_then(|m| from_lrc(m, ow, oh))).unwrap_or(Homography::IDENTITY),
     }
 }
