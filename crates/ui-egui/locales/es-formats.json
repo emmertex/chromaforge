@@ -161,7 +161,7 @@
   "{n} photo{} match · updates automatically as photos change": "{n} foto{0} coincidente{0} · se actualiza automáticamente cuando cambian las fotos",
   "{n} photo{} now · updates automatically as photos change": "{n} foto{} ahora · se actualiza automáticamente cuando cambian las fotos",
   "{pid} (missing)": "{pid} (falta)",
-  "{sel_n} selected · {counted}": "{sel_n} seleccionadas · {counted}",
+  "{sel_n} selected · {counted}": "Seleccionadas: {sel_n} · {counted}",
   "{stage}… {:.0}%": "{stage}… {:.0}%",
   "{verb} {n} Photo{}": "{verb} {n} foto{}",
   "{weekday}, {day}": "{weekday}, {day}",

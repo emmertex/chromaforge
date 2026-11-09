@@ -89,16 +89,7 @@ fn matching(s: &mut Session, p: &Value) -> Result<Value> {
     let dir = models_dir(s, C)?;
     let mut st = read_settings(&dir);
     if let Some(v) = p.get("topFaces") {
-        let max = lcc_faces::matching::MAX_TOP_FACES;
-        st.top_faces = match v {
-            Value::Null => None,
-            v => Some(
-                v.as_u64()
-                    .and_then(|n| usize::try_from(n).ok())
-                    .filter(|n| (1..=max).contains(n))
-                    .ok_or_else(|| bad(C, format!("`topFaces` is a whole number from 1 to {max}, or null for the default")))?,
-            ),
-        };
+        st.top_faces = top_faces_value(C, v, "the default")?;
         write_settings(&dir, &st)?;
         // suggestions and a person's "More" faces follow at once, not within the second the last look is trusted
         #[cfg(not(target_arch = "wasm32"))]
@@ -106,7 +97,26 @@ fn matching(s: &mut Session, p: &Value) -> Result<Value> {
             s.faces.top_seen = None;
         }
     }
-    Ok(json!({"topFaces": st.top_faces(), "default": lcc_faces::matching::TOP_FACES, "max": lcc_faces::matching::MAX_TOP_FACES}))
+    Ok(json!({
+        "topFaces": st.top_faces(),
+        "topFacesDefault": lcc_faces::matching::TOP_FACES,
+        "topFacesMax": lcc_faces::matching::MAX_TOP_FACES,
+    }))
+}
+
+/// `topFaces` as a command is given it: a whole number from 1 to [`lcc_faces::matching::MAX_TOP_FACES`], or null
+/// (`None`, which stands for `null_is`); anything else is refused, the same way by every command that takes it.
+pub(super) fn top_faces_value(cmd: &str, v: &Value, null_is: &str) -> Result<Option<usize>> {
+    let max = lcc_faces::matching::MAX_TOP_FACES;
+    match v {
+        Value::Null => Ok(None),
+        v => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=max).contains(n))
+            .map(Some)
+            .ok_or_else(|| bad(cmd, format!("`topFaces` is a whole number from 1 to {max}, or null for {null_is}"))),
+    }
 }
 
 fn write_settings(dir: &Path, st: &FaceSettings) -> Result<()> {
@@ -592,6 +602,6 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "faces.models.remove", "Remove Face Model", [], None, "{id} — delete an installed model", always, remove),
         cmd!(query "faces.models.select", "Choose Face Recognition Model", [], None, "{id: installed recogniser | null}", always, select),
         cmd!(query "faces.enable", "Face Recognition On/Off", [], None, "{enabled?: bool} (toggles when omitted)", always, enable),
-        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null} → {topFaces, default, max} — how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have", always, matching),
+        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null} → {topFaces, topFacesDefault, topFacesMax} — how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have", always, matching),
     ]
 }
