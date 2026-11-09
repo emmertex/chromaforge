@@ -14,6 +14,14 @@ use crate::state::{BeforeAfter, RightPanel, ToolOverlay, Zoom};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+/// Whether the preview or thumbnail may stand in for `slot` until its own render arrives. They show
+/// the photo's current settings, so for the Before view only while those are its before settings:
+/// an edited photo would otherwise flash its edits before the Before render replaces them
+/// (upstream #2248).
+pub(crate) fn stand_in_shows(app: &LccApp, id: PhotoId, slot: Slot) -> bool {
+    slot != Slot::Before || app.session.catalog.photo(id).is_some_and(|ph| *ph.develop == app.session.before_settings(ph))
+}
+
 /// A clip's whole decoded frame drawn into `r` through the loupe's [`Frame`]: the crop, its
 /// straighten angle and the flips pick the part of the texture that shows (the uncropped frame
 /// while the Crop tool is open).
@@ -1497,10 +1505,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             return "hdr";
         }
         let mine = |s: Slot| app.renderer.textures.get(&s).filter(|t| t.photo == id);
+        // (the Before view takes no stand-in that shows the edits: upstream #2248)
+        let stand_in = stand_in_shows(app, id, slot);
         let candidates = [
             mine(slot).map(|t| (t, "render")),
-            mine(Slot::Preview).filter(truthful).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
-            app.renderer.thumb(id).filter(truthful).map(|t| (t, "thumb")),
+            mine(Slot::Preview).filter(truthful).filter(|_| stand_in).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
+            app.renderer.thumb(id).filter(truthful).filter(|_| stand_in).map(|t| (t, "thumb")),
         ];
         // each picture's corners on the view, when it says where it lies (`Some(None)`: drawn as it
         // is; `None`: it can't be drawn for this view)
