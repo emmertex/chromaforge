@@ -10,8 +10,8 @@ if (!app) throw new Error('display_name not found in brand.toml');
 
 // Base path is set by the Pages workflow (MANUAL_BASE); `/` for local dev.
 export default defineConfig({
-  site: process.env.MANUAL_SITE ?? 'http://localhost:4321',
-  base: process.env.MANUAL_BASE ?? '/',
+  site: process.env.MANUAL_SITE || 'http://localhost:4321',
+  base: process.env.MANUAL_BASE || '/',
   integrations: [
     starlight({
       title: `${app} Manual`,
