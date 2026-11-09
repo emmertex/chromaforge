@@ -1,7 +1,7 @@
 //! [`Manager`]: installed plug-ins, their grants, enabled state, logs and data.
 //!
 //! On disk (a folder, usually `<settings>/plugins`): `<id>.wasm` per plug-in, `plugins.json` with
-//! each plug-in's `{enabled, grant}`, `data/<id>.json`, its metadata namespace (per library), and
+//! each plug-in's `{enabled, grant, denied}` (what the user allowed, and what they said no to), `data/<id>.json`, its metadata namespace (per library), and
 //! `settings/<id>.json`, its settings and remembered dialog values (for the whole app), and
 //! `previous/<id>.wasm` + `previous/<id>.json`, the version an update replaced and its settings, to
 //! go back to ([`Manager::rollback`]; nothing loads from that folder). A manager without a folder
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::context::{CallContext, HostApi, JobReporter, Unwatched};
 use crate::manifest::{Field, dialog_args, parse_version};
-use crate::permissions::Permissions;
+use crate::permissions::{Permissions, Request, refused_root};
 use crate::runtime::{Limits, Plugin};
 use crate::settings::{MAX_SETTINGS_BYTES, SettingsStore, command_scope, destination_scope};
 use crate::store::{NamespaceStore, write_atomic};
@@ -40,6 +40,10 @@ pub struct Installed {
     pub enabled: bool,
     /// What the user granted (the effective set is this ∩ the manifest's request).
     pub grant: Permissions,
+    /// What the user said no to when asked, with the date: never asked again.
+    pub denied: Vec<Denial>,
+    /// Folders the manifest asks for that can't be granted, with why ([`refused_root`]).
+    refused: Vec<(String, String)>,
     pub log: VecDeque<String>,
     store: Option<NamespaceStore>,
     /// Its settings and remembered dialog values (shared with a call running off the lock).
@@ -63,7 +67,49 @@ impl Installed {
 
     /// The capabilities calls actually get.
     pub fn effective(&self) -> Permissions {
-        self.grant.intersect(&self.plugin.manifest().permissions)
+        self.grant.intersect(&self.plugin.manifest().permissions).without_refused(|p| self.refused.iter().any(|(r, _)| r == p))
+    }
+
+    /// Where `r` stands: allowed, denied (on a date), refused (a folder that can't be granted)
+    /// or never asked.
+    pub fn state(&self, r: &Request) -> RequestState {
+        if let Some((_, why)) = self.refused.iter().find(|(p, _)| r.group == crate::Group::Fs && r.value.as_deref() == Some(p)) {
+            RequestState::Refused(why.clone())
+        } else if self.effective().holds(r) {
+            RequestState::Allowed
+        } else if let Some(d) = self.denied.iter().find(|d| d.request == *r) {
+            RequestState::Denied(d.on.clone())
+        } else {
+            RequestState::Never
+        }
+    }
+
+    /// Each request of the manifest with its state, as `plugin.list` gives them.
+    pub fn requests(&self) -> Vec<Value> {
+        let requested = &self.plugin.manifest().permissions;
+        requested
+            .requests()
+            .into_iter()
+            .map(|r| {
+                let mut v = json!({"group": r.group, "value": r.value});
+                if r.group == crate::Group::Fs {
+                    v["write"] = json!(requested.fs.iter().any(|f| Some(&f.path) == r.value.as_ref() && f.write));
+                }
+                match self.state(&r) {
+                    RequestState::Allowed => v["state"] = json!("allowed"),
+                    RequestState::Never => v["state"] = json!("never"),
+                    RequestState::Denied(on) => {
+                        v["state"] = json!("denied");
+                        v["deniedOn"] = json!(on);
+                    }
+                    RequestState::Refused(why) => {
+                        v["state"] = json!("refused");
+                        v["reason"] = json!(why);
+                    }
+                }
+                v
+            })
+            .collect()
     }
 
     /// Hands [`Installed::effective`] (nothing while disabled) to calls running now: their next
@@ -87,7 +133,7 @@ impl Installed {
             "id": m.id, "name": m.name, "version": m.version, "description": m.description, "author": m.author,
             "requires": m.requires,
             "enabled": self.enabled, "size": self.plugin.size(),
-            "requested": m.permissions, "granted": self.effective(),
+            "requested": m.permissions, "granted": self.effective(), "requests": self.requests(),
             "commands": m.commands, "hooks": m.hooks, "publish": m.publish,
             "exportDestinations": m.export_destinations, "metadataFields": m.metadata_fields,
             "settings": m.settings,
@@ -143,6 +189,27 @@ struct State {
 struct Entry {
     enabled: bool,
     grant: Permissions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    denied: Vec<Denial>,
+}
+
+/// A request the user said no to, and when (`YYYY-MM-DD`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Denial {
+    #[serde(flatten)]
+    pub request: Request,
+    pub on: String,
+}
+
+/// Where one request of a plug-in stands ([`Installed::state`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequestState {
+    Allowed,
+    /// The user said no, on this date: later calls fail without asking.
+    Denied(String),
+    /// A folder no one can grant, and why ([`refused_root`]).
+    Refused(String),
+    Never,
 }
 
 /// A plug-in call prepared by [`Manager::begin`]: it owns what the call needs, so it can run
@@ -165,6 +232,16 @@ pub struct PendingCall {
     /// A job ([`crate::CommandDecl::job`]), by its command's label: its `job.*` calls reach a
     /// [`JobReporter`], and a reply `{continue: state}` calls it again.
     job: Option<String>,
+    /// What the plug-in may be asked about: its manifest's request without the folders no one
+    /// may grant.
+    askable: Permissions,
+    /// The requests the user said no to: refused without asking.
+    denied: Vec<Request>,
+    /// The user can be asked ([`PendingCall::ask_user`]): a refused call that was never asked
+    /// about is noted in `needs` instead of telling the plug-in to go to the Plug-in Manager.
+    asking: bool,
+    /// What calls were refused for that the user was never asked about ([`PendingCall::take_needs`]).
+    needs: Vec<Request>,
 }
 
 impl PendingCall {
@@ -176,6 +253,19 @@ impl PendingCall {
     /// Whether this call is a job ([`PendingCall::run_with`] reports its progress).
     pub fn is_job(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// Lets the call note what it needs that the user was never asked about, for the host to ask
+    /// once it ends ([`PendingCall::take_needs`]): for a command the user started, with the user at
+    /// the app. Not for a job, which runs with nobody to ask.
+    pub fn ask_user(&mut self) {
+        self.asking = self.job.is_none();
+    }
+
+    /// The requests calls were refused for that the user was never asked about (only with
+    /// [`PendingCall::ask_user`]), each once, in the order they came.
+    pub fn take_needs(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.needs)
     }
 
     /// A job's command label (as the manifest gives it).
@@ -267,6 +357,10 @@ impl PendingCall {
             fields: &manifest.settings,
             read_only: self.read_only,
             job,
+            askable: &self.askable,
+            denied: &self.denied,
+            asking: self.asking,
+            needs: &mut self.needs,
         };
         let mut outcome = plugin.invoke(&self.request, &mut ctx);
         // what the host did on the plug-in's behalf that the user should see in its log
@@ -276,14 +370,18 @@ impl PendingCall {
     }
 }
 
-/// Refuses a grant from a command that names a program the user hasn't allowed in `granted`, or
-/// more of one (a wider entry, [`crate::ProgramDecl::within`]). Repeating or leaving out granted
-/// programs is fine: only the user adds them.
-fn programs_kept(grant: &Permissions, granted: &Permissions) -> Result<()> {
-    match grant.programs.iter().find(|p| !granted.programs.iter().any(|g| p.within(g))) {
-        Some(p) => Err(Error::Params(format!(
-            "programs can only be allowed by the user, in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…); this grant names {:?}, which the user hasn't allowed as it stands",
-            p.id
+/// Refuses a grant from a command that holds anything `granted` doesn't (a permission, a host, a
+/// folder or its `write`, a program or a wider entry of one, [`Permissions::more_than`]). Repeating
+/// or leaving out what is granted is fine: only the user adds, when the plug-in asks or in the
+/// Plug-in Manager.
+fn adds_nothing(grant: &Permissions, requested: &Permissions, granted: &Permissions) -> Result<()> {
+    // what the manifest doesn't ask for is cut back, except a program entry: a wider one than the
+    // granted entry is an error, not the manifest's entry in its place
+    let mut cut = grant.intersect(requested);
+    cut.programs = grant.programs.clone();
+    match cut.more_than(granted) {
+        Some(r) => Err(Error::Params(format!(
+            "permissions can only be allowed by the user, when the plug-in asks or in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…); this grant adds `{r}`, which the user hasn't allowed"
         ))),
         None => Ok(()),
     }
@@ -315,6 +413,8 @@ impl Failed {
 #[derive(Debug)]
 pub struct Manager {
     dir: Option<PathBuf>,
+    /// Folders no plug-in may be granted (the settings folder; the plug-ins folder always is).
+    protected: Vec<PathBuf>,
     limits: Limits,
     /// The host features plug-ins may require ([`crate::HOST_FEATURES`]).
     features: Vec<String>,
@@ -342,6 +442,7 @@ impl Default for Manager {
     fn default() -> Self {
         Manager {
             dir: None,
+            protected: Vec::new(),
             limits: Limits::default(),
             features: crate::HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
             plugins: BTreeMap::new(),
@@ -423,7 +524,8 @@ impl Manager {
             seen.insert(id.clone(), file.clone());
             m.unloaded.remove(&id);
             // not in plugins.json (copied in by hand): disabled, nothing granted
-            let (enabled, grant) = state.plugins.get(&id).map_or((false, Permissions::default()), |e| (e.enabled, e.grant.clone()));
+            let (enabled, grant, denied) =
+                state.plugins.get(&id).map_or((false, Permissions::default(), Vec::new()), |e| (e.enabled, e.grant.clone(), e.denied.clone()));
             let mut log = VecDeque::new();
             if let Err(e) = p.manifest().semver() {
                 log.push_back(format!("loaded without a valid version ({e}); installing a new version will need one"));
@@ -431,7 +533,9 @@ impl Manager {
             let (settings, damaged) = m.open_settings(&id);
             log.extend(damaged);
             let live = Arc::new(Mutex::new(Permissions::default()));
-            let installed = Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None, live, path: Some(f) };
+            let refused = m.refused_roots(&p.manifest().permissions);
+            let installed =
+                Installed { plugin: Arc::new(p), enabled, grant, denied, refused, log, store: None, settings, busy: None, live, path: Some(f) };
             installed.share_effective();
             if let Some((version, _)) = read_previous(dir, &id) {
                 m.previous.insert(id.clone(), version);
@@ -532,26 +636,27 @@ impl Manager {
         self.dir.as_deref()
     }
 
-    /// Installs (or updates) a module. `grant` = what the user approved, one by one, on the
-    /// install dialog. `None` grants nothing new: a fresh install gets no permissions, an update
-    /// keeps the previous grant (cut back to what the new version still asks for), so an update
-    /// can never gain a capability without the user approving it. The plug-in starts enabled.
+    /// Installs (or updates) a module, as a command does. `None` grants nothing new: a fresh
+    /// install gets no permissions (the plug-in asks the user for each as it needs it), an update
+    /// keeps the previous grant (cut back to what the new version still asks for) and the
+    /// denials, so an update can never gain a capability without the user allowing it. The
+    /// plug-in starts enabled.
     ///
     /// Refused, with nothing written: a plug-in that requires host features this version lacks, a
     /// `version` that isn't semver, and a lower version than the installed one unless
     /// `allow_downgrade` (the same version again is a repair, and allowed).
     ///
-    /// `grant` can't add a program (`programs`): only the user grants those, in the Plugin
-    /// Manager ([`Manager::install_bytes_by_user`]). It may repeat or leave out the programs the
-    /// installed version has granted; one it hasn't, or a wider entry, is an error and installs
-    /// nothing. A module whose code differs from the installed one (another digest) keeps none
-    /// of its programs, and its log says so: the user allowed them for the code they had.
+    /// `grant` can't add anything ([`Permissions::more_than`]): it may repeat or leave out what the
+    /// installed version has granted; anything more is an error and installs nothing. A module
+    /// whose code differs from the installed one (another digest) keeps none of its programs, and
+    /// its log says so: the user allowed them for the code they had.
     pub fn install_bytes(&mut self, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool) -> Result<&Installed> {
         self.install_checked(bytes, grant, allow_downgrade, false)
     }
 
-    /// [`Manager::install_bytes`] as the user approved it in the Plug-in Manager's install dialog:
-    /// the grant may include programs. Never reachable from a command.
+    /// [`Manager::install_bytes`] as the user started it from the Plug-in Manager: a module whose
+    /// code differs keeps its programs. `grant` is taken as given (the install dialog passes none;
+    /// tests set one up this way). Never reachable from a command.
     pub fn install_bytes_by_user(&mut self, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool) -> Result<&Installed> {
         self.install_checked(bytes, grant, allow_downgrade, true)
     }
@@ -616,13 +721,16 @@ impl Manager {
                 .map(|p| format!("{}: this version's code is different, so it may no longer start it; allow it again in the Plug-in Manager", p.name))
                 .collect();
         }
+        // a grant from a command never adds to what the plug-in had: a fresh install starts with
+        // nothing, and only the user allows more, when the plug-in asks or in the Plug-in Manager
         if let Some(g) = &grant
             && !by_user
         {
-            programs_kept(g, &previous)?;
+            adds_nothing(g, &plugin.manifest().permissions, &previous)?;
         }
+        let denied = self.plugins.get(&id).map(|i| i.denied.clone()).or_else(|| self.kept.get(&id).map(|e| e.denied.clone())).unwrap_or_default();
         let grant = grant.unwrap_or_else(|| previous.clone()).intersect(&plugin.manifest().permissions);
-        // a granted program whose entry the update widened is unticked: say why
+        // a granted program whose entry the update widened is no longer allowed: say why
         let widened: Vec<String> = plugin
             .manifest()
             .permissions
@@ -717,7 +825,9 @@ impl Manager {
         if let Err(e) = pruned {
             log.push_back(format!("settings: {e}"));
         }
-        let installed = Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None, live, path };
+        let refused = self.refused_roots(&plugin.manifest().permissions);
+        let installed =
+            Installed { plugin: Arc::new(plugin), enabled: true, grant, denied, refused, log, store: None, settings, busy: None, live, path };
         installed.share_effective();
         self.plugins.insert(id.clone(), installed);
         self.save()?;
@@ -913,7 +1023,7 @@ impl Manager {
     pub fn demote(&mut self, id: &str, error: String) -> bool {
         let Some(p) = self.plugins.remove(id) else { return false };
         *p.live.lock().unwrap_or_else(PoisonError::into_inner) = Permissions::default();
-        self.kept.insert(id.to_string(), Entry { enabled: p.enabled, grant: p.grant.clone() });
+        self.kept.insert(id.to_string(), Entry { enabled: p.enabled, grant: p.grant.clone(), denied: p.denied.clone() });
         let file = p.path.as_ref().map_or_else(|| format!("{id}.wasm"), |f| f.display().to_string());
         self.failed.push(Failed { file, error, missing: Vec::new(), id: id.to_string(), path: p.path });
         true
@@ -928,17 +1038,19 @@ impl Manager {
     }
 
     /// Replaces the grant (revoking what it leaves out); it can never exceed the request. It can't
-    /// add a program: one the plug-in hasn't been granted, or a wider entry, is an error and
-    /// changes nothing (only the user grants programs, [`Manager::set_grant_by_user`]). Repeating
-    /// granted programs keeps them; leaving them out revokes them.
+    /// add anything ([`Permissions::more_than`]): a grant holding a permission, host, folder or
+    /// program the plug-in doesn't have is an error and changes nothing (only the user adds,
+    /// [`Manager::allow_by_user`]). Repeating what is granted keeps it; leaving it out revokes it.
     pub fn set_grant(&mut self, id: &str, grant: Permissions) -> Result<Permissions> {
-        let granted = self.plugins.get(id).ok_or_else(|| Error::NotFound(id.into()))?.effective();
-        programs_kept(&grant, &granted)?;
+        let p = self.plugins.get(id).ok_or_else(|| Error::NotFound(id.into()))?;
+        adds_nothing(&grant, &p.plugin.manifest().permissions, &p.effective())?;
         self.set_grant_by_user(id, grant)
     }
 
-    /// [`Manager::set_grant`] as the user set it in the Plug-in Manager: it may grant programs.
-    /// Never reachable from a command.
+    /// [`Manager::set_grant`] without the check: the whole grant at once, as the user set it.
+    /// Never reachable from a command (the Plug-in Manager allows one request at a time,
+    /// [`Manager::allow_by_user`]; tests set a grant this way). Folders that can't be granted
+    /// ([`refused_root`]) stay out of what calls get.
     pub fn set_grant_by_user(&mut self, id: &str, grant: Permissions) -> Result<Permissions> {
         let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
         p.grant = grant.intersect(&p.plugin.manifest().permissions);
@@ -947,6 +1059,78 @@ impl Manager {
         p.push_log(format!("permissions set to {}", serde_json::to_string(&e).unwrap_or_default()));
         self.save()?;
         Ok(e)
+    }
+
+    /// The user allows request `r` of plug-in `id` (when it asked, or on its Permissions tab): it
+    /// is granted as the manifest asks for it, and a denial of it is forgotten. An error when the
+    /// manifest doesn't ask for it, or it is a folder no one may grant ([`refused_root`]). Never
+    /// reachable from a command.
+    pub fn allow_by_user(&mut self, id: &str, r: &Request) -> Result<Permissions> {
+        let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+        let requested = &p.plugin.manifest().permissions;
+        if !requested.holds(r) || (r.value.is_none() && r.group.has_values()) {
+            return Err(Error::Params(format!("{id} doesn't ask for `{r}`")));
+        }
+        if let RequestState::Refused(why) = p.state(r) {
+            return Err(Error::Params(format!("`{r}` can't be granted: {why}")));
+        }
+        p.grant = p.grant.with(r, requested).intersect(requested);
+        p.denied.retain(|d| d.request != *r);
+        p.share_effective();
+        p.push_log(format!("allowed {r}"));
+        let e = p.effective();
+        self.save()?;
+        Ok(e)
+    }
+
+    /// The user said no to request `r` of plug-in `id` on `on` (`YYYY-MM-DD`): it isn't granted,
+    /// and calls that need it fail without asking until the user allows it. Never reachable from
+    /// a command.
+    pub fn deny_by_user(&mut self, id: &str, r: &Request, on: &str) -> Result<()> {
+        let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+        if !p.plugin.manifest().permissions.holds(r) || (r.value.is_none() && r.group.has_values()) {
+            return Err(Error::Params(format!("{id} doesn't ask for `{r}`")));
+        }
+        p.grant = p.grant.without(r);
+        p.denied.retain(|d| d.request != *r);
+        p.denied.push(Denial { request: r.clone(), on: on.to_string() });
+        p.share_effective();
+        p.push_log(format!("denied {r}"));
+        self.save()
+    }
+
+    /// Revokes request `r` of plug-in `id` (every value of its group when `r` names none): open to
+    /// commands. What is revoked counts as never asked: the plug-in may ask again.
+    pub fn revoke(&mut self, id: &str, r: &Request) -> Result<Permissions> {
+        let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+        p.grant = p.grant.without(r);
+        p.share_effective();
+        p.push_log(format!("revoked {r}"));
+        let e = p.effective();
+        self.save()?;
+        Ok(e)
+    }
+
+    /// Folders no plug-in may be granted, besides the plug-ins folder itself: the settings folder.
+    /// A request for a folder that holds one of them (or lies inside the plug-ins folder) is
+    /// refused: a plug-in that could write there could rewrite its own grant or another module.
+    pub fn set_protected(&mut self, folders: Vec<PathBuf>) {
+        self.protected = folders;
+        let refused: Vec<(String, Vec<(String, String)>)> =
+            self.plugins.iter().map(|(id, p)| (id.clone(), self.refused_roots(&p.plugin.manifest().permissions))).collect();
+        for (id, r) in refused {
+            if let Some(p) = self.plugins.get_mut(&id) {
+                p.refused = r;
+                p.share_effective();
+            }
+        }
+    }
+
+    /// The folders `requested` asks for that can't be granted, with why.
+    fn refused_roots(&self, requested: &Permissions) -> Vec<(String, String)> {
+        let mut protected = self.protected.clone();
+        protected.extend(self.dir.clone());
+        requested.fs.iter().filter_map(|f| refused_root(&f.path, &protected, self.dir.as_deref()).map(|why| (f.path.clone(), why))).collect()
     }
 
     pub fn get(&self, id: &str) -> Option<&Installed> {
@@ -961,7 +1145,8 @@ impl Manager {
     fn save(&self) -> Result<()> {
         let Some(dir) = &self.dir else { return Ok(()) };
         let mut plugins = self.kept.clone();
-        plugins.extend(self.plugins.iter().map(|(id, p)| (id.clone(), Entry { enabled: p.enabled, grant: p.grant.clone() })));
+        plugins
+            .extend(self.plugins.iter().map(|(id, p)| (id.clone(), Entry { enabled: p.enabled, grant: p.grant.clone(), denied: p.denied.clone() })));
         let state = State { plugins };
         let bytes = serde_json::to_vec_pretty(&state).map_err(|e| Error::Io(e.to_string()))?;
         write_atomic(&dir.join("plugins.json"), &bytes)
@@ -1010,6 +1195,8 @@ impl Manager {
         }
         p.share_effective();
         let perms = p.live.clone();
+        let askable = p.plugin.manifest().permissions.without_refused(|f| p.refused.iter().any(|(r, _)| r == f));
+        let denied = p.denied.iter().map(|d| d.request.clone()).collect();
         let plugin = p.plugin.clone();
         let store = p.store.take().unwrap_or_default();
         let settings = p.settings.clone();
@@ -1031,6 +1218,10 @@ impl Manager {
             runs_root: self.runs_root.clone(),
             read_only,
             job: job.map(str::to_string),
+            askable,
+            denied,
+            asking: false,
+            needs: Vec::new(),
         })
     }
 
@@ -1165,6 +1356,33 @@ impl Manager {
         source: &Value,
         host: &mut dyn HostApi,
     ) -> Result<Prepared> {
+        self.prepare_from(id, command, selection, source, host, None)
+    }
+
+    /// [`Manager::prepare_command_from`] for a command the user started, with the user at the app
+    /// ([`PendingCall::ask_user`]): what the prepare step was refused that the user was never
+    /// asked about is added to `needs` (each once), for the host to ask once it ends.
+    pub fn prepare_command_asking(
+        &mut self,
+        id: &str,
+        command: &str,
+        selection: &[String],
+        source: &Value,
+        host: &mut dyn HostApi,
+        needs: &mut Vec<Request>,
+    ) -> Result<Prepared> {
+        self.prepare_from(id, command, selection, source, host, Some(needs))
+    }
+
+    fn prepare_from(
+        &mut self,
+        id: &str,
+        command: &str,
+        selection: &[String],
+        source: &Value,
+        host: &mut dyn HostApi,
+        needs: Option<&mut Vec<Request>>,
+    ) -> Result<Prepared> {
         let p = self.plugins.get(id).ok_or_else(|| Error::NotFound(id.into()))?;
         let decl = p.plugin.manifest().command(command).ok_or_else(|| Error::Params(format!("plug-in {id} has no command {command:?}")))?.clone();
         if !decl.prepare {
@@ -1174,7 +1392,21 @@ impl Manager {
         if !source.is_null() {
             req["source"] = source.clone();
         }
-        let answer = self.invoke(id, &req, host, &[]).and_then(|v| {
+        let answer = self.begin(id, req, Vec::new()).and_then(|mut call| {
+            if needs.is_some() {
+                call.ask_user();
+            }
+            let outcome = call.run(host);
+            if let Some(needs) = needs {
+                for r in call.take_needs() {
+                    if !needs.contains(&r) {
+                        needs.push(r);
+                    }
+                }
+            }
+            self.end(call, Some(outcome))
+        });
+        let answer = answer.and_then(|v| {
             prepared_answer(&decl.dialog, &v).map_err(|e| {
                 // invoke logged failed calls; an answer that doesn't fit is logged here
                 if let Some(p) = self.plugins.get_mut(id) {

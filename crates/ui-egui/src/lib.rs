@@ -771,6 +771,12 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// This frame's input carries synthetic events (an agent's or a script's, [`Self::synthetic`]):
+    /// what only the user may do (allow a plug-in's permission) ignores a click in it.
+    pub(crate) synthetic_frame: bool,
+    /// Input the test harness gives as the user's ([`headless::Headless::click_as_user`]): one
+    /// event per frame, never marked synthetic. Nothing outside the harness fills it.
+    pub(crate) user_events: Vec<egui::Event>,
     /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
     /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
     /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
@@ -1139,6 +1145,8 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            synthetic_frame: false,
+            user_events: vec![],
             paint_hold_until: f64::NEG_INFINITY,
             paint_hold: false,
             mask_landing: Default::default(),
@@ -2602,7 +2610,15 @@ impl LccApp {
         if !self.drop_hover.is_empty() {
             raw.hovered_files = self.drop_hover.iter().map(|p| egui::HoveredFile { path: file(p), ..Default::default() }).collect();
         }
+        self.synthetic_frame = !self.synthetic.is_empty();
         if self.synthetic.is_empty() {
+            if !self.user_events.is_empty() {
+                let e = self.user_events.remove(0);
+                if let egui::Event::PointerButton { pos, .. } = &e {
+                    raw.events.push(egui::Event::PointerMoved(*pos));
+                }
+                raw.events.push(e);
+            }
             shell::defer_tabs(self, raw);
             return;
         }

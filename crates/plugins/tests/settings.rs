@@ -406,7 +406,7 @@ fn prepare_steps_can_only_read() {
         (r#"{"method":"http.request","params":{"method":"POST","url":"http://example.invalid/x","body":"{}"}}"#, false),
     ] {
         let mut m = Manager::in_memory();
-        m.install_bytes(&module(&manifest, Answer::Forward(req)), Some(grant.clone()), false).unwrap();
+        m.install_bytes_by_user(&module(&manifest, Answer::Forward(req)), Some(grant.clone()), false).unwrap();
         let mut host = Writes::default();
         let Ok(Prepared::Dialog { error: Some(e), .. }) = m.prepare_command(id, "go", &["1".into()], &mut host) else {
             panic!("{req}: the declared dialog, with the refusal")
@@ -422,7 +422,7 @@ fn prepare_steps_can_only_read() {
         }
     }
     let mut m = Manager::in_memory();
-    m.install_bytes(
+    m.install_bytes_by_user(
         &module(&manifest, Answer::Forward(r#"{"method":"metadata.setStandard","params":{"ids":["1"],"title":"t"}}"#)),
         Some(grant),
         false,
@@ -447,7 +447,7 @@ fn removing_a_plugin_can_keep_its_data_and_settings() {
     let bytes = module(&manifest, Answer::Forward(r#"{"method":"settings.set","params":{"key":"n","value":9}}"#));
     let mut m = Manager::open(&dir).unwrap();
     m.install_bytes(&bytes, None, false).unwrap();
-    m.set_grant(id, lcc_plugins::Permissions { catalog: true, ..Default::default() }).unwrap();
+    m.set_grant_by_user(id, lcc_plugins::Permissions { catalog: true, ..Default::default() }).unwrap();
     m.set_settings(id, &json!({"n": 5}), &mut NoHost).unwrap();
     m.set_metadata_field(id, "7", "job", &json!("J-1")).unwrap();
     let settings = dir.join("settings").join(format!("{id}.json"));

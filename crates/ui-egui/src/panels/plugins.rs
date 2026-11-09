@@ -8,21 +8,27 @@
 //!   so it is no command of its own: `plugins.page {id, tab?}` does it for agents.
 //! - Install: *Install from File…* opens the system file picker; a `.wasm` dropped on the app while
 //!   the window is open installs too ([`take_drop`]). The module is inspected first and every
-//!   permission it asks for is listed with a checkbox, unchecked unless an installed version
-//!   already has it. Only what the user ticks is granted; an update shows what it newly asks for.
-//!   One install waits at a time, and a module that is exactly what is installed selects its entry
-//!   instead of asking again.
-//! - Per plug-in: enable/disable, toggle (revoke) each requested permission, remove, read the log,
-//!   edit its settings, run its commands (with their declarative dialogs, opening with the values
-//!   they last ran with, or as the plug-in's `prepare` step says).
+//!   permission it may ask for is listed, for information: nothing is granted at install (an
+//!   update keeps what the user allowed). One install waits at a time, and a module that is exactly
+//!   what is installed selects its entry instead of asking again.
+//! - Per plug-in: enable/disable, each requested permission with its state (allowed, denied on a
+//!   date, not asked yet, or a folder that can't be granted) and **Allow** / **Revoke**, remove,
+//!   read the log, edit its settings, run its commands (with their declarative dialogs, opening
+//!   with the values they last ran with, or as the plug-in's `prepare` step says).
+//! - A command the user starts that needs a permission they were never asked about ends with the
+//!   usual error, then a prompt names the plug-in and the permission: **Allow** grants it and runs
+//!   the command again, **Deny** remembers the answer ([`ask_ui`]).
 //! - After an export, enabled export hooks and the chosen export destination run on the written
 //!   files, on a worker with an activity row ([`after_export`], [`poll`]).
 //!
-//! - A program a plug-in may start (`programs`) is granted only here, by the user: the install
-//!   button and the permission checkboxes go through [`lcc_engine::cmd::plugins::install_by_user`]
-//!   and [`lcc_engine::cmd::plugins::grant_by_user`], which no command reaches. Each such row
-//!   shows where the program is installed. Going back to the previous version from the page
-//!   ([`lcc_engine::cmd::plugins::rollback_by_user`]) keeps the programs granted, too.
+//! - Permissions are granted only here, by the user: the Allow buttons go through
+//!   [`lcc_engine::cmd::plugins::allow_by_user`], which no command reaches, and ignore a click in a
+//!   frame carrying the control channel's synthetic input (an agent's or a script's; it says so
+//!   instead). The install button and going back to the previous version
+//!   ([`lcc_engine::cmd::plugins::install_by_user`], [`lcc_engine::cmd::plugins::rollback_by_user`])
+//!   keep the programs granted when the code changes; clicked by an agent they act as the
+//!   `plugin.install` / `plugin.rollback` commands, which don't. A program's row shows where it is
+//!   installed.
 //!
 //! Every other action is an engine `plugin.*` command. State lives in a static here (no field on the
 //! app), so the shell only needs the calls in `run`, `show`, `menu_items`, `after_export` and
@@ -37,12 +43,19 @@ use serde_json::{Value, json};
 use crate::LccApp;
 use crate::i18n::{tr, tr_format};
 
-/// An install waiting for the user's approval: the file, its inspection and the ticked grant.
+/// An install waiting for the user's approval: the file and its inspection.
 #[derive(Clone)]
 struct Pending {
     path: String,
     info: Value,
-    grant: Value,
+}
+
+/// A permission a command the user started needs, on screen as a prompt ([`ask_ui`]).
+#[derive(Clone)]
+struct Asking {
+    ask: lcc_engine::cmd::plugins::PluginAsk,
+    /// What it allows, as the Permissions tab words it.
+    label: String,
 }
 
 /// A command's dialog, as `plugin.prepare` gave it.
@@ -122,6 +135,8 @@ struct State {
     page: Option<Page>,
     /// Remove was clicked on this entry's page: it asks first.
     removing: Option<Removing>,
+    /// The permission prompt on screen.
+    asking: Option<Asking>,
     message: String,
 }
 
@@ -281,9 +296,23 @@ fn one_install_at_a_time(s: &State) -> Result<(), String> {
     Err(tr_format!("Finish or cancel installing {name} first", name = name))
 }
 
-/// Inspects `path` and opens the approval dialog with everything unticked but what an installed
-/// version already holds: `{pending: path}`. A module that is exactly what is installed (the same
-/// version and code) opens no approval: its page shows instead, `{installed: id, message}`.
+/// `plugin.run` for a command the user started here: a permission it needs that the user was
+/// never asked about leaves a prompt ([`lcc_engine::Session::plugin_asks`], [`ask_ui`]).
+fn run_as_user(app: &mut LccApp, params: &Value) -> Result<Value, String> {
+    app.session.plugin_ask_user = true;
+    let r = app.session.execute("plugin.run", params).map_err(|e| e.to_string());
+    app.session.plugin_ask_user = false;
+    r
+}
+
+/// The note for a click on something only the user may do, made by the control channel.
+fn agent_click() -> String {
+    tr("Only you can allow a permission: a click from an agent or a script changes nothing.").to_string()
+}
+
+/// Inspects `path` and opens the install dialog, which lists what the plug-in may ask for:
+/// `{pending: path}`. A module that is exactly what is installed (the same version and code) opens
+/// no dialog: its page shows instead, `{installed: id, message}`.
 fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, String> {
     one_install_at_a_time(s)?;
     if path.is_empty() {
@@ -304,13 +333,7 @@ fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, S
         s.message.clone_from(&message);
         return Ok(json!({"installed": id, "message": message}));
     }
-    let grant = info["installed"]["granted"].clone();
-    let grant = if grant.is_object() {
-        grant
-    } else {
-        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "pixels": false, "crop": false, "virtualCopy": false, "network": [], "fs": [], "programs": []})
-    };
-    s.pending = Some(Pending { path: path.to_string(), info, grant });
+    s.pending = Some(Pending { path: path.to_string(), info });
     s.open = true;
     Ok(json!({"pending": path}))
 }
@@ -323,7 +346,12 @@ fn start_command(app: &mut LccApp, s: &mut State, plugin: &str, command: &str) -
     let list = app.session.execute("plugin.commands", &json!({})).map_err(|e| e.to_string())?;
     let decl = list.as_array().into_iter().flatten().find(|c| c["plugin"] == plugin && c["command"] == command).cloned();
     let decl = decl.ok_or_else(|| format!("{plugin}: {command}: {}", tr("no such plug-in command (is the plug-in enabled?)")))?;
-    let prepared = app.session.execute("plugin.prepare", &json!({"plugin": plugin, "command": command})).map_err(|e| e.to_string())?;
+    // the prepare step runs for the user too: what it needs that they were never asked about
+    // leaves a prompt
+    app.session.plugin_ask_user = true;
+    let prepared = app.session.execute("plugin.prepare", &json!({"plugin": plugin, "command": command}));
+    app.session.plugin_ask_user = false;
+    let prepared = prepared.map_err(|e| e.to_string())?;
     if let Some(m) = prepared.get("message").and_then(Value::as_str) {
         return Ok(json!({"message": m}));
     }
@@ -334,7 +362,7 @@ fn start_command(app: &mut LccApp, s: &mut State, plugin: &str, command: &str) -
     }
     if prepared.get("run").is_some() || fields.is_empty() {
         // `plugin.run` asks the prepare step again and runs with what it gives
-        return app.session.execute("plugin.run", &json!({"plugin": plugin, "command": command})).map_err(|e| e.to_string());
+        return run_as_user(app, &json!({"plugin": plugin, "command": command}));
     }
     let values: serde_json::Map<String, Value> = fields.iter().filter_map(|f| Some((f["key"].as_str()?.to_string(), f["value"].clone()))).collect();
     s.dialog = Some(Dialog {
@@ -844,7 +872,9 @@ const MIN_PAGE_W: f32 = 360.0;
 
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let mut s = state(ctx);
+    ask_ui(app, ctx, &mut s);
     if !s.open && s.dialog.is_none() && s.pending.is_none() {
+        set_state(ctx, s);
         return;
     }
     let list = app.session.execute("plugin.list", &json!({})).unwrap_or(Value::Null);
@@ -1008,32 +1038,119 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             "plugins.askRemove" => {
                 s.removing = p["entry"].as_str().map(|entry| Removing { entry: entry.to_string(), keep_data: false });
             }
-            // only these three can grant or keep programs: the user's own clicks, never a command
+            // only the user's own clicks allow a permission or keep programs; one in a frame the
+            // control channel's input reached (an agent, a script) does what a command does
+            "plugins.userAllow" if app.synthetic_frame => s.message = agent_click(),
+            "plugins.userAllow" => {
+                if let Err(e) = lcc_engine::cmd::plugins::allow_by_user(&mut app.session, &p) {
+                    s.message = e.to_string();
+                }
+            }
+            "plugins.userInstall" if app.synthetic_frame => {
+                exec(app, "plugin.install", p, &mut s.message);
+            }
             "plugins.userInstall" => {
                 if let Err(e) = lcc_engine::cmd::plugins::install_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
                 }
             }
-            "plugins.userGrant" => {
-                if let Err(e) = lcc_engine::cmd::plugins::grant_by_user(&mut app.session, &p) {
-                    s.message = e.to_string();
-                }
+            "plugins.userRollback" if app.synthetic_frame => {
+                exec(app, "plugin.rollback", p, &mut s.message);
             }
             "plugins.userRollback" => {
                 if let Err(e) = lcc_engine::cmd::plugins::rollback_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
                 }
             }
+            "plugin.run" => match run_as_user(app, &p) {
+                Ok(v) => toast_result(app, ctx, &mut s, &v),
+                Err(e) => s.message = e,
+            },
             _ => {
-                if let Some(v) = exec(app, id, p, &mut s.message)
-                    && id == "plugin.run"
-                {
-                    toast_result(app, ctx, &mut s, &v);
-                }
+                exec(app, id, p, &mut s.message);
             }
         }
     }
     set_state(ctx, s);
+}
+
+/// The prompt for a permission a command the user started needs and they were never asked about
+/// ([`lcc_engine::Session::plugin_asks`]), one at a time: **Allow** grants it and runs the command
+/// again (through the same path, so it may ask for the next one), **Deny** remembers the answer.
+/// Allow ignores a click the control channel made.
+fn ask_ui(app: &mut LccApp, ctx: &egui::Context, s: &mut State) {
+    if s.asking.is_none() && !app.session.plugin_asks.is_empty() {
+        let ask = app.session.plugin_asks.remove(0);
+        let list = app.session.execute("plugin.list", &json!({})).unwrap_or(Value::Null);
+        let requested = list["plugins"].as_array().into_iter().flatten().find(|p| p["id"] == ask.plugin.as_str()).map(|p| p["requested"].clone());
+        let want = serde_json::to_value(&ask.request).unwrap_or(Value::Null);
+        let row = requested.as_ref().map(permission_rows).unwrap_or_default().into_iter().find(|r| {
+            let r = r.request();
+            r["group"] == want["group"] && (r["value"] == want["value"] || want.get("value").is_none() && r["value"].is_null())
+        });
+        let label = row.map_or_else(|| ask.request.describe(), |r| r.label(&Installs::new(), &ask.plugin));
+        s.asking = Some(Asking { ask, label });
+    }
+    let Some(asking) = s.asking.clone() else { return };
+    let window_id = key().with("ask");
+    let mut answer = None;
+    let shown = egui::Window::new(tr("Allow Permission"))
+        .id(window_id)
+        .title_bar(false)
+        .frame(crate::dialog_frame::card_frame(ctx))
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            crate::dialog_frame::card_header(ui, tr("Allow Permission"), None);
+            let mut layout = crate::dialog_frame::ModalLayout::begin(ui, window_id);
+            layout.body(ui, |ui| {
+                ui.label(tr_format!("{plugin} asks to: {permission}", plugin = asking.ask.plugin_name, permission = asking.label));
+                ui.weak(tr("Allow runs the command again. You can change this later on the plug-in's Permissions tab."));
+            });
+            layout.footer(ui, |ui| {
+                ui.separator();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    use crate::button::{Button, Kind};
+                    if Button::new("Allow").kind(Kind::Primary).widget("button:pluginAskAllow").show(ui).clicked() {
+                        answer = Some(true);
+                    }
+                    if Button::new("Deny").widget("button:pluginAskDeny").show(ui).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        });
+    crate::dialog_frame::ModalLayout::finish(ctx, window_id, shown.as_ref().map(|w| w.response.rect));
+    let mut call = serde_json::to_value(&asking.ask.request).unwrap_or(Value::Null);
+    call["id"] = json!(asking.ask.plugin);
+    match answer {
+        None => {}
+        Some(true) if app.synthetic_frame => app.toast(ctx, agent_click()),
+        Some(true) => {
+            s.asking = None;
+            match lcc_engine::cmd::plugins::allow_by_user(&mut app.session, &call) {
+                // a prepare step's ask starts the command again as from its menu item
+                Ok(_) if asking.ask.prepare => {
+                    match start_command(app, s, &asking.ask.plugin, asking.ask.rerun["command"].as_str().unwrap_or_default()) {
+                        Ok(v) if !v.is_null() => toast_result(app, ctx, s, &v),
+                        Ok(_) => {}
+                        Err(e) => app.toast(ctx, e),
+                    }
+                }
+                Ok(_) => match run_as_user(app, &asking.ask.rerun) {
+                    Ok(v) => toast_result(app, ctx, s, &v),
+                    Err(e) => app.toast(ctx, e),
+                },
+                Err(e) => app.toast(ctx, e.to_string()),
+            }
+        }
+        Some(false) => {
+            s.asking = None;
+            if let Err(e) = lcc_engine::cmd::plugins::deny_by_user(&mut app.session, &call) {
+                app.toast(ctx, e.to_string());
+            }
+        }
+    }
 }
 
 fn toast_result(app: &mut LccApp, ctx: &egui::Context, s: &mut State, v: &Value) {
@@ -1045,12 +1162,13 @@ fn toast_result(app: &mut LccApp, ctx: &egui::Context, s: &mut State, v: &Value)
     app.toast(ctx, s.message.clone());
 }
 
-/// The install approval: each requested permission with a checkbox; new ones marked.
+/// The install dialog: each permission the plug-in may ask for, for information; new ones marked.
 fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
-    let Some(mut pending) = s.pending.take() else { return };
+    let Some(pending) = s.pending.take() else { return };
     let m = pending.info["manifest"].clone();
     let installed = pending.info["installed"].clone();
     let had = if installed.is_object() { installed["granted"].clone() } else { Value::Null };
+    let id = m["id"].as_str().unwrap_or("").to_string();
     // what stops the install (plugin.install refuses it too): features this version lacks, a bad version
     let missing: Vec<String> = pending.info["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
     let version_error = pending.info["versionError"].as_str().map(str::to_string);
@@ -1100,21 +1218,17 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                     }
                     return;
                 }
-                let req = &m["permissions"];
-                let rows = permission_rows(req);
+                let rows = permission_rows(&m["permissions"]);
                 if rows.is_empty() {
                     ui.label(tr("It asks for no permissions: it can only keep its own data."));
                 } else {
-                    ui.label(tr("It asks for these permissions. Tick the ones you allow:"));
+                    ui.label(tr("It may ask for these permissions when it needs them; nothing is allowed until you say so:"));
                 }
                 for row in rows {
-                    let mut on = row.granted(&pending.grant);
-                    let new = !row.granted(&had);
-                    let label = row.label(installs, m["id"].as_str().unwrap_or(""));
-                    let text = if new && installed.is_object() { format!("{label}  ({})", tr("new")) } else { label };
-                    if ui.checkbox(&mut on, text).changed() {
-                        row.set(&mut pending.grant, on);
-                    }
+                    let label = row.label(installs, &id);
+                    // an update keeps what the user allowed
+                    let text = if row.granted(&had) { format!("• {label}  ({})", tr("allowed")) } else { format!("• {label}") };
+                    ui.label(text);
                 }
             });
             layout.footer(ui, |ui| {
@@ -1123,7 +1237,7 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                     use crate::button::{Button, Kind};
                     let label = if downgrade { "Install Older Version" } else { "Install" };
                     if !blocked && Button::new(label).kind(Kind::Primary).widget("button:pluginInstall").show(ui).clicked() {
-                        actions.push(("plugins.userInstall", json!({"path": pending.path, "grant": pending.grant, "allowDowngrade": downgrade})));
+                        actions.push(("plugins.userInstall", json!({"path": pending.path, "allowDowngrade": downgrade})));
                         keep = false;
                     }
                     if Button::new("Cancel").widget("button:pluginInstallCancel").show(ui).clicked() {
@@ -1254,24 +1368,17 @@ impl Row {
             Row::Flag(k) => g[*k].as_bool() == Some(true),
             Row::Host(h) => g["network"].as_array().is_some_and(|a| a.contains(h)),
             Row::Root(r) => g["fs"].as_array().is_some_and(|a| a.iter().any(|x| x["path"] == r["path"])),
-            // an update that widened a granted entry shows it unticked (and new)
+            // an update that widened a granted entry is no longer allowed (and shows as new)
             Row::Program(d) => g["programs"].as_array().is_some_and(|a| a.iter().any(|x| program_within(d, x))),
         }
     }
-    fn set(&self, g: &mut Value, on: bool) {
-        let list = |g: &mut Value, k: &str, item: &Value, same: &dyn Fn(&Value) -> bool| {
-            let mut a: Vec<Value> = g[k].as_array().cloned().unwrap_or_default();
-            a.retain(|x| !same(x));
-            if on {
-                a.push(item.clone());
-            }
-            g[k] = Value::Array(a);
-        };
+    /// The request it is, as `plugin.list` → `requests` and the Allow / Revoke calls name it.
+    fn request(&self) -> Value {
         match self {
-            Row::Flag(k) => g[*k] = json!(on),
-            Row::Host(h) => list(g, "network", h, &|x| x == h),
-            Row::Root(r) => list(g, "fs", r, &|x| x["path"] == r["path"]),
-            Row::Program(d) => list(g, "programs", d, &|x| x["id"] == d["id"]),
+            Row::Flag(k) => json!({"group": k}),
+            Row::Host(h) => json!({"group": "network", "value": h}),
+            Row::Root(r) => json!({"group": "fs", "value": r["path"]}),
+            Row::Program(d) => json!({"group": "programs", "value": d["id"]}),
         }
     }
 }
@@ -1582,26 +1689,48 @@ fn settings_tab(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut Vec<(&
     });
 }
 
-/// Each permission the plug-in asks for, ticked when granted; a change grants or revokes it.
+/// Each permission the plug-in asks for, with where it stands (allowed, denied on a date, not
+/// asked yet, or a folder that can't be granted and why), and **Allow** or **Revoke**.
 fn permissions_tab(ui: &mut egui::Ui, e: &Entry, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
+    use crate::button::Button;
     let rows = permission_rows(&e.info["requested"]);
     if rows.is_empty() {
         ui.label(tr("It asks for no permissions: it can only keep its own data."));
         return;
     }
-    let mut grant = e.info["granted"].clone();
-    let mut changed = false;
+    let states = e.info["requests"].as_array().cloned().unwrap_or_default();
     for (i, row) in rows.iter().enumerate() {
-        let mut on = row.granted(&grant);
-        let r = ui.checkbox(&mut on, row.label(installs, &e.id));
-        crate::widgets::register(ui.ctx(), format!("pluginPermission:{}:{i}", e.id), r.rect);
-        if r.changed() {
-            row.set(&mut grant, on);
-            changed = true;
-        }
-    }
-    if changed {
-        actions.push(("plugins.userGrant", json!({"id": e.id, "grant": grant})));
+        let req = row.request();
+        let state =
+            states.iter().find(|r| r["group"] == req["group"] && (r["value"] == req["value"] || req["value"].is_null() && r.get("value").is_none()));
+        let state = state.cloned().unwrap_or(Value::Null);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(row.label(installs, &e.id));
+            let what = state["state"].as_str().unwrap_or("never");
+            match what {
+                "allowed" => {
+                    ui.weak(tr("allowed"));
+                }
+                "denied" => {
+                    ui.weak(tr_format!("denied on {date}", date = state["deniedOn"].as_str().unwrap_or("")));
+                }
+                "refused" => {
+                    ui.weak(format!("{} {}", tr("can't be granted:"), state["reason"].as_str().unwrap_or("")));
+                }
+                _ => {
+                    ui.weak(tr("not asked yet"));
+                }
+            }
+            let mut call = req.clone();
+            call["id"] = json!(e.id);
+            if what == "allowed" {
+                if Button::new("Revoke").small().widget(format!("pluginRevoke:{}:{i}", e.id)).show(ui).clicked() {
+                    actions.push(("plugin.revoke", call));
+                }
+            } else if what != "refused" && Button::new("Allow").small().widget(format!("pluginAllow:{}:{i}", e.id)).show(ui).clicked() {
+                actions.push(("plugins.userAllow", call));
+            }
+        });
     }
 }
 
@@ -1834,23 +1963,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn approval_rows_tick_only_what_the_user_allows() {
+    fn rows_name_the_request_each_one_is() {
         let req = json!({"catalog": true, "metadataWrite": false, "network": ["a.com", "b.com"], "fs": [{"path": "/x", "write": true}]});
         let rows = permission_rows(&req);
         assert_eq!(rows.len(), 4, "catalog, two hosts, one root");
-        let mut g = json!({"catalog": false, "metadataWrite": false, "network": [], "fs": []});
-        assert!(rows.iter().all(|r| !r.granted(&g)), "nothing is pre-approved on a first install");
-        rows[2].set(&mut g, true);
-        rows[3].set(&mut g, true);
-        assert_eq!(g["network"], json!(["b.com"]));
-        assert_eq!(g["fs"], json!([{"path": "/x", "write": true}]));
-        rows[3].set(&mut g, false);
-        assert_eq!(g["fs"], json!([]));
-        assert!(!rows[0].granted(&g));
+        let requests: Vec<Value> = rows.iter().map(Row::request).collect();
+        assert_eq!(
+            requests,
+            vec![
+                json!({"group": "catalog"}),
+                json!({"group": "network", "value": "a.com"}),
+                json!({"group": "network", "value": "b.com"}),
+                json!({"group": "fs", "value": "/x"})
+            ]
+        );
+        // the order plugin.list gives its requests in
+        let manifest: lcc_plugins::Permissions = serde_json::from_value(req).unwrap();
+        let listed: Vec<Value> = manifest.requests().iter().map(|r| serde_json::to_value(r).unwrap()).collect();
+        assert_eq!(listed, requests);
     }
 
     #[test]
-    fn program_rows_say_where_the_program_is_and_grant_its_whole_entry() {
+    fn program_rows_say_where_the_program_is() {
         let conv = json!({"id": "conv", "name": "Converter", "macBundleIds": ["org.example.conv"]});
         let rows = permission_rows(&json!({"catalog": true, "programs": [conv.clone(), {"id": "x", "name": "X", "linuxExe": "x"}]}));
         assert_eq!(rows.len(), 3, "catalog and two programs");
@@ -1858,29 +1992,25 @@ mod tests {
         installs.insert(("p".into(), "conv".into()), "installed: Converter 2.0".into());
         let label = rows[1].label(&installs, "p");
         assert!(label.contains("Converter") && label.contains("installed: Converter 2.0"), "{label}");
-        let mut g = json!({"catalog": true, "programs": []});
-        assert!(!rows[1].granted(&g), "a program starts unticked");
-        rows[1].set(&mut g, true);
-        assert_eq!(g["programs"], json!([conv]), "ticking grants the entry as the manifest declares it");
+        assert_eq!(rows[1].request(), json!({"group": "programs", "value": "conv"}));
+        let g = json!({"catalog": true, "programs": [conv]});
         assert!(rows[1].granted(&g) && !rows[2].granted(&g));
-        rows[1].set(&mut g, false);
-        assert_eq!(g["programs"], json!([]));
         if cfg!(target_os = "macos") {
             assert!(label.contains("org.example.conv"), "the row names what it starts: {label}");
         }
     }
 
     #[test]
-    fn a_widened_program_shows_unticked_and_a_narrowed_one_ticked() {
+    fn a_widened_program_is_no_longer_allowed_and_a_narrowed_one_is() {
         let had = json!({"programs": [{"id": "conv", "name": "Converter", "macBundleIds": ["a.one", "a.two"], "linuxExe": "conv"}]});
         let rows = |entry: Value| permission_rows(&json!({"programs": [entry]}));
         let narrowed = rows(json!({"id": "conv", "name": "Converter 2", "macBundleIds": ["a.two"]}));
         assert!(narrowed[0].granted(&had), "renamed and narrowed: still granted");
         let more_ids = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one", "a.three"], "linuxExe": "conv"}));
-        assert!(!more_ids[0].granted(&had), "another bundle id: unticked and new");
+        assert!(!more_ids[0].granted(&had), "another bundle id: no longer allowed");
         let other_exe = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one"], "linuxExe": "sh"}));
-        assert!(!other_exe[0].granted(&had), "another executable: unticked and new");
+        assert!(!other_exe[0].granted(&had), "another executable: no longer allowed");
         let added_exe = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one"], "linuxExe": "conv", "windowsExe": "conv.exe"}));
-        assert!(!added_exe[0].granted(&had), "an added executable: unticked and new");
+        assert!(!added_exe[0].granted(&had), "an added executable: no longer allowed");
     }
 }

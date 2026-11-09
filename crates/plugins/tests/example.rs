@@ -67,7 +67,7 @@ fn example_plugin_end_to_end() {
     let Some(wasm) = build_example() else { return };
     let dir = temp("example");
     let mut m = Manager::open(&dir).unwrap();
-    let info = m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap().info();
+    let info = m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap().info();
     assert_eq!(info["id"], "org.example.catalog-tools");
     assert_eq!(info["granted"]["catalog"], true);
     let id = "org.example.catalog-tools";
@@ -108,7 +108,7 @@ fn example_plugin_end_to_end() {
     // revoking the catalog permission takes effect on the next call
     m.set_grant(id, Permissions::default()).unwrap();
     let e = m.run_command(id, "count", &json!({}), &[], &mut host).unwrap_err();
-    assert!(e.to_string().contains("permission `catalog` not granted"), "{e}");
+    assert!(e.to_string().contains("needs `catalog`, not granted"), "{e}");
     drop(m);
     let mut m = Manager::open(&dir).unwrap();
     assert!(m.get(id).unwrap().enabled);
@@ -148,13 +148,13 @@ fn batch_metadata_example_end_to_end() {
     let mut m = Manager::open(&dir).unwrap();
     let id = "org.example.batch-metadata";
     // installed with read access only: the write is refused by the host
-    m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
     let mut host = FakeLibrary { writes: vec![] };
     let sel: Vec<String> = vec!["7".into(), "8".into(), "9".into()];
     let e = m.run_command(id, "template", &json!({}), &sel, &mut host).unwrap_err();
     assert!(e.to_string().contains("metadataWrite"), "{e}");
     assert!(host.writes.is_empty());
-    m.set_grant(id, Permissions { catalog: true, metadata_write: true, ..Default::default() }).unwrap();
+    m.set_grant_by_user(id, Permissions { catalog: true, metadata_write: true, ..Default::default() }).unwrap();
 
     // titles from the dialog's default template; captions from a numbered one
     let r = m.run_command(id, "template", &json!({}), &sel, &mut host).unwrap();
@@ -217,7 +217,7 @@ fn publish_folder_example_publishes_and_removes() {
     let mut m = Manager::open(&dir).unwrap();
     let id = "org.example.publish-folder";
     let grant = Permissions { fs: vec![lcc_plugins::FsRoot { path: root.display().to_string(), write: true }], ..Default::default() };
-    m.install_bytes(&wasm, Some(grant), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(grant), false).unwrap();
     std::fs::create_dir_all(root).unwrap();
     let src = dir.join("render.jpg");
     std::fs::write(&src, [0u8, 1, 2, 255]).unwrap();
@@ -455,7 +455,7 @@ fn keyword_picker_example_settings_remember_and_prepare() {
     let dir = temp("keyword-picker");
     let mut m = Manager::open(&dir).unwrap();
     let grant = Permissions { catalog: true, metadata_write: true, ..Default::default() };
-    m.install_bytes(&wasm, Some(grant), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(grant), false).unwrap();
     let id = "org.example.keyword-picker";
     let mut host = Keywords { writes: vec![] };
     let sel = ["1".to_string(), "2".to_string()];
@@ -537,7 +537,7 @@ impl HostApi for Inspect {
 fn job_tools_example_works_through_the_photos_and_stops_when_asked() {
     let Some(wasm) = build_sdk_example("job-tools") else { return };
     let mut m = Manager::in_memory();
-    m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
     let id = "org.example.job-tools";
     let photos: Vec<String> = (1..=25).map(|n| n.to_string()).collect();
     let run = |m: &mut Manager, row: &JobRow| {
