@@ -213,6 +213,40 @@ pub fn read<'a>(lines: impl IntoIterator<Item = &'a str>, variances: &[f64]) -> 
         .collect()
 }
 
+/// The samples of a Lightroom Classic `.lrtemplate` (`pointColors`, as JSON): a list of tables with
+/// named fields instead of 19-number lines (`SrcHue`, `SrcSat`, `SrcLum`, `HueShift`, `SatShift`,
+/// `LumShift`, `RangeAmount`, `HueRange` / `SatRange` / `LumRange` = `{LowerNone, LowerFull, UpperFull,
+/// UpperNone}`, and an optional `Variance` / `ColorVariance`), in the same units as the lines. A table
+/// without `SrcHue` is skipped; missing shifts are 0, a missing range amount 0.5, missing or malformed
+/// trapezoids the defaults. At most [`MAX_POINT_COLORS`].
+pub fn read_named(list: &serde_json::Value) -> Vec<PointColor> {
+    let Some(items) = list.as_array() else { return Vec::new() };
+    let num = |o: &serde_json::Value, k: &str| o.get(k).and_then(serde_json::Value::as_f64).filter(|x| x.is_finite());
+    // −1 corners make `full` reject the trapezoid, so `to_ours` uses its defaults
+    let trap = |o: &serde_json::Value, k: &str| -> [f64; 4] {
+        let Some(t) = o.get(k) else { return [-1.0; 4] };
+        ["LowerNone", "LowerFull", "UpperFull", "UpperNone"].map(|c| num(t, c).unwrap_or(-1.0))
+    };
+    items
+        .iter()
+        .filter_map(|o| {
+            let hue = num(o, "SrcHue")?.rem_euclid(std::f64::consts::TAU);
+            let p = LrPoint {
+                hue,
+                sat: num(o, "SrcSat").unwrap_or(0.5),
+                lum: num(o, "SrcLum").unwrap_or(0.18),
+                shift: [num(o, "HueShift"), num(o, "SatShift"), num(o, "LumShift")].map(|v| v.unwrap_or(0.0)),
+                range: num(o, "RangeAmount").unwrap_or(0.5),
+                hue_range: trap(o, "HueRange"),
+                sat_range: trap(o, "SatRange"),
+                lum_range: trap(o, "LumRange"),
+            };
+            Some(to_ours(&p, num(o, "Variance").or_else(|| num(o, "ColorVariance")).unwrap_or(0.0)))
+        })
+        .take(MAX_POINT_COLORS)
+        .collect()
+}
+
 /// A variance list's numbers (unparsable entries are 0).
 pub fn variances<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<f64> {
     items.into_iter().map(|s| s.trim().parse::<f64>().ok().filter(|x| x.is_finite()).unwrap_or(0.0)).collect()
@@ -221,6 +255,29 @@ pub fn variances<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_lrtemplate_samples_read_and_hostile_ones_dont_panic() {
+        let good = serde_json::json!([{ "SrcHue": 0.8, "SrcSat": 0.4, "SrcLum": 0.3, "HueShift": -0.05, "RangeAmount": 0.5,
+            "HueRange": { "LowerNone": 0, "LowerFull": 0.3, "UpperFull": 0.6, "UpperNone": 1 } }]);
+        let got = read_named(&good);
+        assert_eq!(got.len(), 1);
+        assert!((got[0].hue_shift + 5.0).abs() < 1e-9 && (got[0].range - 50.0).abs() < 1e-9);
+        for bad in [
+            serde_json::json!(null),
+            serde_json::json!(3),
+            serde_json::json!([1, "x", [], {}]),
+            serde_json::json!([{ "SrcHue": "x" }]),
+            serde_json::json!([{ "SrcHue": 1e308, "SrcSat": -1e308, "SrcLum": 1e308, "HueShift": 1e308, "RangeAmount": -1e308,
+                "HueRange": { "LowerNone": 5, "LowerFull": -5 }, "SatRange": 3, "Variance": 1e308 }]),
+        ] {
+            for p in read_named(&bad) {
+                assert!([p.lum, p.chroma, p.hue, p.hue_shift, p.range, p.variance, p.hue_range].iter().all(|x| x.is_finite()), "{bad}");
+            }
+        }
+        let many = serde_json::Value::Array(vec![serde_json::json!({ "SrcHue": 1.0 }); MAX_POINT_COLORS + 5]);
+        assert_eq!(read_named(&many).len(), MAX_POINT_COLORS);
+    }
 
     /// A sample as Lightroom Classic writes it (the defaults it gives a picked colour: range 0.5,
     /// hue (0, ⅓, ⅔, 1), saturation and luminance ± 0.18 fading over 0.55).
