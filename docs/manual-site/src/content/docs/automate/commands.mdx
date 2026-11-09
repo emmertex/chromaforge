@@ -1,0 +1,24 @@
+---
+title: Commands
+description: Everything is a command with an id.
+sidebar:
+  order: 1
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+- **Command**: one named action (`photo.rate`, `develop.set`, `app.export`). Each has an id, a label, a menu path, an optional shortcut and parameters.
+- **Same everywhere**: menus, keys, CLI, control channel, MCP, plug-ins, actions and control surfaces all dispatch by id.
+- **Develop controls** are commands too: every slider is a control id such as `light.exposure`, set with `develop.set`.
+- **List them**: `<cli> commands` (add `--json` for scripts); `<cli> controls` for the Develop control ids and ranges.
+- **In the app**: **Edit ▸ Settings ▸ Shortcuts** lists every command with its key and id, and a search box. **Help ▸ Keyboard Shortcuts** opens the same list.
+- There is no command palette yet; **Find…** (⌘F / Ctrl+F) searches photos, not commands.
+
+```sh
+<cli> commands | grep develop
+<cli> controls
+```
+
+<Aside type="note" title="Modern layout">
+In Modern, press **☰** and use **Edit ▸ Settings**, **Help ▸ Keyboard Shortcuts**.
+</Aside>

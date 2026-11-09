@@ -1,0 +1,52 @@
+---
+title: Models and set-up
+description: Where AI models are downloaded, installed, chosen and removed, and which hardware they use.
+sidebar:
+  order: 2
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-models" alt="Settings, AI Models tab: SAM 3 and BiRefNet_lite with Download buttons, and the Object and Sky model choices" />
+
+- **Open it**: Settings ▸ **AI Models**, or the **AI Models…** button in the Masks panel (the dialog also opens by itself when a model is missing).
+- **Download** a model with its **Download** button. Read the licence link first; nothing is fetched until you confirm. Downloads resume after an interruption, can be cancelled, and are verified; a file that does not match is deleted.
+- **Object masks use**: Automatic (SAM 3 if installed, else SAM 2.1), SAM 3, or SAM 2.1.
+- **Sky, Landscape and People masks use**: Photo analysis (default, no download) or EoMT.
+- **SAM 3 model folder**: choose another drive, or point at a folder that already has the files.
+- Denoise and upscaler models, faces and the search model have their own sections: Settings ▸ **AI Denoise**, **Faces**, and the Semantic search section of **AI Models**.
+
+## Models
+
+| Model | Used for | Size | Licence | Download |
+|---|---|---|---|---|
+| SAM 3 | Object and Describe masks | about 3.4 GB | SAM License (Meta) | in the dialog, but no default address is set yet: see below |
+| SAM 2.1 Hiera-Tiny | Object clicks, Remembered, small people | 156 MB | Apache-2.0 | in the dialog |
+| BiRefNet_lite | Subject and Background | about 178 MB | MIT | in the dialog |
+| EoMT scene | Sky, Water, Vegetation, People | 96 MB | MIT (trained on COCO, CC BY 4.0) | in the dialog |
+| MediaPipe people and face | People parts, Skin, Blemishes, Teeth, Detect Faces, eye focus | 16 MB, 5 MB | Apache-2.0 | in the dialog |
+| CLIP ViT-B/32 | AI search | see dialog | MIT | Settings ▸ AI Models |
+| Face recognition (AuraFace, SFace) | name suggestions | 39 to 261 MB | see dialog | Settings ▸ Faces |
+| Real-ESRGAN General v3 | AI Super Resolution, AI Sharpen | about 5 MB | BSD-3-Clause | see [Super resolution](../super-resolution/) |
+
+<Aside type="caution" title="SAM 3 has no default download address yet">
+Meta's model is gated, so Chromaforge cannot host it by default. Put `model.safetensors`, `vocab.json` and `merges.txt` from Meta's `facebook/sam3` in the model folder, or set a download mirror. Object masks work without it through SAM 2.1; Describe needs SAM 3. Steps: the SAM 3 section of the dialog, **How to install the model**.
+</Aside>
+
+## Where files go
+
+- Models live in the per-user settings folder, under `models/` (AI masks), `denoise-models/` and `ml-models/`. Per-model folders can be moved or overridden with environment variables listed in the project documentation.
+- Face and search caches sit beside the library (rebuildable, not part of the catalog).
+
+## Hardware
+
+- **GPU** is used where it gives the same result faster: Metal on macOS for SAM 3, wgpu (Vulkan, DirectX 12, Metal) for denoise, search and face models. Elsewhere SAM runs on the CPU.
+- Settings ▸ **AI Denoise** ▸ Speed: Automatic, Graphics card or Processor. Settings ▸ **AI Models** and **Performance**: choose the device for search (Automatic, a named card, or CPU). Settings ▸ **Faces**: run face models on the CPU only.
+- A GPU error falls back to the CPU for that job; the reason is shown.
+- SAM 3 is large: it uses several GB of memory and is unloaded after 10 idle minutes.
+- A denoise batch can use a second graphics card, or another computer's card over a network (advanced; see the project documentation).
+
+<Aside type="note" title="Modern layout">
+Settings is **☰ ▸ Edit ▸ Settings…** (the AI Models tab is in the list on the left).
+</Aside>

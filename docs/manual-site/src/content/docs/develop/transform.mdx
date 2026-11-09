@@ -1,0 +1,23 @@
+---
+title: Transform and Upright
+description: Perspective correction, Upright modes and manual geometry.
+sidebar:
+  order: 7
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="transform" alt="The Transform section with Upright modes and Vertical set to minus 20" menu="Window ▸ Edit Sections ▸ Transform" />
+
+- **Upright**: **Off**, **Auto**, **Level**, **Vertical**, **Full**, **Guided**. Partial: tuned on synthetic scenes; a mode that finds nothing says why over the photo and suggests Guided.
+- **Guided Upright**: draw guides along lines that should be straight; select a guide and `Delete` removes it.
+- **Constrain Crop** fits the crop to the corrected photo.
+- **Sliders**: **Vertical**, **Horizontal**, **Rotate**, **Aspect**, **Scale**, **Offset X**, **Offset Y**.
+- A fine **grid** shows over the photo while a slider is dragged.
+- Auto modes sync to other photos as a recipe and are analysed on each; Guided is not synced.
+
+<Aside type="note" title="Modern layout">
+  **Optics ▸ Transform** in the dock.
+</Aside>

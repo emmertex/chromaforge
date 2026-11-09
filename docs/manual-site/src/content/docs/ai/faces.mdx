@@ -1,0 +1,37 @@
+---
+title: Faces and people
+description: Detect faces, name people, and get name suggestions, all on this computer.
+sidebar:
+  order: 7
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-settings-faces" alt="Settings, Faces tab: Recognise faces switch, processor and model status" />
+
+- **Names from other apps**: face regions that Lightroom, digiKam and others wrote into XMP are read and shown as boxes in the loupe (hide, resize or remove them). No AI needed.
+- **People view**: View ▸ **People** (or the People button in the toolbar) lists each named person with a close-up and photo count. Click one to filter the grid; `person:` works in search.
+- **Detect Faces**: Library ▸ **Detect Faces** finds faces in the selected photos with the MediaPipe Face Landmarker and adds unnamed boxes in one undo step. It offers the small one-time download the first time. Boxes from XMP or that you named are never touched. Finds faces down to about 60 pixels; tiny faces in big group photos can be missed.
+- **Recognise faces (experimental)**: Settings ▸ **Faces**. With a recognition model chosen, a background scan works out what each face looks like and suggests names from faces you have already named. A suggestion is only a label such as "Jane Doe?" until you confirm it; nothing is named for you.
+- **Everything stays local**: face data is cached beside the library, not in the catalog or XMP.
+
+<NeedsImage what="People view with a few named people, each with a face close-up and photo count" />
+
+## Needs
+
+- Detection: the MediaPipe face model (a few MB, Apache-2.0).
+- Recognition: a model you choose in Settings ▸ Faces ▸ Download after accepting its terms (AuraFace 261 MB, SFace 39 MB). Nothing is bundled, and everything else works without one.
+- Faces are found from the photo upright and uncropped, so crops and edits do not matter. Raws use their embedded preview.
+- Face models run on the CPU unless a check shows the GPU gives the same results faster. Settings ▸ Faces has **Run face models on the CPU only**.
+
+## Limits
+
+- Partial: no separated clusters, no manual tagging beyond naming, and regions are never written back to the sidecar.
+- Detection is a replacement for the earlier detector, whose training data had a restrictive licence; an old one is listed so you can remove it.
+- Not a Lightroom feature set: accuracy is unmeasured against Lightroom.
+
+<Aside type="note" title="Modern layout">
+**☰ ▸ Library ▸ Detect Faces**, **☰ ▸ View ▸ People**, and **☰ ▸ Edit ▸ Settings… ▸ Faces**.
+</Aside>

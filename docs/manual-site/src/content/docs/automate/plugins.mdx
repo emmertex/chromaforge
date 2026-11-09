@@ -1,0 +1,28 @@
+---
+title: Plug-ins and SDK
+description: Sandboxed WebAssembly add-ons for commands, export steps and publish services.
+sidebar:
+  order: 7
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Plug-in Manager**: **File ▸ Plug-ins ▸ Plug-in Manager…** installs, enables and configures plug-ins. Drop a `.wasm` file on it, or **Install from File…**.
+- **Sandbox**: a plug-in runs as WebAssembly and can only do what you grant it (permissions are listed when you install).
+- **What a plug-in can add**: menu commands with dialogs, settings pages, export post-processing, export destinations ("Then send to"), publish services, metadata and keyword suggestions, custom metadata fields, programs it starts, pixel filters.
+- **Commands** appear under **File ▸ Plug-ins** and run as `plugin.run`, so CLI, MCP and actions can run them too.
+- **SDK**: write plug-ins in Rust with the `sdk/plugin` crate. Eight example plug-ins live in `sdk/examples` (catalog tools, batch metadata, export tools, publish folder, program tools, custom fields, job tools, keyword picker).
+- Lightroom Lua plug-ins are not supported.
+
+<Shot name="plugin-manager" alt="The Plug-in Manager" menu="File ▸ Plug-ins ▸ Plug-in Manager…" />
+
+```sh
+<cli> run plugin.install path=catalog_tools.wasm
+```
+
+<Aside type="note" title="Modern layout">
+Open **☰ ▸ File ▸ Plug-ins ▸ Plug-in Manager…**.
+</Aside>
+
+- Author guide and ABI: `docs/plugins.md` in the repository.

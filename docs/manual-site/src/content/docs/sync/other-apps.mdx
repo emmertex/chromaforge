@@ -1,0 +1,33 @@
+---
+title: Other apps and services
+description: Apple Photos, Lightroom, publish services and masks that know people.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Apple Photos (macOS only, partial)
+- **Add to Apple Photos** in the Export dialog hands exported files to Apple Photos, optionally into an album of a name you type.
+- Hidden on other platforms and absent from the web build. macOS asks permission on first use.
+- It is export only; there is no import from the Photos library here.
+
+## Lightroom and Capture One
+- Catalog import is covered in [Import](../../library/import/). Partial: see that page.
+
+## Publish services
+- **Hard Drive**, **SFTP**, **Immich** and plug-in services publish collections; photos show as new, modified or published. Partial: some grid sections are still missing.
+- There is no hosted cloud service. Nothing is uploaded unless you set up a service.
+
+## People and roles (masks)
+- Not a collaboration feature: People masks can target a person by name or by **role** (for example Bride), so a mask follows the same person from photo to photo.
+- Set a role for a folder from the Masking panel (*Set Role…*). Roles stay in the library only, never in sidecars, exports or on the network.
+- Recognising people by appearance alone is not built.
+- There are no shared accounts or multi-user editing.
+
+## Tethering
+- See [Import](../../library/import/).
+
+<Aside type="note" title="Modern layout">
+  Export dialog and publish services are in the menu (**☰**).
+</Aside>
