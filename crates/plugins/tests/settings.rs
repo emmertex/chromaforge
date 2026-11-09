@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use lcc_plugins::{Limits, Manager, NoHost, Prepared};
+use lcc_plugins::{Begun, Limits, Manager, NoHost, Prepared};
 use serde_json::{Value, json};
 
 /// How a test module answers `lcc_handle`.
@@ -431,4 +431,48 @@ fn prepare_steps_can_only_read() {
     let mut host = Writes::default();
     m.run_command(id, "go", &json!({"b": true}), &["1".into()], &mut host).unwrap();
     assert_eq!(host.0.len(), 1, "written by the command");
+}
+
+/// Removing a plug-in can keep its settings and per-photo data for the next install of its id;
+/// its grant goes either way, and a call still running when it was removed can't write its
+/// settings over the kept file.
+#[test]
+fn removing_a_plugin_can_keep_its_data_and_settings() {
+    let dir = temp("keep");
+    let id = "test.settings";
+    let fields = json!([{"key": "n", "label": "N", "type": "number", "min": 0, "max": 10, "default": 3}]);
+    let mut manifest = settings_manifest("1.0.0", fields);
+    manifest["metadataFields"] = json!([{"key": "job", "label": "Job", "type": "text"}]);
+    manifest["permissions"] = json!({"catalog": true});
+    let bytes = module(&manifest, Answer::Forward(r#"{"method":"settings.set","params":{"key":"n","value":9}}"#));
+    let mut m = Manager::open(&dir).unwrap();
+    m.install_bytes(&bytes, None, false).unwrap();
+    m.set_grant(id, lcc_plugins::Permissions { catalog: true, ..Default::default() }).unwrap();
+    m.set_settings(id, &json!({"n": 5}), &mut NoHost).unwrap();
+    m.set_metadata_field(id, "7", "job", &json!("J-1")).unwrap();
+    let settings = dir.join("settings").join(format!("{id}.json"));
+    let data = dir.join("data").join(format!("{id}.json"));
+    let kept = std::fs::read(&settings).unwrap();
+
+    // a call begun before the removal and run after it
+    let Begun::Call(mut call) = m.begin_command(id, "go", &Value::Null, &[], &Value::Null, &mut NoHost).unwrap() else { panic!("a call") };
+    m.uninstall_with(id, true).unwrap();
+    let outcome = call.run(&mut NoHost);
+    let _ = m.end(*call, Some(outcome));
+    assert!(m.get(id).is_none() && !dir.join(format!("{id}.wasm")).exists(), "the module is gone");
+    let state: Value = serde_json::from_slice(&std::fs::read(dir.join("plugins.json")).unwrap()).unwrap();
+    assert!(state["plugins"].get(id).is_none(), "and its entry: {state}");
+    assert_eq!(std::fs::read(&settings).unwrap(), kept, "the running call didn't write over the kept settings");
+    assert!(data.exists(), "its data is kept");
+
+    // installed again: its settings and data are back, its grant isn't
+    m.install_bytes(&bytes, None, false).unwrap();
+    assert_eq!(values(&mut m, id), json!({"n": 5.0}));
+    let job = m.field_values().0.get("7").and_then(|v| v.get(&format!("{id}/job"))).cloned();
+    assert_eq!(job, Some(json!("J-1")), "its per-photo data");
+    assert!(!m.get(id).unwrap().effective().catalog, "nothing granted");
+
+    // without keeping them, both go
+    m.uninstall_with(id, false).unwrap();
+    assert!(!settings.exists() && !data.exists());
 }

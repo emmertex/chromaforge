@@ -40,7 +40,7 @@ pub mod settings;
 mod store;
 
 pub use context::{HostApi, JobReporter, JobUnit, NoHost, PIXELS_DEFAULT_EDGE, PIXELS_MAX_EDGE, PIXELS_MIN_EDGE, Unwatched};
-pub use manager::{Begun, Failed, Installed, Manager, PendingCall, Prepared, SettingsView};
+pub use manager::{Begun, Failed, Installed, Manager, PendingCall, Prepared, SettingsView, duplicate_error, read_module};
 pub use manifest::{
     CommandDecl, DestinationDecl, Field, FieldKind, HOST_FEATURES, Header, Hooks, MAX_PICTURE_BYTES, Manifest, MetadataField, PublishDecl,
 };

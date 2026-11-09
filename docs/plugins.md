@@ -381,7 +381,7 @@ hook that's never called, a host call that fails as an unknown method).
   app is updated again.
 - **Removing** a plug-in that didn't load (it needs missing features, or its module can't be read)
   works like any other: each `failed` row gives its `id`, `plugin.uninstall {id}` deletes its
-  module, its `plugins.json` entry and its data, and the Plug-in Manager lists it with a
+  module, its `plugins.json` entry and its data (`keepData: true` keeps its data and settings), and the Plug-in Manager lists it with a
   didn't-load mark (under Pixel Filters for a filter module) and a page that says why, with a
   Remove button.
 - Versions of the app from before `requires` ignore it, like any field they don't know: the check
@@ -399,8 +399,38 @@ refused unless `plugin.install` gets `allowDowngrade: true`; `plugin.inspectFile
 button. The older version keeps the grant, cut back to what it asks for, and its log says
 "downgraded from X to Y". The same version again is a repair and installs without asking.
 
-Pixel filters (below) have their own manifest, shared with PhotoCraft, and none of this applies to
-them.
+**Going back.** An update with other code keeps the version it replaces, its module and its
+settings as they were before the update, in `previous/<id>.wasm` and `previous/<id>.json` (one
+level deep; nothing loads from that folder). `plugin.list` gives that version as
+`previousVersion`, the plug-in's page offers *Go Back to Version X*, and `plugin.rollback {id}`
+does the same. Going back restores the module and the settings, keeps the grant cut back to what
+that version asks for, and logs "rolled back from Y to X". Programs the user granted stay when
+the user goes back from the page; the command drops them, since that version's code is different
+(as for an install). A job running meanwhile keeps its permissions, as through an update. When the
+old module or its settings can't be staged and written, nothing changes and the error says why;
+if only putting the staged settings in place fails afterwards, the old version runs with the
+current settings, and its log says so.
+
+**Unknown manifest fields** are ignored, but not silently: `plugin.inspectFile` lists them by path
+(`commands[2].lable`) as `unknownFields`, the install dialog shows them, and installing writes
+them to the plug-in's log (a pixel filter's to the app's log). The install still goes ahead.
+
+**One id, one module.** A plug-in and a pixel filter can't share an id: installing one whose id a
+module of the other kind has is refused (`plugin.inspectFile` gives why as `conflict`). Of the
+modules in the folder with one id, the first by file name that loads is the one used (a module
+that needs features this version lacks doesn't hold its id, and keeps that error); each other one
+is listed under `failed` ("another module has this id"), and `plugin.uninstall {file}` deletes
+only that file. Removing a plug-in by its id is refused while a pixel filter module that didn't
+load sits at `<id>.wasm` (the file removing the plug-in would delete): remove that module first,
+by its file or its row in the Plug-in Manager.
+Plug-ins load from the first 256 modules in the folder by file name, pixel filters' modules
+counted too, and pixel filters from the first 1,000; `plugin.list` gives how many modules neither
+loaded as `skipped` (counted only, not listed one by one), and the Plug-in Manager says so.
+
+Pixel filters (below) have their own manifest, shared with PhotoCraft: `requires` and the semver
+rule don't apply to them. Installing an older filter needs confirming as above (versions that
+aren't semver compare as dotted numbers, `1.9` before `1.10`), and a filter keeps no version to go
+back to.
 
 ## The ABI
 
@@ -577,17 +607,23 @@ The manifest fields:
 ## Engine commands
 
 `plugin.list`, `plugin.inspectFile {path}`, `plugin.install {path, grant?, allowDowngrade?}`,
-`plugin.uninstall {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}`,
+`plugin.uninstall {id | file, keepData?}`, `plugin.rollback {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}`,
 `plugin.log {id}`, `plugin.commands`, `plugin.prepare {plugin, command, ids?, source?}`,
 `plugin.run {plugin, command, args?, ids?, source?, wait?}` (a job: `{job}` at once, or its result with `wait`), `plugin.settings {id}`, `plugin.setSettings {id, values}`,
 `plugin.suggestMetadata {ids?}`, `plugin.postExport {files}`, `plugin.publishServices`,
 `plugin.exportDestinations`, `plugin.exportTo {plugin, destination, files, args?}`,
 `plugin.metadataFields {id?}`, `plugin.setField {plugin, field, value, id?}`.
 
-`plugin.list` gives `{dir, host, plugins, failed}`: `dir` is the plug-ins folder (`null`
-when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256) and a
-`settingsRevision` that changes when one of its settings does, and each `failed` row has `file`, `error`, `kind` (`plugin` or
-`filter`) and, when the module named one, `id`. A pixel filter module the filter loader refuses
+`plugin.list` gives `{dir, host, plugins, failed, skipped}`: `dir` is the plug-ins folder (`null`
+when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256), a
+`settingsRevision` that changes when one of its settings does, and `previousVersion` (the version
+`plugin.rollback` goes back to, or `null`), each `failed` row has `file`, `error`, `kind` (`plugin` or
+`filter`) and, when the module named one, `id`, and `skipped` counts the modules past the most the
+folder loads.
+
+`plugin.uninstall {id}` removes a plug-in, its module, data and settings; with `keepData: true`
+its data and settings stay (and its version to go back to), for a later install of the same id,
+and a call still running can't write its settings back. Its grant goes either way. A pixel filter module the filter loader refuses
 gives the loader's error, not the plug-in host's. `plugin.enable` refuses a pixel filter: filters can't be turned off,
 only removed.
 
@@ -599,13 +635,16 @@ Pixel Filters, each with an icon drawn from its id (the same id always gets the 
 plug-in's own icon when its manifest carries one), its name, version and a mark: enabled, disabled or didn't load. The selected entry's page is on the
 right:
 
-- **A plug-in:** Enabled, Remove, and tabs: Settings (when it declares settings), Permissions (each
+- **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), and tabs: Settings (when it declares settings), Permissions (each
   one it asks for, granted or revoked by its box), About (description, what it adds, its commands
   to run, the module's size) and Log.
 - **A pixel filter:** Remove, its stage, whether it measures the photo (the cropped photo or the
   whole one), its base tone, parameters, and the module's size and hash. Filters have no Enabled
   box.
 - **A module that didn't load:** why, and Remove.
+
+Remove asks first, on every page, and Cancel changes nothing; for a plug-in the question offers to
+keep its data and settings for a later install. `plugin.uninstall` doesn't ask.
 
 *Install from File…* opens the file picker for a `.wasm` module, and dropping one `.wasm` file on
 the app while the window is open installs it too; either way the install dialog asks for the
@@ -649,7 +688,9 @@ library opened from a folder, so no value is lost), and `settings/<id>.json` (it
 remembered dialog values: `{"format": 1, "settings": {…}, "dialogs": {"command/<id>" |
 "destination/<id>": {…}}}`; a damaged file reads as empty, says so in the plug-in's log, and is
 kept as `<id>.json.bad` when the next save replaces it; an update drops the keys the new version no
-longer declares, and removing the plug-in deletes the file). A module copied into the folder by hand loads
+longer declares, and removing the plug-in deletes the file unless its data is kept), and
+`previous/<id>.wasm` and `previous/<id>.json` (the version an update replaced and its settings,
+[Going back](#compatibility-requires-and-version)). A module copied into the folder by hand loads
 disabled and with no permissions granted.
 
 ## Pixel filters (PhotoCraft ABI)

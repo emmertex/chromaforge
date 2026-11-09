@@ -2,8 +2,10 @@
 //!
 //! On disk (a folder, usually `<settings>/plugins`): `<id>.wasm` per plug-in, `plugins.json` with
 //! each plug-in's `{enabled, grant}`, `data/<id>.json`, its metadata namespace (per library), and
-//! `settings/<id>.json`, its settings and remembered dialog values (for the whole app). A manager
-//! without a folder keeps everything in memory (tests, the web build).
+//! `settings/<id>.json`, its settings and remembered dialog values (for the whole app), and
+//! `previous/<id>.wasm` + `previous/<id>.json`, the version an update replaced and its settings, to
+//! go back to ([`Manager::rollback`]; nothing loads from that folder). A manager without a folder
+//! keeps everything in memory (tests, the web build).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -16,7 +18,7 @@ use crate::context::{CallContext, HostApi, JobReporter, Unwatched};
 use crate::manifest::{Field, dialog_args, parse_version};
 use crate::permissions::Permissions;
 use crate::runtime::{Limits, Plugin};
-use crate::settings::{SettingsStore, command_scope, destination_scope};
+use crate::settings::{MAX_SETTINGS_BYTES, SettingsStore, command_scope, destination_scope};
 use crate::store::{NamespaceStore, write_atomic};
 use crate::{Error, Result};
 
@@ -28,6 +30,8 @@ const MAX_PLUGINS: usize = 256;
 const MAX_BATCH: usize = 10_000;
 /// Longest message a `prepare` hook may show.
 const MAX_PREPARE_MESSAGE: usize = 4096;
+/// Largest `previous/<id>.json` read back: the settings it keeps, and room for its version.
+const MAX_PREVIOUS_BYTES: u64 = MAX_SETTINGS_BYTES as u64 + 64 * 1024;
 
 /// One installed plug-in.
 #[derive(Debug)]
@@ -47,9 +51,16 @@ pub struct Installed {
     /// uninstalled), shared with a call running off the lock, so a job's next `{continue}` call
     /// gets a revoke, a disable or a removal made while it runs.
     live: Arc<Mutex<Permissions>>,
+    /// Its module file (`None` without a folder): `<id>.wasm`, or the file it was copied in as.
+    path: Option<PathBuf>,
 }
 
 impl Installed {
+    /// Its module file in the plug-ins folder (`None` without a folder).
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     /// The capabilities calls actually get.
     pub fn effective(&self) -> Permissions {
         self.grant.intersect(&self.plugin.manifest().permissions)
@@ -310,12 +321,17 @@ pub struct Manager {
     plugins: BTreeMap<String, Installed>,
     /// Modules in the folder that failed to load.
     pub failed: Vec<Failed>,
+    /// Modules in the folder past the most it loads ([`MAX_PLUGINS`], counting every `.wasm`,
+    /// pixel filters too), by file name: none of them was looked at.
+    pub skipped: Vec<PathBuf>,
     /// `plugins.json` entries of modules that didn't load, written back unchanged, so a plug-in that
     /// loads again (the app updated, the module replaced) keeps its enabled state and grant.
     kept: BTreeMap<String, Entry>,
     /// The versions of modules that didn't load because they need features this version lacks, by
     /// id: installing an older one over them is still a downgrade.
     unloaded: BTreeMap<String, String>,
+    /// The version kept to go back to ([`Manager::rollback`]), by id: of loaded plug-ins only.
+    previous: BTreeMap<String, String>,
     /// The open library's id: plug-in data is kept per library (photo ids are per library).
     library: String,
     /// Where `program.start` makes run folders (`None`: [`crate::programs::runs_root`]).
@@ -330,8 +346,10 @@ impl Default for Manager {
             features: crate::HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
             plugins: BTreeMap::new(),
             failed: Vec::new(),
+            skipped: Vec::new(),
             kept: BTreeMap::new(),
             unloaded: BTreeMap::new(),
+            previous: BTreeMap::new(),
             library: String::new(),
             runs_root: None,
         }
@@ -372,7 +390,9 @@ impl Manager {
             .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wasm")))
             .collect();
         files.sort();
-        files.truncate(MAX_PLUGINS);
+        m.skipped = files.split_off(files.len().min(MAX_PLUGINS));
+        // the first module (by file name) with an id is the one that loads
+        let mut seen: BTreeMap<String, String> = BTreeMap::new();
         for f in files {
             let file = f.display().to_string();
             // installed modules are `<id>.wasm`: the id when the manifest can't be read
@@ -387,14 +407,21 @@ impl Manager {
                 }
             };
             let id = p.id().to_string();
+            if let Some(first) = seen.get(&id) {
+                m.failed.push(Failed { error: duplicate_error(first), file, missing: Vec::new(), id, path: Some(f) });
+                continue;
+            }
             let missing = p.manifest().missing_features(&m.features);
             if !missing.is_empty() {
                 // the app was downgraded: keep its grant and data for when it's updated again
                 m.keep(&state, &id);
-                m.unloaded.insert(id.clone(), p.manifest().version.clone());
+                m.unloaded.entry(id.clone()).or_insert_with(|| p.manifest().version.clone());
                 m.failed.push(Failed { file, error: Error::Unsupported(missing.clone()).to_string(), missing, id, path: Some(f) });
                 continue;
             }
+            // only a module that loads holds its id: one that can't gives way to a later file
+            seen.insert(id.clone(), file.clone());
+            m.unloaded.remove(&id);
             // not in plugins.json (copied in by hand): disabled, nothing granted
             let (enabled, grant) = state.plugins.get(&id).map_or((false, Permissions::default()), |e| (e.enabled, e.grant.clone()));
             let mut log = VecDeque::new();
@@ -404,8 +431,11 @@ impl Manager {
             let (settings, damaged) = m.open_settings(&id);
             log.extend(damaged);
             let live = Arc::new(Mutex::new(Permissions::default()));
-            let installed = Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None, live };
+            let installed = Installed { plugin: Arc::new(p), enabled, grant, log, store: None, settings, busy: None, live, path: Some(f) };
             installed.share_effective();
+            if let Some((version, _)) = read_previous(dir, &id) {
+                m.previous.insert(id.clone(), version);
+            }
             m.plugins.insert(id, installed);
         }
         Ok(m)
@@ -526,8 +556,38 @@ impl Manager {
         self.install_checked(bytes, grant, allow_downgrade, true)
     }
 
+    /// Loads a module with the limits of plug-ins installed from now on, without installing it:
+    /// to look at its manifest first, then install it with [`Manager::install_loaded`].
+    pub fn load(&self, bytes: &[u8]) -> Result<Plugin> {
+        Plugin::load(bytes, self.limits.clone())
+    }
+
+    /// [`Manager::install_bytes`] for a module already loaded by [`Manager::load`] from `bytes`.
+    pub fn install_loaded(&mut self, plugin: Plugin, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool) -> Result<&Installed> {
+        self.install_plugin(plugin, bytes, grant, allow_downgrade, false, false)
+    }
+
+    /// [`Manager::install_loaded`] as the user approved it ([`Manager::install_bytes_by_user`]).
+    pub fn install_loaded_by_user(&mut self, plugin: Plugin, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool) -> Result<&Installed> {
+        self.install_plugin(plugin, bytes, grant, allow_downgrade, true, false)
+    }
+
     fn install_checked(&mut self, bytes: &[u8], grant: Option<Permissions>, allow_downgrade: bool, by_user: bool) -> Result<&Installed> {
         let plugin = Plugin::load(bytes, self.limits.clone())?;
+        self.install_plugin(plugin, bytes, grant, allow_downgrade, by_user, false)
+    }
+
+    /// `rollback`: going back to the version kept ([`Manager::rollback`]): it keeps no version to
+    /// go back to, and logs the rollback.
+    fn install_plugin(
+        &mut self,
+        plugin: Plugin,
+        bytes: &[u8],
+        grant: Option<Permissions>,
+        allow_downgrade: bool,
+        by_user: bool,
+        rollback: bool,
+    ) -> Result<&Installed> {
         let (missing, version, downgrade) = self.install_check(plugin.manifest());
         if !missing.is_empty() {
             return Err(Error::Unsupported(missing));
@@ -571,15 +631,73 @@ impl Manager {
             .filter(|p| previous.program(&p.id).is_some_and(|g| !p.within(g)) && grant.program(&p.id).is_none())
             .map(|p| format!("{}: this version finds it in more places than you allowed; allow it again in the Plug-in Manager", p.name))
             .collect();
-        if let Some(dir) = &self.dir {
-            write_atomic(&dir.join(format!("{id}.wasm")), bytes)?;
-            let file = dir.join(format!("{id}.wasm")).display().to_string();
+        let old_version = self.plugins.get(&id).map(|i| i.plugin.manifest().version.clone());
+        // an update keeps the version it replaces, module and settings (before they're pruned), to
+        // go back to; read now, since the write replaces its file
+        let keep = match (&self.dir, self.plugins.get(&id)) {
+            (Some(_), Some(old)) if !rollback && !same_code => Some(
+                old.path
+                    .as_deref()
+                    .ok_or_else(|| Error::NotFound(format!("{id}.wasm")))
+                    .and_then(|p| read_module(p, &self.limits))
+                    .map(|b| (b, old.plugin.manifest().version.clone(), old.settings().snapshot())),
+            ),
+            _ => None,
+        };
+        let path = self.dir.as_ref().map(|d| d.join(format!("{id}.wasm")));
+        if let Some(path) = &path {
+            write_atomic(path, bytes)?;
+            let file = path.display().to_string();
             self.failed.retain(|f| f.file != file);
+        }
+        // the version it replaces was copied in under another name: that file goes, or it would
+        // load again in place of this one at the next start
+        let stale = self.plugins.get(&id).and_then(|i| i.path.clone()).filter(|p| Some(p) != path.as_ref());
+        let mut stale_error = None;
+        if let Some(stale) = stale {
+            match std::fs::remove_file(&stale) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    stale_error =
+                        Some(format!("the old module {} couldn't be removed ({e}); remove it by hand, or it may load again", stale.display()))
+                }
+            }
+        }
+        let mut kept_error = None;
+        if let Some(dir) = &self.dir
+            && !rollback
+        {
+            match keep {
+                Some(keep) => match keep.and_then(|(b, version, settings)| keep_previous(dir, &id, &b, &version, &settings).map(|_| version)) {
+                    Ok(version) => {
+                        self.previous.insert(id.clone(), version);
+                    }
+                    Err(e) => {
+                        // none rather than an older one under the wrong version
+                        let _ = discard_previous(dir, &id);
+                        self.previous.remove(&id);
+                        kept_error = Some(format!("the version it replaces couldn't be kept to go back to: {e}"));
+                    }
+                },
+                // the same code again keeps what it had; a fresh install finds one a removal kept
+                None if old_version.is_none() => match read_previous(dir, &id) {
+                    Some((version, _)) => {
+                        self.previous.insert(id.clone(), version);
+                    }
+                    None => {
+                        self.previous.remove(&id);
+                    }
+                },
+                None => {}
+            }
         }
         self.kept.remove(&id);
         self.unloaded.remove(&id);
         let old = self.plugins.remove(&id);
         let mut log = old.as_ref().map(|i| i.log.clone()).unwrap_or_default();
+        log.extend(stale_error);
+        log.extend(kept_error);
         // a call still running keeps the cell, and gets the new version's grant on its next call
         let live = old.as_ref().map_or_else(|| Arc::new(Mutex::new(Permissions::default())), |i| i.live.clone());
         let settings = match old.map(|i| i.settings) {
@@ -599,18 +717,21 @@ impl Manager {
         if let Err(e) = pruned {
             log.push_back(format!("settings: {e}"));
         }
-        let installed = Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None, live };
+        let installed = Installed { plugin: Arc::new(plugin), enabled: true, grant, log, store: None, settings, busy: None, live, path };
         installed.share_effective();
         self.plugins.insert(id.clone(), installed);
         self.save()?;
         self.plugins
             .get_mut(&id)
             .map(|i| {
-                i.push_log(match downgrade {
-                    Some(old) => format!("downgraded from {old} to {new}"),
-                    None => format!("installed version {new}"),
+                i.push_log(match (rollback, old_version, downgrade) {
+                    (true, Some(old), _) => format!("rolled back from {old} to {new}"),
+                    (_, _, Some(old)) => format!("downgraded from {old} to {new}"),
+                    _ => format!("installed version {new}"),
                 });
-                for line in dropped.into_iter().chain(widened) {
+                let unknown = &i.plugin.manifest().unknown_fields;
+                let unknown = (!unknown.is_empty()).then(|| format!("unknown manifest fields: {}", unknown.join(", ")));
+                for line in dropped.into_iter().chain(widened).chain(unknown) {
                     i.push_log(line);
                 }
                 &*i
@@ -630,11 +751,100 @@ impl Manager {
         self.install_bytes_by_user(&bytes, grant, allow_downgrade)
     }
 
+    /// The version plug-in `id` goes back to ([`Manager::rollback`]), if one is kept.
+    pub fn previous_version(&self, id: &str) -> Option<&str> {
+        self.previous.get(id).map(String::as_str)
+    }
+
+    /// Goes back to the version of plug-in `id` its last update replaced: its module and its
+    /// settings as they were then. A downgrade nobody needs to confirm; the grant is kept, cut back
+    /// to what that version asks for, without programs (code that differs from a command, as for
+    /// [`Manager::install_bytes`]; the user's rollback keeps them, [`Manager::rollback_by_user`]).
+    /// No version is kept after it (one level deep).
+    ///
+    /// When the module can't be written, the current version stays as it was, settings too.
+    pub fn rollback(&mut self, id: &str) -> Result<&Installed> {
+        self.rollback_as(id, false)
+    }
+
+    /// [`Manager::rollback`] as the user asked for it on the plug-in's page: it keeps the programs
+    /// granted (those the old version asks for). Never reachable from a command.
+    pub fn rollback_by_user(&mut self, id: &str) -> Result<&Installed> {
+        self.rollback_as(id, true)
+    }
+
+    fn rollback_as(&mut self, id: &str, by_user: bool) -> Result<&Installed> {
+        let none = || Error::Params(format!("{id} has no previous version to go back to"));
+        if !self.plugins.contains_key(id) {
+            return Err(Error::NotFound(id.into()));
+        }
+        let Some(dir) = self.dir.clone().filter(|_| self.previous.contains_key(id)) else { return Err(none()) };
+        let (_, settings) = read_previous(&dir, id).ok_or_else(none)?;
+        let bytes = read_module(&previous_paths(&dir, id).0, &self.limits)?;
+        let plugin = Plugin::load(&bytes, self.limits.clone())?;
+        if plugin.id() != id {
+            return Err(Error::Failed(format!("the version kept to go back to is another plug-in ({})", plugin.id())));
+        }
+        // the settings go back with the module or not at all: staged beside their file first
+        let file = SettingsStore::path_in(&dir, id);
+        let mut staged = file.clone().into_os_string();
+        staged.push(".rollback");
+        let staged = PathBuf::from(staged);
+        let restore = match &settings {
+            Value::Null => None,
+            s => Some(SettingsStore::snapshot_file(s).map_err(|e| Error::Failed(format!("the settings kept to go back to: {e}")))?),
+        };
+        if let Some(b) = &restore {
+            write_atomic(&staged, b)?;
+        }
+        match self.install_plugin(plugin, &bytes, None, true, by_user, true) {
+            Ok(_) => {}
+            Err(e) => {
+                let _ = std::fs::remove_file(&staged);
+                return Err(e);
+            }
+        }
+        let mut lines = Vec::new();
+        if restore.is_some() {
+            // under the store's lock, so a call running off the manager's can't save the settings
+            // it had over the file between the two
+            let store = self.plugins.get(id).map(|p| p.settings.clone());
+            let mut store = store.as_ref().map(|s| s.lock().unwrap_or_else(PoisonError::into_inner));
+            match std::fs::rename(&staged, &file) {
+                Ok(()) => {
+                    if let Some(s) = store.as_mut() {
+                        s.restored(&settings);
+                    }
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&staged);
+                    lines.push(format!("settings: the ones kept couldn't be put back ({e}); it keeps the current ones"));
+                }
+            }
+        }
+        self.previous.remove(id);
+        if let Err(e) = discard_previous(&dir, id) {
+            lines.push(format!("the version gone back to couldn't be removed from previous/: {e}"));
+        }
+        let p = self.plugins.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+        for line in lines {
+            p.push_log(line);
+        }
+        Ok(&*p)
+    }
+
     /// Removes a plug-in, its module, its data and its settings.
     ///
     /// A plug-in in the folder that didn't load ([`Manager::failed`]: it needs features this version
     /// lacks, or its module can't be read) is removed the same way, by its id there.
     pub fn uninstall(&mut self, id: &str) -> Result<()> {
+        self.uninstall_with(id, false)
+    }
+
+    /// [`Manager::uninstall`]; `keep_data`: its data (`data/<id>.json`) and settings stay in the
+    /// folder, for a later install of the same id to pick up. Its grant and enabled state go either
+    /// way, and a call still running can't write its settings back.
+    pub fn uninstall_with(&mut self, id: &str, keep_data: bool) -> Result<()> {
         let is_failed = |f: &Failed| !id.is_empty() && f.id == id;
         if !self.plugins.contains_key(id) && !self.failed.iter().any(is_failed) {
             return Err(Error::NotFound(id.into()));
@@ -643,6 +853,10 @@ impl Manager {
         // have, it can't write its file back (and if one can't be deleted, it keeps saving)
         let store = self.plugins.get(id).map(|p| p.settings.clone());
         let mut store = store.as_ref().map(|s| s.lock().unwrap_or_else(PoisonError::into_inner));
+        // kept settings are the latest: a change whose save failed is written now, or nothing goes
+        if keep_data && let Some(s) = store.as_mut() {
+            s.save()?;
+        }
         // the files first: if one can't be deleted, nothing is forgotten (its entry stays saved)
         if let Some(dir) = &self.dir {
             let modules: Vec<PathBuf> = self.failed.iter().filter(|f| is_failed(f)).filter_map(|f| f.path.clone()).collect();
@@ -650,11 +864,12 @@ impl Manager {
             let settings = SettingsStore::path_in(dir, id);
             let mut bad = settings.clone().into_os_string();
             bad.push(".bad");
-            let files = std::iter::once(dir.join(format!("{id}.wasm"))).chain(modules).chain([
-                dir.join("data").join(format!("{id}.json")),
-                settings,
-                bad.into(),
-            ]);
+            // its own module, when it was copied in under another name
+            let own = self.plugins.get(id).and_then(|p| p.path.clone());
+            let (previous, about) = previous_paths(dir, id);
+            let data = [dir.join("data").join(format!("{id}.json")), settings, bad.into(), about, previous];
+            let data = if keep_data { Vec::new() } else { data.to_vec() };
+            let files = std::iter::once(dir.join(format!("{id}.wasm"))).chain(own).chain(modules).chain(data);
             for f in files {
                 match std::fs::remove_file(&f) {
                     Ok(()) => {}
@@ -674,7 +889,34 @@ impl Manager {
         self.failed.retain(|f| !is_failed(f));
         self.kept.remove(id);
         self.unloaded.remove(id);
+        self.previous.remove(id);
         self.save()
+    }
+
+    /// Deletes module `file` ([`Failed::file`]) that didn't load and drops its row; nothing else
+    /// changes (its id's entry and data stay): for a module another one with its id stands in for.
+    pub fn remove_failed_module(&mut self, file: &str) -> Result<()> {
+        let Some(at) = self.failed.iter().position(|f| f.file == file) else { return Err(Error::NotFound(file.into())) };
+        if let Some(path) = self.failed.get(at).and_then(|f| f.path.clone()) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(Error::Io(format!("{}: {e}", path.display()))),
+            }
+        }
+        self.failed.remove(at);
+        Ok(())
+    }
+
+    /// Unloads plug-in `id` and lists its module as failed with `error`, keeping its entry, grant
+    /// and data (as for a module that stopped loading): another module with its id comes first.
+    pub fn demote(&mut self, id: &str, error: String) -> bool {
+        let Some(p) = self.plugins.remove(id) else { return false };
+        *p.live.lock().unwrap_or_else(PoisonError::into_inner) = Permissions::default();
+        self.kept.insert(id.to_string(), Entry { enabled: p.enabled, grant: p.grant.clone() });
+        let file = p.path.as_ref().map_or_else(|| format!("{id}.wasm"), |f| f.display().to_string());
+        self.failed.push(Failed { file, error, missing: Vec::new(), id: id.to_string(), path: p.path });
+        true
     }
 
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<()> {
@@ -1311,8 +1553,54 @@ fn outcome(id: &str, r: Result<Value>) -> Value {
     }
 }
 
-/// Reads a module file: a regular file within the size limit.
-fn read_module(path: &Path, limits: &Limits) -> Result<Vec<u8>> {
+/// The version of plug-in `id` an update replaced, in `dir`: its module and `{version, settings}`.
+fn previous_paths(dir: &Path, id: &str) -> (PathBuf, PathBuf) {
+    let d = dir.join("previous");
+    (d.join(format!("{id}.wasm")), d.join(format!("{id}.json")))
+}
+
+/// The version kept for plug-in `id` in `dir` to go back to: its version and settings (`null`:
+/// none kept). `None`: no version is kept, or it can't be read.
+fn read_previous(dir: &Path, id: &str) -> Option<(String, Value)> {
+    let (module, about) = previous_paths(dir, id);
+    if !std::fs::metadata(&module).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let bytes = crate::safe_io::read_capped(&about, MAX_PREVIOUS_BYTES).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    let version = v.get("version")?.as_str()?.to_string();
+    Some((version, v.get("settings").cloned().unwrap_or(Value::Null)))
+}
+
+/// Keeps `module`, version `version` with `settings`, as plug-in `id`'s version to go back to.
+fn keep_previous(dir: &Path, id: &str, module: &[u8], version: &str, settings: &Value) -> Result<()> {
+    let (path, about) = previous_paths(dir, id);
+    write_atomic(&path, module)?;
+    // compact: the settings may be as large as their own file allows, and must read back
+    let text = serde_json::to_vec(&json!({"version": version, "settings": settings})).map_err(|e| Error::Io(e.to_string()))?;
+    write_atomic(&about, &text)
+}
+
+/// Deletes plug-in `id`'s version to go back to (what tells it's there first).
+fn discard_previous(dir: &Path, id: &str) -> Result<()> {
+    let (path, about) = previous_paths(dir, id);
+    for f in [about, path] {
+        match std::fs::remove_file(&f) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(format!("{}: {e}", f.display()))),
+        }
+    }
+    Ok(())
+}
+
+/// Why a module didn't load: `first`, earlier by file name, has its id.
+pub fn duplicate_error(first: &str) -> String {
+    format!("another module has this id: {first} (the first by file name loads)")
+}
+
+/// Reads a module file: a regular file within the size limit (refused before it is read).
+pub fn read_module(path: &Path, limits: &Limits) -> Result<Vec<u8>> {
     use std::io::Read;
     let io = |e: std::io::Error| Error::Io(format!("{}: {e}", path.display()));
     let meta = std::fs::metadata(path).map_err(io)?;
