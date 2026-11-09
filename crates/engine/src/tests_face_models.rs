@@ -617,11 +617,16 @@ fn recognition_cannot_be_turned_on_without_a_chosen_model() {
 fn the_cpu_only_switch_is_kept_and_bad_values_are_refused() {
     let d = temp("cpu-only");
     let mut s = session(&d);
-    assert_eq!(s.execute("faces.gpu", &json!({})).unwrap()["cpuOnly"], false);
+    let initial = s.execute("faces.gpu", &json!({})).unwrap();
+    assert_eq!(initial["cpuOnly"], false);
+    assert!(!initial["detection"].is_null(), "detection state must not be null");
+    assert!(!initial["recognition"].is_null(), "recognition state must not be null");
     assert_eq!(s.execute("faces.gpu", &json!({"cpuOnly": true})).unwrap()["cpuOnly"], true);
     // kept with the models, so a new session starts on the CPU too
     let mut again = session(&d);
-    assert_eq!(again.execute("faces.models.list", &json!({})).unwrap()["gpu"]["cpuOnly"], true);
+    let list_gpu = again.execute("faces.models.list", &json!({})).unwrap()["gpu"].clone();
+    assert_eq!(list_gpu["cpuOnly"], true);
+    assert_eq!(list_gpu["recognition"]["why"], "the CPU is chosen in Settings");
     assert!(again.execute("faces.gpu", &json!({"cpuOnly": "yes"})).is_err());
     assert_eq!(again.execute("faces.gpu", &json!({"cpuOnly": false})).unwrap()["cpuOnly"], false);
     let _ = std::fs::remove_dir_all(d);
