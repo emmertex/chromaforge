@@ -38,7 +38,9 @@ pub fn sources() -> Vec<Source> {
     files
         .into_iter()
         .map(|path| {
-            let text = std::fs::read_to_string(&path).unwrap();
+            // read as LF: a Windows checkout (`core.autocrlf`) has CRLF line ends, and the test
+            // module must be cut off there too
+            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
             let code = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or_default().to_string();
             let file = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
             Source { file, code }
