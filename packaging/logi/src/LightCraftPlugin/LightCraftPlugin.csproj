@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The LightCraft plugin for Logi Options+ (Logi Actions SDK).
+
+    The current Logi Plugin Service runs on .NET 10 and its PluginApi.dll references System.Runtime 10,
+    which the .NET 8 SDK refuses as a reference (CS1705). So the plugin is compiled against the
+    runtime assemblies the service itself ships (LogiDir); the result is an ordinary net8.0 library
+    the service loads. Nothing from LogiDir is copied to the output.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LightCraft.Logi</RootNamespace>
+    <AssemblyName>LightCraftPlugin</AssemblyName>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <LogiDir Condition="'$(LogiDir)' == ''">C:\Program Files\Logi\LogiPluginService</LogiDir>
+    <NoWarn>$(NoWarn);MSB3277;CA1416</NoWarn>
+    <Authors>RAD Films - Roman Alurkoff</Authors>
+    <Copyright>Copyright (c) 2026 RAD Films - Roman Alurkoff</Copyright>
+    <Version>1.0.7</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="$(LogiDir)\System.*.dll" Exclude="$(LogiDir)\System.*Native*.dll" Private="false" />
+    <Reference Include="$(LogiDir)\netstandard.dll;$(LogiDir)\mscorlib.dll;$(LogiDir)\Microsoft.Win32.Primitives.dll" Private="false" />
+    <Reference Include="$(LogiDir)\PluginApi.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the protocol client, compiled in (it has no Logi dependency) -->
+    <Compile Include="..\LightCraft.Surface.Client\*.cs" Link="Client\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="metadata\**" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="profiles\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

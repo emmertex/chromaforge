@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- the profile repair has no Logi dependency: tested here -->
+    <Compile Include="..\..\src\LightCraftPlugin\ProfileRepair.cs" Link="ProfileRepair.cs" />
+    <ProjectReference Include="..\..\src\LightCraft.Surface.Client\LightCraft.Surface.Client.csproj" />
+  </ItemGroup>
+</Project>
