@@ -373,6 +373,12 @@ times, the render queue, renders thrown away as superseded, the GPU adapter and 
 graph of the last frames with a tick where a render arrived. Once a second it logs the same
 numbers (`fps-hud:`), so a scripted drag (`ui.dragWidget`) can be measured from the log.
 
+**Present mode** (issue #633): the window presents with FIFO (vsync), except with HDR output on
+Wayland with an NVIDIA GPU, where it uses Mailbox when the surface offers it (FIFO there missed
+vblank at idle clocks: ~95 instead of 144 fps). `<PREFIX>_PRESENT=fifo` forces FIFO,
+`<PREFIX>_PRESENT=mailbox` asks for Mailbox anywhere it is offered; a mode the surface doesn't
+offer always falls back to FIFO.
+
 `render_bench` on `corpus/raw/arw-sony-a7m3-compressed.arw` (24 MP; loupe = 2560 px preview →
 1920×1280), min of 7 runs, wall clock, on a heavily shared machine (load average 60–110 on 14 cores,
 so CPU numbers are pessimistic; the GPU numbers are less affected):
