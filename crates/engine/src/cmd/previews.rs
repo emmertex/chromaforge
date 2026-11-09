@@ -176,15 +176,21 @@ impl PreviewBuild {
     }
 
     /// Index of the next photo to build in `queue` (`None`: none left): the first one still there
-    /// from the focus on in the direction of travel, then the rest the other way.
+    /// from the focus on in the direction of travel, then the rest the other way. The background
+    /// preparation starts one past the focus: the photo on screen is the loupe's own render, and
+    /// building it as well decoded the same raw twice while the user stepped (2026-11-09).
     pub(crate) fn next_index<T>(&self, queue: &[Option<T>]) -> Option<usize> {
         let n = queue.len();
         let at = self.focus.load(Ordering::Relaxed).min(n.saturating_sub(1));
         let there = |i: &usize| queue.get(*i).is_some_and(Option::is_some);
+        let skip = usize::from(self.background);
         if self.backward.load(Ordering::Relaxed) {
-            (0..=at).rev().find(there).or_else(|| (at..n).find(there))
+            // (the photos before the focus, nearest first; then the focus and the rest after it)
+            let ahead = at.checked_sub(skip).and_then(|from| (0..=from).rev().find(there));
+            ahead.or_else(|| (at.saturating_add(1).saturating_sub(skip)..n).find(there))
         } else {
-            (at..n).find(there).or_else(|| (0..at).rev().find(there))
+            let from = at.saturating_add(skip).min(n);
+            (from..n).find(there).or_else(|| (0..from).rev().find(there))
         }
     }
 
@@ -362,14 +368,21 @@ type PhotoJobs = (u64, Vec<RenderJob>);
 fn run_all(jobs: Vec<PhotoJobs>, state: &PreviewBuild, task: &TaskGuard, lanes: usize, force: bool, activity: &crate::activity::Activity) {
     let total = jobs.len();
     let queue = std::sync::Mutex::new(jobs.into_iter().map(Some).collect::<Vec<_>>());
-    let work = || {
+    // `steady`: the lane that keeps building while the user steps ([`crate::prep::STEADY_WAIT_MS`])
+    let work = |steady: bool| {
         loop {
             if state.cancel.load(Ordering::Relaxed) {
                 break;
             }
             // the background preparation pauses completely while the user's own work runs (an
             // export, an import, a batch), and waits while the photo on screen is being made
-            if state.background && (wait_for_user_work(activity, &state.cancel, task) || crate::prep::wait_for_foreground(&state.cancel)) {
+            // (a lane whose photos were all taken meanwhile stops waiting: the build is done once
+            // the last photo is, not once the user stops stepping)
+            let left = || queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(Option::is_some);
+            let wait_on_screen = |c: &AtomicBool| {
+                if steady { crate::prep::wait_for_foreground_steady(c) } else { crate::prep::wait_for_foreground_while(c, &left) }
+            };
+            if state.background && (wait_for_user_work(activity, &state.cancel, task) || wait_on_screen(&state.cancel)) {
                 break;
             }
             let next = {
@@ -380,7 +393,12 @@ fn run_all(jobs: Vec<PhotoJobs>, state: &PreviewBuild, task: &TaskGuard, lanes: 
             if !force && already_built(&photo_jobs) {
                 state.skipped.fetch_add(1, Ordering::Relaxed);
             } else if let Some(_held) = Building::take(id, &photo_jobs) {
-                let ok = crate::guard::catch("building previews", || run_photo(photo_jobs)).unwrap_or(false);
+                // the background preparation's decodes wait at the memory gate behind the photo on
+                // screen's, as the other background work does (left out of the port: with a lane
+                // that keeps building while the user steps, the photo on screen waited behind it)
+                let build = || run_photo(photo_jobs);
+                let run = || if state.background { crate::memory::in_background(build) } else { build() };
+                let ok = crate::guard::catch("building previews", run).unwrap_or(false);
                 if !ok {
                     state.failed.fetch_add(1, Ordering::Relaxed);
                 }
@@ -393,18 +411,19 @@ fn run_all(jobs: Vec<PhotoJobs>, state: &PreviewBuild, task: &TaskGuard, lanes: 
     };
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::scope(|sc| {
+        let work = &work;
         for k in 1..lanes.max(1) {
             // a lane that can't start leaves its photos to the others (and to this thread)
-            if std::thread::Builder::new().name(format!("previews-{k}")).spawn_scoped(sc, work).is_err() {
+            if std::thread::Builder::new().name(format!("previews-{k}")).spawn_scoped(sc, move || work(false)).is_err() {
                 break;
             }
         }
-        work();
+        work(true);
     });
     #[cfg(target_arch = "wasm32")]
     {
         let _ = lanes;
-        work();
+        work(true);
     }
     state.finished.store(true, Ordering::Relaxed);
 }
