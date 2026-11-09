@@ -1,0 +1,40 @@
+---
+title: Chromaforge
+description: A photo library and non-destructive raw developer. Native on macOS, Windows and Linux; on the web via WebAssembly.
+template: splash
+hero:
+  tagline: Library, raw developer and print, in one open-source app. Pure Rust. Your photos stay yours.
+  actions:
+    - text: Take the tour
+      link: /start/tour/
+      icon: right-arrow
+    - text: Install
+      link: /start/install/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import Shot from '../../components/Shot.astro';
+
+<Shot name="develop" alt="The Develop module with a graded landscape" />
+
+<CardGrid stagger>
+  <Card title="Library" icon="open-book">
+    Import, rate, flag, keyword and find. Grid, loupe, compare and survey.
+  </Card>
+  <Card title="Develop" icon="pencil">
+    Non-destructive raw editing: light, colour, detail, grading, curves.
+  </Card>
+  <Card title="Masks" icon="puzzle">
+    Linear, radial and brush masks, each with its own adjustments.
+  </Card>
+  <Card title="Output" icon="document">
+    Export, print, slideshow, web gallery and book.
+  </Card>
+  <Card title="Three layouts" icon="laptop">
+    Classic, Modern (touch) and Compact. Switch any time; your edit stays open.
+  </Card>
+  <Card title="Everything is a command" icon="rocket">
+    One command set drives the UI, the CLI, a control channel and MCP.
+  </Card>
+</CardGrid>

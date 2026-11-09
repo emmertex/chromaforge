@@ -1,0 +1,30 @@
+---
+// One screenshot in all three layouts, as tabs. The chosen layout is remembered
+// and shared by every Shot on the site (syncKey), so a reader picks once.
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+
+interface Props { name: string; alt: string }
+const { name, alt } = Astro.props;
+
+const files = import.meta.glob<{ default: ImageMetadata }>('../assets/shots/*/*.{jpg,png}', { eager: true });
+const layouts = [
+  { id: 'classic', label: 'Classic' },
+  { id: 'modern', label: 'Modern' },
+  { id: 'compact', label: 'Compact' },
+];
+const pick = (layout: string) => {
+  const hit = Object.entries(files).find(([k]) => k.includes(`/${layout}/${name}.`));
+  return hit?.[1].default;
+};
+---
+<Tabs syncKey="layout">
+  {layouts.map((l) => {
+    const img = pick(l.id);
+    return (
+      <TabItem label={l.label}>
+        {img ? <Image src={img} alt={`${alt} (${l.label} layout)`} widths={[800, 1280]} sizes="(min-width: 50rem) 800px, 100vw" /> : <p><em>Screenshot not generated yet.</em></p>}
+      </TabItem>
+    );
+  })}
+</Tabs>
