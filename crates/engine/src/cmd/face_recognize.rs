@@ -259,6 +259,25 @@ fn rename_person(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"faces": faces, "photos": photos, "from": from, "to": to, "merged": other}))
 }
 
+/// Photos to look in, from `scope`: absent, the whole library; `"filter"`, the photos the library filter shows (a year,
+/// a folder, an album picked in the sidebar), any person filter aside, so People and a person's page follow the sidebar.
+type Scope = Option<std::collections::HashSet<u64>>;
+
+fn scope_of(s: &Session, cmd: &str, p: &Value) -> Result<Scope> {
+    match p.get("scope") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(v)) if v == "filter" => {
+            let f = lcc_catalog::Filter { person: None, people: Vec::new(), ..s.filter.clone() };
+            Ok(Some(s.catalog.query(&f, &lcc_catalog::Sort::default()).into_iter().map(|id| id.0).collect()))
+        }
+        Some(_) => Err(bad(cmd, "`scope` must be \"filter\" or left out")),
+    }
+}
+
+fn in_scope(scope: &Scope, photo: u64) -> bool {
+    scope.as_ref().is_none_or(|v| v.contains(&photo))
+}
+
 /// Most faces `faces.unnamed` lists.
 const MAX_UNNAMED: usize = 3000;
 
@@ -276,8 +295,9 @@ struct Arranged {
 /// chosen, faces that look alike are next to each other, and a face the named faces recognise carries the name they suggest.
 fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
     let limit = p.get("limit").and_then(Value::as_u64).map_or(600, |n| usize::try_from(n).unwrap_or(600)).clamp(1, MAX_UNNAMED);
+    let scope = scope_of(s, "faces.unnamed", p)?;
     let mut all: Vec<(u64, usize, lcc_geom::Rect)> = Vec::new();
-    for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
+    for ph in s.catalog.photos().filter(|ph| ph.in_library() && in_scope(&scope, ph.id.0)) {
         for (index, r) in ph.meta.regions.iter().enumerate() {
             if r.kind == lcc_meta::RegionKind::Face && r.name.is_none() {
                 all.push((ph.id.0, index, r.rect));
@@ -323,6 +343,7 @@ fn person(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(C, "missing `name`"))?;
     let key = name.to_lowercase();
     let limit = p.get("more").and_then(Value::as_u64).map_or(120, |n| usize::try_from(n).unwrap_or(120)).min(1000);
+    let scope = scope_of(s, C, p)?;
     let (mut shown, mut total, mut confirmed) = (name.to_string(), 0usize, Vec::new());
     for ph in s.catalog.photos().filter(|ph| ph.in_library()) {
         for (index, r) in ph.meta.regions.iter().enumerate() {
@@ -333,12 +354,13 @@ fn person(s: &mut Session, p: &Value) -> Result<Value> {
                 shown = n.trim().to_string();
             }
             total += 1;
-            if confirmed.len() < MAX_CONFIRMED {
+            // the count is the whole library's; the faces shown follow the scope
+            if confirmed.len() < MAX_CONFIRMED && in_scope(&scope, ph.id.0) {
                 confirmed.push(json!({"photo": ph.id.0, "index": index, "rect": rect_json(&r.rect), "view": rect_json(&s.face_view(ph.id, r.rect))}));
             }
         }
     }
-    let similar = if total > 0 { imp::similar(s, &key, limit) } else { Similar { items: Vec::new(), ready: false, pending: 0 } };
+    let similar = if total > 0 { imp::similar(s, &key, limit, &scope) } else { Similar { items: Vec::new(), ready: false, pending: 0 } };
     Ok(
         json!({"name": shown, "total": total, "confirmed": confirmed, "more": similar.items, "ready": similar.ready, "pendingPhotos": similar.pending}),
     )
@@ -835,7 +857,7 @@ mod imp {
     /// is scored like a suggestion (the mean of its two closest faces of theirs) and kept above four fifths of the
     /// model's suggestion bar, since a person looks at these before anything is named. Only faces already embedded can be
     /// found; `ready` says whether a recognition model is chosen and its index is available.
-    pub fn similar(s: &mut Session, key: &str, limit: usize) -> Similar {
+    pub fn similar(s: &mut Session, key: &str, limit: usize, scope: &super::Scope) -> Similar {
         let none = Similar { items: Vec::new(), ready: false, pending: 0 };
         let Some(_) = s.face_models_dir.clone() else { return none };
         let Ok(manifest) = current_manifest(s, "faces.person", false) else { return none };
@@ -847,7 +869,9 @@ mod imp {
                 match r.name.as_deref() {
                     Some(n) if n.trim().to_lowercase() == key => gallery.push(e.clone()),
                     Some(_) => {}
-                    None => candidates.push((ph.id.0, index, r.rect, e.clone())),
+                    // their faces anywhere teach the match; only faces in scope are offered
+                    None if super::in_scope(scope, ph.id.0) => candidates.push((ph.id.0, index, r.rect, e.clone())),
+                    None => {}
                 }
             }
         }
@@ -1214,13 +1238,13 @@ mod imp {
             put(&mut s, b, 0.1, unit(&[(0, 0.95), (1, 0.05)])); // looks just like Ann
             put(&mut s, b, 0.5, unit(&[(1, 1.0)])); // looks like Bob, not Ann
             put(&mut s, c, 0.3, unit(&[(0, 0.8), (1, 0.6)])); // somewhat like Ann
-            let r = similar(&mut s, "ann", 10);
+            let r = similar(&mut s, "ann", 10, &None);
             assert!(r.ready);
             let found: Vec<(u64, u64)> = r.items.iter().map(|i| (i["photo"].as_u64().unwrap(), i["index"].as_u64().unwrap())).collect();
             assert_eq!(found, vec![(b.0, 0), (c.0, 0)], "best first; the face that looks like Bob is left out");
             assert!(r.items[0]["score"].as_f64().unwrap() > r.items[1]["score"].as_f64().unwrap());
-            assert_eq!(similar(&mut s, "ann", 1).items.len(), 1, "capped");
-            assert!(similar(&mut s, "nobody", 10).items.is_empty());
+            assert_eq!(similar(&mut s, "ann", 1, &None).items.len(), 1, "capped");
+            assert!(similar(&mut s, "nobody", 10, &None).items.is_empty());
             let _ = std::fs::remove_dir_all(&d);
         }
     }
@@ -1249,7 +1273,7 @@ mod imp {
         Ok(serde_json::json!({"active": false}))
     }
 
-    pub fn similar(_: &mut Session, _: &str, _: usize) -> super::Similar {
+    pub fn similar(_: &mut Session, _: &str, _: usize, _: &super::Scope) -> super::Similar {
         super::Similar { items: Vec::new(), ready: false, pending: 0 }
     }
 
@@ -1312,7 +1336,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unnamed Faces",
             [],
             None,
-            "{limit?: 600} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready} — the faces nobody has named; with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
+            "{limit?: 600, scope?: \"filter\"} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready} — the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
             super::always,
             unnamed
         ),
@@ -1330,7 +1354,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Faces of a Person",
             [],
             None,
-            "{name, more?: 120} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos} — the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`",
+            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos} — the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library filter shows (any person filter aside); `total` still counts the whole library",
             super::always,
             person
         ),

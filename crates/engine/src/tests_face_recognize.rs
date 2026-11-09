@@ -815,3 +815,53 @@ fn face_review_queue_and_actions_remain_accessible_when_background_scan_is_off()
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn unnamed_and_suggested_faces_follow_the_library_filter_when_scoped() {
+    let d = temp("scoped");
+    let (mut s, _) = setup(&d, 64);
+    s.execute("faces.index", &json!({"budgetMs": 0})).unwrap();
+    let (a, b) = two_photos(&s);
+    let c = s.catalog.photos().map(|p| p.id).find(|id| *id != a && *id != b).unwrap();
+    set_regions(&mut s, a, vec![region(0.1, Some("Ann")), region(0.5, None)]);
+    set_regions(&mut s, b, vec![region(0.1, None), region(0.5, Some("Ann"))]);
+    set_regions(&mut s, c, vec![region(0.3, None)]);
+    let put = |s: &mut Session, id: lcc_catalog::PhotoId, x: f64, v: Vec<f32>| s.faces.index.insert(id.0, &region(x, None).rect, v);
+    put(&mut s, a, 0.1, unit64(&[(0, 1.0)])); // Ann
+    put(&mut s, a, 0.5, unit64(&[(0, 0.97), (2, 0.2)])); // like Ann, in a
+    put(&mut s, b, 0.1, unit64(&[(0, 0.96), (3, 0.2)])); // like Ann, in b
+    put(&mut s, b, 0.5, unit64(&[(0, 0.99), (1, 0.1)])); // Ann
+    put(&mut s, c, 0.3, unit64(&[(0, 0.95), (4, 0.3)])); // like Ann, in c
+    let photos = |r: &Value, key: &str| {
+        let mut v: Vec<u64> = r[key].as_array().unwrap().iter().map(|f| f["photo"].as_u64().unwrap()).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    // the sidebar picks photos b and c (say one year); a person filter is set too, and is left aside
+    s.filter.only = vec![b, c];
+    s.filter.person = Some("Ann".into());
+    let mut bc = vec![b.0, c.0];
+    bc.sort();
+    // unscoped, everything is listed as before
+    let r = s.execute("faces.unnamed", &json!({})).unwrap();
+    assert_eq!(r["total"], 3, "{r}");
+    // scoped, only the unnamed faces in b and c
+    let r = s.execute("faces.unnamed", &json!({"scope": "filter"})).unwrap();
+    assert_eq!((r["total"].clone(), photos(&r, "faces")), (json!(2), bc.clone()), "{r}");
+    // a person's page: their faces and the suggestions follow the scope, the count stays the library's, and Ann's
+    // face in a still teaches the match (with background recognition off, too)
+    s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    let r = s.execute("faces.person", &json!({"name": "Ann", "scope": "filter"})).unwrap();
+    assert_eq!(r["total"], 2, "{r}");
+    assert_eq!(photos(&r, "confirmed"), vec![b.0], "{r}");
+    assert_eq!(photos(&r, "more"), bc, "{r}");
+    let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
+    assert_eq!(r["more"].as_array().unwrap().len(), 3, "{r}");
+    // an odd scope is an error, not a panic
+    for bad in [json!("visible"), json!(7), json!({})] {
+        assert!(s.execute("faces.unnamed", &json!({"scope": bad})).is_err(), "{bad}");
+        assert!(s.execute("faces.person", &json!({"name": "Ann", "scope": bad})).is_err(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

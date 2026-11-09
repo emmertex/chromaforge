@@ -63,9 +63,30 @@ pub fn parse(v: &Value) -> PersonPage {
     }
 }
 
+/// The library filter as the face lists use it: what the sidebar picked (a year, a folder, an album), any person
+/// filter aside, since a person's page and the unnamed faces are about people already.
+pub(crate) fn face_filter(f: &lcc_catalog::Filter) -> lcc_catalog::Filter {
+    lcc_catalog::Filter { person: None, people: Vec::new(), ..f.clone() }
+}
+
+/// Forgets the cached face lists when the library filter changed since they were asked for, so they follow the sidebar.
+pub(crate) fn follow_filter(app: &mut LccApp) {
+    let now = face_filter(&app.session.filter);
+    match &app.caches.faces_filter {
+        Some(was) if *was == now => {}
+        Some(_) => {
+            app.caches.unnamed = None;
+            app.caches.person_page = None;
+            app.caches.faces_filter = Some(now);
+        }
+        None => app.caches.faces_filter = Some(now),
+    }
+}
+
 /// The page for `name`, asked for again only when the catalog changed, or (while the scan runs) at most once a second
 /// as it learns more faces.
 fn page_for(app: &mut LccApp, name: &str, now: f64) -> Arc<PersonPage> {
+    follow_filter(app);
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((n, r, i, at, page)) = &app.caches.person_page
         && n == name
@@ -74,7 +95,7 @@ fn page_for(app: &mut LccApp, name: &str, now: f64) -> Arc<PersonPage> {
     {
         return page.clone();
     }
-    let v = app.session.execute("faces.person", &json!({"name": name})).unwrap_or(Value::Null);
+    let v = app.session.execute("faces.person", &json!({"name": name, "scope": "filter"})).unwrap_or(Value::Null);
     let page = Arc::new(parse(&v));
     app.caches.person_page = Some((name.to_string(), rev, indexed, now, page.clone()));
     page
