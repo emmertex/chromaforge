@@ -1,0 +1,64 @@
+# Builds the manual (docs/manual-site, Astro Starlight) and publishes it to GitHub Pages.
+# The screenshots are committed (docs/manual-site/src/assets/shots); regenerate them with
+# `node docs/manual-site/scripts/shots.mjs --cli <app-cli>`.
+name: Manual
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/manual-site/**", ".github/workflows/manual.yml"]
+  pull_request:
+    paths: ["docs/manual-site/**", ".github/workflows/manual.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: docs/manual-site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: docs/manual-site/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/manual-site/pnpm-lock.yaml
+      - id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        env:
+          MANUAL_SITE: ${{ steps.pages.outputs.origin }}
+          MANUAL_BASE: ${{ steps.pages.outputs.base_path }}
+        run: pnpm build
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: github.event_name != 'pull_request'
+        with:
+          path: docs/manual-site/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
