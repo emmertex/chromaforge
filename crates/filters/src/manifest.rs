@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::about::About;
 use crate::{Error, Result};
 
 /// Longest manifest the host reads.
@@ -135,6 +136,15 @@ pub struct Manifest {
     /// isn't an SVG document of at most [`MAX_HEADER_BYTES`] is dropped (the host draws its own).
     #[serde(skip)]
     pub icon: Option<String>,
+    /// Where the filter comes from (`homepage`, `repository`, `changelog`, `license`, an ABI v1.1
+    /// proposal; hosts without the fields ignore them). Read by [`Manifest::parse`]; a value the
+    /// host can't use is dropped and named in [`Manifest::dropped`].
+    #[serde(skip)]
+    pub about: About,
+    /// Manifest values [`Manifest::parse`] dropped, each with why (`"homepage: not an https://
+    /// link"`).
+    #[serde(skip)]
+    pub dropped: Vec<String>,
 }
 
 /// Most parameter sections a manifest may declare (see [`Manifest::sections`]).
@@ -286,6 +296,7 @@ impl Manifest {
         let raw: Value = serde_json::from_str(text).map_err(|e| Error::Manifest(format!("manifest: {e}")))?;
         man.header = raw.get("header").and_then(Header::parse);
         man.icon = svg_document(raw.get("icon"));
+        (man.about, man.dropped) = About::parse(&raw);
         man.sections = param_sections(raw.get("sections"), &man.params);
         man.shortcut = raw
             .get("shortcut")

@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::about::About;
 use crate::permissions::Permissions;
 use crate::{Error, Result};
 
@@ -49,6 +50,11 @@ pub const HOST_FEATURES: &[&str] = &[
     "crop",
     // `virtualCopy` in the permissions and the `photo.virtualCopy` host call
     "virtualCopy",
+    // `icon` and `header` in the manifest, shown by the Plug-in Manager (`plugin.picture`)
+    "pictures",
+    // `homepage`, `repository`, `changelog` and `license` in the manifest, shown on the About tab
+    // (`plugin.list` → `about`)
+    "about",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.
@@ -108,6 +114,14 @@ pub struct Manifest {
     /// [`MAX_PICTURE_BYTES`] is dropped (no header).
     #[serde(skip)]
     pub header: Option<Header>,
+    /// Where the plug-in comes from (`homepage`, `repository`, `changelog`, `license`). Read by
+    /// [`Manifest::parse`]; a value the host can't use is dropped and named in [`Manifest::dropped`].
+    #[serde(skip)]
+    pub about: About,
+    /// Manifest values [`Manifest::parse`] dropped, each with why (`"homepage: not an https://
+    /// link"`): the install puts them in the plug-in's log.
+    #[serde(skip)]
+    pub dropped: Vec<String>,
 }
 
 /// The largest picture (`icon`, each `header` theme) a manifest may carry: a logo drawn as paths
@@ -404,7 +418,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 
 /// Plug-in manifest fields read leniently (a picture the host can't use is dropped, not an
 /// error): never reported as unknown.
-const LENIENT: &[&str] = &["icon", "header"];
+const LENIENT: &[&str] = &["icon", "header", "homepage", "repository", "changelog", "license"];
 
 impl Manifest {
     /// Parses and validates a manifest.
@@ -418,6 +432,7 @@ impl Manifest {
         // pictures are optional: one the host can't use is dropped, never an error
         m.icon = svg_document(raw.get("icon"));
         m.header = raw.get("header").and_then(Header::parse);
+        (m.about, m.dropped) = About::parse(&raw);
         m.validate()?;
         m.unknown_fields = ignored_fields(&raw, LENIENT, |v| serde_json::from_value::<Manifest>(v.clone()).ok());
         Ok(m)

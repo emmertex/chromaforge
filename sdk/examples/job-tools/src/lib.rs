@@ -13,7 +13,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host, job};
 const MANIFEST: &str = r#"{
   "id": "org.example.job-tools",
   "name": "Job Tools (example)",
-  "version": "0.1.0",
   "description": "Example plug-in for the SDK: a job with progress",
   "author": "the app's authors",
   "requires": ["jobs"],
@@ -60,4 +59,4 @@ fn check(req: &Request) -> Result<Value, String> {
     if next < total { Ok(job::continue_with(json!(next))) } else { Ok(json!({"message": format!("Checked {total} photos")})) }
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);

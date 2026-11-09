@@ -17,7 +17,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.program-tools",
   "name": "Program Tools (example)",
-  "version": "0.1.0",
   "description": "Example plug-in for the SDK: starts a program",
   "author": "the app's authors",
   "requires": ["programs", "libraryAdd"],
@@ -113,4 +112,4 @@ fn end(req: &Request) -> Result<Value, String> {
     Ok(json!({"converted": converted, "photos": photos}))
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
