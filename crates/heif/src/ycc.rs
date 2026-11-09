@@ -237,7 +237,8 @@ pub fn to_rgb16(planes: &Planes<'_>, signal: Signal, alpha: bool, mode: Upsampli
 /// the alpha across the picture.
 pub fn put_alpha(planes: &Planes<'_>, rgba: &mut [u16], width: usize) -> Option<()> {
     let (w, h) = planes.size();
-    if width == 0 || w < width || rgba.len() % (width * 4) != 0 || h < rgba.len() / (width * 4) {
+    let row = width.checked_mul(4).filter(|&r| r != 0)?;
+    if w < width || !rgba.len().is_multiple_of(row) || h < rgba.len() / row {
         return None;
     }
     let max = ((1u32 << u32::from(planes.bit_depth()).clamp(1, 16)) - 1) as f32;
