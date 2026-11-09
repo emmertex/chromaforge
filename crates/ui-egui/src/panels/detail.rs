@@ -431,6 +431,10 @@ fn trackpad_scroll_delta(events: &[egui::Event]) -> egui::Vec2 {
 }
 
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
+/// Brush resize per wheel notch (or [`crate::theme::WHEEL_LINE_POINTS`] of trackpad scroll), as
+/// a log-scale step: about +25 % per notch.
+const BRUSH_PER_NOTCH: f32 = 0.22;
+
 pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
     // While the White Balance Selector is armed, a wheel notch steps its sample size instead of zooming
     // (OneSlips, test notes 2026-10-25 note 13); Ctrl/Cmd+wheel still zooms.
@@ -469,17 +473,21 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     // Ctrl/Cmd+wheel still zooms.
     if app.ui.settings.wheel_resizes_brush && is_brush && !cmd_or_ctrl && !space_held {
         if notches != 0.0 {
-            crate::menus::adjust_brush(app, 1.0 + (notches * 0.1).clamp(-0.5, 0.5), 0.0);
+            crate::menus::adjust_brush(app, (notches * BRUSH_PER_NOTCH).exp().clamp(0.25, 4.0), 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            // Not a view change: the frame still draws the tool overlay, so the brush ring stays
+            // shown instead of flickering to the pointer while it resizes (#867).
+            return false;
         }
         if trackpad_delta.y != 0.0 {
-            let k = (trackpad_delta.y * (0.1 / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.5, 2.0);
+            // Scales with the scroll distance, so a trackpad's many small deltas and a wheel's line
+            // add up to the same growth per distance scrolled (#867).
+            let k = (trackpad_delta.y * (BRUSH_PER_NOTCH / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.25, 4.0);
             crate::menus::adjust_brush(app, k, 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            return false;
         }
         if factor == 1.0 && delta != egui::Vec2::ZERO {
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
