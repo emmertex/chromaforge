@@ -99,6 +99,7 @@ pub mod surface_icons;
 pub mod surface_plugin;
 pub mod sync;
 pub mod tasks;
+pub mod template_browser;
 pub mod text_field;
 pub mod theme;
 pub mod timelapse_ui;

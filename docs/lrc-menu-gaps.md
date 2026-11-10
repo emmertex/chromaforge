@@ -213,7 +213,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Create Saved Slideshow | Save the slideshow as a collection (needs a name dialog). | S | wire-up | `soon.createSavedSlideshow` |
 | New Template | Save the settings as a template (needs a name dialog). | S | wire-up | `soon.newSlideshowTemplate` |
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ Play
@@ -234,7 +233,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Create Saved Print | Save the print as a collection (needs a name dialog). | S | wire-up | `soon.createSavedPrint` |
 | New Template | Save the print settings as a template (needs a name dialog). | S | wire-up | `soon.newPrintTemplate` |
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
 
 ## Print module ▸ View
 

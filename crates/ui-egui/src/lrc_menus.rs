@@ -552,7 +552,7 @@ const BOOK_VIEW: &[&str] = &[
 const SLIDESHOW: &[&str] = &[
     "soon.createSavedSlideshow",
     "soon.newSlideshowTemplate",
-    "soon.newSlideshowTemplateFolder",
+    "slideshow.newTemplateFolder=New Template Folder",
     "---",
     "slideshow.exportPdf",
     "slideshow.exportJpeg",
@@ -581,7 +581,7 @@ const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
 const PRINT: &[&str] = &[
     "soon.createSavedPrint",
     "soon.newPrintTemplate",
-    "soon.newPrintTemplateFolder",
+    "printui.newTemplateFolder=New Template Folder",
     "---",
     r#"printui.page{"delta":-1}=Previous Page"#,
     r#"printui.page{"delta":1}=Next Page"#,
@@ -929,14 +929,12 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // Slideshow
     soon("soon.createSavedSlideshow", "Create Saved Slideshow", None, 'S', true, "Save the slideshow as a collection (needs a name dialog)."),
     soon("soon.newSlideshowTemplate", "New Template", None, 'S', true, "Save the settings as a template (needs a name dialog)."),
-    soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
     soon("soon.createSavedPrint", "Create Saved Print", None, 'S', true, "Save the print as a collection (needs a name dialog)."),
     soon("soon.newPrintTemplate", "New Template", None, 'S', true, "Save the print settings as a template (needs a name dialog)."),
-    soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
