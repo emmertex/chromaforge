@@ -55,7 +55,7 @@ fn connection_tick() -> bool {
 }
 
 fn lib_dir(s: &Session, c: &str) -> Result<PathBuf> {
-    s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(c, "studio capture needs a library on disk"))
+    s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(c, "studio capture needs a catalog on disk"))
 }
 
 fn load(s: &Session, c: &str) -> Result<(PathBuf, Option<StudioSession>)> {

@@ -423,7 +423,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     None => (crate::i18n::tr("{app} Default").to_string(), String::new()),
                 };
                 // which photos it reaches, said on hover rather than as a line of its own
-                let reach = crate::i18n::tr("Photos imported from now on; photos already in the library keep theirs.");
+                let reach = crate::i18n::tr("Photos imported from now on; photos already in the catalog keep theirs.");
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(crate::i18n::tr("New photos start from")).small().weak()).on_hover_text(reach);
                     ui.label(RichText::new(starts_from).small()).on_hover_text(reach);

@@ -114,7 +114,7 @@ impl ZipWriter {
         }
         let header_len = 30 + u64::from(name_len);
         if self.offset + header_len + u64::from(size) > MAX_BYTES {
-            return Err("the library is too large for one backup file (4 GB)".into());
+            return Err("the catalog is too large for one backup file (4 GB)".into());
         }
         let offset = u32::try_from(self.offset).map_err(|_| "backup too large".to_string())?;
         let crc = crc32fast::hash(data);

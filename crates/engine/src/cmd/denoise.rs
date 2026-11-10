@@ -661,7 +661,7 @@ fn queue(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "no denoise model is chosen: install one first (`denoise.models.download` or `denoise.models.install`)"));
     }
     if s.denoise_products_dir().is_none() {
-        return Err(bad(C, "denoise keeps its pictures in the library's folder: open a library on disk first"));
+        return Err(bad(C, "denoise keeps its pictures in the catalog's folder: open a catalog on disk first"));
     }
     let ids = match super::photo_ids(p, C)? {
         Some(ids) => ids,

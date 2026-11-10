@@ -401,7 +401,7 @@ fn recursive_import_with_duplicates() {
 }
 
 /// Files whose content a photo already has, imported anyway (`importDuplicates`, as Synchronize
-/// Folder does with "Don't import files already in the library" unticked): a file with the bytes
+/// Folder does with "Don't import files already in the catalog" unticked): a file with the bytes
 /// of a library photo, and two copies of one new picture, each come in as a photo of their own, and
 /// the photos stay told apart: no two keep the same content key.
 #[test]

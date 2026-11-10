@@ -89,7 +89,7 @@ fn host_name() -> String {
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     /// Another process has the library open.
-    #[error("This library is already open in {}. Close it there first.", .0.as_ref().map(LockOwner::describe).unwrap_or_else(|| "another program".into()))]
+    #[error("This catalog is already open in {}. Close it there first.", .0.as_ref().map(LockOwner::describe).unwrap_or_else(|| "another program".into()))]
     InUse(Option<LockOwner>),
 }
 

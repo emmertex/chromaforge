@@ -77,7 +77,7 @@ pub fn prompt(app: &mut LccApp, ctx: &egui::Context) {
             ui.add(
                 egui::Label::new(
                     RichText::new(crate::i18n::tr(
-                        "{app} can add the photos in your camera roll (DCIM/Camera) to the library. Android asks you to allow access to your photos first.",
+                        "{app} can add the photos in your camera roll (DCIM/Camera) to the catalog. Android asks you to allow access to your photos first.",
                     ))
                     .color(t.text),
                 )

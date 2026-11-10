@@ -65,14 +65,14 @@ pub enum Plan {
     Merge,
     /// Make a new library, open it, import into it.
     NewLibrary,
-    /// Show the window; `new_library`: "Create a new library" is the choice it opens with.
+    /// Show the window; `new_library`: "Create a new catalog" is the choice it opens with.
     Ask { new_library: bool },
 }
 
 /// The decision, from the setting, the open library (`on_disk`: saved in a folder, not in memory;
 /// `photos`: how many it holds) and the command's `into`. `into` always wins; without it a library
 /// in memory, or the setting "Always merge", merges; otherwise the window asks, opening on "Merge"
-/// when the library is empty (there is nothing to merge with) and on "Create a new library" when
+/// when the library is empty (there is nothing to merge with) and on "Create a new catalog" when
 /// it holds photos.
 pub fn decide(setting: LightroomImport, on_disk: bool, photos: usize, into: Option<Destination>) -> Plan {
     match into {
@@ -165,9 +165,9 @@ fn into_new_library(app: &mut LccApp, path: &str, req: &Request) -> Result<Value
         return Err(format!("{path}: there is no Lightroom catalog file here"));
     }
     let location = match req.location.as_deref().map(str::trim) {
-        Some("") => return Err("file.importLightroom: choose where to put the new library (`location`)".into()),
+        Some("") => return Err("file.importLightroom: choose where to put the new catalog (`location`)".into()),
         Some(l) => PathBuf::from(l),
-        None => default_location(app).ok_or("file.importLightroom: no library is open on disk to put the new one next to; give `location`")?,
+        None => default_location(app).ok_or("file.importLightroom: no catalog is open on disk to put the new one next to; give `location`")?,
     };
     if !location.is_absolute() {
         return Err(format!("file.importLightroom: {}: the location must be a full folder path", location.display()));
@@ -195,7 +195,7 @@ pub fn confirm(app: &mut LccApp, dialog: &Dialog) -> Result<Value, String> {
         return Err("not the Lightroom catalog destination window".into());
     };
     if *generation != app.session.library_generation() {
-        return Err(crate::i18n::tr("Another library was opened since this window appeared: nothing was imported").to_string());
+        return Err(crate::i18n::tr("Another catalog was opened since this window appeared: nothing was imported").to_string());
     }
     let r = app.run("file.importLightroom", params(catalog, *new_library, name, location))?;
     if !*new_library && *dont_ask {
@@ -213,7 +213,7 @@ pub fn keeps_open_on_error(app: &LccApp, dialog: &Dialog) -> bool {
 /// The confirm button's label.
 pub fn ok_label(dialog: &Dialog) -> &'static str {
     match dialog {
-        Dialog::LightroomDestination { new_library: true, .. } => "Create Library and Import",
+        Dialog::LightroomDestination { new_library: true, .. } => "Create Catalog and Import",
         _ => "Import",
     }
 }
@@ -233,7 +233,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
     ui.add_space(4.0);
     let n = *photos;
     let merge = crate::i18n::tr_format!(
-        "Merge into the open library “{library}” ({count} photo{})",
+        "Merge into the open catalog “{library}” ({count} photo{})",
         if n == 1 { "" } else { "s" },
         library = library,
         count = n
@@ -250,17 +250,17 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
     note(
         ui,
         if n == 0 {
-            tr("The library is empty: the catalog's photos, collections and edits become its first.")
+            tr("The catalog is empty: the imported catalog's photos, collections and edits become its first.")
         } else {
-            tr("The catalog's photos, collections and edits join the ones already in this library.")
+            tr("The imported catalog's photos, collections and edits join the ones already in this catalog.")
         },
     );
-    let r = ui.radio_value(new_library, true, tr("Create a new library"));
+    let r = ui.radio_value(new_library, true, tr("Create a new catalog"));
     crate::widgets::register(ui.ctx(), "radio:lightroomDestination-new", r.rect);
     ui.add_enabled_ui(*new_library, |ui| {
         // a field's caption, left-aligned in a column as wide as the longer one (in any language)
         let font = egui::TextStyle::Body.resolve(ui.style());
-        let caption_w = [tr("Library name"), tr("Location")]
+        let caption_w = [tr("Catalog name"), tr("Location")]
             .iter()
             .map(|c| ui.painter().layout_no_wrap(c.to_string(), font.clone(), t.text_label).size().x)
             .fold(60.0_f32, f32::max)
@@ -273,9 +273,9 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
         };
         ui.horizontal(|ui| {
             ui.add_space(indent);
-            caption(ui, tr("Library name"));
+            caption(ui, tr("Catalog name"));
             crate::text_field::TextField::singleline("field:lightroomLibraryName", name)
-                .label(tr("Library name"))
+                .label(tr("Catalog name"))
                 .width(ui.available_width().max(120.0))
                 .show(ui);
         });
@@ -296,12 +296,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, dialog: &mut Dialog) {
                 *location = d;
             }
         });
-        note(ui, tr("{app} opens the new library, then imports the catalog into it. Its folder must be new or empty."));
+        note(ui, tr("{app} opens the new catalog, then imports the Lightroom catalog into it. Its folder must be new or empty."));
     });
     ui.add_space(4.0);
     // (it only speaks of merging: unticked and greyed out while a new library is chosen)
     let mut ticked = *dont_ask && !*new_library;
-    let c = ui.add_enabled(!*new_library, egui::Checkbox::new(&mut ticked, tr("Don't ask again (always merge into the open library)")));
+    let c = ui.add_enabled(!*new_library, egui::Checkbox::new(&mut ticked, tr("Don't ask again (always merge into the open catalog)")));
     crate::widgets::register(ui.ctx(), "check:lightroomDontAsk", c.rect);
     if !*new_library {
         *dont_ask = ticked;

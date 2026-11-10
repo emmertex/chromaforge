@@ -185,23 +185,23 @@ fn same(a: &Path, b: &Path) -> bool {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "catalog.info", "Library Info", [], None, "{} → {dir, entry, photos, onDisk, settings}", always, info),
+        cmd!(query "catalog.info", "Catalog Info", [], None, "{} → {dir, entry, photos, onDisk, settings}", always, info),
         cmd!(
             "catalog.settings",
-            "Library Settings",
+            "Catalog Settings",
             [],
             None,
             "{backup?: never|everyExit|daily|weekly|monthly, backupDir?: path (\"\" = backups/ in the catalog), keepBackups?: n (0 = all), testIntegrity?: bool, optimize?: bool, previews?: library.previewSettings params} → the settings (saved in the catalog's catalog-settings.json)",
             on_disk,
             settings
         ),
-        cmd!(query "catalog.backup", "Back Up Library", ["File", "Libraries"], None, "{dir?} — checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
-        cmd!(query "catalog.backupIfDue", "Back Up Library If Due", [], None, "{} — the exit-time backup: only when the schedule says so → {backup: path|null}", always, backup_if_due),
-        cmd!(query "catalog.checkIntegrity", "Test Library Integrity", ["File", "Libraries"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
-        cmd!(query "catalog.optimize", "Optimize Library", [], None, "{} — rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
+        cmd!(query "catalog.backup", "Back Up Catalog", ["File", "Libraries"], None, "{dir?} — checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
+        cmd!(query "catalog.backupIfDue", "Back Up Catalog If Due", [], None, "{} — the exit-time backup: only when the schedule says so → {backup: path|null}", always, backup_if_due),
+        cmd!(query "catalog.checkIntegrity", "Test Catalog Integrity", ["File", "Libraries"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
+        cmd!(query "catalog.optimize", "Optimize Catalog Store", [], None, "{} — rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
         cmd!(
             query "catalog.export",
-            "Export as Library",
+            "Export as Catalog",
             [],
             None,
             "{parent, name, ids? | scope?: selected|visible|all, originals?: bool, previews?: bool} — a new catalog folder parent/name with these photos, their albums and stacks; originals copied into its Originals/ → {entry, photos, albums, stacks, originalsCopied, originalsFailed}",
@@ -210,7 +210,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "catalog.import",
-            "Import from Another Library",
+            "Import from Another Catalog",
             [],
             None,
             "{path, rule?: keep|replaceSettings|replaceMetadata|replaceSettingsAndMetadata, preview?: bool} — photos, albums and stacks from another catalog (read-only), one undo step; with preview only the change preview → {newPhotos, changed, unchanged, newAlbums, extendedAlbums, changedSettings, changedMetadata, imported}",

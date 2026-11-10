@@ -771,7 +771,7 @@ fn smart_run(
 #[cfg(not(target_arch = "wasm32"))]
 fn smart(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.smartPreviews";
-    let dir = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
+    let dir = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a catalog on disk"))?;
     let discard = p.get("discard").and_then(Value::as_bool).unwrap_or(false);
     let background = p.get("background").and_then(Value::as_bool).unwrap_or(false);
     if background && let Some(b) = s.preview_build.as_ref().filter(|b| b.running()) {
@@ -890,13 +890,13 @@ fn location_json(s: &Session) -> Value {
 #[cfg(not(target_arch = "wasm32"))]
 fn smart_location(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "library.smartPreviewsLocation";
-    let current = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
+    let current = s.media.smart_dir.clone().ok_or_else(|| bad(C, "smart previews need a catalog on disk"))?;
     let reset = p.get("reset").and_then(Value::as_bool).unwrap_or(false);
     let chosen = str_param(p, "path").filter(|x| !x.trim().is_empty());
     if !reset && chosen.is_none() {
         return Ok(location_json(s));
     }
-    let lib_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(C, "smart previews need a library on disk"))?;
+    let lib_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(C, "smart previews need a catalog on disk"))?;
     let default = crate::smart::dir(&lib_dir);
     let (new_dir, custom) = match chosen {
         Some(x) if !reset => {
@@ -1027,13 +1027,13 @@ pub fn specs() -> Vec<CommandSpec> {
                         return Err(bad(C, "settings cannot be combined with reset"));
                     }
                     if s.library.is_none() {
-                        return Err(bad(C, "no library is open"));
+                        return Err(bad(C, "no catalog is open"));
                     }
                     s.clear_library_prep()?;
                     return Ok(s.prep_json());
                 }
                 if library && s.library.is_none() {
-                    return Err(bad(C, "no library is open"));
+                    return Err(bad(C, "no catalog is open"));
                 }
                 let base = if library { s.prep.library.unwrap_or(s.prep.app) } else { s.prep.app };
                 let next = match p.get("settings") {

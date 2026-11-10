@@ -901,7 +901,7 @@ fn the_library_folder_is_protected_however_its_path_is_spelled() {
     std::os::unix::fs::symlink(&lib, dir.0.join("alias")).unwrap();
     std::fs::create_dir_all(dir.0.join("elsewhere")).unwrap();
     let err = s.execute("folder.move", &json!({"path": dir.path("alias"), "into": dir.path("elsewhere")})).unwrap_err().to_string();
-    assert!(err.contains("library's own folders"), "{err}");
+    assert!(err.contains("catalog's own folders"), "{err}");
     assert!(lib.is_dir() && !dir.0.join("elsewhere/alias").exists());
 }
 

@@ -265,7 +265,7 @@ pub fn pick_and_restore(backend: Backend, before_reload: impl FnOnce() + 'static
                         let _ = w.location().reload();
                     }
                 }
-                Err(e) => notice(format!("Restore failed: {e}. Nothing was changed: the current library is still in use.")),
+                Err(e) => notice(format!("Restore failed: {e}. Nothing was changed: the current catalog is still in use.")),
             }
         });
     });

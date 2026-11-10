@@ -139,7 +139,7 @@ pub fn sections(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(bid) = s.background_image {
         let name = app.session.catalog.photo(lcc_catalog::PhotoId(bid)).map(|p| p.file_name.clone());
         row(ui, t, "Photo", |ui| {
-            let text = name.unwrap_or_else(|| crate::i18n::tr("(not in the library)").to_string());
+            let text = name.unwrap_or_else(|| crate::i18n::tr("(not in the catalog)").to_string());
             ui.label(egui::RichText::new(text).color(t.text));
             if let Some(a) = active.filter(|a| a.0 != bid)
                 && crate::widgets::text_button(ui, "slideshowUseSelected", "Use selected photo", false).clicked()

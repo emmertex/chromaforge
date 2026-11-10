@@ -1479,14 +1479,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Catalog"))),
                 // from File ▸ Libraries or Library Settings
-                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Catalog backed up to"), v["backup"].as_str().unwrap_or(""))),
                 "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
-                    Some(i18n::tr("The library passed the integrity test").to_string())
+                    Some(i18n::tr("The catalog passed the integrity test").to_string())
                 }
-                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
-                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
+                "catalog.checkIntegrity" => Some(i18n::tr("The catalog failed the integrity test: back it up and optimize it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Catalog optimized").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1677,7 +1677,7 @@ impl LccApp {
             }
             (None, true) => {
                 self.ui.unsaved_seen = false;
-                self.toast(ctx, crate::i18n::tr("Library saved"));
+                self.toast(ctx, crate::i18n::tr("Catalog saved"));
             }
             (Some(_), true) => ctx.request_repaint_after(std::time::Duration::from_secs(2)), // retry
             (None, false) => {}
@@ -2423,7 +2423,7 @@ impl LccApp {
         if !drop.presets.is_empty() {
             // presets live in a library: with none open they would go with the session it replaces
             if panels::library_problem::holds_drops(self) {
-                self.toast(ctx, crate::i18n::tr("Open a library first, then drop the presets again"));
+                self.toast(ctx, crate::i18n::tr("Open a catalog first, then drop the presets again"));
             } else {
                 let _ = self.run("file.importPresets", serde_json::json!({"paths": drop.presets}));
             }
@@ -2817,7 +2817,7 @@ impl LccApp {
             Err(e) => log::warn!("store: {e}"),
         }
         if n > 0 {
-            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            let msg = crate::i18n::tr_format!("{n} presets from your other catalogs were added.", n = n);
             self.toast(ctx, msg);
         }
         // an older install's presets (the app under an earlier name, on this computer) join too, once

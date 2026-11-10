@@ -188,7 +188,7 @@ fn import_browsed(s: &mut Session, p: &Value) -> Result<Value> {
             match take {
                 Take::Picks => "no picks to import: flag photos as picks (P) first",
                 Take::Selected => "no browsed photos selected",
-                Take::All => "nothing to import: every photo here is in the library already",
+                Take::All => "nothing to import: every photo here is in the catalog already",
             },
         ));
     }

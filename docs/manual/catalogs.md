@@ -2,11 +2,11 @@
 
 > Names in angle brackets are the values set in [`brand.toml`](../../brand.toml); see the [manual index](README.md).
 
-A **library** is a folder. Inside it:
+A **catalog** is a folder. Inside it:
 
 | Path | What |
 |---|---|
-| `<name>.<catalog_ext>` | the catalog entry file inside the library (File → Libraries → Open Library… takes the folder or this file) |
+| `<name>.<catalog_ext>` | the catalog entry file inside the catalog (File → Libraries → Open Catalog… takes the folder or this file) |
 | `catalog.redb`, `catalog.snap`, `catalog.log` | the catalog store: photos, edits, history, collections, keywords |
 | `catalog.lock` | held while the catalog is open, so two app instances can't write it at once |
 | `Originals/` | photos copied or moved in on import (`YYYY/YYYY-MM-DD/` by default) |
@@ -17,12 +17,12 @@ A **library** is a folder. Inside it:
 Originals added in place stay where they are; the catalog references them. Edits are stored in the catalog and,
 with File → Automatically Write Changes into XMP on, also in XMP sidecars that Lightroom, darktable and Immich can
 read ([xmp-interop.md](../xmp-interop.md)). App-wide settings (keymap, language, window layout) live in the
-`<settings_dir>` folder of your user configuration directory, not in the library.
+`<settings_dir>` folder of your user configuration directory, not in the catalog.
 
 ## Opening and creating
 
-File → Libraries → New Library… creates an empty library folder; File → Libraries → Open Library… opens another, and
-the libraries you opened last are listed below them. Settings → General → At launch opens the last one at the next
+File → Libraries → New Catalog… creates an empty catalog folder; File → Libraries → Open Catalog… opens another, and
+the catalogs you opened last are listed below them. Settings → General → At launch opens the last one at the next
 start, or asks which one (*Ask me*); holding Alt (Option on a Mac) as the window appears asks once. From the command line, `--library DIR` opens or creates one:
 
 ```sh
@@ -31,20 +31,20 @@ start, or asks which one (*Ask me*); holding Alt (Option on a Mac) as the window
 
 ## Backups and maintenance
 
-Edit → Library Settings… sets the backup schedule (never, every exit, daily, weekly — the default — or monthly), the
+Edit → Catalog Settings… sets the backup schedule (never, every exit, daily, weekly — the default — or monthly), the
 backup folder, how many backups to keep, and whether to test integrity and optimize when backing up.
 
-- File → Libraries → Back Up Library: copy the catalog now and test the copy (`catalog.backup`).
-- File → Libraries → Test Library Integrity (`catalog.checkIntegrity`) and Compact Library (`library.compact`);
-  Library Settings… → Optimise (`catalog.optimize`) rewrites the store and rebuilds its indexes.
-- In the browser version, File → Libraries → Back Up Library… / Restore Library from Backup… download and restore
-  the whole library.
+- File → Libraries → Back Up Catalog: copy the catalog now and test the copy (`catalog.backup`).
+- File → Libraries → Test Catalog Integrity (`catalog.checkIntegrity`) and Optimize Catalog (`library.compact`);
+  Catalog Settings… → Optimise (`catalog.optimize`) rewrites the store and rebuilds its indexes.
+- In the browser version, File → Libraries → Back Up Catalog… / Restore Catalog from Backup… download and restore
+  the whole catalog.
 
-## Moving photos between libraries
+## Moving photos between catalogs
 
-- File → Libraries → Export as Library… (`catalog.export`): selected, visible or all photos with their collections and
-  stacks into a new library folder, optionally with the originals and previews (for a laptop trip).
-- File → More Imports → Import from Another Library… (`catalog.import`): bring them back. Choose what wins for photos both libraries
+- File → Libraries → Export as Catalog… (`catalog.export`): selected, visible or all photos with their collections and
+  stacks into a new catalog folder, optionally with the originals and previews (for a laptop trip).
+- File → More Imports → Import from Another Catalog… (`catalog.import`): bring them back. Choose what wins for photos both catalogs
   have — keep, replace settings, replace metadata, or both — and preview the changes first. One undo step.
 
 ## Missing photos

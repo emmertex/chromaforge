@@ -24,7 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "store.info", "Shared Presets and Profiles", [], None, "{} → {available, dir, inUse, libraryKeepsOwn, presets, exportPresets, lutProfiles, effects, merged: [{library, at, presets, profiles, effects, remap}]}", always, |s, _| Ok(s.store_info())),
         cmd!(
             "store.mergeLibraries",
-            "Merge Libraries into Shared Presets",
+            "Merge Catalogs into Shared Presets",
             [],
             None,
             "{paths: [library folders], force?: bool} — the presets, profiles, effects, export presets and templates of these libraries join the shared store, once per library unless `force` (read only: nothing in them is written; a profile id the store uses for another file gets a new one, and the library's photos follow it when it opens) → {merged: [{library, presets, profiles, effects, problems, skipped}]}",
@@ -36,7 +36,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "store.gatherPresets",
-            "Import Presets from Older Libraries",
+            "Import Presets from Older Catalogs",
             ["File", "More Imports"],
             None,
             "{paths?: [library folders], force?: bool} — export presets, print templates and the other named presets of these libraries, the open one and every library merged before, read from each library's prefs.json and its backups' (once per library unless `force`), join the shared store: the same preset once, the same name with other content as \"name 2\"; nothing in the libraries is written → {libraries, files, count, skipped, problems}",
@@ -59,7 +59,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "store.useLibrary",
-            "Store Presets and Profiles with This Library",
+            "Store Presets and Profiles with This Catalog",
             [],
             None,
             "{keep: bool} — true: the open library keeps its own copy of the shared presets, profiles (files included) and habits from now on; false: it uses the shared store again (its own merged in first) → store.info",

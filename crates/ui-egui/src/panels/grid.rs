@@ -1752,7 +1752,7 @@ pub fn local_only(app: &LccApp, ids: &[PhotoId]) -> bool {
 
 /// Why an album action is off for Local photos.
 pub fn albums_hint() -> String {
-    crate::i18n::tr("Albums hold library photos: Add to My Photos first").to_string()
+    crate::i18n::tr("Albums hold catalog photos: Add to My Photos first").to_string()
 }
 
 /// Tell the user when an album command skipped Local photos of the selection (`skipped` in its
@@ -1762,7 +1762,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
         app.toast(
             ctx,
             crate::i18n::tr_format!(
-                "{n} Local photo{} skipped: collections hold library photos (Add to My Photos first)",
+                "{n} Local photo{} skipped: collections hold catalog photos (Add to My Photos first)",
                 if n == 1 { "" } else { "s" },
                 n = n
             ),

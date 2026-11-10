@@ -400,7 +400,7 @@ pub struct ImportDefaults {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub crop_unconstrained: bool,
     /// Synchronize Folder brings in files whose content a photo of the library already has (at
-    /// another path) as photos of their own: "Don't import files already in the library" turned
+    /// another path) as photos of their own: "Don't import files already in the catalog" turned
     /// off, and kept as it was last left. Off (such files left out) unless turned on.
     pub import_duplicates: bool,
     /// AI Denoise on for new raw photos shot at this ISO or above (`None` = off). Their denoised
@@ -1316,7 +1316,7 @@ impl ImportJob {
             .map(std::path::PathBuf::from)
             .or_else(|| lib_dir.as_ref().map(|l| l.join("Originals")));
         if matches!(mode, ImportMode::Copy | ImportMode::Move) && copy_root.is_none() {
-            return Err(crate::EngineError::Other("copying or moving needs a destination folder or an open library".into()));
+            return Err(crate::EngineError::Other("copying or moving needs a destination folder or an open catalog".into()));
         }
         let fresh = opts.on_deleted == OnDeleted::Fresh;
         Ok(ImportJob {
@@ -2161,7 +2161,7 @@ fn finish_moves(s: &mut Session, placed: Vec<crate::import_move::Placed>, log0: 
     let before = s.pending_log.len();
     if let Err(e) = s.persist() {
         for p in placed {
-            let reason = format!("the library could not be saved ({e}): the original stays; the photo uses the copy at {}", p.dst.display());
+            let reason = format!("the catalog could not be saved ({e}): the original stays; the photo uses the copy at {}", p.dst.display());
             report.kept.push(Kept { path: p.src.to_string_lossy().to_string(), reason });
         }
         return;

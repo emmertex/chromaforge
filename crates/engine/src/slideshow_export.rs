@@ -315,7 +315,7 @@ pub fn prepare(s: &mut Session, p: &Value) -> Result<Prepared, String> {
     }
     for id in ids {
         let Some(photo) = s.catalog.photo(id).cloned() else {
-            warnings.push(format!("photo {} is not in the library; skipped", id.0));
+            warnings.push(format!("photo {} is not in the catalog; skipped", id.0));
             continue;
         };
         let aspect = s.slide_photo_aspect(id).unwrap_or(1.5);
