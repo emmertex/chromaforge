@@ -225,7 +225,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 ui.painter().text(c, Align2::CENTER_CENTER, active.to_string(), t.semibold(9.5), t.canvas);
             }
             let fresp = fresp.on_hover_text(if active > 0 {
-                crate::i18n::tr_format!("Filter bar — {active} active filter{}", if active == 1 { "" } else { "s" }, active = active)
+                crate::i18n::tr_format!("Filter bar: {active} active filter{}", if active == 1 { "" } else { "s" }, active = active)
             } else {
                 crate::i18n::tr("Filter bar").into()
             });

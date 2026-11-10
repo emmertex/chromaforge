@@ -184,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Recognize People",
             [],
             None,
-            "{ids?, apply?: bool (false), threshold?: 0..1} — match the faces on the photos to the people you named (people.learn; by look: within a shoot clothes and hair count most): {suggestions: [{photo, face, name, score}], named, pending} — `apply` names the confident ones (one undo step); in the app `pending` photos are still being analysed (ask again)",
+            "{ids?, apply?: bool (false), threshold?: 0..1}: match the faces on the photos to the people you named (people.learn; by look: within a shoot clothes and hair count most): {suggestions: [{photo, face, name, score}], named, pending}. `apply` names the confident ones (one undo step); in the app `pending` photos are still being analysed (ask again)",
             always,
             |s, p| {
                 let c = "people.recognize";
@@ -241,7 +241,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group Unnamed Faces",
             [],
             None,
-            "{ids?, threshold?: 0..1 (0.6)} — group the unnamed faces of the photos (a shoot) by look, for naming a group at once: {clusters: [{faces: [{photo, face, rect}]}], pending}",
+            "{ids?, threshold?: 0..1 (0.6)}: group the unnamed faces of the photos (a shoot) by look, for naming a group at once: {clusters: [{faces: [{photo, face, rect}]}], pending}",
             always,
             |s, p| {
                 let c = "people.cluster";

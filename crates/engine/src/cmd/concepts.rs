@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remember as…",
             [],
             None,
-            "{name: \"Wedding dress\", id?: photo, mask?: maskId (the selected mask)} — learn what the mask selects (SAM 2.1), adding an example to the remembered object (made when new); teach it on a few photos (worn and hanging, light and dark) → {name, examples} (the app: {pending: true}, a notice follows)",
+            "{name: \"Wedding dress\", id?: photo, mask?: maskId (the selected mask)}: learn what the mask selects (SAM 2.1), adding an example to the remembered object (made when new); teach it on a few photos (worn and hanging, light and dark) → {name, examples} (the app: {pending: true}, a notice follows)",
             always,
             |s, p| {
                 let c = "concepts.teach";
@@ -67,7 +67,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Remembered Object",
             [],
             None,
-            "{name, id?: photo (the active one), mask?: maskId (add to it as a component), op?: add|subtract|intersect (default add)} — select a remembered object on the photo (SAM 2.1): an Object selection named after it, grown from the clicks its look picked → the new mask (the app: {pending: true})",
+            "{name, id?: photo (the active one), mask?: maskId (add to it as a component), op?: add|subtract|intersect (default add)}: select a remembered object on the photo (SAM 2.1): an Object selection named after it, grown from the clicks its look picked → the new mask (the app: {pending: true})",
             always,
             |s, p| {
                 let c = "concepts.find";

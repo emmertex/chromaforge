@@ -348,10 +348,6 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             app.ui.slides.template = name;
             Ok(state_json(app))
         }
-        "slideshow.newTemplateFolder" => {
-            crate::template_browser::prompt_new_folder(app, "slideshow.createTemplateFolder");
-            Ok(Value::Null)
-        }
         "slideshow.createTemplateFolder" | "slideshow.renameTemplateFolder" | "slideshow.deleteTemplateFolder" | "slideshow.moveTemplate" => {
             let op = match id {
                 "slideshow.createTemplateFolder" => "create",
@@ -1367,7 +1363,7 @@ mod tests {
         let wait = Duration::from_secs(120);
         assert!(h.step_until(wait, |h| has_widget(h, "slideshowTemplate:Default")));
         // the menu item asks for the name; confirming makes the folder (empty folders are kept)
-        ok(&mut h, "slideshow.newTemplateFolder", json!({}));
+        ok(&mut h, "ui.prompt", json!({"title": "New Template Folder", "hint": "Folder name", "command": "slideshow.createTemplateFolder", "key": "name"}));
         let Some(crate::state::Dialog::TextPrompt { value, command, key, .. }) = &mut h.app.ui.dialog else { panic!("{:?}", h.app.ui.dialog) };
         assert_eq!((command.as_str(), key.as_str()), ("slideshow.createTemplateFolder", "name"));
         *value = " Weddings ".into();
@@ -1477,11 +1473,14 @@ mod tests {
         ok(&mut h, "library.select", json!({"ids": [first]}));
         let r = ok(&mut h, "slideshow.exportJpeg", json!({"dir": dir.display().to_string(), "width": 320, "height": 200}));
         assert_eq!(r["background"], true, "{r}");
-        assert!(exec(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string()}))["ok"] == false, "one export at a time");
         let r = wait_export(&mut h);
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{r}");
-        // PDF: one file, a page per slide
-        ok(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"}));
+        // PDF: one file, a page per slide; and one export at a time. The PDF starts from the command's
+        // function, not a request: an export's result lands on a frame and none runs before the second
+        // export, so the PDF is still running then (a request runs frames, and a small export can finish)
+        let pdf = json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"});
+        assert_eq!(super::export(&mut h.app, &pdf, super::Out::Pdf).unwrap()["background"], true);
+        assert!(super::export(&mut h.app, &json!({"dir": dir.display().to_string()}), super::Out::Jpeg).is_err(), "one export at a time");
         let r = wait_export(&mut h);
         let pdf = r["files"][0].as_str().unwrap_or_default().to_string();
         assert!(pdf.ends_with("Show.pdf"), "{r}");

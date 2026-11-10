@@ -159,7 +159,6 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.profile", "Printer Color Profile", None, ""),
     ("printui.saveTemplate", "New Print Template", None, ""),
     ("printui.deleteTemplate", "Delete Print Template", None, ""),
-    ("printui.newTemplateFolder", "New Template Folder", None, ""),
     ("printui.createTemplateFolder", "New Print Template Folder", None, ""),
     ("printui.renameTemplateFolder", "Rename Print Template Folder", None, ""),
     ("printui.deleteTemplateFolder", "Delete Print Template Folder", None, ""),
@@ -741,10 +740,6 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             app.print.user_templates.retain(|t| t.name != name);
             app.print.user_templates.push(UserTemplate { name: name.clone(), folder, settings });
             app.print.template = Some(name);
-        }
-        "printui.newTemplateFolder" => {
-            crate::template_browser::prompt_new_folder(app, "printui.createTemplateFolder");
-            return Ok(Value::Null);
         }
         "printui.createTemplateFolder" | "printui.renameTemplateFolder" | "printui.deleteTemplateFolder" | "printui.moveTemplate" => {
             let op = match id {
@@ -2192,7 +2187,7 @@ mod tests {
         };
         let mut app = open();
         // New Template Folder asks for a name first
-        app.run("printui.newTemplateFolder", json!({})).unwrap();
+        app.run("ui.prompt", json!({"title": "New Template Folder", "hint": "Folder name", "command": "printui.createTemplateFolder", "key": "name"})).unwrap();
         let Some(crate::state::Dialog::TextPrompt { command, key, .. }) = &app.ui.dialog else { panic!("{:?}", app.ui.dialog) };
         assert_eq!((command.as_str(), key.as_str()), ("printui.createTemplateFolder", "name"));
         let r = app.run("printui.createTemplateFolder", json!({"name": " Weddings "})).unwrap();

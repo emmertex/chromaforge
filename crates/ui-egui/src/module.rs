@@ -878,7 +878,6 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("slideshow.applyTemplate", "Apply Slideshow Template", None, ""),
     ("slideshow.saveTemplate", "Save Slideshow Template", None, "Slideshow"),
     ("slideshow.deleteTemplate", "Delete Slideshow Template", None, ""),
-    ("slideshow.newTemplateFolder", "New Template Folder", None, ""),
     ("slideshow.createTemplateFolder", "New Slideshow Template Folder", None, ""),
     ("slideshow.renameTemplateFolder", "Rename Slideshow Template Folder", None, ""),
     ("slideshow.deleteTemplateFolder", "Delete Slideshow Template Folder", None, ""),
