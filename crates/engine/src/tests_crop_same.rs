@@ -84,7 +84,15 @@ fn set_process_moves_the_selection_and_refuses_unknown_versions() {
     for id in &ids {
         assert_eq!(s.develop_of(*id).unwrap().process, ProcessVersion::LATEST);
     }
-    for bad in [json!({}), json!({"version": 0}), json!({"version": 99}), json!({"version": -1}), json!({"version": 2.5}), json!({"version": "x"}), json!({"version": null})] {
+    for bad in [
+        json!({}),
+        json!({"version": 0}),
+        json!({"version": 99}),
+        json!({"version": -1}),
+        json!({"version": 2.5}),
+        json!({"version": "x"}),
+        json!({"version": null}),
+    ] {
         assert!(matches!(s.execute("develop.setProcess", &bad), Err(EngineError::BadParams { .. })), "{bad}");
     }
 }

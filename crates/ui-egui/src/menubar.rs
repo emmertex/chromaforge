@@ -823,7 +823,14 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
                 .iter()
                 .map(|p| {
                     let v = p.version();
-                    item("develop.setProcess", json!({"version": v.0}), crate::i18n::tr_format!("Version: {}", v.0), None, has, Some(current == Some(v)))
+                    item(
+                        "develop.setProcess",
+                        json!({"version": v.0}),
+                        crate::i18n::tr_format!("Version: {}", v.0),
+                        None,
+                        has,
+                        Some(current == Some(v)),
+                    )
                 })
                 .collect()
         }

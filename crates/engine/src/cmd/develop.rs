@@ -1182,7 +1182,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     let (w, h) = crop_dims(s, id);
                     let r = s.develop_of(id).unwrap_or_default().crop.geometry.rect_px(w, h);
                     // a crop of no size has no ratio to hand on
-                    let (qa, qb) = aspect_tuple(C, r.width(), r.height()).map_err(|_| bad(C, "the active photo's crop has no usable aspect ratio"))?;
+                    let (qa, qb) =
+                        aspect_tuple(C, r.width(), r.height()).map_err(|_| bad(C, "the active photo's crop has no usable aspect ratio"))?;
                     let targets: Vec<PhotoId> = match named_photos(s, p, C)? {
                         Some(ids) => ids,
                         None => s.targets(p)?,
@@ -1221,7 +1222,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     let label = "Process Version";
                     let v = p
                         .get("version")
-                        .and_then(|v| v.as_u64().or_else(|| v.as_f64().filter(|x| x.fract() == 0.0 && *x >= 0.0 && *x < f64::from(u32::MAX)).map(|x| x as u64)))
+                        .and_then(|v| {
+                            v.as_u64().or_else(|| v.as_f64().filter(|x| x.fract() == 0.0 && *x >= 0.0 && *x < f64::from(u32::MAX)).map(|x| x as u64))
+                        })
                         .and_then(|v| u32::try_from(v).ok())
                         .map(ProcessVersion)
                         .filter(|v| v.is_known())
