@@ -409,6 +409,23 @@ pub(crate) static POOL_LIMIT: AtomicU64 = AtomicU64::new(DEFAULT_POOL_BYTES);
 /// Default for the most bytes kept in the free pool (apps derive it from their memory budget).
 pub(crate) const DEFAULT_POOL_BYTES: u64 = 256 << 20;
 
+/// The share of a card's own memory its pool may hold when that is more than [`POOL_LIMIT`]: 1/n,
+/// 0 for none ([`crate::set_pool_vram_share`]).
+pub(crate) static POOL_VRAM_SHARE: AtomicU64 = AtomicU64::new(0);
+
+/// The most bytes a device keeps pooled while it works: `limit` ([`POOL_LIMIT`]), or `1/share` of
+/// the card's own memory when that is more (`share` 0: `limit`). An app's limit that follows its RAM
+/// budget (2 GiB at most) is small for the 1:1 tiles of a 45 MP photo, whose source buffers are
+/// some 720 MiB: the pool freed them as fast as renders made new ones, and on NVIDIA's Vulkan
+/// driver each free holds a lock for the whole process for 140-300 ms, which the window's frames
+/// waited for (2026-11-10). The idle trim still empties the pool a few seconds after the last render.
+pub(crate) fn pool_limit(limit: u64, vram: Option<u64>, share: u64) -> u64 {
+    match (vram, share) {
+        (Some(v), n) if n > 0 => limit.max(v / n),
+        _ => limit,
+    }
+}
+
 /// Device buffers held by the renderer (bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuMemory {
@@ -556,8 +573,9 @@ struct Staging {
     down: std::sync::Mutex<Vec<wgpu::Buffer>>,
 }
 
-/// At most this many bytes of each kind of staging buffer are kept (they are host memory).
-const STAGING_KEEP: u64 = 1 << 30;
+/// At most this many bytes of each kind of staging buffer are kept per device (host memory): two
+/// uploads of a 45 MP photo's source (537 MB each) at once fit.
+const STAGING_KEEP: u64 = 3 << 29;
 
 /// The index of the smallest buffer in `bufs` (by `size`) that holds `want` bytes with at most
 /// 25 % to spare.
@@ -778,7 +796,7 @@ impl Gpu {
             }
         }
         if added {
-            self.trim(POOL_LIMIT.load(Ordering::Relaxed));
+            self.trim(pool_limit(POOL_LIMIT.load(Ordering::Relaxed), self.vram, POOL_VRAM_SHARE.load(Ordering::Relaxed)));
         }
     }
 
@@ -1463,6 +1481,18 @@ mod tests {
         // upload of a similar size may borrow one; `staging_pools_fit_closely_and_stay_bounded`)
         g.trim(0);
         assert_eq!(kept(&g), (0, 0), "the idle trim frees them");
+    }
+
+    /// With a share of the card's memory set, a device keeps up to that share pooled while it
+    /// works, never less than the app's limit; without one, or with its memory unknown, the limit.
+    #[test]
+    fn the_pool_may_hold_a_share_of_the_cards_memory() {
+        let gib = 1u64 << 30;
+        assert_eq!(super::pool_limit(2 * gib, Some(12 * gib), 3), 4 * gib);
+        assert_eq!(super::pool_limit(2 * gib, Some(3 * gib), 3), 2 * gib, "never below the app's limit");
+        assert_eq!(super::pool_limit(2 * gib, None, 3), 2 * gib);
+        assert_eq!(super::pool_limit(2 * gib, Some(12 * gib), 0), 2 * gib, "no share: the limit");
+        assert_eq!(super::pool_limit(0, Some(u64::MAX), 3), u64::MAX / 3, "no overflow");
     }
 
     /// The staging pools take the smallest buffer that fits with at most 25 % to spare, and hold

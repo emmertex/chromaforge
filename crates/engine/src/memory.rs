@@ -144,7 +144,13 @@ fn apply(b: usize) {
         g.set_limit(export_share(b));
     }
     lcc_gpu::set_pool_limit((b / 8) as u64);
+    // (a 45 MP photo's 1:1 renders need more pooled than that: freeing their buffers stalled the
+    // window on NVIDIA's Vulkan driver)
+    lcc_gpu::set_pool_vram_share(GPU_POOL_VRAM_SHARE);
 }
+
+/// Each card's GPU buffer pool may hold up to 1/n of the card's memory while it works.
+const GPU_POOL_VRAM_SHARE: u64 = 3;
 
 /// Share of the budget for the engine's caches.
 pub fn cache_share(budget: usize) -> usize {
