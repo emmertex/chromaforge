@@ -227,7 +227,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reject Closed and Blurry Eyes",
             [],
             None,
-            "{ids?, closed?: bool (true), blurry?: bool (true), soft?: bool (false: soft eyes, the strip's amber, count as blurry too), mainOnly?: bool (true), wait?: bool} — judge the eyes of the selected photos (else all in view) as the culling strip does and reject those where a main subject (a face at least half as wide as the largest; everyone with mainOnly false) has closed or blurry (or, with soft, soft) eyes; picked photos are left alone. Runs in the background (activity row, cancellable) and flags the rejects in one undo step when done (`photo.rejectEyesPump`); `wait` runs it now → {done, photos} or {done, rejected, closedEyes, blurryEyes, noFaces, looked, failed, cancelled}",
+            "{ids?, closed?: bool (true), blurry?: bool (true), soft?: bool (false: soft eyes, the strip's amber, count as blurry too), mainOnly?: bool (true), wait?: bool}: judge the eyes of the selected photos (else all in view) as the culling strip does and reject those where a main subject (a face at least half as wide as the largest; everyone with mainOnly false) has closed or blurry (or, with soft, soft) eyes; picked photos are left alone. Runs in the background (activity row, cancellable) and flags the rejects in one undo step when done (`photo.rejectEyesPump`); `wait` runs it now → {done, photos} or {done, rejected, closedEyes, blurryEyes, noFaces, looked, failed, cancelled}",
             always,
             crate::eye_cull::reject_eyes
         ),
@@ -236,7 +236,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reject Closed and Blurry Eyes: Take Results",
             [],
             None,
-            "{} — cheap every frame: when a Reject Closed and Blurry Eyes run has finished, flag its rejects (one undo step) and return its summary once → {active, done, rejected, closedEyes, blurryEyes, …}",
+            "{}: cheap every frame: when a Reject Closed and Blurry Eyes run has finished, flag its rejects (one undo step) and return its summary once → {active, done, rejected, closedEyes, blurryEyes, …}",
             always,
             crate::eye_cull::pump
         ),
@@ -245,7 +245,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Eyes Ahead",
             [],
             None,
-            "{path?: folder (its browsed or library photos), subfolders?: bool (true), ids?, wait?: bool, lanes?: 1..8 (photos side by side: 1 in the background, with wait an eighth of the threads up to 4), status?: bool, cancel?: bool} — find the eyes of many photos ahead of culling (those in folder `path`, else `ids`, else the selection, else all in view) and keep each result in the preview cache, so the eye focus strip shows them at once, also after a restart; photos kept there already are skipped. Runs in the background (activity row, cancellable, waits while the photo on screen is being made); `wait` runs it now; `status` reports the last run; `cancel` stops it → {active, done, photos, kept, analyzed, failed, cancelled, ms?, lanes?}",
+            "{path?: folder (its browsed or library photos), subfolders?: bool (true), ids?, wait?: bool, lanes?: 1..8 (photos side by side: 1 in the background, with wait an eighth of the threads up to 4), status?: bool, cancel?: bool}: find the eyes of many photos ahead of culling (those in folder `path`, else `ids`, else the selection, else all in view) and keep each result in the preview cache, so the eye focus strip shows them at once, also after a restart; photos kept there already are skipped. Runs in the background (activity row, cancellable, waits while the photo on screen is being made); `wait` runs it now; `status` reports the last run; `cancel` stops it → {active, done, photos, kept, analyzed, failed, cancelled, ms?, lanes?}",
             always,
             crate::eye_prep::analyze
         ),
@@ -254,7 +254,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Similar Photos",
             ["Library"],
             None,
-            "{id?, similarity?: 0..1 (0.8), filter?: bool (true)} — photos that look like the active one (composition and tones), most similar first; filters the view to them (Clear Filters to go back) → {photos: [{id, similarity}]}",
+            "{id?, similarity?: 0..1 (0.8), filter?: bool (true)}: photos that look like the active one (composition and tones), most similar first; filters the view to them (Clear Filters to go back) → {photos: [{id, similarity}]}",
             always,
             find_similar
         ),
@@ -263,7 +263,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assisted Culling",
             [],
             None,
-            "{ids?, rejectBelow?: sharpness 0..100, pickBest?: bool, burstGap?: seconds 0..86400 (10), similarity?: 0..1 (0.93)} — score the selected photos (else all in view) for focus (0..100), clipping, classical aesthetic and eyes-open when faces are known; group look-alike shots (signature similarity at least `similarity`) taken at most `burstGap` seconds apart and mark the sharpest of each; optionally reject blurry photos and pick each group's best; one undo step → {photos: [{id, sharpness, clipped, group, best, eyesOpen?, aesthetic, cullScore}], groups, rejected, picked}",
+            "{ids?, rejectBelow?: sharpness 0..100, pickBest?: bool, burstGap?: seconds 0..86400 (10), similarity?: 0..1 (0.93)}: score the selected photos (else all in view) for focus (0..100), clipping, classical aesthetic and eyes-open when faces are known; group look-alike shots (signature similarity at least `similarity`) taken at most `burstGap` seconds apart and mark the sharpest of each; optionally reject blurry photos and pick each group's best; one undo step → {photos: [{id, sharpness, clipped, group, best, eyesOpen?, aesthetic, cullScore}], groups, rejected, picked}",
             always,
             analyze
         ),

@@ -534,7 +534,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Camera Profiles (.dcp)",
             [],
             None,
-            "{paths: [.dcp file, folder or .zip], activate?: bool} — DNG camera profiles you own, chosen per photo (develop.cameraProfile); a lone profile for a camera model (every one of the import, with activate: true) becomes that camera's default from the next start, a batch for one camera leaves the default as it is (the default is set per model with library.preferences `cameraDefault`) → {imported: [{id, model, name, file, active}], failed, restart}",
+            "{paths: [.dcp file, folder or .zip], activate?: bool}: DNG camera profiles you own, chosen per photo (develop.cameraProfile); a lone profile for a camera model (every one of the import, with activate: true) becomes that camera's default from the next start, a batch for one camera leaves the default as it is (the default is set per model with library.preferences `cameraDefault`) → {imported: [{id, model, name, file, active}], failed, restart}",
             always,
             import
         ),
@@ -544,7 +544,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Use Camera Profile",
             [],
             None,
-            "{file: library file from camera.listDcp} — active for its model from the next start",
+            "{file: library file from camera.listDcp}: active for its model from the next start",
             always,
             use_dcp
         ),
@@ -553,7 +553,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stop Using Camera Profile",
             [],
             None,
-            "{model} — the model's raws go back to the app's own colour from the next start",
+            "{model}: the model's raws go back to the app's own colour from the next start",
             always,
             remove_dcp
         ),
@@ -562,7 +562,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Camera Profile (.dcp)",
             [],
             None,
-            "{path, ids? (one; default: the active photo), name?, camera? (UniqueCameraModel; default: the camera's usual profile name)} — the camera colour this raw renders with (its chosen .dcp or calibration look, the file's matrices and profile tables, or the colour the app fits) as a DNG camera profile for Lightroom, Camera Raw or RawTherapee → {path, model, name}",
+            "{path, ids? (one; default: the active photo), name?, camera? (UniqueCameraModel; default: the camera's usual profile name)}: the camera colour this raw renders with (its chosen .dcp or calibration look, the file's matrices and profile tables, or the colour the app fits) as a DNG camera profile for Lightroom, Camera Raw or RawTherapee → {path, model, name}",
             always,
             export_dcp
         ),
@@ -571,7 +571,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Look as LUT (.cube)",
             [],
             None,
-            "{path, ids? (one; default: the active photo), title?} — the photo's global look (Light, tone curve, colour, mixer, colour grading, profile look; not white balance, local edits, effects or detail) as a 33³ sRGB-to-sRGB .cube LUT for Capture One, darktable, Photoshop or video tools → {path, size}",
+            "{path, ids? (one; default: the active photo), title?}: the photo's global look (Light, tone curve, colour, mixer, colour grading, profile look; not white balance, local edits, effects or detail) as a 33³ sRGB-to-sRGB .cube LUT for Capture One, darktable, Photoshop or video tools → {path, size}",
             always,
             export_lut
         ),
