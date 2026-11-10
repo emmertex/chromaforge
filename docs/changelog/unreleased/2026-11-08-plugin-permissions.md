@@ -1,3 +1,0 @@
-## Plug-ins
-
-- **Permissions asked for at run time:** nothing is granted at install; the first call that needs a permission asks the user from a command they started, its prepare step included (Allow runs it again, Deny is remembered), and is refused with nobody to ask: from the command line or an agent, in a job and in hooks. Only the user's own input allows: `plugin.install {grant}` and `plugin.grant` can only revoke, the new `plugin.revoke` takes one permission away, and control-channel clicks can't allow. `plugin.list` reports each request's state, and folder roots over the settings or plug-ins folder are refused.
