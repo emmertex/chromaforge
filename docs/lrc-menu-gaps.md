@@ -62,10 +62,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Find Similar Faces | People view: faces like the chosen one. | S | wire-up | `soon.findSimilarFaces` |
-| Move to Unnamed People | Take a face's name off. | S | wire-up | `soon.moveToUnnamedPeople` |
-| Remove Face Region | Delete the chosen face box. | S | wire-up | `soon.removeFaceRegion` |
-| Edit Name (Shift+O) | Rename the chosen face. | S | wire-up | `soon.editFaceName` |
 | Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
 
 ## Library module ▸ Photo ▸ Develop Settings

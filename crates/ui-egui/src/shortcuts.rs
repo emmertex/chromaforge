@@ -161,8 +161,9 @@ pub fn shortcut_of<'a>(keymap: &'a Keymap, id: &str) -> Option<&'a str> {
 
 /// Engine commands that intentionally share a key and are disambiguated by context in [`handle`]:
 /// the X pair by the Crop panel, A by whether it is open (Visualize Spots everywhere, the aspect
-/// lock under the Crop panel).
-pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"), ("view.visualizeSpots", "crop.lockAspect")];
+/// lock under the Crop panel), Shift+O by whether a face is chosen (Edit Name, else the crop overlay).
+pub const CONTEXTUAL: &[(&str, &str)] =
+    &[("photo.reject", "crop.rotateAspect"), ("view.visualizeSpots", "crop.lockAspect"), ("view.cropOverlay", "face.editName")];
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
@@ -932,6 +933,13 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             // / refreshes the selected spot's source in the Remove tool (the filmstrip elsewhere)
             if f == "view.filmstrip" && app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
                 let _ = app.run("spot.refreshSource", json!({}));
+                continue;
+            }
+            // Shift+O is Edit Name while a face is chosen (Photo > People), the overlay cycle otherwise
+            if f == "face.editName" && !crate::menus::ui_enabled(app, "face.editName") {
+                continue;
+            }
+            if f == "view.cropOverlay" && crate::menus::ui_enabled(app, "face.editName") {
                 continue;
             }
             // Shift+O cycles the mask overlay colour while masking (the crop overlay elsewhere)

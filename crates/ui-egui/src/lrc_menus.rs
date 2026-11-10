@@ -631,7 +631,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["soon.findSimilarFaces", "soon.moveToUnnamedPeople", "soon.removeFaceRegion", "soon.editFaceName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
     (
         "Photo",
         "Stacking",
@@ -827,10 +827,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.findPreviousProcess", "Find Previous Process Photos", None, 'S', false, "Show the photos edited with an older process version."),
     // Photo
     soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
-    soon("soon.findSimilarFaces", "Find Similar Faces", None, 'S', true, "People view: faces like the chosen one."),
-    soon("soon.moveToUnnamedPeople", "Move to Unnamed People", None, 'S', true, "Take a face's name off."),
-    soon("soon.removeFaceRegion", "Remove Face Region", None, 'S', true, "Delete the chosen face box."),
-    soon("soon.editFaceName", "Edit Name", Some("Shift+O"), 'S', true, "Rename the chosen face."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),

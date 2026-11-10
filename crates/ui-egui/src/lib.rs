@@ -36,6 +36,7 @@ pub mod export_module;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
+pub mod face_menu;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
