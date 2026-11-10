@@ -501,3 +501,42 @@ fn auto_import_notes_a_watched_folder_it_cannot_read() {
     assert!(h.step_until(T, |h| photos(h) == 1), "and the photo arrives");
     h.app.session.import_defaults.auto_folder = None;
 }
+
+/// Enable Auto Import switches watching off and on again while the folder stays set; with no folder yet,
+/// turning it on opens Settings at the Auto Import section instead.
+#[test]
+fn enable_auto_import_keeps_the_folder_when_off_and_asks_for_one_when_unset() {
+    let dir = Scratch::new("auto-toggle");
+    let mut h = app(&dir);
+    let checked = |h: &Headless| crate::menubar::checked(&h.app, "app.autoImportToggle");
+    let toggle = |h: &mut Headless| {
+        crate::menus::run_ui_command(&mut h.app, "app.autoImportToggle", &serde_json::json!({})).expect("a UI command").expect("runs");
+    };
+    assert_eq!(checked(&h), Some(false));
+    // no folder: nothing to switch on, Settings opens at the section
+    toggle(&mut h);
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Settings { .. })));
+    assert_eq!(h.app.ui.settings_section.as_deref(), Some("autoImport"));
+    assert_eq!(checked(&h), Some(false));
+    h.app.ui.dialog = None;
+    // a folder is watched; off keeps it, on watches it again
+    std::fs::create_dir_all(dir.path("watch")).expect("watch folder");
+    h.app.session.execute("library.autoImport", &serde_json::json!({"folder": dir.path("watch")})).expect("set");
+    assert_eq!(checked(&h), Some(true));
+    toggle(&mut h);
+    assert_eq!(checked(&h), Some(false));
+    assert_eq!(h.app.session.import_defaults.auto_folder, Some(dir.path("watch")), "the folder stays");
+    let r = h.app.session.execute("library.autoImportScan", &serde_json::json!({})).expect("scan");
+    assert!(r["folder"].is_null(), "no scanning while off: {r}");
+    toggle(&mut h);
+    assert_eq!(checked(&h), Some(true));
+}
+
+/// Settings written before the switch existed (a folder, no flag) keep watching.
+#[test]
+fn old_auto_import_settings_still_watch() {
+    let d: lcc_engine::import::ImportDefaults = serde_json::from_str(r#"{"autoFolder":"/x","autoCopy":true}"#).expect("loads");
+    assert_eq!(d.auto_active_folder().map(String::as_str), Some("/x"));
+    let off: lcc_engine::import::ImportDefaults = serde_json::from_str(r#"{"autoFolder":"/x","autoPaused":true}"#).expect("loads");
+    assert!(off.auto_active_folder().is_none() && off.auto_folder.is_some());
+}
