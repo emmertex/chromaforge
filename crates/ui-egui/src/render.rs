@@ -621,6 +621,16 @@ impl Default for Renderer {
 /// worker decoded a 45 MP CR3).
 const STAND_IN_WORKERS: usize = 2;
 
+/// Renders that go to the second graphics card when there is one (`lcc_gpu::prefer_helper`): the
+/// full-quality tiles of a 1:1 view. They come back as pixels for the screen either way, and on the
+/// window's card their work held the window's frames up: presenting waited behind it, 100–1,100 ms
+/// between frames while sliders dragged at 100 % (CF-ZOOM-FREEZE 2026-11-10; with the tiles on the
+/// second card the slowest frames were 22–145 ms). The drag's drafts stay on the window's card.
+/// With one card this changes nothing.
+pub(crate) fn on_second_card(slot: Slot) -> bool {
+    matches!(slot, Slot::Tile { .. })
+}
+
 /// Jobs below this priority are background work (the real thumbnails rendered behind the
 /// stand-ins, [`crate::panels::grid::BACKGROUND_THUMB_PRIORITY`]): at most [`BACKGROUND_AT_ONCE`]
 /// of them run at once, so a worker is always free for the photo on screen.
@@ -1356,6 +1366,7 @@ impl Renderer {
             let run = || match (background, prefetch) {
                 (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
                 (true, false) => lcc_engine::memory::in_background(|| job.run()),
+                _ if on_second_card(slot) => lcc_engine::gpu::prefer_helper(|| job.run()),
                 _ => job.run(),
             };
             Self::run_for(slot, run, &display, headroom)
@@ -2375,6 +2386,19 @@ fn render_failure_message(slot: Slot, photo: PhotoId, source: Option<&lcc_catalo
         Some(lcc_catalog::Source::File { path }) => format!("render {slot:?}, {photo:?}, file {path:?}: {error}"),
         Some(lcc_catalog::Source::Demo { scene }) => format!("render {slot:?}, {photo:?}, demo scene {scene}: {error}"),
         None => format!("render {slot:?}, {photo:?}, source unavailable: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod second_card_tests {
+    use super::*;
+
+    #[test]
+    fn the_tiles_of_a_one_to_one_view_render_on_the_second_card_and_the_view_on_the_window_card() {
+        assert!(on_second_card(Slot::Tile { pane: PANE_AFTER, col: 2, row: 3 }));
+        for slot in [Slot::Main, Slot::Window(PANE_AFTER), Slot::Preview, Slot::Before, Slot::Compare(0), Slot::Hover] {
+            assert!(!on_second_card(slot), "{slot:?} draws on the window's card");
+        }
     }
 }
 
