@@ -451,3 +451,35 @@ pub struct SmartSearch {
     #[serde(rename = "type")]
     pub kind: Option<String>,
 }
+
+/// The most bytes read from one `GET /activities` answer.
+pub const MAX_ACTIVITY_BYTES: u64 = 4 * 1024 * 1024;
+/// The most activities kept from one answer.
+pub const MAX_ACTIVITIES: usize = 500;
+
+/// One entry of `GET /activities` (a comment or a like on an album's asset).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    #[serde(default)]
+    pub id: String,
+    /// `comment` or `like`.
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub user: Option<ActivityUser>,
+}
+
+/// Who left an [`Activity`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityUser {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
+}
