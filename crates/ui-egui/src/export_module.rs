@@ -232,7 +232,11 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, ids: &[lcc_catalog::PhotoId], re
 
 /// The photo's thumbnail fitted into `r` (a placeholder until it is rendered).
 fn draw_photo(p: &egui::Painter, app: &mut LccApp, id: lcc_catalog::PhotoId, r: Rect) {
-    crate::panels::grid::request_thumb(app, id, 256, 8);
+    // the cell, not a fixed size: a single photo fills the whole preview area, and a 256-px
+    // thumbnail scaled up to it is the blurry preview the module used to show
+    let ppp = p.ctx().pixels_per_point();
+    let size = (r.width().max(r.height()).max(120.0) * ppp) as usize;
+    crate::panels::grid::request_thumb(app, id, size, 8);
     let Some(tex) = app.renderer.thumb(id) else {
         p.rect_filled(r, 0.0, Color32::from_gray(60));
         return;

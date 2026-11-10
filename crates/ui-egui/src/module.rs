@@ -773,6 +773,18 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
             app.ui.tool.clear();
         }
         _ => {
+            // Export and Print act on the selection, but from Develop the photo to act on is the
+            // one open on screen: there the filmstrip selection can hold several photos (stepping
+            // through a selection keeps it), and exporting that stale selection instead of the
+            // photo being edited surprises. Lightroom exports the photo Develop shows, so the
+            // open photo becomes the selection; a selection made in another module is kept.
+            if matches!(to, ModuleId::Export | ModuleId::Print)
+                && app.ui.module == ModuleId::Develop
+                && let Some(active) = app.session.active()
+                && !(app.session.selection.ids.as_slice() == [active])
+            {
+                let _ = app.run("library.select", json!({ "ids": [active.0] }));
+            }
             swap(app, to, true);
             app.ui.placeholder_from = Some((app.ui.view, app.ui.right));
         }
