@@ -213,17 +213,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Export Preset",
             [],
             None,
-            "{name, params?: app.export params (default: the last export's): format, quality, limitKb, sizing, sharpening, naming, metadata, watermark, destinationMode, dir (the folder), subfolder… — ids and path are dropped} — adds or replaces a user preset, saved with the library → presets",
+            "{name, params?: app.export params (default: the last export's): format, quality, limitKb, sizing, sharpening, naming, metadata, watermark, destinationMode, dir (the folder), subfolder…; ids and path are dropped}: adds or replaces a user preset, saved with the library → presets",
             always,
             save
         ),
-        cmd!("export.deletePreset", "Delete Export Preset", [], None, "{name} — removes a user preset → presets", always, delete),
+        cmd!("export.deletePreset", "Delete Export Preset", [], None, "{name}: removes a user preset → presets", always, delete),
         cmd!(
             query "export.checkTarget",
             "Check Output Path",
             [],
             None,
-            "{path} — fails when writing `path` would replace a photo's original (or its XMP sidecar) in the library; front ends call it before saving a render or screenshot to a user-given path → {path}",
+            "{path}: fails when writing `path` would replace a photo's original (or its XMP sidecar) in the library; front ends call it before saving a render or screenshot to a user-given path → {path}",
             always,
             |s, p| {
                 let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("export.checkTarget", "missing `path`"))?;

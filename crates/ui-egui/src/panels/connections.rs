@@ -900,7 +900,7 @@ fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
     }
     for l in &libs {
         let paths: Vec<&str> = l["importPaths"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        ui.label(RichText::new(format!("{} — {}", l["name"].as_str().unwrap_or_default(), paths.join(", "))).color(t.text_label));
+        ui.label(RichText::new(format!("{}: {}", l["name"].as_str().unwrap_or_default(), paths.join(", "))).color(t.text_label));
     }
     ui.label(RichText::new(crate::i18n::tr("Path mapping (Immich container path ↔ folder on this computer)")).size(11.5).color(t.text_dim));
     let mut rows = app.immich.maps.get(id).cloned().unwrap_or_default();
@@ -1636,7 +1636,7 @@ fn sync_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let what = if d["side"] == "immich" { crate::i18n::tr("in Immich's trash") } else { crate::i18n::tr("deleted in the catalog") };
-                ui.label(RichText::new(format!("{} — {what}", d["fileName"].as_str().unwrap_or_default())).color(t.text));
+                ui.label(RichText::new(format!("{}: {what}", d["fileName"].as_str().unwrap_or_default())).color(t.text));
                 let apply = if d["side"] == "immich" { "Delete Here Too" } else { "Trash in Immich" };
                 if text_button(ui, &format!("immichDeletion-{i}-{n}-apply"), crate::i18n::tr(apply), false).clicked() {
                     let _ = app.run("immich.resolveDeletion", json!({"account": id, "assets": [d["asset"]], "action": "apply"}));
@@ -1658,7 +1658,7 @@ fn sync_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let in_catalog = d["deletedOn"] == "catalog";
                 let what = if in_catalog { crate::i18n::tr("deleted in the catalog") } else { crate::i18n::tr("deleted in Immich") };
-                ui.label(RichText::new(format!("{} — {what}", d["name"].as_str().unwrap_or_default())).color(t.text));
+                ui.label(RichText::new(format!("{}: {what}", d["name"].as_str().unwrap_or_default())).color(t.text));
                 let apply = if in_catalog { "Delete in Immich Too" } else { "Delete Here Too" };
                 if text_button(ui, &format!("immichAlbumDeletion-{i}-{n}-apply"), crate::i18n::tr(apply), false)
                     .on_hover_text(crate::i18n::tr("Deletes the album only; its photos stay."))
