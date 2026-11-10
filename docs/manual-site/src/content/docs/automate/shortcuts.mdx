@@ -1,0 +1,23 @@
+---
+title: Customise shortcuts
+description: Two key sets, every command rebindable.
+sidebar:
+  order: 9
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Where**: **Edit ▸ Settings ▸ Shortcuts**, or **Help ▸ Keyboard Shortcuts**.
+- **Keymap sets**: **Classic** (the default; Lightroom Classic's keys) or **Alternative** (the app's own). Switch with the two buttons at the top, or **Edit ▸ Keymap**.
+- **Rebind**: click a key box, press the new keys; **Esc** cancels. A key already in use moves to the new command. ✕ clears a key, ↺ restores its default; **Reset All** restores everything.
+- **Search**: the box filters by command name, key or id. **Show commands without a shortcut** lists the rest, so any command can get a key.
+- **Keymap file**: **Import…** and **Export…** share a JSON keymap between computers. Commands: `app.keymapSet`, `app.keymapExport`, `app.keymapImport`.
+- **Module keys**: **⌘/** (Ctrl+/) shows the keys of the current module.
+- The complete default list is in [Keyboard shortcuts](../../reference/shortcuts/).
+
+<Shot name="shortcuts-settings" alt="Settings, Shortcuts" menu="Help ▸ Keyboard Shortcuts" />
+
+<Aside type="note" title="Modern layout">
+Open **☰ ▸ Help ▸ Keyboard Shortcuts**.
+</Aside>

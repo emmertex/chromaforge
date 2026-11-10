@@ -1,0 +1,28 @@
+---
+title: Keywords
+description: Keywording panel, keyword list, sets and painter.
+sidebar:
+  order: 7
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<Shot name="lib-keywords" alt="Keywording and Keyword List panels" menu="Window ▸ Panels ▸ Keywords" />
+
+- **Keywording** panel: type to add keywords to the selection; chips show them (**Keywords**, **& Containing**, **Will Export**). Suggestions appear as chips. A star on a chip means only some selected photos have it.
+- Hierarchical keywords: `parent|child|leaf`. Filtering a parent includes its children; renaming a parent moves them.
+- **Keyword List**: every keyword with photo counts, a filter box, a tri-state box for the selection and an arrow to show its photos. **+** creates a keyword (name, synonyms, parent, add to selection), double-click edits it, **−** deletes with confirmation.
+- Context menu: create inside, move, **Merge**, set a default parent, **Purge Unused Keywords**, per-keyword export flags.
+- **Keyword Set** menu: *Recent Keywords* plus saved sets; `Alt+1`–`Alt+9` toggle the current set's keywords, `Alt+0` / `Alt+Shift+0` cycle sets. **Save Set** stores one.
+- **Keyword painter** (**Paint** button, or **Library ▸ Painter**, `Cmd/Ctrl+Alt+K`): click or drag across grid photos; Alt erases. It also sprays labels, flags, ratings, presets, rotation or the target collection.
+- **Import Keywords…** / **Export Keywords…** (**File** menu): keyword lists as text.
+- Shortcuts for a keyword: **Set Shortcut** in the keyword's menu.
+- **Edit Keywords** (`Cmd/Ctrl+Shift+K`) opens the keyword picked in the list.
+
+<Aside type="note" title="Modern layout">
+  **Window ▸ Panels ▸ Keywords**. Import/Export Keywords: **File** menu. Painter: **Library ▸ Painter**.
+</Aside>

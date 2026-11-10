@@ -1,0 +1,29 @@
+---
+title: Slideshow module
+description: Templates, layout, overlays, titles, music and playback.
+sidebar:
+  order: 11
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **Slideshow** in the module bar. Plays the photos in the filmstrip ("Use: All Filmstrip Photos").
+- **Template Browser** (left): Default, Caption and Rating, Crop to Fill, Exif Metadata, Simple, Widescreen. **Save Template** keeps your own.
+- **Saved Slideshows**: **Create Saved Slideshow** stores it as a collection.
+- **Options**: Zoom to Fill Frame, Stroke Border, Cast Shadow (opacity, offset, radius, angle).
+- **Layout**: Show Guides, margins linked (**Link All**) or per side, aspect preview (Screen and others).
+- **Overlays**: Identity Plate, Rating Stars, Watermark text, text overlays with tokens (**Add Text**, **Tokens**), on the photo or the slide, with shadow.
+- **Backdrop**: Background Color, Color Wash, Background Image with opacity.
+- **Titles**: **Intro Screen** and **Ending Screen** (colour, identity plate or text).
+- **Playback**: Manual Slideshow, slide and fade durations, fade colour, Random Order, Repeat Slideshow, Pan and Zoom, Draft Quality.
+- **Music**: **Soundtrack** (WAV, FLAC, Ogg Vorbis; **Add**), **Fit to Music**, Volume, Balance. 🟡 MP3 and AAC are not decoded.
+- Bottom bar: **Preview** (in the module), **Play** (full screen; ⌥⌘↩, also **Window ▸ Slideshow ▸ Slideshow**).
+
+<Shot name="slideshow-module" alt="Slideshow module with the template browser and options" menu="Window ▸ Modules ▸ Slideshow" />
+<Shot name="slideshow-template" alt="Caption and Rating template, with playback and music options" menu="Window ▸ Modules ▸ Slideshow" />
+
+<Aside type="note" title="Modern layout">
+  Modern has no Slideshow button. Use **Window ▸ Modules ▸ Slideshow**, **Window ▸ Slideshow ▸ Slideshow** to play and **Window ▸ Slideshow ▸ Slideshow Options…** for the settings.
+</Aside>

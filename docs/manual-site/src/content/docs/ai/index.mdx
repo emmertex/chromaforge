@@ -1,0 +1,50 @@
+---
+title: AI overview
+description: What the AI and machine-learning features are, what they need, and what stays on your computer.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Chromaforge's AI features are optional. Nothing is bundled, nothing is downloaded until you ask, and every non-AI feature works without them.
+
+## What exists
+
+| Feature | Needs | Status |
+|---|---|---|
+| [AI masks](masks-ai/): Object, Describe, Remembered | a segmentation model (SAM 3, or SAM 2.1 for Object) | partial |
+| [AI masks](masks-ai/): Subject, Background | BiRefNet_lite (optional); built-in analysis without it | partial |
+| [AI masks](masks-ai/): Sky, People | built-in analysis; optional EoMT scene model; People parts use MediaPipe models | partial |
+| [AI Denoise](denoise/) | nothing (built-in denoiser); a model is optional | partial |
+| [AI Super Resolution and AI Sharpen](super-resolution/) | an upscaler model (Real-ESRGAN General v3) | partial |
+| [Generative remove](generative-remove/) | an online account with a cloud image service (your own key) | partial |
+| [Faces and people](faces/) | MediaPipe face model; optional recognition model | partial |
+| [AI search](search/) | a CLIP model | available |
+| [People retouch](retouch/): Skin, Blemishes, Teeth | MediaPipe people and face models | available |
+
+Set-up and model locations: [Models and set-up](models/).
+
+## Where the work runs
+
+- **Locally, in pure Rust.** Segmentation, denoise, upscaling, face and search models run on this computer: on the GPU where one works (Metal, Vulkan, DirectX 12), otherwise the CPU. No Python, no C libraries.
+- **Downloads are the only network use** for these models. Each asks first, shows the licence, and is checked against a pinned size and SHA-256 before it is used.
+- **One exception: Generative remove** sends a cropped part of your photo to the cloud service you chose. Read [Generative remove](generative-remove/) first.
+- **Models stay out of your edits.** An AI mask stores its result with the mask, so renders and exports never need the model and the library still opens without it.
+- **Long jobs show in the activity stack** and can be cancelled.
+
+## Not available
+
+These are planned or absent. Do not expect them:
+
+- **Lens Blur** and **Depth Range** masks (no depth data yet).
+- **Landscape** mask classes (Mountains, Architecture, ground): no screen for them; only Sky, Water and Vegetation exist internally.
+- **Aesthetic scores, culling suggestions and orientation detection** on the search model: planned.
+- **Automatic keyword tagging or captions by AI**: not built.
+- **An on-device generative model**: Generative remove is cloud-only.
+- **AI Denoise on X-Trans or Foveon raws**: not supported.
+- **Raw-preserving Super Resolution** (an enhanced DNG that stays editable): AI Super Resolution writes a 16-bit TIFF.
+
+<Aside type="note" title="Quality is unmeasured">
+Results are not yet compared with Lightroom on real photos. Where the docs give numbers, they come from synthetic demo scenes or a few public test files.
+</Aside>

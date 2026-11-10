@@ -1,0 +1,48 @@
+---
+title: AI Denoise
+description: Raw denoise before demosaic, with a built-in denoiser and optional models.
+sidebar:
+  order: 4
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-denoise-detail" menu="the Detail section of the Develop panels" alt="Detail section: the AI Denoise switch and Amount above Luminance and Color noise reduction" />
+
+- **Where**: Edit ▸ **Detail** ▸ **AI Denoise** (switch) and **Amount** (0 to 100). Turning it on starts at 50.
+- **Works out of the box**: a built-in denoiser (block matching and collaborative filtering after measuring the photo's noise). No download and no weights. It is a classical filter, not a trained network.
+- **Raw only by default**: Bayer raw files. A JPEG, PNG or TIFF is denoised only with a model for finished pictures. X-Trans, Foveon and demosaiced DNG are not supported. The panel says so on photos it cannot handle.
+- **Non-destructive**: the cleaned picture is cached data, made in the background and shown in previews and exports. Your file is never changed. Exports make it if it is missing.
+- **Manual noise reduction** (Luminance, Color) stays separate and works on every photo.
+
+<NeedsImage what="Before and after crop of a high-ISO raw at 100% with AI Denoise on" />
+
+## Switching on many photos
+
+- With **Auto Sync** on, every selected raw switches together (one undo step) and is made in the background in one activity row with time left; the row's cancel stops the batch.
+- **Settings ▸ Import ▸ AI Denoise from** turns it on for new raws at or above an ISO (Off, 800 to 12800).
+- Settings ▸ **AI Denoise**: choose Speed (Automatic, Graphics card, Processor), make the cleaned picture for the photo you are viewing, **Denoise all photos with an Amount**, and set the cache limit.
+
+<Shot name="ai-settings-denoise" alt="Settings, AI Denoise tab: speed, photos and cache" />
+
+## Optional models
+
+- Settings ▸ **AI Denoise** ▸ **Install from file…** installs an ONNX model you supply, after you accept its terms. A separate slot holds a model for finished pictures.
+- The desktop app can offer the upstream project's own raw model (MIT or Apache-2.0) as a download; the default build offers no other downloads. Opt-in research weights exist only in builds that enable them.
+- See [Models and set-up](../models/).
+
+## Hardware
+
+- Runs on the GPU (wgpu) where a card agrees with the CPU result and is faster, else on the CPU. Speeds measured: one tile 22 ms on a desktop GPU against about 400 ms on one CPU thread.
+- Tiles can run on another computer's graphics card (advanced; see the project documentation).
+
+## Limits
+
+- Partial. No quality comparison with Lightroom on real high-ISO raws yet.
+- A linear-RGB path and merged HDR DNGs are not supported.
+
+<Aside type="note" title="Modern layout">
+Detail is in the Develop panels list. Settings: **☰ ▸ Edit ▸ Settings… ▸ AI Denoise**.
+</Aside>
