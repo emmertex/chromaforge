@@ -1319,6 +1319,59 @@ mod tests {
         assert!(!nested.load(Ordering::Relaxed), "a photo ran inside another on one thread");
     }
 
+    // Given a background photo and a view render (a render worker's job on the shared pool) at the
+    // same time, neither's parallel work ever runs on the other's threads (no render nests inside
+    // another on one thread), and both finish (no deadlock)
+    #[test]
+    fn a_background_photo_and_a_view_render_never_share_a_thread() {
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let _one_at_a_time = POOL_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = Session::with_demo();
+        let ids: Vec<_> = s.catalog.photos().map(|p| p.id).take(2).collect();
+        let prep_jobs = jobs_for(&mut s, ids[0], Some(512));
+        let view = s.loupe_job(ids[1], 512, 512, true).expect("a view job");
+        let crossed = std::sync::Arc::new(AtomicBool::new(false));
+        let is_prep = || std::thread::current().name().is_some_and(|n| n.starts_with("lc-prep-"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        for round in 0..4 {
+            let (prep_jobs, mut view, crossed, tx) = (prep_jobs.clone(), view.clone(), crossed.clone(), tx.clone());
+            // the background photo: a real render on its pool, then parallel work checked thread by thread
+            let c = crossed.clone();
+            let t1 = tx.clone();
+            std::thread::spawn(move || {
+                crate::prep::on_background_pool(|| {
+                    let ok = run_photo(prep_jobs);
+                    (0..64).into_par_iter().for_each(|_| {
+                        if !is_prep() {
+                            c.store(true, Ordering::Relaxed);
+                        }
+                        std::thread::sleep(std::time::Duration::from_micros(200));
+                    });
+                    let _ = t1.send(("prep", round, ok));
+                });
+            });
+            // the view render, from a thread of its own as the render workers run it (shared pool)
+            std::thread::spawn(move || {
+                view.view_cache = None;
+                let ok = view.run().rendered.is_ok();
+                (0..64).into_par_iter().for_each(|_| {
+                    if is_prep() {
+                        crossed.store(true, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                });
+                let _ = tx.send(("view", round, ok));
+            });
+        }
+        drop(tx);
+        for _ in 0..8 {
+            let (what, round, ok) = rx.recv_timeout(std::time::Duration::from_secs(120)).expect("both renders finish (no deadlock)");
+            assert!(ok, "{what} render {round} worked");
+        }
+        assert!(!crossed.load(Ordering::Relaxed), "a render's parallel work ran on the other's threads");
+    }
+
     // Given many photos, a standard preview build renders them side by side and counts every one
     #[test]
     fn preview_build_of_many_photos_counts_each_once() {
