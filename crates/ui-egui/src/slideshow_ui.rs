@@ -1363,7 +1363,11 @@ mod tests {
         let wait = Duration::from_secs(120);
         assert!(h.step_until(wait, |h| has_widget(h, "slideshowTemplate:Default")));
         // the menu item asks for the name; confirming makes the folder (empty folders are kept)
-        ok(&mut h, "ui.prompt", json!({"title": "New Template Folder", "hint": "Folder name", "command": "slideshow.createTemplateFolder", "key": "name"}));
+        ok(
+            &mut h,
+            "ui.prompt",
+            json!({"title": "New Template Folder", "hint": "Folder name", "command": "slideshow.createTemplateFolder", "key": "name"}),
+        );
         let Some(crate::state::Dialog::TextPrompt { value, command, key, .. }) = &mut h.app.ui.dialog else { panic!("{:?}", h.app.ui.dialog) };
         assert_eq!((command.as_str(), key.as_str()), ("slideshow.createTemplateFolder", "name"));
         *value = " Weddings ".into();

@@ -212,11 +212,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
 
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-
 ## Print module ▸ View
 
 | Item | What it does | Size | Kind | Slot |

@@ -2187,7 +2187,11 @@ mod tests {
         };
         let mut app = open();
         // New Template Folder asks for a name first
-        app.run("ui.prompt", json!({"title": "New Template Folder", "hint": "Folder name", "command": "printui.createTemplateFolder", "key": "name"})).unwrap();
+        app.run(
+            "ui.prompt",
+            json!({"title": "New Template Folder", "hint": "Folder name", "command": "printui.createTemplateFolder", "key": "name"}),
+        )
+        .unwrap();
         let Some(crate::state::Dialog::TextPrompt { command, key, .. }) = &app.ui.dialog else { panic!("{:?}", app.ui.dialog) };
         assert_eq!((command.as_str(), key.as_str()), ("printui.createTemplateFolder", "name"));
         let r = app.run("printui.createTemplateFolder", json!({"name": " Weddings "})).unwrap();
