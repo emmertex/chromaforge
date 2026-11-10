@@ -565,7 +565,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Up Publish Service…",
             [],
             None,
-            "{kind?: hardDrive (default), name?, dir: absolute folder (Hard Drive), export?: app.export params without targets (default JPEG, 2048 px)} — also makes the service's collection set → the service",
+            "{kind?: hardDrive (default), name?, dir: absolute folder (Hard Drive), export?: app.export params without targets (default JPEG, 2048 px)}: also makes the service's collection set → the service",
             always,
             create_service
         ),
@@ -583,7 +583,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Publish Service",
             [],
             None,
-            "{service: id | name} — removes its collections (published files stay) → publish.services",
+            "{service: id | name}: removes its collections (published files stay) → publish.services",
             always,
             delete_service
         ),
@@ -592,7 +592,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Published Collection…",
             [],
             None,
-            "{service: id | name, name, parent?: a collection set (folder album id) inside the service's set, addSelected?: bool} — a published collection (an album in the service's set) → publish.status",
+            "{service: id | name, name, parent?: a collection set (folder album id) inside the service's set, addSelected?: bool}: a published collection (an album in the service's set) → publish.status",
             always,
             create_collection
         ),
@@ -601,7 +601,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Published Collection",
             [],
             None,
-            "{collection: albumId} — forgets what was published (files stay) → publish.services",
+            "{collection: albumId}: forgets what was published (files stay) → publish.services",
             always,
             delete_collection
         ),
@@ -617,7 +617,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Publish",
             [],
             None,
-            "{collection: albumId} or {service: id | name} (all its collections) — renders new and modified photos with the service's export settings, sends them, removes photos taken out → {runs: [{collection, published: [{id, remoteId}], removed, failed: [{id, error}], cancelled}]}",
+            "{collection: albumId} or {service: id | name} (all its collections): renders new and modified photos with the service's export settings, sends them, removes photos taken out → {runs: [{collection, published: [{id, remoteId}], removed, failed: [{id, error}], cancelled}]}",
             always,
             run
         ),
@@ -626,7 +626,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mark as Up-to-Date",
             [],
             None,
-            "{collection: albumId, ids?: photo ids (default: all modified)} — modified photos count as published again → publish.status + {marked}",
+            "{collection: albumId, ids?: photo ids (default: all modified)}: modified photos count as published again → publish.status + {marked}",
             always,
             mark_up_to_date
         ),

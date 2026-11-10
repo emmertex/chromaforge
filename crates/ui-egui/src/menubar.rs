@@ -731,7 +731,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             let recent = &recent;
             let label = |r: &str| {
                 let d = std::path::Path::new(r);
-                format!("{} — {}", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
+                format!("{} ({})", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
             };
             let mut v: Vec<MenuNode> = recent
                 .iter()

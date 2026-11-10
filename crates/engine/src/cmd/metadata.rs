@@ -211,7 +211,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata Preset",
             [],
             None,
-            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..], supplementalCategories?: [..], subjectCode?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)} — adds or replaces",
+            "{name, fields?: {copyright?, copyrightStatus?: unknown|copyrighted|publicDomain, usageTerms?, copyrightUrl?, creator?, creatorJobTitle?, creatorAddress?, creatorCity?, creatorState?, creatorPostalCode?, creatorCountry?, creatorPhone?, creatorEmail?, creatorWebsite?, title?, headline?, caption?, descriptionWriter?, category?, location?, city?, state?, country?, keywords?: [..], supplementalCategories?: [..], subjectCode?: [..]}, only?: [field] (from the active photo when `fields` is absent; default the copyright fields, creator and contact, place)}: adds or replaces",
             always,
             save
         ),
@@ -221,7 +221,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Metadata Preset",
             [],
             None,
-            "{name, ids?} — text fields and lists replace, keywords are added; one undo step",
+            "{name, ids?}: text fields and lists replace, keywords are added; one undo step",
             always,
             apply
         ),
