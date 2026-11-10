@@ -77,6 +77,7 @@
   "Making the denoised picture… {}%": "ノイズ除去済み画像を生成中… {}%",
   "Measured as part of a roll of {n}": "{n} 枚のロールの一部として測定",
   "Module: {size} KB": "モジュール: {size} KB",
+  "Moved {name} to {folder}": "{name} を {folder} に移動しました",
   "Name this face {who}": "この顔に名前を付ける {who}",
   "New {n}": "新規（{n}）",
   "Not available on this computer: keeping them needs about {need} MB of graphics memory on this screen, and the graphics card has {have} MB. The app uses at most a quarter of it for them, so the rest stays free for the photo itself and other apps. Zoomed HDR views still work; going back to one renders it again.": "このコンピューターでは利用できません：保持するにはこの画面で約 {need} MB のグラフィックメモリが必要ですが、グラフィックカードには {have} MB しかありません。アプリはその最大 4 分の 1 しか使わないため、残りは写真自体や他のアプリのために空けておかれます。ズームした HDR 表示は引き続き使えますが、戻ると再びレンダリングされます。",

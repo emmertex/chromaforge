@@ -172,6 +172,8 @@ const LIBRARY: &[&str] = &[
     "soon.filterByMetadata",
     "@Filters",
     "---",
+    "library.lockFilters",
+    "library.rememberFilters",
     "library.showSubfolderPhotos",
     "---",
     "soon.refinePhotos",
@@ -410,7 +412,7 @@ const DEVELOP_PHOTO: &[&str] = &[
 const SETTINGS: &[&str] = &[
     "develop.reset=Reset All Settings",
     "develop.updateProcess=Update to Current Process Version",
-    "soon.processVersion",
+    "@Process Version",
     "---",
     "view.softProof=Proof",
     "---",
@@ -437,9 +439,9 @@ const SETTINGS: &[&str] = &[
     "develop.hdr=Toggle HDR Edit Mode",
     "---",
     "crop.reset",
-    "soon.cropAsShot",
+    "crop.asShot",
     "crop.lockAspect=Constrain Aspect Ratio",
-    "soon.cropSameAspect",
+    "crop.sameAspect",
     "crop.rotateAspect",
     "---",
     "beforeAfter.copyAfterToBefore",
@@ -560,7 +562,7 @@ const BOOK_VIEW: &[&str] = &[
 const SLIDESHOW: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Slideshow","hint":"Name","command":"slideshow.saveSlideshow","key":"name"}=Create Saved Slideshow…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"slideshow.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newSlideshowTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"slideshow.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "slideshow.exportPdf",
     "slideshow.exportJpeg",
@@ -589,7 +591,7 @@ const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"printui.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newPrintTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"printui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     r#"printui.page{"delta":-1}=Previous Page"#,
     r#"printui.page{"delta":1}=Next Page"#,
@@ -620,8 +622,8 @@ const SUB: &[(&str, &str, &[&str])] = &[
         "Library Filters",
         &[
             "library.toggleFilters=Enable Filters",
-            "soon.lockFilters",
-            "soon.rememberFilters",
+            "library.lockFilters",
+            "library.rememberFilters",
             "---",
             "view.filterBar=Show Filter Bar",
             "library.clearFilter",
@@ -773,8 +775,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         false,
         "Make the Quick Collection the target collection again (B adds to the target).",
     ),
-    soon("soon.lockFilters", "Lock Filters", None, 'S', false, "Keep the filter bar's filter when another folder or collection is chosen."),
-    soon("soon.rememberFilters", "Remember Each Source's Filters Separately", None, 'S', false, "Each folder and collection keeps its own filter."),
     soon(
         "soon.pageSetup",
         "Page Setup…",
@@ -873,12 +873,9 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
     soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
-    soon("soon.cropAsShot", "Crop As Shot", Some("Cmd+Alt+Shift+R"), 'S', false, "Reset the crop to the camera's own crop (aspect from the raw)."),
-    soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.addToMask", "Add to Mask with", None, 'S', true, "Add a component to the chosen mask (the Masking panel does it)."),
     soon(
@@ -920,12 +917,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
-    soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),

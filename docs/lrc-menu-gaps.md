@@ -28,13 +28,6 @@ Generated from the menu tables; don't edit by hand.
 | Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
 | Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
 
-## Every module ▸ File ▸ Library Filters
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Lock Filters | Keep the filter bar's filter when another folder or collection is chosen. | S | feature | `soon.lockFilters` |
-| Remember Each Source's Filters Separately | Each folder and collection keeps its own filter. | S | feature | `soon.rememberFilters` |
-
 ## Every module ▸ Edit
 
 | Item | What it does | Size | Kind | Slot |
@@ -114,11 +107,8 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
 | Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
 | Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-| Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
-| Crop to Same Aspect Ratio (Shift+A) | Apply the active photo's crop ratio to the selection. | S | feature | `soon.cropSameAspect` |
 
 ## Develop module ▸ Tools
 
@@ -198,7 +188,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ Play
@@ -212,12 +201,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
-
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
 
 ## Print module ▸ View
 
