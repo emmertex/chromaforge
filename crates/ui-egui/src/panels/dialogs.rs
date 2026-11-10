@@ -2385,6 +2385,7 @@ fn prompt_verb(command: &str) -> &'static str {
         | "mask.renameEffect"
         | "printui.renameTemplateFolder"
         | "slideshow.renameTemplateFolder"
+        | "app.renameLibrary"
         | "print.template.folder.rename" => "Rename",
         "folder.create"
         | "mask.setEffectGroup"

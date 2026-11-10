@@ -83,7 +83,7 @@ const FILE: &[&str] = &[
     "app.openLibrary=Open Catalog…",
     "@Open Recent=Libraries",
     "library.compact=Optimize Catalog",
-    "soon.renameCatalog",
+    "app.renameLibrary=Rename Catalog…",
     // The app's own catalog care, beside Classic's
     "catalog.backup=Back Up Catalog",
     "file.backupLibrary=Back Up Catalog…",
@@ -754,7 +754,6 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.renameCatalog", "Rename Catalog…", None, 'S', false, "Rename the open catalog's folder and file, then reopen it."),
     soon("soon.autoImportEnable", "Enable Auto Import", None, 'M', false, "Watch a folder and import new files as they arrive."),
     soon(
         "soon.autoImportSettings",

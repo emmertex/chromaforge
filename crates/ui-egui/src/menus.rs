@@ -385,6 +385,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
     ("app.newLibrary", "New Catalog…", None, "File>Libraries"),
     ("app.openLibrary", "Open Catalog…", Some("Cmd+O"), "File>Libraries"),
+    ("app.renameLibrary", "Rename Catalog…", None, "File>Libraries"),
     // libraries (crate::catalog_ui; the ids keep their older catalog name)
     ("catalog.new", "New Catalog…", None, ""),
     ("catalog.open", "Open Catalog…", None, ""),
@@ -1249,6 +1250,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "app.openLibrary" => crate::panels::settings::open_library(app, p),
         "app.newLibrary" => crate::panels::settings::new_library(app, p),
+        "app.renameLibrary" => crate::panels::settings::rename_library(app, p),
         "app.recentLibraries" => crate::panels::settings::recent_libraries(app, p),
         "app.clearRecentLibraries" => crate::panels::settings::recent_libraries(app, &json!({"clear": true})),
         "app.displayProfile" => crate::panels::settings::display_profile(app, p),
@@ -3350,6 +3352,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "view.compare" => app.session.catalog.len() > 1,
         "view.fullScreenPreview" | "view.infoOverlay" | "view.navigator" => app.session.active().is_some() || app.ui.fullscreen,
         "app.openLibrary" | "app.newLibrary" => app.services.pick_folder.is_some() && crate::panels::settings::can_switch_library(app).is_ok(),
+        "app.renameLibrary" => app.session.library.as_ref().is_some_and(|l| l.on_disk) && crate::panels::settings::can_switch_library(app).is_ok(),
         "dialog.import" => !crate::lightroom_import::is_running(app),
         "file.addFolder" => (app.services.pick_folder.is_some() || app.services.picker.is_some()) && !crate::lightroom_import::is_running(app),
         "file.backupLibrary" => app.services.backup_library.is_some(),
