@@ -820,6 +820,14 @@ pub const STRAIGHTEN_MIN_LINES: usize = 3;
 /// The plane Upright looks for lines in: the lens-corrected photo (optics and orientation applied, no
 /// perspective or crop) at `long` px on its long edge, as perceptual lightness normalized to its bright end.
 pub fn analysis_luminance(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, long: usize) -> Plane {
+    // Decoding keeps negative channels (upstream #2278); line finding sees the source clipped at zero, as before.
+    let clipped;
+    let src = if src.data.iter().any(|p| p.iter().any(|v| *v < 0.0)) {
+        clipped = src.map(|p| p.map(|v| v.max(0.0)));
+        &clipped
+    } else {
+        src
+    };
     let mut base = s.clone();
     base.geometry = Geometry::default();
     base.crop = Crop::default();

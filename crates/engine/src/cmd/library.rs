@@ -659,7 +659,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Show Photos in Subfolders",
             [],
             None,
-            "{on?: bool (default: toggle)} — whether a folder chosen in Folders also shows the photos of the folders inside it → {on, count}",
+            "{on?: bool (default: toggle)}: whether a folder chosen in Folders also shows the photos of the folders inside it → {on, count}",
             always,
             |s, p| {
                 let on = bool_or(p, "on", !s.folder_subfolders);
@@ -737,7 +737,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Folder from Catalog",
             [],
             None,
-            "{path, disk?: bool} — move the library photos imported from this folder (and the folders inside it) to Recently Deleted; one undo step, no file is touched. A whole disk or share (`/Volumes/nas`, `C:\\`, `\\\\srv\\share`) goes only with `disk: true`, the startup disk never → {removed}",
+            "{path, disk?: bool}: move the library photos imported from this folder (and the folders inside it) to Recently Deleted; one undo step, no file is touched. A whole disk or share (`/Volumes/nas`, `C:\\`, `\\\\srv\\share`) goes only with `disk: true`, the startup disk never → {removed}",
             always,
             |s, p| {
                 const C: &str = "library.removeFolder";
@@ -789,7 +789,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Folder Color Label",
             [],
             None,
-            "{path, label: red|yellow|green|blue|purple|none} — give a folder of the library (one its photos were imported from, see library.folders) a colour label, or take it off (also once its photos are gone); one undo step. The label follows the folder when it is renamed or moved with folder.rename / folder.move → {path, label}",
+            "{path, label: red|yellow|green|blue|purple|none}: give a folder of the library (one its photos were imported from, see library.folders) a colour label, or take it off (also once its photos are gone); one undo step. The label follows the folder when it is renamed or moved with folder.rename / folder.move → {path, label}",
             always,
             |s, p| {
                 const C: &str = "folder.label";
@@ -826,7 +826,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Enable Filters",
             ["Library", "Filters"],
             Some("Cmd+L"),
-            "{} — with a filter set, puts it aside and shows everything; with one put aside, brings it back as it was (stars, flag, text… together). Setting or clearing a filter while it is off forgets the one put aside → {enabled, count}",
+            "{}: with a filter set, puts it aside and shows everything; with one put aside, brings it back as it was (stars, flag, text… together). Setting or clearing a filter while it is off forgets the one put aside → {enabled, count}",
             always,
             |s, _| {
                 if s.filter != Filter::default() {
@@ -847,7 +847,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Rejected Photos",
             ["View"],
             None,
-            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or, from there, no longer filters by flag; the rest of the filter stays. `hide` asks for the menu row's state: when the row is already in it, nothing changes (so `hide: false` leaves Picked only or Rejected only as it is). Like any filter change, it forgets a filter put aside → {hidden, count}",
+            "{hide?: bool (default: the opposite of now)}: the flag filter shows picks and unflagged photos, or, from there, no longer filters by flag; the rest of the filter stays. `hide` asks for the menu row's state: when the row is already in it, nothing changes (so `hide: false` leaves Picked only or Rejected only as it is). Like any filter change, it forgets a filter put aside → {hidden, count}",
             always,
             |s, p| {
                 let hide = match p.get("hide") {
@@ -907,7 +907,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refresh View",
             ["Library", "Filters"],
             None,
-            "{} — show what matches now: a view that holds its photos (`library.holdView`) lets go of the ones that stopped matching a smart album's rules, Picks or the filter bar since it was opened, sorted or last refreshed",
+            "{}: show what matches now: a view that holds its photos (`library.holdView`) lets go of the ones that stopped matching a smart album's rules, Picks or the filter bar since it was opened, sorted or last refreshed",
             always,
             |s, _| {
                 s.refresh_view();
@@ -919,7 +919,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hold View Until Refreshed",
             ["Library", "Filters"],
             None,
-            "{on?: bool (toggles when omitted)} → {hold} — when on, an edit that makes a photo stop matching the view (a keyword given in a smart album of photos without keywords, a flag taken off in Picks, a rating under the filter bar's) keeps it in the view until `library.refresh`, Reshuffle, or another source, filter or sort; photos that start matching still appear at once, and deleting a photo or taking it out of the album or folder shown still takes it out of the view. Changing a smart album's rules is another view too. Off (the default): the view follows every edit. Kept with the library's preferences; asking for the state it already has changes nothing",
+            "{on?: bool (toggles when omitted)} → {hold}: when on, an edit that makes a photo stop matching the view (a keyword given in a smart album of photos without keywords, a flag taken off in Picks, a rating under the filter bar's) keeps it in the view until `library.refresh`, Reshuffle, or another source, filter or sort; photos that start matching still appear at once, and deleting a photo or taking it out of the album or folder shown still takes it out of the view. Changing a smart album's rules is another view too. Off (the default): the view follows every edit. Kept with the library's preferences; asking for the state it already has changes nothing",
             always,
             |s, p| {
                 let on = match p.get("on") {
@@ -945,7 +945,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reshuffle",
             ["View", "Sort"],
             None,
-            "{seed?: 0..2^53-1} — sort at random; without `seed` a new shuffle each time",
+            "{seed?: 0..2^53-1}: sort at random; without `seed` a new shuffle each time",
             always,
             |s, p| {
                 let seed = match seed_param(p, "library.shuffle", s.sort.seed)? {
@@ -980,7 +980,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Photos",
             [],
             None,
-            "{ids: [id], active?: id, mode?: replace|add|toggle|range|click} — every id must be a photo of the library. toggle (⌘/Ctrl-click) and range (Shift-click, from the active photo) keep the active photo; click (a plain click on a picture) on a photo of a selection of several makes it the active one and keeps the selection, elsewhere it selects that photo alone",
+            "{ids: [id], active?: id, mode?: replace|add|toggle|range|click}: every id must be a photo of the library. toggle (⌘/Ctrl-click) and range (Shift-click, from the active photo) keep the active photo; click (a plain click on a picture) on a photo of a selection of several makes it the active one and keeps the selection, elsewhere it selects that photo alone",
             always,
             |s, p| {
                 let ids = super::photo_ids(p, "library.select")?.unwrap_or_default();
@@ -1037,7 +1037,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select All",
             ["Edit"],
             Some("Cmd+A"),
-            "{} — every photo of the view; photos that join the view later (an import still running) are selected too, until the selection or the view changes",
+            "{}: every photo of the view; photos that join the view later (an import still running) are selected too, until the selection or the view changes",
             always,
             |s, _| {
                 let vis = s.visible_cloned();
@@ -1046,10 +1046,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"selected": s.selection.ids.len()}))
             }
         ),
-        cmd!(query "library.devices", "Cameras and Cards", [], None, "{} → [{name, path (its DCIM folder), root}] — mounted volumes with a DCIM folder", always, |_, _| {
+        cmd!(query "library.devices", "Cameras and Cards", [], None, "{} → [{name, path (its DCIM folder), root}]: mounted volumes with a DCIM folder", always, |_, _| {
             Ok(serde_json::to_value(crate::devices::devices_now()).unwrap_or_default())
         }),
-        cmd!(query "photo.copyMetadata", "Copy Metadata", ["Metadata"], Some("Cmd+Alt+Shift+C"), "{} — title, caption, copyright (notice, status, usage terms, info URL), creator, location and keywords of the active photo", has_active, |s, _| {
+        cmd!(query "photo.copyMetadata", "Copy Metadata", ["Metadata"], Some("Cmd+Alt+Shift+C"), "{}: title, caption, copyright (notice, status, usage terms, info URL), creator, location and keywords of the active photo", has_active, |s, _| {
             let v = active_meta(s, "photo.copyMetadata")?;
             s.meta_clipboard = Some(v.clone());
             Ok(v)
@@ -1059,7 +1059,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Metadata",
             ["Metadata"],
             None,
-            "{fields?: [title|caption|copyright|copyrightStatus|usageTerms|copyrightUrl|creator|location|keywords|…] (default: all)} — copy the active photo's metadata (as photo.copyMetadata) to the other selected photos, one undo step → as photo.setMeta",
+            "{fields?: [title|caption|copyright|copyrightStatus|usageTerms|copyrightUrl|creator|location|keywords|…] (default: all)}: copy the active photo's metadata (as photo.copyMetadata) to the other selected photos, one undo step → as photo.setMeta",
             has_selection,
             |s, p| {
                 let c = "photo.syncMetadata";
@@ -1110,7 +1110,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select by Flag, Rating or Label",
             [],
             None,
-            "{flag?: pick|reject|none, rating?: 0..5, ratingOp?: gte|eq|lte (default gte), label?: red|…|none, add?: bool (extend the selection)} — among the photos in view",
+            "{flag?: pick|reject|none, rating?: 0..5, ratingOp?: gte|eq|lte (default gte), label?: red|…|none, add?: bool (extend the selection)}: among the photos in view",
             always,
             select_by
         ),
@@ -1124,7 +1124,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Next Photo",
             [],
             Some("Right"),
-            "{} — with several photos selected: the next selected one (wrapping round), the selection kept",
+            "{}: with several photos selected: the next selected one (wrapping round), the selection kept",
             always,
             |s, _| step_in(s, 1, true)
         ),
@@ -1133,7 +1133,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Previous Photo",
             [],
             Some("Left"),
-            "{} — with several photos selected: the previous selected one (wrapping round), the selection kept",
+            "{}: with several photos selected: the previous selected one (wrapping round), the selection kept",
             always,
             |s, _| step_in(s, -1, true)
         ),
@@ -1142,7 +1142,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Next Unrated Photo",
             [],
             Some("Cmd+Alt+Right"),
-            "{} — the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            "{}: the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
             always,
             |s, _| step_unrated(s, 1)
         ),
@@ -1151,7 +1151,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Previous Unrated Photo",
             [],
             Some("Cmd+Alt+Left"),
-            "{} — the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
+            "{}: the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
             always,
             |s, _| step_unrated(s, -1)
         ),
@@ -1179,7 +1179,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Rating",
             ["Photo", "Set Rating"],
             None,
-            "{rating: 0..5, ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{rating: 0..5, ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| {
                 let r = super::index_req(p, "rating", "photo.rate")
@@ -1194,7 +1194,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Decrease Rating",
             [],
             None,
-            "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| change_rating(s, p, -1, "Decrease Rating")) }
         ),
@@ -1203,7 +1203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Increase Rating",
             [],
             None,
-            "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| change_rating(s, p, 1, "Increase Rating")) }
         ),
@@ -1212,7 +1212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Flag",
             ["Photo", "Set Flag"],
             None,
-            "{flag: pick|reject|none, ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{flag: pick|reject|none, ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| {
                 let f = str_param(p, "flag").and_then(Flag::parse).ok_or_else(|| bad("photo.flag", "flag must be pick|reject|none"))?;
@@ -1225,7 +1225,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Cycle Flag",
             ["Photo", "Set Flag"],
             Some("`"),
-            "{ids?, advance?: bool} — each photo's own flag: unflagged -> pick -> reject -> unflagged; without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: each photo's own flag: unflagged -> pick -> reject -> unflagged; without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| {
                 cull(s, p, |s| {
@@ -1242,7 +1242,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Increase Flag Status",
             ["Photo", "Set Flag"],
             Some("Cmd+Up"),
-            "{ids?, advance?: bool} — reject -> unflagged -> pick (stops at pick); without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: reject -> unflagged -> pick (stops at pick); without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| change_flag(s, p, "Increase Flag Status", |f| if f == Flag::Reject { Flag::None } else { Flag::Pick })) }
         ),
@@ -1251,7 +1251,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Decrease Flag Status",
             ["Photo", "Set Flag"],
             Some("Cmd+Down"),
-            "{ids?, advance?: bool} — pick -> unflagged -> reject (stops at reject); without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: pick -> unflagged -> reject (stops at reject); without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| change_flag(s, p, "Decrease Flag Status", |f| if f == Flag::Pick { Flag::None } else { Flag::Reject })) }
         ),
@@ -1260,7 +1260,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Flag as Pick",
             ["Photo", "Set Flag"],
             Some("P"),
-            "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| for_marks(s, p, "Flag as Pick", |id| Some(Op::SetFlag { id, flag: Flag::Pick }))) }
         ),
@@ -1269,7 +1269,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Flag as Reject",
             ["Photo", "Set Flag"],
             Some("X"),
-            "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| for_marks(s, p, "Flag as Reject", |id| Some(Op::SetFlag { id, flag: Flag::Reject }))) }
         ),
@@ -1278,7 +1278,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unflag",
             ["Photo", "Set Flag"],
             Some("U"),
-            "{ids?, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| for_marks(s, p, "Unflag", |id| Some(Op::SetFlag { id, flag: Flag::None }))) }
         ),
@@ -1287,7 +1287,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Color Label",
             ["Photo", "Set Color Label"],
             None,
-            "{label: red|yellow|green|blue|purple|none, ids?, toggle?: bool, advance?: bool} — without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{label: red|yellow|green|blue|purple|none, ids?, toggle?: bool, advance?: bool}: without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| {
                 // `none` (or null) clears; a missing label or one that isn't text is an error, not a clear
@@ -1325,7 +1325,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Color Label",
             ["Photo", "Set Color Label"],
             None,
-            "{ids?, advance?: bool} — `photo.label` with `none`; without `ids`, the selection moves on when this takes the active photo out of the view",
+            "{ids?, advance?: bool}: `photo.label` with `none`; without `ids`, the selection moves on when this takes the active photo out of the view",
             has_selection,
             |s, p| { cull(s, p, |s| for_targets(s, p, "Set Color Label", |id| Some(Op::SetLabel { id, label: None }))) }
         ),
@@ -1340,7 +1340,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Face Box",
             [],
             None,
-            "{id?, index} — remove one face / pet region (by its position in the photo's regions) from the photo in the catalog; undoable. The XMP sidecar is never rewritten for this, even with auto-write on, so reading the metadata from the file brings the region back",
+            "{id?, index}: remove one face / pet region (by its position in the photo's regions) from the photo in the catalog; undoable. The XMP sidecar is never rewritten for this, even with auto-write on, so reading the metadata from the file brings the region back",
             always,
             |s, p| {
                 let id = s.photo_or_active(p, "photo.removeRegion")?;
@@ -1364,7 +1364,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Resize Face Box",
             [],
             None,
-            "{id?, index, rect: {x0, y0, x1, y1}} — set one face / pet region's box (normalized, in the photo's upright frame; clamped to the photo, at least 0.5 % each way) in the catalog; undoable. Like photo.removeRegion it never rewrites the XMP sidecar",
+            "{id?, index, rect: {x0, y0, x1, y1}}: set one face / pet region's box (normalized, in the photo's upright frame; clamped to the photo, at least 0.5 % each way) in the catalog; undoable. Like photo.removeRegion it never rewrites the XMP sidecar",
             always,
             |s, p| {
                 const C: &str = "photo.setRegion";
@@ -1399,7 +1399,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Photo",
             ["Photo"],
             Some("Delete"),
-            "{ids?} — moves to Recently Deleted (browsed photos not in the library are left alone: reject them instead; a selection of nothing else is refused)",
+            "{ids?}: moves to Recently Deleted (browsed photos not in the library are left alone: reject them instead; a selection of nothing else is refused)",
             has_selection,
             |s, p| {
                 let before = s.visible_cloned();
@@ -1420,7 +1420,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Empty Recently Deleted",
             ["Photo"],
             None,
-            "{} → {deleted} — removes every photo in Recently Deleted from the library (files on disk stay)",
+            "{} → {deleted}: removes every photo in Recently Deleted from the library (files on disk stay)",
             always,
             |s, _| {
                 let ids: Vec<PhotoId> = s.catalog.photos().filter(|p| p.deleted).map(|p| p.id).collect();
@@ -1456,7 +1456,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete from Disk",
             ["Photo", "File"],
             None,
-            "{ids?} — moves the photos' files to the system trash and removes them from the library (refused for browsed photos not in the library: their files are never touched)",
+            "{ids?}: moves the photos' files to the system trash and removes them from the library (refused for browsed photos not in the library: their files are never touched)",
             has_selection,
             |s, p| {
                 let before = s.visible_cloned();
@@ -1468,7 +1468,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(r)
             }
         ),
-        cmd!(query "library.tally", "Culling Counts", [], None, "{} → {total, picks, rejects, unflagged, stars: [0★..5★], labels: [red, yellow, green, blue, purple], unlabeled} — the view's photos by culling mark, counted without the stars / flags / labels filter itself", always, |s, _| {
+        cmd!(query "library.tally", "Culling Counts", [], None, "{} → {total, picks, rejects, unflagged, stars: [0★..5★], labels: [red, yellow, green, blue, purple], unlabeled}: the view's photos by culling mark, counted without the stars / flags / labels filter itself", always, |s, _| {
             Ok(serde_json::to_value(s.tally()).unwrap_or_default())
         }),
         cmd!(
@@ -1476,7 +1476,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Rejected Photos",
             ["Photo", "File"],
             None,
-            "{files?: keep (default) | recycle, confirm?: bool} — every rejected photo of the view in one go: keep removes them from the library to Recently Deleted (one undo step, the files stay on disk); recycle moves their files (and the sidecars that are theirs alone) to the system trash as Delete from Disk does, and needs confirm: true → {deleted, files}",
+            "{files?: keep (default) | recycle, confirm?: bool}: every rejected photo of the view in one go: keep removes them from the library to Recently Deleted (one undo step, the files stay on disk); recycle moves their files (and the sidecars that are theirs alone) to the system trash as Delete from Disk does, and needs confirm: true → {deleted, files}",
             always,
             |s, p| {
                 let files = str_param(p, "files").unwrap_or("keep");
@@ -1682,7 +1682,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Duplicate Collection",
             [],
             None,
-            "{id, name?} — a new regular album beside it with the same photos and Custom Order (a second order of the same photos) → {id}",
+            "{id, name?}: a new regular album beside it with the same photos and Custom Order (a second order of the same photos) → {id}",
             always,
             |s, p| {
                 const C: &str = "album.duplicate";
@@ -1717,7 +1717,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Smart Collection…",
             [],
             None,
-            "{name, rules?: partial Filter (rating, ratingOp, flag, label, kind, edited, keyword, camera, lens, dateFrom, dateTo, date, text, album, ruleSet: {match: all|any|none, rules: [{field, op, value} | {group: ruleSet}]} — see album.ruleFields), parent?: folderId} — without `rules`, saves the current view (source + filter)",
+            "{name, rules?: partial Filter (rating, ratingOp, flag, label, kind, edited, keyword, camera, lens, dateFrom, dateTo, date, text, album, ruleSet: {match: all|any|none, rules: [{field, op, value} | {group: ruleSet}]}; see album.ruleFields), parent?: folderId}: without `rules`, saves the current view (source + filter)",
             always,
             |s, p| {
                 let name = str_param(p, "name").unwrap_or("Smart Collection").trim().to_string();
@@ -1763,7 +1763,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Smart Collection",
             [],
             None,
-            "{id, rules?: partial Filter merged onto the current rules (null clears a field), replace?: bool, fromView?: bool (use the current view), name?: also rename it (blank keeps the name) — one undo step, both or neither}",
+            "{id, rules?: partial Filter merged onto the current rules (null clears a field), replace?: bool, fromView?: bool (use the current view), name?: also rename it (blank keeps the name); one undo step, both or neither}",
             always,
             |s, p| {
                 let id = album_param(p, "id", "album.setRules")?;
@@ -1826,7 +1826,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Collection",
             [],
             None,
-            "{id} — deletes the collection or folder and its descendants, keeping photos in the library; one undo step",
+            "{id}: deletes the collection or folder and its descendants, keeping photos in the library; one undo step",
             always,
             |s, p| {
                 let id = album_param(p, "id", "album.delete")?;
@@ -1870,7 +1870,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reorder Collection",
             [],
             None,
-            "{id, parent?: folderId|null, before?: albumId|null} — places the album (or folder) in `parent` (default: where it is; null: the top level) before the sibling `before` of the same kind, or last of its kind; the folder is then ordered by hand. One undo step. → {changed}: how many edits it took (0: already there)",
+            "{id, parent?: folderId|null, before?: albumId|null}: places the album (or folder) in `parent` (default: where it is; null: the top level) before the sibling `before` of the same kind, or last of its kind; the folder is then ordered by hand. One undo step. → {changed}: how many edits it took (0: already there)",
             always,
             |s, p| {
                 let id = album_param(p, "id", "album.reorder")?;
@@ -1920,7 +1920,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sort Collections by Name",
             [],
             None,
-            "{parent?: folderId|null} — drops the hand order of the albums inside the folder (default: the top level), so they are listed by name → {changed}: how many albums lost their place",
+            "{parent?: folderId|null}: drops the hand order of the albums inside the folder (default: the top level), so they are listed by name → {changed}: how many albums lost their place",
             always,
             |s, p| {
                 let parent = opt_album_param(p, "parent", "album.sort")?;
@@ -1979,7 +1979,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move in Custom Order",
             [],
             None,
-            "{album?: albumId (default: the album shown), ids: [photoIds], before?: photoId (default: to the end)} — moves the photos, in their current order, before `before`; sorts the view by Custom Order → {order}",
+            "{album?: albumId (default: the album shown), ids: [photoIds], before?: photoId (default: to the end)}: moves the photos, in their current order, before `before`; sorts the view by Custom Order → {order}",
             always,
             |s, p| {
                 const C: &str = "album.orderPhotos";
@@ -2030,7 +2030,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Custom Order",
             [],
             None,
-            "{album: albumId, ids: [photoIds]} — the album's Custom Order (repeats ignored; members not listed follow in their current order) → {order}",
+            "{album: albumId, ids: [photoIds]}: the album's Custom Order (repeats ignored; members not listed follow in their current order) → {order}",
             always,
             |s, p| {
                 const C: &str = "album.setPhotoOrder";
@@ -2049,7 +2049,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to Target Collection",
             [],
             None,
-            "{ids?} — B: adds the photos to the target album (the Quick Collection unless one is set), or removes them when they're all in it → {album, added, toggled, skipped}; Local photos are skipped, ids the library doesn't have are dropped (none left: nothing changes and `added` is null)",
+            "{ids?}: B: adds the photos to the target album (the Quick Collection unless one is set), or removes them when they're all in it → {album, added, toggled, skipped}; Local photos are skipped, ids the library doesn't have are dropped (none left: nothing changes and `added` is null)",
             has_library_selection,
             |s, p| {
                 let targets =
@@ -2124,7 +2124,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Show Quick Collection",
             [],
             None,
-            "{} — the grid shows the Quick Collection → {count}",
+            "{}: the grid shows the Quick Collection → {count}",
             always,
             |s, _| { s.execute("library.source", &json!({"kind": "quickCollection"})) }
         ),
@@ -2133,7 +2133,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Quick Collection…",
             [],
             None,
-            "{name?: album name (default \"Quick Collection\"), clear?: bool (default true)} — a new album holding the Quick Collection's photos, which is then cleared; one undo step → {id, count}",
+            "{name?: album name (default \"Quick Collection\"), clear?: bool (default true)}: a new album holding the Quick Collection's photos, which is then cleared; one undo step → {id, count}",
             always,
             |s, p| {
                 let quick = s.catalog.quick_collection();
@@ -2159,7 +2159,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Import Settings",
             [],
             None,
-            "{folder?: path | null (clear), enabled?: bool (switch watching on or off, keeping the folder; choosing a folder switches it on), copy?: bool (copy into the library's Originals, else add in place), album?: name | null} — a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
+            "{folder?: path | null (clear), enabled?: bool (switch watching on or off, keeping the folder; choosing a folder switches it on), copy?: bool (copy into the library's Originals, else add in place), album?: name | null}: a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
             always,
             |s, p| {
                 if let Some(f) = p.get("folder") {
@@ -2191,7 +2191,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Import Now",
             [],
             None,
-            "{listing?: [[path, size]] (the folder as listed by the caller, e.g. on a worker thread), start?: bool (false: return the `library.import` params as `import` instead of importing)} — add the watched folder's new photos (files the library doesn't have yet; partial / still-copying files wait for the next scan) → {imported, folder, warnings?: [{path, code, profile?, mode?, fields?}], import?}",
+            "{listing?: [[path, size]] (the folder as listed by the caller, e.g. on a worker thread), start?: bool (false: return the `library.import` params as `import` instead of importing)}: add the watched folder's new photos (files the library doesn't have yet; partial / still-copying files wait for the next scan) → {imported, folder, warnings?: [{path, code, profile?, mode?, fields?}], import?}",
             always,
             |s, p| {
                 let Some(folder) = s.import_defaults.auto_active_folder().cloned() else { return Ok(json!({"imported": [], "folder": null})) };
@@ -2259,7 +2259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove from Collection",
             ["Photo"],
             None,
-            "{id?: albumId (default: the album on screen), ids?} — takes the photos out of the album only: they stay in the library and in their folders (issue #1805; photo.delete removes them from the library) → {removed, album: name}",
+            "{id?: albumId (default: the album on screen), ids?}: takes the photos out of the album only: they stay in the library and in their folders (issue #1805; photo.delete removes them from the library) → {removed, album: name}",
             has_selection,
             |s, p| {
                 let id = match p.get("id") {
@@ -2318,7 +2318,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Review Import",
             [],
             None,
-            "{paths: [file or folder (recursive)]} → {candidates: [{path, name, format, kind, width, height, fileSize, captured, duplicate?: path|content, existing?, error?, previewOnly?: why a raw can only be shown from its embedded preview}], duplicates, scanned, scanLimited: bool (the folder walk stopped at its scan limit: there may be more photos), skipped: {unreadable (folders that could not be listed), unsupported (files in the folders that are not a supported photo type, XMP sidecars not counted; a file named in paths is always tried)}} — nothing is added",
+            "{paths: [file or folder (recursive)]} → {candidates: [{path, name, format, kind, width, height, fileSize, captured, duplicate?: path|content, existing?, error?, previewOnly?: why a raw can only be shown from its embedded preview}], duplicates, scanned, scanLimited: bool (the folder walk stopped at its scan limit: there may be more photos), skipped: {unreadable (folders that could not be listed), unsupported (files in the folders that are not a supported photo type, XMP sidecars not counted; a file named in paths is always tried)}}: nothing is added",
             always,
             |s, p| {
                 let paths = strs(p, "paths");
@@ -2341,7 +2341,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Photos",
             ["File"],
             Some("Cmd+Shift+I"),
-            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source — only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`) — dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1 (must fit this platform; later files are reported failed if the sequence runs out), metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, presetProfile?: bool (a preset's camera profile replaces the raw's; default false: each raw keeps its body's camera profile through the presets), presets?: [presetId] (a stack applied in order after `preset`, one History step each; a browsed photo joining the library gets the presets, keywords and metadata preset too, on top of its own culling and edits, and copied or moved its record follows its file), recipe?: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}] (a batch-edit recipe: each control is set to its value, clamped to the control's range, on every photo this import adds, after its sidecar, camera default and preset, as one extra History step named Import adjustments; a photo the library already has — a duplicate, one restored from Recently Deleted, one joined from a browsed folder — is not changed; a control a recipe may not name is refused before anything is imported; preset.saveRecipe keeps a recipe for reuse), keywords?: [..], cameraProfile?: auto (default: each body's own camera profile, else the camera's default) | {all: camera profile id} (every raw of that profile's camera) | {perBody: {body (as profiles.bodies lists it): camera profile id}} — for this import only; a raw whose XMP sidecar sets develop settings keeps its own, onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits — relinked to the file when its own is gone, skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo — a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
+            "{paths: [file or folder (recursive)], mode?: add|copy|move (add = reference the files in place; copy = into the library's Originals/YYYY/YYYY-MM-DD/; move = as copy, then each original and its XMP sidecars are removed from the source, only after the copy is verified (a hard link on the same volume, else copied, synced and compared byte for byte) and its catalog record is saved; failed, duplicate and unchecked files keep their sources; a taken name gets -1, -2…; undo removes the photos from the library but leaves the files at the destination), destination?: folder for copies / moves, organize?: date (YYYY/YYYY-MM-DD) | month (YYYY/YYYY-MM) | flat | a folder template, e.g. `{date:%Y}/{date:%Y%m%d}` → 2026/20260114 (the template's `/` make the folders, each level expanded with the rename tokens and made a safe folder name: never outside the destination; must be relative, no `..`; a level with missing metadata is `unknown`); dated by capture time, else the import time, rename?: file-name template for copies, original extension added (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext}; photo.renameTokens explains each; blank = keep names), renameStart?: 1 (must fit this platform; later files are reported failed if the sequence runs out), metadataPreset?: name, dng?: bool (copy raws as DNG; copy only), local?: bool (browsing: the photos stay out of the library, like library.browse; not with move), album?: albumId, albumName?: new album, preset?: presetId, presetProfile?: bool (a preset's camera profile replaces the raw's; default false: each raw keeps its body's camera profile through the presets), presets?: [presetId] (a stack applied in order after `preset`, one History step each; a browsed photo joining the library gets the presets, keywords and metadata preset too, on top of its own culling and edits, and copied or moved its record follows its file), recipe?: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}] (a batch-edit recipe: each control is set to its value, clamped to the control's range, on every photo this import adds, after its sidecar, camera default and preset, as one extra History step named Import adjustments; a photo the library already has (a duplicate, one restored from Recently Deleted, one joined from a browsed folder) is not changed; a control a recipe may not name is refused before anything is imported; preset.saveRecipe keeps a recipe for reuse), keywords?: [..], cameraProfile?: auto (default: each body's own camera profile, else the camera's default) | {all: camera profile id} (every raw of that profile's camera) | {perBody: {body (as profiles.bodies lists it): camera profile id}}, for this import only; a raw whose XMP sidecar sets develop settings keeps its own, onDeleted?: restore|skip|fresh (a file that is in Recently Deleted: restore (default) = bring the photo back with its edits, relinked to the file when its own is gone; skip = leave it there and say so, fresh = delete the trashed record and import the file as new), importDuplicates?: bool (false by default = Lightroom's Don't Import Suspected Duplicates: a file whose content the library already has is skipped; true imports it as a new photo; a path already in the library, or a photo in Recently Deleted, is still handled as above)} → {imported, duplicates: [{path, existing, reason, existingDeleted?}], restored?: [photoId], failed, warnings?: [{path, code: cameraProfile|uprightGeometry|unmappedXmp, profile?, mode?: off|auto|level|vertical|full|guided|unknown, fields?}], moved?: [{from, to, sidecars?}], kept?: [{path, reason}] (move: sources left in place and why), album?}",
             always,
             |s, p| {
                 let req = import_params(s, p)?;

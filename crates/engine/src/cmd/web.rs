@@ -552,13 +552,13 @@ pub fn specs() -> Vec<CommandSpec> {
             "{settings?: partial web gallery settings {template: grid|square|track|single, site: {title, collectionTitle, description, contact, link}, palette: {background, text, detailText, cell, cellHover, border, accent}, appearance: {columns, thumbSize, cellNumbers, photoBorders, borderWidth, imagePageSize, thumbCaptions}, imageInfo: {title, caption} (tokens {title} {caption} {filename} {date} {camera} {lens} {copyright} {creator} {keywords} {rating} {iso} {aperture} {shutter} {focal}), output: {largeSize, quality, metadata: all|copyrightOnly, watermark, sharpen}}, gallery?: saved gallery name, ids?: photo ids (default: the selection, or every visible photo)} → {settings, photos, files: [{path, bytes, text}], images: [{path, photo, longEdge}]}; renders nothing",
             always, preview),
         cmd!(query "web.export", "Export Web Gallery", [], None,
-            "{dir, settings?, gallery?, ids?} — writes index.html, content/, assets/ and the rendered images/ into dir → {dir, index, files, photos, bytes}",
+            "{dir, settings?, gallery?, ids?}: writes index.html, content/, assets/ and the rendered images/ into dir → {dir, index, files, photos, bytes}",
             always, |s, p| run_now(s, "web.export", p)),
         cmd!(query "web.upload", "Upload Web Gallery", [], None,
-            "{server: saved server name | {host, port?, user, path, keyFile?, knownFingerprint?}, password?, settings?, gallery?, ids?} — renders the gallery and uploads it over SFTP (the host key must be pinned first: web.hostKey shows it, web.trustServer or knownFingerprint pins it; an unpinned or changed key refuses before logging in) → {host, path, files, bytes, photos, fingerprint}",
+            "{server: saved server name | {host, port?, user, path, keyFile?, knownFingerprint?}, password?, settings?, gallery?, ids?}: renders the gallery and uploads it over SFTP (the host key must be pinned first: web.hostKey shows it, web.trustServer or knownFingerprint pins it; an unpinned or changed key refuses before logging in) → {host, path, files, bytes, photos, fingerprint}",
             always, |s, p| run_now(s, "web.upload", p)),
         cmd!(query "web.shareImmich", "Share via Immich", [], None,
-            "{account?: connected Immich account (default: the only one), album?: album name (default: the collection or site title), expiresDays?: 1…3650, password?, allowDownload?: true, showMetadata?: true, settings?, gallery?, ids?} — renders the gallery's large images, uploads them to a new Immich album and creates a shared link (IMM-SHARELINK) → {album, albumId, url, uploaded, photos, expiresAt}",
+            "{account?: connected Immich account (default: the only one), album?: album name (default: the collection or site title), expiresDays?: 1…3650, password?, allowDownload?: true, showMetadata?: true, settings?, gallery?, ids?}: renders the gallery's large images, uploads them to a new Immich album and creates a shared link (IMM-SHARELINK) → {album, albumId, url, uploaded, photos, expiresAt}",
             always, |s, p| run_now(s, "web.shareImmich", p)),
         cmd!(query "web.galleries", "Saved Web Galleries", [], None, "{} → [{id, name, settings, ids}] (saved creations of kind web)", always, galleries),
         cmd!(
@@ -566,7 +566,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Web Gallery",
             [],
             None,
-            "{name, settings?, gallery?, ids?} — adds or replaces a saved gallery: a collection holding the settings and its photos (replaced only when ids are given) → galleries",
+            "{name, settings?, gallery?, ids?}: adds or replaces a saved gallery: a collection holding the settings and its photos (replaced only when ids are given) → galleries",
             always,
             save_gallery
         ),
@@ -576,10 +576,10 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "web.saveServer", "Save Web Upload Server", [], None,
             "{server: {name, host, port?, user, path, keyFile?}, password?: kept in the keychain} → servers", always, save_server),
         cmd!(query "web.hostKey", "Show Upload Server Host Key", [], None,
-            "{server: saved server name | {host, port?}} — connects without logging in → {host, port, fingerprint, pinned, matches}", always, host_key),
+            "{server: saved server name | {host, port?}}: connects without logging in → {host, port, fingerprint, pinned, matches}", always, host_key),
         cmd!(query "web.trustServer", "Trust Upload Server Host Key", [], None,
-            "{name, fingerprint: SHA256:… as web.hostKey showed, confirmed by the user} — pins the saved server's host key → servers", always, trust_server),
-        cmd!(query "web.deleteServer", "Delete Web Upload Server", [], None, "{name} — also forgets its keychain secret → servers", always, delete_server),
+            "{name, fingerprint: SHA256:… as web.hostKey showed, confirmed by the user}: pins the saved server's host key → servers", always, trust_server),
+        cmd!(query "web.deleteServer", "Delete Web Upload Server", [], None, "{name}: also forgets its keychain secret → servers", always, delete_server),
     ]
 }
 

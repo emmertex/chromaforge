@@ -486,7 +486,7 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "library.missing", "Missing Photos", [], None, "{} → [{id, path}] — photos whose original file isn't where the library expects it", always, |s, _| {
+        cmd!(query "library.missing", "Missing Photos", [], None, "{} → [{id, path}]: photos whose original file isn't where the library expects it", always, |s, _| {
             Ok(Value::Array(missing(s).into_iter().map(|(id, path)| json!({"id": id.0, "path": path})).collect()))
         }),
         cmd!(
@@ -494,7 +494,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Locate Photo",
             [],
             None,
-            "{id?, path} — point a photo at its file's new location (undo never moves files)",
+            "{id?, path}: point a photo at its file's new location (undo never moves files)",
             always,
             relink
         ),
@@ -503,7 +503,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Missing Photos",
             [],
             None,
-            "{folder} — relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or — renamed — same content (and size, when the library knows it); or {found, missing, ambiguous} — relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
+            "{folder}: relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or, if renamed, same content (and size, when the library knows it); or {found, missing, ambiguous}: relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
             always,
             find_missing
         ),
