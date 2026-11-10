@@ -173,11 +173,13 @@ fn capture_time_reverts_to_the_files_exif() {
     let img = lcc_raster::Rgba8 { width: w, height: h, data: vec![[9, 9, 9, 255]; w * h] };
     let meta = lcc_meta::Metadata { capture_time: lcc_meta::DateTime::parse_iso("2024-01-16T12:34:56.250+02:00"), ..Default::default() };
     let exif = lcc_meta::write_exif(&meta);
-    let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta { exif: Some(&exif), ..Default::default() }).unwrap();
+    let bytes =
+        lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta { exif: Some(&exif), ..Default::default() }).unwrap();
     std::fs::write(src.join("dated.png"), bytes).unwrap();
     let mut s = Session::new().with_fs();
     s.open_library(&lib, false).unwrap();
-    let r = s.execute("library.import", &json!({"paths": [src.join("plain.png").to_string_lossy(), src.join("dated.png").to_string_lossy()]})).unwrap();
+    let r =
+        s.execute("library.import", &json!({"paths": [src.join("plain.png").to_string_lossy(), src.join("dated.png").to_string_lossy()]})).unwrap();
     let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
     let by_name = |s: &Session, n: &str| ids.iter().copied().find(|id| path_of(s, *id).ends_with(n)).unwrap();
     let (plain, dated) = (by_name(&s, "plain.png"), by_name(&s, "dated.png"));
