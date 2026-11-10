@@ -339,3 +339,17 @@ fn library_problems_are_worded_by_their_cause() {
     assert!(!ProblemKind::Foreign.retryable() && ProblemKind::InUse.retryable());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Refine Photos asks first (nothing changes yet); confirming applies it.
+#[test]
+fn refine_photos_asks_before_changing_flags() {
+    let mut app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+    let first = app.session.visible_cloned()[0];
+    app.run("photo.flag", json!({"ids": [first.0], "flag": "pick"})).unwrap();
+    let r = app.run("library.refine", json!({})).unwrap();
+    assert_eq!(r["confirm"], "dialog", "{r}");
+    assert!(matches!(app.catalog_ui.dialog, Some(CatalogDialog::Refine { .. })));
+    assert_eq!(app.session.catalog.photo(first).unwrap().flag, lcc_catalog::Flag::Pick, "nothing changed yet");
+    app.run("library.refine", json!({"confirmed": true})).unwrap();
+    assert_eq!(app.session.catalog.photo(first).unwrap().flag, lcc_catalog::Flag::None);
+}

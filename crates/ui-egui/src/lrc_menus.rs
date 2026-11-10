@@ -83,7 +83,7 @@ const FILE: &[&str] = &[
     "app.openLibrary=Open Catalog…",
     "@Open Recent=Libraries",
     "library.compact=Optimize Catalog",
-    "soon.renameCatalog",
+    "app.renameLibrary=Rename Catalog…",
     // The app's own catalog care, beside Classic's
     "catalog.backup=Back Up Catalog",
     "file.backupLibrary=Back Up Catalog…",
@@ -176,7 +176,7 @@ const LIBRARY: &[&str] = &[
     "library.rememberFilters",
     "library.showSubfolderPhotos",
     "---",
-    "soon.refinePhotos",
+    "library.refine",
     "soon.reviewComments",
     "---",
     "dialog.rename",
@@ -193,7 +193,7 @@ const LIBRARY: &[&str] = &[
     "---",
     "@Previews",
     "---",
-    "soon.findPreviousProcess",
+    "library.findPreviousProcess",
     "---",
     "library.previous=Previous Selected Photo",
     "library.next=Next Selected Photo",
@@ -253,7 +253,7 @@ const METADATA: &[&str] = &[
     "@Keyword Set",
     "@Color Label Set",
     "---",
-    "soon.metadataTargetOnly",
+    "metadata.targetOnly",
     "---",
     "photo.copyMetadata=Copy Metadata…",
     "photo.pasteMetadata",
@@ -263,7 +263,7 @@ const METADATA: &[&str] = &[
     "@Metadata Presets=Metadata Preset",
     "---",
     "dialog.captureTime",
-    "soon.revertCaptureTime",
+    "photo.setCaptureTime{\"fromExif\":true}=Revert Capture Time to Original",
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
@@ -421,8 +421,8 @@ const SETTINGS: &[&str] = &[
     "develop.pastePrevious",
     "---",
     "dialog.syncSettings",
-    "soon.syncCopies",
-    "soon.syncSnapshots",
+    "dialog.syncCopies",
+    "dialog.syncSnapshots",
     "develop.matchExposure",
     "---",
     "masks.updateAi=Update AI Settings",
@@ -464,7 +464,7 @@ const TOOLS: &[&str] = &[
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
-    "soon.fringeSelector",
+    "tool.fringe",
     "tool.pointColor",
     "---",
     "@Target Adjustment",
@@ -523,7 +523,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Color Label=Photo>Set Color Label",
     "---",
     "soon.deleteGps",
-    "soon.deleteLocationMetadata",
+    "map.clearLocationMetadata",
 ];
 
 const MAP_VIEW: &[&str] = &[
@@ -604,15 +604,15 @@ const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.i
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
-    "soon.newWebTemplate",
-    "soon.newWebTemplateFolder",
+    r#"ui.prompt{"title":"New Template","hint":"Template name","command":"webui.saveTemplate","key":"name"}=New Template…"#,
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"webui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "webui.reload=Reload",
     "webui.export=Export Web Photo Gallery…",
     "webui.previewInBrowser",
 ];
 
-const WEB_VIEW: &[&str] = &["panel.toolbar", "soon.webGuides"];
+const WEB_VIEW: &[&str] = &["panel.toolbar", "webui.guides=Show Guides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
@@ -756,7 +756,6 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.renameCatalog", "Rename Catalog…", None, 'S', false, "Rename the open catalog's folder and file, then reopen it."),
     soon("soon.autoImportEnable", "Enable Auto Import", None, 'M', false, "Watch a folder and import new files as they arrive."),
     soon(
         "soon.autoImportSettings",
@@ -812,7 +811,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon("soon.refinePhotos", "Refine Photos…", Some("Cmd+Alt+R"), 'S', false, "Reject unflagged photos and unflag flagged ones (a culling pass)."),
     soon("soon.reviewComments", "Review Comments", None, 'L', false, "Comments from shared web galleries."),
     soon("soon.flatField", "Flat-Field Correction…", None, 'L', false, "Correct lens cast and vignetting from a flat-field reference frame."),
     soon("soon.validateDng", "Validate DNG Files", None, 'S', false, "Check the DNGs' embedded checksums and list the damaged ones."),
@@ -824,21 +822,11 @@ pub const COMING_SOON: &[ComingSoon] = &[
         true,
         "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
     ),
-    soon("soon.findPreviousProcess", "Find Previous Process Photos", None, 'S', false, "Show the photos edited with an older process version."),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon(
-        "soon.metadataTargetOnly",
-        "Show Metadata for Target Photo Only",
-        None,
-        'S',
-        false,
-        "The Metadata panel shows the active photo, not the selection's mixed values.",
-    ),
-    soon("soon.revertCaptureTime", "Revert Capture Time to Original", None, 'S', false, "Undo Edit Capture Time from the file's own date."),
     soon(
         "soon.updateDngPreview",
         "Update DNG Preview & Metadata",
@@ -863,18 +851,14 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
-    soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
@@ -888,9 +872,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     // Web
-    soon("soon.newWebTemplate", "New Template", None, 'S', false, "Save the web gallery settings as a template."),
-    soon("soon.newWebTemplateFolder", "New Template Folder", None, 'S', false, "Group web templates in folders."),
-    soon("soon.webGuides", "Show Guides", None, 'S', false, "Layout guides in the gallery preview."),
 ];
 
 /// The "Coming soon" item `id`.

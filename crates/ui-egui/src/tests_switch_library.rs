@@ -290,3 +290,91 @@ fn page_title_names_the_active_photo_and_unsaved_changes() {
     assert_eq!(empty.page_title(false), lcc_brand::DISPLAY_NAME);
     assert_eq!(empty.page_title(true), format!("{} •", lcc_brand::DISPLAY_NAME));
 }
+
+fn rename_app(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, LccApp) {
+    let root = std::env::temp_dir().join(format!("lc-ui-renamelib-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let lib = root.join("Old Name");
+    std::fs::create_dir_all(&lib).unwrap();
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.open_library(&lib, true).unwrap();
+    let mut app = LccApp::new(session, Services::default());
+    app.ui.settings.recent_libraries = vec![lib.to_string_lossy().into_owned()];
+    app.ui.settings.library_path = lib.to_string_lossy().into_owned();
+    (root, lib, app)
+}
+
+#[test]
+fn rename_catalog_moves_the_folder_and_keeps_the_library_open() {
+    let (root, lib, mut app) = rename_app("ok");
+    let photos = app.session.catalog.len();
+    assert!(photos > 0);
+    let r = app.run("app.renameLibrary", json!({"name": "New Name"})).unwrap();
+    let new = root.join("New Name");
+    assert!(new.is_dir() && !lib.exists(), "folder renamed");
+    assert!(lcc_engine::library::is_library(&new));
+    assert_eq!(r["path"], new.to_string_lossy().as_ref());
+    assert_eq!(app.session.catalog.len(), photos, "reopened with its photos");
+    assert_eq!(app.session.library.as_ref().map(|l| l.dir.clone()), Some(new.clone()));
+    assert_eq!(app.ui.settings.recent_libraries, vec![new.to_string_lossy().into_owned()]);
+    assert_eq!(app.ui.settings.library_path, new.to_string_lossy().as_ref());
+    app.session.close_library().unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rename_catalog_follows_photos_stored_inside_the_catalog() {
+    let (root, lib, mut app) = rename_app("inside");
+    let originals = lib.join("Originals");
+    std::fs::create_dir_all(&originals).unwrap();
+    let file = originals.join("a.jpg");
+    std::fs::write(&file, b"x").unwrap();
+    let id = app.session.catalog.alloc_photo_id();
+    let photo = lcc_catalog::Photo::new(
+        id,
+        lcc_catalog::Source::File { path: file.to_string_lossy().into() },
+        "a.jpg",
+        "JPEG",
+        60,
+        40,
+        "2026-01-01T10:00:00",
+    );
+    app.session.commit("add", lcc_catalog::Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+    let r = app.run("app.renameLibrary", json!({"name": "Renamed"})).unwrap();
+    assert_eq!(r["relinked"], 1, "{r}");
+    let moved = root.join("Renamed").join("Originals").join("a.jpg");
+    assert!(moved.is_file());
+    let p = app.session.catalog.photo(id).expect("photo kept");
+    assert!(matches!(&p.source, lcc_catalog::Source::File { path } if std::path::Path::new(path) == moved), "{:?}", p.source);
+    // undoing must not point the photo back at a folder that is gone
+    let _ = app.run("edit.undo", json!({}));
+    let p = app.session.catalog.photo(id).expect("photo kept");
+    assert!(matches!(&p.source, lcc_catalog::Source::File { path } if std::path::Path::new(path) == moved), "{:?}", p.source);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rename_catalog_refuses_bad_names_and_leaves_the_library_alone() {
+    let (root, lib, mut app) = rename_app("bad");
+    std::fs::create_dir_all(root.join("Taken")).unwrap();
+    let photos = app.session.catalog.len();
+    for bad in ["", "  ", "a/b", "..", "x\\y", "Taken", "Old Name", "ends."] {
+        let e = app.run("app.renameLibrary", json!({"name": bad})).unwrap_err();
+        assert!(e.contains("app.renameLibrary"), "{bad:?}: {e}");
+        assert!(lib.is_dir(), "{bad:?} left the folder");
+        assert_eq!(app.session.library.as_ref().map(|l| l.dir.clone()), Some(lib.clone()), "{bad:?}");
+        assert_eq!(app.session.catalog.len(), photos);
+    }
+    assert!(app.run("app.renameLibrary", json!({"name": 5})).is_err());
+    // no name: asks for one
+    app.run("app.renameLibrary", json!({})).unwrap();
+    assert!(matches!(app.ui.dialog, Some(crate::state::Dialog::TextPrompt { .. })));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rename_catalog_needs_a_catalog_on_disk() {
+    let mut app = LccApp::new(lcc_engine::Session::new(), Services::default());
+    assert!(!crate::menus::ui_enabled(&app, "app.renameLibrary"));
+    assert!(app.run("app.renameLibrary", json!({"name": "x"})).is_err());
+}
