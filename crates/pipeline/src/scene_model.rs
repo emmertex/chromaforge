@@ -117,7 +117,13 @@ mod tests {
     fn the_model_replaces_sky_landscape_and_people_and_keeps_subject() {
         let mut a = crate::auto_mask::analyze(&Rgb32f::new(16, 12));
         let subject = a.subject.clone();
-        let sel = SceneSelection { sky: plane(4, 3, 0.9), water: plane(4, 3, 0.2), vegetation: plane(4, 3, 0.3), person: plane(4, 3, 0.7), terrain: vec![("mountains", plane(4, 3, 0.6))] };
+        let sel = SceneSelection {
+            sky: plane(4, 3, 0.9),
+            water: plane(4, 3, 0.2),
+            vegetation: plane(4, 3, 0.3),
+            person: plane(4, 3, 0.7),
+            terrain: vec![("mountains", plane(4, 3, 0.6))],
+        };
         apply(&mut a, &sel);
         assert_eq!(a.for_shape(&MaskShape::Sky), Some(&sel.sky));
         assert_eq!(a.for_shape(&MaskShape::Landscape { class: "Water".into() }), Some(&sel.water));

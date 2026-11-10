@@ -83,7 +83,7 @@ const FILE: &[&str] = &[
     "app.openLibrary=Open Catalog…",
     "@Open Recent=Libraries",
     "library.compact=Optimize Catalog",
-    "soon.renameCatalog",
+    "app.renameLibrary=Rename Catalog…",
     // The app's own catalog care, beside Classic's
     "catalog.backup=Back Up Catalog",
     "file.backupLibrary=Back Up Catalog…",
@@ -219,7 +219,7 @@ const PHOTO: &[&str] = &[
     "@Stacking=Stack",
     "@People",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -253,7 +253,7 @@ const METADATA: &[&str] = &[
     "@Keyword Set",
     "@Color Label Set",
     "---",
-    "soon.metadataTargetOnly",
+    "metadata.targetOnly",
     "---",
     "photo.copyMetadata=Copy Metadata…",
     "photo.pasteMetadata",
@@ -263,7 +263,7 @@ const METADATA: &[&str] = &[
     "@Metadata Presets=Metadata Preset",
     "---",
     "dialog.captureTime",
-    "soon.revertCaptureTime",
+    "photo.setCaptureTime{\"fromExif\":true}=Revert Capture Time to Original",
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
@@ -284,11 +284,11 @@ const VIEW: &[&str] = &[
     "view.zoomIn",
     "view.zoomOut",
     "view.zoom100=Zoom To 100%",
-    "soon.lockZoomPosition",
+    "view.lockZoomPosition",
     "---",
     "view.thumbSizeUp=Increase Grid Size",
     "view.thumbSizeDown=Decrease Grid Size",
-    "soon.scrollByRow",
+    "view.scrollByRow",
     "---",
     "@Sort",
     "---",
@@ -311,7 +311,7 @@ const VIEW: &[&str] = &[
     "@Loupe Info",
     "@Loupe Overlay",
     "---",
-    "soon.mirrorImageMode",
+    "view.mirrorImage",
 ];
 
 const WINDOW: &[&str] = &[
@@ -389,7 +389,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "dialog.enhance",
     "---",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -464,7 +464,7 @@ const TOOLS: &[&str] = &[
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
-    "soon.fringeSelector",
+    "tool.fringe",
     "tool.pointColor",
     "---",
     "@Target Adjustment",
@@ -523,7 +523,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Color Label=Photo>Set Color Label",
     "---",
     "soon.deleteGps",
-    "soon.deleteLocationMetadata",
+    "map.clearLocationMetadata",
 ];
 
 const MAP_VIEW: &[&str] = &[
@@ -568,7 +568,7 @@ const SLIDESHOW: &[&str] = &[
     "slideshow.exportJpeg",
     "slideshow.exportVideo",
     "---",
-    "soon.addTextOverlay",
+    r#"ui.prompt{"title":"Add Text Overlay…","hint":"{Caption} · {Filename}","command":"slideshow.overlays","key":"addTextString"}=Add Text Overlay…"#,
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -616,7 +616,7 @@ const WEB_VIEW: &[&str] = &["panel.toolbar", "webui.guides=Show Guides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
-    ("File", "Auto Import", &["soon.autoImportEnable", "soon.autoImportSettings"]),
+    ("File", "Auto Import", &["app.autoImportToggle", r#"app.settings{"section":"autoImport"}=Auto Import Settings…"#]),
     (
         "File",
         "Library Filters",
@@ -756,16 +756,6 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.renameCatalog", "Rename Catalog…", None, 'S', false, "Rename the open catalog's folder and file, then reopen it."),
-    soon("soon.autoImportEnable", "Enable Auto Import", None, 'M', false, "Watch a folder and import new files as they arrive."),
-    soon(
-        "soon.autoImportSettings",
-        "Auto Import Settings…",
-        None,
-        'M',
-        false,
-        "Choose the watched folder, destination, naming and develop settings for Auto Import.",
-    ),
     soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
     soon(
         "soon.quickCollectionTarget",
@@ -824,20 +814,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
         "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
     ),
     // Photo
-    soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon(
-        "soon.metadataTargetOnly",
-        "Show Metadata for Target Photo Only",
-        None,
-        'S',
-        false,
-        "The Metadata panel shows the active photo, not the selection's mixed values.",
-    ),
-    soon("soon.revertCaptureTime", "Revert Capture Time to Original", None, 'S', false, "Undo Edit Capture Time from the file's own date."),
     soon(
         "soon.updateDngPreview",
         "Update DNG Preview & Metadata",
@@ -848,28 +828,16 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     // View
     soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
-    soon(
-        "soon.lockZoomPosition",
-        "Lock Zoom Position",
-        Some("Cmd+Shift+="),
-        'S',
-        false,
-        "Zoom every photo to the same place while stepping through them.",
-    ),
-    soon("soon.scrollByRow", "Scroll By Row", None, 'S', false, "The grid scrolls a whole row at a time."),
-    soon("soon.mirrorImageMode", "Enable Mirror Image Mode", None, 'S', false, "Show every photo flipped left to right (view only)."),
     // Window
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
@@ -878,7 +846,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     // Slideshow
-    soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),

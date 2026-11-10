@@ -587,7 +587,9 @@ fn select_landscape_adds_the_analysis_classes_and_asks_for_the_scene_model_for_t
         }
     }
     assert_eq!(masks(&s), before, "a refused class adds no mask");
-    for bad in [json!({"kind": "landscape"}), json!({"kind": "landscape", "class": "dragons"}), json!({"kind": "landscape", "class": "x".repeat(500)})] {
+    for bad in
+        [json!({"kind": "landscape"}), json!({"kind": "landscape", "class": "dragons"}), json!({"kind": "landscape", "class": "x".repeat(500)})]
+    {
         assert_eq!(s.execute("mask.add", &bad).unwrap_err().kind(), ErrorKind::BadParams, "{bad}");
     }
 }

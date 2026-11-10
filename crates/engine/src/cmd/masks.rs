@@ -81,7 +81,8 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
         }
         "landscape" => {
             let raw = str_param(p, "class").map(str::trim).unwrap_or_default();
-            let class = landscape_class(raw).ok_or_else(|| bad(c, format!("landscape: `class` is one of {} (not `{raw}`)", LANDSCAPE_CLASSES.join(", "))))?;
+            let class =
+                landscape_class(raw).ok_or_else(|| bad(c, format!("landscape: `class` is one of {} (not `{raw}`)", LANDSCAPE_CLASSES.join(", "))))?;
             MaskShape::Landscape { class: class.to_string() }
         }
         "concept" => {

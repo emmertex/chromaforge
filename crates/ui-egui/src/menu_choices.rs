@@ -232,7 +232,12 @@ fn select_landscape(app: &LccApp) -> Vec<MenuNode> {
     v.push(MenuNode::Separator);
     v.extend(choices(
         "mask.add",
-        [row("Mountains", "mountains"), row("Architecture", "architecture"), row("Natural Ground", "natural ground"), row("Artificial Ground", "artificial ground")],
+        [
+            row("Mountains", "mountains"),
+            row("Architecture", "architecture"),
+            row("Natural Ground", "natural ground"),
+            row("Artificial Ground", "artificial ground"),
+        ],
     ));
     v
 }
