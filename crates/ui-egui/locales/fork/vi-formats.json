@@ -220,6 +220,7 @@
   "{n} keywords removed": "Đã xóa {n} từ khóa",
   "{n} new photos in {folders} folders: see the badges in Folders": "{n} ảnh mới trong {folders} thư mục: xem các huy hiệu trong Thư mục",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "{n} ảnh mới trong “{folder}”: nhấp chuột phải vào thư mục → Thêm ảnh mới",
+  "{n} new photo{} from the camera roll": "{n} ảnh mới từ thư viện ảnh của máy{:.0}",
   "{n} operations in progress…": "{n} thao tác đang chạy…",
   "{n} pages": "{n} trang",
   "{n} paper size(s) from the printer": "{n} khổ giấy từ máy in",

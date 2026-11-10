@@ -2811,6 +2811,7 @@
   "Waiting for the other device…": "もう一方のデバイスを待っています…",
   "Waiting for {program} to finish ({plugin})": "{program} の完了を待機中（{plugin}）",
   "Waiting to start…": "開始を待っています…",
+  "Watch for new photos": "新しい写真を監視",
   "Watched-folder auto import; Convert to DNG; Duplicate; Build Standard / 1:1 / Smart Previews.": "監視フォルダーの自動読み込み、DNG に変換、複製、標準 / 1:1 / スマートプレビューの作成。",
   "Watermark text": "透かしのテキスト",
   "Watermarking": "透かし",
