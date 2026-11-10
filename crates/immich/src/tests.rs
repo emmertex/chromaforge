@@ -855,3 +855,81 @@ fn a_trashed_checksum_match_is_restored_not_reused_as_is() {
     assert!(String::from_utf8_lossy(&restore.body).contains("as-1"));
     assert!(!seen.iter().any(|r| r.method == "POST" && r.target == "/api/assets"), "no upload");
 }
+
+/// A server whose album `al-1` ("Old") has `activities` as the answer to `GET /activities`.
+fn comment_server(activities: &'static str) -> (String, Arc<Mutex<Vec<Req>>>) {
+    serve(move |req| {
+        let path = req.target.split('?').next().unwrap_or_default();
+        match (req.method.as_str(), path) {
+            ("GET", "/api/albums") => response("200 OK", br#"[{"id":"al-1","albumName":"Old","assetCount":1}]"#),
+            ("GET", "/api/activities") => response("200 OK", activities.as_bytes()),
+            _ => response("404 Not Found", br#"{"message":"Not found"}"#),
+        }
+    })
+}
+
+fn comments_of(url: &str, name: &str, remote: &str) -> Result<Vec<lcc_publish::Comment>, lcc_publish::PublishError> {
+    use lcc_publish::PublishService;
+    let mut svc = crate::publish::ImmichPublish::new(client(url, KEY), Default::default(), name, "dev", publish_photos());
+    assert!(svc.capabilities().comments);
+    svc.comments(remote)
+}
+
+#[test]
+fn comments_come_from_the_album_activity_oldest_first_without_likes() {
+    let (url, seen) = comment_server(
+        r#"[
+        {"id":"b","type":"comment","createdAt":"2026-11-02T10:00:00.000Z","comment":" Lovely light ","user":{"name":"Ann","email":"a@x"}},
+        {"id":"a","type":"comment","createdAt":"2026-11-01T09:00:00.000Z","comment":"First!","user":{"name":"","email":"bob@x"}},
+        {"id":"l","type":"like","createdAt":"2026-11-03T09:00:00.000Z","user":{"name":"Cy"}},
+        {"id":"e","type":"comment","createdAt":"2026-11-04T09:00:00.000Z","comment":"  "}
+    ]"#,
+    );
+    let list = comments_of(&url, "Old", "r:as-1").unwrap();
+    assert_eq!(list.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["First!", "Lovely light"]);
+    assert_eq!(list[0].author, "bob@x");
+    assert_eq!(list[1].author, "Ann");
+    assert_eq!(list[0].date.as_deref(), Some("2026-11-01T09:00:00.000Z"));
+    let seen = seen.lock().unwrap();
+    let req = seen.iter().find(|r| r.target.starts_with("/api/activities")).expect("asked");
+    assert!(req.target.contains("albumId=al-1") && req.target.contains("assetId=as-1") && req.target.contains("type=comment"), "{}", req.target);
+    assert!(!seen.iter().any(|r| r.method != "GET"), "read only: no album is created or renamed");
+}
+
+#[test]
+fn comments_of_an_album_that_is_gone_are_none_and_a_server_error_is_reported() {
+    let (url, seen) = comment_server("[]");
+    assert!(comments_of(&url, "Other", "r:as-1").unwrap().is_empty());
+    assert!(!seen.lock().unwrap().iter().any(|r| r.target.starts_with("/api/activities")));
+    let (url, _) = serve(|_| response("403 Forbidden", br#"{"message":"missing permission activity.read"}"#));
+    assert!(comments_of(&url, "Old", "r:as-1").is_err());
+}
+
+#[test]
+fn hostile_activity_answers_are_bounded_and_never_panic() {
+    // too many entries are cut, long text and names are clipped
+    let many: String = (0..600)
+        .map(|i| {
+            let (text, name) = if i < 3 { ("é".repeat(9000), "n".repeat(900)) } else { ("hi".to_string(), "n".to_string()) };
+            format!(r#"{{"id":"c{i}","type":"comment","createdAt":"2026-11-01T09:00:00Z","comment":"{text}","user":{{"name":"{name}"}}}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let (url, _) = comment_server(Box::leak(format!("[{many}]").into_boxed_str()));
+    let list = comments_of(&url, "Old", "r:as-1").unwrap();
+    assert!(list.len() <= MAX_ACTIVITIES);
+    assert!(list.iter().all(|c| c.text.chars().count() <= 4000 && c.author.chars().count() <= 200));
+    // an answer over the byte cap is refused
+    let big = format!("[{}]", " ".repeat(MAX_ACTIVITY_BYTES as usize + 10));
+    let (url, _) = comment_server(Box::leak(big.into_boxed_str()));
+    assert!(comments_of(&url, "Old", "r:as-1").is_err());
+    // wrong shapes and hostile ids are errors, not panics
+    for body in ["{}", "null", "[1,2]", r#"[{"id":5}]"#, r#"[{"type":null,"comment":7}]"#, "[", ""] {
+        let (url, _) = comment_server(Box::leak(body.to_string().into_boxed_str()));
+        let _ = comments_of(&url, "Old", "r:as-1");
+    }
+    let (url, _) = comment_server("[]");
+    for id in ["", "r:", "r:../x", "o:a b+r:", "garbage"] {
+        let _ = comments_of(&url, "Old", id);
+    }
+}

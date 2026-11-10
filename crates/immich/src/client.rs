@@ -285,6 +285,29 @@ impl Client {
         Ok(out)
     }
 
+    /// `GET /activities?albumId=&assetId=&type=`: the comments (`kind` `comment`) or likes (`like`)
+    /// on one asset of an album, oldest first. Needs `activity.read`. The answer is capped at
+    /// [`MAX_ACTIVITY_BYTES`] and the list at [`MAX_ACTIVITIES`]; both are an error or a cut, never a crash.
+    pub fn activities(&self, album: &str, asset: &str, kind: &str) -> Result<Vec<Activity>, ImmichError> {
+        if !matches!(kind, "comment" | "like") {
+            return Err(ImmichError::Protocol(format!("not an activity type: {kind:?}")));
+        }
+        let path = format!("/activities?albumId={}&assetId={}&type={kind}", path_id(album)?, path_id(asset)?);
+        let mut r = self.send(Method::Get, &path, None, true)?;
+        let too_big = || ImmichError::Protocol(format!("the activity list is larger than {MAX_ACTIVITY_BYTES} bytes"));
+        if r.header("content-length").and_then(|v| v.trim().parse::<u64>().ok()).is_some_and(|n| n > MAX_ACTIVITY_BYTES) {
+            return Err(too_big());
+        }
+        let mut body = Vec::new();
+        (&mut r).take(MAX_ACTIVITY_BYTES.saturating_add(1)).read_to_end(&mut body).map_err(|e| ImmichError::Io(e.to_string()))?;
+        if body.len() as u64 > MAX_ACTIVITY_BYTES {
+            return Err(too_big());
+        }
+        let mut list: Vec<Activity> = serde_json::from_slice(&body).map_err(|e| ImmichError::Protocol(format!("/activities: {e}")))?;
+        list.truncate(MAX_ACTIVITIES);
+        Ok(list)
+    }
+
     /// `POST /assets/bulk-upload-check`: which checksums the server already has.
     pub fn upload_check(&self, items: &[UploadCheck]) -> Result<Vec<UploadCheckResult>, ImmichError> {
         let r: UploadCheckResponse = self.post("/assets/bulk-upload-check", &serde_json::json!({ "assets": items }))?;
