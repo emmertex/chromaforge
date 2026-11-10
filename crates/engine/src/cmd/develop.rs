@@ -1504,7 +1504,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Settings",
             [],
             None,
-            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId]}: copy the active photo's settings to the other selected photos: whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
+            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId], copies?: bool}: copy the active photo's settings to the other selected photos (with `copies`: to the master and every virtual copy of the active photo instead; Sync Copies): whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
             has_selection,
             |s, p| {
                 let c = "develop.sync";
@@ -1537,13 +1537,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut partial = pick.extract(&d);
                 lcc_develop::presets::to_recipes(&mut partial);
                 let values: Vec<(&str, f64)> = controls.iter().filter_map(|k| lcc_develop::controls::get(&d, k).map(|v| (*k, v))).collect();
-                let targets: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
+                let targets: Vec<PhotoId> = if p.get("copies").and_then(Value::as_bool).unwrap_or(false) {
+                    let master = s.catalog.photo(id).map(|ph| ph.copy_of.unwrap_or(ph.id)).unwrap_or(id);
+                    s.catalog
+                        .photos()
+                        .filter(|ph| !ph.deleted && ph.id != id && (ph.id == master || ph.copy_of == Some(master)))
+                        .map(|ph| ph.id)
+                        .collect()
+                } else {
+                    s.selection.ids.iter().copied().filter(|x| *x != id).collect()
+                };
                 let link_source = link_copied_masks(s, &mut partial, Some(id), &targets, "Sync Settings");
                 let mut ops = Vec::new();
                 // a crop goes on as what it means on each photo's own frame (upstream #3572; as Auto Sync does)
                 let with_crop = partial.get("crop").is_some();
                 let adims = crop_dims(s, id);
-                for x in s.selection.ids.clone().into_iter().filter(|x| *x != id) {
+                for x in targets.iter().copied() {
                     let Some(dd) = s.develop_of(x) else { continue };
                     let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
                     if with_crop {
@@ -2114,6 +2123,32 @@ pub fn specs() -> Vec<CommandSpec> {
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
             edit_version(s, p, c, "Rename Version", |v, _| v.name = name)
         }),
+        cmd!(
+            "version.sync",
+            "Sync Snapshots",
+            ["Photo", "Develop Settings"],
+            None,
+            "{groups?: [settingsGroup], settings?: [settingItem]}: apply those settings of the active photo's current edit to each of its snapshots (versions), in one undo step (default: what Sync ticked last) → {changed}",
+            has_active,
+            |s, p| {
+                let c = "version.sync";
+                let id = active(s, c)?;
+                let pick = pick_param(p, c)?.unwrap_or_else(|| s.dialogs.sync.clone());
+                let ph = s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?;
+                if ph.versions.is_empty() {
+                    return Err(bad(c, "the photo has no snapshots"));
+                }
+                let mut partial = pick.extract(&s.develop_of(id).unwrap_or_default());
+                lcc_develop::presets::to_recipes(&mut partial);
+                let mut versions = ph.versions.clone();
+                for v in &mut versions {
+                    v.settings = std::sync::Arc::new(lcc_develop::apply_partial(&v.settings, &partial, 1.0));
+                }
+                let n = versions.len();
+                s.commit("Sync Snapshots", Op::SetVersions { id, versions })?;
+                Ok(json!({"changed": n}))
+            }
+        ),
         cmd!("version.update", "Update Version with Current Settings", [], None, "{index}", has_active, |s, p| {
             edit_version(s, p, "version.update", "Update Version", |v, current| v.settings = current)
         }),

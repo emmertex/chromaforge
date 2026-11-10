@@ -94,13 +94,6 @@ Generated from the menu tables; don't edit by hand.
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
 
-## Develop module ▸ Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
-| Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-
 ## Develop module ▸ Tools
 
 | Item | What it does | Size | Kind | Slot |
