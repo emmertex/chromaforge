@@ -15,11 +15,13 @@ use crate::state::{NameEdit, ViewMode};
 pub const MOVE_TO_UNNAMED: &str = "face.moveToUnnamed";
 pub const REMOVE_REGION: &str = "face.removeRegion";
 pub const EDIT_NAME: &str = "face.editName";
+pub const FIND_SIMILAR: &str = "face.findSimilar";
 
 pub const COMMANDS: &[UiCommand] = &[
     (MOVE_TO_UNNAMED, "Move to Unnamed People", None, ""),
     (REMOVE_REGION, "Remove Face Region", None, ""),
     (EDIT_NAME, "Edit Name", Some("Shift+O"), ""),
+    (FIND_SIMILAR, "Find Similar Faces", None, ""),
 ];
 
 /// The face the People items act on: (photo, region index), when it is a face region that exists.
@@ -50,17 +52,41 @@ fn region_name(app: &LccApp, (photo, index): (u64, usize)) -> Option<String> {
     app.session.catalog.photo(lcc_catalog::PhotoId(photo))?.meta.regions.get(index)?.name.clone()
 }
 
+/// Opens the page of the person the chosen face belongs to (a named face), or looks most like (an unnamed one, by the
+/// faces already embedded: nothing is scanned here). That page lists their faces and the unnamed faces that look like them.
+fn find_similar(app: &mut LccApp, (photo, index): (u64, usize)) -> Result<Value, String> {
+    let name = match region_name(app, (photo, index)) {
+        Some(n) => n,
+        None => {
+            let v = app.session.execute("faces.suggest", &json!({"ids": [photo], "budgetMs": 0})).map_err(|e| e.to_string())?;
+            let best = v["photos"]
+                .as_array()
+                .and_then(|a| a.iter().find(|p| p["id"].as_u64() == Some(photo)))
+                .and_then(|p| p["faces"].as_array())
+                .and_then(|a| a.iter().find(|f| f["index"].as_u64().and_then(|i| usize::try_from(i).ok()) == Some(index)))
+                .and_then(|f| f["candidates"].as_array())
+                .and_then(|c| c.first())
+                .and_then(|c| c["name"].as_str());
+            match best {
+                Some(n) => n.to_string(),
+                None => return Err("no named person looks like this face yet (name some faces first, and let the scan reach this photo)".to_string()),
+            }
+        }
+    };
+    app.run("view.person", json!({"name": name}))
+}
+
 pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     let face = chosen_face(app);
     match id {
         MOVE_TO_UNNAMED => Some(face.and_then(|f| region_name(app, f)).is_some()),
-        REMOVE_REGION | EDIT_NAME => Some(face.is_some()),
+        REMOVE_REGION | EDIT_NAME | FIND_SIMILAR => Some(face.is_some()),
         _ => None,
     }
 }
 
 pub fn run(app: &mut LccApp, id: &str, _p: &Value) -> Option<Result<Value, String>> {
-    if !matches!(id, MOVE_TO_UNNAMED | REMOVE_REGION | EDIT_NAME) {
+    if !matches!(id, MOVE_TO_UNNAMED | REMOVE_REGION | EDIT_NAME | FIND_SIMILAR) {
         return None;
     }
     let Some((photo, index)) = chosen_face(app) else {
@@ -74,6 +100,7 @@ pub fn run(app: &mut LccApp, id: &str, _p: &Value) -> Option<Result<Value, Strin
             app.ui.name_edit = None;
             app.run("photo.removeRegion", json!({"id": photo, "index": index}))
         }
+        FIND_SIMILAR => find_similar(app, (photo, index)),
         _ => {
             if app.ui.view == ViewMode::People {
                 // the naming bar's box takes the keyboard

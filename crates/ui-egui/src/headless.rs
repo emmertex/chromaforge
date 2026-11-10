@@ -1480,7 +1480,7 @@ mod tests {
         h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
         h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
         h.settle(SETTLE);
-        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName"] {
+        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName", "face.findSimilar"] {
             assert!(!crate::menus::ui_enabled(&h.app, c), "{c} is off with no face chosen");
             let r = h.request("engine.execute", json!({"command": c}), t);
             assert_eq!(r["ok"], false, "{c}: {r}");
@@ -1497,6 +1497,13 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == 0 && e.text == "Ann"));
         h.app.ui.name_edit = None;
+        // Find Similar Faces opens the named person's page
+        assert!(crate::menus::ui_enabled(&h.app, "face.findSimilar"));
+        let r = h.request("engine.execute", json!({"command": "face.findSimilar"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.ui.person_page.as_deref(), Some("Ann"));
+        h.app.ui.person_page = None;
+        h.app.ui.view = crate::state::ViewMode::Detail;
         // Shift+O does the same while a face is chosen (it cycles the crop overlay otherwise)
         h.request("ui.key", json!({"key": "O", "shift": true}), t);
         h.step();
