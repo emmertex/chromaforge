@@ -106,11 +106,9 @@ pub fn fit(reference: &RawImage) -> Result<FlatField, FlatFieldError> {
         }
         // a low-order surface through the cell means (at their samples' centroids) is the smooth map: it ignores
         // noise and dust, and fills cells without usable samples
-        let pts: Vec<(f64, f64, f64)> =
-            cells.iter().filter(|c| c.3 > 0).map(|c| (c.1 / c.3 as f64, c.2 / c.3 as f64, c.0 / c.3 as f64)).collect();
-        let coef = fit_surface(&pts).ok_or_else(|| {
-            FlatFieldError::Reference("the flat-field reference has too few usable samples (black or clipped)".into())
-        })?;
+        let pts: Vec<(f64, f64, f64)> = cells.iter().filter(|c| c.3 > 0).map(|c| (c.1 / c.3 as f64, c.2 / c.3 as f64, c.0 / c.3 as f64)).collect();
+        let coef = fit_surface(&pts)
+            .ok_or_else(|| FlatFieldError::Reference("the flat-field reference has too few usable samples (black or clipped)".into()))?;
         let grid: Vec<f64> = (0..g * g)
             .map(|i| {
                 let t = |k: usize| 2.0 * k as f64 / (g - 1) as f64 - 1.0;
@@ -121,10 +119,7 @@ pub fn fit(reference: &RawImage) -> Result<FlatField, FlatFieldError> {
         if !(centre.is_finite() && centre > 1e-4) {
             return Err(FlatFieldError::Reference("the flat-field reference's centre is black".into()));
         }
-        let gains = grid
-            .iter()
-            .map(|&l| if l.is_finite() && l > 0.0 { ((centre / l) as f32).clamp(MIN_GAIN, MAX_GAIN) } else { 1.0 })
-            .collect();
+        let gains = grid.iter().map(|&l| if l.is_finite() && l > 0.0 { ((centre / l) as f32).clamp(MIN_GAIN, MAX_GAIN) } else { 1.0 }).collect();
         let as_u32 = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
         ops.push(Opcode::GainMap {
             area: Area {
@@ -193,7 +188,7 @@ fn fit_surface(pts: &[(f64, f64, f64)]) -> Option<[f64; TERMS]> {
         let piv = (col..TERMS).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
         a.swap(col, piv);
         let d = a[col][col];
-        if !(d.abs() > 1e-12) {
+        if d.is_nan() || d.abs() <= 1e-12 {
             return None;
         }
         for r in 0..TERMS {
@@ -240,7 +235,10 @@ mod tests {
     /// A synthetic RGGB mosaic: `level(x, y, colour)` in [0, 1] over a 12-bit range with black 256.
     fn mosaic(w: usize, h: usize, level: impl Fn(usize, usize, u8) -> f64) -> RawImage {
         let cfa = Cfa::bayer("RGGB").unwrap();
-        let data = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| (256.0 + level(x, y, cfa.color_at(x, y)) * 3839.0).round() as u16).collect();
+        let data = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| (256.0 + level(x, y, cfa.color_at(x, y)) * 3839.0).round() as u16)
+            .collect();
         let full = Rect::new(0, 0, w, h);
         RawImage {
             format: RawFormat::Dng,
@@ -270,7 +268,7 @@ mod tests {
         let (dx, dy) = (x as f64 / w as f64 - 0.5, y as f64 / h as f64 - 0.5);
         let r2 = (dx * dx + dy * dy) / 0.5;
         let k = [0.5, 0.55, 0.65][c as usize];
-        1.0 - k * r2 + if (x * 7 + y * 13) % 5 == 0 { 0.004 } else { 0.0 }
+        1.0 - k * r2 + if (x * 7 + y * 13).is_multiple_of(5) { 0.004 } else { 0.0 }
     }
 
     #[test]
@@ -290,11 +288,8 @@ mod tests {
         let spread = |d: &[f32]| {
             let mut worst = 0f32;
             for c in 0..3u8 {
-                let v: Vec<f32> = (0..h)
-                    .flat_map(|y| (0..w).map(move |x| (x, y)))
-                    .filter(|&(x, y)| cfa.color_at(x, y) == c)
-                    .map(|(x, y)| d[y * w + x])
-                    .collect();
+                let v: Vec<f32> =
+                    (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).filter(|&(x, y)| cfa.color_at(x, y) == c).map(|(x, y)| d[y * w + x]).collect();
                 let (lo, hi) = v.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
                 worst = worst.max((hi - lo) / hi);
             }
