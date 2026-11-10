@@ -45,6 +45,10 @@ covers what exists today.
   they take the desktop's drop path: photos open the import review, presets import as presets. A share that arrives
   before the native side is up waits in the activity until `Host::new` calls `hostReady()`. Copy failures are logged
   and shown as a toast.
+- **HEIC/HEIF photos** (what iPhones shoot) open like on the desktop: the same pure-Rust decoder
+  (`lcc-heif`), on through the Android app's default `heif` feature, so the import review, the camera roll
+  (MediaStore files HEIC shots as images) and the pickers (`image/heif`) all take them. Distributors who must
+  avoid HEVC (patents) build with `--no-default-features`, as on the desktop.
 - **Peer discovery** is multicast DNS service discovery (RFC 6762 / 6763, `crates/peer`), the same as Bonjour, so
   a future iOS build can join. Android's Wi-Fi drops multicast unless an app holds a `WifiManager.MulticastLock`:
   the activity acquires one in `onCreate` (permission `CHANGE_WIFI_MULTICAST_STATE`) and releases it in `onDestroy`.
