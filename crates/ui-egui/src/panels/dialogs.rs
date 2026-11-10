@@ -2379,9 +2379,18 @@ fn sheet_w(screen: egui::Rect, insets: crate::modern::Insets) -> f32 {
 fn prompt_verb(command: &str) -> &'static str {
     match command {
         "album.rename" | "folder.rename" | "version.rename" | "preset.rename" | "mask.renameEffect" => "Rename",
-        "folder.create" | "mask.setEffectGroup" | "app.newLibrary" => "Create",
+        "folder.create" | "mask.setEffectGroup" | "app.newLibrary" | "preset.createGroup" => "Create",
         "preset.move" => "Move",
-        "keyword.saveSet" | "filter.savePreset" | "curve.savePreset" | "metadata.savePreset" => "Save",
+        "keyword.saveSet"
+        | "printui.saveCreation"
+        | "printui.saveTemplate"
+        | "book.save"
+        | "slideshow.saveSlideshow"
+        | "slideshow.saveTemplate"
+        | "web.saveGallery"
+        | "filter.savePreset"
+        | "curve.savePreset"
+        | "metadata.savePreset" => "Save",
         "photo.tagFromTracklog" => "Add Locations",
         _ => "OK",
     }
