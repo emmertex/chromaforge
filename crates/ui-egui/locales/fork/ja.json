@@ -118,6 +118,7 @@
   "Add to Target Collection": "ターゲットコレクションに追加",
   "Add to or remove from the selected photos": "選択した写真に追加または削除",
   "Add {seq}: 1, 2, 3… in the order the photos are shown": "{seq} を追加：写真の表示順に 1、2、3…",
+  "Added to every photo that arrives. The file naming applies to copies; separate keywords with commas.": "届いたすべての写真に追加されます。ファイル名の設定はコピーに適用されます。キーワードはカンマで区切ります。",
   "Adding Capture One photos…": "Capture One の写真を追加中…",
   "Address": "住所",
   "Adds:": "追加内容:",

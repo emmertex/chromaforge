@@ -2286,8 +2286,11 @@ impl LccApp {
                 && !self.tasks.is_running(LABEL)
             {
                 self.ui.auto_import_at = now;
-                let listed = folder.clone();
-                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&listed);
+                let scope = self.session.auto_import_scope();
+                let work = move || match scope {
+                    Some(scope) => scope.list(),
+                    None => Ok(Vec::new()),
+                };
                 let done = move |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
                     // the watched folder changed while this one was listed: its result is for nothing on screen
                     if app.session.import_defaults.auto_active_folder() != Some(&folder) {

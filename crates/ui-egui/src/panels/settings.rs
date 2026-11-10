@@ -1172,6 +1172,61 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 }
                 ui.data_mut(|m| m.insert_temp(id, name));
             });
+            let o = d.auto_options.clone();
+            row(ui, t, "", |ui| {
+                let mut sub = o.subfolders;
+                if ui.checkbox(&mut sub, crate::i18n::tr("Include subfolders")).changed() {
+                    let _ = app.run("library.autoImport", json!({"subfolders": sub}));
+                }
+            });
+            hint(ui, t, crate::i18n::tr("Added to every photo that arrives. The file naming applies to copies; separate keywords with commas."));
+            row(ui, t, crate::i18n::tr("File naming"), |ui| {
+                let id = egui::Id::new("auto-rename");
+                let mut text = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| o.rename.clone());
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut text).hint_text(crate::i18n::tr("keep names, or e.g. {date}_{seq:3}")).desired_width(240.0));
+                register(ui.ctx(), "field:settings.autoImportRename", r.rect);
+                if r.lost_focus() {
+                    let _ = app.run("library.autoImport", json!({"rename": text.trim()}));
+                }
+                ui.data_mut(|m| m.insert_temp(id, text));
+            });
+            row(ui, t, crate::i18n::tr("Develop preset"), |ui| {
+                if let Some(v) = preset_combo(app, ui, "settingsAutoPreset", o.preset.as_deref(), "None") {
+                    let _ = app.run("library.autoImport", json!({"preset": v}));
+                }
+            });
+            row(ui, t, crate::i18n::tr("Metadata preset"), |ui| {
+                let cur = o.metadata_preset.clone();
+                let mut pick = None;
+                let r = crate::widgets::combo_box("settingsAutoMetaPreset")
+                    .width(240.0)
+                    .selected_text(cur.clone().unwrap_or_else(|| crate::i18n::tr("None").into()))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(cur.is_none(), crate::i18n::tr("None")).clicked() {
+                            pick = Some(String::new());
+                        }
+                        for m in &app.session.metadata_presets {
+                            if ui.selectable_label(cur.as_deref() == Some(m.name.as_str()), &m.name).clicked() {
+                                pick = Some(m.name.clone());
+                            }
+                        }
+                    });
+                register(ui.ctx(), "combo:settingsAutoMetaPreset", r.response.rect);
+                if let Some(n) = pick {
+                    let _ = app.run("library.autoImport", json!({"metadataPreset": n}));
+                }
+            });
+            row(ui, t, crate::i18n::tr("Keywords"), |ui| {
+                let id = egui::Id::new("auto-keywords");
+                let mut text = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| o.keywords.join(", "));
+                let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(crate::i18n::tr("None")).desired_width(240.0));
+                register(ui.ctx(), "field:settings.autoImportKeywords", r.rect);
+                if r.lost_focus() {
+                    let _ = app.run("library.autoImport", json!({"keywords": text.trim()}));
+                }
+                ui.data_mut(|m| m.insert_temp(id, text));
+            });
         }
     }
     if app.session.library.is_none() {
