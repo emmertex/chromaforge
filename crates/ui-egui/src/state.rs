@@ -511,6 +511,10 @@ pub struct AppSettings {
     /// card when there is one), `off`, or a card's key.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub gpu_helper: String,
+    /// Hardware device for AI semantic search vector embeddings (Settings ▸ Performance / Settings ▸ AI Models):
+    /// empty or "auto" for Automatic, "cpu" for CPU, or a card's key.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub ml_device: String,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -741,6 +745,7 @@ impl Default for AppSettings {
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
             gpu_helper: String::new(),
+            ml_device: String::new(),
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,
@@ -1016,6 +1021,9 @@ pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
 }
 /// The Import tab's settings column (Import Settings, on the right of the browsed photos).
 pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
+/// The Import tab's Folders panel (the cards, drives and folders on the left of the browsed photos): its right edge
+/// drags it wider to read long folder names.
+pub const IMPORT_SOURCES_WIDTH: PanelWidth = PanelWidth { min: 180.0, default: 230.0, max: 640.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1251,6 +1259,9 @@ pub struct UiState {
     /// Width of the Import tab's settings column in points (its left edge is dragged to resize
     /// it; within [`IMPORT_SETTINGS_WIDTH`]).
     pub import_settings_width: f32,
+    /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
+    /// [`IMPORT_SOURCES_WIDTH`]).
+    pub import_sources_width: f32,
     /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
     /// to go back to).
     pub presets: bool,
@@ -2168,13 +2179,13 @@ pub enum Dialog {
         library: String,
         /// The photos in the open library.
         photos: usize,
-        /// "Create a new library" is chosen (else "Merge into the open library").
+        /// "Create a new catalog" is chosen (else "Merge into the open library").
         new_library: bool,
         /// The new library's name (prefilled from the catalog's file name).
         name: String,
         /// The folder the new library goes in (prefilled with the open library's parent folder).
         location: String,
-        /// "Don't ask again (always merge into the open library)".
+        /// "Don't ask again (always merge into the open catalog)".
         dont_ask: bool,
         /// `Session::library_generation` when the window opened.
         generation: u64,
@@ -2325,7 +2336,7 @@ pub struct SyncCounts {
     pub new: usize,
     /// Files whose content a photo already has.
     pub duplicates: usize,
-    /// Of those, the ones "Don't import files already in the library" unticked brings in (not copies
+    /// Of those, the ones "Don't import files already in the catalog" unticked brings in (not copies
     /// of a photo in Recently Deleted: see `lcc_engine::sync::FolderChanges::importable_duplicates`).
     #[serde(default)]
     pub copies: usize,
@@ -2400,6 +2411,7 @@ impl Default for UiState {
             profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
             import_settings_width: IMPORT_SETTINGS_WIDTH.default,
+            import_sources_width: IMPORT_SOURCES_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2916,6 +2928,7 @@ impl UiState {
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
         self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
+        self.import_sources_width = IMPORT_SOURCES_WIDTH.clamp(self.import_sources_width);
         self.film_height = FILM_HEIGHT.clamp(self.film_height);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
@@ -3011,6 +3024,16 @@ mod loupe_info_tests {
         assert_eq!(saved["loupeMessages"], false);
         let read: AppSettings = serde_json::from_value(saved).unwrap();
         assert!(!read.loupe_messages);
+    }
+
+    #[test]
+    fn ml_device_setting_round_trips() {
+        assert_eq!(AppSettings::default().ml_device, "");
+        let settings = AppSettings { ml_device: "cpu".into(), ..AppSettings::default() };
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["mlDevice"], "cpu");
+        let read: AppSettings = serde_json::from_value(saved).unwrap();
+        assert_eq!(read.ml_device, "cpu");
     }
 }
 

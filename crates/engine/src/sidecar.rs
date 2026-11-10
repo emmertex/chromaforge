@@ -365,8 +365,10 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
                     })
                     .unwrap_or(crate::import::ImportUprightMode::Unknown);
                 // Lightroom keeps its Upright analysis when Upright is Off but doesn't apply it:
-                // nothing is lost then
-                if mode != crate::import::ImportUprightMode::Off {
+                // nothing is lost then; Auto, Level, Vertical and Full apply Lightroom's own matrix
+                // (`geometry.lrc_upright`), so only a mode without a usable one is redone here
+                let applied = partial.pointer("/geometry/lrc_upright").is_some_and(|v| !v.is_null());
+                if mode != crate::import::ImportUprightMode::Off && !applied {
                     out.warnings.push(crate::import::ImportWarning {
                         path: String::new(),
                         code: crate::import::ImportWarningCode::UprightGeometry,
@@ -535,7 +537,7 @@ impl SidecarData {
         self
     }
 
-    /// The patch with a Lightroom crop put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
+    /// The patch with a Lightroom crop, spots and mask shapes put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
     /// of the straightened crop on the stored image, before its orientation (the sidecar's whole orientation, else
     /// the file's) and the straighten turn, as in a Lightroom catalog
     /// ([`crate::lightroom_catalog::catalog_crop`]). `upright` is the photo's size turned by the file's orientation.
@@ -547,11 +549,32 @@ impl SidecarData {
             && w > 0
             && h > 0
         {
-            crate::lightroom_catalog::catalog_crop(v, self.turned_to.unwrap_or(file), f64::from(w) / f64::from(h));
+            let o = self.turned_to.unwrap_or(file);
+            orient_lightroom_patch(v, o, f64::from(w) / f64::from(h), f64::from(upright.0) / f64::from(upright.1));
         }
         self
     }
+}
 
+/// Put a Lightroom patch's crop, spots and mask shapes (on the stored image, of aspect `stored`) in the app's frame
+/// for orientation `o`. `photo_aspect` is the photo record's width / height: [`merge_into`] refits radials from
+/// [`crate::crs_masks::DEFAULT_ASPECT`] to it, so they are left in those terms, fitted to the turned image once it has.
+pub(crate) fn orient_lightroom_patch(v: &mut Value, o: lcc_meta::Orientation, stored: f64, photo_aspect: f64) {
+    if !(stored.is_finite() && stored > 0.0) {
+        return;
+    }
+    crate::lightroom_catalog::catalog_crop(v, o, stored);
+    if o != lcc_meta::Orientation::Normal {
+        use crate::crs_masks::{DEFAULT_ASPECT, orient_geometry, refit_radials};
+        refit_radials(v, DEFAULT_ASPECT, stored);
+        orient_geometry(v, o, stored);
+        if photo_aspect.is_finite() && photo_aspect > 0.0 {
+            refit_radials(v, photo_aspect, DEFAULT_ASPECT);
+        }
+    }
+}
+
+impl SidecarData {
     /// Read the label through the catalog's label names: other editors write the label's name
     /// (a custom set's "To Do" as well as "Red"); unknown names clear the label.
     pub fn resolve_label(mut self, cat: &lcc_catalog::Catalog) -> Self {
@@ -1388,7 +1411,7 @@ impl Session {
     fn sidecar_paths(&self, id: PhotoId, owners: &StemOwners) -> Result<(PathBuf, Vec<PathBuf>)> {
         let p = self.catalog.photo(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
         if p.copy_of.is_some() {
-            return Err(EngineError::Other(format!("{} is a virtual copy: its settings live only in the library", p.file_name)));
+            return Err(EngineError::Other(format!("{} is a virtual copy: its settings live only in the catalog", p.file_name)));
         }
         let orig = file_path(p).ok_or_else(|| EngineError::Other(format!("{} is not a file on disk", p.file_name)))?;
         // A relative path would be taken from the working directory.

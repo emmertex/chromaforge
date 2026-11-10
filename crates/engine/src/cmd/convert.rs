@@ -205,14 +205,15 @@ fn edit_copy(s: &mut Session, p: &Value, id: lcc_catalog::PhotoId, opts: &crate:
         written.push(path.to_string());
         Ok(())
     };
-    let to = crate::export::Destination { dir, exact: None };
+    let to = crate::export::Destination { dir: dir.clone(), exact: None };
     crate::export::export_batch(s, &[id], opts, &to, &mut write, &|path| Path::new(path).exists()).map_err(|e| bad(cmd, e))?;
     let ext = format!(".{}", opts.format.extension());
     let out = written.into_iter().find(|w| w.ends_with(&ext)).ok_or_else(|| bad(cmd, "nothing was written"))?;
     let r = s.execute("library.import", &json!({"paths": [out]}))?;
     let Some(new) = r["imported"].get(0).and_then(Value::as_u64) else {
         // the render is the same bytes as a copy the library already has (the last one was never changed): that copy
-        // is the one to open, and the file just written is an orphan nobody would ever see (upstream #3617)
+        // is the one to open, and the file just written is an orphan nobody would ever see (upstream #3617), unless
+        // import restored a trashed copy by relinking it to this very file
         let existing = r["restored"]
             .get(0)
             .and_then(Value::as_u64)
@@ -220,18 +221,45 @@ fn edit_copy(s: &mut Session, p: &Value, id: lcc_catalog::PhotoId, opts: &crate:
             .and_then(|i| s.catalog.photo(lcc_catalog::PhotoId(i)))
             .filter(|p| !p.deleted)
             .and_then(|p| match &p.source {
-                Source::File { path } => Some((p.id.0, path.clone())),
-                Source::Demo { .. } => None,
+                // only a copy this command could have made (next to the original, named `<name>-Edit…`: the same
+                // bytes alone don't make another photo this one's copy) and whose file is still there
+                Source::File { path } if is_edit_copy_name(&ph.file_name, &dir, path) && Path::new(path).is_file() => Some((p.id.0, path.clone())),
+                _ => None,
             });
-        let _ = std::fs::remove_file(&out);
+        if existing.as_ref().is_none_or(|(_, path)| *path != out) {
+            let _ = std::fs::remove_file(&out);
+        }
         return match existing {
-            Some((id, path)) => Ok(json!({"path": path, "id": id, "original": ph.id.0})),
+            Some((copy, path)) => {
+                // as for a new copy, it ends on top of the original's stack and the stack is open, so both show: a
+                // restored copy left its stack when it was deleted, and one still in it may be under the original or collapsed
+                let shown =
+                    s.catalog.stack_of(lcc_catalog::PhotoId(copy)).is_some_and(|st| st.photos.contains(&id) && st.top().0 == copy && !st.collapsed);
+                if !shown {
+                    stack_on_top(s, copy, id.0);
+                }
+                Ok(json!({"path": path, "id": copy, "original": id.0}))
+            }
             None => Err(bad(cmd, "the edit copy could not be added")),
         };
     };
-    // stack: the edit on top of the original, expanded so both show
-    let _ = s.execute("stack.group", &json!({"ids": [new, id.0], "top": new, "collapsed": false}));
+    stack_on_top(s, new, id.0);
     Ok(json!({"path": out, "id": new, "original": id.0}))
+}
+
+/// Whether `copy` is where and as `edit_copy` names the copy of the photo called `original_name` in `dir`: in `dir`, with a
+/// file name that starts with the original's name and `-Edit` (a `-2` for a taken name follows it).
+fn is_edit_copy_name(original_name: &str, dir: &str, copy: &str) -> bool {
+    let same = |a: &str, b: &str| a.replace('\\', "/").trim_end_matches('/') == b.replace('\\', "/").trim_end_matches('/');
+    let copy = Path::new(copy);
+    let stem = Path::new(original_name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let copy_stem = copy.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    !stem.is_empty() && copy.parent().is_some_and(|p| same(&p.to_string_lossy(), dir)) && copy_stem.starts_with(&format!("{stem}-Edit"))
+}
+
+/// Stack an edit copy on top of its original, expanded so both show.
+fn stack_on_top(s: &mut Session, copy: u64, original: u64) {
+    let _ = s.execute("stack.group", &json!({"ids": [copy, original], "top": copy, "collapsed": false}));
 }
 
 /// The op that brings a photo up to date with what its file is now (`info`, a fresh probe), or
@@ -258,7 +286,7 @@ pub(crate) fn content_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info
 }
 
 /// Ops that fill a photo's empty camera fields (camera, lens, exposure, GPS, capture time) from a fresh probe.
-fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
+pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     let (mut m, src) = (ph.meta.clone(), &info.meta);
     let before = m.clone();
     if m.camera.is_empty() {
@@ -310,16 +338,22 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
 
 /// Ops that give a photo the lens data its file carries now (`info`, a fresh probe), or none when
 /// it already has them. A catalog from before the lens data was read at import has none, so such a
-/// photo's correction stayed off. When the photo gains lens data and its develop settings are still
-/// what import gave it, the lens correction is turned on as import would; an edited photo keeps
-/// its settings.
+/// photo's correction stayed off. When the photo gains lens data that import would have turned on
+/// ([`lcc_catalog::Photo::lens_correction_built_in`]) and its develop settings are still what
+/// import gave it, the correction is turned on as import would; an edited photo keeps its settings.
 pub(crate) fn lens_ops(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     if info.embedded_lens == ph.embedded_lens.as_deref().copied() {
         return Vec::new();
     }
     let mut ops = vec![Op::SetEmbeddedLens { id, lens: info.embedded_lens.map(Box::new) }];
     // (a photo with a default-preset look keeps it: that look is its import state)
-    if ph.embedded_lens.is_none() && info.embedded_lens.is_some() && ph.import_look.is_none() && !ph.is_edited() && !ph.develop.optics.lens_profile {
+    if ph.embedded_lens.is_none()
+        && info.embedded_lens.is_some()
+        && ph.import_look.is_none()
+        && !ph.is_edited()
+        && !ph.develop.optics.lens_profile
+        && lcc_catalog::lens_built_in_format(&ph.format)
+    {
         let mut d = (*ph.develop).clone();
         d.optics.lens_profile = true;
         ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Lens Corrections".into(), edited: ph.edited.clone() });
@@ -355,8 +389,9 @@ pub(crate) fn reload_ops(
         ops.append(&mut mine);
         changed.push(id);
     }
-    // virtual copies share the file
-    for c in cat.photos().filter(|c| c.copy_of == Some(id)) {
+    // A selected copy refreshes its same-file family too, but only the explicit target gets missing descriptive
+    // metadata above. Relinked copies keep their own file facts.
+    for c in cat.photos().filter(|c| c.id != id && shares_reload_source(c, ph)) {
         let theirs: Vec<Op> =
             content_op(c.id, c, info.clone()).into_iter().chain(lens_ops(c.id, c, info)).chain(as_shot_wb_op(c.id, c, info)).collect();
         if !theirs.is_empty() {
@@ -364,6 +399,12 @@ pub(crate) fn reload_ops(
             changed.push(c.id);
         }
     }
+}
+
+/// Copies share probe results only while both the family and the actual file agree.
+pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Photo) -> bool {
+    a.copy_of.unwrap_or(a.id) == b.copy_of.unwrap_or(b.id)
+        && matches!((&a.source, &b.source), (Source::File { path: a }, Source::File { path: b }) if a == b)
 }
 
 /// Re-read photos whose files changed on disk (an external editor saved them): new size,

@@ -264,6 +264,9 @@ suggest names for the ones you have not:
 - Everything stays on your computer. The embeddings (one short list of numbers per face) are cached in the library folder in
   `face-embeddings-<model id>.bin`, one file per model, so switching models back and forth does not start over; they are
   not part of the catalog and not written to XMP.
+- **Manual review without background scan:** Toggling automatic background scanning off pauses continuous AI indexing
+  to conserve system resources. Suggestion previews in the loupe and People views, as well as candidate review queues
+  and confirmation/rejection actions, remain fully available over already-indexed faces.
 
 ### The background scan
 
@@ -316,6 +319,11 @@ To name a group: click faces to select them (Shift-click selects a range, **Sele
 name in the bar that appears (people already named complete as you type), press Enter: all of them are named at once, as
 one undo step. Selecting names nothing.
 
+The unnamed faces follow the sidebar: pick a year, a folder or an album and only the faces in those photos are listed
+(`faces.unnamed {scope: "filter"}`), as the person cards are. A person filter is left aside here. On a person's page the
+same goes for their faces and the **More** suggestions (`faces.person {scope: "filter"}`), so you can go through one year
+at a time; their faces anywhere still teach the match, and the face count in the header stays the whole library's.
+
 Right-click a person's card, or use **Rename Person…** on their page, to rename every face of that person in the library
 at once (`faces.renamePerson`). The name is matched the way the cards are grouped (trimmed, ignoring capitalization) and
 every matching face is stored with the exact new spelling, so a change of capitalization alone updates them all. The
@@ -350,6 +358,11 @@ without this explicit action.
 **Show photos** puts their photos in the grid; **‹ People** or Escape goes back. "More" only holds faces the scan has
 already embedded, so it fills in as the scan goes; it shows faces scoring above four fifths of the model's suggestion bar,
 since you look at each one before anything is named.
+
+The review queue, suggestion previews, and confirmation/rejection actions remain accessible when automatic background
+face recognition is turned off: candidate suggestions on already-embedded faces can still be reviewed, named, or rejected
+without running background AI scans. When the queue is empty and background scanning is off, a message and **Turn on**
+button let you resume scanning to find more photos.
 
 How well it works: on 755 named faces of marble busts from one museum folder (each face hidden in turn and matched against
 shots taken more than five seconds apart), SFace named the right person first 95.5% of the time and AuraFace 94.7%; at

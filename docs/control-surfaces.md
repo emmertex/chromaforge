@@ -1,6 +1,6 @@
 # Control surfaces
 
-> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-25 · **Change:** minor (one Masks page for the Masks panel, settings format 4 merges the old Masking / Mask pair; with no mask selected the mask values set the next mask's; the editor's preview ends when Settings closes; before: a preset on a key through the shared preset picker, labelled with its name, a preset icon with an AI mark, unused parameters flagged; before: the overlay reports every change, from any source, with mode and size settings; the Dialpad drawn as the device; the Actions Ring set up in Chromaforge with drag and drop; Touch to find; the Loupedeck+ drawn by zones and set up with no driver steps); previously minor (Erase while held; destructive keys need a hold; no Delete on built-in layouts; lit keys say why they are lit) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-11-09 · **Change:** patch (the previous name's `control-surfaces.json` is copied in when there is none); previously minor (one Masks page for the Masks panel, settings format 4 merges the old Masking / Mask pair; with no mask selected the mask values set the next mask's; the editor's preview ends when Settings closes; before: a preset on a key through the shared preset picker, labelled with its name, a preset icon with an AI mark, unused parameters flagged; before: the overlay reports every change, from any source, with mode and size settings; the Dialpad drawn as the device; the Actions Ring set up in Chromaforge with drag and drop; Touch to find; the Loupedeck+ drawn by zones and set up with no driver steps); previously minor (Erase while held; destructive keys need a hold; no Delete on built-in layouts; lit keys say why they are lit) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
 
 Hardware dials, keys and buttons that drive Chromaforge: the **Logitech MX Creative Console** (Keypad + Dialpad) first,
 MIDI controllers and Tangent panels later. Chromaforge owns the whole engine — layouts, what each control does, dial
@@ -164,9 +164,11 @@ Every action of the editor is also a command (`cmd:surface.profile`, `cmd:surfac
 ## Settings file
 
 `control-surfaces.json` in Chromaforge's settings folder (next to `ui.json`; `<PREFIX>_CONFIG_DIR` moves it). Written
-atomically half a second after a change. A damaged file, or one from a newer Chromaforge, is reported (Settings ▸
-Controls and a notice), kept as it is, and Chromaforge runs on the defaults until you change something. Every number is
-clamped into range on reading.
+atomically half a second after a change. When the settings folder has none on start, the file is copied (never moved)
+from the first of the previous name's settings folders that has one (`[legacy] settings_dirs` in `brand.toml`); an
+existing file is never overwritten, and a `<PREFIX>_CONFIG_DIR` or portable folder is left alone. A damaged file, or
+one from a newer Chromaforge, is reported (Settings ▸ Controls and a notice), kept as it is, and Chromaforge runs on
+the defaults until you change something. Every number is clamped into range on reading.
 
 ```jsonc
 {

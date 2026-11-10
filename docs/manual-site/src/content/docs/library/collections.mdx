@@ -1,0 +1,32 @@
+---
+title: Collections
+description: Collections, sets and smart collections.
+sidebar:
+  order: 6
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+- **Collections** panel (left): collections, **collection sets** (folders of collections) and smart collections. Drag photos onto one to add them.
+- **Library ▸ New Collection…** (`Cmd/Ctrl+N`), **New Collection Set…** (`Cmd/Ctrl+Shift+N`), **New Smart Collection…**.
+- Per collection: **Rename**, **Move**, **Duplicate**, **Delete**, **Set as Collection Cover**, **Sort Collections by Name**, **Add to / Remove from Collection**.
+- **Target collection**: **Set as Target Collection**; `B` adds the selection to it (the Quick Collection by default).
+- **Custom order**: **Set Custom Order**, then drag photos; sort by *Custom Order*.
+- **Export / Import Collection Definition**: share the rules of a smart collection.
+- **Publish Services** panel: Hard Drive and SFTP services track new, modified and published photos.
+
+## Smart collections
+
+<Shot name="lib-smart" alt="The smart collection rule editor" />
+
+- Match **all**, **any** or **none** of the rules; **+ Rule**, **+ Group** (nested), 47 fields in groups: Rating, Pick Flag, Color Label, camera, lens, keyword, capture date, file path, and more.
+- A smart collection updates itself as photos change.
+- **New Smart Collection from Filter…** (`Cmd/Ctrl+Alt+N`) turns the current filter bar into one; **Edit Smart Collection** changes the rules.
+
+<Aside type="note" title="Modern layout">
+  **Library ▸ New Collection…**, **New Collection Set…**, **New Smart Collection…** in the ☰ menu.
+</Aside>

@@ -56,6 +56,8 @@ mod gate;
 mod helper;
 #[cfg(not(target_arch = "wasm32"))]
 mod init;
+#[cfg(not(target_arch = "wasm32"))]
+mod instance;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,6 +77,9 @@ pub use render::{DisplayFrame, GpuStages};
 #[cfg(not(target_arch = "wasm32"))]
 pub use wgpu;
 
+/// Every wgpu instance comes from here: one at a time, with the Vulkan loader kept loaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub use instance::new_instance;
 #[cfg(not(target_arch = "wasm32"))]
 pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
 
@@ -458,6 +463,20 @@ pub fn set_batch_limits(bytes: Option<u64>, jobs: Option<usize>) {
     gate::set_limits(bytes, jobs);
     #[cfg(target_arch = "wasm32")]
     let _ = (bytes, jobs);
+}
+
+/// Pin the bytes the joint colour noise reduction's bands may take on the device, for every render
+/// from now on (`None`: plan them from the device's memory and the renders on it again). Planned from
+/// the device, the plan follows the renders in flight, and when no band fits the step runs on the CPU,
+/// which agrees with the device only to within an 8-bit level; a pinned plan stays put, so two renders
+/// of one photo take the same path. For tests that compare renders bit for bit
+/// (`<PREFIX>_NR_GPU_BAND_MB` pins it from outside).
+#[doc(hidden)]
+pub fn set_nr_band_budget(bytes: Option<usize>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    render::NR_BAND_BUDGET.store(bytes.map_or(0, |b| b.max(1)), Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = bytes;
 }
 
 /// Batch work on the GPU now and so far.
@@ -906,7 +925,7 @@ fn editing_device(backends: wgpu::Backends, window: Option<WindowDevice>) -> Res
 
 /// The cards `adapters` are, as the settings list them (remembered for [`adapters`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
+pub(crate) fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
     let infos: Vec<_> =
         adapters.iter().map(|a| (a.get_info(), a.limits().max_storage_buffers_per_shader_stage, lcc_gpumem::adapter_memory(a))).collect();
     let entries = cards::entries_from(&infos, cards::screen().as_ref());
@@ -1130,6 +1149,7 @@ pub fn offer_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &w
     }
     let info = adapter.get_info();
     cards::set_screen(cards::ScreenCard::of(&info));
+    backend::note_window_backend(info.backend);
     let vram = lcc_gpumem::adapter_memory(adapter);
     *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
 }

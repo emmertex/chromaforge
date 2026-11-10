@@ -411,6 +411,24 @@ impl Headless {
             || !self.events.is_empty()
     }
 
+    /// Clicks widget `id` (as `ui.widgets` names it) as the user would: input the app doesn't mark
+    /// as an agent's, so it reaches what only the user may do (allowing a plug-in's permission).
+    /// The control channel has no such path. False when the widget isn't on screen.
+    pub fn click_as_user(&mut self, id: &str) -> bool {
+        let Some(at) = self.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| r.center()) else { return false };
+        let (button, modifiers) = (egui::PointerButton::Primary, egui::Modifiers::NONE);
+        self.app.user_events.extend([
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton { pos: at, button, pressed: true, modifiers },
+            egui::Event::PointerButton { pos: at, button, pressed: false, modifiers },
+        ]);
+        while !self.app.user_events.is_empty() {
+            self.step();
+        }
+        self.settle(Duration::from_secs(5));
+        true
+    }
+
     /// Run frames until nothing is pending (renders finished, input consumed) for a few frames in
     /// a row, or `timeout` passes. Returns whether it settled.
     pub fn settle(&mut self, timeout: Duration) -> bool {
@@ -3730,6 +3748,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
+    /// Issue #966: clicking a folder kept in Favorites (Browse Folder…) reads its photos into
+    /// the view, the way it did before; it used to leave the view empty ("No photos in this folder").
+    #[test]
+    fn favorite_folder_click_shows_its_photos() {
+        let mut h = demo([1300.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let dir = std::env::temp_dir().join(format!("lc-ui-fav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+        for i in 0..2u8 {
+            let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80 + i, 255]);
+            std::fs::write(dir.join(format!("p{i}.png")), lcc_engine::export::encode_image(&img, &o).unwrap()).unwrap();
+        }
+        let path = dir.to_string_lossy().to_string();
+        h.request("ui.set", json!({"leftPanel": true}), t);
+        h.app.ui.toggle_sidebar_section("panel:navigator");
+        h.app.ui.panel_order = vec![crate::module::PanelId::Local];
+        h.hide_home_above(&dir);
+        let r = h.request("engine.execute", json!({"command": "local.addRoot", "params": {"path": path}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+        let row = format!("source:local:{path}");
+        assert!(h.step_until(t, |h| h.app.widgets.iter().any(|(w, _)| *w == row)), "the favourite is listed");
+        assert_eq!(h.request("ui.clickWidget", json!({"id": row}), t)["ok"], true);
+        assert_eq!(h.app.session.source, lcc_engine::LibrarySource::Folder);
+        assert!(h.step_until(t, |h| h.app.scan.is_none() && h.app.import.is_none()));
+        h.settle(SETTLE);
+        assert_eq!(h.app.session.visible_cloned().len(), 2, "the favourite's photos show");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #966: a folder that can't be listed (no permission) says so instead of showing as
+    /// an empty folder, and keeps the photos the library already knows from it.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_folder_browse_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut h = demo([1300.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let dir = std::env::temp_dir().join(format!("lc-ui-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&dir).is_ok() {
+            // running as root: every folder can be read
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(h.step_until(t, |h| h.app.scan.is_none() && h.app.import.is_none()));
+        h.settle(SETTLE);
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(h.app.ui.toasts.iter().any(|t| t.0.contains(&*dir.to_string_lossy())), "the unreadable folder is reported: {:?}", h.app.ui.toasts);
+    }
+
     /// Local: a kept folder stays a root while its subfolders (and other locations) are
     /// browsed — the subfolder is highlighted inside its tree, its siblings stay listed — and
     /// the kept folders survive a save/load of the UI state (a restart).
@@ -4089,7 +4166,7 @@ mod tests {
     }
 
     /// File → Import from Folder… on a folder that was browsed in Local offers its photos, adding
-    /// them in place (they aren't "In library" yet), and confirming brings them into the library.
+    /// them in place (they aren't "In catalog" yet), and confirming brings them into the library.
     #[test]
     fn import_from_folder_offers_the_photos_browsed_in_local() {
         let mut h = demo([1300.0, 900.0]);
@@ -4454,7 +4531,8 @@ mod tests {
         exec(&mut h, "develop.set", json!({"values": {"light.exposure": 1.0, "color.vibrance": 30}}));
         exec(&mut h, "develop.copy", json!({"groups": ["light", "color"]}));
         exec(&mut h, "library.select", json!({"ids": [ids[1]]}));
-        h.request("ui.key", json!({"key": "V", "cmd": true, "shift": true}), t);
+        // (⇧⌘V pastes at once in the Classic set; the dialog is Paste Selected Settings…)
+        exec(&mut h, "dialog.pasteSettings", json!({}));
         h.settle(SETTLE);
         let Some(crate::state::Dialog::PasteSettings { groups }) = &h.app.ui.dialog else { panic!("dialog not open: {:?}", h.app.ui.dialog) };
         assert_eq!(lcc_develop::SettingsPick::from_ids(groups), lcc_develop::SettingsPick::from_ids(&["light", "color"]));

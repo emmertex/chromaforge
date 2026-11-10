@@ -49,7 +49,8 @@ fn folder(name: &str) -> PathBuf {
 }
 
 fn files(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> = walk(dir).into_iter().map(|p| p.strip_prefix(dir).unwrap().display().to_string()).collect();
+    let mut v: Vec<String> =
+        walk(dir).into_iter().map(|p| p.strip_prefix(dir).unwrap().iter().map(|c| c.to_string_lossy()).collect::<Vec<_>>().join("/")).collect();
     v.sort();
     v
 }
@@ -71,7 +72,8 @@ fn plugins_json(dir: &Path) -> Value {
 fn a_plugin_needing_features_the_host_lacks_is_not_installed() {
     let dir = folder("requires");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    let e = m.install_bytes(&plugin("t.needs", "1.0.0", &["settings", "jobs", "programs"], false), Some(catalog_and_write()), false).unwrap_err();
+    let e =
+        m.install_bytes_by_user(&plugin("t.needs", "1.0.0", &["settings", "jobs", "programs"], false), Some(catalog_and_write()), false).unwrap_err();
     assert_eq!(e, Error::Unsupported(vec!["settings".into(), "programs".into()]), "every missing feature, and only those");
     let msg = e.to_string();
     assert!(msg.contains("`settings`") && msg.contains("`programs`") && !msg.contains("`jobs`"), "{msg}");
@@ -115,7 +117,7 @@ fn a_malformed_requires_is_a_manifest_error() {
 fn a_plugin_that_stops_loading_keeps_its_entry_and_data() {
     let dir = folder("kept");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     m.install_bytes(&plugin("t.other", "1.0.0", &[], false), None, false).unwrap();
     m.set_enabled("t.other", false).unwrap();
@@ -197,7 +199,7 @@ fn a_module_already_installed_without_a_valid_version_still_loads() {
 fn a_downgrade_needs_confirming() {
     let dir = folder("downgrade");
     let mut m = Manager::open(&dir).unwrap();
-    m.install_bytes(&plugin("t.dg", "1.4.0", &[], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.dg", "1.4.0", &[], true), Some(catalog_and_write()), false).unwrap();
     let installed = std::fs::read(dir.join("t.dg.wasm")).unwrap();
     let state = std::fs::read(dir.join("plugins.json")).unwrap();
 
@@ -244,7 +246,7 @@ fn the_install_check_reports_what_would_stop_an_install() {
 fn a_plugin_that_did_not_load_can_be_removed() {
     let dir = folder("remove");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     m.install_bytes(&plugin("t.other", "1.0.0", &[], false), None, false).unwrap();
     drop(m);
@@ -284,7 +286,7 @@ fn a_failed_removal_forgets_nothing() {
     use std::os::unix::fs::PermissionsExt;
     let dir = folder("readonly");
     let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
-    m.install_bytes(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
+    m.install_bytes_by_user(&plugin("t.jobs", "1.0.0", &["jobs"], true), Some(catalog_and_write()), false).unwrap();
     m.set_metadata_field("t.jobs", "7", "job", &json!("J-1")).unwrap();
     drop(m);
     let entry = plugins_json(&dir)["plugins"]["t.jobs"].clone();
@@ -301,4 +303,119 @@ fn a_failed_removal_forgets_nothing() {
     m.install_bytes(&plugin("t.other", "1.0.0", &[], false), None, false).unwrap();
     assert_eq!(plugins_json(&dir)["plugins"]["t.jobs"], entry, "the next save keeps its entry");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two modules in the folder with one id: the first by file name loads, the other is listed with
+/// why, and removing it by its file leaves the one that loaded.
+#[test]
+fn of_two_modules_with_one_id_the_first_by_file_name_loads() {
+    let dir = folder("duplicate");
+    std::fs::write(dir.join("a-first.wasm"), plugin("t.dup", "1.0.0", &[], false)).unwrap();
+    std::fs::write(dir.join("b-second.wasm"), plugin("t.dup", "2.0.0", &[], false)).unwrap();
+    let mut m = Manager::open(&dir).unwrap();
+    assert_eq!(m.get("t.dup").unwrap().plugin.manifest().version, "1.0.0", "the first by file name");
+    let second = dir.join("b-second.wasm").display().to_string();
+    let row = m.failed.iter().find(|f| f.id == "t.dup").cloned().expect("the other is listed");
+    assert_eq!(row.file, second);
+    assert_eq!(row.path.as_deref(), Some(dir.join("b-second.wasm").as_path()));
+    assert!(row.error.contains("another module has this id") && row.error.contains("a-first.wasm"), "{}", row.error);
+
+    m.remove_failed_module(&second).unwrap();
+    assert!(m.failed.is_empty(), "{:?}", m.failed);
+    assert_eq!(files(&dir), ["a-first.wasm"], "only that file went");
+    assert!(m.get("t.dup").is_some(), "the one that loaded stays");
+    assert!(matches!(m.remove_failed_module(&second), Err(Error::NotFound(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module that can't load (it needs features this version lacks) doesn't hold its id: the
+/// working version installed beside it, later by file name, still loads at the next start.
+#[test]
+fn a_module_that_cant_load_gives_way_to_a_later_one_with_its_id() {
+    let dir = folder("gives-way");
+    std::fs::write(dir.join("a-old.wasm"), plugin("t.way", "2.0.0", &["programs"], false)).unwrap();
+    let mut m = Manager::open_with_features(&dir, &[]).unwrap();
+    assert!(m.get("t.way").is_none() && m.failed.iter().any(|f| f.id == "t.way"), "it can't load here");
+    m.install_bytes(&plugin("t.way", "1.0.0", &[], false), None, true).unwrap();
+    drop(m);
+    let m = Manager::open_with_features(&dir, &[]).unwrap();
+    assert_eq!(m.get("t.way").map(|p| p.plugin.manifest().version.clone()).as_deref(), Some("1.0.0"), "the installed one loads: {:?}", m.failed);
+    let row = m.failed.iter().find(|f| f.id == "t.way").expect("the other is still listed");
+    assert!(row.file.ends_with("a-old.wasm") && !row.error.contains("another module has this id"), "{}", row.error);
+    assert!(m.unloaded("t.way").is_none(), "it counts as installed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A plug-in copied in under another name: removing it deletes that file, and an update replaces
+/// it, so the old version never loads again at the next start.
+#[test]
+fn a_module_copied_in_under_another_name_goes_with_its_plugin() {
+    let dir = folder("copied");
+    std::fs::write(dir.join("copied-in.wasm"), plugin("t.copied", "1.0.0", &[], false)).unwrap();
+    let mut m = Manager::open(&dir).unwrap();
+    assert_eq!(m.get("t.copied").unwrap().path(), Some(dir.join("copied-in.wasm").as_path()));
+    m.install_bytes(&plugin("t.copied", "1.1.0", &[], false), None, false).unwrap();
+    assert_eq!(
+        files(&dir),
+        ["plugins.json", "previous/t.copied.json", "previous/t.copied.wasm", "t.copied.wasm"],
+        "the old file replaced (and kept to go back to)"
+    );
+    drop(m);
+    let m = Manager::open(&dir).unwrap();
+    assert_eq!(m.get("t.copied").unwrap().plugin.manifest().version, "1.1.0");
+    assert!(m.failed.is_empty(), "{:?}", m.failed);
+
+    std::fs::rename(dir.join("t.copied.wasm"), dir.join("again.wasm")).unwrap();
+    drop(m);
+    let mut m = Manager::open(&dir).unwrap();
+    m.uninstall("t.copied").unwrap();
+    assert_eq!(files(&dir), ["plugins.json"], "its own file went too");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// More modules than the folder loads: the rest are listed as skipped, not dropped silently.
+#[test]
+fn modules_past_the_most_a_folder_loads_are_listed_as_skipped() {
+    let dir = folder("skipped");
+    for i in 0..258 {
+        std::fs::write(dir.join(format!("m{i:03}.wasm")), b"\0asm").unwrap();
+    }
+    let m = Manager::open(&dir).unwrap();
+    assert_eq!(m.failed.len(), 256, "the ones looked at");
+    assert_eq!(m.skipped, [dir.join("m256.wasm"), dir.join("m257.wasm")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fields the host doesn't know (a typo, or a field from a newer host) are named by path, and the
+/// install says so in the plug-in's log; fields it knows are never named, even at their defaults.
+#[test]
+fn unknown_manifest_fields_are_named_and_the_install_goes_ahead() {
+    let manifest = json!({
+        "id": "t.unknown", "name": "U", "version": "1.0.0", "descripton": "typo",
+        "description": "", "author": "", "requires": [], "hooks": {}, "settings": [],
+        "permissions": {"catalog": true, "netwrok": ["example.com"], "network": []},
+        "commands": [{"id": "go", "label": "Go", "lable": "Go!", "menu": "",
+            "dialog": [{"key": "n", "label": "N", "type": "number", "min": 0, "max": 9, "default": 0, "stepp": 1}]}],
+    });
+    let parsed = Manifest::parse(manifest.to_string().as_bytes()).unwrap();
+    let mut unknown = parsed.unknown_fields.clone();
+    unknown.sort();
+    assert_eq!(unknown, ["commands[0].dialog[0].stepp", "commands[0].lable", "descripton", "permissions.netwrok"]);
+    let clean = json!({"id": "t.clean", "name": "C", "version": "1.0.0", "description": "", "hooks": {}, "permissions": {}});
+    assert!(Manifest::parse(clean.to_string().as_bytes()).unwrap().unknown_fields.is_empty(), "known fields at their defaults");
+    // pictures are known fields, even one the host drops
+    let pictures = json!({"id": "t.pics", "name": "P", "icon": "not an svg", "header": {"dark": 3}});
+    assert!(Manifest::parse(pictures.to_string().as_bytes()).unwrap().unknown_fields.is_empty(), "icon and header are known");
+    // many known fields at their defaults before a typo don't crowd it out
+    let commands: Vec<Value> = (0..40).map(|i| json!({"id": format!("c{i}"), "label": "C", "job": false, "prepare": false})).collect();
+    let crowded = json!({"id": "t.crowded", "name": "C", "version": "1.0.0", "commands": commands, "zz_typo": 1});
+    assert_eq!(Manifest::parse(crowded.to_string().as_bytes()).unwrap().unknown_fields, ["zz_typo"]);
+
+    let mut m = Manager::in_memory();
+    let p = m.install_bytes(&module(&manifest), None, false).unwrap();
+    assert!(
+        p.log.iter().any(|l| l.starts_with("unknown manifest fields: ") && l.contains("descripton") && l.contains("commands[0].lable")),
+        "{:?}",
+        p.log
+    );
 }

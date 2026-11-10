@@ -28,7 +28,7 @@ pub fn folders(app: &mut LccApp) -> Value {
     let can_pick = app.services.pick_folder.is_some();
     let mut out = Vec::new();
     let library = app.session.library.as_ref().map(|l| l.dir.display().to_string());
-    out.push(entry("library", "Library", library, true, can_pick, false, "The open library: its catalog, previews and settings."));
+    out.push(entry("library", "Library", library, true, can_pick, false, "The open catalog: its records, previews and settings."));
     let last = last_export_dir(app);
     let export = last.clone().or_else(|| Some(crate::control::default_export_dir()).filter(|d| !d.is_empty()));
     out.push(entry(
@@ -74,7 +74,7 @@ pub fn folders(app: &mut LccApp) -> Value {
             true,
             true,
             false,
-            "Adds the photos taken with this device to the library (asks for access to your photos).",
+            "Adds the photos taken with this device to the catalog (asks for access to your photos).",
         ));
     }
     let st = app.session.lens_db.status();

@@ -54,6 +54,7 @@ pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
 pub mod loupe_timing;
+pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
@@ -108,6 +109,8 @@ pub mod web_module;
 pub mod widgets;
 pub mod window_place;
 
+#[cfg(test)]
+mod i18n_scan;
 #[cfg(test)]
 mod tests_access;
 #[cfg(test)]
@@ -236,12 +239,16 @@ mod tests_histogram_modes;
 mod tests_hover_pointer;
 #[cfg(test)]
 mod tests_i18n_coverage;
+#[cfg(test)]
+mod tests_i18n_sweep;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
 #[cfg(test)]
 mod tests_import_drives;
+#[cfg(test)]
+mod tests_import_loupe;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
@@ -286,6 +293,8 @@ mod tests_libtools;
 mod tests_lightroom_destination;
 #[cfg(test)]
 mod tests_loading_cell;
+#[cfg(test)]
+mod tests_lrc_menus;
 #[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
@@ -771,6 +780,12 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// This frame's input carries synthetic events (an agent's or a script's, [`Self::synthetic`]):
+    /// what only the user may do (allow a plug-in's permission) ignores a click in it.
+    pub(crate) synthetic_frame: bool,
+    /// Input the test harness gives as the user's ([`headless::Headless::click_as_user`]): one
+    /// event per frame, never marked synthetic. Nothing outside the harness fills it.
+    pub(crate) user_events: Vec<egui::Event>,
     /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
     /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
     /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
@@ -938,6 +953,7 @@ pub struct LccApp {
     gpu_applied: Option<bool>,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
+    ml_device_applied: Option<String>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -1139,6 +1155,8 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            synthetic_frame: false,
+            user_events: vec![],
             paint_hold_until: f64::NEG_INFINITY,
             paint_hold: false,
             mask_landing: Default::default(),
@@ -1217,6 +1235,7 @@ impl LccApp {
             preview_window: None,
             gpu_applied: None,
             gpu_cards_applied: None,
+            ml_device_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -1374,6 +1393,17 @@ impl LccApp {
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
+        if let Ok(v) = &r
+            && id == "ml.status"
+            && (params.get("device").is_some() || params.get("preference").is_some())
+            && let Some(dev_choice) = v.get("deviceChoice").and_then(Value::as_str)
+        {
+            let choice = if dev_choice.eq_ignore_ascii_case("auto") { "" } else { dev_choice.trim() };
+            if self.ui.settings.ml_device != choice {
+                self.ui.settings.ml_device = choice.to_string();
+            }
+            self.ml_device_applied = Some(choice.to_string());
+        }
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
                 Some(serde_json::json!("original"))
@@ -1449,14 +1479,14 @@ impl LccApp {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Compact Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Catalog"))),
                 // from File ▸ Libraries or Library Settings
-                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Library backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Catalog backed up to"), v["backup"].as_str().unwrap_or(""))),
                 "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
-                    Some(i18n::tr("The library passed the integrity test").to_string())
+                    Some(i18n::tr("The catalog passed the integrity test").to_string())
                 }
-                "catalog.checkIntegrity" => Some(i18n::tr("The library failed the integrity test: back it up and optimise it").to_string()),
-                "catalog.optimize" => Some(i18n::tr("Library optimised").to_string()),
+                "catalog.checkIntegrity" => Some(i18n::tr("The catalog failed the integrity test: back it up and optimize it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Catalog optimized").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1508,7 +1538,11 @@ impl LccApp {
             }
             Ok(v) if matches!(id, "faces.detect" | "faces.clearAndRescan") && v["done"] == false => {
                 let n = v["photos"].as_u64().unwrap_or(0);
-                self.ui.status = if n == 1 { "Detecting faces…".to_string() } else { format!("Detecting faces in {n} photos…") };
+                self.ui.status = if n == 1 {
+                    crate::i18n::tr("Detecting faces…").to_string()
+                } else {
+                    crate::i18n::tr_format!("Detecting faces in {n} photos…", n = n)
+                };
             }
             Ok(v) if id == "faces.detect" => self.ui.status = detect_summary(v),
             Ok(v) if id == "faces.renamePerson" => {
@@ -1643,7 +1677,7 @@ impl LccApp {
             }
             (None, true) => {
                 self.ui.unsaved_seen = false;
-                self.toast(ctx, crate::i18n::tr("Library saved"));
+                self.toast(ctx, crate::i18n::tr("Catalog saved"));
             }
             (Some(_), true) => ctx.request_repaint_after(std::time::Duration::from_secs(2)), // retry
             (None, false) => {}
@@ -2389,7 +2423,7 @@ impl LccApp {
         if !drop.presets.is_empty() {
             // presets live in a library: with none open they would go with the session it replaces
             if panels::library_problem::holds_drops(self) {
-                self.toast(ctx, crate::i18n::tr("Open a library first, then drop the presets again"));
+                self.toast(ctx, crate::i18n::tr("Open a catalog first, then drop the presets again"));
             } else {
                 let _ = self.run("file.importPresets", serde_json::json!({"paths": drop.presets}));
             }
@@ -2442,6 +2476,34 @@ impl LccApp {
                 lcc_engine::gpu::set_helper(&cards.1);
             }
             self.gpu_cards_applied = Some(cards);
+        }
+        let ml_device = self.ui.settings.ml_device.clone();
+        if self.ml_device_applied.is_none() && ml_device.is_empty() {
+            if let Ok(st) = self.session.execute("ml.status", &serde_json::json!({})) {
+                let adopted = st
+                    .get("deviceChoice")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("")
+                    .to_string();
+                if !adopted.is_empty() {
+                    self.ui.settings.ml_device = adopted.clone();
+                }
+                self.ml_device_applied = Some(adopted);
+            }
+        } else if self.ml_device_applied.as_ref() != Some(&ml_device)
+            && self
+                .session
+                .execute(
+                    "ml.status",
+                    &serde_json::json!({
+                        "device": ml_device,
+                    }),
+                )
+                .is_ok()
+        {
+            self.ml_device_applied = Some(ml_device);
         }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
@@ -2602,7 +2664,15 @@ impl LccApp {
         if !self.drop_hover.is_empty() {
             raw.hovered_files = self.drop_hover.iter().map(|p| egui::HoveredFile { path: file(p), ..Default::default() }).collect();
         }
+        self.synthetic_frame = !self.synthetic.is_empty();
         if self.synthetic.is_empty() {
+            if !self.user_events.is_empty() {
+                let e = self.user_events.remove(0);
+                if let egui::Event::PointerButton { pos, .. } = &e {
+                    raw.events.push(egui::Event::PointerMoved(*pos));
+                }
+                raw.events.push(e);
+            }
             shell::defer_tabs(self, raw);
             return;
         }
@@ -2747,13 +2817,17 @@ impl LccApp {
             Err(e) => log::warn!("store: {e}"),
         }
         if n > 0 {
-            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            let msg = crate::i18n::tr_format!("{n} presets from your other catalogs were added.", n = n);
             self.toast(ctx, msg);
         }
         // an older install's presets (the app under an earlier name, on this computer) join too, once
         // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
         // asks again
-        // (its camera profiles too, bound to the bodies the older install started with them)
+        // (its camera profiles too, bound to the bodies the older install started with them).
+        // No older install on this computer: nothing to ask, and no error at startup (issue #965).
+        if lcc_engine::app_store::older_install_stores().is_empty() {
+            return;
+        }
         if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
             let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
             let (n, m) = (sum("presets"), sum("cameraProfiles"));
@@ -3178,6 +3252,9 @@ pub struct Caches {
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
     pub unnamed: Option<(u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
+    /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another
+    /// year, folder or album, they are asked for again.
+    pub faces_filter: Option<lcc_catalog::Filter>,
     /// The most photos the face scan has had left at once since it last finished (the progress bar's whole).
     pub faces_peak: u64,
     person_names: Option<(u64, std::sync::Arc<Vec<String>>)>,

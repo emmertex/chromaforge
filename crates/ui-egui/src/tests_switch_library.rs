@@ -92,9 +92,9 @@ fn recent_submenu(app: &LccApp) -> Vec<crate::menubar::MenuNode> {
     use crate::menubar::MenuNode;
     let bar = crate::menubar::menu_bar(app);
     let file = &bar.iter().find(|(t, _)| t == "File").unwrap().1;
-    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Libraries")) {
+    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Open Recent")) {
         Some(MenuNode::Submenu { children, .. }) => children.clone(),
-        _ => panic!("no Libraries submenu in {file:?}"),
+        _ => panic!("no Open Recent submenu in {file:?}"),
     }
 }
 
@@ -117,9 +117,9 @@ fn new_library_creates_opens_and_is_remembered_and_named() {
 
     // a second New Library at the same place is refused and the current one stays open
     let e = app.run("app.newLibrary", json!({"path": dir.to_string_lossy(), "name": "Client A"})).unwrap_err();
-    assert!(e.contains("library here already"), "{e}");
+    assert!(e.contains("catalog here already"), "{e}");
     let e = app.run("app.newLibrary", json!({"path": dir.to_string_lossy(), "name": "../x"})).unwrap_err();
-    assert!(e.contains("library name"), "{e}");
+    assert!(e.contains("catalog name"), "{e}");
     assert_eq!(app.session.library.as_ref().unwrap().dir, a);
 
     let list = app.run("app.recentLibraries", json!({})).unwrap();
@@ -264,7 +264,7 @@ fn library_names_must_work_as_folder_names_on_every_system() {
     let mut app = app_in(&dir);
     for bad in ["a<b", "a>b", "a:b", "a\"b", "a/b", "a\\b", "a|b", "a?b", "a*b", "name.", "..", " ", "a\u{7}"] {
         let e = app.run("app.newLibrary", json!({"path": dir.to_string_lossy(), "name": bad})).unwrap_err();
-        assert!(e.contains("library name"), "{bad:?}: {e}");
+        assert!(e.contains("catalog name"), "{bad:?}: {e}");
     }
     assert!(app.session.library.as_ref().unwrap().dir.ends_with("first"));
     app.run("app.newLibrary", json!({"path": dir.to_string_lossy(), "name": "  Trip 2026  "})).unwrap();

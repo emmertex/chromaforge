@@ -77,7 +77,7 @@ auto-repeat used to flip the zoom back and forth (`crates/ui-egui/src/space_hand
 
 **Grid thumbnail size (KEYC-COMPARE):** Classic's `=` and `-` increase and decrease the Grid thumbnail size (same keys on macOS and Windows; `+` also works for the larger size here, as Shift+`=` or the keypad). They step the bottom-bar slider by 30 pt inside its 90–480 pt range, in Photo Grid, Square Grid and People only; Detail, Compare, Survey and Reference ignore them, and ⌘= / ⌘− stay Zoom In / Out. See [library shortcuts](library-shortcuts.md).
 
-**Library navigation keys (KEYC-COMPARE):** in Photo Grid and Square Grid, `Home` / `End` make the first / last photo of the view the active, selected one, and `Shift+Left` / `Shift+Right` add the previous / next photo of the view to the selection, `Shift+Up` / `Shift+Down` every photo up to the cell above / below the active one (the cell plain Up / Down move to); `Ctrl+Shift` with an arrow does the same, as the Windows file manager's Ctrl+Shift+arrows keep a scattered selection (the added photo, or the cell reached, becomes active; the keys never remove a photo from the selection, and do nothing at either end of the view, or in the top / bottom row for Up / Down). They wait in the other views, in the full-screen preview, while a text field or a dialog has the keyboard, and when you gave the key to a command; they are listed under Fixed keys in Help → Keyboard Shortcuts. `Cmd+O` (`Ctrl+O` on Windows and Linux) runs File → Open Library… ; View → Visualize HDR has no default key (`Shift+H` cycles the Tool Overlay, issue #224; `Cmd+Shift+H` stays the Histogram). Covered by `crates/ui-egui/src/tests_keymap.rs`; the macOS native menu path for `Cmd+O` is not exercised by the headless tests.
+**Library navigation keys (KEYC-COMPARE):** in Photo Grid and Square Grid, `Home` / `End` make the first / last photo of the view the active, selected one, and `Shift+Left` / `Shift+Right` add the previous / next photo of the view to the selection, `Shift+Up` / `Shift+Down` every photo up to the cell above / below the active one (the cell plain Up / Down move to); `Ctrl+Shift` with an arrow does the same, as the Windows file manager's Ctrl+Shift+arrows keep a scattered selection (the added photo, or the cell reached, becomes active; the keys never remove a photo from the selection, and do nothing at either end of the view, or in the top / bottom row for Up / Down). They wait in the other views, in the full-screen preview, while a text field or a dialog has the keyboard, and when you gave the key to a command; they are listed under Fixed keys in Help → Keyboard Shortcuts. `Cmd+O` (`Ctrl+O` on Windows and Linux) runs File → Open Catalog… ; View → Visualize HDR has no default key (`Shift+H` cycles the Tool Overlay, issue #224; `Cmd+Shift+H` stays the Histogram). Covered by `crates/ui-egui/src/tests_keymap.rs`; the macOS native menu path for `Cmd+O` is not exercised by the headless tests.
 
 **Still missing / broken:**
 - Tab / ⇧Tab (hide the side panels / all panels): Tab moves the keyboard focus here (accessibility), so it is
@@ -137,7 +137,7 @@ a real screen reader on any platform yet.
 
 Escape leaves Reference for Detail, preserving the active photo and its edits; a second Escape
 returns to the grid. Existing dialogs, tools and Lights Out retain their higher-priority Escape
-handling. The reference stays pinned when leaving the view, but a successful Open/New Library
+handling. The reference stays pinned when leaving the view, but a successful Open/New Catalog
 clears it: numeric photo IDs are local to each catalog. A refused switch keeps the current pin,
 including Open/New refused while an import or its folder scan is running.
 
@@ -147,7 +147,7 @@ active photo. Restoring the photo permits pinning it again. An empty catalog can
 
 Verification: four new behavioral regressions failed on upstream `76b5377` before the fix.
 The patched Windows x64 app on RTX 5080 / DX12 passed Escape, edit preservation, delete/restore,
-and New/Open Library checks using isolated catalogs. Saved exposure survived reopening. Native
+and New/Open Catalog checks using isolated catalogs. Saved exposure survived reopening. Native
 1400 × 900 captures did not fall back to headless rendering. Control-channel input does not
 establish OS keyboard delivery or cross-platform acceptance.
 

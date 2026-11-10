@@ -1,0 +1,28 @@
+---
+title: Libraries
+description: Create, open, back up and move catalogs.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+- A **library** is a folder holding the catalog; one library is open at a time, and a second program is refused with who has it.
+- **File ▸ Libraries ▸ New Library…** (name, then location), **Open Library…**, **Open Recent Library** (last eight; missing ones greyed).
+- **Settings ▸ General ▸ At launch**: reopen the last library or ask which. **Choose Library…** shows the chooser.
+- **Back Up Library…** and **Restore Library from Backup…**. **Test Library Integrity** and **Optimise** are in the same menu.
+- **Edit ▸ Library Settings…**: backup schedule (never, every exit, daily, weekly, monthly) and folder, integrity test, standard preview size, discard 1:1 previews.
+- **Export as Library…**: selected or all photos, with or without originals and previews.
+- **Import from Another Library…**: merge it back, with a change preview.
+- Older catalogs are upgraded in place after a verified copy in `backups/`; a failure leaves the old version intact.
+- Scale: hundreds of thousands of photos open in about a second.
+- Everything is undoable; catalog data is separate from your files, which are never changed without your say.
+- **Previews** (**Library ▸ Previews**): build standard or 1:1 previews of selected photos, discard 1:1 previews.
+
+<Aside type="note" title="Modern layout">
+  **File ▸ Libraries** and **Edit ▸ Library Settings…** in the ☰ menu.
+</Aside>

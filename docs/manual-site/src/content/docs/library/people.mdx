@@ -1,0 +1,30 @@
+---
+title: People and faces
+description: Named people from XMP and optional face models.
+sidebar:
+  order: 12
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import NeedsImage from '../../../components/NeedsImage.astro';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<NeedsImage what="The People view: Named People cards with face close-ups, photo counts and names, a Search People box, and Unnamed faces to name." />
+
+- **People** view (**View ▸ People**): a card per named person (face close-up, photo count, name), filtered by the current filter chips. Click one to see that person's photos.
+- Names written to XMP by other apps (Lightroom, digiKam) are read as face regions.
+- **Face boxes** in the loupe (**View ▸ Face Boxes**): resize, rename or remove one (**Remove Face Box**).
+- **Detect Faces** (**Library** menu) finds faces; the model is an opt-in download (**Settings ▸ Faces**), nothing ships bundled.
+- **Name Faces**: unnamed faces are grouped (**Group Unnamed Faces**); type a name once for a group. With an optional recognition model, **Recognize People** suggests names.
+- **Ignore** a face; the ignored list can be reviewed.
+- **Faces** filter in the filter bar and **People** metadata column.
+- **Roles** (**Set Role…** in the Masking panel's People component): bind a role such as *Bride* to a person per folder, collection or date range, so a mask follows them. Roles stay in the library only.
+- **Forget This Person** and **Forget All Roles and Appearance Data** erase stored data.
+- Face data never leaves your machine.
+
+<Aside type="note" title="Modern layout">
+  **View ▸ People** and **Library ▸ Detect Faces** in the ☰ menu.
+</Aside>

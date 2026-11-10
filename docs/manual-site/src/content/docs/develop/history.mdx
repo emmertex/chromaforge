@@ -1,0 +1,24 @@
+---
+title: History and snapshots
+description: History, snapshots (versions), virtual copies and reset.
+sidebar:
+  order: 12
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="history-panel" alt="The left panel with Navigator, Presets, Versions with one snapshot, and History steps" menu="Window ▸ Panels ▸ History, Versions" />
+
+- **History**: every change is a step, newest on top. Click a step to look at it; later steps stay until you make a new edit.
+- **Step menu**: copy the step to Before, create a version from it, **Clear History**.
+- **Undo** and **Redo**: **Edit** menu, `⌘Z` / `⇧⌘Z`.
+- **Snapshots** are called **Versions**: **Create Version** (**Photo ▸ Develop Settings**, or the + in the panel). **Named** and **Auto** lists; click to restore, rename, update or delete.
+- **Virtual copies**: **Photo ▸ Virtual Copy** (Library: the photo context menu) makes another set of settings for the same file ("Copy N" badge, stacked with the original). A real copy with its own file is **Photo ▸ File ▸ Duplicate**.
+- **Reset**: **Reset** at the bottom right, **Reset Edits** (`⇧⌘R`). Double-click a slider to reset it; a section header's reset button resets the section. The eye on a section header turns it off.
+- **Auto**: `⇧A` calibrated on Lightroom's Auto for 24 Sony raws.
+
+<Aside type="note" title="Modern layout">
+  Undo and redo are in the top-left. History and Versions: **Window ▸ Panels**; **Photo ▸ Develop Settings** for versions.
+</Aside>

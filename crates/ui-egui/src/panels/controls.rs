@@ -100,6 +100,13 @@ fn slider(ui: &mut egui::Ui, id: &str, v: &mut f64, range: std::ops::RangeInclus
     r.changed()
 }
 
+/// A speed slider: logarithmic, so the fine end (0.01–0.3) gets as much travel as the fast end.
+fn slider_speed(ui: &mut egui::Ui, id: &str, v: &mut f64) -> bool {
+    let r = ui.add(egui::Slider::new(v, 0.01..=5.0).logarithmic(true).fixed_decimals(2).suffix("×"));
+    register(ui.ctx(), format!("slider:{id}"), r.rect);
+    r.changed()
+}
+
 fn slider_u32(ui: &mut egui::Ui, id: &str, v: &mut u32, range: std::ops::RangeInclusive<u32>, suffix: &str) -> bool {
     let r = ui.add(egui::Slider::new(v, range).suffix(suffix));
     register(ui.ctx(), format!("slider:{id}"), r.rect);
@@ -1039,7 +1046,7 @@ fn editor_panel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, page: &str, max
         let mut c = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("Its speed")).color(t.text_label));
-            c |= slider(ui, "surface.valueSpeed", &mut tu.speed, 0.1..=5.0, 2, "×");
+            c |= slider_speed(ui, "surface.valueSpeed", &mut tu.speed);
             ui.label(RichText::new(tr("Its acceleration")).color(t.text_label));
             c |= slider(ui, "surface.valueAccel", &mut tu.acceleration, 0.1..=4.0, 2, "×");
         });
@@ -1587,7 +1594,7 @@ fn feel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     heading(ui, t, "Dial Feel");
     let mut m = app.surface.settings().motion.clone();
     let mut changed = false;
-    row(ui, t, "Speed", |ui| changed |= slider(ui, "surface.speed", &mut m.speed, 0.1..=5.0, 2, "×"));
+    row(ui, t, "Speed", |ui| changed |= slider_speed(ui, "surface.speed", &mut m.speed));
     row(ui, t, "Acceleration", |ui| changed |= slider(ui, "surface.acceleration", &mut m.acceleration, 0.1..=4.0, 2, "×"));
     row(ui, t, "Fine steps", |ui| changed |= slider(ui, "surface.fine", &mut m.fine, 0.01..=1.0, 2, "×"));
     row(ui, t, "Big steps", |ui| changed |= slider(ui, "surface.coarse", &mut m.coarse, 1.0..=20.0, 1, "×"));
@@ -1611,7 +1618,7 @@ fn feel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     let mut tu = app.surface.settings().tuning_of(&target);
     let mut c = false;
-    row(ui, t, "Its speed", |ui| c |= slider(ui, "surface.tuneSpeed", &mut tu.speed, 0.1..=5.0, 2, "×"));
+    row(ui, t, "Its speed", |ui| c |= slider_speed(ui, "surface.tuneSpeed", &mut tu.speed));
     row(ui, t, "Its acceleration", |ui| c |= slider(ui, "surface.tuneAccel", &mut tu.acceleration, 0.1..=4.0, 2, "×"));
     row(ui, t, "Slow turning", |ui| c |= slider(ui, "surface.tuneMin", &mut tu.acceleration_min, 0.1..=10.0, 1, "×"));
     row(ui, t, "Fast turning", |ui| c |= slider(ui, "surface.tuneMax", &mut tu.acceleration_max, 0.1..=15.0, 1, "×"));

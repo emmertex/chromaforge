@@ -1,6 +1,7 @@
-This software is licensed under the MIT License (LICENSE), except crates/segment and
-crates/fetch, which are licensed under the Apache License 2.0 only (see LICENSE-APACHE in each
-of those crate folders).
+This software is dual-licensed (maintainer decision 2026-11-10): you may use it under the MIT
+License (LICENSE) or, at your option, the GNU General Public License version 3 or later
+(LICENSE-GPL-3.0.txt). crates/segment and crates/fetch additionally remain available under the
+Apache License 2.0 inherited from upstream (see LICENSE-APACHE in each of those crate folders).
 
 Upstream attribution
 

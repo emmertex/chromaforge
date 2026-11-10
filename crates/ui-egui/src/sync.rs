@@ -168,7 +168,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     };
     let t = Tokens::get(ui.ctx());
     ui.set_min_width(420.0);
-    ui.label(crate::i18n::tr("Bring the library up to date with this folder and the folders inside it:"));
+    ui.label(crate::i18n::tr("Bring the catalog up to date with this folder and the folders inside it:"));
     ui.label(egui::RichText::new(name.as_str()).strong());
     ui.label(egui::RichText::new(path.as_str()).color(t.text_dim));
     ui.add_space(6.0);
@@ -196,7 +196,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     // the files skipped for being in the library elsewhere (`dups` of them), and those that can't be read
     let skipped = |ui: &mut egui::Ui, dups: usize| {
         if dups > 0 {
-            dim(ui, &count("Skipped: files already in the library elsewhere", dups));
+            dim(ui, &count("Skipped: files already in the catalog elsewhere", dups));
         }
         if c.unreadable > 0 {
             dim(ui, &count("Skipped: files that can't be read", c.unreadable));
@@ -205,7 +205,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     if c.up_to_date() {
         // nothing to choose: the answer takes the choices' place, and the one button closes
         // (`only_shows`)
-        ui.label(crate::i18n::tr("The library is up to date with this folder."));
+        ui.label(crate::i18n::tr("The catalog is up to date with this folder."));
         skipped(ui, c.duplicates);
         return;
     }
@@ -216,20 +216,20 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     if c.copies > 0 {
         ui.indent("syncSkipDuplicatesIndent", |ui| {
             let mut skip = !*import_duplicates;
-            let r = ui.add_enabled(*import_new, egui::Checkbox::new(&mut skip, count("Don't import files already in the library", c.copies)));
+            let r = ui.add_enabled(*import_new, egui::Checkbox::new(&mut skip, count("Don't import files already in the catalog", c.copies)));
             crate::widgets::register(ui, "syncSkipDuplicates", r.rect);
-            let r = r.on_hover_text(crate::i18n::tr("A file with the same content as a photo of the library, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize."));
+            let r = r.on_hover_text(crate::i18n::tr("A file with the same content as a photo of the catalog, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize."));
             if r.changed() {
                 *import_duplicates = !skip;
             }
         });
     }
     choice(ui, relink_moved, c.moved, count("Relink photos whose file was renamed or moved", c.moved), "syncRelinkMoved");
-    choice(ui, remove_missing, c.missing, count("Remove missing photos from the library", c.missing), "syncRemoveMissing");
+    choice(ui, remove_missing, c.missing, count("Remove missing photos from the catalog", c.missing), "syncRemoveMissing");
     choice(ui, read_metadata, c.metadata, count("Read metadata updates from XMP sidecars", c.metadata), "syncReadMetadata");
     ui.add_space(6.0);
     if c.nothing_to_do(true, *import_duplicates) {
-        dim(ui, crate::i18n::tr("The library is up to date with this folder."));
+        dim(ui, crate::i18n::tr("The catalog is up to date with this folder."));
     }
     if c.missing > 0 {
         dim(ui, crate::i18n::tr("Missing photos move to Recently Deleted and can be restored; no file on disk is touched."));
@@ -341,7 +341,7 @@ fn remember_import_duplicates(app: &mut LccApp, import_duplicates: bool) {
     if import_duplicates != app.session.import_defaults.import_duplicates
         && let Err(e) = app.run("library.preferences", json!({"import": {"importDuplicates": import_duplicates}}))
     {
-        log::warn!("synchronize: the choice about files already in the library was not saved: {e}");
+        log::warn!("synchronize: the choice about files already in the catalog was not saved: {e}");
     }
 }
 
@@ -478,7 +478,7 @@ pub fn poll_run(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(e) = not_saved.first() {
         parts.push(format!("{}: {e}", crate::i18n::tr("Not saved")));
     }
-    let text = if parts.is_empty() { crate::i18n::tr("The library is up to date with this folder.").to_string() } else { parts.join(" · ") };
+    let text = if parts.is_empty() { crate::i18n::tr("The catalog is up to date with this folder.").to_string() } else { parts.join(" · ") };
     if not_saved.is_empty() && !crashed {
         app.toast(ctx, format!("{name}: {text}"));
     } else {

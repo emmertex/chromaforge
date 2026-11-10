@@ -249,13 +249,13 @@ is running: the command never looks at a folder itself. A failed open never mark
 may have it). Recent libraries are checked in the
 background when the app starts (the first 8) and when the launch window opens; one not found is looked for again every
 30 s (a drive plugged back in), the others only when the window comes back to the front (a timer would wake external
-drives and shares). File ▸ Open Recent Library greys out only an entry a check found missing (not there, not a folder,
+drives and shares). File ▸ Open Recent Catalog greys out only an entry a check found missing (not there, not a folder,
 no library in it); an unreadable catalog, a folder that refuses to be listed, a failed open or a lookup that failed
 (a share that timed out) doesn't grey it out. `lastOpened`: ISO 8601, `null` when not known; kept in `ui.json` →
 `settings.recentLibrariesOpened`. `{remove: path}` forgets one entry (an error if the list
 doesn't hold it) and `{clear: true}` (or `app.clearRecentLibraries`) all of them; nothing on disk is touched.
 
-### Open Library on a Lightroom catalog
+### Open Catalog on a Lightroom catalog
 
 `app.openLibrary` never makes a library of the app inside a Lightroom Classic catalog (issue #891): given the catalog
 folder (it holds a `*.lrcat`), one of its `*.lrdata` / `*.lrcat-data` folders or `Backups/`, the `.lrcat` itself or

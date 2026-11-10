@@ -371,3 +371,38 @@ fn semantic_search_toggle_filters_the_grid_and_shows_chip_and_ai_models_section(
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn apply_settings_adopts_saved_ml_device_and_retries_on_error() {
+    let d = std::env::temp_dir().join(format!("lcc-ui-ml-dev-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let models_dir = d.join("ml-models");
+
+    // Engine session 1 saves device="cpu" to ml-models/settings.json
+    let mut s1 = lcc_engine::Session::new();
+    s1.ml_models_dir = Some(models_dir.clone());
+    s1.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+
+    // Session 2 starts with an empty AppSettings.ml_device: apply_settings adopts the engine-saved "cpu"
+    let mut s2 = lcc_engine::Session::new();
+    s2.ml_models_dir = Some(models_dir.clone());
+    let mut app = LccApp::new(s2, Services { png: None, ..Default::default() });
+    let ctx = egui::Context::default();
+    assert_eq!(app.ui.settings.ml_device, "");
+    app.apply_settings(&ctx);
+    assert_eq!(app.ui.settings.ml_device, "cpu");
+
+    // An unknown device errors in ml.status and does not mark ml_device_applied, so a subsequent valid setting applies
+    app.ui.settings.ml_device = "vulkan:10de:9999:Missing#1".into();
+    app.apply_settings(&ctx);
+    let st = app.session.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st["deviceChoice"], "cpu", "failed ml.status leaves engine choice untouched");
+
+    // Executing ml.status with device="auto" via run_typed updates both engine and AppSettings.ml_device
+    app.ui.settings.ml_device = String::new();
+    app.apply_settings(&ctx);
+    let st = app.session.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+
+    let _ = std::fs::remove_dir_all(&d);
+}

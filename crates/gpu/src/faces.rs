@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
@@ -65,9 +65,25 @@ struct Ops {
 }
 
 /// The face device on each card ([`Card::index`] order).
-static DEVS: [OnceLock<Result<Dev, String>>; 2] = [const { OnceLock::new() }, const { OnceLock::new() }];
+static DEVS: [Mutex<Option<Result<&'static Dev, String>>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
 static BROKEN: [AtomicBool; 2] = [const { AtomicBool::new(false) }, const { AtomicBool::new(false) }];
 static BROKEN_WHY: [Mutex<Option<String>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
+
+/// Clear broken device state and any cached failure so that a retry (or settings change) can attempt GPU initialization again.
+pub fn reset() {
+    for (i, b) in BROKEN.iter().enumerate() {
+        let was_broken = b.swap(false, Ordering::Relaxed);
+        if let Some(w) = BROKEN_WHY.get(i) {
+            *w.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        if let Some(slot) = DEVS.get(i) {
+            let mut dev = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            if was_broken || matches!(&*dev, Some(Err(_))) {
+                *dev = None;
+            }
+        }
+    }
+}
 
 /// Stop using `card`'s face device (the first reason is kept); the other card's is not touched.
 fn mark_broken(card: Card, why: &str) {
@@ -100,7 +116,8 @@ pub fn broken_reason_on(card: Card) -> Option<String> {
 
 /// Why the GPU stopped being used for faces (a device error) on every card a new model could go to, if it did.
 pub fn broken_reason() -> Option<String> {
-    let second_usable = broken_reason_on(Card::Second).is_none() && !matches!(DEVS.first().and_then(OnceLock::get), Some(Err(_)));
+    let second_failed = DEVS.first().is_some_and(|m| matches!(&*m.lock().unwrap_or_else(PoisonError::into_inner), Some(Err(_))));
+    let second_usable = broken_reason_on(Card::Second).is_none() && !second_failed;
     if second_usable { None } else { broken_reason_on(Card::Editing) }
 }
 
@@ -120,11 +137,14 @@ fn dev_on(card: Card) -> Result<&'static Dev, String> {
         return Err(why);
     }
     let slot = DEVS.get(card.index()).ok_or(crate::ai::NO_SECOND_CARD)?;
-    let _work = match slot.get() {
-        Some(_) => None,
-        None => Some(crate::exit::enter().ok_or("the app is closing")?),
-    };
-    slot.get_or_init(|| create_device(card)).as_ref().map_err(|e| e.clone())
+    let mut dev = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cached) = &*dev {
+        return cached.clone();
+    }
+    let _work = crate::exit::enter().ok_or("the app is closing")?;
+    let res = create_device(card).map(|d| &*Box::leak(Box::new(d)));
+    *dev = Some(res.clone());
+    res
 }
 
 fn create_device(card: Card) -> Result<Dev, String> {
@@ -147,7 +167,7 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     desc.backends = backends;
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = crate::new_instance(desc);
     // the second graphics card (none: `Err`), or the card for editing (`crate::ai_adapter_on`)
     let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
     let info = adapter.get_info();
@@ -914,6 +934,8 @@ mod tests {
             Ok(a) => assert_eq!(a.card(), Card::Editing),
             Err(e) => lcc_testkit::skip!(Gpu, "no GPU for the face kernels: {e}"),
         }
+        reset();
+        assert_eq!(broken_reason_on(Card::Second), None);
     }
 
     /// The face detector's kernels validate without a GPU.

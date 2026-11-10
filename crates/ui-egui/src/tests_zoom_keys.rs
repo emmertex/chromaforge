@@ -52,7 +52,9 @@ fn zoom_shortcuts_zoom_the_photo_and_leave_the_interface_scale_alone() {
     key(&mut h, "-");
     assert_eq!(h.app.ui.zoom, Zoom::Fit, "{:?}", h.app.ui.zoom);
     assert_eq!(h.view.ctx.zoom_factor(), scale, "Cmd+- scaled the interface");
-    // Cmd+0 is Zoom to Fit; egui would reset its interface scale with the same key
+    // Cmd+0 (Histogram in the Classic set; Zoom to Fit in the Alternative one): egui would reset
+    // its interface scale with the same key
+    h.app.ui.settings.keymap_set = crate::shortcuts::KeymapSet::Alternative;
     h.app.run("view.navigate", json!({"zoom": {"percent": 200.0}})).unwrap();
     h.view.ctx.set_zoom_factor(1.2);
     h.step();

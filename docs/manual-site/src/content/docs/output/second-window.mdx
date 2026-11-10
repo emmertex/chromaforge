@@ -1,0 +1,20 @@
+---
+title: Second window
+description: Show the active photo on a second display.
+sidebar:
+  order: 17
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Window ▸ Second Window** (⌘F11) opens the active photo, fitted, in its own native window with its own render.
+- Drag it to the second monitor. Where there are no native windows (web), it is a floating panel.
+- Loupe only: no grid, compare or survey in it.
+
+<NeedsImage what="The second window on a second monitor next to the main window" />
+
+<Aside type="note" title="Modern layout">
+  **☰ ▸ Window ▸ Second Window**.
+</Aside>

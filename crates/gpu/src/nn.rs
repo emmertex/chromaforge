@@ -150,7 +150,7 @@ fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     desc.backend_options = crate::backend::backend_options();
     // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    wgpu::Instance::new(desc)
+    crate::new_instance(desc)
 }
 
 /// Why nothing runs on the GPU once [`crate::begin_shutdown`] was called.

@@ -1,0 +1,100 @@
+[
+  {
+    "name": "shortcuts-settings",
+    "layouts": [
+      "classic",
+      "compact"
+    ],
+    "steps": [
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "module.library"
+        }
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "app.settings",
+          "params": {
+            "tab": "shortcuts"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "controls-settings",
+    "layouts": [
+      "classic",
+      "compact"
+    ],
+    "steps": [
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "module.library"
+        }
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "app.settings",
+          "params": {
+            "tab": "controls"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "plugin-manager",
+    "layouts": [
+      "classic",
+      "compact"
+    ],
+    "steps": [
+      {
+        "method": "ui.dialog.cancel",
+        "params": {}
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "module.library"
+        }
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "plugins.manager"
+        }
+      }
+    ]
+  },
+  {
+    "name": "actions-panel",
+    "layouts": [
+      "classic",
+      "compact"
+    ],
+    "steps": [
+      {
+        "method": "ui.dialog.cancel",
+        "params": {}
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "module.develop"
+        }
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "panel.actions"
+        }
+      }
+    ]
+  }
+]

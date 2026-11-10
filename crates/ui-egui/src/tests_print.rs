@@ -484,3 +484,98 @@ fn picture_package_and_custom_package_pages_can_print_cut_guide() {
         scroll(&mut h, 600.0);
     }
 }
+
+/// The Print module (issue #853): cell sizes in centimetres, typed sizes, a cell resized with the
+/// pointer by its corner, and cells added, moved and removed freely in Custom Package.
+#[test]
+fn print_module_cells_in_cm_typed_and_resized_with_the_pointer() {
+    let mut h = demo(Services::default());
+    cmd(&mut h, "module.print", json!({}));
+    click(&mut h, "print:style:2");
+    cmd(&mut h, "printui.guides", json!({"units": "cm"}));
+    let st = cmd(&mut h, "printui.state", json!({}));
+    assert_eq!(st["guides"]["units"], "cm");
+    let custom = |h: &Headless| match &h.app.print.settings.layout {
+        lcc_print::LayoutStyle::CustomPackage { pages } => pages[0].cells.iter().map(|c| c.rect).collect::<Vec<_>>(),
+        _ => panic!("not a custom package"),
+    };
+    // a typed size, in cm by default
+    let r = cmd(&mut h, "printui.cell", json!({"index": 0, "w": 10, "h": 15, "x": 2, "y": 2}));
+    assert_eq!(r["index"], 0);
+    let c = custom(&h)[0];
+    assert!((c.w - 10.0 / 2.54 * 72.0).abs() < 0.1 && (c.h - 15.0 / 2.54 * 72.0).abs() < 0.1, "{c:?}");
+    // selecting the cell shows its corner handle; dragging it makes the cell larger
+    click(&mut h, "print:cell:0");
+    assert_eq!(h.app.print.selected, Some(0));
+    assert!(has(&h, "print:resize:0"));
+    let before = custom(&h)[0];
+    drag(&mut h, "print:resize:0", 40.0, 30.0);
+    let after = custom(&h)[0];
+    assert!(after.w > before.w + 5.0 && after.h > before.h + 5.0, "{before:?} → {after:?}");
+    assert_eq!((after.x, after.y), (before.x, before.y), "resizing keeps the corner it grows from");
+    // add a second cell, then remove the first
+    cmd(&mut h, "printui.cell", json!({"w": 5, "h": 5, "unit": "in"}));
+    assert_eq!(custom(&h).len(), 2);
+    assert!((custom(&h)[1].w - 360.0).abs() < 0.1);
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    assert_eq!(custom(&h).len(), 1);
+}
+
+/// Bad `printui.cell` arguments are errors, never a panic or a broken layout.
+#[test]
+fn print_cell_rejects_hostile_arguments() {
+    let mut h = demo(Services::default());
+    cmd(&mut h, "printui.template", json!({"name": "2×2 Cells"}));
+    let bad = |h: &mut Headless, p: Value| {
+        let r = h.request("engine.execute", json!({"command": "printui.cell", "params": p}), T);
+        assert_eq!(r["ok"], false, "{p}: {r}");
+    };
+    bad(&mut h, json!({"w": 2, "h": 2})); // a grid has no free cells
+    cmd(&mut h, "module.print", json!({}));
+    click(&mut h, "print:style:1");
+    assert!(matches!(h.app.print.settings.layout, lcc_print::LayoutStyle::PicturePackage(_)));
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    for p in [
+        json!({"w": 2}),
+        json!({"w": -1, "h": 2}),
+        json!({"w": 1e30, "h": 2}),
+        json!({"w": "x", "h": 2}),
+        json!({"w": 2, "h": 2, "unit": "furlong"}),
+        json!({"w": 2, "h": 2, "x": 1}),
+        json!({"index": 99, "w": 2}),
+        json!({"index": -1, "remove": true}),
+        json!({"index": 99, "remove": true}),
+    ] {
+        bad(&mut h, p);
+    }
+    // the package panel lists the cells with typed sizes
+    cmd(&mut h, "printui.cell", json!({"w": 10, "h": 15, "unit": "cm"}));
+    assert!(has(&h, "field:print:cellW:0") || has(&h, "print:cellW:0") || has(&h, "print:removeCell:0"));
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    for _ in 0..64 {
+        cmd(&mut h, "printui.cell", json!({"w": 1, "h": 1, "unit": "in"}));
+    }
+    bad(&mut h, json!({"w": 1, "h": 1}));
+}
+
+/// The Print module prints the filmstrip's selection: the one photo chosen there is what the
+/// preview shows and the job takes, and only an empty selection falls back to the whole filmstrip.
+#[test]
+fn print_module_follows_the_filmstrip_selection() {
+    let mut h = demo(Services::default());
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    cmd(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    cmd(&mut h, "module.print", json!({}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0]]);
+    // choosing another photo in the filmstrip moves the print to it
+    cmd(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[1]]);
+    // several selected print those, in the selection's order
+    cmd(&mut h, "library.select", json!({"ids": [ids[0], ids[2]]}));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0], ids[2]]);
+    // nothing selected: the whole filmstrip
+    cmd(&mut h, "library.select", json!({"ids": []}));
+    assert!(crate::print_ui::job_photos(&mut h.app, false).len() >= ids.len());
+}

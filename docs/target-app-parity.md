@@ -110,7 +110,7 @@ pure-Rust inference is proven (faces, SAM 3, denoise).
 
 ## Ready for real work, mainstream practitioner and essentials user
 
-Three readiness numbers (craftrules `standards/progress-docs.md`). The full number is a weighted
+Three readiness numbers. The full number is a weighted
 sum over the dimensions with written weights. Mainstream and essentials take the weighted depth of
 the areas their user touches, then apply written multiplicative discounts for what still stops real
 work. Each has its own hours to ~95%, calibrated as in [How hours are calibrated](#how-hours-are-calibrated)

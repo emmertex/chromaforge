@@ -485,7 +485,7 @@ fn move_to_folder(s: &mut Session, p: &Value) -> Result<Value> {
     for id in ids {
         let ph = s.catalog.photo(id).ok_or_else(|| bad(C, format!("no photo {}", id.0)))?;
         if ph.local {
-            return Err(bad(C, format!("{} is not in the library (Local): add it first", ph.file_name)));
+            return Err(bad(C, format!("{} is not in the catalog (Local): add it first", ph.file_name)));
         }
         let lcc_catalog::Source::File { path } = &ph.source else {
             return Err(bad(C, format!("{} has no file on disk", ph.file_name)));
@@ -581,7 +581,7 @@ pub(crate) fn move_folder(s: &mut Session, from: &str, to: &str) -> std::result:
         lib.starts_with(&chosen) || chosen.parent() == Some(lib.as_path()) || l.starts_with(src) || src.parent() == Some(l)
     };
     if s.library.as_ref().is_some_and(|l| protected(&l.dir)) {
-        return Err("the library's own folders can't be moved here".into());
+        return Err("the catalog's own folders can't be moved here".into());
     }
     // Repairs retain their exact old paths, including those on surviving history entries.
     // Complete them before the directory moves; an unavailable repair leaves it in place.

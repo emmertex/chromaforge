@@ -232,9 +232,38 @@ pub fn tr(source: &str) -> &str {
     tr_in(language(), source)
 }
 
-/// [`tr`] for a message whose translation depends on where it appears: a catalog entry keyed
-/// `"<context>|<source>"` wins, else the plain message. A language adds the contextual entry only
-/// where its shared translation reads wrongly there (Japanese はい / いいえ as a rule's value).
+/// Every translation in `language`'s catalog (a painted text that is one is translated, even when
+/// it is also some English message: German "Profile" for "Profiles").
+#[cfg(test)]
+pub(crate) fn translations(language: Locale) -> std::collections::BTreeSet<&'static str> {
+    language.catalog().values().map(String::as_str).collect()
+}
+
+/// The messages whose translation depends on where they appear, as (context, English message): one
+/// English word with two meanings in the UI (`Tracking`: the book's letter spacing and the camera's
+/// AF area). Such a place asks for `"<context>|<English>"`, through [`tr`] or any helper that
+/// translates; a catalog entry keyed that way wins there, else the plain message is shown. A language
+/// adds the contextual entry only where its plain translation reads wrongly in that place, so every
+/// language carries the plain message and only some carry a contextual one.
+pub(crate) const CONTEXTUAL: &[(&str, &str)] = &[
+    (BOOL_CONTEXT, "Yes"),
+    (BOOL_CONTEXT, "No"),
+    ("book text", "Tracking"),
+    ("focus", "Tracking"),
+    ("book graphic", "Frame"),
+    ("time-lapse", "Frame"),
+    ("color wheels", "Log"),
+    ("plug-in tab", "Log"),
+];
+
+/// `"<context>|<English>"` split into its context and English message, when it is one of
+/// [`CONTEXTUAL`]'s (other text with a `|` in it is a plain message).
+pub(crate) fn contextual(source: &str) -> Option<(&str, &str)> {
+    source.split_once('|').filter(|pair| CONTEXTUAL.contains(pair))
+}
+
+/// [`tr`] for a message whose translation depends on where it appears ([`CONTEXTUAL`]): a catalog
+/// entry keyed `"<context>|<source>"` wins, else the plain message.
 fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
     match language.catalog().get(&format!("{context}|{source}")) {
         Some(translation) => translation.as_str(),
@@ -245,6 +274,9 @@ fn tr_ctx_in<'a>(language: Locale, context: &str, source: &'a str) -> &'a str {
 /// Catalog values are `'static` (they live in the embedded file), so a translation can be handed
 /// out for as long as the `'static` key it was looked up by.
 fn tr_in(language: Locale, source: &str) -> &str {
+    if let Some((context, plain)) = contextual(source) {
+        return tr_ctx_in(language, context, plain);
+    }
     if language.catalog().is_empty() {
         return filled_source(source);
     }
@@ -258,7 +290,8 @@ fn tr_in(language: Locale, source: &str) -> &str {
 }
 
 /// Fills the brand placeholders of catalog and source text: `{app}` (the display name, via
-/// [`lcc_brand::fill`]), `{cli}` (the command-line binary) and `{env}` (the environment variable prefix).
+/// [`lcc_brand::fill`], which also fills `{upstream}`), `{cli}` (the command-line binary) and `{env}` (the
+/// environment variable prefix).
 pub fn brand_fill(text: &str) -> String {
     if !text.contains('{') {
         return text.to_string();
@@ -270,7 +303,7 @@ pub fn brand_fill(text: &str) -> String {
 /// filled text is interned (the set of built-in messages is bounded), so it can be handed out like
 /// the source.
 fn filled_source(source: &str) -> &str {
-    if !(source.contains("{app}") || source.contains("{cli}") || source.contains("{env}")) {
+    if !["{app}", "{cli}", "{env}", "{upstream}"].iter().any(|placeholder| source.contains(placeholder)) {
         return source;
     }
     thread_local! {
@@ -754,7 +787,7 @@ mod tests {
                 let Some(end) = rest[start..].find('}') else { break };
                 let name = rest[start + 1..start + end].split(':').next().unwrap_or("").to_string();
                 // brand placeholders are filled in at load time, so only the key still has them
-                if !matches!(name.as_str(), "app" | "cli" | "env") {
+                if !matches!(name.as_str(), "app" | "cli" | "env" | "upstream") {
                     out.push(name);
                 }
                 rest = &rest[start + end + 1..];
@@ -956,7 +989,9 @@ mod tests {
     #[test]
     fn translated_catalogs_do_not_use_missing_menu_triangles() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
-        for entry in std::fs::read_dir(dir).unwrap() {
+        // upstream's catalogs and the fork's rows the build merges over them (`locales/fork/`)
+        let entries = std::fs::read_dir(&dir).unwrap().chain(std::fs::read_dir(dir.join("fork")).unwrap());
+        for entry in entries {
             let path = entry.unwrap().path();
             if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
@@ -1014,6 +1049,48 @@ mod tests {
         let saved = serde_json::to_string(&settings).unwrap();
         let restored: crate::state::UiState = serde_json::from_str(&saved).unwrap();
         assert_eq!(restored.language, Locale::ZhHans);
+    }
+
+    /// A word with two meanings in the UI is asked for with a context in each place, and a contextual
+    /// entry changes only its own place: where a language has `focus|Tracking`, the Focus row shows it
+    /// while the book's letter-spacing slider keeps the plain translation, and the other way round with
+    /// `book text|Tracking`. A language without a contextual entry shows the plain translation there.
+    /// (Every place asks with its key: `every_contextual_lookup_is_asked_for_in_the_code`.)
+    #[test]
+    fn contextual_entries_change_only_their_own_place() {
+        let tracking_area = lcc_meta::FocusPoint {
+            rect: lcc_geom::Rect { x0: 0.4, y0: 0.4, x1: 0.6, y1: 0.6 },
+            mode: None,
+            area: Some("Tracking".into()),
+            tracking: None,
+        };
+        let (mut focus_only, mut book_only) = (0, 0);
+        for language in Locale::ALL {
+            let catalog = language.catalog();
+            let plain = language.tr("Tracking");
+            let (focus, book) = (catalog.get("focus|Tracking"), catalog.get("book text|Tracking"));
+            set_language(*language);
+            let shown = crate::panels::metadata::focus_text(Some(&tracking_area));
+            set_language(Locale::En);
+            assert_eq!(shown.as_deref(), Some(focus.map_or(plain, String::as_str)), "{}: the Focus row", language.code());
+            assert_eq!(tr_in(*language, "book text|Tracking"), book.map_or(plain, String::as_str), "{}: the book's slider", language.code());
+            focus_only += usize::from(focus.is_some_and(|f| f != plain) && book.is_none());
+            book_only += usize::from(book.is_some_and(|b| b != plain) && focus.is_none());
+        }
+        assert!(focus_only > 0 && book_only > 0, "some language words each place apart from the plain translation ({focus_only}, {book_only})");
+        assert_eq!(tr_in(Locale::En, "book text|Tracking"), "Tracking", "English shows the word as is");
+        // every pair: its own entry where the language has one, else the plain message; and each word's
+        // places read differently in some language, or the contexts change nothing
+        for (context, source) in CONTEXTUAL {
+            let key = format!("{context}|{source}");
+            for language in Locale::ALL {
+                let expected = language.catalog().get(&key).map_or(language.tr(source), String::as_str);
+                assert_eq!(tr_in(*language, &key), expected, "{}: {key:?}", language.code());
+            }
+            for other in CONTEXTUAL.iter().filter(|(c, s)| s == source && c != context).map(|(c, s)| format!("{c}|{s}")) {
+                assert!(Locale::ALL.iter().any(|l| tr_in(*l, &key) != tr_in(*l, &other)), "{key:?} and {other:?} read alike in every language");
+            }
+        }
     }
 
     /// Smart-album choice values read as words in every language (English "Public Domain"), never as
@@ -1628,11 +1705,8 @@ mod tests {
             notes.len()
         );
         for language in Locale::ALL.iter().filter(|language| **language != Locale::En) {
-            let catalog = language.catalog();
-            let own_formats = formats_catalog(language.code());
-            let missing: Vec<&str> = messages.iter().map(String::as_str).filter(|m| !catalog.contains_key(*m)).collect();
-            let missing_formats: Vec<&str> = formats.iter().map(String::as_str).filter(|m| !own_formats.contains_key(*m)).collect();
-            let missing_notes = notes.iter().filter(|line| !catalog.contains_key(**line)).count();
+            let (missing, missing_formats) = gaps(*language, &messages, &formats);
+            let missing_notes = notes.iter().filter(|line| !language.catalog().contains_key(**line)).count();
             out.push_str(&format!(
                 "{}: {} messages, {} formats, {} What's New lines\n",
                 language.code(),
@@ -1650,8 +1724,37 @@ mod tests {
         println!("{out}");
     }
 
-    /// Every plain message: the keys of every catalog (but contextual entries, which a language adds
-    /// only where it needs one) and the labels the UI translates from tables.
+    /// The plain messages and formats `language` lacks, out of `messages` and `formats`.
+    fn gaps<'a>(
+        language: Locale,
+        messages: &'a std::collections::BTreeSet<String>,
+        formats: &'a std::collections::BTreeSet<String>,
+    ) -> (Vec<&'a str>, Vec<&'a str>) {
+        let (catalog, own_formats) = (language.catalog(), formats_catalog(language.code()));
+        (
+            messages.iter().map(String::as_str).filter(|m| !catalog.contains_key(*m)).collect(),
+            formats.iter().map(String::as_str).filter(|m| !own_formats.contains_key(*m)).collect(),
+        )
+    }
+
+    /// No language lacks any of the messages and formats the gaps report knows (Help ▸ What's New's
+    /// lines aside, upstream's release notes): a gap would show English text.
+    #[test]
+    fn no_language_has_translation_gaps() {
+        let notes = whats_new_lines();
+        let messages: std::collections::BTreeSet<String> = plain_messages().into_iter().filter(|m| !notes.contains(&m.as_str())).collect();
+        let formats = format_messages();
+        let mut missing = Vec::new();
+        for language in Locale::ALL.iter().filter(|language| **language != Locale::En) {
+            let (plain, format) = gaps(*language, &messages, &formats);
+            missing.extend(plain.iter().map(|m| format!("{} lacks {m:?}", language.code())));
+            missing.extend(format.iter().map(|m| format!("{} lacks the format {m:?}", language.code())));
+        }
+        assert!(missing.is_empty(), "{} translation(s) missing, shown in English:\n{}", missing.len(), missing.join("\n"));
+    }
+
+    /// Every plain message: the keys of every catalog (but contextual entries, [`CONTEXTUAL`], which a
+    /// language adds only where it needs one) and the labels the UI translates from tables.
     fn plain_messages() -> std::collections::BTreeSet<String> {
         use lcc_catalog::rules;
         let mut labels: Vec<&str> = lcc_engine::command_specs().iter().map(|spec| spec.label).collect();
@@ -1687,13 +1790,20 @@ mod tests {
             "Imported Photos",
         ]);
         labels.extend(crate::panels::keyword_list::VARIABLE_LABELS);
-        let contextual = format!("{BOOL_CONTEXT}|");
+        // and every literal the source hands to `tr` or a helper that translates (`tr_format!`
+        // messages are the formats' list); a place that asks with a context needs the plain message
+        let formats = format_messages();
+        let scanned = crate::i18n_scan::translated_texts()
+            .into_keys()
+            .filter(|text| !formats.contains(text))
+            .map(|text| contextual(&text).map_or(text.clone(), |(_, plain)| plain.to_string()));
         Locale::ALL
             .iter()
             .flat_map(|language| language.catalog().keys())
-            .filter(|key| !key.starts_with(&contextual))
+            .filter(|key| contextual(key).is_none())
             .cloned()
             .chain(labels.into_iter().map(str::to_string))
+            .chain(scanned)
             .collect()
     }
 
@@ -1707,41 +1817,29 @@ mod tests {
             .collect()
     }
 
-    /// `locales/<code>-formats.json` (the catalog `build.rs` compiles into `tr_format!`), without
-    /// empty translations.
+    /// `locales/<code>-formats.json` with the fork's rows (`locales/fork/`) over it, as `build.rs`
+    /// compiles them into `tr_format!`, without empty translations.
     fn formats_catalog(code: &str) -> BTreeMap<String, String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("locales/{code}-formats.json"));
-        let mut messages: BTreeMap<String, String> =
-            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+        let read = |path: std::path::PathBuf| -> BTreeMap<String, String> {
+            std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        };
+        let mut messages = read(dir.join(format!("{code}-formats.json")));
+        messages.extend(read(dir.join("fork").join(format!("{code}-formats.json"))));
         messages.retain(|_, text| !text.is_empty());
         messages
     }
 
     /// Every format message: the keys of every formats catalog and the message of every
-    /// `tr_format!` call in `src/` outside its test modules.
+    /// `tr_format!` call in the app's source (`i18n_scan::sources`: no test files or modules).
     fn format_messages() -> std::collections::BTreeSet<String> {
         let mut all: std::collections::BTreeSet<String> = Locale::ALL
             .iter()
             .filter(|language| **language != Locale::En)
             .flat_map(|language| formats_catalog(language.code()).into_keys())
             .collect();
-        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
-        while let Some(dir) = dirs.pop() {
-            for path in std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().path()) {
-                if path.is_dir() {
-                    dirs.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let source = std::fs::read_to_string(&path).unwrap();
-                    let app = source
-                        .split(
-                            "#[cfg(test)]
-mod ",
-                        )
-                        .next()
-                        .unwrap_or_default();
-                    all.extend(tr_format_messages(app));
-                }
-            }
+        for source in crate::i18n_scan::sources() {
+            all.extend(tr_format_messages(&source.code));
         }
         all
     }

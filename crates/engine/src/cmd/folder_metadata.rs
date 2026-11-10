@@ -124,7 +124,7 @@ impl FolderMetadataJob {
         let filter = Filter { library_folder: Some(folder.to_string()), ..Default::default() };
         let ids = s.catalog.query(&filter, &Sort::default());
         if ids.is_empty() {
-            return Err(bad(c, format!("{folder}: no photo in the library was imported from it")));
+            return Err(bad(c, format!("{folder}: no photo in the catalog was imported from it")));
         }
         let items: Vec<Item> = ids
             .iter()

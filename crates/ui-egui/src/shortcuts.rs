@@ -13,7 +13,10 @@ use crate::LccApp;
 #[path = "keymap_classic.rs"]
 mod classic;
 pub(crate) use classic::tab_bound;
-pub use classic::{CLASSIC, KeymapSet, active_set, choose_set, default_in, export_file, import_file, import_value, keymap_file, set_active};
+pub use classic::{
+    CLASSIC, KeymapSet, active_set, choose_set, classic_extra_keys, default_in, export_file, import_file, import_value, keymap_file, module_keys_of,
+    set_active,
+};
 
 /// The user's changes to the keymap: command id → shortcut (`""` = no shortcut). Saved with the
 /// app settings (`ui.json`); commands not listed keep their declared shortcut.
@@ -42,7 +45,8 @@ pub fn bindable() -> &'static [Bindable] {
     let fixed = FIXED.get_or_init(|| {
         let mut v: Vec<Bindable> = Vec::new();
         for (id, label, sc, _) in crate::menus::ui_commands() {
-            if !v.iter().any(|b| b.id == *id) {
+            // a greyed "Coming soon" menu item can't take a key: it never runs
+            if !v.iter().any(|b| b.id == *id) && !crate::lrc_menus::is_coming_soon(id) {
                 v.push(Bindable { id, label, default: *sc });
             }
         }
@@ -448,9 +452,10 @@ fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
         return ctx.input(|input| input.key_pressed(Key::Escape))
             && app.widgets.iter().any(|(widget, _)| widget.starts_with("sliderField:") && crate::text_field::was_editing(ctx, widget));
     }
-    // a selected slider keeps its arrow keys; everything else is a shortcut
+    // a selected slider keeps the keys that nudge it (Up / Down); Left / Right still change the
+    // photo, so a click or drag on a slider doesn't stop the arrows from browsing (#880)
     if crate::widgets::slider_has_focus(ctx) {
-        return ctx.input(|input| [Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown].iter().any(|key| input.key_pressed(*key)));
+        return ctx.input(|input| [Key::ArrowUp, Key::ArrowDown].iter().any(|key| input.key_pressed(*key)));
     }
     // a handle on the photo keeps the arrows (it moves) and Return / Space (it acts)
     if crate::canvas_keys::has_focus(ctx) {
@@ -592,6 +597,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         // an unmodified H no assignment has claimed (the Masking panel's pin toggle, below)
         h_press = matches(i, Modifiers::NONE, Key::H) && !native("H") && !taken.contains(&(Modifiers::NONE, Key::H));
         classic::module_key_presses(i, module_keys, keymap, &mut consumed, &mut aliased);
+        classic::module_key_presses(i, classic_extra_keys(), keymap, &mut consumed, &mut aliased);
         // Enter opens the active grid photo; widgets, popups and custom bindings keep the key.
         if grid
             && app.session.active().is_some()

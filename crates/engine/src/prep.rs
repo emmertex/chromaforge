@@ -332,12 +332,46 @@ pub fn foreground_busy() -> bool {
 
 /// Wait while the photo on screen is being made. `true`: `cancel` was set meanwhile.
 pub fn wait_for_foreground(cancel: &AtomicBool) -> bool {
+    wait_for_foreground_while(cancel, &|| true)
+}
+
+/// [`wait_for_foreground`], given up as soon as `still` says the wait is no longer needed (a build
+/// lane whose photos the other lane took). `true`: `cancel` was set meanwhile.
+pub fn wait_for_foreground_while(cancel: &AtomicBool, still: &dyn Fn() -> bool) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
-    while foreground_busy() {
+    while foreground_busy() && still() {
         if cancel.load(Ordering::Relaxed) {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = still;
+    cancel.load(Ordering::Relaxed)
+}
+
+/// The longest the background build's first lane waits for the photo on screen and its
+/// neighbours before it builds its next photo anyway (ms). Stepping through a folder keeps the
+/// photo on screen being made all the time: a build that always waited never got ahead of the user
+/// (2026-11-09: 16 photos in 70 s of culling a wedding). The other lanes wait as long as it takes,
+/// and every lane waits for the pictures missing on screen ([`pictures_missing`]).
+pub const STEADY_WAIT_MS: u64 = 1500;
+
+/// Wait while the photo on screen is being made, at most [`STEADY_WAIT_MS`], and while something on
+/// screen lacks its first picture (no limit). `true`: `cancel` was set meanwhile.
+pub fn wait_for_foreground_steady(cancel: &AtomicBool) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let t0 = clock_ms();
+        while foreground_busy() {
+            if cancel.load(Ordering::Relaxed) {
+                return true;
+            }
+            if clock_ms().saturating_sub(t0) >= STEADY_WAIT_MS && !pictures_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
     }
     cancel.load(Ordering::Relaxed)
 }
@@ -383,6 +417,8 @@ impl Session {
         let settings = self.prep.settings();
         let want = settings.mode(mode);
         let wanted = want.previews && settings.scope(mode) != Scope::OnScreen;
+        // a folder being culled is prepared from the photo the user is on, in the grid too
+        let at = if mode == Mode::Culling { at.or_else(|| self.active()) } else { at };
         // the running build: re-aimed at the user, stopped when switched off
         if let Some(b) = self.prep.build.clone() {
             if b.running() {
@@ -390,6 +426,21 @@ impl Session {
                     b.cancel.store(true, Ordering::Relaxed);
                 } else if let Some(id) = at {
                     b.focus_on(id, backward);
+                }
+                // the user moved on to a photo the build doesn't hold (another folder, or another
+                // stretch of the library): the build of the photos left behind makes way for the
+                // ones in view (a wedding browsed after another folder kept building the other
+                // folder's previews, 2026-11-09). A folder still being read keeps its build: the
+                // photos read since join the next one, which skips what this one built.
+                if wanted
+                    && !self.prep.resync
+                    && !b.cancel.load(Ordering::Relaxed)
+                    && let Some(id) = at
+                    && self.prep.started_for.is_some()
+                    && !b.order.contains(&id.0)
+                {
+                    b.cancel.store(true, Ordering::Relaxed);
+                    self.prep.superseded = true;
                 }
                 // photos changed off screen go before the rest of the view: its build makes way
                 if wanted && !self.prep.resync && self.resync_due() && !b.cancel.load(Ordering::Relaxed) {
@@ -426,10 +477,9 @@ impl Session {
             return;
         }
         let Some(at) = at else { return };
-        let ids = self.visible_cloned();
-        let mut sig = signature(&ids, self);
-        if self.prep.steps_in != Some(sig) {
-            self.prep.steps_in = Some(sig);
+        let view_sig = signature(&self.visible_cloned(), self);
+        if self.prep.steps_in != Some(view_sig) {
+            self.prep.steps_in = Some(view_sig);
             self.prep.steps = 0;
             self.prep.last_at = None;
         }
@@ -437,18 +487,12 @@ impl Session {
             self.prep.last_at = Some(at);
             self.prep.steps = self.prep.steps.saturating_add(1);
         }
-        // a library: the stretch around the photo on screen (a build per stretch); a folder: all of it
-        let ids = match (mode, ids.iter().position(|id| *id == at)) {
-            (Mode::Culling, _) | (_, None) => ids,
-            (_, Some(i)) => {
-                let stretch = i / AROUND;
-                sig ^= (stretch as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-                let from = (stretch * AROUND).saturating_sub(AROUND);
-                ids.into_iter().skip(from).take(AROUND * 3).collect()
-            }
-        };
+        let (sig, ids) = self.prep_view(mode, at);
+        // a folder browsed to be culled is prepared as soon as a photo of it is looked at (the
+        // user waited on photo 1 for minutes and nothing was prepared); a library after a few steps
+        let steps_needed = if mode == Mode::Culling { 1 } else { STEPS_BEFORE_BUILD };
         if busy
-            || self.prep.steps < STEPS_BEFORE_BUILD
+            || self.prep.steps < steps_needed
             || self.prep.started_for == Some(sig)
             || self.prep.declined_for == Some(sig)
             || self.library.as_ref().is_none_or(|l| !l.on_disk)
@@ -467,6 +511,23 @@ impl Session {
         match self.execute("library.buildPreviews", &p) {
             Ok(_) => self.prep.build = self.preview_build.clone(),
             Err(e) => log::info!("background preparation: {e}"),
+        }
+    }
+
+    /// What the background build prepares with the user on photo `at` in `mode`, and its identity:
+    /// a folder being culled whole; a library the stretch around `at` ([`AROUND`]), a build per
+    /// stretch.
+    fn prep_view(&mut self, mode: Mode, at: PhotoId) -> (u64, Vec<PhotoId>) {
+        let ids = self.visible_cloned();
+        let sig = signature(&ids, self);
+        match (mode, ids.iter().position(|id| *id == at)) {
+            (Mode::Culling, _) | (_, None) => (sig, ids),
+            (_, Some(i)) => {
+                let stretch = i / AROUND;
+                let sig = sig ^ (stretch as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                let from = (stretch * AROUND).saturating_sub(AROUND);
+                (sig, ids.into_iter().skip(from).take(AROUND * 3).collect())
+            }
         }
     }
 

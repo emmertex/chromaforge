@@ -401,7 +401,7 @@ fn recursive_import_with_duplicates() {
 }
 
 /// Files whose content a photo already has, imported anyway (`importDuplicates`, as Synchronize
-/// Folder does with "Don't import files already in the library" unticked): a file with the bytes
+/// Folder does with "Don't import files already in the catalog" unticked): a file with the bytes
 /// of a library photo, and two copies of one new picture, each come in as a photo of their own, and
 /// the photos stay told apart: no two keep the same content key.
 #[test]
@@ -962,6 +962,59 @@ fn find_missing_does_not_take_a_look_alike_for_a_file_name_with_a_backslash() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A record made without its file being read (a Lightroom catalog import whose original wasn't
+/// there) has no exposure information. Locating the file, by hand or with Find Missing Photos,
+/// reads it from the file; undo takes the record back to what it was (adapted from upstream #3969).
+#[test]
+fn a_found_photo_reads_the_exposure_its_record_never_had() {
+    use lcc_catalog::{Op, Photo, Source};
+    use lcc_tiff::{ByteOrder, IfdBuilder, TiffWriter, Value as Tv};
+    let dir = temp_dir("found-reads-exposure");
+    let mut exif = IfdBuilder::new();
+    exif.set(0x829a, Tv::Rational(vec![(1, 250)]));
+    exif.set(0x829d, Tv::Rational(vec![(28, 10)]));
+    exif.set(0x8827, Tv::Short(vec![400]));
+    exif.set(0x920a, Tv::Rational(vec![(50, 1)]));
+    let mut ifd0 = IfdBuilder::new();
+    ifd0.set(0x010f, Tv::Ascii("Canon".into()));
+    ifd0.set(0x0110, Tv::Ascii("Canon EOS 5D".into()));
+    ifd0.set_child(0x8769, exif);
+    let block = TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap();
+    let mut s = Session::new().with_fs();
+    let mut ids = Vec::new();
+    for (name, seed) in [("a.png", 1), ("b.png", 2)] {
+        let file = dir.join("found").join(name);
+        write_png_with_metadata(&file, seed, Some(&block), None);
+        let id = s.catalog.alloc_photo_id();
+        let mut p = Photo::new(
+            id,
+            Source::File { path: dir.join("gone").join(name).to_string_lossy().to_string() },
+            name,
+            "PNG",
+            48,
+            32,
+            "2026-01-01T00:00:00",
+        );
+        p.file_size = std::fs::metadata(&file).unwrap().len();
+        s.commit("Add", Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        ids.push(id);
+    }
+    let exposure = |p: &Photo| (p.meta.shutter.clone(), p.meta.aperture, p.meta.iso, p.meta.focal_mm);
+    assert_eq!(exposure(s.catalog.photo(ids[0]).unwrap()), (String::new(), None, None, None));
+    s.execute("photo.relink", &json!({"id": ids[0].0, "path": dir.join("found/a.png").to_string_lossy()})).unwrap();
+    let a = s.catalog.photo(ids[0]).unwrap();
+    assert_eq!(exposure(a), ("1/250".into(), Some(2.8), Some(400), Some(50.0)), "Locate reads the file's exposure");
+    let r = s.execute("library.findMissing", &json!({"folder": dir.join("found").to_string_lossy()})).unwrap();
+    assert_eq!(r["found"].as_array().map(Vec::len), Some(1), "{r}");
+    let b = s.catalog.photo(ids[1]).unwrap();
+    assert_eq!(exposure(b), ("1/250".into(), Some(2.8), Some(400), Some(50.0)), "Find Missing Photos reads the file's exposure");
+    s.execute("edit.undo", &json!({})).unwrap();
+    let b = s.catalog.photo(ids[1]).unwrap();
+    assert_eq!(exposure(b), (String::new(), None, None, None));
+    assert!(matches!(&b.source, Source::File { path } if path.contains("gone")), "{:?}", b.source);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn missing_files_are_found_and_relinked() {
     let dir = std::env::temp_dir().join(format!("lc-missing-{}", std::process::id()));
@@ -1398,6 +1451,250 @@ fn smart_previews_stand_in_for_offline_originals() {
     s.media.forget(id);
     assert!(s.render_now(id, 48, 32).is_err());
     let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The long edge the grid asks thumbnails for in the tests of missing photos below.
+const CELL: usize = 256;
+
+/// Waits for `s`'s thumbnail cache to finish its disk writes (as quitting does).
+fn drain_thumbnail_writes(s: &Session) {
+    let t = std::time::Instant::now();
+    while s.media.rendered.queued_bytes() > 0 && t.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(s.media.rendered.queued_bytes(), 0, "the thumbnail cache's writes are done");
+}
+
+/// The mean difference per channel value of two pictures of one size.
+fn mean_diff(a: &lcc_raster::Rgba8, b: &lcc_raster::Rgba8) -> f64 {
+    assert_eq!((a.width, a.height), (b.width, b.height), "one size");
+    let sum: f64 = a.data.iter().zip(&b.data).map(|(p, q)| (0..3).map(|i| (f64::from(p[i]) - f64::from(q[i])).abs()).sum::<f64>()).sum();
+    sum / (a.data.len() * 3).max(1) as f64
+}
+
+fn import_png(s: &mut Session, path: &Path) -> lcc_catalog::PhotoId {
+    let r = s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap())
+}
+
+/// A photo whose original is missing (a drive that isn't mounted) keeps its last grid thumbnail through an update
+/// that changes the thumbnails' keys, as Lightroom keeps a missing photo's preview; once the original is back, its
+/// thumbnail renders afresh. A missing photo with nothing cached still fails, and a file that is there but can't be
+/// read shows its error, never an old thumbnail.
+#[test]
+fn a_missing_photo_keeps_its_thumbnail_through_an_update() {
+    let src = temp_dir("keptsrc");
+    let lib = temp_dir("keptlib");
+    for (name, seed) in [("a.png", 7), ("b.png", 9), ("c.png", 11)] {
+        write_png(&src.join(name), seed);
+    }
+    // seen online: a and c get their grid thumbnails, b is never shown
+    let (a, b, c, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let (a, b, c) = (import_png(&mut s, &src.join("a.png")), import_png(&mut s, &src.join("b.png")), import_png(&mut s, &src.join("c.png")));
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("a renders online").image;
+        s.thumb_job(c, CELL).unwrap().run().rendered.expect("c renders online");
+        drain_thumbnail_writes(&s);
+        (a, b, c, before)
+    };
+    // the drive goes away; c turns up elsewhere as a file that can't be read
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("c.png"), b"not a picture").unwrap();
+    // the next start comes after more updates than earlier versions' thumbnails are looked for under: only the
+    // thumbnail the photo kept can show
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let offline = s.thumb_job(a, CELL).unwrap().run();
+    assert_eq!(offline.quick, Some(crate::media::QuickSource::Kept), "says it is the kept thumbnail");
+    assert!(offline.placement.is_none(), "made with the look and crop the photo had then: it claims neither");
+    let shown = offline.rendered.expect("the missing photo shows its kept thumbnail").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had before the update: {diff}");
+    assert!(s.thumb_job(b, CELL).unwrap().run().rendered.is_err(), "a missing photo with nothing cached has no picture");
+    assert!(s.thumb_job(c, CELL).unwrap().run().rendered.is_err(), "a file that is there but can't be read shows its error");
+    // the drive is back, and a's pixels changed meanwhile: its thumbnail renders afresh from the file
+    std::fs::remove_dir_all(&src).unwrap();
+    std::fs::rename(src.with_extension("offline"), &src).unwrap();
+    write_png(&src.join("a.png"), 200);
+    let online = s.thumb_job(a, CELL).unwrap().run();
+    assert!(online.loaded.is_some(), "decoded from the original, not taken from a cache");
+    let diff = mean_diff(&online.rendered.expect("a renders online again").image, &before);
+    assert!(diff > 30.0, "the file's new pixels, not the kept thumbnail: {diff}");
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// A thumbnail cached by an earlier version of the app, before photos kept one whatever made it, still shows for a
+/// missing photo: it is looked for under the renderer versions before this one.
+#[test]
+fn a_missing_photo_finds_a_thumbnail_an_earlier_version_cached() {
+    let src = temp_dir("oldsrc");
+    let lib = temp_dir("oldlib");
+    write_png(&src.join("a.png"), 7);
+    let (a, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        // an app three versions back, which kept no thumbnail of its own
+        s.media.thumb_version -= 3;
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders online").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)), "this version keeps one");
+        (a, before)
+    };
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the earlier version's thumbnail").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had: {diff}");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// A thumbnail cached before photos kept one is kept the next time it is shown from the cache, so the photo keeps
+/// it through any number of later updates.
+#[test]
+fn a_thumbnail_cached_before_photos_kept_one_is_kept_once_shown() {
+    let src = temp_dir("backsrc");
+    let lib = temp_dir("backlib");
+    write_png(&src.join("a.png"), 7);
+    let (a, before) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        let before = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders online").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        s.media.rendered.remove(crate::media::kept_thumb_key(&p));
+        (a, before)
+    };
+    // the next start shows it from the cache (the original still there)
+    {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let r = s.thumb_job(a, CELL).unwrap().run();
+        assert!(r.rendered.is_ok() && r.loaded.is_none(), "shown from the cache");
+        drain_thumbnail_writes(&s);
+    }
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the thumbnail kept when it was last shown").image;
+    let diff = mean_diff(&shown, &before);
+    assert!(diff < 6.0, "the thumbnail it had: {diff}");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The kept thumbnail is the look the photo had when it was last shown: an undo back to a look whose thumbnail was
+/// cached already replaces the kept thumbnail of the edit undone.
+#[test]
+fn a_missing_photo_keeps_the_look_an_undo_went_back_to() {
+    let src = temp_dir("undosrc");
+    let lib = temp_dir("undolib");
+    write_png(&src.join("a.png"), 7);
+    // cached by a version that kept none
+    let (a, plain) = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        let plain = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders").image;
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)));
+        (a, plain)
+    };
+    // the next start: an edit is rendered (the first kept thumbnail), then undone back to the cached look
+    let edited = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let as_shot = (*s.catalog.photo(a).unwrap().develop).clone();
+        let mut bright = as_shot.clone();
+        bright.light.exposure = 2.0;
+        s.set_develop(a, bright, "Exposure").unwrap();
+        let edited = s.thumb_job(a, CELL).unwrap().run().rendered.expect("renders the edit").image;
+        assert!(mean_diff(&plain, &edited) > 20.0, "the edit shows");
+        s.set_develop(a, as_shot, "Undo").unwrap();
+        let back = s.thumb_job(a, CELL).unwrap().run();
+        assert!(back.rendered.is_ok() && back.loaded.is_none(), "shown from the cache");
+        drain_thumbnail_writes(&s);
+        edited
+    };
+    std::fs::rename(&src, src.with_extension("offline")).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+    let shown = s.thumb_job(a, CELL).unwrap().run().rendered.expect("the kept thumbnail").image;
+    assert!(mean_diff(&shown, &plain) < 6.0, "the look it went back to");
+    assert!(mean_diff(&shown, &edited) > 20.0, "not the edit undone");
+    let _ = std::fs::remove_dir_all(src.with_extension("offline"));
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The loupe's stand-in shows the photo's cached view: that is no grid thumbnail, and is never kept as one (a
+/// view-sized or full-size copy for every photo seen in the loupe).
+#[test]
+fn the_loupes_stand_in_keeps_no_thumbnail() {
+    let src = temp_dir("loupesrc");
+    let lib = temp_dir("loupelib");
+    write_png(&src.join("a.png"), 7);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let a = import_png(&mut s, &src.join("a.png"));
+    s.thumb_job(a, CELL).unwrap().run().rendered.expect("the grid thumbnail renders");
+    s.loupe_job(a, 1600, 1600, true).unwrap().run().rendered.expect("the view renders");
+    let r = s.quick_view_job(a, 1600, true).unwrap().run();
+    assert_eq!(r.quick, Some(crate::media::QuickSource::Cached), "the cached view stands in");
+    drain_thumbnail_writes(&s);
+    let p = s.catalog.photo(a).unwrap().clone();
+    let kept = s.media.rendered.get_latest(crate::media::kept_thumb_key(&p)).expect("the grid thumbnail is kept");
+    assert!(kept.width.max(kept.height) <= CELL, "the kept thumbnail is the grid's, not the view: {}x{}", kept.width, kept.height);
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// The grid's stand-in for an edited photo shows its cached thumbnail before the render job does: what it shows is
+/// kept, as when the render job shows it from the cache.
+#[test]
+fn the_grids_stand_in_keeps_the_edited_thumbnail_it_shows() {
+    let src = temp_dir("standinsrc");
+    let lib = temp_dir("standinlib");
+    write_png(&src.join("a.png"), 7);
+    let bright = |s: &Session, a| {
+        let mut bright = (*s.catalog.photo(a).unwrap().develop).clone();
+        bright.light.exposure = 2.0;
+        bright
+    };
+    // cached by a version that kept none
+    let a = {
+        let mut s = Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        let a = import_png(&mut s, &src.join("a.png"));
+        s.set_develop(a, bright(&s, a), "Exposure").unwrap();
+        s.thumb_job(a, CELL).unwrap().run().rendered.expect("the edit renders");
+        drain_thumbnail_writes(&s);
+        let p = s.catalog.photo(a).unwrap().clone();
+        assert!(s.media.rendered.remove(crate::media::kept_thumb_key(&p)), "kept when rendered");
+        a
+    };
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    // (the same edit again: one look, one cached thumbnail)
+    s.set_develop(a, bright(&s, a), "Exposure").unwrap();
+    let p = s.catalog.photo(a).unwrap().clone();
+    let job = s.thumb_job(a, CELL).unwrap();
+    let r = s.quick_thumb_job(&job).expect("the grid's stand-in").run();
+    assert_eq!(r.quick, Some(crate::media::QuickSource::Cached), "the cached thumbnail stands in");
+    drain_thumbnail_writes(&s);
+    assert!(s.media.rendered.get_latest(crate::media::kept_thumb_key(&p)).is_some(), "what the stand-in showed is kept");
+    let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&lib);
 }
 
@@ -3376,6 +3673,57 @@ fn an_import_names_the_files_it_left_as_still_being_copied() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Lightroom keeps spots and mask shapes on the stored image, before its orientation, as it does the crop; the app
+/// keeps them on the oriented photo. A brushed Content-Aware Remove on a raw turned to portrait (8) comes in where
+/// Lightroom shows it: (0.69, 0.9) on the stored frame is (0.9, 0.31) on the photo turned a quarter counter-clockwise.
+/// Before, it landed on the stored-frame spot of the turned photo (sunset g04: on the stairs, not the camera rig).
+#[test]
+fn lightroom_spots_and_masks_on_a_turned_raw_land_where_lightroom_shows_them() {
+    use lcc_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, Samples, encode_jpeg};
+    let px: Vec<u8> = (0..60 * 40).flat_map(|i| [(i % 251) as u8, 90, 200]).collect();
+    let j = encode_jpeg(&EncodeImage::new(60, 40, 3, Samples::U8(&px)), 90, ChromaSubsampling::S444, &EncodeMeta::default()).unwrap();
+    let off = 8 + 2 + 24 + 4;
+    let mut nef = b"II*     ".to_vec();
+    for (tag, v) in [(513u16, off as u32), (514, j.len() as u32)] {
+        nef.extend_from_slice(&tag.to_le_bytes());
+        nef.extend_from_slice(&[4, 0, 1, 0, 0, 0]);
+        nef.extend_from_slice(&v.to_le_bytes());
+    }
+    nef.extend_from_slice(&[0, 0, 0, 0]);
+    nef.extend_from_slice(&j);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    for (exif, spot_at, centre_at, swapped) in [("8", (0.9, 0.31), (0.3, 0.8), true), ("1", (0.69, 0.9), (0.2, 0.3), false)] {
+        let src = temp_dir("lr-turned-spots");
+        std::fs::write(src.join("DSC_0003.NEF"), &nef).unwrap();
+        let xmp = format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" tiff:Orientation="{exif}" crs:Version="17.0" crs:ProcessVersion="15.4" crs:HasSettings="True">
+ <crs:RetouchAreas><rdf:Seq><rdf:li><rdf:Description crs:SpotType="heal_patchmatch" crs:SourceState="sourceAutoComputed" crs:Opacity="1">
+  <crs:Masks><rdf:Seq><rdf:li><rdf:Description crs:What="Mask/Paint" crs:Radius="0.03" crs:MaskValue="1"><crs:Dabs><rdf:Seq><rdf:li>d 0.69 0.9</rdf:li><rdf:li>d 0.7 0.88</rdf:li></rdf:Seq></crs:Dabs></rdf:Description></rdf:li></rdf:Seq></crs:Masks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:RetouchAreas>
+ <crs:MaskGroupBasedCorrections><rdf:Seq><rdf:li><rdf:Description crs:What="Correction" crs:CorrectionAmount="1" crs:CorrectionActive="true" crs:LocalExposure2012="0.5">
+  <crs:CorrectionMasks><rdf:Seq><rdf:li crs:What="Mask/CircularGradient" crs:Top="0.2" crs:Left="0.1" crs:Bottom="0.4" crs:Right="0.3" crs:Angle="10" crs:Feather="50" crs:Version="2"/></rdf:Seq></crs:CorrectionMasks>
+ </rdf:Description></rdf:li></rdf:Seq></crs:MaskGroupBasedCorrections>
+</rdf:Description></rdf:RDF></x:xmpmeta>"#
+        );
+        std::fs::write(src.join("DSC_0003.xmp"), xmp).unwrap();
+        let mut s = Session::new().with_fs();
+        let r = s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+        assert_eq!(ids(&r, "imported"), 1, "{r}");
+        let p = s.catalog.photos().next().unwrap();
+        let spot = p.develop.spots.first().expect("the spot came in");
+        // Content-Aware Remove comes in as our content-aware fill, not a heal from an automatic source
+        assert_eq!(spot.mode, lcc_develop::SpotMode::Fill);
+        let at = spot.points.first().expect("its path");
+        assert!(near(at.x, spot_at.0) && near(at.y, spot_at.1), "orientation {exif}: spot at {at:?}, want {spot_at:?}");
+        let comp = p.develop.masks.first().and_then(|m| m.components.first()).expect("the radial mask came in");
+        let lcc_develop::MaskShape::Radial { center, rx, ry, .. } = &comp.shape else { panic!("not radial: {:?}", comp.shape) };
+        assert!(near(center.x, centre_at.0) && near(center.y, centre_at.1), "orientation {exif}: radial at {center:?}, want {centre_at:?}");
+        // the ellipse was wider than tall on the stored frame (0.2 × 0.2 of a 3:2 image): turned, it is taller
+        assert_eq!(rx < ry, swapped, "orientation {exif}: rx {rx}, ry {ry}");
+        let _ = std::fs::remove_dir_all(&src);
+    }
+}
+
 /// A photo turned in Lightroom comes in turned: Lightroom writes the whole orientation as the sidecar's
 /// `tiff:Orientation`, and the photo takes what it adds to the file's own (none here, so a half turn for 3).
 #[test]
@@ -4280,4 +4628,115 @@ fn before_is_the_import_state_and_set_before_is_kept() {
     let missing = lcc_catalog::Op::SetBefore { id: lcc_catalog::PhotoId(u64::MAX), before: None };
     assert!(s.commit("Set Before", missing).is_err());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn reload_relinked_virtual_copy_reads_its_own_file() {
+    reload_relinked_virtual_copy(true);
+}
+
+#[test]
+fn reload_original_leaves_relinked_virtual_copy_unchanged() {
+    reload_relinked_virtual_copy(false);
+}
+
+#[test]
+fn reload_copy_refreshes_family_and_keeps_the_metadata_target() {
+    reload_copy_family_metadata(false);
+}
+
+#[test]
+fn reload_selected_copies_fill_metadata_after_deduplication() {
+    reload_copy_family_metadata(true);
+}
+
+fn reload_copy_family_metadata(select_sibling: bool) {
+    use crate::cmd::reload;
+    let dir = temp_dir(&format!("reload-copy-family-{select_sibling}"));
+    let path = dir.join("original.png");
+    write_png(&path, 10);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let original = s.active().unwrap();
+    let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+    let copy = lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap());
+    let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+    let sibling = lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap());
+    s.execute("develop.set", &json!({"ids": [copy.0], "control": "light.exposure", "value": 0.7})).unwrap();
+    let before: Vec<_> = [original, copy, sibling].map(|id| s.catalog.photo(id).unwrap().clone()).into();
+    let old_items = reload::plan(&mut s, &json!({"ids": [original.0]})).unwrap();
+    let old_info = reload::file_probe(&s).unwrap()(&path.to_string_lossy()).unwrap();
+    write_png(&path, 200);
+    let targets = if select_sibling { vec![copy.0, sibling.0] } else { vec![copy.0] };
+    let items = reload::plan(&mut s, &json!({"ids": targets})).unwrap();
+    assert_eq!(items.len(), 1, "one probe per shared file");
+    assert_eq!(items[0].id, copy, "keep the explicit metadata target");
+    let mut info = reload::file_probe(&s).unwrap()(&path.to_string_lossy()).unwrap();
+    info.meta.camera = "new camera metadata".into();
+    let changed = reload::apply(&mut s, items, vec![Ok(info)]).unwrap();
+    assert_eq!(changed.len(), 3);
+    for old in &before {
+        let new = s.catalog.photo(old.id).unwrap();
+        assert_ne!(new.content_hash, old.content_hash);
+        assert_eq!(new.develop, old.develop);
+        assert_eq!(new.meta.camera, if old.id == copy || (select_sibling && old.id == sibling) { "new camera metadata" } else { "" });
+    }
+    assert!(reload::apply(&mut s, old_items, vec![Ok(old_info)]).unwrap().is_empty(), "the newer copy reload supersedes its original's old result");
+    s.execute("edit.undo", &json!({})).unwrap();
+    for old in &before {
+        assert_eq!(s.catalog.photo(old.id).unwrap(), old);
+    }
+    s.execute("edit.redo", &json!({})).unwrap();
+    for old in &before {
+        assert_ne!(s.catalog.photo(old.id).unwrap().content_hash, old.content_hash);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn reload_relinked_virtual_copy(from_copy: bool) {
+    let dir = temp_dir(&format!("reload-relinked-copy-{from_copy}"));
+    let original_path = dir.join("original.png");
+    let copy_path = dir.join("other.png");
+    write_png(&original_path, 10);
+    write_png(&copy_path, 20);
+    let mut s = Session::new().with_fs();
+    let r = s.execute("library.import", &json!({"paths": [original_path.to_string_lossy()]})).unwrap();
+    let original = lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap());
+    let mut copies = Vec::new();
+    for _ in 0..2 {
+        let r = s.execute("photo.virtualCopy", &json!({"ids": [original.0]})).unwrap();
+        copies.push(lcc_catalog::PhotoId(r["ids"][0].as_u64().unwrap()));
+    }
+    let (copy, sibling) = (copies[0], copies[1]);
+    s.execute("photo.relink", &json!({"id": copy.0, "path": copy_path.to_string_lossy()})).unwrap();
+    assert_eq!(s.catalog.photo(copy).unwrap().copy_of, Some(original));
+    let before: Vec<_> = [original, sibling, copy].into_iter().map(|id| s.catalog.photo(id).unwrap().clone()).collect();
+    write_png(&original_path, 100);
+    write_png(&copy_path, 200);
+
+    if from_copy {
+        // A relinked copy keeps its own probe; same-file siblings still share one original probe.
+        let items = crate::cmd::reload::plan(&mut s, &json!({"ids": [copy.0, original.0, sibling.0]})).unwrap();
+        assert_eq!(items.iter().map(|item| item.id).collect::<Vec<_>>(), vec![copy, original]);
+        assert_eq!(items[0].path, copy_path.to_string_lossy());
+        assert_eq!(items[1].path, original_path.to_string_lossy());
+    }
+    let target = if from_copy { copy } else { original };
+    let changed = if from_copy { vec![copy] } else { vec![original, sibling] };
+    let r = s.execute("photo.reload", &json!({"ids": [target.0]})).unwrap();
+    assert_eq!(r["reloaded"], json!(changed.iter().map(|id| id.0).collect::<Vec<_>>()));
+    for old in &before {
+        let new = s.catalog.photo(old.id).unwrap();
+        if changed.contains(&old.id) {
+            assert_ne!(new.content_hash, old.content_hash);
+            assert_eq!(new.develop, old.develop);
+        } else {
+            assert_eq!(new, old, "a photo using another file stays unchanged");
+        }
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
+    for old in &before {
+        assert_eq!(s.catalog.photo(old.id).unwrap(), old, "reload remains one undo step");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }

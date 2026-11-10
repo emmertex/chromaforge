@@ -1,0 +1,39 @@
+---
+title: Generative remove
+description: Replace an area with a cloud image model, using your own account.
+sidebar:
+  order: 6
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-remove" menu="the Remove tool in the Develop panels" alt="Remove tool with Fill Selected Mask and Generate into Selected Mask" />
+
+<Aside type="caution" title="This one is not local">
+Generative remove uploads a crop of your photo (never the whole photo or its metadata) to the service you pick. It costs money on your account and some services may train on uploads. The consent dialog shows the cost and policy before the first use of each service.
+</Aside>
+
+- **Where**: Edit ▸ **Remove**, the Generative tool (cloud icon). Paint over the area, then **Generate**. Or select a mask and click **Generate into Selected Mask**.
+- **Off until set up**: Settings ▸ **Generative Fill**. Paste an API key per service and **Save Key**. The Remove panel offers only services that have a key.
+- **Services**: OpenAI (default), Stability AI, Black Forest Labs, fal.ai. Settings ▸ Generative Fill lists what each is best at, its limits, price per fill, whether it trains on uploads and what marks it adds.
+- **First Generate per service** shows the crop, its size and the cost; **Generate** records consent for that service. Settings withdraws it.
+- **Variations**: 1 to 4, each a paid result. Generate Again keeps earlier results; **Restore** brings back any past fill.
+- **One request or none.** An area too large for one request is refused before anything is sent. A large area is downscaled and the patch comes out softer (the panel says so).
+- **Keys** are kept in the settings folder with owner-only permissions on macOS and Linux, never in the catalog, XMP, exports or logs.
+- **Provenance**: only the pixels of the filled area are kept; hidden watermarks in the pixels may survive.
+- **Not Generative**: **Remove** (automatic), **Content-Aware** (PatchMatch, local, no model), **Heal** and **Clone** need no account.
+
+<Shot name="ai-settings-genfill" alt="Settings, Generative Fill tab: a card per service with its key field" />
+
+<NeedsImage what="A distraction removed with Generative on the demo photo, spot pin visible, variation arrows" />
+
+## Limits
+
+- Partial: no on-device generative model. Only OpenAI has been tried with a real account.
+- Adobe Firefly is not offered.
+
+<Aside type="note" title="Modern layout">
+Remove is in the dock or panels list. Settings: **☰ ▸ Edit ▸ Settings… ▸ Generative Fill**.
+</Aside>

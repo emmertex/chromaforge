@@ -117,6 +117,17 @@ fn suggestions_come_from_the_named_faces_and_are_never_applied() {
     for p in [json!({"threshold": "x"}), json!({"margin": null}), json!({"budgetMs": 0}), json!({"ids": []}), json!({"ids": [999999]})] {
         assert!(s.execute("faces.suggest", &p).is_ok(), "{p}");
     }
+    // how many faces a match is based on: the count asked for, else the one chosen in Settings (also for null)
+    for (asked, used) in [(json!(1), 1), (json!(8), 8), (json!(null), 2)] {
+        let r = s.execute("faces.suggest", &json!({"ids": [b.0], "topFaces": asked, "budgetMs": 0})).unwrap();
+        assert_eq!(r["topFaces"], used, "{asked}: {r}");
+    }
+    // and refused, as `faces.matching` refuses it, when it is no count from 1 to 8
+    for bad in [json!(0), json!(9), json!(-1), json!(2.5), json!("3")] {
+        for cmd in ["faces.suggest", "faces.evaluate"] {
+            assert!(s.execute(cmd, &json!({"ids": [b.0], "topFaces": bad})).is_err(), "{cmd} {bad}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -292,7 +303,7 @@ fn the_background_pump_saves_what_it_embeds_for_the_next_launch() {
 }
 
 #[test]
-fn faces_person_lists_a_persons_faces_and_looks_for_more_only_while_recognition_runs() {
+fn faces_person_lists_a_persons_faces_and_looks_for_more_even_with_background_scan_off() {
     let d = temp("person");
     let (mut s, _) = setup(&d, 64);
     s.execute("faces.index", &json!({"budgetMs": 0})).unwrap();
@@ -325,12 +336,19 @@ fn faces_person_lists_a_persons_faces_and_looks_for_more_only_while_recognition_
     let more = r["more"].as_array().unwrap();
     assert_eq!((more.len(), more[0]["photo"].clone(), more[0]["index"].clone()), (1, json!(b.0), json!(0)), "{r}");
     assert!(more[0]["score"].as_f64().unwrap() > 0.9);
-    // confirming it moves it from one list to the other (and is one undo step)
+    // with background scanning switched off, suggestion review remains accessible without loading the ONNX network
+    s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    s.faces.embedder = None;
+    let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
+    assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(2), json!(true), 1));
+    assert!(s.faces.embedder.is_none(), "looking up indexed look-alikes does not load the ONNX network");
+    // confirming it moves it from one list to the other (and is one undo step) even with background scanning off
     s.execute("faces.setName", &json!({"id": b.0, "index": 0, "name": "Ann"})).unwrap();
     let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
-    assert_eq!((r["total"].clone(), r["more"].as_array().unwrap().len()), (json!(3), 0));
-    // switched off, the faces are still listed but nothing is searched for
-    s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(3), json!(true), 0));
+    // with no model chosen at all, `ready` is false and `more` is empty
+    s.execute("faces.models.select", &json!({"id": null})).unwrap();
+    s.faces.checked = None;
     let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
     assert_eq!((r["total"].clone(), r["ready"].clone(), r["more"].as_array().unwrap().len()), (json!(3), json!(false), 0));
     // nobody by that name, and bad input, are plain answers and errors
@@ -439,11 +457,11 @@ fn unnamed_faces_come_with_look_alikes_together_and_the_name_the_named_ones_sugg
     // a limit cuts the list, not the count
     let r = s.execute("faces.unnamed", &json!({"limit": 2})).unwrap();
     assert_eq!((r["total"].clone(), r["faces"].as_array().unwrap().len()), (json!(5), 2));
-    // switched off, the faces are still listed, in photo order, without suggestions
+    // switched off, suggestions from indexed faces and look-alike order remain available
     s.execute("faces.enable", &json!({"enabled": false})).unwrap();
     let r = s.execute("faces.unnamed", &json!({})).unwrap();
-    assert_eq!((r["total"].clone(), r["ordered"].clone(), r["ready"].clone()), (json!(5), json!(false), json!(false)));
-    assert!(r["faces"].as_array().unwrap().iter().all(|f| f["suggestion"].is_null()));
+    assert_eq!((r["total"].clone(), r["ordered"].clone(), r["ready"].clone()), (json!(5), json!(true), json!(true)));
+    assert_eq!(r["faces"].as_array().unwrap().iter().find(|f| at(f) == (b.0, 0)).unwrap()["suggestion"]["name"], "Ann");
     for odd in [json!({"limit": 0}), json!({"limit": "x"}), json!({"limit": u64::MAX})] {
         assert!(s.execute("faces.unnamed", &odd).is_ok(), "{odd}");
     }
@@ -724,4 +742,126 @@ fn ignored_faces_follow_renames_and_are_kept_by_detection() {
     assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].kind, RegionKind::IgnoredFace);
     s.execute("faces.ignore", &json!({"faces": face, "ignored": false})).unwrap();
     assert_eq!(s.catalog.photo(a).unwrap().meta.regions[0].name.as_deref(), Some("Bea"));
+}
+
+/// Issue #887: face suggestion review queue and accept/reject actions remain fully functional
+/// even when automated background face recognition is turned off.
+#[test]
+fn face_review_queue_and_actions_remain_accessible_when_background_scan_is_off() {
+    let d = temp("reviewqueue_bgoff");
+    let (mut s, _) = setup(&d, 64);
+    s.execute("faces.index", &json!({"budgetMs": 0})).unwrap();
+    let (a, b) = two_photos(&s);
+    set_regions(&mut s, a, vec![region(0.1, Some("Alice")), region(0.5, None)]);
+    set_regions(&mut s, b, vec![region(0.1, None), region(0.5, None)]);
+    let unit = |parts: &[(usize, f32)]| {
+        let mut v = vec![0.0f32; 64];
+        for (i, x) in parts {
+            v[*i] = *x;
+        }
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| x / n).collect::<Vec<f32>>()
+    };
+    s.faces.index.insert(a.0, &region(0.1, None).rect, unit(&[(0, 1.0)])); // Alice
+    s.faces.index.insert(a.0, &region(0.5, None).rect, unit(&[(1, 1.0)])); // Unnamed, distinct
+    s.faces.index.insert(b.0, &region(0.1, None).rect, unit(&[(0, 0.95)])); // Unnamed, matches Alice
+    s.faces.index.insert(b.0, &region(0.5, None).rect, unit(&[(2, 1.0)])); // Unnamed, distinct
+
+    // Toggle background scanning OFF to save system resources, and drop the loaded ONNX network as on a fresh launch
+    assert_eq!(s.execute("faces.enable", &json!({"enabled": false})).unwrap()["enabled"], false);
+    s.faces.embedder = None;
+    s.faces.checked = None;
+
+    // 1. Background indexing pump does NOT run any workers or load the ONNX network
+    let pump_res = s.execute("faces.pump", &json!({})).unwrap();
+    assert_eq!(pump_res["active"], false);
+    assert_eq!(pump_res["indexedFaces"], 4);
+    assert!(s.faces.embedder.is_none(), "background pump with recognition off does not load the ONNX network");
+
+    // 2. Person review queue ("More" section) is accessible and returns candidate suggestions without loading the network
+    let person_res = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
+    assert_eq!(person_res["ready"], true);
+    let more = person_res["more"].as_array().unwrap();
+    assert_eq!(more.len(), 1);
+    assert_eq!(more[0]["photo"], b.0);
+    assert_eq!(more[0]["index"], 0);
+    assert!(more[0]["score"].as_f64().unwrap() > 0.9);
+    assert!(s.faces.embedder.is_none());
+
+    // 3. Review queue actions: confirm one candidate via faces.setName
+    s.execute("faces.setName", &json!({"id": b.0, "index": 0, "name": "Alice"})).unwrap();
+    let person_after_confirm = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
+    assert_eq!(person_after_confirm["total"], 2);
+    assert_eq!(person_after_confirm["more"].as_array().unwrap().len(), 0);
+
+    // 4. Undo and test batch reject via faces.ignore
+    s.execute("edit.undo", &json!({})).unwrap();
+    let person_after_undo = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
+    assert_eq!(person_after_undo["more"].as_array().unwrap().len(), 1);
+    s.execute("faces.ignore", &json!({"faces": [{"photo": b.0, "index": 0}]})).unwrap();
+    let person_after_ignore = s.execute("faces.person", &json!({"name": "Alice"})).unwrap();
+    assert_eq!(person_after_ignore["more"].as_array().unwrap().len(), 0);
+
+    // 5. Unnamed faces list and loupe hints (`faces.suggest {budgetMs: 0}`) still provide suggestions without loading ONNX
+    s.execute("edit.undo", &json!({})).unwrap(); // restore ignored face
+    let unnamed_res = s.execute("faces.unnamed", &json!({})).unwrap();
+    assert_eq!(unnamed_res["ready"], true);
+    assert_eq!(unnamed_res["ordered"], true);
+    let suggestion = unnamed_res["faces"].as_array().unwrap().iter().find(|f| f["photo"] == b.0 && f["index"] == 0).unwrap();
+    assert_eq!(suggestion["suggestion"]["name"], "Alice");
+    let suggest_res = s.execute("faces.suggest", &json!({"ids": [b.0], "budgetMs": 0})).unwrap();
+    assert_eq!(suggest_res["photos"][0]["faces"][0]["suggestion"]["name"], "Alice");
+    assert!(s.faces.embedder.is_none(), "read-only queries over cached embeddings leave the ONNX network unloaded");
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn unnamed_and_suggested_faces_follow_the_library_filter_when_scoped() {
+    let d = temp("scoped");
+    let (mut s, _) = setup(&d, 64);
+    s.execute("faces.index", &json!({"budgetMs": 0})).unwrap();
+    let (a, b) = two_photos(&s);
+    let c = s.catalog.photos().map(|p| p.id).find(|id| *id != a && *id != b).unwrap();
+    set_regions(&mut s, a, vec![region(0.1, Some("Ann")), region(0.5, None)]);
+    set_regions(&mut s, b, vec![region(0.1, None), region(0.5, Some("Ann"))]);
+    set_regions(&mut s, c, vec![region(0.3, None)]);
+    let put = |s: &mut Session, id: lcc_catalog::PhotoId, x: f64, v: Vec<f32>| s.faces.index.insert(id.0, &region(x, None).rect, v);
+    put(&mut s, a, 0.1, unit64(&[(0, 1.0)])); // Ann
+    put(&mut s, a, 0.5, unit64(&[(0, 0.97), (2, 0.2)])); // like Ann, in a
+    put(&mut s, b, 0.1, unit64(&[(0, 0.96), (3, 0.2)])); // like Ann, in b
+    put(&mut s, b, 0.5, unit64(&[(0, 0.99), (1, 0.1)])); // Ann
+    put(&mut s, c, 0.3, unit64(&[(0, 0.95), (4, 0.3)])); // like Ann, in c
+    let photos = |r: &Value, key: &str| {
+        let mut v: Vec<u64> = r[key].as_array().unwrap().iter().map(|f| f["photo"].as_u64().unwrap()).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    // the sidebar picks photos b and c (say one year); a person filter is set too, and is left aside
+    s.filter.only = vec![b, c];
+    s.filter.person = Some("Ann".into());
+    let mut bc = vec![b.0, c.0];
+    bc.sort();
+    // unscoped, everything is listed as before
+    let r = s.execute("faces.unnamed", &json!({})).unwrap();
+    assert_eq!(r["total"], 3, "{r}");
+    // scoped, only the unnamed faces in b and c
+    let r = s.execute("faces.unnamed", &json!({"scope": "filter"})).unwrap();
+    assert_eq!((r["total"].clone(), photos(&r, "faces")), (json!(2), bc.clone()), "{r}");
+    // a person's page: their faces and the suggestions follow the scope, the count stays the library's, and Ann's
+    // face in a still teaches the match (with background recognition off, too)
+    s.execute("faces.enable", &json!({"enabled": false})).unwrap();
+    let r = s.execute("faces.person", &json!({"name": "Ann", "scope": "filter"})).unwrap();
+    assert_eq!(r["total"], 2, "{r}");
+    assert_eq!(photos(&r, "confirmed"), vec![b.0], "{r}");
+    assert_eq!(photos(&r, "more"), bc, "{r}");
+    let r = s.execute("faces.person", &json!({"name": "Ann"})).unwrap();
+    assert_eq!(r["more"].as_array().unwrap().len(), 3, "{r}");
+    // an odd scope is an error, not a panic
+    for bad in [json!("visible"), json!(7), json!({})] {
+        assert!(s.execute("faces.unnamed", &json!({"scope": bad})).is_err(), "{bad}");
+        assert!(s.execute("faces.person", &json!({"name": "Ann", "scope": bad})).is_err(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
 }

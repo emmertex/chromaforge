@@ -372,15 +372,17 @@ mod tests {
         let t0 = Instant::now();
         let scope = local.scope();
         let r = within_20_s(move || {
-            create_on(scope, Duration::from_millis(200), B, move || -> Result<u32, String> {
-                // twelve "kernels", 50 ms each: 600 ms in all, three times the limit
+            // a limit with room for a busy machine: beside the other tests, a step (or the return
+            // after the last one) can be a few hundred ms late without anything hanging
+            create_on(scope, Duration::from_secs(1), B, move || -> Result<u32, String> {
+                // twelve "kernels", one every 125 ms: 1.5 s in all, one and a half times the limit
                 let progress = Progress::current();
                 let workers: Vec<_> = (0..2)
                     .map(|_| {
                         let progress = progress.clone();
                         std::thread::spawn(move || {
                             for _ in 0..6 {
-                                std::thread::sleep(Duration::from_millis(100));
+                                std::thread::sleep(Duration::from_millis(250));
                                 progress.tick();
                             }
                         })
@@ -393,7 +395,7 @@ mod tests {
             })
         });
         assert_eq!(r, Ok(7), "a creation that keeps making progress gets the time it needs");
-        assert!(t0.elapsed() >= Duration::from_millis(600), "{:?}", t0.elapsed());
+        assert!(t0.elapsed() >= Duration::from_millis(1500), "{:?}", t0.elapsed());
         assert!(STUCK.reason().is_none());
     }
 

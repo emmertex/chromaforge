@@ -1,0 +1,30 @@
+---
+title: Lens corrections
+description: Profile corrections, chromatic aberration, defringe and manual distortion.
+sidebar:
+  order: 6
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="lens-corrections" alt="The Lens Corrections section with Remove Chromatic Aberration and Enable Lens Corrections" />
+
+- **Enable Lens Corrections** applies the profile for the lens (partial, see below).
+- **Remove Chromatic Aberration** and **Defringe**: Purple and Green Amount with hue low and high. No fringe eyedropper.
+- **Manual**: **Distortion**, **Vignetting** and its midpoint.
+- **Save as default**: stores the Optics settings as the start for photos imported from now on, per camera.
+- When nothing applies, the panel says why: no lens database, no lens in the metadata, or no profile for the lens.
+
+## Where profiles come from
+
+- **In the file**: DNG warp and vignette opcodes (including Pixel phones' two-stage warp).
+- **Camera corrections** read from the raw: Sony ARW, Nikon NEF, Fujifilm RAF, Panasonic and Leica RW2.
+- **Lens database** you supply, in lensfun format: **Edit ▸ Settings ▸ Import ▸ Lens profiles** (choose a folder, or Download). Not bundled.
+- Adobe lens profiles are never used.
+- **Sensor window**: crop modes are handled so profiles line up.
+
+<Aside type="note" title="Modern layout">
+  **Optics** in the dock has Distortion, Vignetting and both fringe sliders; **Lens Corrections** under it opens the full section.
+</Aside>

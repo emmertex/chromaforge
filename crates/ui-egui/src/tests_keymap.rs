@@ -364,12 +364,19 @@ fn the_shortcuts_list_shows_the_current_modules_keys() {
     click(&mut h, "check:shortcuts.moduleOnly");
 }
 
+/// The Alternative set's edit-settings keys (Ctrl+C / Ctrl+V, ⇧Ctrl+V for Paste Selected).
+fn alternative() -> Headless {
+    let mut h = demo();
+    h.app.ui.settings.keymap_set = crate::shortcuts::KeymapSet::Alternative;
+    h
+}
+
 /// On Windows and Linux the windowing layer turns Ctrl+C / Ctrl+V into clipboard events, not key
 /// presses: outside a text field they still copy the edit settings, and with ⇧ open Paste Selected
-/// Settings.
+/// Settings (Alternative set; Classic's keys are below).
 #[test]
 fn clipboard_events_run_the_copy_and_paste_shortcuts() {
-    let mut h = demo();
+    let mut h = alternative();
     assert!(h.app.session.clipboard.is_none());
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
@@ -382,10 +389,10 @@ fn clipboard_events_run_the_copy_and_paste_shortcuts() {
 
 /// With no text on the system clipboard (empty, a screenshot) the windowing layer drops Ctrl+V's
 /// press and sends only its release; the paste shortcuts still paste (Ctrl+V) and open Paste
-/// Selected Settings (⇧Ctrl+V).
+/// Selected Settings (⇧Ctrl+V) (Alternative set).
 #[test]
 fn paste_shortcuts_work_with_no_text_on_the_clipboard() {
-    let mut h = demo();
+    let mut h = alternative();
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
     assert!(h.app.session.clipboard.is_some());
@@ -412,7 +419,7 @@ fn paste_shortcuts_work_with_no_text_on_the_clipboard() {
 /// the plain Paste / Cut, not ⇧Ctrl+V (Paste Selected Settings).
 #[test]
 fn shift_insert_pastes_plainly() {
-    let mut h = demo();
+    let mut h = alternative();
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
     let undo = h.app.session.undo.len();
@@ -420,6 +427,37 @@ fn shift_insert_pastes_plainly() {
     h.settle(SETTLE);
     assert_eq!(h.app.ui.dialog, None, "no Paste Selected Settings");
     assert_eq!(h.app.session.undo.len(), undo + 1, "the settings were pasted");
+}
+
+/// Classic's edit-settings keys reach their commands as clipboard events too: ⇧Ctrl+C opens Copy
+/// Settings…, ⇧Ctrl+V pastes the settings (also when the windowing layer sends only the release),
+/// and plain Ctrl+C / Ctrl+V leave the edit alone, as in Lightroom Classic.
+#[test]
+fn classic_clipboard_events_copy_and_paste_settings() {
+    let mut h = demo();
+    let shift_cmd = egui::Modifiers::SHIFT | egui::Modifiers::COMMAND;
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::Copy]);
+    h.settle(SETTLE);
+    assert!(h.app.session.clipboard.is_none(), "plain Ctrl+C copies no settings");
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), egui::Event::Copy]);
+    h.settle(SETTLE);
+    assert!(matches!(h.app.ui.dialog, Some(Dialog::CopySettings { .. })), "⇧Ctrl+C: {:?}", h.app.ui.dialog);
+    h.app.ui.dialog = None;
+    h.app.run("develop.copy", json!({})).unwrap();
+    // with no text on the clipboard the windowing layer sends only ⇧Ctrl+V's release: it pastes too
+    let undo = h.app.session.undo.len();
+    let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: shift_cmd };
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), release]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "a release-only ⇧Ctrl+V pastes");
+    let undo = h.app.session.undo.len();
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo, "plain Ctrl+V pastes no settings");
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "⇧Ctrl+V pasted the settings");
+    assert_eq!(h.app.ui.dialog, None);
 }
 
 /// ⌘⌥⇧C / ⌘⌥⇧V (Ctrl+Alt+Shift+C / V) copy and paste metadata, as in Lightroom Classic's Library,

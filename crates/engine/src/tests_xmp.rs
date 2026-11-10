@@ -439,7 +439,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let r = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
     let warnings = r["warnings"].as_array().unwrap();
     assert!(warnings.iter().any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful"), "{r}");
-    assert!(warnings.iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{r}");
+    // Auto with Lightroom's stored matrix is applied as Lightroom solved it: nothing to warn about
+    assert!(!warnings.iter().any(|w| w["code"] == "uprightGeometry"), "{r}");
     assert!(warnings.iter().all(|w| w.get("fields").is_none()), "{r}");
     let import_warnings: Vec<crate::import::ImportWarning> =
         warnings.iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
@@ -447,11 +448,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     assert_eq!(import_profile.path, photo_path);
     assert_eq!(import_profile.profile.as_deref(), Some("Camera Faithful"));
     assert!(import_profile.fields.is_empty());
-    let import_upright = import_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
-    assert_eq!(import_upright.path, photo_path);
-    assert_eq!(import_upright.mode, Some(crate::import::ImportUprightMode::Auto));
-    assert!(import_upright.fields.is_empty());
     let p = s.catalog.photos().next().unwrap().clone();
+    assert!(p.develop.geometry.lrc_upright.is_some(), "Lightroom's Upright matrix is kept");
     assert_eq!(import_profile.photo, Some(p.id.0), "a warning names the photo it was imported as");
     assert_eq!(p.develop.profile.id, "lc.color");
     assert_eq!(p.develop.light.exposure, 1.68);
@@ -467,10 +465,7 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     assert_eq!(reread_profile.path, photo_path);
     assert_eq!(reread_profile.profile.as_deref(), Some("Camera Faithful"));
     assert!(reread_profile.fields.is_empty());
-    let reread_upright = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
-    assert_eq!(reread_upright.path, photo_path);
-    assert_eq!(reread_upright.mode, Some(crate::import::ImportUprightMode::Auto));
-    assert!(reread_upright.fields.is_empty());
+    assert!(!reread_warnings.iter().any(|w| w.code == crate::import::ImportWarningCode::UprightGeometry), "{reread}");
     assert!(
         reread["warnings"]
             .as_array()
@@ -479,7 +474,20 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
             .any(|w| w["code"] == "cameraProfile" && w["profile"] == "Camera Faithful" && w["path"] == photo_path),
         "{reread}"
     );
-    assert!(reread["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "uprightGeometry" && w["mode"] == "auto"), "{reread}");
+    // Auto whose stored matrix can't be used (singular): we detect our own, so the warning names the mode
+    let no_matrix = xmp.replace(
+        "0.897233402,-0.013204641,-0.030578613,-0.096087436,0.953621255,0.003270197,-0.157075841,-0.043520282,1.000000000",
+        "1,2,3,2,4,6,0,0,1",
+    );
+    std::fs::write(&sidecar, &no_matrix).unwrap();
+    let reread = s.execute("photo.readMetadataFromFile", &json!({"ids": [p.id.0]})).unwrap();
+    let reread_warnings: Vec<crate::import::ImportWarning> =
+        reread["warnings"].as_array().unwrap().iter().cloned().map(serde_json::from_value).collect::<std::result::Result<_, _>>().unwrap();
+    let reread_upright = reread_warnings.iter().find(|w| w.code == crate::import::ImportWarningCode::UprightGeometry).unwrap();
+    assert_eq!(reread_upright.path, photo_path);
+    assert_eq!(reread_upright.mode, Some(crate::import::ImportUprightMode::Auto));
+    assert!(reread_upright.fields.is_empty());
+    // the other modes have no stored matrix in this sidecar (only `_1`), so they warn too
     for (source, mode) in [("2", "level"), ("3", "vertical"), ("4", "full"), ("5", "guided"), ("9", "unknown")] {
         let mode_xmp = xmp.replace("crs:PerspectiveUpright=\"1\"", &format!("crs:PerspectiveUpright=\"{source}\""));
         std::fs::write(&sidecar, mode_xmp).unwrap();
@@ -524,7 +532,8 @@ fn foreign_profile_and_upright_import_diagnostics_are_actionable() {
     let clean_report = s.execute("library.import", &json!({"paths": [clean.to_string_lossy()]})).unwrap();
     assert!(clean_report.get("warnings").is_none(), "{clean_report}");
     let repeat = s.execute("library.import", &json!({"paths": [photo.to_string_lossy()]})).unwrap();
-    assert_eq!(repeat["warnings"].as_array().unwrap().len(), 2, "{repeat}");
+    // the profile only: the Upright matrix is applied as Lightroom saved it
+    assert_eq!(repeat["warnings"].as_array().unwrap().len(), 1, "{repeat}");
     let _ = std::fs::remove_dir_all(&src);
 }
 
@@ -848,6 +857,25 @@ fn dng_embedded_crs_settings_are_read_on_import() {
     s2.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
     assert_eq!(s2.catalog.photos().next().unwrap().develop.light.contrast, -10.0);
     let _ = std::fs::remove_dir_all(&src);
+
+    // A sidecar that can't be read keeps precedence too, as on Read Metadata from File
+    // (`sidecar::read_packet`): the DNG imports as one without settings, not with its embedded ones (its rating
+    // is file metadata the probe reads, not a setting, so it is not compared).
+    let other = temp_dir("dng-unreadable-sidecar");
+    std::fs::write(other.join("synth.dng"), synthetic_dng(x)).unwrap();
+    std::fs::write(other.join("synth.xmp"), [0xff, 0xfe, 0xfd]).unwrap();
+    std::fs::write(other.join("plain.dng"), synthetic_dng_with(None, lcc_meta::Metadata::default())).unwrap();
+    let mut s3 = Session::new().with_fs();
+    let r = s3.execute("library.import", &json!({"paths": [other.to_string_lossy()]})).unwrap();
+    assert_eq!(r["imported"].as_array().unwrap().len(), 2, "{r}");
+    let by_name = |name: &str| s3.catalog.photos().find(|p| p.file_name == name).unwrap().clone();
+    let (unreadable, plain) = (by_name("synth.dng"), by_name("plain.dng"));
+    assert_eq!(
+        (unreadable.develop.wb.temp, unreadable.develop.light.contrast, unreadable.develop.effects.dehaze),
+        (plain.develop.wb.temp, plain.develop.light.contrast, plain.develop.effects.dehaze),
+        "the embedded settings don't apply behind a sidecar that can't be read"
+    );
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 fn jpeg_xmp_packet(rating: i8, title: &str) -> String {
@@ -1217,6 +1245,134 @@ fn external_edit_copy_is_stacked() {
     assert_eq!((st.top(), st.photos.contains(&orig)), (new, true));
     let r2 = s.execute("photo.editExternal", &json!({"colorSpace": "proPhoto"})).unwrap();
     assert!(r2["path"].as_str().unwrap().ends_with("beach-Edit-Edit.tif") || r2["path"].as_str().unwrap().contains("-2"), "{r2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #3617: a second Edit In on a photo whose first copy is unchanged renders the same bytes. Import skips
+/// them as a duplicate; the command used to fail with "invalid parameters" and leave the new file behind.
+#[test]
+fn external_edit_again_on_an_unchanged_copy_still_works() {
+    let dir = temp_dir("extedit-again");
+    let src = dir.join("beach.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let first = s.execute("photo.editExternal", &json!({})).unwrap();
+    let first_path = first["path"].as_str().unwrap().to_string();
+    // the editor was closed without saving: same photo, same settings
+    s.execute("library.select", &json!({"ids": [orig.0]})).unwrap();
+    let files = || std::fs::read_dir(&dir).unwrap().count();
+    let before = files();
+    let again = s.execute("photo.editExternal", &json!({})).expect("a second Edit In works");
+    let again_path = again["path"].as_str().unwrap();
+    assert!(std::path::Path::new(again_path).exists(), "{again}");
+    assert_eq!(std::fs::read(again_path).unwrap(), std::fs::read(&first_path).unwrap(), "the same render");
+    let id = lcc_catalog::PhotoId(again["id"].as_u64().unwrap());
+    assert!(s.catalog.photo(id).is_some(), "the copy it hands to the editor is in the library: {again}");
+    assert!(files() <= before, "no orphan copy is left on disk ({} files before, {} after)", before, files());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Issue #3617, review of #3628: the unchanged copy was moved to Recently Deleted and its file is gone. Import then
+/// restores that photo by pointing it at the file just rendered, so that file must be kept.
+#[test]
+fn external_edit_again_after_the_copy_was_trashed_keeps_the_file_the_restored_copy_uses() {
+    let dir = temp_dir("extedit-trashed");
+    let src = dir.join("beach.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let first = s.execute("photo.editExternal", &json!({})).unwrap();
+    let copy = first["id"].as_u64().unwrap();
+    s.execute("photo.delete", &json!({"ids": [copy]})).unwrap();
+    std::fs::remove_file(first["path"].as_str().unwrap()).unwrap();
+    s.execute("library.select", &json!({"ids": [orig.0]})).unwrap();
+    let again = s.execute("photo.editExternal", &json!({})).expect("Edit In works after the copy was trashed");
+    let path = again["path"].as_str().unwrap();
+    assert!(std::path::Path::new(path).exists(), "the copy handed to the editor has its file: {again}");
+    let id = lcc_catalog::PhotoId(again["id"].as_u64().unwrap());
+    let photo = s.catalog.photo(id).expect("in the library");
+    assert!(!photo.deleted, "restored from Recently Deleted");
+    assert_eq!(photo.source, lcc_catalog::Source::File { path: path.to_string() }, "and its file is there");
+    // it left the stack when it was deleted: it is stacked on the original again
+    let st = s.catalog.stack_of(id).expect("restacked");
+    assert_eq!((st.top(), st.photos.contains(&orig)), (id, true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #3628: the unchanged copy is still in the original's stack, but under it and collapsed. As for a new copy,
+/// the copy is put on top and the stack opened, so the editor's file shows in the grid.
+#[test]
+fn external_edit_again_puts_a_hidden_copy_back_on_top_of_its_stack() {
+    let dir = temp_dir("extedit-hidden");
+    let src = dir.join("beach.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let first = s.execute("photo.editExternal", &json!({})).unwrap();
+    let copy = lcc_catalog::PhotoId(first["id"].as_u64().unwrap());
+    // the original on top, the stack collapsed: the copy is hidden under it
+    s.execute("stack.group", &json!({"ids": [orig.0, copy.0], "top": orig.0, "collapsed": true})).unwrap();
+    let hidden = s.catalog.stack_of(copy).expect("stacked");
+    assert_eq!((hidden.top(), hidden.collapsed), (orig, true));
+    s.execute("library.select", &json!({"ids": [orig.0]})).unwrap();
+    let again = s.execute("photo.editExternal", &json!({})).unwrap();
+    assert_eq!(again["id"].as_u64(), Some(copy.0), "the same copy");
+    let st = s.catalog.stack_of(copy).expect("still stacked");
+    assert_eq!((st.top(), st.collapsed, st.photos.contains(&orig)), (copy, false, true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #3628: same bytes alone don't make another photo this photo's edit copy. An unrelated photo that holds the
+/// render is not handed to the editor or stacked; the command fails and leaves no stray file.
+#[test]
+fn external_edit_again_does_not_reuse_an_unrelated_photo_with_the_same_bytes() {
+    let dir = temp_dir("extedit-unrelated");
+    let src = dir.join("beach.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let first = s.execute("photo.editExternal", &json!({})).unwrap();
+    let first_path = first["path"].as_str().unwrap().to_string();
+    // the render's bytes now belong to a photo that is not the original's copy
+    let unrelated = dir.join("holiday.tif");
+    std::fs::copy(&first_path, &unrelated).unwrap();
+    s.execute("photo.deletePermanently", &json!({"ids": [first["id"].as_u64().unwrap()]})).unwrap();
+    let _ = std::fs::remove_file(&first_path);
+    let imported = s.execute("library.import", &json!({"paths": [unrelated.to_string_lossy()]})).unwrap();
+    let other = lcc_catalog::PhotoId(imported["imported"][0].as_u64().expect("the unrelated photo is imported"));
+    s.execute("library.select", &json!({"ids": [orig.0]})).unwrap();
+    let files = || std::fs::read_dir(&dir).unwrap().count();
+    let before = files();
+    assert!(s.execute("photo.editExternal", &json!({})).is_err(), "not reused");
+    assert!(s.catalog.stack_of(other).is_none(), "the unrelated photo is not stacked on the original");
+    assert!(files() <= before, "no stray file left");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review of #3628: the catalog still has the copy but its file was removed outside the app. The editor is handed a file
+/// that exists (import adds the new render as a copy), never a path to the missing one, and nothing is orphaned.
+#[test]
+fn external_edit_again_hands_over_a_file_that_exists_when_the_copys_file_is_gone() {
+    let dir = temp_dir("extedit-gone");
+    let src = dir.join("beach.png");
+    write_png(&src, 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let orig = s.active().unwrap();
+    let first = s.execute("photo.editExternal", &json!({})).unwrap();
+    std::fs::remove_file(first["path"].as_str().unwrap()).unwrap();
+    s.execute("library.select", &json!({"ids": [orig.0]})).unwrap();
+    let files = || std::fs::read_dir(&dir).unwrap().count();
+    let before = files();
+    let again = s.execute("photo.editExternal", &json!({})).expect("Edit In works when the copy's file is gone");
+    let path = again["path"].as_str().unwrap();
+    assert!(std::path::Path::new(path).is_file(), "the editor gets a file that exists: {again}");
+    assert_eq!(files(), before + 1, "one new copy, nothing orphaned");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -224,7 +224,7 @@ pub fn pump(app: &mut LccApp, ctx: &egui::Context) {
         let n = v["import"]["imported"].as_u64().unwrap_or(0);
         let skipped = v["import"]["skipped"].as_u64().unwrap_or(0);
         let failed = v["import"]["failed"].as_array().map(Vec::len).unwrap_or(0);
-        app.toast(ctx, trf!("Imported {} from Immich ({} already in the library, {} failed)", n, skipped, failed));
+        app.toast(ctx, trf!("Imported {} from Immich ({} already in the catalog, {} failed)", n, skipped, failed));
     }
     // a sidecar run that just finished: say what it did
     if app.immich.last["sidecars"]["active"] == true && v["sidecars"]["active"] == false {
@@ -399,7 +399,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     let accounts = st["accounts"].as_array().cloned().unwrap_or_default();
     if accounts.is_empty() {
-        super::settings::hint(ui, t, "No server connected. Add one below to link your library with Immich and import from it.");
+        super::settings::hint(ui, t, "No server connected. Add one below to link your catalog with Immich and import from it.");
     }
     for (i, a) in accounts.iter().enumerate() {
         account_card(app, ui, t, i, a);
@@ -969,7 +969,7 @@ fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
     app.immich.maps.insert(id.to_string(), rows);
     let cov = v["coverage"].as_array().cloned().unwrap_or_default();
     let covered = cov.iter().filter(|c| c["library"].is_string()).count();
-    ui.label(RichText::new(trf!("{} of {} library folders are inside an external library", covered, cov.len())).color(t.text_label));
+    ui.label(RichText::new(trf!("{} of {} catalog folders are inside an external library", covered, cov.len())).color(t.text_label));
     egui::ScrollArea::vertical().id_salt(("immich-coverage", id)).max_height(120.0).show(ui, |ui| {
         for c in &cov {
             let (mark, color) = if c["library"].is_string() { ("✓", t.text) } else { ("–", t.text_dim) };
@@ -1376,7 +1376,7 @@ fn asset_cell(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, a: &Val
         _ => {}
     }
     if have {
-        let g = p.layout_no_wrap(crate::i18n::tr("In library").into(), t.semibold(9.0), Color32::WHITE);
+        let g = p.layout_no_wrap(crate::i18n::tr("In catalog").into(), t.semibold(9.0), Color32::WHITE);
         let br = Rect::from_min_size(pos2(r.left() + 4.0, r.top() + 4.0), vec2(g.size().x + 8.0, 14.0));
         p.rect_filled(br, 7.0, Color32::from_black_alpha(170));
         p.galley(pos2(br.left() + 4.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);

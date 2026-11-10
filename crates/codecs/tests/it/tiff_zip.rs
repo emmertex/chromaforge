@@ -34,6 +34,18 @@ fn checked_zip_size(img: &EncodeImage<'_>) -> usize {
     assert!(matches!(compression, 8 | 32946 | 1), "Compression tag {compression} is neither Deflate nor the uncompressed fallback");
     let decoded = decode(&bytes, DecodeOptions::default()).unwrap();
     assert_eq!((decoded.image.width, decoded.image.height), (img.width as usize, img.height as usize));
+    // Untagged integer RGB TIFFs are sRGB; check the application conversion independently of the integer
+    // comparison above, including the sample count so zip cannot hide truncation.
+    let encoded: Vec<f32> = match img.samples {
+        Samples::U8(samples) => samples.iter().map(|&v| f32::from(v) / 255.0).collect(),
+        Samples::U16(samples) => samples.iter().map(|&v| f32::from(v) / 65535.0).collect(),
+        _ => panic!("expected an integer TIFF fixture"),
+    };
+    assert_eq!(decoded.image.data.len() * 3, encoded.len());
+    for (i, (&actual, encoded)) in decoded.image.data.iter().flatten().zip(encoded).enumerate() {
+        let expected = lcc_color::transfer::srgb_to_linear(encoded);
+        assert!((actual - expected).abs() <= 1e-6, "application-decoded sample {i}: {actual}, expected {expected}");
+    }
     bytes.len()
 }
 

@@ -1,0 +1,4 @@
+/* Keep the manual dense: bullets and pictures, little prose. */
+.sl-markdown-content ul { margin-block: 0.5rem; }
+.sl-markdown-content li { margin-block: 0.2rem; }
+.sl-markdown-content img { border-radius: 6px; }

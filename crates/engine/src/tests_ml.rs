@@ -145,6 +145,72 @@ fn ml_status_before_any_job_starts_nothing() {
 }
 
 #[test]
+fn ml_status_sets_device_and_reports_available_devices() {
+    let mut s = session();
+    let st = s.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert!(st["availableDevices"].is_array());
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "auto"));
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "cpu"));
+
+    let st = s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    assert_eq!(st["deviceChoice"], "cpu");
+    assert_eq!(st["preference"], "cpu");
+
+    let st = s.execute("ml.status", &json!({"device": "auto"})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert_eq!(st["preference"], "auto");
+}
+
+#[test]
+fn ml_status_refuses_non_string_and_invalid_devices() {
+    let mut s = session();
+    for bad in [json!({"device": 123}), json!({"device": true}), json!({"device": []}), json!({"device": {}})] {
+        assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
+    }
+    for bad in [json!({"device": "potato"}), json!({"device": "vulkan:10de:9999:Fake#1"})] {
+        assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn ml_status_empty_device_resets_preference_to_auto() {
+    let mut s = session();
+    s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    assert_eq!(s.execute("ml.status", &json!({})).unwrap()["preference"], "cpu");
+    let st = s.execute("ml.status", &json!({"device": ""})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert_eq!(st["preference"], "auto");
+}
+
+#[test]
+fn ml_status_preference_is_session_only_while_device_persists() {
+    let temp = temp_dir("device-stick");
+    let mut s = session();
+    s.ml_models_dir = Some(temp.clone());
+    // `preference` is session-only and does not write settings.json
+    let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();
+    assert_eq!(st["preference"], "cpu");
+    assert_eq!(st["deviceChoice"], "cpu");
+
+    let mut s_check = session();
+    s_check.ml_models_dir = Some(temp.clone());
+    let st_check = s_check.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st_check["deviceChoice"], "auto", "session-only preference does not persist across sessions");
+    assert_eq!(st_check["preference"], "auto");
+
+    // `device` persists to settings.json across sessions
+    s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    let mut s2 = session();
+    s2.ml_models_dir = Some(temp.clone());
+    let st2 = s2.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st2["deviceChoice"], "cpu");
+    assert_eq!(st2["preference"], "cpu");
+
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
 fn ml_status_sets_the_preference_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();

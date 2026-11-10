@@ -1,0 +1,23 @@
+---
+title: Backup and sharing
+description: Back up a library, move it, and share it between machines.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+- A **library** is a folder (catalog, previews, settings). Copy the folder to move it. It is locked while open, so one app uses it at a time.
+- **File ▸ Libraries ▸ Back Up Library**: checkpoints the catalog, copies it to a timestamped folder, tests the copy, and prunes the oldest.
+- **Test Library Integrity** and **Optimise** are in the same menu and in Library Settings.
+- **Edit ▸ Library Settings…**: backup schedule (never, every exit, daily, weekly, monthly), backup folder, integrity test, optimise. The backup runs silently when the app exits; there is no exit dialog to skip it.
+- **Older catalogs** are upgraded with a kept copy first.
+- Every change is saved immediately; a failed save is reported and retried, never dropped silently.
+- **Photo files are not in a backup**: it copies the catalog, not your originals. Back those up yourself.
+- **Web build**: File ▸ Back Up Library downloads a zip of the library and stored originals; Restore Library from Backup reads one into a new library. See [Web](../../platforms/web/).
+- **Between machines**: [Device sync](../peer-sync/) shares edits; [Immich](../immich/) shares photos through a server. Neither is a shared live library.
+- **Presets** are shared by every library on a machine.
+
+<Aside type="note" title="Modern layout">
+  Back Up Library: **File ▸ Libraries**. Library Settings: **Edit ▸ Library Settings…**.
+</Aside>

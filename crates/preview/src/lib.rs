@@ -331,6 +331,21 @@ impl PreviewCache {
         Some((img, meta))
     }
 
+    /// The record kept with `alias`'s picture ([`Self::put_latest_with`]) without reading the picture: from memory,
+    /// else from its file on disk (then kept in memory). `None`: no record, or none kept with it.
+    pub fn latest_meta(&self, alias: Hash128) -> Option<Arc<[u8]>> {
+        if let Some(m) = self.latest_meta.lock().unwrap_or_else(|e| e.into_inner()).get(&alias) {
+            return Some(m.clone());
+        }
+        let m: Arc<[u8]> = Arc::from(self.get_data(latest_meta_key(alias))?);
+        let mut map = self.latest_meta.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= MAX_ALIASES {
+            map.clear();
+        }
+        map.insert(alias, m.clone());
+        Some(m)
+    }
+
     fn get_latest_picture(&self, alias: Hash128) -> Option<Arc<Rgba8>> {
         let generation = self.generation();
         if generation == u64::MAX {

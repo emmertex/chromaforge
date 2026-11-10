@@ -52,9 +52,9 @@ Fixes #
   `LOOK_VERSION`, process version: the number this takes. If another pull request lands with it first, take one
   past main's when you merge main in. -->
 - **Where it came from:** <!-- for a decoder, camera or lens data, or fitted constants: the public spec, your own
-  measurements, or observed output, and the files measured. Never GPL / LGPL code (LibRaw, rawspeed, darktable,
-  RawTherapee, lensfun …), text derived from it, or Adobe profiles; dcraw only as AGENTS.md's dcraw reference policy
-  allows. -->
+  measurements, or observed output, and the files measured. Material that forbids derivation is out (Adobe
+  profiles/files, CC BY-NC/ND, no licence); anything permitting derivatives, sharing and commercial use is in —
+  AGENTS.md → "Third-party sources". Name the source on a `Sources:` line. -->
 - **New dependencies, `unsafe`, build scripts, network access, spawned processes, deleted files, CI or `xtask` gate
   changes:** <!-- each with its reason, or "none". Dependencies are pure Rust and use `workspace = true`; actions are
   pinned by SHA; downloads are checked against a sha256; nothing leaves the machine unless the person asked. -->

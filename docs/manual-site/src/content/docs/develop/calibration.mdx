@@ -1,0 +1,21 @@
+---
+title: Calibration
+description: Shadows tint and primary hue and saturation.
+sidebar:
+  order: 10
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="calibration-section" alt="The Calibration section with shadows tint and red, green and blue primaries" menu="Window ▸ Edit Sections ▸ Calibration" />
+
+- **Shadows Tint**: green to magenta cast in the darks.
+- **Red, Green, Blue Primary**: **Hue** and **Saturation** each. Read and written in XMP.
+- Different from [camera profiles](../colour/): Calibration shifts the primaries of whatever profile is active.
+- **Per-camera defaults**: a camera's raws can start from their own profile: **Settings ▸ Import**.
+
+<Aside type="note" title="Modern layout">
+  **Window ▸ Edit Sections ▸ Calibration** (Classic and Compact show it in the Edit panel).
+</Aside>

@@ -288,7 +288,7 @@ pub fn exchange(ch: &mut Channel, initiator: bool, local: &Local, on_records: &m
         return Err("unexpected message".into());
     };
     if remote.len() > MAX_KEYS {
-        return Err("the other library is too large".into());
+        return Err("the other catalog is too large".into());
     }
     // the records this side lacks: changed over there since last time, present here, different
     let want: Vec<String> = remote

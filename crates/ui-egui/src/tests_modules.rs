@@ -521,6 +521,30 @@ fn export_module_previews_and_resizes() {
     assert!(width(&h) < before, "dragging the edge right narrows the column");
 }
 
+/// From Develop, Export and Print act on the photo open on screen, not a stale multi-selection
+/// (stepping through a selection in Develop keeps the selection); a selection made outside
+/// Develop is kept as it is.
+#[test]
+fn export_and_print_from_develop_take_the_open_photo() {
+    let mut h = demo();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    run(&mut h, "library.select", json!({"ids": ids.clone()}));
+    run(&mut h, "module.develop", json!({}));
+    // the second photo is open in Develop while the selection still holds both
+    run(&mut h, "library.select", json!({"ids": ids.clone(), "active": ids[1]}));
+    assert_eq!(h.app.session.selection.ids.len(), 2);
+    run(&mut h, "module.export", json!({}));
+    assert_eq!(h.app.session.selection.ids.iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[1]], "the open photo is what exports");
+    run(&mut h, "module.develop", json!({}));
+    run(&mut h, "module.print", json!({}));
+    assert_eq!(h.app.session.selection.ids.iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[1]], "the open photo is what prints");
+    // from Library a multi-selection is exported and printed as it is
+    run(&mut h, "module.library", json!({}));
+    run(&mut h, "library.select", json!({"ids": ids.clone()}));
+    run(&mut h, "module.print", json!({}));
+    assert_eq!(h.app.session.selection.ids.len(), 2, "a Library selection prints as it is");
+}
+
 /// File ▸ Export… (⇧E, the top bar's Export button) opens the Export module on the desktop.
 #[test]
 fn file_export_opens_the_module() {
@@ -598,4 +622,19 @@ fn test_square_grid_view_state_persists_across_restart() {
     ui_square.view = ViewMode::Detail;
     let sanitized_square = ui_square.sanitized();
     assert_eq!(sanitized_square.view, ViewMode::SquareGrid, "StartupView::SquareGrid opens in SquareGrid");
+}
+
+/// The Export module's preview of a single photo draws the loupe's own render (the thumbnail
+/// ladder stops at 512 px; the preview area is larger), with the thumbnail standing in first.
+#[test]
+fn export_module_single_photo_preview_renders_full_quality() {
+    let mut h = demo();
+    let id = h.app.session.visible_cloned()[0];
+    run(&mut h, "library.select", json!({"ids": [id.0]}));
+    run(&mut h, "module.export", json!({}));
+    assert!(h.settle(SETTLE));
+    let main = h.app.renderer.textures.get(&crate::render::Slot::Main);
+    assert!(main.is_some_and(|t| t.photo == id && t.quick.is_none()), "the preview has the loupe's render of the photo");
+    let long = main.map(|t| t.size[0].max(t.size[1])).unwrap_or(0);
+    assert!(long > 512, "the render is bigger than the thumbnail ladder's 512 px cap (got {long})");
 }

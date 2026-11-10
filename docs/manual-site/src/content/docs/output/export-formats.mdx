@@ -1,0 +1,31 @@
+---
+title: Formats
+description: JPEG, TIFF, PNG, PSD, WebP, AVIF, JPEG XL, DNG and originals.
+sidebar:
+  order: 3
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## File Settings ▸ Format
+- **JPEG**: **Quality** 1–100; **Limit file size (KB)** finds the quality that fits.
+- **PNG**, **TIFF**, **PSD** (flat, 8/16-bit, no layers), **WebP**, **AVIF**.
+- **JPEG XL**: native builds only; lossy or lossless, 8/16-bit.
+- **DNG**: raw photos only, a lossless re-encode with the edits in the embedded XMP. Compression: lossless JPEG (default), ZIP, none or lossy.
+- **DNG of: Rendered photo**: the finished image as a linear DNG other raw converters open as rendered. Also **Photo ▸ File ▸ Render to DNG** (writes `<name>-Rendered.dng` beside the original and stacks it).
+- **Original files**: copies the file byte for byte, with an XMP sidecar.
+- A non-raw photo cannot be exported as DNG.
+- Transparent sources keep alpha in PNG, WebP and TIFF.
+
+## Bit depth and compression
+- **Bit depth**: 8-bit, 16-bit or 32-bit float for PNG / TIFF (TIFF defaults to 16).
+- **Compression** (TIFF): None, LZW, ZIP.
+
+<Shot name="export-tiff" alt="File Settings with TIFF: bit depth and compression" menu="☰ ▸ Shortcuts ▸ Export…" />
+
+## After export
+- **Post-Processing ▸ Add to Apple Photos** (macOS only): imports the files into an album you name; macOS asks permission once.
+- Video clips in the batch get a **Video** section: H.264 (MP4) or ProRes (MOV), quality, long edge. See [Video](../video/).
+- 🟡 Other post-processing actions (open in an editor, run a program) are not built; external editors are under the Edit In commands.

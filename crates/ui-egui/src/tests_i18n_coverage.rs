@@ -1,9 +1,6 @@
-//! P6.3 localisation coverage: every complete catalog carries the same messages (a message missing
-//! from one language fails, it doesn't quietly show English), and every text the fork's own UI
-//! passes to `tr` (directly, or through a helper that translates) is in every complete catalog.
-//!
-//! The languages in [`PARTIAL`] are catching up: what they lack is reported, not failed, as
-//! upstream's `display_label_gaps_are_reported` does for every language.
+//! P6.3 localisation coverage: every catalog carries the same messages (a message missing from one
+//! language fails, it doesn't quietly show English), and every text the UI passes to `tr`
+//! (directly, or through a helper that translates; read by `i18n_scan`) is in every catalog.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,12 +17,6 @@ fn catalog(code: &str, formats: bool) -> BTreeMap<String, String> {
     }
     messages
 }
-
-/// Languages upstream added after the fork's own UI: their catalogs (upstream's rows plus the
-/// fork overlay's few rows) don't yet carry the fork's messages. Their gaps are reported; the
-/// messages upstream's own tests require in every language (the smart-album rule words) are in
-/// their overlays. A language leaves this list once its overlay catches up.
-const PARTIAL: &[Locale] = &[Locale::Pl, Locale::Cs, Locale::It, Locale::Ka, Locale::Sv, Locale::Fi, Locale::Id, Locale::Vi];
 
 /// Every message a fork overlay (`locales/fork/`) carries, in any language.
 fn fork_keys(formats: bool) -> BTreeSet<String> {
@@ -54,30 +45,25 @@ fn translated() -> impl Iterator<Item = Locale> {
     Locale::ALL.iter().copied().filter(|l| *l != Locale::En)
 }
 
-fn complete() -> impl Iterator<Item = Locale> {
-    translated().filter(|l| !PARTIAL.contains(l))
-}
-
-/// Print what a partial language lacks (a report, not a failure).
+/// Print upstream's own translation gaps (a report, not a failure).
 fn report(what: &str, gaps: &[String]) {
     if !gaps.is_empty() {
-        eprintln!(
-            "{} {what} (partial languages, reported only); first ones:\n{}",
-            gaps.len(),
-            gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
-        );
+        eprintln!("{} {what} (reported only); first ones:\n{}", gaps.len(), gaps.iter().take(20).cloned().collect::<Vec<_>>().join("\n"));
     }
 }
 
 #[test]
 fn every_catalog_carries_every_message() {
     for formats in [false, true] {
-        let all: Vec<(Locale, BTreeMap<String, String>)> = complete().map(|l| (l, catalog(l.code(), formats))).collect();
+        let all: Vec<(Locale, BTreeMap<String, String>)> = translated().map(|l| (l, catalog(l.code(), formats))).collect();
         // Help ▸ What's New's lines are upstream's release notes, translated as each language gets
         // to them (a language with them all, another with none): the translation gap report counts
         // them (`i18n`), they don't fail here
         let notes = whats_new_lines();
-        let union: BTreeSet<&String> = all.iter().flat_map(|(_, c)| c.keys()).filter(|k| !notes.contains(k.as_str())).collect();
+        // a contextual entry (`book text|Tracking`) is only where a language's plain translation reads
+        // wrongly in that place: no other language needs it
+        let union: BTreeSet<&String> =
+            all.iter().flat_map(|(_, c)| c.keys()).filter(|k| !notes.contains(k.as_str()) && crate::i18n::contextual(k).is_none()).collect();
         // a message only upstream's catalogs carry, in some languages, is upstream's translation
         // gap (its own report counts it): reported here; the fork's messages must be everywhere
         let fork = fork_keys(formats);
@@ -93,137 +79,124 @@ fn every_catalog_carries_every_message() {
         }
         assert!(missing.is_empty(), "{} message(s) missing (formats: {formats}):\n{}", missing.len(), missing.join("\n"));
         report("upstream messages missing", &upstream_gaps);
-        // the partial languages: every runtime format (a missing one would show English text with
-        // values in it), the rest reported
-        let mut gaps = Vec::new();
-        for l in PARTIAL {
-            let c = catalog(l.code(), formats);
-            for key in &union {
-                if !c.contains_key(*key) {
-                    if formats {
-                        missing.push(format!("{} lacks {key:?}", l.code()));
-                    } else {
-                        gaps.push(format!("{} lacks {key:?}", l.code()));
-                    }
-                }
-            }
-        }
-        assert!(missing.is_empty(), "{} format message(s) missing:\n{}", missing.len(), missing.join("\n"));
-        report("messages missing", &gaps);
     }
 }
 
-/// The fork's UI files (owned in `upstream-owned.txt`) whose text must be translated.
-const OWNED: &[(&str, &str)] = &[
-    ("map/mod.rs", include_str!("map/mod.rs")),
-    ("map/side.rs", include_str!("map/side.rs")),
-    ("map/view.rs", include_str!("map/view.rs")),
-    ("book.rs", include_str!("book.rs")),
-    ("slideshow_ui.rs", include_str!("slideshow_ui.rs")),
-    ("print_ui.rs", include_str!("print_ui.rs")),
-    ("web_module.rs", include_str!("web_module.rs")),
-    ("creations_ui.rs", include_str!("creations_ui.rs")),
-    ("edit_in.rs", include_str!("edit_in.rs")),
-    ("module.rs", include_str!("module.rs")),
-    ("plate.rs", include_str!("plate.rs")),
-    ("help_overlay.rs", include_str!("help_overlay.rs")),
-    ("access.rs", include_str!("access.rs")),
-    ("panels/publish.rs", include_str!("panels/publish.rs")),
-    ("panels/ai_models.rs", include_str!("panels/ai_models.rs")),
-    ("panels/retouch.rs", include_str!("panels/retouch.rs")),
-    ("panels/tether_bar.rs", include_str!("panels/tether_bar.rs")),
-    ("panels/connections.rs", include_str!("panels/connections.rs")),
-    ("panels/peer_sync.rs", include_str!("panels/peer_sync.rs")),
-    ("folder_poll.rs", include_str!("folder_poll.rs")),
-    ("panels/plugins.rs", include_str!("panels/plugins.rs")),
-    ("panels/classic.rs", include_str!("panels/classic.rs")),
-    ("panels/navigator.rs", include_str!("panels/navigator.rs")),
-    ("panels/metadata.rs", include_str!("panels/metadata.rs")),
-    ("panels/cells.rs", include_str!("panels/cells.rs")),
-    ("video_ui.rs", include_str!("video_ui.rs")),
-    ("video_view.rs", include_str!("video_view.rs")),
-];
-
-/// Calls whose first string literal is translated: `tr("…")`, and the helpers that call `tr` on
-/// their text argument.
-const TRANSLATING: &[&str] =
-    &["tr(", "tr_format!(", "access::button(", "access::choice(", "access::label(", "section(ui, ", "heading(ui, ", "small(ui, "];
-
-/// The Rust string literal starting at `s` (just after its opening quote), unescaped; `None` for
-/// anything this little reader doesn't understand (it is skipped, not guessed).
-fn literal(s: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                '\'' => out.push('\''),
-                '\n' => {
-                    // a line continuation: the next line's leading spaces are dropped
-                    let rest = chars.as_str().trim_start();
-                    chars = rest.chars();
-                }
-                _ => return None,
-            },
-            c => out.push(c),
-        }
-    }
-    None
-}
-
-/// Every literal the owned files hand to a translating call (test modules excluded).
-fn owned_texts() -> BTreeMap<String, &'static str> {
-    let mut found = BTreeMap::new();
-    for (file, src) in OWNED {
-        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap_or(src);
-        for call in TRANSLATING {
-            let mut rest = code;
-            while let Some(i) = rest.find(call) {
-                let before = &rest[..i];
-                rest = &rest[i + call.len()..];
-                // `tr(` must be the function, not the end of another name (`attr(`, `str(`)
-                if *call == "tr(" && before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                    continue;
-                }
-                // the first argument for tr / tr_format; for access::* and helpers, the first literal
-                let args = rest.trim_start();
-                let start = match *call {
-                    "tr(" | "tr_format!(" => args.strip_prefix('"'),
-                    _ => args
-                        .split_once(['"', ')', ';'])
-                        .and_then(|(head, _)| (!head.contains('(')).then(|| &args[head.len()..]))
-                        .and_then(|a| a.strip_prefix('"')),
-                };
-                let Some(text) = start.and_then(literal) else { continue };
-                if text.chars().any(char::is_alphabetic) {
-                    found.entry(text).or_insert(*file);
-                }
-            }
-        }
-    }
-    found
-}
-
+/// Every text the UI hands to `tr` (directly, or through a helper that translates), in every
+/// non-test source file (`i18n_scan`), is in every catalog.
 #[test]
-fn owned_ui_text_is_in_every_catalog() {
-    let texts = owned_texts();
-    assert!(texts.len() > 300, "the scan finds the owned UI's text ({} messages)", texts.len());
+fn ui_text_is_in_every_catalog() {
+    let texts = crate::i18n_scan::translated_texts();
+    assert!(texts.len() > 2000, "the scan finds the UI's text ({} messages)", texts.len());
     assert!(texts.contains_key("Map Style") && texts.contains_key("Zoom In"), "helpers and access names are scanned");
-    let (mut missing, mut gaps) = (Vec::new(), Vec::new());
+    let mut missing = Vec::new();
     for l in translated() {
         let (plain, formats) = (catalog(l.code(), false), catalog(l.code(), true));
-        for (text, file) in &texts {
+        for (text, files) in &texts {
+            // a place that asks with a context (`focus|Tracking`) shows the plain message where the
+            // language has no contextual entry
+            let text = crate::i18n::contextual(text).map_or(text.as_str(), |(_, plain)| plain);
             if !plain.contains_key(text) && !formats.contains_key(text) {
-                let gap = format!("{}: {text:?} ({file})", l.code());
-                if PARTIAL.contains(&l) { gaps.push(gap) } else { missing.push(gap) }
+                let files: Vec<&str> = files.iter().map(String::as_str).collect();
+                missing.push(format!("{}: {text:?} ({})", l.code(), files.join(", ")));
             }
         }
     }
     assert!(missing.is_empty(), "{} untranslated message(s):\n{}", missing.len(), missing.join("\n"));
-    report("untranslated messages", &gaps);
+}
+
+/// `build.rs` writes each format message's macro arm as JSON spells it, and `macro_rules!` matches a
+/// literal as written in the source, so a call spelled another way (`\u{201c}` for `“`, a raw string)
+/// matches no arm and shows English in every language. JSON and Rust spell only `\n`, `\t`, `\"` and
+/// `\\` the same way.
+#[test]
+fn format_messages_are_spelled_as_their_macro_arms() {
+    let mut odd = Vec::new();
+    for source in crate::i18n_scan::sources() {
+        for (at, _) in source.code.match_indices("tr_format!(") {
+            let rest = source.code.get(at + "tr_format!(".len()..).unwrap_or_default().trim_start();
+            let Some(body) = rest.strip_prefix('"') else {
+                if rest.starts_with('r') {
+                    odd.push(format!("{}: a raw string", source.file));
+                }
+                continue;
+            };
+            // the literal as written, up to its closing quote
+            let (mut raw, mut chars, mut spelled_alike) = (String::new(), body.chars(), true);
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => {
+                        let next = chars.next().unwrap_or_default();
+                        spelled_alike &= matches!(next, 'n' | 't' | '"' | '\\');
+                        raw.extend([c, next]);
+                    }
+                    _ => raw.push(c),
+                }
+            }
+            if !spelled_alike {
+                odd.push(format!("{}: \"{raw}\"", source.file));
+            }
+        }
+    }
+    assert!(odd.is_empty(), "format messages that match no catalog arm (write the characters themselves):\n{}", odd.join("\n"));
+}
+
+/// A catalog key that starts with a context (lowercase words, then `|`: `book text|Tracking`) is
+/// one of the contextual lookups the code makes (`crate::i18n::CONTEXTUAL`): a context or English
+/// message spelled otherwise (`focus|Trackng`, `fokus|Tracking`) would never be shown, and the
+/// place would show the plain translation without a word. (Messages with a `|` further on, such as
+/// `Keyword (a|b nests it under a)`, are plain.)
+#[test]
+fn contextual_entries_name_a_lookup_in_the_code() {
+    let is_context = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_lowercase() || c == ' ' || c == '-');
+    assert!(crate::i18n::CONTEXTUAL.iter().all(|(context, _)| is_context(context)), "contexts are lowercase words");
+    let mut stray = Vec::new();
+    for l in translated() {
+        for formats in [false, true] {
+            for key in catalog(l.code(), formats).into_keys() {
+                let context_shaped = key.split_once('|').is_some_and(|(context, _)| is_context(context));
+                if context_shaped && (formats || crate::i18n::contextual(&key).is_none()) {
+                    stray.push(format!("{}{}: {key:?}", l.code(), if formats { " (formats)" } else { "" }));
+                }
+            }
+        }
+    }
+    assert!(stray.is_empty(), "contextual entries no place asks for (each must be one of `CONTEXTUAL`'s):\n{}", stray.join("\n"));
+}
+
+/// Each contextual lookup (`crate::i18n::CONTEXTUAL`) is asked for somewhere in the UI's source as the
+/// literal `"<context>|<English>"`, and every literal shaped like one is listed: a place spelled
+/// otherwise (`"plug-in tabs|Log"`) would paint the key itself in every language, and a place gone
+/// back to the plain word would quietly drop its language's contextual entries.
+#[test]
+fn every_contextual_lookup_is_asked_for_in_the_code() {
+    let sources = crate::i18n_scan::sources();
+    let mut asked: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for source in &sources {
+        let code = source.code.as_str();
+        for (at, _) in code.match_indices('"') {
+            // `"` + a lowercase context + `|` + a capitalised English word
+            let rest = code.get(at + 1..).unwrap_or_default();
+            let Some((context, english)) = rest.split_once('|') else { continue };
+            let context_shaped =
+                context.starts_with(|c: char| c.is_ascii_lowercase()) && context.chars().all(|c| c.is_ascii_lowercase() || c == ' ' || c == '-');
+            if !context_shaped || !english.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            let Some((english, _)) = english.split_once('"') else { continue };
+            asked.entry(format!("{context}|{english}")).or_default().insert(source.file.clone());
+        }
+    }
+    // the smart-album values are built from `BOOL_CONTEXT` and the rule's label, not written out
+    let listed: BTreeSet<String> =
+        crate::i18n::CONTEXTUAL.iter().filter(|(context, _)| *context != "smart album value").map(|(c, e)| format!("{c}|{e}")).collect();
+    let unasked: Vec<&String> = listed.iter().filter(|key| !asked.contains_key(*key)).collect();
+    assert!(unasked.is_empty(), "contextual lookups no source file asks for: {unasked:?}");
+    let unlisted: Vec<String> = asked
+        .iter()
+        .filter(|(key, _)| !listed.contains(*key))
+        .map(|(key, files)| format!("{key:?} ({})", files.iter().cloned().collect::<Vec<_>>().join(", ")))
+        .collect();
+    assert!(unlisted.is_empty(), "contextual keys in the source that `CONTEXTUAL` doesn't list (shown as written):\n{}", unlisted.join("\n"));
 }

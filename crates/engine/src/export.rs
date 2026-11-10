@@ -250,6 +250,11 @@ pub fn subfolder_problem(name: &str) -> Option<&'static str> {
     if t.chars().all(|c| c == '.') {
         return Some("the subfolder can't be `.` or `..`");
     }
+    // a name every file system takes: no character Windows refuses (`* ? " < > |`), no trailing dot or space, and no
+    // device name Windows reserves (`CON`, `NUL`, `COM1`…, also before a dot), as for a file name
+    if portable_stem(t) != t {
+        return Some("the subfolder can't hold `* ? \" < > |`, end in a dot or space, or be a reserved Windows name such as `CON` or `NUL`");
+    }
     None
 }
 

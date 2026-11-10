@@ -94,7 +94,7 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui) {
     let mut form: Form = ui.data(|d| d.get_temp(form_id())).unwrap_or_default();
     let list = v["services"].as_array().cloned().unwrap_or_default();
     if v.is_null() {
-        ui.label(egui::RichText::new(crate::i18n::tr("Publish services need a library on disk.")).color(t.text_dim).size(11.5));
+        ui.label(egui::RichText::new(crate::i18n::tr("Publish services need a catalog on disk.")).color(t.text_dim).size(11.5));
         return;
     }
     if list.is_empty() && !form.setup {

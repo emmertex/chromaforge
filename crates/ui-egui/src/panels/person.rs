@@ -63,9 +63,30 @@ pub fn parse(v: &Value) -> PersonPage {
     }
 }
 
+/// The library filter as the face lists use it: what the sidebar picked (a year, a folder, an album), any person
+/// filter aside, since a person's page and the unnamed faces are about people already.
+pub(crate) fn face_filter(f: &lcc_catalog::Filter) -> lcc_catalog::Filter {
+    lcc_catalog::Filter { person: None, people: Vec::new(), ..f.clone() }
+}
+
+/// Forgets the cached face lists when the library filter changed since they were asked for, so they follow the sidebar.
+pub(crate) fn follow_filter(app: &mut LccApp) {
+    let now = face_filter(&app.session.filter);
+    match &app.caches.faces_filter {
+        Some(was) if *was == now => {}
+        Some(_) => {
+            app.caches.unnamed = None;
+            app.caches.person_page = None;
+            app.caches.faces_filter = Some(now);
+        }
+        None => app.caches.faces_filter = Some(now),
+    }
+}
+
 /// The page for `name`, asked for again only when the catalog changed, or (while the scan runs) at most once a second
 /// as it learns more faces.
 fn page_for(app: &mut LccApp, name: &str, now: f64) -> Arc<PersonPage> {
+    follow_filter(app);
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((n, r, i, at, page)) = &app.caches.person_page
         && n == name
@@ -74,7 +95,7 @@ fn page_for(app: &mut LccApp, name: &str, now: f64) -> Arc<PersonPage> {
     {
         return page.clone();
     }
-    let v = app.session.execute("faces.person", &json!({"name": name})).unwrap_or(Value::Null);
+    let v = app.session.execute("faces.person", &json!({"name": name, "scope": "filter"})).unwrap_or(Value::Null);
     let page = Arc::new(parse(&v));
     app.caches.person_page = Some((name.to_string(), rev, indexed, now, page.clone()));
     page
@@ -204,7 +225,8 @@ fn batch_bar(app: &mut LccApp, ui: &mut egui::Ui, current: &str) {
                 }
             }
             if let Some(new) = create {
-                let b = ui.add(egui::Button::new(RichText::new(format!("+ Create \u{201c}{new}\u{201d}")).color(t.text_label)).frame(false));
+                let b =
+                    ui.add(egui::Button::new(RichText::new(crate::i18n::tr_format!("+ Create “{new}”", new = new)).color(t.text_label)).frame(false));
                 register(ui.ctx(), "person:create", b.rect);
                 if b.clicked() {
                     assign = Some(new);
@@ -323,12 +345,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
     let dismissed = &app.ui.dismissed_faces;
     let more: Vec<&Face> = page.more.iter().filter(|f| !dismissed.contains(&(f.photo, f.index))).collect();
     // what the "More" section says when it has no faces to show
-    let recognising = app.caches.faces_active || page.ready;
+    let recognising = app.caches.faces_active || !more.is_empty();
     // with a model installed the button switches recognition on; without one it opens Settings ▸ Faces
     let step = if recognising { super::faces::Setup::Running } else { super::faces::setup(app, ui.ctx()) };
     let note: Option<String> = if step == super::faces::Setup::TurnOn {
         Some(format!("Face recognition is off. Turn it on to find more photos of {shown_name}."))
-    } else if !recognising {
+    } else if matches!(step, super::faces::Setup::GetModel | super::faces::Setup::Unavailable) {
         Some(format!("Face recognition needs a model, in Settings, to find more photos of {shown_name}."))
     } else if more.is_empty() && page.pending > 0 {
         Some(format!("Looking through your photos… {} left", page.pending))
@@ -385,7 +407,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
             ),
         };
         ui.painter().text(pos2(area.left() + PAD, area.top() + more_top + 36.0), Align2::LEFT_CENTER, sub, t.font(12.0), t.text_dim);
-        if !recognising {
+        if matches!(step, super::faces::Setup::TurnOn | super::faces::Setup::GetModel) {
             let r = Rect::from_min_size(pos2(area.left() + PAD + 330.0, area.top() + more_top + 8.0), vec2(120.0, 24.0));
             let label = if step == super::faces::Setup::TurnOn { "Turn on" } else { "Open Settings" };
             let b = ui.put(r, egui::Button::new(label));
@@ -554,7 +576,7 @@ fn tile(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, f: &Face, ppp: f32, more: 
             hit = Hit::Confirm;
         }
     } else {
-        let _ = resp.clone().on_hover_text(format!("{name} — click to open this photo"));
+        let _ = resp.clone().on_hover_text(crate::i18n::tr_format!("{name} — click to open this photo", name = name));
         if resp.clicked() {
             hit = Hit::Open;
         }
