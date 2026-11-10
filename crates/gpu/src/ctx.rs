@@ -440,6 +440,8 @@ pub struct Gpu {
     dummy: Vec<wgpu::Buffer>,
     /// Recycled buffers (see [`Buf`]).
     free: std::sync::Mutex<Vec<Tracked>>,
+    /// Recycled staging buffers of uploads and readbacks ([`Staging`]).
+    staging: Staging,
     /// Largest storage buffer the device accepts (bytes).
     pub max_buffer: u64,
     /// Which device this is: each one created in the process gets the next number, so buffers and
@@ -539,6 +541,37 @@ pub(crate) fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
     crate::new_instance(desc)
+}
+
+/// Staging buffers kept between renders. Every render used to create its own: a buffer for each
+/// upload plus the staging copy `queue.write_buffer` makes of it, and one for each readback. With
+/// a 45 MP photo those are hundreds of MiB each, and NVIDIA's Vulkan driver holds a lock for the
+/// whole process while it allocates or frees one (80-250 ms): the window's swapchain view and
+/// submit waited behind it, and drags at 100 % stuttered on Vulkan but not on DX12 (2026-11-10).
+#[derive(Default)]
+struct Staging {
+    /// For uploads ([`Gpu::upload`]), each with the submission that last copied out of it.
+    up: std::sync::Mutex<Vec<(wgpu::Buffer, wgpu::SubmissionIndex)>>,
+    /// For readbacks ([`Gpu::finish_and_read_parts`]), unmapped.
+    down: std::sync::Mutex<Vec<wgpu::Buffer>>,
+}
+
+/// At most this many bytes of each kind of staging buffer are kept (they are host memory).
+const STAGING_KEEP: u64 = 1 << 30;
+
+/// The index of the smallest buffer in `bufs` (by `size`) that holds `want` bytes with at most
+/// 25 % to spare.
+fn best_fit<T>(bufs: &[T], want: u64, size: impl Fn(&T) -> u64) -> Option<usize> {
+    bufs.iter().enumerate().filter(|(_, b)| size(b) >= want && size(b) <= want.saturating_add(want / 4)).min_by_key(|(_, b)| size(b)).map(|(i, _)| i)
+}
+
+/// Keep `buf` in `pool` unless that would hold more than [`STAGING_KEEP`] bytes.
+fn keep_staging<T>(pool: &std::sync::Mutex<Vec<T>>, buf: T, size: impl Fn(&T) -> u64) {
+    let mut p = pool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let held: u64 = p.iter().map(&size).sum();
+    if held.saturating_add(size(&buf)) <= STAGING_KEEP {
+        p.push(buf);
+    }
 }
 
 impl Gpu {
@@ -660,7 +693,20 @@ impl Gpu {
             max_buffer >> 20,
             if window { ", the window's device" } else { "" }
         );
-        Ok(Gpu { device, queue, info, kernels, dummy, free: Default::default(), max_buffer, generation, vram, lost, window })
+        Ok(Gpu {
+            device,
+            queue,
+            info,
+            kernels,
+            dummy,
+            free: Default::default(),
+            staging: Staging::default(),
+            max_buffer,
+            generation,
+            vram,
+            lost,
+            window,
+        })
     }
 
     /// A buffer of `len` 32-bit values with undefined contents (a recycled one when possible).
@@ -736,8 +782,15 @@ impl Gpu {
         }
     }
 
-    /// Free pooled buffers (oldest first) until at most `keep` bytes stay pooled.
+    /// Free pooled buffers (oldest first) until at most `keep` bytes stay pooled; emptying the pool
+    /// (`keep` 0: idle, or the device replaced) frees the staging buffers kept for uploads and
+    /// readbacks too ([`Staging`]). (Every submission trims to the pool's limit: those keep them.)
     pub fn trim(&self, keep: u64) {
+        let staged = keep == 0 && {
+            let up = std::mem::take(&mut *self.staging.up.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            let down = std::mem::take(&mut *self.staging.down.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            !up.is_empty() || !down.is_empty()
+        };
         let mut f = self.free.lock().unwrap_or_else(|e| e.into_inner());
         let mut total: u64 = f.iter().map(|b| b.0.size()).sum();
         let mut dropped = Vec::new();
@@ -748,7 +801,7 @@ impl Gpu {
             dropped.push(b);
         }
         drop(f);
-        if !dropped.is_empty() {
+        if !dropped.is_empty() || staged {
             drop(dropped);
             // let wgpu release the memory now rather than at its next maintenance
             let _ = self.poll(wgpu::PollType::Poll);
@@ -798,29 +851,87 @@ impl Gpu {
             self.over_limit(bytes.len() as u64);
             return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
         }
-        // created unmapped and filled through the queue: a buffer mapped at creation would hand
-        // back a mapping of nothing when the device has no memory for it
+        // a recycled buffer when there is one (out of memory: the placeholder, failure recorded)
         let size = (bytes.len() as u64).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
-        let buf = self.checked(size, || {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        });
-        let Some(buf) = buf else {
-            return Buf { buf: Some(Tracked::new(self.placeholder(), self.generation)), len };
-        };
-        if bytes.len() as u64 == size {
-            self.queue.write_buffer(&buf, 0, bytes);
-        } else {
-            // the queue copies whole 4-byte words
-            let mut padded = bytes.to_vec();
-            padded.resize(size as usize, 0);
-            self.queue.write_buffer(&buf, 0, &padded);
+        let mut dst = self.buffer((size / 4) as usize);
+        dst.len = len;
+        if dst.raw().size() < size {
+            return dst;
         }
-        Buf { buf: Some(Tracked::new(buf, self.generation)), len }
+        // the copy is of whole 4-byte words
+        let padded;
+        let bytes = if bytes.len() as u64 == size {
+            bytes
+        } else {
+            let mut p = bytes.to_vec();
+            p.resize(size as usize, 0);
+            padded = p;
+            &padded
+        };
+        if !self.write_staged(dst.raw(), bytes) {
+            self.queue.write_buffer(dst.raw(), 0, bytes);
+        }
+        dst
+    }
+
+    /// Copy `bytes` (a multiple of 4) into `dst` through a recycled staging buffer ([`Staging`]),
+    /// submitted at once: it runs before any later submission that reads `dst`. `false` when no
+    /// staging buffer could be had (the caller writes through the queue instead).
+    fn write_staged(&self, dst: &wgpu::Buffer, bytes: &[u8]) -> bool {
+        let size = bytes.len() as u64;
+        let reused = {
+            let mut p = self.staging.up.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            best_fit(&p, size, |b| b.0.size()).map(|i| p.swap_remove(i))
+        };
+        let staging = match reused {
+            Some((b, last)) => {
+                // mapped again once the GPU has copied out of it
+                if self.poll(wgpu::PollType::Wait { submission_index: Some(last), timeout: Some(READBACK_TIMEOUT) }).is_err() {
+                    return false;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                b.slice(..size).map_async(wgpu::MapMode::Write, move |r| {
+                    let _ = tx.send(r);
+                });
+                let started = std::time::Instant::now();
+                loop {
+                    if self.poll(wgpu::PollType::Poll).is_err() {
+                        return false;
+                    }
+                    match rx.recv_timeout(std::time::Duration::from_millis(1)) {
+                        Ok(Ok(())) => break,
+                        Ok(Err(_)) => return false,
+                        Err(_) if started.elapsed() < MAP_WAIT => {}
+                        Err(_) => return false,
+                    }
+                }
+                b
+            }
+            None => {
+                let created = self.checked(size, || {
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("upload"),
+                        size,
+                        usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                        mapped_at_creation: true,
+                    })
+                });
+                let Some(b) = created else { return false };
+                b
+            }
+        };
+        match staging.slice(..size).get_mapped_range_mut() {
+            Ok(mut view) => view.copy_from_slice(bytes),
+            Err(_) => return false,
+        }
+        staging.unmap();
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("upload") });
+        enc.copy_buffer_to_buffer(&staging, 0, dst, 0, size);
+        // straight to the queue, not `Gpu::submit`: that also pools the buffers this thread dropped
+        // since its last submission, which an encoder not yet submitted may still use
+        let index = self.queue.submit([enc.finish()]);
+        keep_staging(&self.staging.up, (staging, index), |b| b.0.size());
+        true
     }
 
     /// Create a buffer, or record [`FailKind::OutOfMemory`] and return `None` when the device has
@@ -943,16 +1054,27 @@ impl Gpu {
             return zeros();
         }
         let size = (len * 4) as u64;
-        // out of memory here is the render's failure, not a broken readback
-        let Some(staging) = self.checked(size, || {
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("readback"),
-                size: size.max(4),
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        }) else {
-            return zeros();
+        // a recycled staging buffer ([`Staging`]); out of memory here is the render's failure, not
+        // a broken readback
+        let reused = {
+            let mut p = self.staging.down.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            best_fit(&p, size, wgpu::Buffer::size).map(|i| p.swap_remove(i))
+        };
+        let staging = match reused {
+            Some(b) => b,
+            None => {
+                let Some(b) = self.checked(size, || {
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("readback"),
+                        size: size.max(4),
+                        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    })
+                }) else {
+                    return zeros();
+                };
+                b
+            }
         };
         enc.copy_buffer_to_buffer(src.raw(), 0, &staging, 0, size);
         let index = self.submit([enc.finish()]);
@@ -1000,6 +1122,7 @@ impl Gpu {
             .collect();
         drop(data);
         staging.unmap();
+        keep_staging(&self.staging.down, staging, wgpu::Buffer::size);
         out
     }
 }
@@ -1007,6 +1130,9 @@ impl Gpu {
 /// Longest wait for a render's GPU work: beyond it the render fails over to the CPU (drivers
 /// normally reset a hung GPU much sooner).
 const READBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Longest wait for a recycled upload buffer to be mapped again once the GPU is done with it.
+const MAP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `{ENV_PREFIX}_GPU_LIMITS`: lower the device limits, e.g. to reproduce a smaller adapter.
 /// `webgpu` / `downlevel` = 128 MiB storage bindings and 256 MiB buffers (the WebGPU defaults),
@@ -1311,6 +1437,52 @@ mod tests {
     /// readback past the buffer, a kernel run with the wrong number of bindings, and an upload
     /// after a failure (which returns the placeholder with the requested length). A zero-length
     /// readback is no failure.
+    /// Uploads and readbacks through recycled staging buffers ([`super::Staging`]): the data arrives
+    /// intact round after round, and the idle trim frees them.
+    #[test]
+    fn uploads_and_readbacks_reuse_their_staging_buffers() {
+        let Some(g) = crate::device() else {
+            lcc_testkit::skip!(Gpu, "no GPU device");
+            return;
+        };
+        let words = 777_773; // a size no other test uses: the device's pools are shared
+        let bytes = (words * 4) as u64;
+        let kept = |g: &super::Gpu| {
+            let up = g.staging.up.lock().unwrap().iter().filter(|b| b.0.size() == bytes).count();
+            let down = g.staging.down.lock().unwrap().iter().filter(|b| b.size() == bytes).count();
+            (up, down)
+        };
+        for round in 0..3u32 {
+            let data: Vec<u32> = (0..words as u32).map(|i| i.wrapping_mul(2_654_435_761).wrapping_add(round)).collect();
+            let b = g.upload(&data);
+            let back: Vec<u32> = g.finish_and_read(g.encoder(), &b, words);
+            assert!(back == data, "round {round}: the data comes back intact");
+            assert!(!super::failed());
+        }
+        // (how many are kept is not checked here: the tests share the device, and another test's
+        // upload of a similar size may borrow one; `staging_pools_fit_closely_and_stay_bounded`)
+        g.trim(0);
+        assert_eq!(kept(&g), (0, 0), "the idle trim frees them");
+    }
+
+    /// The staging pools take the smallest buffer that fits with at most 25 % to spare, and hold
+    /// at most [`super::STAGING_KEEP`] bytes.
+    #[test]
+    fn staging_pools_fit_closely_and_stay_bounded() {
+        let sizes = [100u64, 130, 124, 1000];
+        assert_eq!(super::best_fit(&sizes, 100, |b| *b), Some(0), "an exact fit first");
+        assert_eq!(super::best_fit(&sizes, 101, |b| *b), Some(2), "then the smallest within 25 %");
+        assert_eq!(super::best_fit(&sizes, 900, |b| *b), Some(3));
+        assert_eq!(super::best_fit(&sizes, 700, |b| *b), None, "1000 is too big for 700");
+        assert_eq!(super::best_fit(&sizes, u64::MAX, |b| *b), None, "no overflow");
+        let pool = std::sync::Mutex::new(Vec::new());
+        let half = super::STAGING_KEEP / 2;
+        super::keep_staging(&pool, half, |b| *b);
+        super::keep_staging(&pool, half, |b| *b);
+        super::keep_staging(&pool, 1, |b| *b);
+        assert_eq!(pool.lock().unwrap().len(), 2, "the third would pass the limit");
+    }
+
     #[test]
     fn caller_mistakes_fail_the_render_instead_of_panicking() {
         let Some(g) = crate::device() else {
