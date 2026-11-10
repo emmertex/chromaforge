@@ -7,7 +7,7 @@ description: Get Chromaforge running.
 - **macOS**: open the `.dmg`, drag the app to Applications. The app is not signed with an Apple developer certificate, so macOS warns first (see below).
 - **Windows**: run the installer, or unpack the portable zip.
 - **Linux**: AppImage, `.deb`, `.rpm`, Flatpak or a tarball.
-- **Android**: install from [Google Play](https://play.google.com/store/apps/details?id=com.emmertex.chromaforge), or sideload the `.apk` from Releases. Play runs a little behind Releases because of Google's review process.
+- **Android**: install from [Google Play](https://play.google.com/store/apps/details?id=<app_id>), or sideload the `.apk` from Releases. Play runs a little behind Releases because of Google's review process.
 - **Web**: open the browser build; it runs locally, nothing is uploaded.
 - Build from source: `cargo xtask install`.
 - Updates: the app checks for new releases and tells you.
