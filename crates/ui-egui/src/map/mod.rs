@@ -45,6 +45,10 @@ pub struct MapPrefs {
     pub online_consent: bool,
     /// Tile cache limit (MB).
     pub cache_mb: u64,
+    /// View ▸ Lock Markers: pins can't be dragged to a new position.
+    pub lock_markers: bool,
+    /// View ▸ Show Saved Location Overlay: the saved locations' circles and names.
+    pub show_saved: bool,
 }
 
 impl Default for MapPrefs {
@@ -59,6 +63,8 @@ impl Default for MapPrefs {
             endpoint: lcc_geo::geocode::NOMINATIM_DEFAULT.into(),
             online_consent: false,
             cache_mb: lcc_geo::cache::DEFAULT_MAX_BYTES / (1024 * 1024),
+            lock_markers: false,
+            show_saved: true,
         }
     }
 }
@@ -89,6 +95,8 @@ pub struct MapUi {
     /// Camera clock's offset for Auto-Tag (`+02:00`).
     pub offset: String,
     pub search: String,
+    /// Map ▸ Search…: the side panel's search box takes focus on the next frame.
+    pub focus_search: bool,
     pub results: Vec<(String, LatLon)>,
     pub jobs: Vec<Job>,
     /// The new-location form.
@@ -122,6 +130,7 @@ impl Default for MapUi {
             tracks: Vec::new(),
             offset: String::new(),
             search: String::new(),
+            focus_search: false,
             results: Vec::new(),
             jobs: Vec::new(),
             new_name: String::new(),
@@ -343,7 +352,7 @@ impl Module for MapModule {
 }
 
 /// Map: `=` / `-` zoom in / out one level (Classic's Map keys).
-const MAP_KEYS: &[ModuleKey] = &[("=", "map.view", r#"{"zoomBy": 1}"#), ("-", "map.view", r#"{"zoomBy": -1}"#), crate::help_overlay::KEY];
+const MAP_KEYS: &[ModuleKey] = &[("Cmd+F", "map.focusSearch", "{}"), ("=", "map.view", r#"{"zoomBy": 1}"#), ("-", "map.view", r#"{"zoomBy": -1}"#), crate::help_overlay::KEY];
 
 // ---------- UI commands
 
@@ -361,6 +370,9 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("map.fit", "Show All Pins", None, ""),
     ("map.reveal", "Show Selected Pins", None, ""),
     ("map.search", "Find Place", None, ""),
+    ("map.focusSearch", "Search…", None, ""),
+    ("map.toggleLockMarkers", "Lock Markers", None, ""),
+    ("map.toggleSavedLocations", "Show Saved Location Overlay", None, ""),
     ("map.geocoder", "Reverse Geocoding Settings", None, ""),
     ("map.lookup", "Look Up Locations", None, ""),
     ("map.tileCache", "Tile Cache", None, ""),
@@ -552,6 +564,21 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             let force = p.get("force").and_then(Value::as_bool).unwrap_or(false);
             reveal_selection(app, force);
             Ok(view_json(app))
+        }
+        "map.focusSearch" => {
+            app.map.focus_search = true;
+            Ok(json!({"focus": "map:search"}))
+        }
+        "map.toggleLockMarkers" => {
+            app.map.prefs.lock_markers = !app.map.prefs.lock_markers;
+            app.map.dragging_pin = None;
+            app.map.save();
+            Ok(json!({"lockMarkers": app.map.prefs.lock_markers}))
+        }
+        "map.toggleSavedLocations" => {
+            app.map.prefs.show_saved = !app.map.prefs.show_saved;
+            app.map.save();
+            Ok(json!({"showSaved": app.map.prefs.show_saved}))
         }
         "map.search" => {
             let q = s(p, "query").ok_or("missing `query`")?.to_string();

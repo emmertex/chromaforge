@@ -48,6 +48,8 @@ pub struct PrintUi {
     pub user_templates: Vec<(String, PrintSettings)>,
     /// Preview page (0-based).
     pub page: usize,
+    /// Master switch for the guides (margins, image cells, bleed, dimensions); the rulers have their own.
+    pub show: bool,
     pub rulers: bool,
     pub margins: bool,
     pub cells: bool,
@@ -95,6 +97,7 @@ impl Default for PrintUi {
             template: Some(name),
             user_templates: Vec::new(),
             page: 0,
+            show: true,
             rulers: true,
             margins: true,
             cells: true,
@@ -130,6 +133,8 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.pageSetup", "Page Setup", None, ""),
     ("printui.page", "Print Preview Page", None, ""),
     ("printui.guides", "Print Guides", None, ""),
+    ("printui.toggleGuides", "Show Guides", None, ""),
+    ("printui.toggleRulers", "Show Rulers", None, ""),
     ("printui.print", "Print", None, ""),
     ("printui.printOne", "Print One", None, ""),
     ("printui.printers", "Find Printers", None, ""),
@@ -375,7 +380,7 @@ fn state_json(app: &mut LccApp) -> Value {
         "pages": pages,
         "photos": photos,
         "error": err,
-        "guides": {"rulers": pu.rulers, "margins": pu.margins, "cells": pu.cells, "bleed": pu.bleed, "dimensions": pu.dimensions, "units": pu.units},
+        "guides": {"show": pu.show, "rulers": pu.rulers, "margins": pu.margins, "cells": pu.cells, "bleed": pu.bleed, "dimensions": pu.dimensions, "units": pu.units},
         "selectedCell": pu.selected,
         "printer": pu.printer_uri,
         "profileName": pu.profile_name,
@@ -655,6 +660,7 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         "printui.guides" => {
             let pu = &mut app.print;
             for (k, f) in [
+                ("show", &mut pu.show),
                 ("rulers", &mut pu.rulers),
                 ("margins", &mut pu.margins),
                 ("cells", &mut pu.cells),
@@ -669,6 +675,8 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 pu.units = serde_json::from_value(u.clone()).map_err(|_| format!("unknown unit {u}: in, cm, mm or pt"))?;
             }
         }
+        "printui.toggleGuides" => app.print.show = !app.print.show,
+        "printui.toggleRulers" => app.print.rulers = !app.print.rulers,
         "printui.cell" => {
             let unit = match p.get("unit") {
                 Some(u) => serde_json::from_value(u.clone()).map_err(|_| format!("unknown unit {u}: in, cm, mm or pt"))?,
@@ -1248,6 +1256,7 @@ fn template_browser(ui: &mut egui::Ui, app: &mut LccApp) {
         heading(ui, "Guides");
         let g = &mut app.print;
         for (k, label, v) in [
+            ("show", "Show Guides", &mut g.show),
             ("rulers", "Rulers", &mut g.rulers),
             ("margins", "Margins and Gutters", &mut g.margins),
             ("cells", "Image Cells", &mut g.cells),
@@ -1814,15 +1823,15 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
     let bg = page.background;
     p.rect_filled(sheet, 0.0, Color32::from_rgb(bg[0], bg[1], bg[2]));
     let guide = Color32::from_rgb(70, 140, 220);
-    if app.print.margins {
+    if app.print.show && app.print.margins {
         let c = rect(&page.content());
         p.rect_stroke(c, 0.0, Stroke::new(1.0, guide.gamma_multiply(0.8)), StrokeKind::Inside);
     }
     let infos: Vec<Option<PhotoInfo>> =
         layout.cells.iter().map(|c| c.as_photo().and_then(|ph| ph.photo.as_deref()).map(|id| info_of(app, id))).collect();
-    let dimensions = app.print.dimensions;
+    let dimensions = app.print.show && app.print.dimensions;
     let units = app.print.units;
-    let show_cells = app.print.cells;
+    let show_cells = app.print.show && app.print.cells;
     let pi = app.print.page;
     for (i, cell) in layout.cells.iter().enumerate() {
         let r = rect(&cell.rect);
@@ -1886,7 +1895,7 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
             }
         }
     }
-    if app.print.bleed && page.bleed > 0.0 {
+    if app.print.show && app.print.bleed && page.bleed > 0.0 {
         p.rect_stroke(rect(&page.bleed_box()), 0.0, Stroke::new(1.0, Color32::from_rgb(220, 60, 60)), StrokeKind::Outside);
     }
     for g in &layout.guides {

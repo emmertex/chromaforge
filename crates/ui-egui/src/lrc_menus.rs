@@ -503,7 +503,7 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "soon.locationFilter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] = &["map.focusSearch=Search…", "@Tracklog", "---", "soon.locationFilter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",
@@ -520,7 +520,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Rating=Photo>Set Rating",
     "@Set Color Label=Photo>Set Color Label",
     "---",
-    "soon.deleteGps",
+    r#"map.geotag{"clear":true}=Delete GPS Coordinates"#,
     "soon.deleteLocationMetadata",
 ];
 
@@ -529,18 +529,19 @@ const MAP_VIEW: &[&str] = &[
     "view.filterBar=Show Filter Bar",
     "soon.mapInfo",
     "soon.mapKey",
-    "soon.savedLocationOverlay",
-    "soon.lockMarkers",
+    "map.toggleSavedLocations",
+    "map.toggleLockMarkers",
     "---",
     "soon.mapStyle",
 ];
 
 const BOOK: &[&str] =
-    &["soon.createSavedBook", "---", "soon.bookPageNavigation", "---", "soon.updateMetadataCaptions", "soon.bookPreferences", "---", "book.export"];
+    &["soon.createSavedBook", "---", r#"book.go{"delta":-1}=Previous Page"#,
+    r#"book.go{"delta":1}=Next Page"#, "---", "book.refreshCaptions", "soon.bookPreferences", "---", "book.export"];
 
 const BOOK_VIEW: &[&str] = &[
     "soon.bookHeaderBar",
-    "soon.bookGuides",
+    "book.toggleGuides",
     "soon.bookInfoOverlay",
     "---",
     r#"book.view{"mode":"multi"}=Multi-Page View"#,
@@ -576,7 +577,7 @@ const PLAY: &[&str] = &[
     "soon.slideshowContent",
 ];
 
-const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
+const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "slideshow.toggleGuides"];
 
 const PRINT: &[&str] = &[
     "soon.createSavedPrint",
@@ -590,7 +591,7 @@ const PRINT: &[&str] = &[
     "soon.pageSetup",
 ];
 
-const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "soon.printInfoOverlay"];
+const PRINT_VIEW: &[&str] = &["printui.toggleGuides", "printui.toggleRulers", "soon.printInfoOverlay"];
 
 const WEB: &[&str] = &[
     "soon.createSavedWebGallery",
@@ -909,22 +910,15 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
-    soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.locationFilter", "Location Filter", None, 'S', true, "Visible on Map / Tagged / Untagged / None (map.filter exists)."),
-    soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
     soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.mapInfo", "Show Map Info", None, 'S', false, "The map's info overlay."),
     soon("soon.mapKey", "Show Map Key", None, 'S', false, "The map's legend of pin types."),
-    soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
-    soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     soon("soon.mapStyle", "Map Style", None, 'S', true, "The map's tile styles as a submenu (map.style exists)."),
     // Book
     soon("soon.createSavedBook", "Create Saved Book", None, 'S', true, "Save the book as a collection (book.save needs a name dialog)."),
-    soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
-    soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
     soon("soon.bookHeaderBar", "Show Header Bar", None, 'S', false, "The book's header bar."),
-    soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
     soon("soon.createSavedSlideshow", "Create Saved Slideshow", None, 'S', true, "Save the slideshow as a collection (needs a name dialog)."),
@@ -932,13 +926,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
-    soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
     soon("soon.createSavedPrint", "Create Saved Print", None, 'S', true, "Save the print as a collection (needs a name dialog)."),
     soon("soon.newPrintTemplate", "New Template", None, 'S', true, "Save the print settings as a template (needs a name dialog)."),
     soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
-    soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
-    soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
     // Web
     soon("soon.createSavedWebGallery", "Create Saved Web Gallery", None, 'S', false, "Save the web gallery as a collection."),

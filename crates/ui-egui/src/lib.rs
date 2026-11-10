@@ -296,6 +296,8 @@ mod tests_loading_cell;
 #[cfg(test)]
 mod tests_lrc_menus;
 #[cfg(test)]
+mod tests_menu_toggles;
+#[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
 mod tests_mask_landing;

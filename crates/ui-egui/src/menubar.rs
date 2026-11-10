@@ -413,6 +413,12 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
+        "map.toggleLockMarkers" => Some(app.map.prefs.lock_markers),
+        "map.toggleSavedLocations" => Some(app.map.prefs.show_saved),
+        "book.toggleGuides" => Some(u.book.book.guides.show),
+        "slideshow.toggleGuides" => Some(u.slides.settings.layout.show_guides),
+        "printui.toggleGuides" => Some(app.print.show),
+        "printui.toggleRulers" => Some(app.print.rulers),
         _ => None,
     }
 }

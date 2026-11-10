@@ -170,14 +170,12 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Search… (Ctrl+F) | Focus the map's search box. | S | wire-up | `soon.mapSearch` |
 | Location Filter | Visible on Map / Tagged / Untagged / None (map.filter exists). | S | wire-up | `soon.locationFilter` |
 
 ## Map module ▸ Photo
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
 | Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
 ## Map module ▸ View
@@ -186,8 +184,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Map Info | The map's info overlay. | S | feature | `soon.mapInfo` |
 | Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
-| Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
-| Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
 | Map Style | The map's tile styles as a submenu (map.style exists). | S | wire-up | `soon.mapStyle` |
 
 ## Book module ▸ Book
@@ -195,8 +191,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Create Saved Book | Save the book as a collection (book.save needs a name dialog). | S | wire-up | `soon.createSavedBook` |
-| Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
-| Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
 | Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
 
 ## Book module ▸ View
@@ -204,7 +198,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Show Header Bar | The book's header bar. | S | feature | `soon.bookHeaderBar` |
-| Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
 | Show Info Overlay | Page and book info over the view. | S | feature | `soon.bookInfoOverlay` |
 
 ## Slideshow module ▸ Slideshow
@@ -222,12 +215,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Content | Play the selected / filmstrip / flagged photos. | S | feature | `soon.slideshowContent` |
 
-## Slideshow module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
-
 ## Print module ▸ Print
 
 | Item | What it does | Size | Kind | Slot |
@@ -240,8 +227,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
-| Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
 | Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
 
 ## Web module ▸ Web
