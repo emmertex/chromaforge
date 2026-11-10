@@ -235,6 +235,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // service set up it opens Settings ▸ Generative Fill instead
     ("remove.useGenerative", "Use Generative AI", None, ""),
     ("tool.none", "No Tool", None, ""),
+    ("tool.tat", "Targeted Adjustment", None, ""),
+    ("mask.startComponent", "Combine Mask with", None, ""),
+    ("dialog.keywordSet", "Edit Keyword Set…", None, ""),
     // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
     ("mask.editComponent", "Edit Mask Component", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
@@ -1999,6 +2002,19 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     return Some(r);
                 }
                 // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
+                // {target: curve|hue|sat|lum; none or missing puts the targeted adjustment away}
+                "tat" => match p.get("target").and_then(Value::as_str).filter(|t| !t.is_empty() && *t != "none") {
+                    None => {
+                        if app.ui.tool.starts_with("tat:") {
+                            app.ui.tool.clear();
+                        }
+                    }
+                    Some(t) => {
+                        if let Err(e) = crate::panels::edit::start_tat(app, t) {
+                            return Some(Err(e));
+                        }
+                    }
+                },
                 "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
                 "wbPicker" => {
                     app.ui.right = RightPanel::Edit;
@@ -2134,6 +2150,33 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let mode = p.get("mode").and_then(Value::as_str).unwrap_or("set").to_string();
             app.ui.dialog =
                 Some(Dialog::CaptureTime { mode, time: time.get(..19).unwrap_or(&time).to_string(), days: 0, hours: 0, minutes: 0, zone: 0.0 });
+            Ok(Value::Null)
+        }
+        "dialog.keywordSet" => {
+            crate::panels::right::edit_keyword_set(app);
+            Ok(Value::Null)
+        }
+        "mask.startComponent" => {
+            // {kind, op: add|subtract|intersect}: Add / Subtract / Intersect Mask with (the Masking panel's menus)
+            let kind = p.get("kind").and_then(Value::as_str).ok_or("missing `kind`");
+            let op = p
+                .get("op")
+                .and_then(Value::as_str)
+                .filter(|o| matches!(*o, "add" | "subtract" | "intersect"))
+                .ok_or("`op` is add|subtract|intersect");
+            let (kind, op) = match (kind, op) {
+                (Ok(k), Ok(o)) => (k.to_string(), o.to_string()),
+                (Err(e), _) | (_, Err(e)) => return Some(Err(format!("mask.startComponent: {e}"))),
+            };
+            if !crate::panels::masking::MASK_KINDS.iter().any(|(k, _)| *k == kind) {
+                return Some(Err(format!("mask.startComponent: unknown mask kind `{kind}`")));
+            }
+            if app.session.active_mask.is_none() {
+                return Some(Err("mask.startComponent: no mask is selected".into()));
+            }
+            app.ui.right = RightPanel::Masking;
+            app.ui.view = ViewMode::Detail;
+            crate::panels::masking::start_component(app, &ctx, &kind, &op);
             Ok(Value::Null)
         }
         "dialog.labelNames" => {
@@ -3334,6 +3377,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
         "dialog.updatePreset" => app.session.active().is_some(),
+        "mask.startComponent" => app.session.active().is_some() && app.session.active_mask.is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone

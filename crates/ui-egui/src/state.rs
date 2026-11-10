@@ -1466,6 +1466,9 @@ pub struct UiState {
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
+    /// The face box the pointer last rested on in the loupe (photo, region): the "chosen face" of Photo ▸ People.
+    #[serde(skip)]
+    pub face_focus: Option<(u64, usize)>,
     /// The person whose page the People view shows (their faces and the faces that look like them); `None`: everyone.
     #[serde(skip)]
     pub person_page: Option<String>,
@@ -2512,6 +2515,7 @@ impl Default for UiState {
             section_open: Default::default(),
             tree_open: Default::default(),
             name_edit: None,
+            face_focus: None,
             person_page: None,
             person_from: None,
             last_person: None,
