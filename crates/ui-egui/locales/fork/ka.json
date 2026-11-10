@@ -212,6 +212,7 @@
   "Ask (show “N new”)": "კითხვა (ჩვენება „N ახალი“)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Immich-ისთვის გარე ბიბლიოთეკების ახლავე ხელახლა სკანირების თხოვნა (ადმინისტრატორის გასაღები სჭირდება)",
   "Ask Which Catalog to Open at Launch": "გაშვებისას გასახსნელი კატალოგის კითხვა",
+  "Ask for a Name": "სახელის მოთხოვნა",
   "Ask me": "მკითხეთ",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "„მკითხეთ“ გაშვებისას თქვენს ბოლო კატალოგებს აჩვენებს. ფანჯრის გამოჩენისას Alt-ის (Mac-ზე Option) დაჭერა ერთხელ გკითხავთ.",
   "Ask where to import it": "კითხვა, სად მოხდეს იმპორტი",

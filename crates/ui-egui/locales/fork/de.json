@@ -162,6 +162,7 @@
   "Ask (show “N new”)": "Fragen („N neu“ anzeigen)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Immich bitten, die externen Bibliotheken jetzt neu einzulesen (erfordert einen Admin-Schlüssel)",
   "Ask Which Catalog to Open at Launch": "Beim Start fragen, welcher Katalog geöffnet wird",
+  "Ask for a Name": "Nach einem Namen fragen",
   "Ask me": "Nachfragen",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "„Nachfragen“ listet beim Start Ihre zuletzt verwendeten Kataloge auf. Halten Sie Alt (auf dem Mac Option) gedrückt, wenn das Fenster erscheint, wird nur dieses Mal nachgefragt.",
   "Ask where to import it": "Nachfragen, wohin importiert wird",
