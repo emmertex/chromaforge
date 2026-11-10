@@ -1157,7 +1157,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Crop As Shot",
             [],
             Some("Cmd+Alt+Shift+R"),
-            "{} — the crop goes back to the decoded camera frame (the sensor's own crop, which decoding already applies): full frame, no angle, no ratio lock; flips stay",
+            "{}: the crop goes back to the decoded camera frame (the sensor's own crop, which decoding already applies): full frame, no angle, no ratio lock; flips stay",
             has_active,
             |s, _| {
                 edit(s, "crop.asShot", "Crop As Shot", |d| {
@@ -1174,7 +1174,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "Crop to Same Aspect Ratio",
                 [],
                 Some("Shift+A"),
-                "{ids?} — gives every other selected photo (or `ids`) the active photo's crop ratio: the largest centred crop of that ratio, as one undo step → {changed}. Needs an active photo and at least one other target",
+                "{ids?}: gives every other selected photo (or `ids`) the active photo's crop ratio: the largest centred crop of that ratio, as one undo step → {changed}. Needs an active photo and at least one other target",
                 has_other_selected,
                 |s, p| {
                     const C: &str = "crop.sameAspect";
@@ -1215,7 +1215,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "Set Process Version",
                 [],
                 None,
-                "{version: number, ids?} — puts the target photos (`ids`, else the selection) on rendering process `version` (1..=latest; unknown versions are refused), as one undo step. Their look can change; the sliders keep their values (docs/process-versions.md) → {changed, process}",
+                "{version: number, ids?}: puts the target photos (`ids`, else the selection) on rendering process `version` (1..=latest; unknown versions are refused), as one undo step. Their look can change; the sliders keep their values (docs/process-versions.md) → {changed, process}",
                 has_selection,
                 |s, p| {
                     const C: &str = "develop.setProcess";
