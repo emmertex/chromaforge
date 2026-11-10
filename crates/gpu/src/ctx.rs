@@ -1265,7 +1265,8 @@ mod tests {
     /// renderer; any other uncaptured error still stops it, and on a device of the renderer's own every one does.
     #[test]
     fn only_the_window_surface_failing_leaves_the_renderer_on_the_gpu() {
-        let surface = "Validation Error\n\nCaused by:\n  In Surface::configure\n    Failed to wait for GPU to come idle before reconfiguring the Surface";
+        let surface =
+            "Validation Error\n\nCaused by:\n  In Surface::configure\n    Failed to wait for GPU to come idle before reconfiguring the Surface";
         assert!(!super::stops_renderer(true, surface));
         assert!(super::stops_renderer(false, surface));
         assert!(super::stops_renderer(true, "Validation Error\n  In Queue::submit\n    Buffer is destroyed"));
