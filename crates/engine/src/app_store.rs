@@ -77,6 +77,8 @@ pub struct Habits {
     /// Options of the last Photo Merge, per command.
     pub last_merge: BTreeMap<String, Value>,
     pub print_templates: Vec<crate::print::template::PrintTemplate>,
+    /// The Print Template Browser's folders (empty ones included).
+    pub print_template_folders: Vec<String>,
     pub metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
     pub filter_presets: Vec<crate::cmd::filters::FilterPreset>,
     pub curve_presets: Vec<crate::cmd::curves::CurvePreset>,
@@ -718,6 +720,11 @@ impl Habits {
     fn merge_named_presets(&mut self, other: Habits) -> usize {
         let mut n = merge_named(&mut self.export_presets, other.export_presets);
         n += merge_named(&mut self.print_templates, other.print_templates);
+        // folders of the other store come along (a template of theirs may sit in one)
+        for f in other.print_template_folders {
+            let _ = crate::template_folders::create_folder(&mut self.print_template_folders, &f);
+        }
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         n += merge_named(&mut self.metadata_presets, other.metadata_presets);
         n += merge_named(&mut self.filter_presets, other.filter_presets);
         n += merge_named(&mut self.curve_presets, other.curve_presets);
@@ -1021,6 +1028,7 @@ impl Session {
             last_export: self.last_export.clone(),
             last_merge: self.last_merge.clone(),
             print_templates: self.print_templates.clone(),
+            print_template_folders: self.print_template_folders.clone(),
             metadata_presets: self.metadata_presets.clone(),
             filter_presets: self.filter_presets.clone(),
             curve_presets: self.curve_presets.clone(),
@@ -1044,6 +1052,8 @@ impl Session {
         self.last_export = h.last_export;
         self.last_merge = h.last_merge;
         self.print_templates = h.print_templates;
+        self.print_template_folders = h.print_template_folders;
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         self.metadata_presets = h.metadata_presets;
         self.filter_presets = h.filter_presets;
         self.curve_presets = h.curve_presets;
@@ -1064,8 +1074,12 @@ impl Session {
         crate::cmd::lut_profiles::register_all(self, dir.as_deref());
         self.mask_effects = c.mask_effects;
         self.mask_tool_effects = c.mask_tool_effects;
-        let (auto_folder, auto_copy, auto_album, auto_paused) =
-            (self.import_defaults.auto_folder.take(), self.import_defaults.auto_copy, self.import_defaults.auto_album.take(), self.import_defaults.auto_paused);
+        let (auto_folder, auto_copy, auto_album, auto_paused) = (
+            self.import_defaults.auto_folder.take(),
+            self.import_defaults.auto_copy,
+            self.import_defaults.auto_album.take(),
+            self.import_defaults.auto_paused,
+        );
         self.import_defaults = ImportDefaults { auto_folder, auto_copy, auto_album, auto_paused, ..c.import };
         let mut list = crate::presets::builtin();
         for p in &mut list {

@@ -45,7 +45,18 @@ impl MenuNode {
 
 /// User-defined names in parameterized menus are data, not message keys.
 pub fn display_item_label<'a>(id: &str, params: &Value, label: &'a str) -> &'a str {
-    if matches!(id, "metadata.applyPreset" | "album.addPhotos" | "label.applySet" | "catalog.openRecent" | "plugins.runItem")
+    if matches!(
+        id,
+        "metadata.applyPreset"
+            | "album.addPhotos"
+            | "label.applySet"
+            | "catalog.openRecent"
+            | "plugins.runItem"
+            | "filter.applyPreset"
+            | "keyword.toggleFromSet"
+            | "keyword.useSet"
+            | "map.style"
+    ) || (id == "map.filter" && params.get("filter").and_then(Value::as_str).is_some_and(|f| f.starts_with("location:")))
         || (id == "app.export" && params.get("preset").is_some())
         || (id == "app.openLibrary" && params.get("path").is_some())
         || (id == "app.recentLibraries" && params.get("remove").is_some())
@@ -341,7 +352,7 @@ pub(crate) fn in_normal_album(app: &LccApp) -> bool {
     }
 }
 
-fn item(id: &str, params: Value, label: impl Into<String>, shortcut: Option<&str>, enabled: bool, checked: Option<bool>) -> MenuNode {
+pub(crate) fn item(id: &str, params: Value, label: impl Into<String>, shortcut: Option<&str>, enabled: bool, checked: Option<bool>) -> MenuNode {
     MenuNode::Item { id: id.into(), params, label: label.into(), shortcut: shortcut.map(str::to_string), enabled, checked }
 }
 
@@ -381,6 +392,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.colorReadoutHsl" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Hsl),
         "view.colorReadoutLab" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Lab),
         "view.softProof" => Some(u.soft_proof),
+        "remove.useGenerative" => Some(crate::panels::genfill::generative_on(app)),
         "view.maskOverlay" => Some(u.mask_overlay),
         "view.maskOverlayAll" => Some(u.mask_overlay_all),
         "view.maskPins" => Some(u.mask_pins),
@@ -413,7 +425,14 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.keywords" => panel(RightPanel::Keywords),
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
+        "map.showInfo" => Some(app.map.prefs.show_info),
+        "map.showKey" => Some(app.map.prefs.show_key),
+        "book.headerBar" => Some(u.book.header_bar),
+        "book.infoOverlay" => Some(u.book.info_overlay),
+        "printui.infoOverlay" => Some(app.print.info_overlay),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
+        "library.lockFilters" => Some(app.session.lock_filters),
+        "library.rememberFilters" => Some(app.session.remember_filters),
         _ => None,
     }
 }
@@ -441,6 +460,10 @@ fn live_label(app: &LccApp, id: &str, label: &str) -> String {
 
 /// The parameterized submenus.
 pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
+    // the state-driven choice submenus (`menu_choices`)
+    if let Some(v) = crate::menu_choices::expanded(app, name) {
+        return Some(v);
+    }
     let active = app.session.active().and_then(|id| app.session.catalog.photo(id).cloned());
     let has = active.is_some();
     Some(match name {
@@ -804,18 +827,34 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Color Label Set" => {
             let sets = lcc_engine::cmd::manage::label_sets_json(&app.session);
             let current = sets["current"].as_str().map(str::to_string);
-            let mut v: Vec<MenuNode> = sets["sets"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|set| {
+            let mut v = crate::menu_choices::choices(
+                "label.applySet",
+                sets["sets"].as_array().into_iter().flatten().map(|set| {
                     let name = set["name"].as_str().unwrap_or_default();
-                    item("label.applySet", json!({"name": name}), name, None, true, Some(current.as_deref() == Some(name)))
-                })
-                .collect();
+                    crate::menu_choices::Choice::new(name, json!({"name": name}), current.as_deref() == Some(name))
+                }),
+            );
             v.push(MenuNode::Separator);
             v.push(item("dialog.labelNames", Value::Null, "Edit…", None, true, None));
             v
+        }
+        // Classic's Settings ▸ Process Version: every process this build renders, the active photo's checked
+        "Process Version" => {
+            let current = active.as_ref().map(|p| p.develop.process);
+            lcc_develop::Process::ALL
+                .iter()
+                .map(|p| {
+                    let v = p.version();
+                    item(
+                        "develop.setProcess",
+                        json!({"version": v.0}),
+                        crate::i18n::tr_format!("Version: {}", v.0),
+                        None,
+                        has,
+                        Some(current == Some(v)),
+                    )
+                })
+                .collect()
         }
         "Select by" => {
             let mut v: Vec<MenuNode> = [("pick", "Picks"), ("reject", "Rejects"), ("none", "Unflagged")]
