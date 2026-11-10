@@ -1774,6 +1774,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -2571,6 +2573,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,
