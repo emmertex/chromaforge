@@ -178,3 +178,23 @@ fn a_full_disk_mid_write_leaves_the_old_profile_intact() {
     assert!(!file.with_extension("dcp.tmp").exists(), "no half-written file is left behind");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A real SpyderCHECKR 24 shot on a Panasonic DMC-G7, read straight from its RW2: the chart is found as a
+/// SpyderCHECKR and a profile is fitted. The photo is the user's, so it is not in the repository: set
+/// `<PREFIX>_TEST_SPYDER_RW2` to the file (any RW2 of a SpyderCHECKR 24 lit by daylight).
+#[test]
+fn a_spydercheckr_rw2_is_found_and_profiled() {
+    let Some(path) = lcc_brand::env_os("TEST_SPYDER_RW2").filter(|p| !p.is_empty()).map(PathBuf::from) else {
+        lcc_testkit::skip!(Corpus, "set <PREFIX>_TEST_SPYDER_RW2 to an RW2 of a SpyderCHECKR 24");
+        return;
+    };
+    let prep = cp::prepare_path(&path.to_string_lossy()).unwrap();
+    let located = prep.located.expect("the chart is found by its colours");
+    assert_eq!(located.chart.key, "spyder24");
+    let req = cp::Request { illuminant: "D55".into(), ..Default::default() };
+    let out = cp::build((&prep, &req), None, &Default::default()).unwrap();
+    let built = &out.calibrations[0].built;
+    // Measured on the user's DMC-G7 frame: matrix 5.2, with the table 2.7 (the light on that card is uneven).
+    assert!(built.matrix_mean_delta_e < 6.0, "{}", built.matrix_mean_delta_e);
+    assert!(built.mean_delta_e < 3.5, "{}", built.mean_delta_e);
+}
