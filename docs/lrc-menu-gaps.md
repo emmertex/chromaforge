@@ -94,12 +94,6 @@ Generated from the menu tables; don't edit by hand.
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
 
-## Develop module ▸ Tools
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
-
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
@@ -130,7 +124,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-| Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
 ## Map module ▸ View
 
