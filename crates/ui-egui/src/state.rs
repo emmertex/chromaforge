@@ -2107,6 +2107,14 @@ pub enum Dialog {
         groups: Vec<String>,
         controls: Vec<String>,
     },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
+    },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
     UpdatePreset {

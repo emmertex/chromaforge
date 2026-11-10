@@ -116,8 +116,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
 | Proof | Soft-proof the photo (View ▸ Soft Proofing exists). | S | wire-up | `soon.proof` |
-| Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
-| Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
 | Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
 | Crop to Same Aspect Ratio (Shift+A) | Apply the active photo's crop ratio to the selection. | S | feature | `soon.cropSameAspect` |
 
