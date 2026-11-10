@@ -364,6 +364,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         // Every language's command is checked when it is the active one.
         _ if crate::menus::language_from_command(id).is_some() => Some(crate::menus::language_from_command(id) == Some(u.language)),
         "develop.autoSync" => Some(app.session.auto_sync),
+        "webui.guides" => Some(u.web.show_guides),
         "view.photoCounts" => Some(u.show_counts),
         "view.cellCompact" => Some(u.lib.cell_style == crate::libtools::CellStyle::Compact),
         "view.cellExpanded" => Some(u.lib.cell_style == crate::libtools::CellStyle::Expanded),
@@ -382,6 +383,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         crate::face_menu::DRAW_REGIONS => Some(u.draw_faces),
         "view.hdrPreview" => Some(u.hdr_preview),
         "view.focusPoint" => Some(u.settings.focus_point),
+        "metadata.targetOnly" => Some(u.settings.metadata_target_only),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
         "view.shotInfo" => Some(u.shot_info),

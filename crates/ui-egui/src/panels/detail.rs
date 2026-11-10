@@ -3160,7 +3160,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" | "hslPick" => {
+        "wbPicker" | "fringe" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3225,6 +3225,23 @@ fn general_interaction(
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
             app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "fringe" {
+        // the Fringe Color Selector: a click points Defringe at the colour under it; a spot with no
+        // colour says so and the selector stays armed
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            match app.run("develop.fringePick", json!({"x": n.x, "y": n.y})) {
+                Ok(r) if r["applied"] == false => {
+                    let message = r["message"].as_str().unwrap_or("This spot can't be read").to_string();
+                    app.toast(ui.ctx(), crate::i18n::tr(&message));
+                }
+                _ => app.ui.tool.clear(),
+            }
         }
         return;
     }

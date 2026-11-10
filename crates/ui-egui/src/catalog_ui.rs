@@ -63,6 +63,11 @@ pub enum CatalogDialog {
         ids: Vec<u64>,
         affected: usize,
     },
+    /// Refine Photos asks first: how many photos of the view it unflags and rejects.
+    Refine {
+        picks: usize,
+        unflagged: usize,
+    },
 }
 
 /// Library UI state on [`LccApp`].
@@ -264,8 +269,22 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "photo.readMetadataFromFile" | "photo.saveMetadataToFile" if !p.get("confirmed").and_then(Value::as_bool).unwrap_or(false) => {
             return xmp_conflict(app, id, p);
         }
+        "library.refine" if !p.get("confirmed").and_then(Value::as_bool).unwrap_or(false) => return refine_question(app),
         _ => return None,
     })
+}
+
+/// Refine Photos changes many flags at once: say how many first (nothing to change: no question).
+fn refine_question(app: &mut LccApp) -> Option<Result<Value, String>> {
+    let ids = app.session.visible_cloned();
+    let flag_of = |id: &lcc_catalog::PhotoId| app.session.catalog.photo(*id).map(|p| p.flag);
+    let picks = ids.iter().filter(|id| flag_of(id) == Some(lcc_catalog::Flag::Pick)).count();
+    let unflagged = ids.iter().filter(|id| flag_of(id) == Some(lcc_catalog::Flag::None)).count();
+    if picks + unflagged == 0 {
+        return None;
+    }
+    app.catalog_ui.dialog = Some(CatalogDialog::Refine { picks, unflagged });
+    Some(Ok(json!({"confirm": "dialog", "picks": picks, "unflagged": unflagged})))
 }
 
 /// Read / Save Metadata: ask first when it would overwrite newer changes on the other side
@@ -360,6 +379,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         CatalogDialog::ImportCatalog { .. } => "Import from Another Catalog",
         CatalogDialog::XmpConflict { command, .. } if command == "photo.readMetadataFromFile" => "Read Metadata from File",
         CatalogDialog::XmpConflict { .. } => "Save Metadata to File",
+        CatalogDialog::Refine { .. } => "Refine Photos",
     };
     let mut close = false;
     let mut action: Option<(String, Value)> = None;
@@ -431,6 +451,14 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                                 action = Some(("catalog.import".into(), json!({"path": path, "rule": rule})));
                             }
                         }
+                    }
+                }
+                CatalogDialog::Refine { picks, unflagged } => {
+                    ui.label(crate::i18n::tr("Refine Photos unflags the picked photos in view and rejects the unflagged ones. Rejected photos stay as they are."));
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("Picks to unflag: {n}", n = picks)).strong());
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("Unflagged photos to reject: {n}", n = unflagged)).strong());
+                    if buttons(ui, "Refine", "button:refineConfirm", &mut close) {
+                        action = Some(("library.refine".into(), json!({"confirmed": true})));
                     }
                 }
                 CatalogDialog::XmpConflict { command, ids, affected } => {
