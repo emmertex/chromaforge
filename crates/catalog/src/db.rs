@@ -200,6 +200,102 @@ fn open_database(path: &Path, create: bool) -> Result<Database> {
     if create { b.create(path) } else { b.open(path) }.map_err(dberr)
 }
 
+/// The largest store [`CatalogDb::load`] reads into memory first; a larger one is read from the
+/// file page by page, as before.
+const MEMORY_LOAD_MAX: u64 = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 256 << 20 };
+
+/// The store file's bytes in memory, as redb's storage for one load.
+///
+/// redb reads a file one page (4 KiB) at a time, in key order, which is anywhere in the file: on a
+/// network share or a hard disk each of those reads is a round trip or a seek, and a library of
+/// 300,000 photos took minutes to load (issue #979). The file read front to back in large pieces
+/// takes seconds there. Whatever redb writes while it has the copy open (it marks a store as open)
+/// stays in the copy and is dropped with it: the file is not touched.
+#[derive(Default)]
+pub(crate) struct MemFile(RwLock<Vec<u8>>);
+
+impl std::fmt::Debug for MemFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemFile").field("len", &self.bytes().len()).finish()
+    }
+}
+
+impl MemFile {
+    /// Read the file at `path` whole. An error when it is larger than `max` bytes, can't be read
+    /// or doesn't fit in memory (the caller then reads it from the file).
+    pub(crate) fn read(path: &Path, max: u64) -> std::io::Result<MemFile> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let len = file.metadata()?.len();
+        let too_big = || std::io::Error::other(format!("{len} bytes: more than is read into memory"));
+        if len > max {
+            return Err(too_big());
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        buf.try_reserve_exact(usize::try_from(len).map_err(|_| too_big())?).map_err(std::io::Error::other)?;
+        // in pieces of 8 MiB, and never past `max` should the file grow meanwhile
+        loop {
+            let left = max.saturating_sub(buf.len() as u64);
+            if left == 0 || (&mut file).take(left.min(8 << 20)).read_to_end(&mut buf)? == 0 {
+                break;
+            }
+        }
+        Ok(MemFile(RwLock::new(buf)))
+    }
+
+    fn bytes(&self) -> std::sync::RwLockReadGuard<'_, Vec<u8>> {
+        self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn bytes_mut(&self) -> std::sync::RwLockWriteGuard<'_, Vec<u8>> {
+        self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `offset..offset + len` as a range of a buffer of `total` bytes, if it lies inside it.
+    fn range(offset: u64, len: usize, total: usize) -> Option<std::ops::Range<usize>> {
+        let start = usize::try_from(offset).ok()?;
+        let end = start.checked_add(len)?;
+        (end <= total).then_some(start..end)
+    }
+}
+
+impl redb::StorageBackend for MemFile {
+    fn len(&self) -> std::io::Result<u64> {
+        Ok(self.bytes().len() as u64)
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        let bytes = self.bytes();
+        let from = Self::range(offset, out.len(), bytes.len()).and_then(|r| bytes.get(r));
+        let from = from.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read past the end of the store"))?;
+        out.copy_from_slice(from);
+        Ok(())
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        let len = usize::try_from(len).ok().filter(|l| *l as u64 <= MEMORY_LOAD_MAX.saturating_mul(2));
+        let len = len.ok_or_else(|| std::io::Error::other("the store's copy in memory can't grow that far"))?;
+        let mut bytes = self.bytes_mut();
+        let more = len.saturating_sub(bytes.len());
+        bytes.try_reserve(more).map_err(std::io::Error::other)?;
+        bytes.resize(len, 0);
+        Ok(())
+    }
+
+    fn sync_data(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        let mut bytes = self.bytes_mut();
+        let total = bytes.len();
+        let to = Self::range(offset, data.len(), total).and_then(|r| bytes.get_mut(r));
+        let to = to.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "write past the end of the store"))?;
+        to.copy_from_slice(data);
+        Ok(())
+    }
+}
+
 impl CatalogDb {
     /// Create a new, empty store at `path` (replacing nothing: fails if it exists).
     pub fn create(path: &Path) -> Result<CatalogDb> {
@@ -237,6 +333,29 @@ impl CatalogDb {
     /// The file, opened for one operation.
     fn handle(&self) -> Result<Database> {
         open_database(&self.path, false)
+    }
+
+    /// The file's contents, read in one pass and opened from memory, for a load ([`MemFile`]).
+    /// `None` when that can't be done (too large, no memory, unreadable): the load then reads
+    /// the file itself, which reports what is wrong with it.
+    fn memory_handle(&self) -> Option<Database> {
+        let t = web_time::Instant::now();
+        let opened = MemFile::read(&self.path, MEMORY_LOAD_MAX).map_err(dberr).and_then(|mem| {
+            let bytes = mem.bytes().len();
+            let mut b = Database::builder();
+            b.set_cache_size(64 << 20);
+            b.create_with_backend(mem).map(|db| (db, bytes)).map_err(dberr)
+        });
+        match opened {
+            Ok((db, bytes)) => {
+                log::info!("catalog: read {} ({bytes} bytes) in {:.0} ms", self.path.display(), t.elapsed().as_secs_f64() * 1e3);
+                Some(db)
+            }
+            Err(e) => {
+                log::info!("catalog: reading {} page by page ({e})", self.path.display());
+                None
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -307,7 +426,11 @@ impl CatalogDb {
     fn load_inner(&mut self) -> Result<(Catalog, u64, usize)> {
         let (seq, generation, version) = self.check_format()?;
         (self.generation, self.version) = (generation, version);
-        let db = self.handle()?;
+        // (the check above opened the file itself: a store that was not closed cleanly is repaired there)
+        let db = match self.memory_handle() {
+            Some(db) => db,
+            None => self.handle()?,
+        };
         let r = db.begin_read().map_err(dberr)?;
         let mut bad = 0usize;
         let mut cat = Catalog::new();

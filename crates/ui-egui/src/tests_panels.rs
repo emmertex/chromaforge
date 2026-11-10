@@ -3367,3 +3367,22 @@ fn remembering_folder_and_collection_conditions_across_sessions() {
     assert!(has(&h2, "source:libfolder:/pics/sub"), "remembered /pics was expanded");
     assert_eq!(h2.app.ui.tree_open.get(&format!("album:{europe2}")), Some(&false));
 }
+
+/// `ui.prompt` asks for one line of text and then runs the named command with it; bad calls
+/// are errors, not dialogs.
+#[test]
+fn ui_prompt_asks_for_a_name_then_runs_the_command_with_it() {
+    let mut h = folders_app(&["/pics/trip/a.jpg"]);
+    for bad in [json!({}), json!({"title": "T", "command": "preset.createGroup"}), json!({"title": "T", "command": "ui.prompt", "key": "name"})] {
+        assert!(h.app.run("ui.prompt", bad).is_err());
+        assert!(h.app.ui.dialog.is_none());
+    }
+    assert!(h.app.run("ui.prompt", json!({"title": "T", "command": "preset.createGroup", "key": "name", "params": 3})).is_err());
+    h.app.run("ui.prompt", json!({"title": "New Preset Folder", "hint": "Folder name", "command": "preset.createGroup", "key": "name"})).unwrap();
+    h.step();
+    let Some(crate::state::Dialog::TextPrompt { value, .. }) = &mut h.app.ui.dialog else { panic!("{:?}", h.app.ui.dialog) };
+    *value = "  Wedding ".into();
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(h.app.session.preset_folders.iter().any(|f| f == "Wedding"), "{:?}", h.app.session.preset_folders);
+}

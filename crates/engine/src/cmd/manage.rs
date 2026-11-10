@@ -219,7 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save File Naming Preset",
             [],
             None,
-            "{name, template} — adds or replaces a user naming preset (kept with the library); `{text:Label}` tags in it are asked each time it is used → presets",
+            "{name, template}: adds or replaces a user naming preset (kept with the library); `{text:Label}` tags in it are asked each time it is used → presets",
             always,
             |s, p| {
                 let c = "naming.savePreset";
@@ -245,7 +245,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(naming_presets_json(s))
             }
         ),
-        cmd!("naming.deletePreset", "Delete File Naming Preset", [], None, "{name} — user presets only → presets", always, |s, p| {
+        cmd!("naming.deletePreset", "Delete File Naming Preset", [], None, "{name}: user presets only → presets", always, |s, p| {
             let c = "naming.deletePreset";
             let name = str_param(p, "name").ok_or_else(|| bad(c, "missing `name`"))?;
             let before = s.naming_presets.len();
@@ -256,10 +256,10 @@ pub fn specs() -> Vec<CommandSpec> {
             s.save_prefs()?;
             Ok(naming_presets_json(s))
         }),
-        cmd!(query "photo.renameTokens", "Rename Template Tags", [], None, "{} → {tokens: [{tag, aliases, meaning, example}], dateDirectives: [{directive, meaning}], notes: [..], sample} — the file-name template tags shared by photo.rename, library.import (rename) and app.export (naming); examples are for a sample photo", always, |_, _| {
+        cmd!(query "photo.renameTokens", "Rename Template Tags", [], None, "{} → {tokens: [{tag, aliases, meaning, example}], dateDirectives: [{directive, meaning}], notes: [..], sample}: the file-name template tags shared by photo.rename, library.import (rename) and app.export (naming); examples are for a sample photo", always, |_, _| {
             Ok(crate::rename::token_help_json())
         }),
-        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
+        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?}: renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
             let (ids, template, start) = rename_args(s, p, "photo.renamePreview", false)?;
             Ok(serde_json::to_value(s.plan_rename(&ids, &template, start)).unwrap_or_default())
         }),
@@ -268,7 +268,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Photos",
             [],
             None,
-            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
+            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?}: renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
             has_selection,
             |s, p| {
                 let (ids, template, start) = rename_args(s, p, "photo.rename", true)?;
@@ -427,7 +427,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto-Tag Photos from Tracklog",
             [],
             None,
-            "{path?: GPX file | gpx?: GPX text, ids?, offset?: camera clock's UTC offset for photos whose capture time has no zone (`+02:00`, or hours; default UTC), maxGap?: seconds (600), replace?: bool (also photos that already have GPS), dryRun?: bool} → {tagged, interpolated, nearest, skipped: {noTime, outside, hasGps}, assumedUtc, points, start, end, photos: [{id, gps, match}]} — positions from the track log by capture time; one undo step",
+            "{path?: GPX file | gpx?: GPX text, ids?, offset?: camera clock's UTC offset for photos whose capture time has no zone (`+02:00`, or hours; default UTC), maxGap?: seconds (600), replace?: bool (also photos that already have GPS), dryRun?: bool} → {tagged, interpolated, nearest, skipped: {noTime, outside, hasGps}, assumedUtc, points, start, end, photos: [{id, gps, match}]}: positions from the track log by capture time; one undo step",
             has_selection,
             auto_tag_tracklog
         ),
@@ -442,7 +442,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Color Label Names",
             [],
             None,
-            "{names: {red?: name|null, yellow?, green?, blue?, purple?}} — null or empty restores the colour's name",
+            "{names: {red?: name|null, yellow?, green?, blue?, purple?}}: null or empty restores the colour's name",
             always,
             |s, p| {
                 let names = p.get("names").and_then(Value::as_object).ok_or_else(|| bad("label.setNames", "missing `names`"))?;
@@ -463,7 +463,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(query "label.sets", "Color Label Sets", [], None, "{} → {sets: [{name, names: [red, yellow, green, blue, purple], builtin}], current: name|null}", always, |s, _| Ok(label_sets_json(s))),
-        cmd!("label.applySet", "Apply Color Label Set", [], None, "{name} — use a set's label names (undoable)", always, |s, p| {
+        cmd!("label.applySet", "Apply Color Label Set", [], None, "{name}: use a set's label names (undoable)", always, |s, p| {
             let name = str_param(p, "name").ok_or_else(|| bad("label.applySet", "missing `name`"))?;
             let set = all_label_sets(s)
                 .into_iter()
@@ -481,7 +481,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Color Label Set",
             [],
             None,
-            "{name} — save the current label names as a set (replaces a user set of that name)",
+            "{name}: save the current label names as a set (replaces a user set of that name)",
             always,
             |s, p| {
                 let name =
@@ -498,7 +498,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"name": name}))
             }
         ),
-        cmd!("label.deleteSet", "Delete Color Label Set", [], None, "{name} — user sets only", always, |s, p| {
+        cmd!("label.deleteSet", "Delete Color Label Set", [], None, "{name}: user sets only", always, |s, p| {
             let name = str_param(p, "name").ok_or_else(|| bad("label.deleteSet", "missing `name`"))?;
             let before = s.label_sets.len();
             s.label_sets.retain(|x| !x.name.eq_ignore_ascii_case(name));
@@ -514,7 +514,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remember Dialog Choices",
             [],
             None,
-            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)} — keep a dialog's last choices across restarts and libraries; null forgets them",
+            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)}: keep a dialog's last choices across restarts and libraries; null forgets them",
             always,
             |s, p| {
                 let c = "dialog.remember";

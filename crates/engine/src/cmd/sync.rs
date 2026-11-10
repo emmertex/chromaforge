@@ -18,7 +18,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Scan Folder for Changes",
             [],
             None,
-            "{path, disk?: bool (a whole disk or share, or a folder holding disks)} — compare a folder of the library (and the folders inside it) with the disk; changes nothing → {path, new: [{path, name, format, …}] files the library doesn't have, duplicates: [{path, name, …, existing?: photoId}] (a list of candidates, no longer a count; library.importPreview's `duplicates` is still a count) files whose content a photo already has (the library's photo, or none for a copy of a file found earlier in the scan): imported only with importDuplicates, unreadable: [{path, error}], missing: [{id, path}] photos whose file is gone, moved: [{id, from, to}] photos whose file is elsewhere in the folder (same content), metadata: [{id, path}] photos whose XMP sidecar was saved after they came in or were last edited here and says something the library doesn't}",
+            "{path, disk?: bool (a whole disk or share, or a folder holding disks)}: compare a folder of the library (and the folders inside it) with the disk; changes nothing → {path, new: [{path, name, format, …}] files the library doesn't have, duplicates: [{path, name, …, existing?: photoId}] (a list of candidates, no longer a count; library.importPreview's `duplicates` is still a count) files whose content a photo already has (the library's photo, or none for a copy of a file found earlier in the scan): imported only with importDuplicates, unreadable: [{path, error}], missing: [{id, path}] photos whose file is gone, moved: [{id, from, to}] photos whose file is elsewhere in the folder (same content), metadata: [{id, path}] photos whose XMP sidecar was saved after they came in or were last edited here and says something the library doesn't}",
             always,
             |s, p| {
                 const C: &str = "folder.scanChanges";
@@ -34,7 +34,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Synchronize Folder",
             [],
             None,
-            "{path, disk?: bool, scanned?: bool, importNew?: true, importDuplicates?: bool (with importNew, the files whose content a photo already has come in too, as photos of their own; default: the library's setting, library.preferences import.importDuplicates, off), relinkMoved?: true, removeMissing?: false, readMetadata?: false} — bring a folder of the library up to date with the disk (see folder.scanChanges): import its new files in place, relink photos whose file was renamed or moved within it, move photos whose file is gone to Recently Deleted, read XMP sidecars saved by other apps (the sidecar wins); acts on the last folder.scanChanges of the folder while it is current (the folder's photos unchanged), else scans again — or, with `scanned: true`, refuses; one undo step, no file is touched → {imported, relinked, removed, read, failed: [[path, error]]}",
+            "{path, disk?: bool, scanned?: bool, importNew?: true, importDuplicates?: bool (with importNew, the files whose content a photo already has come in too, as photos of their own; default: the library's setting, library.preferences import.importDuplicates, off), relinkMoved?: true, removeMissing?: false, readMetadata?: false}: bring a folder of the library up to date with the disk (see folder.scanChanges): import its new files in place, relink photos whose file was renamed or moved within it, move photos whose file is gone to Recently Deleted, read XMP sidecars saved by other apps (the sidecar wins); acts on the last folder.scanChanges of the folder while it is current (the folder's photos unchanged), else scans again (or, with `scanned: true`, refuses); one undo step, no file is touched → {imported, relinked, removed, read, failed: [[path, error]]}",
             always,
             sync
         ),
@@ -52,7 +52,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Check Folders for New Photos",
             [],
             None,
-            "{} — list each of the library's folders once and scan again, as folder.scanChanges, only those whose listing (modification time or entries) changed since the last poll (the first poll only records the listings); new files are added (newFiles: add, imported in place) or counted for the folder's badge (ask; see folder.newFiles). Runs whether or not polling is on → {listed, offline, changed: [path], new: [{path, count}], imported, failed: [[path, error]]}",
+            "{}: list each of the library's folders once and scan again, as folder.scanChanges, only those whose listing (modification time or entries) changed since the last poll (the first poll only records the listings); new files are added (newFiles: add, imported in place) or counted for the folder's badge (ask; see folder.newFiles). Runs whether or not polling is on → {listed, offline, changed: [path], new: [{path, count}], imported, failed: [[path, error]]}",
             always,
             poll
         ),
@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Files in Folders",
             [],
             None,
-            "{} — the folders in which a poll found files the library doesn't have yet (newFiles: ask), until they are added (folder.synchronize) → {folders: [{path, count}], total}",
+            "{}: the folders in which a poll found files the library doesn't have yet (newFiles: ask), until they are added (folder.synchronize) → {folders: [{path, count}], total}",
             always,
             |s, _| {
                 let folders: Vec<Value> = s.folder_new.iter().map(|(p, n)| json!({"path": p, "count": n})).collect();
