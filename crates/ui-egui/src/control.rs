@@ -527,7 +527,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.dialog.cancel" => {
             app.ui.dialog = None;
             #[cfg(not(target_arch = "wasm32"))]
-            if matches!(app.catalog_ui.dialog, Some(crate::catalog_ui::CatalogDialog::XmpConflict { .. })) {
+            if matches!(
+                app.catalog_ui.dialog,
+                Some(crate::catalog_ui::CatalogDialog::XmpConflict { .. } | crate::catalog_ui::CatalogDialog::Refine { .. })
+            ) {
                 app.catalog_ui.dialog = None;
             }
             ok(Value::Null)
@@ -639,6 +642,7 @@ pub(crate) fn confirm_dialog(app: &mut LccApp) -> Result<Value, String> {
         #[cfg(not(target_arch = "wasm32"))]
         None => match app.catalog_ui.dialog.take() {
             Some(crate::catalog_ui::CatalogDialog::XmpConflict { command, ids, .. }) => app.run(&command, json!({"ids": ids, "confirmed": true})),
+            Some(crate::catalog_ui::CatalogDialog::Refine { .. }) => app.run("library.refine", json!({"confirmed": true})),
             other => {
                 app.catalog_ui.dialog = other;
                 Err("no dialog open".into())

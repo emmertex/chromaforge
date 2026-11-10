@@ -903,6 +903,15 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("webui.shareImmich", "Share Web Gallery via Immich", None, ""),
     ("webui.reload", "Reload Preview", None, "Web"),
     ("webui.previewInBrowser", "Preview in Browser…", None, "Web"),
+    ("webui.applyTemplate", "Apply Web Template", None, ""),
+    ("webui.saveTemplate", "Save Web Template", None, "Web"),
+    ("webui.deleteTemplate", "Delete Web Template", None, ""),
+    ("webui.createTemplateFolder", "New Web Template Folder", None, ""),
+    ("webui.renameTemplateFolder", "Rename Web Template Folder", None, ""),
+    ("webui.deleteTemplateFolder", "Delete Web Template Folder", None, ""),
+    ("webui.moveTemplate", "Move Web Template to Folder", None, ""),
+    ("webui.templates", "Web Templates", None, ""),
+    ("webui.guides", "Show Web Guides", None, "Web"),
     // the Book module (crate::book)
     ("book.new", "New Book", None, ""),
     ("book.get", "Book Document", None, ""),
@@ -931,6 +940,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.redo", "Redo Book Edit", None, ""),
     ("book.view", "Book View", None, ""),
     ("book.go", "Go to Book Page", None, ""),
+    ("book.headerBar", "Show Header Bar", None, ""),
+    ("book.infoOverlay", "Show Info Overlay", None, ""),
     ("book.select", "Select Book Cell", None, ""),
     ("book.export", "Export Book…", None, ""),
     ("book.exportStatus", "Book Export Status", None, ""),
@@ -979,6 +990,9 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         return r;
     }
     if let Some(r) = crate::web_module::run(app, id, p) {
+        return r;
+    }
+    if let Some(r) = crate::web_templates::run(app, id, p) {
         return r;
     }
     if id == crate::help_overlay::COMMAND {
