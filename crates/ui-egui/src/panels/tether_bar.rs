@@ -354,7 +354,7 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
                     crate::access::label(&r, "Session name");
                     register(ui.ctx(), "tetherSession", r.rect);
                     ui.end_row();
-                    ui.label(crate::i18n::tr("Copy into library"));
+                    ui.label(crate::i18n::tr("Copy into catalog"));
                     ui.checkbox(&mut form.copy, crate::i18n::tr("Copy shots into Originals/<session>"));
                     ui.end_row();
                     ui.label(crate::i18n::tr("File naming"));

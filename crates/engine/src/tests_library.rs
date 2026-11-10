@@ -158,7 +158,9 @@ fn thumbnails_come_from_the_disk_cache_after_restart() {
         assert_eq!(img.width.max(img.height), 256);
     }
     let info = s.execute("library.info", &json!({})).unwrap();
-    assert_eq!(info["cache"]["disk"]["hits"], 3, "{info}");
+    // (each thumbnail read from disk; the record of a photo's kept thumbnail is read too, so no exact count)
+    assert!(info["cache"]["disk"]["hits"].as_u64().is_some_and(|h| h >= 3), "every thumbnail read from disk: {info}");
+    assert_eq!(info["cache"]["disk"]["misses"], 0, "nothing looked for on disk was missing: {info}");
     // an edit is a new key: rendered (from the source), then cached
     s.execute("library.select", &json!({"ids": [ids[0].0]})).unwrap();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();

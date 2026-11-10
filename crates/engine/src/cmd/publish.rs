@@ -19,7 +19,7 @@ use crate::export::{ExportOptions, PreparedExport};
 use crate::{Result, Session};
 
 fn lib_dir(s: &Session, c: &str) -> Result<PathBuf> {
-    s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(c, "publish services need a library on disk"))
+    s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.clone()).ok_or_else(|| bad(c, "publish services need a catalog on disk"))
 }
 
 fn load(s: &Session, c: &str) -> Result<(PathBuf, PublishConfig)> {

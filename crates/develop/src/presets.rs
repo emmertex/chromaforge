@@ -251,7 +251,7 @@ const OPTICS_ITEMS: &[SettingItem] = &[
     item("optics.vignetting", "Manual Vignetting", &["optics.vignetting", "optics.vignetting_midpoint"]),
 ];
 const GEOMETRY_ITEMS: &[SettingItem] = &[
-    item("geometry.upright", "Upright", &["geometry.upright", "geometry.guides", "geometry.upright_transform"]),
+    item("geometry.upright", "Upright", &["geometry.upright", "geometry.guides", "geometry.upright_transform", "geometry.lrc_upright"]),
     item(
         "geometry.transform",
         "Transform Sliders",
@@ -1135,6 +1135,8 @@ mod tests {
     fn group_items_cover_every_key() {
         let mut s = DevelopSettings::default();
         s.hdr.enabled = true;
+        // only written when an XMP carried Lightroom's Upright matrix
+        s.geometry.lrc_upright = Some(lcc_geom::Homography::IDENTITY);
         let full = s.to_json();
         for g in SettingsGroup::ALL {
             if g.items().is_empty() {

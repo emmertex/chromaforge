@@ -58,7 +58,7 @@ const SECTIONS: &[Section] = &[
         label: "General",
         icon: Icon::Gear,
         tabs: &["general"],
-        words: "language library location open new startup culling auto advance confirm external editing photocraft editor",
+        words: "language catalog library location open new startup culling auto advance confirm external editing photocraft editor",
     },
     Section {
         key: "import",
@@ -558,7 +558,7 @@ pub(crate) fn reveal(h: &mut crate::headless::Headless, id: &str) {
             Some(w) => (rows.top() + 120.0 - w.center().y).clamp(-500.0, 500.0),
             None => -300.0,
         };
-        let r = h.request("ui.hoverWidget", serde_json::json!({"id": "settings:rows", "fx": 0.98, "fy": 0.5}), t);
+        let r = h.request("ui.hoverWidget", serde_json::json!({"id": "settings:rows", "fx": 0.9, "fy": 0.5}), t);
         assert_eq!(r["ok"], true, "{r}");
         let r = h.request("ui.scroll", serde_json::json!({"dy": dy}), t);
         assert_eq!(r["ok"], true, "{r}");

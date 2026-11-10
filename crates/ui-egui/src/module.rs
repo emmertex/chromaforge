@@ -487,8 +487,18 @@ const DEVELOP_RIGHT: &[PanelId] = &[PanelId::Edit, PanelId::Crop, PanelId::Remov
 /// Library: (`[` / `]` rate in the grids, see `shortcuts::grid_bracket_command`); `\` the filter bar (in a loupe
 /// it stays Show Original, see `shortcuts::handle`); Home / End the first and last photo. `=` / `-`
 /// (thumbnail size) are the grids' `view.thumbSizeUp` / `view.thumbSizeDown`, not module keys.
-pub const LIBRARY_KEYS: &[ModuleKey] =
-    &[("\\", "view.filterBar", "{}"), ("Home", "library.first", "{}"), ("End", "library.last", "{}"), crate::help_overlay::KEY];
+/// As in Lightroom Classic's Library: ⇧⌘U Auto White Balance, O the People view, ⌘← / ⌘→ the
+/// previous / next selected photo.
+pub const LIBRARY_KEYS: &[ModuleKey] = &[
+    ("\\", "view.filterBar", "{}"),
+    ("Home", "library.first", "{}"),
+    ("End", "library.last", "{}"),
+    ("Cmd+Shift+U", "develop.wb", r#"{"mode": "auto"}"#),
+    ("O", "view.people", "{}"),
+    ("Cmd+Left", "library.previous", "{}"),
+    ("Cmd+Right", "library.next", "{}"),
+    crate::help_overlay::KEY,
+];
 
 /// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⇧Q cycles the selected spot's mode
 /// (Remove → Heal → Clone), Home / End the first and last photo.
@@ -498,6 +508,13 @@ pub const DEVELOP_KEYS: &[ModuleKey] = &[
     ("Shift+Q", "spot.cycleMode", "{}"),
     ("Home", "library.first", "{}"),
     ("End", "library.last", "{}"),
+    // Lightroom Classic's Develop menu: ⌘N New Snapshot, ⇧⌘N New Preset, ⌘← / ⌘→ the previous /
+    // next photo; Tools ▸ Tool Overlay ▸ Always Show
+    ("Cmd+N", "version.create", "{}"),
+    ("Cmd+Shift+N", "dialog.createPreset", "{}"),
+    ("Cmd+Left", "library.previous", "{}"),
+    ("Cmd+Right", "library.next", "{}"),
+    ("Cmd+Shift+H", "view.toolOverlay", r#"{"mode": "always"}"#),
     crate::help_overlay::KEY,
 ];
 
@@ -730,7 +747,7 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
             if app.session.active().is_none() {
                 // Develop needs a photo: take the first one shown
                 let first = app.session.visible().first().copied();
-                let Some(first) = first else { return Err("Develop needs a photo: the library is empty".into()) };
+                let Some(first) = first else { return Err("Develop needs a photo: the catalog is empty".into()) };
                 app.run("library.select", json!({"ids": [first.0]}))?;
             }
             swap(app, to, true);
@@ -756,6 +773,18 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
             app.ui.tool.clear();
         }
         _ => {
+            // Export and Print act on the selection, but from Develop the photo to act on is the
+            // one open on screen: there the filmstrip selection can hold several photos (stepping
+            // through a selection keeps it), and exporting that stale selection instead of the
+            // photo being edited surprises. Lightroom exports the photo Develop shows, so the
+            // open photo becomes the selection; a selection made in another module is kept.
+            if matches!(to, ModuleId::Export | ModuleId::Print)
+                && app.ui.module == ModuleId::Develop
+                && let Some(active) = app.session.active()
+                && !(app.session.selection.ids.as_slice() == [active])
+            {
+                let _ = app.run("library.select", json!({ "ids": [active.0] }));
+            }
             swap(app, to, true);
             app.ui.placeholder_from = Some((app.ui.view, app.ui.right));
         }

@@ -195,9 +195,9 @@ both). Photos match by file path and virtual-copy name, so a photo whose origina
 
 ## In the app
 
-- **File ▸ Libraries** holds New Library…, Open Library…, the recent libraries, Export as Library…, Back Up
-  Library (`catalog.backup`; the browser version has its own Back Up Library… and Restore Library from Backup…
-  there instead), Test Library Integrity and Compact Library. The UI commands `catalog.new`, `catalog.open` and
+- **File ▸ Libraries** holds New Catalog…, Open Catalog…, the recent libraries, Export as Catalog…, Back Up
+  Library (`catalog.backup`; the browser version has its own Back Up Catalog… and Restore Catalog from Backup…
+  there instead), Test Catalog Integrity and Optimize Catalog. The UI commands `catalog.new`, `catalog.open` and
   `catalog.openRecent {path?}` (`crates/ui-egui/src/catalog_ui.rs`; the ids keep their older name) open libraries
   like `app.newLibrary` and `app.openLibrary`. Open validates the folder or entry point (`library::resolve`), so a
   folder that is no library is refused instead of becoming an empty one. Every way of opening a library puts it
@@ -217,19 +217,19 @@ both). Photos match by file path and virtual-copy name, so a photo whose origina
   library (name, location — default `~/Pictures/<library_default>` — and sample photos only if ticked; `catalog.new
   {parent, name, demo}`) or open one. Its "Check for updates when the app starts" box (unticked at first) travels with the
   action as `checkAtStartup: true` when ticked (`catalog.new`, `catalog.open`, `catalog.openRecent`), and turns the
-  start-up check on through `update.prefs` only once that action has opened a library; while Open Library…'s folder
+  start-up check on through `update.prefs` only once that action has opened a library; while Open Catalog…'s folder
   dialog is up the welcome dialog waits, and cancelling it returns there. Another app's library (e.g. the upstream app's, named by settings copied from a
   previous name) is never opened as this app's own: its format is refused as `Foreign`, never upgraded in place, and
   the dialog names it. The problem window words each failure by its cause (damaged only after a failed integrity
   check; in use, newer, another app's, missing, permission).
 - **Backup**: engine commands `catalog.backup {dir?}`, `catalog.checkIntegrity`, `catalog.optimize` and
   `catalog.backupIfDue`, which the desktop app runs on exit before the closing checkpoint.
-- **Library Settings…** (Edit menu, `dialog.catalogSettings` → `catalog.settings`): backup schedule, folder, integrity
+- **Catalog Settings…** (Edit menu, `dialog.catalogSettings` → `catalog.settings`): backup schedule, folder, integrity
   test, optimise after backup; standard preview size, 1:1 discard, previews at import. The preview settings live in
   `catalog-settings.json` (`previews`), no longer in the library's `prefs.json` (read from there once, moved on the next
   save). Browser and in-memory libraries keep them in `prefs.json`.
-- **File ▸ Libraries ▸ Export as Library…** (`catalog.export {parent, name, ids? | scope, originals, previews}`) and **File ▸
-  More Imports ▸ Import from Another Library…** (`catalog.import {path, rule, preview}`): the dialog shows the change preview and the rule for
+- **File ▸ Libraries ▸ Export as Catalog…** (`catalog.export {parent, name, ids? | scope, originals, previews}`) and **File ▸
+  More Imports ▸ Import from Another Catalog…** (`catalog.import {path, rule, preview}`): the dialog shows the change preview and the rule for
   changed photos; the import is one undo step.
 - **Metadata vs XMP**: every XMP write (Save Metadata to File, auto-write) and read (Read Metadata from File, import
   of a photo with a sidecar) records an `XmpStamp` (journaled, not an undo step). `photo.xmpStatus` reports in sync /

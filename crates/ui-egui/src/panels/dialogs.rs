@@ -299,8 +299,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
         Dialog::StopWaiting { .. } => "Stop Waiting",
-        Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Library",
-        Dialog::RemoveFolder { .. } => "Remove Folder from Library",
+        Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Catalog",
+        Dialog::RemoveFolder { .. } => "Remove Folder from Catalog",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
         // (nothing to download from in this build: the dialog explains the manual install)
         Dialog::ChartProfile { .. } => "Create Camera Profile from Color Chart",
@@ -563,15 +563,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     ui.label(summary.as_str());
                     ui.add_space(8.0);
                     if let Some(library) = library {
-                        ui.label(crate::i18n::tr("Destination library"));
+                        ui.label(crate::i18n::tr("Destination catalog"));
                         ui.add(egui::Label::new(library.as_str()).wrap().selectable(true));
                         ui.label(crate::i18n::tr(if *capture_one {
-                            "Capture One catalogs import into the open library; no separate catalog folder is created."
+                            "Capture One catalogs import into the open catalog; no new catalog folder is created."
                         } else {
-                            "Lightroom catalogs import into the open library; no separate catalog folder is created."
+                            "Lightroom catalogs import into the open catalog; no new catalog folder is created."
                         }));
                     } else {
-                        ui.label(crate::i18n::tr("These photos are only in memory. Open a library on disk and import the catalog again to save them."));
+                        ui.label(crate::i18n::tr("These photos are only in memory. Open a catalog on disk and import again to save them."));
                     }
                     for detail in details.iter() {
                         ui.add(egui::Label::new(detail).wrap().selectable(true));
@@ -773,7 +773,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for set in sets["sets"].as_array().into_iter().flatten() {
                             let name = set["name"].as_str().unwrap_or_default();
-                            if crate::widgets::text_button(ui, &format!("labelSet-{name}"), name, false).clicked() {
+                            let shown = crate::i18n::builtin_label(name, set["builtin"].as_bool() == Some(true));
+                            if crate::widgets::text_button(ui, &format!("labelSet-{name}"), shown, false).clicked() {
                                 *names = set["names"].as_array().into_iter().flatten().map(|n| n.as_str().unwrap_or_default().to_string()).collect();
                             }
                         }
@@ -783,7 +784,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         field(ui, &colour, |ui| {
                             let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                             ui.painter().circle_filled(r.center(), 6.0, crate::panels::grid::label_color(*l));
-                            let te = crate::widgets::named(ui.add(egui::TextEdit::singleline(&mut names[i]).hint_text(colour.as_str()).desired_width(f32::INFINITY)), crate::i18n::tr(&colour));
+                            let te = crate::widgets::named(ui.add(egui::TextEdit::singleline(&mut names[i]).hint_text(crate::i18n::tr(&colour)).desired_width(f32::INFINITY)), crate::i18n::tr(&colour));
                             crate::widgets::register(ui.ctx(), format!("field:labelName-{}", colour.to_lowercase()), te.rect);
                         });
                     }
@@ -863,7 +864,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     } else {
                         ui.label(
                             egui::RichText::new(crate::i18n::tr_format!(
-                                "Renames {n} face{} across the library. The files are not changed.",
+                                "Renames {n} face{} across the catalog. The files are not changed.",
                                 if plan.faces == 1 { "" } else { "s" },
                                 n = plan.faces
                             ))
@@ -1052,7 +1053,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         });
                         crate::widgets::register(ui.ctx(), "combo:timelapseSize", c.response.rect);
                     });
-                    choices(ui, "Frame", "timelapseFit", &[(false, "Fit (letterbox)"), (true, "Fill (crop)")], fill);
+                    choices(ui, "time-lapse|Frame", "timelapseFit", &[(false, "Fit (letterbox)"), (true, "Fill (crop)")], fill);
                     choices(ui, "Frame Rate", "timelapseFps", &[(24, "24"), (25, "25"), (30, "30"), (50, "50"), (60, "60")], fps);
                     field(ui, "Frames per Photo", |ui| { ui.add(egui::DragValue::new(hold).range(1..=lcc_engine::timelapse::MAX_HOLD)); });
                     field(ui, "Cross-Fade Frames", |ui| { ui.add(egui::DragValue::new(crossfade).range(0..=lcc_engine::timelapse::MAX_HOLD)); });
@@ -1217,9 +1218,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     let what = if *count == 1 { crate::i18n::tr("this photo").to_string() } else { crate::i18n::tr_format!("these {count} photos", count = count) };
                     if *disk_files > 0 && app.session.trash.is_some() {
                         ui.label(if *count == 1 {
-                            crate::i18n::tr("Delete this photo from disk, or only remove it from the library?").to_string()
+                            crate::i18n::tr("Delete this photo from disk, or only remove it from the catalog?").to_string()
                         } else {
-                            crate::i18n::tr_format!("Delete these {count} photos from disk, or only remove them from the library?", count = count)
+                            crate::i18n::tr_format!("Delete these {count} photos from disk, or only remove them from the catalog?", count = count)
                         });
                         let files = if *disk_files == 1 {
                             crate::i18n::tr("Delete from Disk moves 1 file to the system trash.").to_string()
@@ -1237,7 +1238,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Dialog::ConfirmPurge { count, .. } => {
                     let what = if *count == 1 { crate::i18n::tr("this photo").to_string() } else { crate::i18n::tr_format!("these {count} photos", count = count) };
-                    ui.label(crate::i18n::tr_format!("Remove {what} from the library for good?", what = what));
+                    ui.label(crate::i18n::tr_format!("Remove {what} from the catalog for good?", what = what));
                     crate::dialog_frame::note(ui,
                         egui::RichText::new(crate::i18n::tr("Their edits, keywords and collection memberships are removed; the files on disk are kept."))
                             .color(t.text_dim),
@@ -1254,15 +1255,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 d @ Dialog::SynchronizeFolder { .. } => crate::sync::body(app, ui, d),
                 Dialog::LightroomCatalog { folder, catalog } => {
-                    ui.label(crate::i18n::tr("This is a Lightroom catalog, not a {app} library. Import it into a {app} library instead?"));
+                    ui.label(crate::i18n::tr("This is a Lightroom catalog, not a {app} catalog. Import it into a {app} catalog instead?"));
                     crate::dialog_frame::note(ui, egui::RichText::new(catalog.as_deref().unwrap_or(folder.as_str())).color(t.text_dim));
                     // (the import then asks where the catalog goes, unless Settings says to merge, #2672)
                     let asks = app.ui.settings.lightroom_import == crate::state::LightroomImport::Ask
                         && app.session.library.as_ref().is_some_and(|l| l.on_disk);
                     let what = if asks {
-                        "The import reads the catalog without changing it. Next, choose whether its photos, edits, keywords and collections join the library open now or go into a new library."
+                        "The import reads the catalog without changing it. Next, choose whether its photos, edits, keywords and collections join the catalog open now or go into a new catalog."
                     } else {
-                        "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the library open now."
+                        "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the catalog open now."
                     };
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(what)).color(t.text_dim));
                 }
@@ -1274,14 +1275,14 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::DeleteRejected { count, recycle } => {
                     ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
                     ui.add_space(6.0);
-                    let keep = ui.radio_value(recycle, false, crate::i18n::tr("Remove from the library (to Recently Deleted; the files stay on disk)"));
+                    let keep = ui.radio_value(recycle, false, crate::i18n::tr("Remove from the catalog (to Recently Deleted; the files stay on disk)"));
                     crate::widgets::register(ui.ctx(), "radio:rejectsKeep", keep.rect);
                     if app.session.trash.is_some() {
                         let bin = ui.radio_value(recycle, true, crate::i18n::tr("Remove, and move the files to the system trash"));
                         crate::widgets::register(ui.ctx(), "radio:rejectsRecycle", bin.rect);
                     }
                     let note = if *recycle {
-                        "The files and their own XMP sidecars go to the system trash, where they can be put back; the photos leave the library."
+                        "The files and their own XMP sidecars go to the system trash, where they can be put back; the photos leave the catalog."
                     } else {
                         "Edit ▸ Undo brings them back; Recently Deleted keeps them until it is emptied."
                     };
@@ -1289,7 +1290,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 Dialog::RemoveFolder { name, count, path, disk } => {
                     ui.label(crate::i18n::tr_format!(
-                        "Remove “{name}” and its {count} photo{} from the library?",
+                        "Remove “{name}” and its {count} photo{} from the catalog?",
                         if *count == 1 { "" } else { "s" },
                         name = name,
                         count = count
@@ -1356,7 +1357,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     ui.add_space(6.0);
                     crate::dialog_frame::note(ui,
                         egui::RichText::new(crate::i18n::tr(
-                            "Saves the active photo's Optics settings as this preset; photos already in the library keep theirs.",
+                            "Saves the active photo's Optics settings as this preset; photos already in the catalog keep theirs.",
                         ))
                         .color(t.text_dim),
                     );
@@ -2305,7 +2306,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             // another library opened meanwhile (from the menu bar, an agent): these numbers are
             // other photos there
             if *library != app.session.library_generation() {
-                return Err(crate::i18n::tr("Another library was opened since the photos were dropped: nothing was moved").to_string());
+                return Err(crate::i18n::tr("Another catalog was opened since the photos were dropped: nothing was moved").to_string());
             }
             let moved = crate::panels::left::move_photos(app, Some(ids), folder)?;
             // only a move that began turns the question off: one refused, or that found the photos there already,

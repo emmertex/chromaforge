@@ -183,7 +183,7 @@ pub enum EngineError {
     /// The folder (or file) asked for is a Lightroom Classic catalog or part of one, not a
     /// library of the app (issue #891): nothing was created or opened. `catalog`: the `.lrcat`
     /// to import with `library.importLightroom`, when one was found.
-    #[error("{} is a Lightroom Classic catalog, not a library of the app; import it into a library with File ▸ Import Lightroom Catalog…{}", path.display(), catalog.as_ref().map_or(String::new(), |c| format!(" ({})", c.display())))]
+    #[error("{} is a Lightroom Classic catalog, not a catalog of the app; import it into one with File ▸ Import Lightroom Catalog…{}", path.display(), catalog.as_ref().map_or(String::new(), |c| format!(" ({})", c.display())))]
     LightroomCatalog { path: std::path::PathBuf, catalog: Option<std::path::PathBuf> },
     /// The work was cancelled (by the person, an agent or a newer request): not a failure.
     #[error("{0}")]
@@ -447,6 +447,9 @@ pub struct Session {
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
     /// from it and from the folders inside it.
     pub library_folder: Option<String>,
+    /// Whether the [`LibrarySource::LibraryFolder`] view also shows the photos of the folders
+    /// inside the chosen one (Show Photos in Subfolders, on by default).
+    pub folder_subfolders: bool,
     /// Copied metadata (`photo.copyMetadata`): photo.setMeta params.
     pub meta_clipboard: Option<Value>,
     /// The photo that was active before the current one (Paste Settings from Previous).
@@ -522,6 +525,15 @@ pub struct Session {
     /// The stable id of the open library as plug-ins' data is kept (`""`: none). The plug-in
     /// manager is process-wide; each call made for this session points it at this library first.
     pub(crate) plugin_library: String,
+    /// The UI is running a plug-in command the user started (`plugin.run`): what it needs that the
+    /// user was never asked about goes in `plugin_asks`, instead of an error that says to go to
+    /// the Plug-in Manager. Set by the UI only, around its own runs; never by a request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_ask_user: bool,
+    /// Permissions plug-in commands the user started need, for the UI to ask about (Allow runs the
+    /// command again).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_asks: Vec<cmd::plugins::PluginAsk>,
     /// XMP sidecar preferences (persisted with the library).
     pub xmp: sidecar::XmpPrefs,
     /// The library's shared-stem owners with the catalog revision they were built at
@@ -798,6 +810,7 @@ impl Session {
             meta_clipboard: None,
             browse: None,
             library_folder: None,
+            folder_subfolders: true,
             previous_active: None,
             dialogs: Default::default(),
             preset_undo: None,
@@ -829,6 +842,10 @@ impl Session {
             library: None,
             library_identity: Arc::new(()),
             plugin_library: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_ask_user: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_asks: Vec::new(),
             xmp: sidecar::XmpPrefs::default(),
             last_export: None,
             previous_export: Vec::new(),
@@ -2025,8 +2042,10 @@ impl Session {
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
         self.reconcile_view();
-        let mut key =
-            (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
+        let mut key = (
+            self.catalog.revision,
+            format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}", self.source, self.filter, self.sort, self.browse, self.library_folder, self.folder_subfolders),
+        );
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
         // changed ask something else). Not the checks of Missing Photos below: they fill the view in, they are
         // no other view.
@@ -2223,6 +2242,7 @@ impl Session {
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+            f.library_folder_only = !self.folder_subfolders;
         }
         if source == LibrarySource::PreviousExport {
             let exported = self.previous_export_filter();
@@ -2295,7 +2315,7 @@ impl Session {
                 return Some(ids.len());
             }
         }
-        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}", self.source, self.browse, self.library_folder));
+        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}|{}", self.source, self.browse, self.library_folder, self.folder_subfolders));
         let key_changed = self.total.as_ref().map(|total| &total.0) != Some(&key);
         let cached_minute = self.total.as_ref().and_then(|total| total.2.as_deref());
         let current_now = cached_minute.map(|_| (self.clock)());
@@ -2316,6 +2336,7 @@ impl Session {
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+                f.library_folder_only = !self.folder_subfolders;
             }
             if self.source == LibrarySource::PreviousExport {
                 f.only = self.previous_export_filter();
@@ -2656,6 +2677,8 @@ mod tests_persist;
 mod tests_plugin_develop;
 #[cfg(test)]
 mod tests_plugin_filters;
+#[cfg(test)]
+mod tests_plugin_installs;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;

@@ -345,8 +345,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // Android: the photos in DCIM/Camera, through the media store (Settings ▸ Folders)
     ("file.addCameraRoll", "Import Camera Roll…", None, ""),
     ("file.findMissing", "Find Missing Photos…", None, "Library"),
-    ("file.backupLibrary", "Back Up Library…", None, "File>Libraries"),
-    ("file.restoreLibrary", "Restore Library from Backup…", None, "File>Libraries"),
+    ("file.backupLibrary", "Back Up Catalog…", None, "File>Libraries"),
+    ("file.restoreLibrary", "Restore Catalog from Backup…", None, "File>Libraries"),
     ("photo.locate", "Locate Missing File…", None, ""),
     ("dialog.saveMetadataPreset", "Save Metadata Preset…", None, ""),
     // the keywords ⇧K adds or removes, typed with commas between them
@@ -371,21 +371,21 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.exportCurvePresets", "Export Point Curve Presets…", None, ""),
     ("dialog.watermark", "Edit Watermarks…", None, "Edit"),
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
-    ("app.newLibrary", "New Library…", None, "File>Libraries"),
-    ("app.openLibrary", "Open Library…", Some("Cmd+O"), "File>Libraries"),
+    ("app.newLibrary", "New Catalog…", None, "File>Libraries"),
+    ("app.openLibrary", "Open Catalog…", Some("Cmd+O"), "File>Libraries"),
     // libraries (crate::catalog_ui; the ids keep their older catalog name)
-    ("catalog.new", "New Library…", None, ""),
-    ("catalog.open", "Open Library…", None, ""),
-    ("catalog.openRecent", "Open Recent Library", None, ""),
-    ("catalog.chooser", "Choose Library…", None, ""),
+    ("catalog.new", "New Catalog…", None, ""),
+    ("catalog.open", "Open Catalog…", None, ""),
+    ("catalog.openRecent", "Open Recent Catalog", None, ""),
+    ("catalog.chooser", "Choose Catalog…", None, ""),
     ("catalog.welcome", "Welcome…", None, ""),
-    ("catalog.promptAtStartup", "Ask Which Library to Open at Launch", None, ""),
-    ("dialog.catalogSettings", "Library Settings…", None, "Edit"),
-    ("dialog.exportCatalog", "Export as Library…", None, "File>Libraries"),
-    ("dialog.importCatalog", "Import from Another Library…", None, "File>More Imports"),
+    ("catalog.promptAtStartup", "Ask Which Catalog to Open at Launch", None, ""),
+    ("dialog.catalogSettings", "Catalog Settings…", None, "Edit"),
+    ("dialog.exportCatalog", "Export as Catalog…", None, "File>Libraries"),
+    ("dialog.importCatalog", "Import from Another Catalog…", None, "File>More Imports"),
     crate::legacy::IMPORT_LIBRARY,
-    ("app.recentLibraries", "Recent Libraries", None, ""),
-    ("app.clearRecentLibraries", "Clear Recent Libraries", None, ""),
+    ("app.recentLibraries", "Recent Catalogs", None, ""),
+    ("app.clearRecentLibraries", "Clear Recent Catalogs", None, ""),
     // Settings ▸ Display
     ("app.displayProfile", "Display Profile", None, ""),
     ("app.lensDbFolder", "Choose Lens Database Folder…", None, ""),
@@ -1144,7 +1144,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             li.path = path;
             li.show = true;
             li.revision = li.revision.wrapping_add(1);
-            app.toast(&ctx, "Layout Image On");
+            app.toast(&ctx, crate::i18n::tr("Layout Image On"));
             Ok(json!({"layoutImage": app.ui.layout_image}))
         }
         "view.layoutImage" => {
@@ -1154,7 +1154,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 return run_ui_command(app, "view.chooseLayoutImage", &json!({}));
             }
             app.ui.layout_image.show = show;
-            app.toast(&ctx, if show { "Layout Image On" } else { "Layout Image Off" });
+            app.toast(&ctx, crate::i18n::tr(if show { "Layout Image On" } else { "Layout Image Off" }));
             Ok(json!({"layoutImage": app.ui.layout_image}))
         }
         "view.layoutImageOpacity" | "view.layoutImageMatte" => {
@@ -1219,7 +1219,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let action = if id == "file.backupLibrary" { app.services.backup_library.as_mut() } else { app.services.restore_library.as_mut() };
             match action {
                 Some(f) => f(&mut app.session),
-                None => Err("not available here: on the desktop the library is a folder; back it up with your other files".into()),
+                None => Err("not available here: on the desktop the catalog is a folder; back it up with your other files".into()),
             }
         }
         "view.filmstrip" => {
@@ -3461,7 +3461,7 @@ pub fn show_in_folders_enabled(app: &LccApp, id: Option<lcc_catalog::PhotoId>) -
 /// row in the sidebar's Folders section does, and bring the row into view: the sidebar, the
 /// section and the folders above it open, and it scrolls there (`reveal_folder`).
 fn show_in_folders(app: &mut LccApp, id: Option<lcc_catalog::PhotoId>) -> Result<Value, String> {
-    let dir = photo_folder(app, id).ok_or("this photo is not in a folder of the library")?;
+    let dir = photo_folder(app, id).ok_or("this photo is not in a folder of the catalog")?;
     let tree = app.caches.folder_tree(&app.session.catalog);
     // the row's own spelling (forward slashes): what its click hands `library.source`, and its id
     let path = crate::panels::left::folder_row_of(&tree, &dir).map(|n| n.path.clone()).ok_or("this photo's folder is not in Folders")?;

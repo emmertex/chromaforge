@@ -46,7 +46,7 @@ pub fn import_item(app: &mut LccApp, ui: &mut egui::Ui, parent: Option<u64>) {
             match app.run("album.importDefinition", json!({"path": path, "parent": parent})) {
                 Ok(r) => {
                     let (n, m) = (r["photos"].as_u64().unwrap_or(0), r["unmatched"].as_u64().unwrap_or(0));
-                    app.toast(ui.ctx(), crate::i18n::tr_format!("Collection imported: {n} photos found, {m} not in this library", n = n, m = m));
+                    app.toast(ui.ctx(), crate::i18n::tr_format!("Collection imported: {n} photos found, {m} not in this catalog", n = n, m = m));
                 }
                 Err(e) => app.toast(ui.ctx(), e),
             }

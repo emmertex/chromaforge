@@ -1,0 +1,28 @@
+---
+title: Web
+description: "The browser build: what runs, and its limits."
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The same interface compiled to WebAssembly. Photos stay on your machine; nothing is uploaded.
+
+## What works
+- **Persistent library** in the browser's storage for that site, with demo photos at first.
+- **Import** by file picker or dropping files onto the page: JPEG, PNG, TIFF, WebP, JXL and supported raws.
+- **Every Develop control** (sliders, curves, masking, crop) works as on the desktop. Rendering runs in background workers.
+- **Export** downloads the file (JPEG, PNG, TIFF, WebP).
+- **File ▸ Back Up Library…** downloads a zip; **Restore Library from Backup…** reads one into a new library. Experimental: the library lives only in this browser, so back up.
+- Use **one tab** at a time; a second tab says the app is already open.
+
+## Limits
+- No screen reader support, no update check, no map tiles or online place lookup.
+- No control channel or MCP (they need a local socket).
+- AVIF export is untested; JPEG XL export is unavailable (import works).
+- Preset file import/export is not wired to the browser yet.
+- Backups over 4 GB are not supported.
+- Chinese and Japanese text need the font files that release builds include.
+- A decoder crash can end the page; the stored library is kept and a reload recovers it.
+- Clearing the site's data deletes the library.

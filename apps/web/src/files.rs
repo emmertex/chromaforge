@@ -84,6 +84,12 @@ impl Files {
         self.lock().files.get(name).cloned()
     }
 
+    /// Is there a stored entry under `name/` (the mirror's way of holding a folder's files)?
+    pub fn has_folder(&self, name: &str) -> bool {
+        let prefix = format!("{name}/");
+        self.lock().files.keys().any(|k| k.starts_with(&prefix))
+    }
+
     /// Replace a file.
     pub fn write(&self, name: &str, data: &[u8]) {
         let mut m = self.lock();
@@ -193,6 +199,11 @@ impl Store for FilesStore {
     fn describe(&self) -> String {
         "browser storage".into()
     }
+    /// Without this the trait default (`false`) would let a library with a `segments` folder open
+    /// and be overwritten (upstream #3962).
+    fn has_folder(&mut self, name: &str) -> io::Result<bool> {
+        Ok(self.0.has_folder(name))
+    }
 }
 
 /// Names of the library files read at start-up.
@@ -216,7 +227,7 @@ pub fn preload_library(files: &Files, reads: Vec<(&str, Result<Option<Vec<u8>>, 
             Err(e) => failed.push(format!("{name}: {e}")),
         }
     }
-    if failed.is_empty() { Ok(()) } else { Err(format!("couldn't read the library from browser storage ({})", failed.join("; "))) }
+    if failed.is_empty() { Ok(()) } else { Err(format!("couldn't read the catalog from browser storage ({})", failed.join("; "))) }
 }
 
 #[cfg(test)]

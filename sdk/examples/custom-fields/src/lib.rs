@@ -15,7 +15,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.custom-fields",
   "name": "Job Fields (example)",
-  "version": "0.1.0",
   "description": "Client, job and usage fields for commissioned work",
   "author": "the app's authors",
   "commands": [
@@ -81,7 +80,7 @@ fn handle(req: &Request) -> Result<Value, String> {
     }
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {

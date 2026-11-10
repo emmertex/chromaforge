@@ -1,0 +1,24 @@
+---
+title: Slideshow export
+description: Export a slideshow as PDF, JPEG sequence or video.
+sidebar:
+  order: 12
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Buttons at the bottom of the module: **Export Video…**, **Export PDF…**, **Export JPEG…**; also **Window ▸ Slideshow ▸ Export Slideshow…**.
+- **PDF**: a page per slide with duration and fade transitions for a viewer's presentation mode.
+- **JPEG**: `name-001.jpg`, `-002.jpg`… into a folder.
+- **Video**: H.264 + AAC in MP4, or ProRes in MOV; includes fades, pan and zoom, overlays, titles and the mixed music.
+- Playback and export use the same renderer, so they match.
+- Runs in the background (activity stack); a cancelled export leaves no partial file; unreadable photos are skipped and named.
+- 🟡 Other codecs and saving a slideshow with an album are not built.
+
+<NeedsImage what="A slideshow video playing in an external player, with a fade between slides" />
+
+<Aside type="note" title="Modern layout">
+  **Window ▸ Slideshow ▸ Export Slideshow…**.
+</Aside>

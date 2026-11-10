@@ -110,3 +110,22 @@ fn browse_show_all_and_not_imported() {
     assert_eq!(s.visible_cloned().len(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Issue #881: browsing a folder whose photos are already in the library (Local ▸ folder) shows
+/// them, as Folders ▸ the same folder does.
+#[test]
+fn browsing_a_folder_already_in_the_library_shows_its_photos() {
+    let dir = temp_dir("in-library");
+    png(&dir.join("a.png"), 1);
+    png(&dir.join("b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [dir.to_string_lossy()]})).unwrap();
+    assert_eq!(s.catalog.photos().filter(|p| !p.local).count(), 2);
+    let r = s.execute("library.browse", &json!({"path": dir.to_string_lossy()})).unwrap();
+    assert_eq!(r["photos"], 2, "{r}");
+    assert_eq!(s.visible().len(), 2);
+    // with a trailing separator too
+    let r = s.execute("library.browse", &json!({"path": format!("{}/", dir.to_string_lossy())})).unwrap();
+    assert_eq!(r["photos"], 2, "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

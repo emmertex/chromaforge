@@ -20,12 +20,14 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod about;
 mod apply;
 pub mod manifest;
 mod registry;
 mod runtime;
 mod sniff;
 
+pub use about::About;
 pub use apply::{FrameInfo, MAX_MERGE, MAX_MERGE_BYTES};
 pub use manifest::{AnalyzeArea, Area, BaseTone, Header, Kind, Manifest, ParamSection, ParamSpec, Stage};
 pub use registry::{FolderReport, Registry};

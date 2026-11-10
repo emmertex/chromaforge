@@ -25,6 +25,11 @@ fn gpu() -> bool {
     // which card the comparisons ran on (`<PREFIX>_GPU_ADAPTER` picks one on a machine with two)
     static NAMED: std::sync::Once = std::sync::Once::new();
     NAMED.call_once(|| eprintln!("GPU equivalence tests on {}", lcc_gpu::adapter_name().unwrap_or_default()));
+    // Planned from the device, the joint colour NR's bands follow the renders in flight: with these
+    // tests rendering side by side, one render of a pair could run that step on the device and the
+    // other on the CPU (equal only to within an 8-bit level), and the cached / fitted comparisons
+    // here are exact. A pinned budget gives every render the same plan.
+    lcc_gpu::set_nr_band_budget(Some(512 << 20));
     ok
 }
 

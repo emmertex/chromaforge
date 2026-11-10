@@ -1,0 +1,308 @@
+[
+ {
+  "name": "lib-grid",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.photoGrid"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true,
+     "thumbSize": 150
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-loupe",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       2
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.detail"
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-compare",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1,
+       2
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.compare"
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-survey",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1,
+       2,
+       3,
+       4
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.survey"
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-keywords",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.photoGrid"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.keywords"
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "lib-info",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.photoGrid"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.info"
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "lib-map",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.map"
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-stack",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.photoGrid"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1,
+       2,
+       3
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "stack.group"
+    }
+   }
+  ]
+ },
+ {
+  "name": "lib-smart",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "dialog.smartAlbum"
+    }
+   }
+  ]
+ }
+]

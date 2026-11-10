@@ -12,8 +12,17 @@
 //! profile: key pages from `70`, dial pages and buttons from `71` (`72` adds nothing new).
 //! One change: the Dialpad's fourth button turns the dial pages (TactileBridge left that to Logi
 //! Options+); the action it had is on a key page too.
+//!
+//! The profiles that ship are the TactileBridge author's own working layouts
+//! (`data/default-profiles.json`, by RAD Films - Roman Alurkoff, MIT): the same six profiles,
+//! tuned through daily use on weddings, with a Loupedeck+ layout on every profile. Keys that applied the
+//! author's own presets were left out. [`tactilebridge_profiles`] builds the original layouts in
+//! code; it serves if the file can't be read.
 
 use serde_json::json;
+
+/// The shipped profiles (see the module docs).
+const DEFAULT_PROFILES: &str = include_str!("../data/default-profiles.json");
 
 use crate::binding::{Binding, Modifier};
 use crate::devices::PageGroup;
@@ -351,8 +360,22 @@ fn finish(mut p: Profile) -> Profile {
     p
 }
 
-/// The built-in profiles, in TactileBridge's order.
+/// The built-in profiles, in TactileBridge's order: the shipped layouts
+/// (`data/default-profiles.json`), or [`tactilebridge_profiles`] if that file can't be read.
 pub fn profiles() -> Vec<Profile> {
+    match serde_json::from_str::<Vec<Profile>>(DEFAULT_PROFILES) {
+        Ok(mut ps) if !ps.is_empty() => {
+            for p in &mut ps {
+                p.sanitize();
+            }
+            ps
+        }
+        _ => tactilebridge_profiles(),
+    }
+}
+
+/// TactileBridge's original layouts, built in code (see the module docs).
+pub fn tactilebridge_profiles() -> Vec<Profile> {
     let mut out = Vec::new();
 
     let mut d = Profile { name: "Default".into(), description: "Browse, rate and edit: TactileBridge's default layout".into(), ..Default::default() };
@@ -565,14 +588,22 @@ pub(crate) mod tests {
         assert_eq!(names, ["Default", "Wedding", "Portrait", "Fashion", "Landscape", "Real Estate"]);
         for p in &ps {
             for page in p.pages.iter().filter(|pg| pg.groups == [PageGroup::Keys] && !pg.auto) {
-                assert_eq!(page.bindings.len(), 9, "{} / {}: every TactileBridge key is mapped", p.name, page.name);
+                // Wedding's Edit page had a key for the author's own preset: left out
+                let want = if (p.name.as_str(), page.name.as_str()) == ("Wedding", "Edit") { 8 } else { 9 };
+                assert_eq!(page.bindings.len(), want, "{} / {}: every key is mapped", p.name, page.name);
             }
             for b in p.pages.iter().flat_map(|pg| pg.bindings.values()).chain(p.base.values()) {
                 if let Binding::Value { target } = b {
                     assert!(crate::targets::target_spec(target).is_some(), "{} → {target}", p.name);
                 }
+                if let Binding::Command { params, .. } = b {
+                    let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    assert!(!id.starts_with("user."), "{}: no key applies someone's own preset ({id})", p.name);
+                }
             }
-            assert_eq!(p.base.len(), 12, "{}: four Dialpad buttons, eight Actions Ring slots", p.name);
+            let slots = |prefix: &str| p.base.keys().filter(|k| k.starts_with(prefix)).count();
+            assert_eq!((slots("pad."), slots("ring.")), (4, 8), "{}: four Dialpad buttons, eight Actions Ring slots", p.name);
+            assert!(slots("ld.") > 100, "{}: a Loupedeck+ layout", p.name);
             assert!(p.contexts.contains_key("default") && p.contexts.contains_key("crop") && p.contexts.contains_key("masking.mask.brush"));
             let mut clone = p.clone();
             clone.sanitize();

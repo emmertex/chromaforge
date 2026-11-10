@@ -120,7 +120,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "folder.delete";
     let path = folder_param(p, c)?;
     if !photos_in(s, Path::new(&path)).is_empty() {
-        return Err(bad(c, "the folder holds library photos: remove them from the library first"));
+        return Err(bad(c, "the folder holds catalog photos: remove them from the catalog first"));
     }
     remove_empty(&path).map_err(|e| bad(c, e))?;
     let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();

@@ -1452,6 +1452,10 @@ const FIXED_BAND_BUDGET: usize = 2048 << 20;
 /// plans its noise reduction bands, each of the others may still allocate the buffers of its other stages.
 static RENDERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// The bytes the joint colour noise reduction's bands may take when pinned with
+/// [`crate::set_nr_band_budget`] (0: not pinned, planned from the device by [`band_budget_from`]).
+pub(crate) static NR_BAND_BUDGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Held while a noise reduction plans its bands and runs them: two plans made at once from the same
 /// memory would together ask for more than there is.
 static BANDS: Bands = Bands::new();
@@ -1608,8 +1612,14 @@ fn color_nr_joint(
     // 12 values per pixel (guide 3, two chroma buffers 2 + 2, paths 2, weights 2; up to 12 while the
     // speck brake and the guide run). The budget for both together is `band_budget_from` the device's
     // memory where its backend reports it (`lcc_gpumem`, `Gpu::vram`), else a fixed 2 GB;
-    // `<PREFIX>_NR_GPU_BAND_MB` overrides it.
-    let fixed = budget.or_else(|| lcc_brand::env("NR_GPU_BAND_MB").and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb.saturating_mul(1 << 20)));
+    // a budget pinned with `set_nr_band_budget`, else `<PREFIX>_NR_GPU_BAND_MB`, overrides it.
+    let pinned = match NR_BAND_BUDGET.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        bytes => Some(bytes),
+    };
+    let from_env = || lcc_brand::env("NR_GPU_BAND_MB").and_then(|v| v.trim().parse::<usize>().ok()).map(|mb| mb.saturating_mul(1 << 20));
+    let pinned_used = budget.is_none() && pinned.is_some();
+    let fixed = budget.or(pinned).or_else(from_env);
     let renders = RENDERS.load(std::sync::atomic::Ordering::Relaxed);
     let memory = crate::ctx::memory();
     let measured = cx.gpu.vram.map(|vram| band_budget_from(vram, memory.allocated, memory.pooled, renders));
@@ -1618,7 +1628,9 @@ fn color_nr_joint(
         eprintln!(
             "  gpu joint budget: {} MB ({}, {renders} render(s) on the device)",
             budget >> 20,
-            if fixed.is_some() {
+            if pinned_used {
+                "pinned"
+            } else if fixed.is_some() {
                 "NR_GPU_BAND_MB"
             } else if measured.is_some() {
                 "device memory"
@@ -2369,6 +2381,77 @@ fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: 
 mod tests {
     use super::*;
     use lcc_develop::DevelopSettings;
+
+    /// The colour NR of processes V1–V7 (`local::colour_nr`) on the device matches the CPU: the 3 × 3
+    /// chromaticity median exactly (it is a selection), the whole step to float rounding. The median's
+    /// insertion sort over a private array came out wrong on Vulkan, where Windows' compute moved with
+    /// issue #934 (up to 81 8-bit levels in the equivalence tests); DX12 had hidden it.
+    #[test]
+    fn colour_nr_before_v8_matches_the_cpu() {
+        let Some(gpu) = crate::device() else {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        };
+        let _scope = crate::ctx::RenderScope::new(&gpu);
+        // odd sizes (a last workgroup part full), hashed colour noise with some negative values
+        let (w, h) = (97usize, 61usize);
+        let hash = |x: usize, y: usize, c: usize| {
+            let mut v = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ (c as u32 + 1).wrapping_mul(0xc2b2_ae35) | 1;
+            v ^= v << 13;
+            v ^= v >> 17;
+            v ^= v << 5;
+            v as f32 / u32::MAX as f32
+        };
+        let img = Rgb32f::from_fn(w, h, |x, y| [0, 1, 2].map(|c| hash(x, y, c) * 0.4 - 0.02));
+        let n = w * h;
+        let mut cx = Cx::new(&gpu);
+        let src = gpu.upload(rgb_words(&img));
+        let med = cx.gpu.buffer(n * 3);
+        map(&mut cx, "chroma_med", n, &[w as u32], [Some(&src), None, None], &med);
+        let gpu_med = cx.read_rgb(&med, w, h);
+        let chroma = Rgb32f::from_fn(w, h, |x, y| {
+            let c = img.get(x, y).map(|v| v.max(0.0));
+            let yl = lcc_color::luminance_2020(c).max(1e-6);
+            c.map(|v| v / yl)
+        });
+        for y in 0..h {
+            for x in 0..w {
+                let mut v = [[0.0f32; 9]; 3];
+                for (k, (dx, dy)) in (-1..=1isize).flat_map(|dy| (-1..=1isize).map(move |dx| (dx, dy))).enumerate() {
+                    let c = chroma.get_clamped(x as isize + dx, y as isize + dy);
+                    for ch in 0..3 {
+                        v[ch][k] = c[ch];
+                    }
+                }
+                for ch in 0..3 {
+                    v[ch].sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let (want, got) = (v[ch][4], gpu_med.get(x, y)[ch]);
+                    assert!((want - got).abs() <= 1e-6 * want.abs().max(1.0), "median at ({x}, {y}) channel {ch}: GPU {got}, CPU {want}");
+                }
+            }
+        }
+        // the whole step, as `denoise` runs it
+        let mut s = DevelopSettings { process: lcc_develop::Process::V7.version(), ..Default::default() };
+        s.detail.nr_color = 25.0;
+        let Some(nr) = local::nr_params(&s, 1.0).1 else { panic!("Color 25 has parameters") };
+        let clamped = cx.gpu.buffer(n * 3);
+        map(&mut cx, "clamp0_k", n, &[], [Some(&src), None, None], &clamped);
+        let blurred = gaussian(&mut cx, &clamped, w, h, 3, nr.sigma);
+        let out = cx.gpu.buffer(n * 3);
+        map(
+            &mut cx,
+            "nr_col",
+            n,
+            &[nr.t.to_bits(), local::SPECKLE_LO.to_bits(), local::SPECKLE_HI.to_bits()],
+            [Some(&src), Some(&med), Some(&blurred)],
+            &out,
+        );
+        let gpu_out = cx.read_rgb(&out, w, h);
+        let mut cpu = img.clone();
+        local::denoise_with(&mut cpu, &s, 1.0, false, None);
+        let worst = gpu_out.data.iter().zip(&cpu.data).flat_map(|(p, q)| (0..3).map(move |c| (p[c] - q[c]).abs())).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "colour NR V7, GPU vs CPU: {worst}");
+    }
 
     /// Runs `upload_with` on a thread whose upload takes 800 ms, and returns how long `read` took
     /// on this thread while that upload ran.

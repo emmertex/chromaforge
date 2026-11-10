@@ -12,6 +12,7 @@
 //! Sources: own design, after the CLIP paper (Radford et al., "Learning Transferable Visual Models From Natural
 //! Language Supervision", 2021) and the faces accelerator's device handling (`faces.rs`).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -20,6 +21,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 pub use crate::ai::Card;
+use crate::cards::AdapterKey;
 
 /// Longest wait for one batch before the device is given up on.
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -38,9 +40,12 @@ struct Dev {
     layernorm: wgpu::ComputePipeline,
     attention: wgpu::ComputePipeline,
     card: Card,
+    broken: Arc<AtomicBool>,
+    broken_why: Arc<Mutex<Option<String>>>,
 }
 
-static DEVS: [OnceLock<Result<Dev, String>>; 2] = [const { OnceLock::new() }, const { OnceLock::new() }];
+static DEVS: [OnceLock<Result<Arc<Dev>, String>>; 2] = [const { OnceLock::new() }, const { OnceLock::new() }];
+static NAMED_DEVS: OnceLock<Mutex<HashMap<AdapterKey, Result<Arc<Dev>, String>>>> = OnceLock::new();
 static BROKEN: [AtomicBool; 2] = [const { AtomicBool::new(false) }, const { AtomicBool::new(false) }];
 static BROKEN_WHY: [Mutex<Option<String>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
 
@@ -57,6 +62,24 @@ fn mark_broken(card: Card, why: &str) {
     }
 }
 
+fn mark_dev_broken(dev: &Dev, why: &str) {
+    {
+        let mut w = dev.broken_why.lock().unwrap_or_else(PoisonError::into_inner);
+        if w.is_none() {
+            *w = Some(why.to_string());
+        }
+    }
+    dev.broken.store(true, Ordering::Relaxed);
+    mark_broken(dev.card, why);
+}
+
+fn dev_broken_reason(dev: &Dev) -> Option<String> {
+    if dev.broken.load(Ordering::Relaxed) {
+        return Some(dev.broken_why.lock().unwrap_or_else(PoisonError::into_inner).clone().unwrap_or_else(|| "device error".into()));
+    }
+    broken_reason_on(dev.card)
+}
+
 /// Why the GPU stopped being used for CLIP on `card` (a device error), if it did.
 pub fn broken_reason_on(card: Card) -> Option<String> {
     let i = card.index();
@@ -66,11 +89,22 @@ pub fn broken_reason_on(card: Card) -> Option<String> {
         .then(|| BROKEN_WHY.get(i).and_then(|w| w.lock().unwrap_or_else(PoisonError::into_inner).clone()).unwrap_or_else(|| "device error".into()))
 }
 
-fn dev() -> Result<&'static Dev, String> {
+fn dev() -> Result<Arc<Dev>, String> {
     dev_on(Card::Second).or_else(|_| dev_on(Card::Editing))
 }
 
-fn dev_on(card: Card) -> Result<&'static Dev, String> {
+fn dev_for(card_key: Option<&str>) -> Result<Arc<Dev>, String> {
+    let Some(key_str) = card_key.map(str::trim).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto")) else {
+        return dev();
+    };
+    if key_str.eq_ignore_ascii_case("cpu") {
+        return Err("the AI device preference is the CPU".into());
+    }
+    let parsed = AdapterKey::parse(key_str).ok_or_else(|| format!("unknown graphics card `{key_str}`"))?;
+    dev_named(parsed)
+}
+
+fn dev_on(card: Card) -> Result<Arc<Dev>, String> {
     if let Some(why) = broken_reason_on(card) {
         return Err(format!("stopped after a GPU failure: {why}"));
     }
@@ -82,12 +116,40 @@ fn dev_on(card: Card) -> Result<&'static Dev, String> {
         Some(_) => None,
         None => Some(crate::exit::enter().ok_or("the app is closing")?),
     };
-    slot.get_or_init(|| create_device(card)).as_ref().map_err(|e| e.clone())
+    slot.get_or_init(|| create_device(card).map(Arc::new)).as_ref().map(Arc::clone).map_err(|e| e.clone())
+}
+
+fn dev_named(key: AdapterKey) -> Result<Arc<Dev>, String> {
+    if let Some(why) = crate::switched_off() {
+        return Err(why);
+    }
+    let map = NAMED_DEVS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(existing) = map.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned() {
+        let d = existing?;
+        if let Some(why) = dev_broken_reason(&d) {
+            return Err(format!("stopped after a GPU failure: {why}"));
+        }
+        return Ok(d);
+    }
+    let _work = crate::exit::enter().ok_or("the app is closing")?;
+    let created = create_named_device(key.clone()).map(Arc::new);
+    let mut guard = map.lock().unwrap_or_else(PoisonError::into_inner);
+    let res = guard.entry(key).or_insert(created).clone();
+    let d = res?;
+    if let Some(why) = dev_broken_reason(&d) {
+        return Err(format!("stopped after a GPU failure: {why}"));
+    }
+    Ok(d)
 }
 
 fn create_device(card: Card) -> Result<Dev, String> {
     let Some(backends) = crate::backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
     crate::init::create(backends, move || make_device(backends, card))
+}
+
+fn create_named_device(key: AdapterKey) -> Result<Dev, String> {
+    let Some(backends) = crate::backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
+    crate::init::create(backends, move || make_named_device(backends, &key))
 }
 
 fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
@@ -104,8 +166,29 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     desc.backends = backends;
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = crate::new_instance(desc);
     let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
+    build_dev_from_adapter(adapter, card, None)
+}
+
+fn make_named_device(backends: wgpu::Backends, key: &AdapterKey) -> Result<Dev, String> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    desc.backend_options = crate::backend::backend_options();
+    desc.flags = crate::backend::instance_flags_from_env(desc.flags);
+    let instance = crate::new_instance(desc);
+    let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+    let entries = crate::remember_adapters(&adapters);
+    let idx = entries
+        .iter()
+        .position(|e| e.usable && e.key == *key)
+        .or_else(|| entries.iter().position(|e| e.usable && e.key.same_model(key)))
+        .ok_or_else(|| format!("selected graphics card ({}) is not available or not usable", key.name))?;
+    let adapter = adapters.into_iter().nth(idx).ok_or_else(|| format!("selected graphics card ({}) is not available", key.name))?;
+    build_dev_from_adapter(adapter, Card::Editing, Some(key))
+}
+
+fn build_dev_from_adapter(adapter: wgpu::Adapter, card: Card, named: Option<&AdapterKey>) -> Result<Dev, String> {
     let info = adapter.get_info();
     if info.device_type == wgpu::DeviceType::Cpu {
         return Err(format!("software adapter ({}) skipped: the CPU is faster", info.name));
@@ -128,13 +211,40 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     }))
     .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
     let which = card.id();
+    let is_named = named.is_some();
+    let broken = Arc::new(AtomicBool::new(false));
+    let broken_why = Arc::new(Mutex::new(None));
+    let broken_err = Arc::clone(&broken);
+    let broken_why_err = Arc::clone(&broken_why);
     device.on_uncaptured_error(Arc::new(move |e| {
         log::error!("gpu (clip, {which} card): {e}");
-        mark_broken(card, &format!("device error: {e}"));
+        let msg = format!("device error: {e}");
+        {
+            let mut w = broken_why_err.lock().unwrap_or_else(PoisonError::into_inner);
+            if w.is_none() {
+                *w = Some(msg.clone());
+            }
+        }
+        broken_err.store(true, Ordering::Relaxed);
+        if !is_named {
+            mark_broken(card, &msg);
+        }
     }));
+    let broken_lost = Arc::clone(&broken);
+    let broken_why_lost = Arc::clone(&broken_why);
     device.set_device_lost_callback(move |reason, msg| {
         log::error!("gpu (clip, {which} card): device lost ({reason:?}): {msg}");
-        mark_broken(card, &format!("device lost ({reason:?}): {msg}"));
+        let why = format!("device lost ({reason:?}): {msg}");
+        {
+            let mut w = broken_why_lost.lock().unwrap_or_else(PoisonError::into_inner);
+            if w.is_none() {
+                *w = Some(why.clone());
+            }
+        }
+        broken_lost.store(true, Ordering::Relaxed);
+        if !is_named {
+            mark_broken(card, &why);
+        }
     });
     use wgpu::BufferBindingType::{Storage, Uniform};
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -165,13 +275,18 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     };
     let (linear, layernorm, attention) = (pipe("linear"), pipe("layernorm"), pipe("attention"));
     log::info!("gpu (clip, {which} card): {} ({:?})", info.name, info.backend);
-    Ok(Dev { device, queue, info, limits, layout, linear, layernorm, attention, card })
+    Ok(Dev { device, queue, info, limits, layout, linear, layernorm, attention, card, broken, broken_why })
 }
 
 /// The adapter AI search would use ("AMD Radeon RX 7900 XTX (Vulkan)"), or why it cannot use one. Creates the device on
 /// first use.
 pub fn adapter() -> Result<String, String> {
-    dev().map(|d| format!("{} ({:?})", d.info.name, d.info.backend))
+    adapter_for(None)
+}
+
+/// [`adapter`] for a chosen graphics card key (`None` or `"auto"`: automatic selection).
+pub fn adapter_for(card_key: Option<&str>) -> Result<String, String> {
+    dev_for(card_key).map(|d| format!("{} ({:?})", d.info.name, d.info.backend))
 }
 
 /// The shape of one tower's blocks.
@@ -219,7 +334,7 @@ struct Block {
 
 /// One CLIP tower's transformer blocks on the GPU.
 pub struct ClipTower {
-    dev: &'static Dev,
+    dev: Arc<Dev>,
     spec: TowerSpec,
     blocks: Vec<Block>,
 }
@@ -250,6 +365,11 @@ fn u32_of(v: usize) -> Result<u32, String> {
 
 /// Upload a tower's blocks to the GPU, or say why it can't run there.
 pub fn tower(spec: TowerSpec, blocks: &[BlockRef<'_>]) -> Result<ClipTower, String> {
+    tower_for(None, spec, blocks)
+}
+
+/// [`tower`] on a chosen graphics card (`None` or `"auto"`: automatic selection).
+pub fn tower_for(card_key: Option<&str>, spec: TowerSpec, blocks: &[BlockRef<'_>]) -> Result<ClipTower, String> {
     let (h, i) = (spec.hidden, spec.intermediate);
     if h == 0 || i == 0 || spec.heads == 0 || !h.is_multiple_of(spec.heads) || blocks.is_empty() || !spec.eps.is_finite() {
         return Err("invalid CLIP tower shape".into());
@@ -270,7 +390,7 @@ pub fn tower(spec: TowerSpec, blocks: &[BlockRef<'_>]) -> Result<ClipTower, Stri
     if total > MAX_RESIDENT {
         return Err("the CLIP tower is too large for the GPU budget".into());
     }
-    let dev = dev()?;
+    let dev = dev_for(card_key)?;
     if (hi as u64) * 4 > dev.limits.max_storage_buffer_binding_size.min(dev.limits.max_buffer_size) {
         return Err(format!("{}: a CLIP weight is larger than a storage buffer may be", dev.info.name));
     }
@@ -322,15 +442,14 @@ impl ClipTower {
 
     /// Run `x` (`[batch, seq, hidden]`, row-major) through every block; returns the result in the same shape.
     pub fn run(&self, x: &[f32], batch: usize, seq: usize) -> Result<Vec<f32>, String> {
-        if let Some(why) = broken_reason_on(self.dev.card) {
+        if let Some(why) = dev_broken_reason(&self.dev) {
             return Err(format!("the GPU is not used any more: {why}"));
         }
         if let Some(why) = crate::switched_off() {
             return Err(why);
         }
-        let card = self.dev.card;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run_inner(x, batch, seq))).unwrap_or_else(|_| {
-            mark_broken(card, "CLIP on the GPU panicked");
+            mark_dev_broken(&self.dev, "CLIP on the GPU panicked");
             Err("the GPU runner gave up".into())
         })
     }
@@ -341,7 +460,7 @@ impl ClipTower {
         if rows == 0 || seq > MAX_SEQ || x.len() != rows.checked_mul(s.hidden).ok_or("a batch too large")? {
             return Err("invalid CLIP batch shape".into());
         }
-        let d = self.dev;
+        let d = &self.dev;
         let max_groups = d.limits.max_compute_workgroups_per_dimension as usize;
         let bh = batch.checked_mul(s.heads).ok_or("a batch too large")?;
         if rows > max_groups || bh > max_groups || rows.div_ceil(16) > max_groups {
@@ -471,11 +590,11 @@ impl ClipTower {
             return Err(format!("the GPU ran out of memory: {e}"));
         }
         if let Some(e) = validation {
-            mark_broken(d.card, &format!("device error: {e}"));
+            mark_dev_broken(d, &format!("device error: {e}"));
             return Err(format!("the GPU reported an error: {e}"));
         }
         if let Err(e) = waited {
-            mark_broken(d.card, &format!("the GPU did not finish a CLIP batch: {e}"));
+            mark_dev_broken(d, &format!("the GPU did not finish a CLIP batch: {e}"));
             return Err(format!("the GPU did not finish: {e}"));
         }
         match rx.recv_timeout(Duration::from_secs(10)) {

@@ -1,0 +1,4 @@
+# Install scripts: esbuild fetches its binary; sharp ships prebuilt binaries and needs none.
+allowBuilds:
+  esbuild: true
+  sharp: false

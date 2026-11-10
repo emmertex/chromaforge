@@ -467,7 +467,7 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
 /// The Metadata columns' height (points), under the filter bar's rows: a column's field, its search box and its values.
 pub const COLUMNS_HEIGHT: f32 = 198.0;
 /// The fields a Metadata column can list (`library.facetPick`'s fields), with their headers.
-pub const COLUMN_FIELDS: [(&str, &str); 23] = [
+pub const COLUMN_FIELDS: [(&str, &str); 25] = [
     ("year", "Date"),
     ("camera", "Camera"),
     ("lens", "Lens"),
@@ -480,6 +480,8 @@ pub const COLUMN_FIELDS: [(&str, &str); 23] = [
     ("format", "File Format"),
     ("iso", "ISO"),
     ("focal", "Focal Length"),
+    ("aperture", "Aperture"),
+    ("shutter", "Shutter Speed"),
     ("aspect", "Aspect Ratio"),
     ("title", "Title"),
     ("headline", "Headline"),

@@ -1036,7 +1036,7 @@ fn local_rows(app: &mut LccApp, ui: &mut egui::Ui, now: &LocalNow) {
     {
         let picked = app.services.pick_folder.as_mut().and_then(|f| f());
         if let Some(path) = picked {
-            match app.run("library.browse", json!({"path": path})) {
+            match app.run("library.browse", json!({"path": path, "show": "all"})) {
                 // the picked folder stays in Local (and comes back if it was hidden)
                 Ok(r) => {
                     let dir = r["path"].as_str().unwrap_or(&path).to_string();
@@ -1307,7 +1307,9 @@ pub(crate) fn folder_tree(
     let tr = tree_toggle(app, ui, &resp, indent, &key, open_id, &mut open, format!("folderToggle:{path}"));
     if !tr.clicked()
         && resp.clicked()
-        && let Err(e) = app.run("library.browse", json!({"path": path}))
+        // every photo of the folder, library ones too: the Import tab's Show Not Imported is
+        // that tab's alone, and kept it would hide a library folder's photos here (#881)
+        && let Err(e) = app.run("library.browse", json!({"path": path, "show": "all"}))
     {
         app.toast(ui.ctx(), e);
     }
@@ -1731,7 +1733,7 @@ fn drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, a: &A
                 if skipped > 0 {
                     msg.push_str(" · ");
                     msg.push_str(&crate::i18n::tr_format!(
-                        "{n} Local photo{} skipped: collections hold library photos (Add to My Photos first)",
+                        "{n} Local photo{} skipped: collections hold catalog photos (Add to My Photos first)",
                         if skipped == 1 { "" } else { "s" },
                         n = skipped
                     ));
@@ -2136,7 +2138,7 @@ fn folder_drop_target(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response
     let refused = if !n.selectable {
         Some(crate::i18n::tr("This row covers more than one disk: drop on a folder inside it"))
     } else if photos.iter().any(|p| p.local) {
-        Some(crate::i18n::tr("Local photos aren't in the library yet: Add to My Photos first, then move them"))
+        Some(crate::i18n::tr("Local photos aren't in the catalog yet: Add to My Photos first, then move them"))
     } else {
         None
     };
@@ -2319,7 +2321,7 @@ fn synchronize_item(app: &mut LccApp, ui: &mut egui::Ui, target: Option<(&Folder
     let r = ui
         .add_enabled(target.is_some(), egui::Button::new(crate::i18n::tr("Synchronize Folder…")))
         .on_hover_text(crate::i18n::tr("Find photos added to or missing from this folder on disk, and XMP sidecars changed by other apps"))
-        .on_disabled_hover_text(crate::i18n::tr("No photo in this folder is in the library yet"));
+        .on_disabled_hover_text(crate::i18n::tr("No photo in this folder is in the catalog yet"));
     crate::widgets::register(ui.ctx(), "folderSynchronize", r.rect);
     if r.clicked()
         && let Some((n, name)) = target
@@ -2339,7 +2341,7 @@ pub(crate) fn folder_export_blocker(n: &FolderNode) -> Option<&'static str> {
     if !n.selectable {
         Some("This row covers more than one disk: export a folder inside it")
     } else if n.count == 0 {
-        Some("No photo in this folder is in the library yet")
+        Some("No photo in this folder is in the catalog yet")
     } else {
         None
     }
@@ -2495,6 +2497,12 @@ fn disk_folder_menu(app: &mut LccApp, resp: &egui::Response, row: FolderRow, pat
                 }
             }
         }
+        if row == FolderRow::Library {
+            if drawn {
+                ui.separator();
+            }
+            super::folders::subfolder_photos_item(app, ui);
+        }
     });
 }
 
@@ -2560,7 +2568,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
         FolderItem::AddToMyPhotos => {
             let r = ui
                 .add_enabled(crate::import::can_open(app), egui::Button::new(crate::i18n::tr("Add to My Photos…")))
-                .on_hover_text(crate::i18n::tr("Reviews the photos in this folder, then adds them to the library where they are; no file is touched"))
+                .on_hover_text(crate::i18n::tr("Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched"))
                 .on_disabled_hover_text(crate::i18n::tr("An import is running"));
             register(ui.ctx(), "folderAddToMyPhotos", r.rect);
             if r.clicked() {
@@ -2746,9 +2754,9 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             let Some(n) = node else { return };
             let disk = item == FolderItem::RemoveDisk;
             let (text, hint) = if disk {
-                ("Remove Disk from Library…", "Moves every photo imported from this disk to Recently Deleted; no file is touched")
+                ("Remove Disk from Catalog…", "Moves every photo imported from this disk to Recently Deleted; no file is touched")
             } else {
-                ("Remove from Library…", "Moves the photos imported from this folder to Recently Deleted; no file is touched")
+                ("Remove from Catalog…", "Moves the photos imported from this folder to Recently Deleted; no file is touched")
             };
             let r = ui.button(crate::i18n::tr(text)).on_hover_text(crate::i18n::tr(hint));
             register(ui.ctx(), "folderRemove", r.rect);

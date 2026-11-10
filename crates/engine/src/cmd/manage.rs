@@ -274,7 +274,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let (ids, template, start) = rename_args(s, p, "photo.rename", true)?;
                 // a browsed photo's file is only looked at until it is imported (LR-IMP-NODELETE)
                 if ids.iter().any(|id| s.catalog.photo(*id).is_some_and(|ph| ph.local)) {
-                    return Err(bad("photo.rename", "browsed photos are not in the library: import them before renaming their files"));
+                    return Err(bad("photo.rename", "browsed photos are not in the catalog: import them before renaming their files"));
                 }
                 let plans = s.plan_rename(&ids, &template, start);
                 let n = s.apply_rename(&plans)?;

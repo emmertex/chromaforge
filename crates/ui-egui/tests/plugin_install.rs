@@ -128,10 +128,27 @@ fn the_dialog_refuses_what_this_version_cant_run_and_confirms_downgrades() {
     h.step();
     click(&mut h, "pluginEntry:test.uifailed");
     click(&mut h, "button:pluginRemoveFailed:test.uifailed");
+    click(&mut h, "button:pluginRemoveConfirm:test.uifailed");
     assert!(row(&mut h).is_none(), "removed");
     assert!(
         h.request("engine.execute", json!({"command": "plugin.uninstall", "params": {"id": "test.uifailed"}}), T)["ok"] == false,
         "gone for good"
     );
+
+    // fields this version doesn't know are named, and it still installs
+    let odd = module_file(&dir, "odd", &json!({"id": "test.uiodd", "name": "Odd", "version": "1.0.0", "hooks": {"exprt": true}}));
+    open_dialog(&mut h, &odd);
+    let text = h.painted_text();
+    assert!(text.iter().any(|t| t.contains("fields this version doesn't know") && t.contains("hooks.exprt")), "{text:?}");
+    assert!(has_widget(&mut h, "button:pluginInstall"), "it still installs");
+    click(&mut h, "button:pluginInstallCancel");
+
+    // a value it can't use (a link that isn't https://) is named with why, and it still installs
+    let link = module_file(&dir, "link", &json!({"id": "test.uilink", "name": "Link", "version": "1.0.0", "homepage": "http://example.com"}));
+    open_dialog(&mut h, &link);
+    let text = h.painted_text();
+    assert!(text.iter().any(|t| t.contains("values this version can't use") && t.contains("homepage: not an https:// link")), "{text:?}");
+    assert!(has_widget(&mut h, "button:pluginInstall"), "it still installs");
+    click(&mut h, "button:pluginInstallCancel");
     let _ = std::fs::remove_dir_all(&dir);
 }

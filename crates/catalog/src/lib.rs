@@ -86,7 +86,7 @@ pub enum CatalogError {
     Io(String),
     /// The library was written by a newer version of the app (a newer catalog format, or a change this
     /// version doesn't know). Nothing was read into the session and nothing was modified.
-    #[error("this library was written by a newer version of the app ({0}); update the app to open it. The library was left unchanged.")]
+    #[error("this catalog was written by a newer version of the app ({0}); update the app to open it. The catalog was left unchanged.")]
     Newer(String),
     /// The folder holds a catalog of another app (e.g. the upstream app this one was forked from):
     /// a format this app doesn't read. Nothing was read and nothing was modified.

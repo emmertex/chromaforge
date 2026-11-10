@@ -14,6 +14,14 @@ use crate::state::{BeforeAfter, RightPanel, ToolOverlay, Zoom};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+/// Whether the preview or thumbnail may stand in for `slot` until its own render arrives. They show
+/// the photo's current settings, so for the Before view only while those are its before settings:
+/// an edited photo would otherwise flash its edits before the Before render replaces them
+/// (upstream #2248).
+pub(crate) fn stand_in_shows(app: &LccApp, id: PhotoId, slot: Slot) -> bool {
+    slot != Slot::Before || app.session.catalog.photo(id).is_some_and(|ph| *ph.develop == app.session.before_settings(ph))
+}
+
 /// A clip's whole decoded frame drawn into `r` through the loupe's [`Frame`]: the crop, its
 /// straighten angle and the flips pick the part of the texture that shows (the uncropped frame
 /// while the Crop tool is open).
@@ -181,6 +189,14 @@ impl CanvasMap {
             None => n,
         };
         Some(self.place(n))
+    }
+    /// Screen points per unit of the oriented photo's long edge: the unit of brush and spot sizes.
+    /// The render measures them on the uncropped photo (`Frame::px_per_long`), so a cursor sized from
+    /// the cropped frame on screen would draw smaller than the stroke it paints.
+    pub(crate) fn per_long(&self) -> f32 {
+        let o = self.place(Point::new(0.0, 0.0));
+        let (sx, sy) = (self.place(Point::new(1.0, 0.0)).distance(o), self.place(Point::new(0.0, 1.0)).distance(o));
+        sx.max(sy).max(1e-3)
     }
     /// A point on the displayed frame (normalized) on screen.
     fn place(&self, n: Point) -> Pos2 {
@@ -415,6 +431,10 @@ fn trackpad_scroll_delta(events: &[egui::Event]) -> egui::Vec2 {
 }
 
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
+/// Brush resize per wheel notch (or [`crate::theme::WHEEL_LINE_POINTS`] of trackpad scroll), as
+/// a log-scale step: about +25 % per notch.
+const BRUSH_PER_NOTCH: f32 = 0.22;
+
 pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
     // While the White Balance Selector is armed, a wheel notch steps its sample size instead of zooming
     // (OneSlips, test notes 2026-10-25 note 13); Ctrl/Cmd+wheel still zooms.
@@ -453,17 +473,21 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     // Ctrl/Cmd+wheel still zooms.
     if app.ui.settings.wheel_resizes_brush && is_brush && !cmd_or_ctrl && !space_held {
         if notches != 0.0 {
-            crate::menus::adjust_brush(app, 1.0 + (notches * 0.1).clamp(-0.5, 0.5), 0.0);
+            crate::menus::adjust_brush(app, (notches * BRUSH_PER_NOTCH).exp().clamp(0.25, 4.0), 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            // Not a view change: the frame still draws the tool overlay, so the brush ring stays
+            // shown instead of flickering to the pointer while it resizes (#867).
+            return false;
         }
         if trackpad_delta.y != 0.0 {
-            let k = (trackpad_delta.y * (0.1 / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.5, 2.0);
+            // Scales with the scroll distance, so a trackpad's many small deltas and a wheel's line
+            // add up to the same growth per distance scrolled (#867).
+            let k = (trackpad_delta.y * (BRUSH_PER_NOTCH / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.25, 4.0);
             crate::menus::adjust_brush(app, k, 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            return false;
         }
         if factor == 1.0 && delta != egui::Vec2::ZERO {
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
@@ -977,8 +1001,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let Some(photo) = app.session.catalog.photo(id).cloned() else { return };
     brief_info(app, ui.ctx(), id);
     let d = (*photo.develop).clone();
-    // the full-screen preview shows the photo only: no tool overlays
-    let right = if fullscreen { RightPanel::None } else { app.ui.right };
+    // the full-screen preview shows the photo only: no tool overlays; nor does the Import tab's loupe, which has no
+    // Develop panel (a tool left open there drew its overlays and notes over a browsed photo)
+    let browsing = crate::import_tab::showing(app);
+    let right = if fullscreen || browsing { RightPanel::None } else { app.ui.right };
     let crop_tool = right == RightPanel::Crop;
     let frame = Frame::with_lens(photo.width.max(1) as usize, photo.height.max(1) as usize, &d, !crop_tool, photo.embedded_lens.as_deref());
     let aspect = frame.aspect() as f32;
@@ -1351,7 +1377,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             && let Some(job) =
                 app.session.region_job(id, native[0], native[1], lcc_engine::pipeline::PixelWindow { x: 0, y: 0, w: 1, h: 1 }, !crop_tool)
         {
-            app.renderer.prefetch(Slot::Prefetch(2), job, PREFETCH_PRIORITY - 1);
+            app.renderer.prefetch(Slot::Prefetch(crate::render::FULL_SOURCE_PREFETCH), job, PREFETCH_PRIORITY - 1);
         } else if now - since < WARM_FULL_AFTER_S {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((WARM_FULL_AFTER_S - (now - since)).max(0.05)));
         }
@@ -1497,10 +1523,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             return "hdr";
         }
         let mine = |s: Slot| app.renderer.textures.get(&s).filter(|t| t.photo == id);
+        // (the Before view takes no stand-in that shows the edits: upstream #2248)
+        let stand_in = stand_in_shows(app, id, slot);
         let candidates = [
             mine(slot).map(|t| (t, "render")),
-            mine(Slot::Preview).filter(truthful).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
-            app.renderer.thumb(id).filter(truthful).map(|t| (t, "thumb")),
+            mine(Slot::Preview).filter(truthful).filter(|_| stand_in).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
+            app.renderer.thumb(id).filter(truthful).filter(|_| stand_in).map(|t| (t, "thumb")),
         ];
         // each picture's corners on the view, when it says where it lies (`Some(None)`: drawn as it
         // is; `None`: it can't be drawn for this view)
@@ -1810,7 +1838,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     (true, Some(before), Some(q)) if before.contains(q) => (CanvasMap::new(&frame, before_img), before_img, *before),
                     _ => (map, img_rect, main_area),
                 };
-                general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                if browsing {
+                    // no Develop picker works on a browsed photo: a click only zooms, as in Library
+                    click_zoom_and_pan(app, &resp, img, pane);
+                } else {
+                    general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                }
             }
         }
     }
@@ -2646,6 +2679,7 @@ fn quick_name(q: lcc_engine::media::QuickSource) -> &'static str {
         QuickSource::Small => "small",
         QuickSource::Last => "last",
         QuickSource::Draft => "draft",
+        QuickSource::Kept => "kept",
     }
 }
 
@@ -4222,7 +4256,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         }
         return;
     }
-    let long = (map.rect.width().max(map.rect.height())) as f64;
+    // sizes are in units of the uncropped photo's long edge, as the render reads them
+    let long = f64::from(map.per_long());
     let active = app.session.active_mask;
     // no tool armed as this frame starts (a click that makes a mask puts its tool away: that click doesn't zoom)
     let idle = app.ui.tool.is_empty();
@@ -5390,7 +5425,8 @@ fn draw_tinted_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec
 /// The Tool Overlay mode (Shift+H) says which spots show; a hidden spot can't be grabbed, so a
 /// click there adds a new one.
 fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
-    let long = (map.rect.width().max(map.rect.height())) as f64;
+    // sizes are in units of the uncropped photo's long edge, as the render reads them
+    let long = f64::from(map.per_long());
     let active = app.session.active_spot.filter(|i| *i < d.spots.len());
     let (mode, live) = (app.ui.tool_overlay, pins_live(app, resp, map));
     // Auto also hides them while a new spot is painted
@@ -5669,7 +5705,7 @@ fn spot_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
         ui.data_mut(|m| m.insert_temp(key, moved));
     }
     if crate::canvas_keys::has_focus(ui.ctx()) && ui.memory(|m| m.has_focus(crate::canvas_keys::id("spot:new"))) {
-        let r = (app.ui.remove_size as f64 * (map.rect.width().max(map.rect.height())) as f64) as f32;
+        let r = app.ui.remove_size * map.per_long();
         ui.painter().circle_stroke(q, r, Stroke::new(1.0, Color32::WHITE));
     }
     if keys.activated {
@@ -6777,6 +6813,7 @@ mod tests {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
@@ -7207,6 +7244,23 @@ mod mask_guide_tests {
         d.optics.distortion = 50.0;
         let frame = Frame::new(400, 300, &d, true);
         CanvasMap::new(&frame, Rect::from_min_size(pos2(100.0, 50.0), vec2(400.0, 300.0))).for_mask(true)
+    }
+
+    /// Brush and spot sizes are measured on the uncropped photo's long edge: on a photo cropped to
+    /// half its width the cursor is as large as the stroke the render paints (upstream #3958).
+    #[test]
+    fn a_brush_cursor_on_a_cropped_photo_is_the_size_the_render_paints() {
+        let size = 0.05f32;
+        let painted = |frame: &Frame, out_w: usize| size * frame.px_per_long(out_w) as f32 * 2.0;
+        let mut d = DevelopSettings::default();
+        d.crop.geometry.rect = lcc_geom::Rect::new(0.25, 0.0, 0.75, 1.0);
+        let cropped = Frame::new(400, 300, &d, true);
+        let m = CanvasMap::new(&cropped, Rect::from_min_size(pos2(10.0, 20.0), vec2(400.0, 600.0)));
+        let want = painted(&cropped, 200);
+        assert!((size * m.per_long() - want).abs() < 1e-3, "cursor {} vs painted {want}", size * m.per_long());
+        let full = Frame::new(400, 300, &DevelopSettings::default(), true);
+        let m = CanvasMap::new(&full, Rect::from_min_size(pos2(10.0, 20.0), vec2(800.0, 600.0)));
+        assert!((size * m.per_long() - painted(&full, 400)).abs() < 1e-3);
     }
 
     /// A linear gradient's guides on a warped photo follow its bands through the warp: every

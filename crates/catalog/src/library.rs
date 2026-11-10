@@ -244,7 +244,7 @@ impl Journal {
             db = CatalogDb::open(&db_path)?;
             db.mark_version().map_err(|e| match e {
                 CatalogError::Io(e) => CatalogError::Io(format!(
-                    "can't upgrade {} from catalog format v{stored} to v{} ({e}). The library was left unchanged: free some disk space (or make the catalog writable), then try again",
+                    "can't upgrade {} from catalog format v{stored} to v{} ({e}). The catalog was left unchanged: free some disk space (or make it writable), then try again",
                     db_path.display(),
                     crate::journal::VERSION
                 )),

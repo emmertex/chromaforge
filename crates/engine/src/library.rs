@@ -65,7 +65,7 @@ pub fn resolve_dir(path: &Path) -> Result<PathBuf> {
         .and_then(|n| n.to_str())
         .is_some_and(|n| [lcc_catalog::journal::SNAPSHOT, lcc_catalog::journal::LOG, lcc_catalog::lock::LOCK].contains(&n));
     if !own {
-        return Err(EngineError::Other(format!("{} is a file; a library is a folder", path.display())));
+        return Err(EngineError::Other(format!("{} is a file; a catalog is a folder", path.display())));
     }
     Ok(match path.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(dir) => dir.to_path_buf(),
@@ -276,6 +276,9 @@ struct ViewFile {
     browse: Option<crate::Browse>,
     /// The folder a `libraryFolder` source shows.
     library_folder: Option<String>,
+    /// Show Photos in Subfolders turned off (`false` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    folder_direct: bool,
     // No filter: a library opens unfiltered. A date, keyword or person left over from the last session
     // would silently hide photos, with only a small badge to say so.
     sort: lcc_catalog::Sort,
@@ -571,7 +574,7 @@ impl Session {
         if !dir.is_dir() {
             return Err(EngineError::Other(format!("{} is not a folder", dir.display())));
         }
-        std::fs::read_dir(&dir).map_err(|e| EngineError::Other(format!("can't open library {}: {e}", dir.display())))?;
+        std::fs::read_dir(&dir).map_err(|e| EngineError::Other(format!("can't open catalog {}: {e}", dir.display())))?;
         // the library open in this session keeps its lock when reopened; any other must be free
         let current = self.library.as_ref().is_some_and(|l| l.on_disk && same_dir(&l.dir, &dir));
         if !current && is_library(&dir) {
@@ -597,7 +600,7 @@ impl Session {
             return Err(EngineError::LightroomCatalog { path: dir, catalog: place.catalog });
         }
         let dir = resolve_dir(&dir)?;
-        let open = || FsStore::open(&dir).map_err(|e| EngineError::Other(format!("can't open library {}: {e}", dir.display())));
+        let open = || FsStore::open(&dir).map_err(|e| EngineError::Other(format!("can't open catalog {}: {e}", dir.display())));
         let stores = LibraryStores { catalog: Box::new(open()?), files: Box::new(open()?), on_disk: true, dir: dir.clone() };
         // the library open in this session (same directory): hand its lock over
         let reused = self.library.as_mut().filter(|l| same_dir(&l.dir, &dir)).and_then(|l| l.lock.take());
@@ -791,6 +794,7 @@ impl Session {
             self.source = v.source;
             self.browse = v.browse;
             self.library_folder = v.library_folder.filter(|f| !f.trim().is_empty());
+            self.folder_subfolders = !v.folder_direct;
             if self.source == LibrarySource::LibraryFolder {
                 // a folder that is gone (or none): everything, not an empty grid
                 let f = lcc_catalog::Filter { library_folder: self.library_folder.clone(), ..Default::default() };
@@ -1051,7 +1055,7 @@ impl Session {
         if !lib.journal.snapshot_running() {
             lib.compaction_row = None;
         } else if lib.compaction_row.is_none() {
-            lib.compaction_row = Some(self.activity.start("compaction", "Optimizing the library", crate::activity::Cancel::No));
+            lib.compaction_row = Some(self.activity.start("compaction", "Optimizing the catalog", crate::activity::Cancel::No));
         }
     }
 
@@ -1149,6 +1153,7 @@ impl Session {
             browse: self.browse.clone(),
             // only while it is shown: a leftover would be a stale choice nobody made
             library_folder: self.library_folder.clone().filter(|_| self.source == LibrarySource::LibraryFolder),
+            folder_direct: !self.folder_subfolders,
             sort: self.sort,
             selection: self.selection.clone(),
             previous_export: self.previous_export.clone(),
@@ -1479,7 +1484,7 @@ impl Session {
 /// refusing would lock the user out — but the user must learn that a second program could open it.
 /// What an upgrade of the library's catalog did and how to go back (`None` when it wasn't
 /// upgraded, or no copy was kept: a new or in-memory library).
-pub const UPGRADE_NOTICE_START: &str = "This library's catalog was upgraded";
+pub const UPGRADE_NOTICE_START: &str = "This catalog was upgraded";
 
 /// See [`UPGRADE_NOTICE_START`]: the text always begins with it, so the UI can title it as news, not a problem.
 fn upgrade_notice(report: &LoadReport) -> Option<String> {

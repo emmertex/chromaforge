@@ -1,0 +1,29 @@
+---
+title: Ratings, flags, labels
+description: Cull and mark photos from the keyboard.
+sidebar:
+  order: 9
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+- **Stars**: `1`–`5`, `0` clears. `[` / `]` lower or raise by one.
+- **Flags**: `P` pick, `X` reject, `U` clear, backtick cycles; `Cmd/Ctrl+↑/↓` raises or lowers the flag.
+- **Colour labels**: `6` red, `7` yellow, `8` green, `9` blue. Purple and clear: **Photo ▸ Set Color Label** or the right-click menu.
+- **Shift** + any of these also moves to the next photo. **Auto Advance** (**Photo** menu) does it every time.
+- **Label sets**: *Colors* and *Review*, or your own (**Edit Label Names…**); names are saved in XMP.
+- Bottom bar: stars, colour dots and flag buttons for the selection.
+- Applies to every selected photo; one undo step.
+- **Painter** (`Cmd/Ctrl+Alt+K`) paints a rating, flag or label by clicking photos.
+- **Assisted Culling…** (**Library** menu): focus score, clipping and burst grouping; reject below a threshold and pick the sharpest of each burst. **Reject Closed and Blurry Eyes** is a separate command.
+- **Find Similar Photos** (**Library** menu or photo menu): look-alikes by composition and tones, most similar first.
+- **Delete Rejected** removes every rejected photo from the catalog.
+- All keys are remappable in **Help ▸ Keyboard Shortcuts**; see [Shortcuts](../shortcuts/).
+
+<Aside type="note" title="Modern layout">
+  Flag and stars are on the screen's bottom bar. Labels, Assisted Culling, Find Similar: **Photo** and **Library** menus.
+</Aside>

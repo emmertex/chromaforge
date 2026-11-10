@@ -122,7 +122,14 @@ pub fn parse_lr_local_template(text: &str, stem: &str) -> std::result::Result<(M
     }
     let title = root.get("title").or_else(|| root.get("internalName")).and_then(Lua::str).map(str::trim).filter(|t| !t.is_empty());
     let name = title.map(|t| delocalize(t).trim().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| stem.to_string());
-    build(name, values, extra)
+    // Point Color: named-field tables; applied when readable, else kept (and reported) for export
+    let points = extra.get("pointColors").map(crate::crs_point_color::read_named).unwrap_or_default();
+    if !points.is_empty() {
+        extra.remove("pointColors");
+    }
+    let (mut e, unmapped) = build(name, values, extra)?;
+    e.point_colors = points;
+    Ok((e.normalized(), unmapped))
 }
 
 fn build(name: String, values: Map<String, Value>, extra: Map<String, Value>) -> std::result::Result<(MaskEffect, Vec<String>), String> {
@@ -603,9 +610,11 @@ mod tests {
         assert!((e.adjust.texture + 30.0).abs() < 1e-9);
         assert!((e.adjust.noise - 10.0).abs() < 1e-9);
         assert!((e.adjust.amount - 100.0).abs() < 1e-9);
-        assert_eq!(unmapped, vec!["Color luminance".to_string(), "Grain".into(), "Point Color".into()]);
+        assert_eq!(unmapped, vec!["Color luminance".to_string(), "Grain".into()]);
         assert_eq!(e.extra.get("grain"), Some(&json!(0.25)), "kept for export");
-        assert_eq!(e.extra["pointColors"][0]["HueRange"]["UpperFull"], json!(0.6));
+        assert_eq!(e.point_colors.len(), 1, "the Point Color sample is applied");
+        assert!(e.point_colors[0].hue_shift < 0.0 && e.point_colors[0].range > 0.0);
+        assert!(!e.extra.contains_key("pointColors"));
         assert!(!e.extra.contains_key("refineSaturation"), "zero settings aren't kept");
     }
 

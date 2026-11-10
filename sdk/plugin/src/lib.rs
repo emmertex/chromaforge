@@ -19,6 +19,10 @@
 //! export_plugin!(MANIFEST, handle);
 //! ```
 //!
+//! `export_plugin!(package: MANIFEST, handle)` takes the manifest's `version`, `description`,
+//! `author`, `homepage`, `repository` and `license` from the crate's `Cargo.toml` where the JSON
+//! doesn't set them, so they can't drift apart.
+//!
 //! The SDK itself has no `unsafe` blocks: buffers the host fills are ordinary `Vec`s kept in a
 //! table by address; the host imports are declared `safe`. The only `unsafe` token is the
 //! `#[unsafe(no_mangle)]` the [`export_plugin!`] macro puts on the four ABI exports.
@@ -529,10 +533,83 @@ pub mod job {
     }
 }
 
+/// The plug-in crate's own `Cargo.toml` package fields, as [`package!`] reads them at compile
+/// time (an unset field is empty).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Package {
+    pub version: &'static str,
+    pub description: &'static str,
+    /// `authors`, `:`-separated as Cargo gives them.
+    pub authors: &'static str,
+    pub homepage: &'static str,
+    pub repository: &'static str,
+    pub license: &'static str,
+}
+
+/// The [`Package`] of the crate this is written in (it expands there, so `env!` reads that
+/// crate's `Cargo.toml`).
+#[macro_export]
+macro_rules! package {
+    () => {
+        $crate::Package {
+            version: env!("CARGO_PKG_VERSION"),
+            description: env!("CARGO_PKG_DESCRIPTION"),
+            authors: env!("CARGO_PKG_AUTHORS"),
+            homepage: env!("CARGO_PKG_HOMEPAGE"),
+            repository: env!("CARGO_PKG_REPOSITORY"),
+            license: env!("CARGO_PKG_LICENSE"),
+        }
+    };
+}
+
+/// Manifest JSON `manifest` with `version`, `description`, `author`, `homepage`, `repository` and
+/// `license` filled from `package` where the JSON doesn't set them; a field `package` leaves empty
+/// stays out (`author` joins Cargo's `authors` with ", "). Manifest text that isn't a JSON object
+/// is returned as it is, for the host to report.
+pub fn with_package(manifest: &str, package: &Package) -> String {
+    let Ok(Value::Object(mut m)) = serde_json::from_str::<Value>(manifest) else { return manifest.to_string() };
+    let authors = package.authors.split(':').map(str::trim).filter(|a| !a.is_empty()).collect::<Vec<_>>().join(", ");
+    let fields = [
+        ("version", package.version),
+        ("description", package.description),
+        ("author", authors.as_str()),
+        ("homepage", package.homepage),
+        ("repository", package.repository),
+        ("license", package.license),
+    ];
+    for (key, value) in fields {
+        let value = value.trim();
+        if !value.is_empty() && !m.contains_key(key) {
+            m.insert(key.into(), Value::from(value));
+        }
+    }
+    Value::Object(m).to_string()
+}
+
 /// Exports the ABI: `export_plugin!(MANIFEST_JSON, handler)` with
-/// `fn handler(&Request) -> Result<Value, String>`.
+/// `fn handler(&Request) -> Result<Value, String>`. `export_plugin!(package: MANIFEST_JSON,
+/// handler)` fills the manifest's `version`, `description`, `author`, `homepage`, `repository` and
+/// `license` from the plug-in crate's `Cargo.toml` where the JSON leaves them out ([`with_package`]).
 #[macro_export]
 macro_rules! export_plugin {
+    (package: $manifest:expr, $handler:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn lcc_abi_version() -> i32 {
+            $crate::ABI_VERSION
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn lcc_manifest() -> i64 {
+            $crate::__manifest(&$crate::with_package($manifest, &$crate::package!()))
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn lcc_alloc(len: i32) -> i32 {
+            $crate::__alloc(len)
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn lcc_handle(ptr: i32, len: i32) -> i64 {
+            $crate::__handle(ptr, len, $handler)
+        }
+    };
     ($manifest:expr, $handler:path) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn lcc_abi_version() -> i32 {
@@ -551,6 +628,31 @@ macro_rules! export_plugin {
             $crate::__handle(ptr, len, $handler)
         }
     };
+}
+
+#[cfg(test)]
+mod tests_package {
+    use super::{Package, with_package};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn package_fields_fill_only_what_the_manifest_leaves_out() {
+        let p = Package {
+            version: "1.2.3",
+            description: "From Cargo",
+            authors: "Ann <a@x.org>:Bo",
+            homepage: "",
+            repository: "https://github.com/me/geo",
+            license: "MIT",
+        };
+        let m: Value = serde_json::from_str(&with_package(r#"{"id": "x", "name": "X", "description": "Mine"}"#, &p)).unwrap();
+        assert_eq!(
+            m,
+            json!({"id": "x", "name": "X", "description": "Mine", "version": "1.2.3", "author": "Ann <a@x.org>, Bo", "repository": "https://github.com/me/geo", "license": "MIT"})
+        );
+        assert_eq!(with_package("not json", &p), "not json");
+        assert_eq!(with_package("[1]", &p), "[1]");
+    }
 }
 
 #[cfg(test)]

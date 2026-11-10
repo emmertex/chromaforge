@@ -90,7 +90,7 @@ pub(super) fn add(s: &mut Session, p: &Value) -> std::result::Result<Value, Stri
     };
 
     // `from`: a photo of the library with a file
-    let ph = s.catalog.photo(from).filter(|ph| ph.in_library()).ok_or_else(|| format!("photo {} is not in the library", from.0))?;
+    let ph = s.catalog.photo(from).filter(|ph| ph.in_library()).ok_or_else(|| format!("photo {} is not in the catalog", from.0))?;
     let Source::File { path: original } = &ph.source else {
         return Err(format!("photo {} has no file, so nothing can be made from it", from.0));
     };

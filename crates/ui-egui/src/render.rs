@@ -532,6 +532,15 @@ pub struct Renderer {
     /// re-logged at every cell it appears in. A changed file (or edit) renders under another job
     /// key, which this never held, and so is tried again.
     thumb_failures: HashMap<(PhotoId, bool), (u64, String)>,
+    /// Photos whose grid cell showed a failure or the photo's kept thumbnail while their original
+    /// was known to be missing ([`Self::note_missing_original`]): the cell asks again once the
+    /// original is back.
+    missing_originals: std::collections::HashSet<PhotoId>,
+    /// The availability generation ([`lcc_engine::availability::Availability::gone_generation`]) at
+    /// which each photo's cell last asked again for an original found back
+    /// ([`Self::retry_found_original`]): once per generation, so a file that keeps failing is not
+    /// read on every frame.
+    found_back: HashMap<PhotoId, u64>,
     /// The catalog revision seen at the last poll: a failure is retried once the catalog changes
     /// (a relinked or re-imported file).
     catalog_rev: u64,
@@ -583,6 +592,9 @@ pub struct Renderer {
 
 /// How many [`Slot::QuickAhead`] stand-ins the loupe keeps ready.
 pub const AHEAD_SLOTS: u8 = 6;
+
+/// The [`Slot::Prefetch`] of the open photo's full-resolution source, decoded ahead of a zoom to 1:1.
+pub const FULL_SOURCE_PREFETCH: u8 = 2;
 
 /// After this long without renders the GPU renderer's pool of recycled buffers is freed.
 #[cfg(not(target_arch = "wasm32"))]
@@ -683,6 +695,8 @@ impl Renderer {
             quick_tried: HashMap::new(),
             failed: HashMap::new(),
             thumb_failures: HashMap::new(),
+            missing_originals: std::collections::HashSet::new(),
+            found_back: HashMap::new(),
             catalog_rev: 0,
             prefetched: HashMap::new(),
             ready_views: HashMap::new(),
@@ -799,6 +813,44 @@ impl Renderer {
         }
         self.remember_thumb(photo, bucket, key, true);
         self.embedded_thumbs.insert(photo.id, (Arc::downgrade(photo), bucket, key));
+    }
+
+    /// The original of photo `id`, whose grid cell shows a failure or the photo's kept thumbnail, is known to be
+    /// missing: once it is back, [`Self::retry_found_original`] lets the cell ask again.
+    pub fn note_missing_original(&mut self, id: PhotoId) {
+        if self.missing_originals.len() >= THUMB_FAILURES_MAX && !self.missing_originals.contains(&id) {
+            self.missing_originals.clear();
+        }
+        self.missing_originals.insert(id);
+    }
+
+    /// The original of photo `id` is there (`generation`: the availability's gone generation): if its grid cell
+    /// shows the photo's kept thumbnail (`kept`), or a failure from while the original was missing, it asks again,
+    /// once per generation. Both stand for the thumbnail's key, so nothing else would until a restart, a relink or
+    /// an edit (issue #448). The kept picture stays on screen as a stand-in until the render replaces it.
+    pub fn retry_found_original(&mut self, id: PhotoId, kept: bool, generation: u64) {
+        if (!kept && !self.missing_originals.contains(&id)) || self.found_back.get(&id) == Some(&generation) {
+            return;
+        }
+        self.missing_originals.remove(&id);
+        if self.found_back.len() >= THUMB_FAILURES_MAX && !self.found_back.contains_key(&id) {
+            self.found_back.clear();
+        }
+        self.found_back.insert(id, generation);
+        for slot in [Slot::Thumb(id), Slot::ThumbQuick(id)] {
+            self.failed.remove(&slot);
+            self.quick_tried.remove(&slot);
+            self.thumb_failures.remove(&(id, matches!(slot, Slot::ThumbQuick(_))));
+        }
+        self.thumb_inputs.remove(&id);
+        self.embedded_thumbs.remove(&id);
+        // (a kept picture shown as the thumbnail itself becomes its stand-in: the grid then asks for the real one)
+        if self.textures.get(&Slot::Thumb(id)).is_some_and(|t| t.quick == Some(QuickSource::Kept)) {
+            self.release(Slot::ThumbQuick(id));
+            if let Some(t) = self.textures.remove(&Slot::Thumb(id)) {
+                self.textures.insert(Slot::ThumbQuick(id), t);
+            }
+        }
     }
 
     pub fn remember_thumb(&mut self, photo: &Arc<lcc_catalog::Photo>, bucket: usize, key: u64, quick: bool) {
@@ -1479,9 +1531,12 @@ impl Renderer {
         );
     }
 
-    /// Prepared-ahead jobs ([`Slot::Prefetch`]) queued or running.
+    /// Prepared-ahead jobs of the photos around the one on screen ([`Slot::Prefetch`]) queued or
+    /// running. Not the open photo's full-resolution source ([`FULL_SOURCE_PREFETCH`]): a slow
+    /// decode for a zoom that may never come, which must neither take a neighbour's turn nor hold
+    /// the background preparation back (it held it for 20 s while a wedding folder was read).
     pub fn prefetches_pending(&self) -> usize {
-        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(_))).count()
+        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).count()
     }
 
     /// Slots of photos prepared around the one on screen asked for since the renderer last forgot
@@ -1493,7 +1548,7 @@ impl Renderer {
     /// The jobs asked for in the slots of photos prepared around the one on screen (queued,
     /// running or made).
     pub fn prefetch_keys(&self) -> Vec<u64> {
-        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != 2)).map(|(_, k)| *k).collect()
+        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).map(|(_, k)| *k).collect()
     }
 
     /// Whether `slot` was last asked for the job of `key` (queued, running or done).
@@ -1536,6 +1591,8 @@ impl Renderer {
         self.quick_tried.clear();
         self.failed.clear();
         self.thumb_failures.clear();
+        self.missing_originals.clear();
+        self.found_back.clear();
         self.prefetched.clear();
         self.ready_views.clear();
         self.adopted.clear();
@@ -2633,6 +2690,23 @@ mod thumbnail_tests {
             std::mem::take(&mut self.0.borrow_mut().finished)
         }
     }
+    /// The open photo's full-resolution source decoded ahead of a zoom is no neighbour: while it
+    /// decodes, the neighbours still get both their turns and the background preparation is not
+    /// held back (2026-11-09: it was pending for 20 s while a wedding folder was read, and every
+    /// photo ahead waited behind it).
+    #[test]
+    fn the_full_resolution_warm_up_is_not_a_neighbour_render() {
+        let (mut app, _work, _ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        let id = PhotoId(1);
+        let job = app.session.loupe_job(id, 64, 64, true).expect("a loupe job");
+        app.renderer.prefetch(Slot::Prefetch(FULL_SOURCE_PREFETCH), job.clone(), 10);
+        assert!(app.renderer.is_pending(Slot::Prefetch(FULL_SOURCE_PREFETCH)), "queued");
+        assert_eq!(app.renderer.prefetches_pending(), 0, "not counted as a neighbour");
+        app.renderer.prefetch(Slot::Prefetch(0), job, 10);
+        assert_eq!(app.renderer.prefetches_pending(), 1, "the neighbour is");
+    }
+
     fn fixture() -> (crate::LccApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
         fixture_with(Session::new(), (*photo()).clone())
     }
@@ -2748,7 +2822,7 @@ mod thumbnail_tests {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
             desc.backend_options = lcc_engine::gpu::backend::backend_options();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("test window"), ..Default::default() })).ok()
         })();
@@ -2817,7 +2891,7 @@ mod thumbnail_tests {
         let device = (|| {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
         })();
@@ -3807,6 +3881,7 @@ mod thumbnail_tests {
             fit: None,
             draft: None,
             want: None,
+            kept: None,
         };
 
         r.request_quick(Slot::ThumbQuick(id), job(), 5);
@@ -3823,6 +3898,88 @@ mod thumbnail_tests {
         // another key (a new look or size) is on its way, so the cell is loading again
         r.pending.insert(Slot::ThumbQuick(id), (43, 6));
         assert_eq!(r.thumb_failure(id), None);
+    }
+
+    /// A missing photo's cell asks for its thumbnail again once the original is back (a drive mounted while the
+    /// app runs), whether it showed the photo's kept thumbnail or an error: both stand for the thumbnail's key, so
+    /// nothing else would until a restart, a relink or an edit. The kept picture stays on screen meanwhile; while
+    /// the original is still missing, nothing is asked again.
+    #[test]
+    fn a_missing_photos_cell_asks_again_once_its_original_is_back() {
+        let id = PhotoId(1);
+        let there = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut app, work, ctx) = fixture();
+        let probe = there.clone();
+        app.session.media.availability.set_probe(Arc::new(move |_| probe.load(std::sync::atomic::Ordering::Relaxed)));
+        let back = |app: &mut crate::LccApp, on: bool| {
+            there.store(on, std::sync::atomic::Ordering::Relaxed);
+            // (what the availability worker does when it finds a file back)
+            let probe = there.clone();
+            app.session.media.availability.set_probe(Arc::new(move |_| probe.load(std::sync::atomic::Ordering::Relaxed)));
+        };
+
+        // the kept thumbnail is on screen
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let mut kept = job.run();
+        kept.quick = Some(QuickSource::Kept);
+        finish(&mut app, &work, &ctx, slot, kept);
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Kept));
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "the original is still missing: nothing is asked again");
+        back(&mut app, true);
+        request(&mut app);
+        assert_eq!(work.borrow().jobs.len(), 1, "the original is back: its thumbnail is asked for again");
+        assert!(app.renderer.thumb(id).is_some(), "the kept picture stays on screen until the render arrives");
+        let (slot, job) = take_job(&work);
+        let fresh = job.run();
+        finish(&mut app, &work, &ctx, slot, fresh);
+        assert_eq!(app.renderer.thumb(id).map(|t| t.quick), Some(None), "the fresh render replaced it");
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "nothing more to ask");
+
+        // an error shown while the original was missing: asked again once it is back
+        let mut settings = (*app.session.catalog.photo(id).unwrap().develop).clone();
+        settings.light.exposure += 0.5;
+        app.session.catalog.apply(Op::SetDevelop { id, settings: Arc::new(settings), label: "test".into(), edited: None }).unwrap();
+        back(&mut app, false);
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let failed = RenderResult { rendered: Err("No such file or directory".into()), ..job.run() };
+        finish(&mut app, &work, &ctx, slot, failed);
+        assert!(app.renderer.thumb_failure(id).is_some());
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "still missing: the failure stands");
+        back(&mut app, true);
+        request(&mut app);
+        assert_eq!(work.borrow().jobs.len(), 1, "the original is back: asked again");
+
+        // gone again before the render read it: the kept thumbnail comes back, and is not asked for again on every
+        // frame while the availability hasn't seen the file go
+        let (slot, job) = take_job(&work);
+        let mut kept = job.run();
+        kept.quick = Some(QuickSource::Kept);
+        finish(&mut app, &work, &ctx, slot, kept);
+        request(&mut app);
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "asked again once per availability generation, not on every frame");
+    }
+
+    /// A file that is there but can't be read keeps its failure: only an original found back is asked for again.
+    #[test]
+    fn an_unreadable_file_that_is_there_is_not_asked_for_again() {
+        let id = PhotoId(1);
+        let (mut app, work, ctx) = fixture();
+        app.session.media.availability.set_probe(Arc::new(|_| true));
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let failed = RenderResult { rendered: Err("unsupported raw".into()), ..job.run() };
+        finish(&mut app, &work, &ctx, slot, failed);
+        for _ in 0..3 {
+            request(&mut app);
+        }
+        assert!(work.borrow().jobs.is_empty(), "the unreadable file is not read again");
+        assert_eq!(app.renderer.thumb_failure(id), Some("unsupported raw"));
     }
 
     #[test]
@@ -4082,6 +4239,7 @@ mod extended_linear_tests {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {

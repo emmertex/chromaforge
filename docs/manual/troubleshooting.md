@@ -9,7 +9,7 @@
 | App settings, keymap, window layout | `<settings_dir>` in your configuration folder: `~/.config/<settings_dir>` (Linux, or `$XDG_CONFIG_HOME`), `~/Library/Application Support/<settings_dir>` (macOS), `%APPDATA%\<settings_dir>` (Windows) |
 | Log file | `logs/<binary>.log` in that folder; the two previous runs are kept as `<binary>.1.log` and `.2.log`, so a crashed run's log survives the next start |
 | Your library | the folder shown by `<cli> run --library DIR catalog.info` (default `<library_default>` under Pictures) |
-| Catalog backups | `backups/` in the library, or the folder set in Edit → Library Settings… |
+| Catalog backups | `backups/` in the library, or the folder set in Edit → Catalog Settings… |
 
 Attach the log to a bug report. Set `<PREFIX>_LOG=debug` for more detail, or `RUST_LOG` for per-module levels
 (`warn,lcc_pipeline=trace`).
@@ -44,7 +44,7 @@ and relinks them. Their edits and metadata are safe in the catalog meanwhile.
 - "This library is already open in …": another running program holds the library's lock (the message names the
   process and computer). Close it there. A `catalog.lock` file left by a crash doesn't block anything: the
   operating system releases the lock when the process ends.
-- File → Test Catalog Integrity checks the store; File → Restore Library from Backup… or opening a copy from
+- File → Test Catalog Integrity checks the store; File → Restore Catalog from Backup… or opening a copy from
   `backups/` gets you back to the last good state.
 
 ## Updating the app

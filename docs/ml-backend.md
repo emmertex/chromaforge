@@ -47,8 +47,9 @@ embedding cache store.
 
 **The engine** (`crates/engine/src/ml.rs`, `crates/engine/src/cmd/ml.rs`) integrates `lcc-ml` into `Session`:
 
-- its GPU probe follows the rendering GPU's switches (`<PREFIX>_GPU`, `<PREFIX>_GPU_BACKEND`, `app.gpu`) and reports
-  the adapter rendering uses;
+- its GPU probe follows the rendering GPU's switches (`<PREFIX>_GPU`, `<PREFIX>_GPU_BACKEND`, `app.gpu`) and the ML device
+  setting (`AppSettings::ml_device`, `ml.status {device}`), using `lcc_gpu::clip` (wgpu on Vulkan, DX12 or Metal) on the
+  chosen graphics card (or the automatic AI card);
 - `<PREFIX>_ML_DEVICE=cpu` keeps the AI jobs on the CPU (`auto` is the default);
 - its row in the activity stack is a batch: kind `mlIndex`, label "Indexing photos" ("Indexing photos · 37 of 200 ·
   2 failed"), detail the photo's file name;
@@ -71,10 +72,12 @@ embedding cache store.
     refreshes automatically.
 
 **The interface** (`crates/ui-egui/src/panels/topbar.rs`, `crates/ui-egui/src/modern_library.rs`,
-`crates/ui-egui/src/panels/ml_models.rs`) exposes natural-language search (`search:ai` in the top bar,
-`modern:search:ai` in the Modern search pill, a removable `AI search: “…”` chip in the filter-chips bar) and a
-**Semantic search** section in Settings ▸ AI Models (`dialog.aiModels`) to download, select or remove the CLIP model and
-toggle background indexing.
+`crates/ui-egui/src/panels/ml_models.rs`, `crates/ui-egui/src/panels/settings.rs`) exposes natural-language search
+(`search:ai` in the top bar, `modern:search:ai` in the Modern search pill, a removable `AI search: “…”` chip in the
+filter-chips bar), an explicit hardware selector dropdown in Settings ▸ AI Models and Settings ▸ Performance, and a
+**Semantic search** section in Settings ▸ AI Models (`dialog.aiModels`) to download, select or remove the CLIP model,
+choose the hardware device (Automatic, specific detected GPU, or CPU), view active hardware status and fallback reasons,
+and toggle background indexing.
 
 ## What's next
 

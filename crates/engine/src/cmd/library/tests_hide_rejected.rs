@@ -47,3 +47,26 @@ fn the_rest_of_the_filter_stays_and_a_bad_call_changes_nothing() {
     assert!(s.execute("library.hideRejected", &json!({"hide": "yes"})).is_err());
     assert_eq!(shown(&mut s), vec![1, 2, 4]);
 }
+
+/// Adapted from upstream #3624 (170fd6a86).
+#[test]
+fn hide_false_leaves_another_flag_filter_alone() {
+    let mut s = session().unwrap();
+    for (flags, expect) in [(json!(["pick"]), vec![1]), (json!(["reject"]), vec![2, 5])] {
+        s.execute("library.filter", &json!({"flags": flags})).unwrap();
+        let before = s.filter.clone();
+        let r = s.execute("library.hideRejected", &json!({"hide": false})).unwrap();
+        assert_eq!((r["hidden"].clone(), r["count"].clone()), (json!(false), json!(expect.len())), "{flags}");
+        assert_eq!(s.filter, before, "{flags}: the row is already off, so nothing changes");
+        assert_eq!(shown(&mut s), expect, "{flags}");
+    }
+}
+
+#[test]
+fn hide_null_toggles_as_a_missing_hide_does() {
+    let mut s = session().unwrap();
+    assert_eq!(s.execute("library.hideRejected", &json!({"hide": null})).unwrap()["hidden"], json!(true));
+    assert_eq!(shown(&mut s), vec![1, 3, 4]);
+    assert_eq!(s.execute("library.hideRejected", &json!({"hide": null})).unwrap()["hidden"], json!(false));
+    assert_eq!(shown(&mut s), vec![1, 2, 3, 4, 5]);
+}

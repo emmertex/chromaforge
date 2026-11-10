@@ -42,10 +42,16 @@ impl Stale {
 
 /// The library's preview-only photos whose flag another app version set (or every preview-only
 /// photo, with `all`): library photos with a file, not virtual copies (they follow the photo they
-/// were copied from). No file-system calls.
+/// were copied from) unless relinked to a file of their own, which nothing else would recheck. No
+/// file-system calls.
 pub fn stale(cat: &Catalog, all: bool) -> Vec<Stale> {
     cat.photos()
-        .filter(|p| p.copy_of.is_none() && p.preview_only.is_some() && !link_only(p) && (all || p.preview_only_stale()))
+        .filter(|p| {
+            p.copy_of.is_none_or(|o| cat.photo(o).is_some_and(|orig| !crate::cmd::convert::shares_reload_source(p, orig)))
+                && p.preview_only.is_some()
+                && !link_only(p)
+                && (all || p.preview_only_stale())
+        })
         .filter_map(|p| crate::cmd::missing::checked_path(p).map(|path| Stale::of(p, path)))
         .collect()
 }

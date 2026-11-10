@@ -638,7 +638,7 @@ pub fn specs() -> Vec<CommandSpec> {
                         let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
                         let ids = s.catalog.query(&f, &Sort::default());
                         if ids.is_empty() {
-                            return Err(bad("library.source", format!("{path}: no photo in the library was imported from it")));
+                            return Err(bad("library.source", format!("{path}: no photo in the catalog was imported from it")));
                         }
                         if covers_other_disks(s, path, &ids) {
                             return Err(bad("library.source", format!("{path} holds other disks as well: choose a disk or a folder on one")));
@@ -652,6 +652,21 @@ pub fn specs() -> Vec<CommandSpec> {
                 };
                 s.keep_active_in_view();
                 Ok(json!({"count": s.visible().len()}))
+            }
+        ),
+        cmd!(
+            "library.showSubfolderPhotos",
+            "Show Photos in Subfolders",
+            [],
+            None,
+            "{on?: bool (default: toggle)} — whether a folder chosen in Folders also shows the photos of the folders inside it → {on, count}",
+            always,
+            |s, p| {
+                let on = bool_or(p, "on", !s.folder_subfolders);
+                s.folder_subfolders = on;
+                s.keep_active_in_view();
+                s.save_view();
+                Ok(json!({"on": on, "count": s.visible().len()}))
             }
         ),
         cmd!(
@@ -710,7 +725,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             query "library.folders",
-            "Library Folders",
+            "Catalog Folders",
             [],
             None,
             "{} → [{name, path, count, own, volume, selectable, label?, children}] the disks and the folders the library's photos were imported from, with photo counts (subfolders included in `count`); show one with library.source {kind: libraryFolder, path} (rows with selectable false only open)",
@@ -719,7 +734,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "library.removeFolder",
-            "Remove Folder from Library",
+            "Remove Folder from Catalog",
             [],
             None,
             "{path, disk?: bool} — move the library photos imported from this folder (and the folders inside it) to Recently Deleted; one undo step, no file is touched. A whole disk or share (`/Volumes/nas`, `C:\\`, `\\\\srv\\share`) goes only with `disk: true`, the startup disk never → {removed}",
@@ -739,12 +754,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
                 let ids = s.catalog.query(&f, &Sort::default());
                 if ids.is_empty() {
-                    return Err(bad(C, format!("{path}: no photo in the library was imported from it")));
+                    return Err(bad(C, format!("{path}: no photo in the catalog was imported from it")));
                 }
                 if covers_other_disks(s, path, &ids) && !bool_or(p, "disk", false) {
                     return Err(bad(C, format!("{path} holds whole disks: pass `disk: true` to remove everything on them")));
                 }
-                mark_deleted(s, &ids, "Remove Folder from Library")?;
+                mark_deleted(s, &ids, "Remove Folder from Catalog")?;
                 if s.filter.library_folder.as_deref().is_some_and(|c| lcc_catalog::query::folder_within(c, path)) {
                     s.filter.library_folder = None;
                 }
@@ -786,7 +801,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 // taking a label off always works, also once the folder's photos are gone
                 let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
                 if label.is_some() && s.catalog.query(&f, &Sort::default()).is_empty() {
-                    return Err(bad(C, format!("{path}: no photo in the library was imported from it")));
+                    return Err(bad(C, format!("{path}: no photo in the catalog was imported from it")));
                 }
                 if label.is_none() && s.catalog.folder_record(path).is_none() {
                     return Ok(json!({"path": path, "label": label}));
@@ -832,13 +847,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Rejected Photos",
             ["View"],
             None,
-            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or no longer filters by flag; the rest of the filter stays. Like any filter change, it forgets a filter put aside → {hidden, count}",
+            "{hide?: bool (default: the opposite of now)} — the flag filter shows picks and unflagged photos, or, from there, no longer filters by flag; the rest of the filter stays. `hide` asks for the menu row's state: when the row is already in it, nothing changes (so `hide: false` leaves Picked only or Rejected only as it is). Like any filter change, it forgets a filter put aside → {hidden, count}",
             always,
             |s, p| {
                 let hide = match p.get("hide") {
                     None | Some(Value::Null) => !s.rejects_hidden(),
                     Some(v) => v.as_bool().ok_or_else(|| bad("library.hideRejected", "hide must be true or false"))?,
                 };
+                // already in the state asked for: another flag filter (Picked only…) or a filter put aside stays as it is
+                if hide == s.rejects_hidden() {
+                    return Ok(json!({"hidden": hide, "count": s.visible().len()}));
+                }
                 s.filter.flag = None;
                 s.filter.flags = if hide { vec![Flag::Pick, Flag::None] } else { Vec::new() };
                 s.shelved_filter = None;
@@ -2340,7 +2359,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         // ---- persistence
-        cmd!(query "library.info", "Library Info", [], None, "{}", always, |s, _| {
+        cmd!(query "library.info", "Catalog Info", [], None, "{}", always, |s, _| {
             let photos = s.catalog.len();
             let albums = s.catalog.albums().count();
             let (rendered_n, rendered_bytes) = s.media.rendered.mem_usage();
@@ -2394,7 +2413,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 },
             }))
         }),
-        cmd!("library.compact", "Compact Library", ["File", "Libraries"], None, "{}", has_library, |s, _| {
+        cmd!("library.compact", "Optimize Catalog", ["File", "Libraries"], None, "{}", has_library, |s, _| {
             s.compact_library()?;
             ok()
         }),
@@ -2509,7 +2528,7 @@ impl Session {
 }
 
 fn has_library(s: &Session) -> std::result::Result<(), String> {
-    if s.library.is_some() { Ok(()) } else { Err("no library is open (in-memory session)".into()) }
+    if s.library.is_some() { Ok(()) } else { Err("no catalog is open (in-memory session)".into()) }
 }
 
 /// Coordinates typed by a person: "51.5072, -0.1276", "51.5072 N 0.1276 W",

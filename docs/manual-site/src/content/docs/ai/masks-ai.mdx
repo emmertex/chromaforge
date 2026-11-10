@@ -1,0 +1,85 @@
+---
+title: AI masks
+description: Object, Describe, Subject, Background, Sky, People and Remembered masks.
+sidebar:
+  order: 3
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-mask-types" alt="Create New Mask: Object, Describe, Subject, Sky, Background, People, Remembered and the drawn types" />
+
+Open **Masks** and pick a tile. All AI tiles are in Create New Mask; the result is a normal mask with the same Light, Colour, Effects and Detail sliders (see [Masks](../../develop/masking/)).
+
+| Tile | What it selects | Needs |
+|---|---|---|
+| **Object** | the thing you click | SAM 3 or SAM 2.1 |
+| **Describe** | everything matching a text phrase | SAM 3 |
+| **Subject** | the main subject | optional BiRefNet_lite |
+| **Background** | the inverse of Subject | optional BiRefNet_lite |
+| **Sky** | the sky | built-in analysis; optional EoMT |
+| **People** | people and their parts | MediaPipe models, or the file's own mattes |
+| **Remembered** | an object you named earlier | SAM 2.1 |
+
+## Object
+
+<Shot name="ai-mask-object" menu="Masks in the dock, then Object" alt="Object mode: click the object on the photo" />
+
+- Click the object; each click refines it. **Alt-click** (Option on macOS) leaves a part out. Green dots include, red dots exclude.
+- First click on a photo waits for the photo to be analysed (about 3 s on a fast Apple GPU, about 11 s on a CPU); later clicks take a fraction of a second.
+- A second, zoomed-in pass refines small objects in the background.
+- **Edge** per selection: below 0 crisper, above 0 softer.
+- No model installed: the app offers the download instead of failing.
+
+<NeedsImage what="Object mask selecting a tree on the demo photo, green click dot visible, selection overlay in red" />
+
+## Describe
+
+- Type a phrase (`sky`, `trees`, `the red car`) in **Describe what to select** and press Return or **Select**. Every match joins the mask; nothing matching creates nothing and tells you.
+- Comma lists select several things at once: `car, road`.
+- Needs **SAM 3**, which is a large, gated download: see [Models and set-up](../models/).
+
+<NeedsImage what="Describe mask for the phrase 'trees' with the overlay on the demo photo" />
+
+## Combine selections
+
+- **+ / −** under a selected mask, and the Add, Subtract and Intersect menus, combine selections: Describe `car`, then subtract Describe `people`.
+- **Update AI Mask** (mask list menu, a component's menu, or the photo's right-click menu) recomputes an AI mask. Editing the photo's look does not recompute it.
+- **Refine Edges** and **Feather** work on AI masks too.
+- Copy, paste and sync carry Object and Describe masks to other photos (**Auto Sync** merges them into each photo's own masks).
+
+## Subject, Background, Sky
+
+- **Subject** and **Background** use the downloadable BiRefNet_lite matte when installed; otherwise a built-in whole-photo analysis. A raw that carries its own person mattes (for example iPhone ProRAW) uses those.
+- **Sky** uses a built-in colour analysis, the file's sky matte when it has one, or the optional EoMT model (Settings ▸ AI Models ▸ Sky, Landscape and People masks use).
+- Partial: measured only on synthetic demo scenes (Sky 0.79 overlap, Subject 0.88 with the built-in analysis). Calm seas under sunset skies, aurora and a sea the same blue as the sky are weak cases. BiRefNet_lite reads sharp synthetic bokeh as objects. Real-photo accuracy is unmeasured.
+- Subject and Background take a few seconds per photo on the CPU the first time and are cached.
+
+## People
+
+<Shot name="ai-mask-people" menu="Masks in the dock, then People" alt="The People picker: Everyone, then the parts to select" />
+
+- Pick **Everyone** or one person found on the photo (by name when faces are named), then the parts: Entire Person, Face Skin, Body Skin, Hair, Clothes, Eyebrows, Eye Sclera, Iris and Pupil, Lips, Teeth.
+- Needs the MediaPipe people and face models. Without them, the file's own mattes or the Subject analysis stand in.
+- A People mask that finds nobody selects nothing. A mask can name who it is about, so presets and Sync follow the right person on other photos ([Faces](../faces/)).
+
+## Remembered
+
+<Shot name="ai-mask-remembered" menu="Masks in the dock, then Remembered" alt="The Remembered picker with nothing remembered yet" />
+
+- Select a thing with any mask, then choose **Remember as…** in the mask's menu and name it. **Remembered** then selects it on other photos with a click.
+- Learned objects stay in the library. Needs SAM 2.1.
+- Partial: no accuracy measurements yet.
+
+<Aside type="note" title="Modern layout">
+**Masks** is in the dock; the tiles are the same. Models: **☰ ▸ Edit ▸ Settings… ▸ AI Models**.
+</Aside>
+
+## Limits
+
+- Models see the whole uncropped photo at a low grid (288 by 288 for SAM 3); edges are then snapped to the photo, so very small objects can still be rough.
+- **Landscape** classes (Mountains, Architecture, ground) are not offered. **Depth Range** is not built.
+- Not verified against Lightroom's Select Object. No box or brush object mode.
+- AI masks are stored with the photo and render without the model; the web build renders them but cannot make them.

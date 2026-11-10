@@ -61,6 +61,7 @@ pub fn parse(v: &Value) -> Unnamed {
 /// The unnamed faces, asked for again only when the catalog changed, or (while the scan runs and learns more faces) at
 /// most every few seconds, since putting look-alikes together looks at every pair.
 pub fn faces(app: &mut LccApp, now: f64) -> Arc<Unnamed> {
+    super::person::follow_filter(app);
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((r, i, at, list)) = &app.caches.unnamed
         && *r == rev
@@ -68,7 +69,7 @@ pub fn faces(app: &mut LccApp, now: f64) -> Arc<Unnamed> {
     {
         return list.clone();
     }
-    let v = app.session.execute("faces.unnamed", &json!({})).unwrap_or(Value::Null);
+    let v = app.session.execute("faces.unnamed", &json!({"scope": "filter"})).unwrap_or(Value::Null);
     let list = Arc::new(parse(&v));
     // what was selected and has since been named (or removed) is no longer selected
     let present: std::collections::HashSet<(u64, usize)> = list.faces.iter().map(|f| (f.photo, f.index)).collect();
@@ -272,7 +273,7 @@ pub fn tile(app: &mut LccApp, ui: &mut egui::Ui, list: &Unnamed, i: usize, r: Re
         p.text(pos2(r.left() + 5.0, strip.center().y), Align2::LEFT_CENTER, format!("{label}?"), t.font(11.5), Color32::from_gray(225));
     }
     if let (Some(a), Some(who)) = (&accept, &f.suggestion)
-        && a.clone().on_hover_text(format!("Name this face {who}")).clicked()
+        && a.clone().on_hover_text(crate::i18n::tr_format!("Name this face {who}", who = who)).clicked()
     {
         name(app, &[key], who);
         return;

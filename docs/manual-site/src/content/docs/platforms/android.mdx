@@ -1,0 +1,21 @@
+---
+title: Android
+description: The phone and tablet app, Modern layout only.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Partial: runs and is verified on an emulator, not yet on a phone or tablet.
+
+- **Install** from [Google Play](https://play.google.com/store/apps/details?id=<app_id>), or sideload the `.apk` from Releases (arm64 and x86_64). Play runs a little behind Releases because of Google's review process.
+- **Modern layout** is the default, with touch controls: tap for tools, drag to adjust, hold for the original, swipe to scroll, long-press to multi-select, system Back.
+- **Import** from the system picker, the camera roll (**Settings ▸ Folders ▸ Camera roll**), or by sharing photos to the app from another app.
+- A picked folder is **copied** into the app, and new files in it are copied in while the app is in front. Photos are read in place only in the GitHub build, with "All files access".
+- **Develop** works with the Basic, Colour, Tone, Detail, Optics and Effects groups. Not yet: pinch in adjust mode, touch UIs for Crop and Masks.
+- **Library** lives in the app's folder, reachable from the Files app, and is removed with the app.
+- **Export** sheet saves to Pictures or opens the share sheet.
+- **Sync** with your desktop: pairing exists (**Settings ▸ Sync**), catalog exchange is limited. See [Device sync](../../sync/peer-sync/).
+- Permissions: photos access, optional All files access (GitHub build only), Wi-Fi/multicast for sync. See [Privacy](../settings-and-privacy/).
+- Classic and Compact layouts are not offered here; **Settings ▸ General ▸ Layout** switches Touch or Desktop.

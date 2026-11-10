@@ -11,6 +11,21 @@ platform builds unsigned, no draft is created and nothing is uploaded, so nothin
 its tags changes. With `dry_run=false` only the `release` branch may run it: the version job refuses any other
 branch, and the release environment's branch restrictions still apply to the signing jobs.
 
+### Who can start a release
+
+Repository settings (Settings ▸ Environments and Settings ▸ Rules), not code:
+
+- The `release` environment, which holds every signing secret, is limited to the `release` branch: a run on any
+  other branch that names `environment: release` is refused before it gets a secret.
+- The `release` branch ruleset (**release: PR + approval**) forbids deleting it and force pushes, and takes changes
+  only through a pull request approved by someone other than its author; a push after the approval needs a new one.
+  So a release takes two people. The repository admin (emmertex) may bypass it, and so may an agent working with
+  that account (`gh pr merge --admin`).
+- [`.github/CODEOWNERS`](../.github/CODEOWNERS) names the owners of `.github/workflows/`, `.github/scripts/`, `packaging/` and
+  `xtask/` (the code the signing jobs hand secrets to), and main's ruleset requires their review, so nobody can
+  change what runs with the secrets alone. Caveat: the platform builds compile the workspace with the secrets set,
+  so a `build.rs`, proc-macro or dependency could still read them; the PR into `release` is the check for that (the admin bypass applies here too).
+
 `only` limits a dry run to some platforms, comma-separated: `macos`, `windows`, `linux`, `flatpak`, `android`,
 `web`, `riscv64`, `freebsd` (`-f only=android`). A real run refuses it, since a release builds every platform.
 
@@ -126,7 +141,7 @@ and the WASM web app. The platform scripts in [`packaging/`](../packaging/) writ
   (`<binary>-<version>-android-arm64-v8a.apk`, `…-android-x86_64.apk`) and one Play Store bundle
   (`…-android-arm64-v8a-x86_64.aab`), cross-compiled on gpu0 (see [android.md](android.md)).
 
-Only the macOS, Windows and draft-release jobs use the `release` environment (not on a dry run). The
+Only the macOS, Windows, Android and draft-release jobs use the `release` environment (not on a dry run). The
 others sign nothing.
 
 ### Where the release jobs run

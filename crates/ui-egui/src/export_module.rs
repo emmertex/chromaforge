@@ -226,19 +226,40 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, ids: &[lcc_catalog::PhotoId], re
             break;
         }
         p.rect_filled(r, 4.0, t.chrome);
-        draw_photo(&p, app, *id, r.shrink(6.0));
+        draw_photo(&p, app, *id, r.shrink(6.0), ids.len() == 1);
     }
 }
 
-/// The photo's thumbnail fitted into `r` (a placeholder until it is rendered).
-fn draw_photo(p: &egui::Painter, app: &mut LccApp, id: lcc_catalog::PhotoId, r: Rect) {
-    crate::panels::grid::request_thumb(app, id, 256, 8);
-    let Some(tex) = app.renderer.thumb(id) else {
+/// The photo's picture fitted into `r` (a placeholder until it is rendered). `full`: the preview's
+/// single photo, drawn from the loupe's own render — the thumbnail ladder stops at 512 px, and a
+/// photo that fills the module's centre is soft beside Develop and the Library loupe — with the
+/// thumbnail standing in until the render arrives.
+fn draw_photo(p: &egui::Painter, app: &mut LccApp, id: lcc_catalog::PhotoId, r: Rect, full: bool) {
+    // the cell, not a fixed size: a single photo fills the whole preview area, and a 256-px
+    // thumbnail scaled up to it is the blurry preview the module used to show
+    let ppp = p.ctx().pixels_per_point();
+    let size = (r.width().max(r.height()).max(120.0) * ppp) as usize;
+    crate::panels::grid::request_thumb(app, id, size, 8);
+    if full {
+        let w = (r.width() * ppp).max(8.0) as usize;
+        let h = (r.height() * ppp).max(8.0) as usize;
+        let job = app.session.loupe_job(id, w, h, true).map(|job| job.with_display_fit(w, h));
+        if let Some(job) = job {
+            app.renderer.request(crate::render::Slot::Main, job, 60);
+        }
+    }
+    // the loupe's render of this photo when it has arrived; the thumbnail otherwise
+    let shown: Option<(egui::TextureId, [usize; 2])> = if full {
+        app.renderer.textures.get(&crate::render::Slot::Main).filter(|t| t.photo == id && t.quick.is_none()).map(|t| (t.id(), t.size))
+    } else {
+        None
+    }
+    .or_else(|| app.renderer.thumb(id).map(|t| (t.id(), t.size)));
+    let Some((tex, [w, h])) = shown else {
         p.rect_filled(r, 0.0, Color32::from_gray(60));
         return;
     };
-    let [w, h] = tex.size;
     let aspect = w.max(1) as f32 / h.max(1) as f32;
     let fit = if r.width() / r.height().max(1.0) > aspect { vec2(r.height() * aspect, r.height()) } else { vec2(r.width(), r.width() / aspect) };
-    p.image(tex.id(), Rect::from_center_size(r.center(), fit), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    p.image(tex, Rect::from_center_size(r.center(), fit), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }

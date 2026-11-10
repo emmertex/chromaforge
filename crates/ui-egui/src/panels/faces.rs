@@ -143,8 +143,8 @@ pub fn take_step(app: &mut LccApp, ctx: &egui::Context, step: Setup) {
         Setup::TurnOn => {
             if app.run("faces.enable", json!({"enabled": true})).is_ok() {
                 app.caches.faces_epoch += 1;
-                app.ui.status = "Face recognition is on".into();
-                app.toast(ctx, "Face recognition is on");
+                app.ui.status = crate::i18n::tr("Face recognition is on").into();
+                app.toast(ctx, crate::i18n::tr("Face recognition is on"));
             }
         }
         Setup::GetModel => {
@@ -192,6 +192,10 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
             (crate::i18n::tr("Checking the GPU…").to_string(), None)
         } else if let Some(device) = st["device"].as_str() {
             (device.to_string(), None)
+        } else if st["why"].as_str().is_some_and(|w| w.contains("not installed")) {
+            (crate::i18n::tr("Not installed").to_string(), st["why"].as_str())
+        } else if st["why"].as_str().is_some_and(|w| w.contains("No recognition model")) {
+            (crate::i18n::tr("Not chosen").to_string(), st["why"].as_str())
         } else {
             (crate::i18n::tr("CPU").to_string(), st["why"].as_str())
         };
@@ -427,7 +431,7 @@ fn model_row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, m: &Value, dl: Opt
                         app.caches.faces_epoch += 1;
                     }
                     if !selected && !detector {
-                        let r = ui.button("Use");
+                        let r = ui.button(crate::i18n::tr("Use"));
                         register(ui.ctx(), format!("faces:use:{id}"), r.rect);
                         if r.clicked() {
                             let _ = app.run("faces.models.select", json!({"id": id}));
@@ -633,11 +637,8 @@ pub struct Hints {
 }
 
 /// Suggestions for `photo`'s unnamed faces from what is already indexed (nothing is embedded for this: the background
-/// indexer does that). `None` while recognition is off. Asked again only when the catalog or the index changed.
+/// indexer does that). Asked again only when the catalog or the index changed.
 pub fn hints_for(app: &mut LccApp, photo: u64) -> Option<std::sync::Arc<Hints>> {
-    if !app.caches.faces_active {
-        return None;
-    }
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((p, r, i, h)) = &app.caches.face_hints
         && (*p, *r, *i) == (photo, rev, indexed)
@@ -684,7 +685,7 @@ pub fn name_editor(
     let shown = egui::Area::new(egui::Id::new("face-name-editor")).order(egui::Order::Foreground).fixed_pos(at).constrain(true).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(230.0);
-            let r = ui.add(egui::TextEdit::singleline(&mut edit.text).hint_text("Name").desired_width(220.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut edit.text).hint_text(crate::i18n::tr("Name")).desired_width(220.0));
             register(ui.ctx(), "field:faceName", r.rect);
             if edit.fresh {
                 r.request_focus();

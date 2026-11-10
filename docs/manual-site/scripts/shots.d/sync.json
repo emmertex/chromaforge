@@ -1,0 +1,47 @@
+[
+  {
+    "name": "settings-connections",
+    "steps": [
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "module.library"
+        }
+      },
+      {
+        "method": "engine.execute",
+        "params": {
+          "command": "app.settings"
+        }
+      },
+      {
+        "method": "ui.clickWidget",
+        "params": {
+          "id": "button:settingsTab-connections"
+        }
+      }
+    ]
+  },
+  {
+    "name": "settings-performance",
+    "steps": [
+      {
+        "method": "ui.clickWidget",
+        "params": {
+          "id": "button:settingsTab-performance"
+        }
+      }
+    ]
+  },
+  {
+    "name": "settings-general",
+    "steps": [
+      {
+        "method": "ui.clickWidget",
+        "params": {
+          "id": "button:settingsTab-general"
+        }
+      }
+    ]
+  }
+]

@@ -33,6 +33,10 @@ const ALLOWED: &[&str] = &[
     "xtask/src/rename.rs",
     // upstream contributor credits (attribution)
     "contributors/",
+    // the Logi Options+ plugin: a separate C# package whose identity is the app it drives (package and
+    // assembly names, namespaces, the window-matching exe pattern) and which migrates the earlier name's
+    // plugin data (`LegacyData.cs`); C# has no build-time brand, so a rebrand renames this package
+    "packaging/logi/",
 ];
 
 /// `[legacy]` handling: files that must name a previous identity to migrate from it (settings folders, env vars,
@@ -45,7 +49,7 @@ pub const LEGACY_FILES: &[&str] = &[
     "crates/engine/src/legacy.rs",
     // IndexedDB name holding users' browser libraries, cross-tab lock name
     "apps/web/src/legacy.rs",
-    // the earlier name's catalog format, read by File > More Imports, and that command's menu label
+    // the earlier name's catalog format, read by File > More Imports (its UI text says `{upstream}`)
     "crates/catalog/src/legacy.rs",
     "crates/ui-egui/src/legacy.rs",
     // thumbnail-cache marker file written into existing preview folders
@@ -55,11 +59,6 @@ pub const LEGACY_FILES: &[&str] = &[
     // the intake ledger quotes upstream PR titles verbatim, and upstream titles name upstream
     "docs/upstream-pr-reviews/ledger.md",
 ];
-
-/// UI text that must name a previous identity, cut from the test build's output before it is searched for foreign
-/// names: the menu label of File > More Imports > Import (earlier name) Library, defined in
-/// `crates/ui-egui/src/legacy.rs` (a test keeps the two equal).
-const LEGACY_UI: &[&str] = &["Import LightCraft Library…"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -255,7 +254,7 @@ fn is_rendered_doc(root: &Path, path: &str) -> bool {
 /// Markdown docs may name the product by its display name (maintainer decision 2026-10-25: docs say the
 /// fork's name literally); binary names, the env prefix and legacy names stay out of them.
 fn doc_may_name(path: &str, what: &str) -> bool {
-    (path.ends_with(".md") || path.ends_with(".md.in")) && what == "display_name"
+    (path.ends_with(".md") || path.ends_with(".mdx") || path.ends_with(".md.in")) && what == "display_name"
 }
 
 pub fn is_allowed(path: &str) -> bool {
@@ -439,10 +438,7 @@ pub fn test(root: &Path) -> Result<(), String> {
     }
     let foreign_in = |what: &str, text: &str| -> Vec<String> {
         // the checkout's own path may contain a product name (e.g. a folder named after it)
-        let mut text = text.replace(&*root.to_string_lossy(), "<root>");
-        for ui in LEGACY_UI {
-            text = text.replace(ui, "<legacy label>");
-        }
+        let text = text.replace(&*root.to_string_lossy(), "<root>");
         let lower = text.to_ascii_lowercase();
         foreign.iter().filter(|f| lower.contains(&f.to_ascii_lowercase())).map(|f| format!("{what}: contains `{f}`")).collect()
     };
@@ -603,15 +599,6 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_ui_labels_are_the_app_s_own() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let src = std::fs::read_to_string(root.join("crates/ui-egui/src/legacy.rs")).unwrap();
-        for ui in LEGACY_UI {
-            assert!(src.contains(&format!("\"{ui}\"")), "`{ui}` is no longer a label in crates/ui-egui/src/legacy.rs");
-        }
-    }
 
     const SAMPLE: &str = r#"
 [product]

@@ -901,6 +901,25 @@ fn the_library_folder_is_protected_however_its_path_is_spelled() {
     std::os::unix::fs::symlink(&lib, dir.0.join("alias")).unwrap();
     std::fs::create_dir_all(dir.0.join("elsewhere")).unwrap();
     let err = s.execute("folder.move", &json!({"path": dir.path("alias"), "into": dir.path("elsewhere")})).unwrap_err().to_string();
-    assert!(err.contains("library's own folders"), "{err}");
+    assert!(err.contains("catalog's own folders"), "{err}");
     assert!(lib.is_dir() && !dir.0.join("elsewhere/alias").exists());
+}
+
+/// Show Photos in Subfolders off: a chosen folder shows its own photos only, not those of the
+/// folders inside it; on again, both.
+#[test]
+fn show_photos_in_subfolders_off_shows_the_folder_alone() {
+    let mut s = session();
+    add(&mut s, "/pics/trip/export/d.jpg");
+    source_folder(&mut s, "/pics/trip");
+    assert_eq!(s.visible().len(), 3, "the folder and its export subfolder");
+    let r = s.execute("library.showSubfolderPhotos", &json!({"on": false})).unwrap();
+    assert_eq!(r["on"], false);
+    assert_eq!(s.visible().len(), 2, "the folder's own photos only");
+    source_folder(&mut s, "/pics/trip/export");
+    assert_eq!(s.visible().len(), 1, "the subfolder is shown on its own");
+    source_folder(&mut s, "/pics/trip");
+    s.execute("library.showSubfolderPhotos", &json!({})).unwrap();
+    assert!(s.folder_subfolders, "no `on` toggles it back");
+    assert_eq!(s.visible().len(), 3);
 }

@@ -2,14 +2,15 @@
 //! to compile egui's own shaders on DX12 — "The parameter is incorrect. (0x80070057)" in
 //! `egui_pipeline` — and wgpu's default error handler panicked, killing the app at start-up).
 //!
-//! - **Windows:** each renderer of [`backend::window_renderer_order`] (DX12, GL, then eframe's
-//!   glow; Vulkan only when the environment asks for it) is *probed* before the window opens: a device is created with an error handler
+//! - **Windows:** each renderer of [`backend::window_renderer_order`] (Vulkan, DX12, GL, then
+//!   eframe's glow) is *probed* before the window opens: a device is created with an error handler
 //!   that logs instead of panicking, and egui's pipeline is built inside error scopes. The first
 //!   that builds cleanly is handed to eframe as an existing device (so its error handler stays).
 //! - **Everywhere:** a marker file names the renderer being started and is removed once the
 //!   window's renderer is up. Left behind — the start died or panicked — the next launch tries that
 //!   renderer last; [`relaunch_after_failure`] starts that next launch right away.
-//! - The renderer that worked is remembered (`<config>/window-renderer`, Windows only) and tried
+//! - The renderer that worked is remembered (`<config>/window-renderer-2`, Windows only; the `-2`
+//!   drops the DX12 that 26.45.4 remembered, so Vulkan is tried again: issue #934) and tried
 //!   first next time. `<PREFIX>_GPU_BACKEND=dx12|vulkan|gl|glow` (or `WGPU_BACKEND`) forces one.
 
 use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupExisting};
@@ -46,7 +47,7 @@ impl Files {
         self.dir.as_ref().map(|d| d.join("window-init.marker"))
     }
     fn remembered(&self) -> Option<PathBuf> {
-        self.dir.as_ref().map(|d| d.join("window-renderer"))
+        self.dir.as_ref().map(|d| d.join("window-renderer-2"))
     }
     fn read(p: Option<PathBuf>) -> Option<WindowRenderer> {
         std::fs::read_to_string(p?).ok().as_deref().and_then(WindowRenderer::parse)
@@ -204,7 +205,7 @@ fn pick_probed(
 
 /// Create a device on `backends` and build egui's pipeline on it; any wgpu error is returned.
 fn probe(backends: Backends, compose_window: bool) -> Result<WgpuSetupExisting, String> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    let instance = lcc_engine::gpu::new_instance(wgpu::InstanceDescriptor {
         backends,
         flags: backend::instance_flags_from_env(wgpu::InstanceFlags::from_build_config().with_env()),
         backend_options: presentation_options(backends, compose_window),
@@ -358,7 +359,7 @@ mod tests {
     /// wgpu's default panic. Needs an adapter; skipped where there is none (CI without a GPU).
     #[test]
     fn pipeline_errors_are_captured_not_panics() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = lcc_engine::gpu::new_instance(wgpu::InstanceDescriptor {
             backends: backend::window_backends(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });

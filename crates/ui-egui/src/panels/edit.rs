@@ -423,7 +423,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     None => (crate::i18n::tr("{app} Default").to_string(), String::new()),
                 };
                 // which photos it reaches, said on hover rather than as a line of its own
-                let reach = crate::i18n::tr("Photos imported from now on; photos already in the library keep theirs.");
+                let reach = crate::i18n::tr("Photos imported from now on; photos already in the catalog keep theirs.");
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(crate::i18n::tr("New photos start from")).small().weak()).on_hover_text(reach);
                     ui.label(RichText::new(starts_from).small()).on_hover_text(reach);
@@ -2594,9 +2594,9 @@ fn hdr_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     }
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
         let mut v = app.ui.hdr_visualize;
-        let r = ui.checkbox(&mut v, "Visualize HDR");
+        let r = ui.checkbox(&mut v, crate::i18n::tr("Visualize HDR"));
         register(ui.ctx(), "check:hdrVisualize", r.rect);
-        if r.on_hover_text("Grey below SDR white; yellow, orange, red, magenta up to 1, 2, 3 and over 3 stops above it").changed() {
+        if r.on_hover_text(crate::i18n::tr("Grey below SDR white; yellow, orange, red, magenta up to 1, 2, 3 and over 3 stops above it")).changed() {
             app.ui.hdr_visualize = v;
         }
         // Lightroom Classic's Preview for SDR Display: the photo as SDR displays and SDR exports

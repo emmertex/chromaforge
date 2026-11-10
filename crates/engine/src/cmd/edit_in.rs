@@ -379,7 +379,7 @@ pub(crate) fn stack_edit(s: &mut Session, new: PhotoId, on: PhotoId) -> Result<(
 fn add_and_stack(s: &mut Session, path: &Path, on: PhotoId, stack: bool, cmd: &str) -> Result<u64> {
     let r = s.execute("library.import", &json!({"paths": [path.to_string_lossy()]}))?;
     let new =
-        r["imported"].get(0).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("{} could not be added to the library", path.display())))?;
+        r["imported"].get(0).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("{} could not be added to the catalog", path.display())))?;
     // the round trip keeps the catalog's metadata (rating, label, title, keywords, camera…),
     // whatever the file format could carry
     if let Some(from) = s.catalog.photo(on).cloned() {

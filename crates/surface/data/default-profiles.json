@@ -1,0 +1,7430 @@
+[
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "develop.paste",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Page 1",
+    "Dial Page"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Browse, rate and edit: TactileBridge's default layout",
+  "name": "Default",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "library.next",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "develop.copy",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "develop.paste",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "develop.auto",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "develop.reset",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Page 1"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 0
+      }
+     },
+     "key.2": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 1
+      }
+     },
+     "key.3": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 2
+      }
+     },
+     "key.4": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 3
+      }
+     },
+     "key.5": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 4
+      }
+     },
+     "key.6": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 5
+      }
+     },
+     "key.7": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "red"
+      }
+     },
+     "key.8": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "green"
+      }
+     },
+     "key.9": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "blue"
+      }
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Page 2"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "tool.none",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "tool.wbPicker",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "tool.brush",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "view.zoomToggle",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Page 3"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Dial Page"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "White Balance"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "detail.nrLuminance"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "detail.sharpenAmount"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.amount"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ },
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "develop.paste",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Cull",
+    "Exposure/WB"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Fast culling, white balance, exposure, copy and paste, skin retouching",
+  "name": "Wedding",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "view.eyeFocus",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "yellow"
+      }
+     },
+     "key.5": {
+      "command": "photo.unflag",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "red"
+      }
+     },
+     "key.7": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "photo.pick",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "library.next",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Cull"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "geometry.upright",
+      "kind": "command",
+      "params": {
+       "mode": "vertical"
+      }
+     },
+     "key.2": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "key.3": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "light.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "light.shadows"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "kind": "value",
+      "target": "color.saturation"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Edit"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "tool.brush",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "mask.add",
+      "kind": "command",
+      "params": {
+       "kind": "brush"
+      }
+     },
+     "key.5": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "dialog.export",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Retouch"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.temp"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Exposure/WB"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.shadows"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.highlights"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "HDR"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "detail.nrLuminance"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "detail.sharpenAmount"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.temp"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ },
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "develop.paste",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Cull",
+    "Exposure/WB"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Skin tones, white balance, gentle adjustments, black and white",
+  "name": "Portrait",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "library.next",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 1
+      }
+     },
+     "key.5": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 3
+      }
+     },
+     "key.6": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 5
+      }
+     },
+     "key.7": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "green"
+      }
+     },
+     "key.8": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "red"
+      }
+     },
+     "key.9": {
+      "command": "photo.delete",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Cull"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "develop.copy",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "develop.paste",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "develop.auto",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "tool.wbPicker",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "photo.rotateRight",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "develop.reset",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Tone"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "section.color",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "tool.brush",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.add",
+      "kind": "command",
+      "params": {
+       "kind": "brush"
+      }
+     },
+     "key.7": {
+      "command": "develop.treatment",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "dialog.export",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Skin & BW"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.temp"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Exposure/WB"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "color.saturation"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.contrast"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Tone (dials)"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "detail.nrLuminance"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "detail.sharpenAmount"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.amount"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ },
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "panel.remove",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "mask.add",
+    "kind": "command",
+    "params": {
+     "kind": "brush"
+    }
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Cull",
+    "Exposure"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Layer-heavy retouching, colour grading, skin tone, creative colour",
+  "name": "Fashion",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "library.next",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 1
+      }
+     },
+     "key.5": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 3
+      }
+     },
+     "key.6": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 5
+      }
+     },
+     "key.7": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "green"
+      }
+     },
+     "key.8": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "red"
+      }
+     },
+     "key.9": {
+      "command": "photo.delete",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Cull"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "tool.brush",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.add",
+      "kind": "command",
+      "params": {
+       "kind": "brush"
+      }
+     },
+     "key.7": {
+      "command": "panel.remove",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Retouch"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "tool.wbPicker",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "section.color",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "develop.copy",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "develop.paste",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "dialog.export",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Grade"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Exposure"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.temp"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "color.saturation"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "detail.sharpenAmount"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.amount"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ },
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "develop.paste",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Navigate",
+    "Exposure/WB"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Highlight and shadow recovery, clarity and texture, graduated masks, vivid colour",
+  "name": "Landscape",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "library.next",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.navigate",
+      "kind": "command",
+      "params": {
+       "zoom": {
+        "percent": 200
+       }
+      }
+     },
+     "key.7": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 1
+      }
+     },
+     "key.8": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 5
+      }
+     },
+     "key.9": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "green"
+      }
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Navigate"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "develop.copy",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "develop.paste",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "develop.auto",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "tool.wbPicker",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "develop.reset",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Tone"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "mask.add",
+      "kind": "command",
+      "params": {
+       "kind": "brush"
+      }
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "dialog.export",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Layers"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.temp"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Exposure/WB"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.shadows"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.highlights"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "HDR"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.amount"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ },
+ {
+  "base": {
+   "ld.b1": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.hue"
+    }
+   },
+   "ld.b10": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.sat"
+    }
+   },
+   "ld.b101": {
+    "command": "develop.treatment",
+    "kind": "command"
+   },
+   "ld.b103": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b104": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b11": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.sat"
+    }
+   },
+   "ld.b115": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b116": {
+    "command": "view.back",
+    "kind": "command"
+   },
+   "ld.b12": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.sat"
+    }
+   },
+   "ld.b13": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.sat"
+    }
+   },
+   "ld.b14": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.sat"
+    }
+   },
+   "ld.b15": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.sat"
+    }
+   },
+   "ld.b16": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.sat"
+    }
+   },
+   "ld.b17": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.lum"
+    }
+   },
+   "ld.b18": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.lum"
+    }
+   },
+   "ld.b19": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.lum"
+    }
+   },
+   "ld.b2": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.orange.hue"
+    }
+   },
+   "ld.b20": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.lum"
+    }
+   },
+   "ld.b21": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.lum"
+    }
+   },
+   "ld.b22": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.lum"
+    }
+   },
+   "ld.b23": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.lum"
+    }
+   },
+   "ld.b24": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.lum"
+    }
+   },
+   "ld.b25": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.red"
+    }
+   },
+   "ld.b26": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.orange"
+    }
+   },
+   "ld.b27": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.yellow"
+    }
+   },
+   "ld.b28": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.green"
+    }
+   },
+   "ld.b29": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.aqua"
+    }
+   },
+   "ld.b3": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.yellow.hue"
+    }
+   },
+   "ld.b30": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.blue"
+    }
+   },
+   "ld.b31": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.purple"
+    }
+   },
+   "ld.b32": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "bw.magenta"
+    }
+   },
+   "ld.b33": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b34": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.temp"
+    }
+   },
+   "ld.b35": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "wb.tint"
+    }
+   },
+   "ld.b36": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.saturation"
+    }
+   },
+   "ld.b37": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "color.vibrance"
+    }
+   },
+   "ld.b38": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.blacks"
+    }
+   },
+   "ld.b39": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.whites"
+    }
+   },
+   "ld.b4": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.green.hue"
+    }
+   },
+   "ld.b40": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.highlights"
+    }
+   },
+   "ld.b41": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.texture"
+    }
+   },
+   "ld.b42": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "vignette.amount"
+    }
+   },
+   "ld.b44": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.shadows"
+    }
+   },
+   "ld.b45": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.clarity"
+    }
+   },
+   "ld.b46": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "light.contrast"
+    }
+   },
+   "ld.b47": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "effects.dehaze"
+    }
+   },
+   "ld.b48": {
+    "command": "panel.crop",
+    "kind": "command"
+   },
+   "ld.b5": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.aqua.hue"
+    }
+   },
+   "ld.b51": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "ld.b52": {
+    "command": "develop.wb",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b6": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.blue.hue"
+    }
+   },
+   "ld.b67": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 2
+    }
+   },
+   "ld.b68": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 3
+    }
+   },
+   "ld.b69": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 4
+    }
+   },
+   "ld.b7": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.purple.hue"
+    }
+   },
+   "ld.b70": {
+    "command": "photo.rate",
+    "kind": "command",
+    "params": {
+     "rating": 5
+    }
+   },
+   "ld.b71": {
+    "command": "library.filter",
+    "kind": "command",
+    "params": {
+     "label": "red"
+    }
+   },
+   "ld.b72": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "yellow"
+    }
+   },
+   "ld.b73": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "green"
+    }
+   },
+   "ld.b74": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "blue"
+    }
+   },
+   "ld.b75": {
+    "command": "photo.label",
+    "kind": "command",
+    "params": {
+     "label": "purple"
+    }
+   },
+   "ld.b76": {
+    "command": "library.selectAll",
+    "kind": "command"
+   },
+   "ld.b77": {
+    "command": "library.selectNone",
+    "kind": "command"
+   },
+   "ld.b78": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ld.b79": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ld.b8": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.magenta.hue"
+    }
+   },
+   "ld.b88": {
+    "command": "geometry.upright",
+    "kind": "command",
+    "params": {
+     "mode": "auto"
+    }
+   },
+   "ld.b89": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b9": {
+    "command": "develop.resetControl",
+    "kind": "command",
+    "params": {
+     "control": "mixer.red.sat"
+    }
+   },
+   "ld.b90": {
+    "command": "view.zoomToggle",
+    "kind": "command"
+   },
+   "ld.b91": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ld.b92": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "ld.b93": {
+    "command": "develop.pastePrevious",
+    "kind": "command"
+   },
+   "ld.b94": {
+    "command": "tool.brush",
+    "kind": "command"
+   },
+   "ld.b95": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ld.b97": {
+    "command": "view.fullScreenPreview",
+    "kind": "command"
+   },
+   "ld.r1": {
+    "kind": "value",
+    "target": "mixer.red.hue"
+   },
+   "ld.r10": {
+    "kind": "value",
+    "target": "mixer.orange.sat"
+   },
+   "ld.r11": {
+    "kind": "value",
+    "target": "mixer.yellow.sat"
+   },
+   "ld.r12": {
+    "kind": "value",
+    "target": "mixer.green.sat"
+   },
+   "ld.r13": {
+    "kind": "value",
+    "target": "mixer.aqua.sat"
+   },
+   "ld.r14": {
+    "kind": "value",
+    "target": "mixer.blue.sat"
+   },
+   "ld.r15": {
+    "kind": "value",
+    "target": "mixer.purple.sat"
+   },
+   "ld.r16": {
+    "kind": "value",
+    "target": "mixer.magenta.sat"
+   },
+   "ld.r17": {
+    "kind": "value",
+    "target": "mixer.red.lum"
+   },
+   "ld.r18": {
+    "kind": "value",
+    "target": "mixer.orange.lum"
+   },
+   "ld.r19": {
+    "kind": "value",
+    "target": "mixer.yellow.lum"
+   },
+   "ld.r2": {
+    "kind": "value",
+    "target": "mixer.orange.hue"
+   },
+   "ld.r20": {
+    "kind": "value",
+    "target": "mixer.green.lum"
+   },
+   "ld.r21": {
+    "kind": "value",
+    "target": "mixer.aqua.lum"
+   },
+   "ld.r22": {
+    "kind": "value",
+    "target": "mixer.blue.lum"
+   },
+   "ld.r23": {
+    "kind": "value",
+    "target": "mixer.purple.lum"
+   },
+   "ld.r24": {
+    "kind": "value",
+    "target": "mixer.magenta.lum"
+   },
+   "ld.r25": {
+    "kind": "value",
+    "target": "bw.red"
+   },
+   "ld.r26": {
+    "kind": "value",
+    "target": "bw.orange"
+   },
+   "ld.r27": {
+    "kind": "value",
+    "target": "bw.yellow"
+   },
+   "ld.r28": {
+    "kind": "value",
+    "target": "bw.green"
+   },
+   "ld.r29": {
+    "kind": "value",
+    "target": "bw.aqua"
+   },
+   "ld.r3": {
+    "kind": "value",
+    "target": "mixer.yellow.hue"
+   },
+   "ld.r30": {
+    "kind": "value",
+    "target": "bw.blue"
+   },
+   "ld.r31": {
+    "kind": "value",
+    "target": "bw.purple"
+   },
+   "ld.r32": {
+    "kind": "value",
+    "target": "bw.magenta"
+   },
+   "ld.r33": {
+    "kind": "value",
+    "target": "light.exposure"
+   },
+   "ld.r34": {
+    "kind": "value",
+    "target": "wb.temp"
+   },
+   "ld.r35": {
+    "kind": "value",
+    "target": "wb.tint"
+   },
+   "ld.r36": {
+    "kind": "value",
+    "target": "color.saturation"
+   },
+   "ld.r37": {
+    "kind": "value",
+    "target": "color.vibrance"
+   },
+   "ld.r38": {
+    "kind": "value",
+    "target": "light.blacks"
+   },
+   "ld.r39": {
+    "kind": "value",
+    "target": "light.whites"
+   },
+   "ld.r4": {
+    "kind": "value",
+    "target": "mixer.green.hue"
+   },
+   "ld.r40": {
+    "kind": "value",
+    "target": "light.highlights"
+   },
+   "ld.r41": {
+    "kind": "value",
+    "target": "effects.texture"
+   },
+   "ld.r42": {
+    "kind": "value",
+    "target": "vignette.amount"
+   },
+   "ld.r44": {
+    "kind": "value",
+    "target": "light.shadows"
+   },
+   "ld.r45": {
+    "kind": "value",
+    "target": "effects.clarity"
+   },
+   "ld.r46": {
+    "kind": "value",
+    "target": "light.contrast"
+   },
+   "ld.r47": {
+    "kind": "value",
+    "target": "effects.dehaze"
+   },
+   "ld.r48": {
+    "kind": "value",
+    "target": "crop.angle"
+   },
+   "ld.r5": {
+    "kind": "value",
+    "target": "mixer.aqua.hue"
+   },
+   "ld.r6": {
+    "kind": "value",
+    "target": "mixer.blue.hue"
+   },
+   "ld.r7": {
+    "kind": "value",
+    "target": "mixer.purple.hue"
+   },
+   "ld.r8": {
+    "kind": "value",
+    "target": "mixer.magenta.hue"
+   },
+   "ld.r9": {
+    "kind": "value",
+    "target": "mixer.red.sat"
+   },
+   "pad.1": {
+    "command": "develop.copy",
+    "kind": "command"
+   },
+   "pad.2": {
+    "command": "develop.paste",
+    "kind": "command"
+   },
+   "pad.3": {
+    "command": "develop.auto",
+    "kind": "command"
+   },
+   "pad.4": {
+    "group": "dials",
+    "kind": "pageNext"
+   },
+   "ring.1": {
+    "command": "edit.undo",
+    "kind": "command"
+   },
+   "ring.2": {
+    "command": "edit.redo",
+    "kind": "command"
+   },
+   "ring.3": {
+    "command": "photo.pick",
+    "kind": "command"
+   },
+   "ring.4": {
+    "command": "photo.reject",
+    "kind": "command"
+   },
+   "ring.5": {
+    "command": "library.previous",
+    "kind": "command"
+   },
+   "ring.6": {
+    "command": "library.next",
+    "kind": "command"
+   },
+   "ring.7": {
+    "command": "view.beforeAfter",
+    "kind": "command"
+   },
+   "ring.8": {
+    "command": "view.zoomFit",
+    "kind": "command"
+   }
+  },
+  "contexts": {
+   "crop": [
+    "Crop"
+   ],
+   "default": [
+    "Navigate",
+    "Exposure/WB"
+   ],
+   "dialog": [
+    "Dialog"
+   ],
+   "masking": [
+    "Masks"
+   ],
+   "masking.mask.brush": [
+    "Brush"
+   ],
+   "remove": [
+    "Remove"
+   ]
+  },
+  "description": "Perspective correction, white balance, highlights and shadows, batch work",
+  "name": "Real Estate",
+  "pages": [
+   {
+    "bindings": {
+     "key.1": {
+      "command": "library.previous",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "library.next",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.beforeAfter",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 1
+      }
+     },
+     "key.6": {
+      "command": "photo.rate",
+      "kind": "command",
+      "params": {
+       "rating": 5
+      }
+     },
+     "key.7": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "green"
+      }
+     },
+     "key.8": {
+      "command": "photo.label",
+      "kind": "command",
+      "params": {
+       "label": "red"
+      }
+     },
+     "key.9": {
+      "command": "photo.delete",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Navigate"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "panel.crop",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.guidedUpright",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "geometry.upright",
+      "kind": "command",
+      "params": {
+       "mode": "vertical"
+      }
+     },
+     "key.5": {
+      "command": "geometry.upright",
+      "kind": "command",
+      "params": {
+       "mode": "level"
+      }
+     },
+     "key.6": {
+      "command": "tool.wbPicker",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "develop.auto",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "photo.rotateLeft",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "photo.rotateRight",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Correct"
+   },
+   {
+    "bindings": {
+     "key.1": {
+      "command": "develop.copy",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "develop.paste",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "develop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "develop.autoSync",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "dialog.export",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "view.clipping",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Process"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.temp"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Exposure/WB"
+   },
+   {
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.shadows"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.highlights"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "HDR"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.zoom"
+     },
+     "key.1": {
+      "command": "crop.rotateAspect",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "crop.autoStraighten",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "crop.reset",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "view.cropOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "view.cropOverlayOrientation",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "crop.angle"
+     }
+    },
+    "name": "Crop"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.brushFeather"
+     },
+     "key.1": {
+      "command": "mask.invert",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "brush.erase",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.4": {
+      "command": "surface.maskPrevious",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "mask.visible",
+      "kind": "command"
+     },
+     "key.7": {
+      "kind": "value",
+      "target": "ui.brushFlow"
+     },
+     "key.8": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.brushSize"
+     }
+    },
+    "name": "Brush"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "ui.removeFeather"
+     },
+     "key.1": {
+      "command": "view.visualizeSpots",
+      "kind": "command"
+     },
+     "key.2": {
+      "command": "view.zoomIn",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "view.zoomOut",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "view.zoomFit",
+      "kind": "command"
+     },
+     "key.5": {
+      "command": "view.zoom100",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "spot.delete",
+      "kind": "command"
+     },
+     "key.7": {
+      "command": "edit.undo",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "edit.redo",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "ui.removeSize"
+     }
+    },
+    "name": "Remove"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "key.1": {
+      "command": "surface.dialogConfirm",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "surface.dialogCancel",
+      "kind": "command"
+     },
+     "key.4": {
+      "command": "library.selectAll",
+      "kind": "command"
+     },
+     "key.6": {
+      "command": "library.selectNone",
+      "kind": "command"
+     }
+    },
+    "groups": [
+     "keys"
+    ],
+    "name": "Dialog"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "light.contrast"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "light.exposure"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Light"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "wb.tint"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "wb.temp"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Color"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "effects.texture"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "effects.clarity"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Effects"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "detail.nrLuminance"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "detail.sharpenAmount"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Detail"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "optics.vignetting"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "optics.distortion"
+     }
+    },
+    "groups": [
+     "dials"
+    ],
+    "name": "Optics"
+   },
+   {
+    "auto": true,
+    "bindings": {
+     "dial": {
+      "kind": "value",
+      "target": "mask.amount"
+     },
+     "key.1": {
+      "command": "tool.brush",
+      "kind": "command",
+      "params": {
+       "new": true
+      }
+     },
+     "key.2": {
+      "command": "tool.linear",
+      "kind": "command"
+     },
+     "key.3": {
+      "command": "tool.radial",
+      "kind": "command"
+     },
+     "key.4": {
+      "kind": "value",
+      "target": "mask.exposure"
+     },
+     "key.5": {
+      "kind": "value",
+      "target": "mask.highlights"
+     },
+     "key.6": {
+      "kind": "value",
+      "target": "mask.shadows"
+     },
+     "key.7": {
+      "command": "view.maskOverlay",
+      "kind": "command"
+     },
+     "key.8": {
+      "command": "surface.maskNext",
+      "kind": "command"
+     },
+     "key.9": {
+      "command": "tool.done",
+      "kind": "command"
+     },
+     "roller": {
+      "kind": "value",
+      "target": "mask.exposure"
+     }
+    },
+    "name": "Masks"
+   }
+  ]
+ }
+]

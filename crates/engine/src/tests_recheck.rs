@@ -153,3 +153,23 @@ fn session_without_file_access_refuses() {
     assert!(e.contains("no file access"), "{e}");
     assert!(x.s.catalog.photo(x.id).unwrap().preview_only.is_some());
 }
+
+/// A virtual copy relinked to a file of its own is rechecked with that file (nothing else would), while one
+/// that still shares its original's file follows the original.
+#[test]
+fn a_relinked_virtual_copy_is_rechecked_but_a_same_file_copy_is_not() {
+    let mut x = library("relinked-copy");
+    let r = x.s.execute("photo.virtualCopy", &json!({"ids": [x.id.0]})).unwrap();
+    let copy = PhotoId(r["ids"][0].as_u64().unwrap());
+    let listed = |x: &Lib| recheck::stale(&x.s.catalog, true).iter().map(|i| i.id).collect::<Vec<_>>();
+    assert_eq!(listed(&x), vec![x.id], "a copy on the original's file follows the original");
+    let other = x.dir.join("files").join("IMG_0002.cr3");
+    std::fs::write(&other, cr3_with_preview(96, 64)).unwrap();
+    x.s.execute("photo.relink", &json!({"id": copy.0, "path": other.to_string_lossy()})).unwrap();
+    let after = listed(&x);
+    assert!(after.contains(&x.id), "{after:?}");
+    assert!(
+        after.contains(&copy) == x.s.catalog.photo(copy).unwrap().preview_only.is_some(),
+        "a relinked copy that is preview-only is listed: {after:?}"
+    );
+}

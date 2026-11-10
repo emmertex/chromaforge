@@ -1694,12 +1694,17 @@ fn custom_name_sequence_follows_selection_order() {
 #[test]
 fn hostile_subfolders_are_refused() {
     use crate::export::{Destination, DestinationMode};
-    for bad in ["..", ".", "../up", "/etc", "a/b", "a\\b", "C:x", "x\u{0}y"] {
+    for bad in ["..", ".", "../up", "/etc", "a/b", "a\\b", "C:x", "x\u{0}y", "CON", "nul.txt", "COM1", "a*b", "what?", "a<b>", "q\"x", "p|q", "dots."]
+    {
         let e = ExportOptions::from_params(&json!({"subfolder": bad})).unwrap_err().to_string();
         assert!(e.contains("subfolder"), "{bad}: {e}");
         assert!(ExportOptions::from_json(&json!({"subfolder": bad})).subfolder.chars().all(|c| !matches!(c, '/' | '\\')), "{bad}");
     }
     assert_eq!(ExportOptions::from_params(&json!({"subfolder": " Edited "})).unwrap().subfolder, "Edited");
+    // a name that merely looks like a device is fine
+    for ok in ["Console", "COM10", "Trip 2026"] {
+        assert_eq!(ExportOptions::from_params(&json!({"subfolder": ok})).unwrap().subfolder, ok);
+    }
     let mut s = Session::with_demo();
     let ids: Vec<_> = s.catalog.photos().take(1).map(|p| p.id).collect();
     for mode in [DestinationMode::SpecificFolder, DestinationMode::SameAsOriginal] {
