@@ -143,7 +143,7 @@ fn name(group: &str, tag: u16) -> String {
 
 fn rational(n: f64, d: f64) -> String {
     if d == 0.0 {
-        return "—".into();
+        return String::new();
     }
     let v = n / d;
     if (v - v.round()).abs() < 1e-9 {

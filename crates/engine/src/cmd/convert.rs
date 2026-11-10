@@ -131,7 +131,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Convert to DNG",
         ["Photo", "File"],
         None,
-        "{ids?} — write each raw photo as a lossless DNG next to it (settings embedded) and relink the photo to it; originals are kept → {converted: [{id, path, original}], skipped}",
+        "{ids?}: write each raw photo as a lossless DNG next to it (settings embedded) and relink the photo to it; originals are kept → {converted: [{id, path, original}], skipped}",
         has_selection,
         convert
     )]
@@ -488,7 +488,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Duplicate",
             ["Photo", "File"],
             None,
-            "{ids?} — copy each photo's file next to it (`-copy`) and add it with the same settings, metadata and albums (a real file, unlike a virtual copy) → {ids}",
+            "{ids?}: copy each photo's file next to it (`-copy`) and add it with the same settings, metadata and albums (a real file, unlike a virtual copy) → {ids}",
             has_selection,
             duplicate
         ),
@@ -497,7 +497,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Reload from Disk",
             ["Photo", "File"],
             None,
-            "{ids?} — re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
+            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
             has_selection,
             reload
         ),
@@ -506,7 +506,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Edit Copy for External Editor",
             [],
             None,
-            "{ids?, colorSpace?: adobeRgb (default) | proPhoto | displayP3 | srgb, format?: tiff (default) | psd, bitDepth?: 16 (default) | 8, dir?} — render each selected photo (or `ids`, at most 50) with its edits as `<name>-Edit.tif` (or `.psd`, flat, which PhotoCraft saves back to in place) next to it, add each stacked on its original and select the copies → {path, id, original (the first copy), copies: [{path, id, original}]} (the app then opens them in the external editor)",
+            "{ids?, colorSpace?: adobeRgb (default) | proPhoto | displayP3 | srgb, format?: tiff (default) | psd, bitDepth?: 16 (default) | 8, dir?}: render each selected photo (or `ids`, at most 50) with its edits as `<name>-Edit.tif` (or `.psd`, flat, which PhotoCraft saves back to in place) next to it, add each stacked on its original and select the copies → {path, id, original (the first copy), copies: [{path, id, original}]} (the app then opens them in the external editor)",
             has_active,
             edit_external
         ),
@@ -517,7 +517,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
                 "Render to DNG",
                 ["Photo", "File"],
                 None,
-                "{ids?, colorSpace?: proPhoto (default) | rec2020 | adobeRgb | displayP3 | srgb, dir?} — render each selected photo (or `ids`, at most 500) with its edits as a linear 16-bit float DNG `<name>-Rendered.dng` next to it (a demo photo into `dir`), add each stacked on its original and select them; a batch shows in the activity stack and can be cancelled between photos → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
+                "{ids?, colorSpace?: proPhoto (default) | rec2020 | adobeRgb | displayP3 | srgb, dir?}: render each selected photo (or `ids`, at most 500) with its edits as a linear 16-bit float DNG `<name>-Rendered.dng` next to it (a demo photo into `dir`), add each stacked on its original and select them; a batch shows in the activity stack and can be cancelled between photos → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
                 has_selection,
                 render_to_dng
             )

@@ -521,7 +521,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Develop Values",
             [],
             None,
-            "{control?: controlId, value?: number, values?: {controlId: number}, ids?: [photo]} — see develop.controls; `crop.angle` turns the crop as crop.straighten does (kept if it still fits, else the largest of its aspect inside the photo)",
+            "{control?: controlId, value?: number, values?: {controlId: number}, ids?: [photo]}: see develop.controls; `crop.angle` turns the crop as crop.straighten does (kept if it still fits, else the largest of its aspect inside the photo)",
             has_active,
             |s, p| {
                 let mut vals: Vec<(String, f64)> = Vec::new();
@@ -718,7 +718,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto B&W Mix",
             [],
             None,
-            "{} — sets the black & white mix from the photo's colours (and switches to B&W)",
+            "{}: sets the black & white mix from the photo's colours (and switches to B&W)",
             has_active,
             |s, _| {
                 let id = active(s, "develop.autoBwMix")?;
@@ -921,7 +921,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Camera Profile",
             [],
             None,
-            "{id: \"\" (the camera's default), \"lc\" (the app's own colour), \"dcp:…\" (an imported .dcp) or \"cal:…\" (a Lightroom-matched calibrated look; both listed by camera.listDcp)} — how the raw is decoded",
+            "{id: \"\" (the camera's default), \"lc\" (the app's own colour), \"dcp:…\" (an imported .dcp) or \"cal:…\" (a Lightroom-matched calibrated look; both listed by camera.listDcp)}: how the raw is decoded",
             has_active,
             |s, p| {
                 const C: &str = "develop.cameraProfile";
@@ -1005,7 +1005,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Drag Crop Handle",
             [],
             None,
-            "{handle: topLeft|topRight|bottomRight|bottomLeft|top|right|bottom|left|move | 0..8, from: [x,y], to: [x,y] (normalized, straightened frame), start?: [x0,y0,x1,y1] (default: the current crop), keepRatio?: bool (default false)} — drags a crop handle; stops at the image edge, keeps the opposite edges, honours the aspect lock; keepRatio holds the frame's current proportions for this drag even with the lock off (the UI sends it while Shift is held)",
+            "{handle: topLeft|topRight|bottomRight|bottomLeft|top|right|bottom|left|move | 0..8, from: [x,y], to: [x,y] (normalized, straightened frame), start?: [x0,y0,x1,y1] (default: the current crop), keepRatio?: bool (default false)}: drags a crop handle; stops at the image edge, keeps the opposite edges, honours the aspect lock; keepRatio holds the frame's current proportions for this drag even with the lock off (the UI sends it while Shift is held)",
             has_active,
             |s, p| {
                 let id = active(s, "crop.drag")?;
@@ -1047,7 +1047,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Straighten",
             [],
             None,
-            "{angle: degrees -45..45} — keeps the crop if it still fits, else shrinks it about its centre (the largest crop of its aspect stays the largest)",
+            "{angle: degrees -45..45}: keeps the crop if it still fits, else shrinks it about its centre (the largest crop of its aspect stays the largest)",
             has_active,
             |s, p| {
                 let id = active(s, "crop.straighten")?;
@@ -1060,35 +1060,27 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!(
-            "crop.autoStraighten",
-            "Auto Straighten",
-            [],
-            None,
-            "{} — level the horizon (or plumb lines) with the crop angle",
-            has_active,
-            |s, _| {
-                let id = active(s, "crop.autoStraighten")?;
-                let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad("crop.autoStraighten", e))?;
-                let info = s.source_info(id);
-                let d = s.develop_of(id).unwrap_or_default();
-                let aux = lcc_pipeline::source_stage::aux_source(&src, &info, &d);
-                let Some(level) = lcc_pipeline::upright::level_degrees(aux.as_deref().unwrap_or(&src), &info, &d) else {
-                    return Ok(json!({"changed": false, "reason": "no dominant horizontal or vertical lines"}));
-                };
-                // Same convention as the crop angle (verified: a horizon descending 6° to the right
-                // comes out level with angle = level ≈ −6°).
-                let angle = level.clamp(-45.0, 45.0);
-                s.execute("crop.straighten", &json!({"angle": (angle * 100.0).round() / 100.0}))?;
-                Ok(json!({"changed": true, "angle": angle}))
-            }
-        ),
+        cmd!("crop.autoStraighten", "Auto Straighten", [], None, "{}: level the horizon (or plumb lines) with the crop angle", has_active, |s, _| {
+            let id = active(s, "crop.autoStraighten")?;
+            let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad("crop.autoStraighten", e))?;
+            let info = s.source_info(id);
+            let d = s.develop_of(id).unwrap_or_default();
+            let aux = lcc_pipeline::source_stage::aux_source(&src, &info, &d);
+            let Some(level) = lcc_pipeline::upright::level_degrees(aux.as_deref().unwrap_or(&src), &info, &d) else {
+                return Ok(json!({"changed": false, "reason": "no dominant horizontal or vertical lines"}));
+            };
+            // Same convention as the crop angle (verified: a horizon descending 6° to the right
+            // comes out level with angle = level ≈ −6°).
+            let angle = level.clamp(-45.0, 45.0);
+            s.execute("crop.straighten", &json!({"angle": (angle * 100.0).round() / 100.0}))?;
+            Ok(json!({"changed": true, "angle": angle}))
+        }),
         cmd!(
             "crop.aspect",
             "Crop Aspect",
             [],
             None,
-            "{aspect: \"original\"|\"free\"|\"current\" (lock the crop's present shape)|\"toggle\" (lock ↔ free)|\"1x1\"|\"4x5\"|\"8.5x11\"|\"5x7\"|\"2x3\"|\"4x3\"|\"16x9\"|\"16x10\"|[w,h], orientation?: \"crop\"|\"given\"} — a named ratio takes the crop's present orientation (landscape, or portrait after X); [w,h] is used as given (taller than wide → portrait); `orientation` overrides either",
+            "{aspect: \"original\"|\"free\"|\"current\" (lock the crop's present shape)|\"toggle\" (lock ↔ free)|\"1x1\"|\"4x5\"|\"8.5x11\"|\"5x7\"|\"2x3\"|\"4x3\"|\"16x9\"|\"16x10\"|[w,h], orientation?: \"crop\"|\"given\"}: a named ratio takes the crop's present orientation (landscape, or portrait after X); [w,h] is used as given (taller than wide → portrait); `orientation` overrides either",
             has_active,
             |s, p| {
                 let id = active(s, "crop.aspect")?;
@@ -1258,7 +1250,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "HDR",
             [],
             None,
-            "{enabled?: bool (default: toggle), maxEv?: number 0..5 (headroom limit, stops above SDR white)} — HDR editing: highlights above SDR white for HDR exports and displays; every SDR render uses the SDR rendition (the hdr.sdr* controls)",
+            "{enabled?: bool (default: toggle), maxEv?: number 0..5 (headroom limit, stops above SDR white)}: HDR editing: highlights above SDR white for HDR exports and displays; every SDR render uses the SDR rendition (the hdr.sdr* controls)",
             has_active,
             |s, p| {
                 let id = active(s, "develop.hdr")?;
@@ -1284,7 +1276,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Pick an HSL Curve Point",
             [],
             None,
-            "{channel: hue|sat|lum, x, y (normalized image coords)} — samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
+            "{channel: hue|sat|lum, x, y (normalized image coords)}: samples the photo's colour there and adds that hue to the channel's HSL curve, at the curve's current height there → {x}",
             has_active,
             |s, p| {
                 let c = "develop.hslPick";
@@ -1312,7 +1304,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set HSL Curve",
             [],
             None,
-            "{channel: hue|sat|lum, points: [[x,y],...] — x hue position 0..1 around the hue circle, y −1..1}",
+            "{channel: hue|sat|lum, points: [[x,y],...]: x hue position 0..1 around the hue circle, y −1..1}",
             has_active,
             |s, p| {
                 let ch = str_param(p, "channel").ok_or_else(|| bad("develop.hslCurves", "missing channel"))?.to_string();
@@ -1338,7 +1330,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Upright",
             [],
             None,
-            "{mode: off|auto|guided|level|vertical|full, again?: bool} — analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes. `again` (a second click on the mode that is on) analyses it afresh and clears Guided's guides; the Transform sliders stay → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
+            "{mode: off|auto|guided|level|vertical|full, again?: bool}: analyses the photo (line segments → vanishing points) and stores the correction; run again to update after lens changes. `again` (a second click on the mode that is on) analyses it afresh and clears Guided's guides; the Transform sliders stay → {mode, transform, note (why the mode found nothing to correct, when it didn't)}",
             has_active,
             |s, p| {
                 let mode: Upright =
@@ -1385,7 +1377,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Guided Upright Guides",
             [],
             None,
-            "{guides: [[x0,y0,x1,y1], …] (≤ 4, normalized coords of the lens-corrected image), add?: bool (append one guide, dropping the oldest beyond 4)} — switches Upright to Guided",
+            "{guides: [[x0,y0,x1,y1], …] (≤ 4, normalized coords of the lens-corrected image), add?: bool (append one guide, dropping the oldest beyond 4)}: switches Upright to Guided",
             has_active,
             |s, p| {
                 let parse = |v: &Value| -> Option<(Point, Point)> {
@@ -1418,7 +1410,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Copy Edit Settings",
             ["Photo", "Develop Settings"],
             Some("Cmd+C"),
-            "{groups?: [settingsGroup], settings?: [settingItem] (single settings of a group, develop.settingItems)} (default: what was ticked last; at first all but crop, masks, remove) — the choice is remembered → {groups, settings}",
+            "{groups?: [settingsGroup], settings?: [settingItem] (single settings of a group, develop.settingItems)} (default: what was ticked last; at first all but crop, masks, remove): the choice is remembered → {groups, settings}",
             has_active,
             |s, p| {
                 let c = "develop.copy";
@@ -1440,7 +1432,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paste Settings from Previous",
             ["Photo", "Develop Settings"],
             Some("Cmd+Alt+V"),
-            "{ids?, groups?: [settingsGroup], settings?: [settingItem] (default: the copy choice)} — from the photo that was active before this one",
+            "{ids?, groups?: [settingsGroup], settings?: [settingItem] (default: the copy choice)}: from the photo that was active before this one",
             has_active,
             |s, p| {
                 let c = "develop.pastePrevious";
@@ -1509,7 +1501,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Settings",
             [],
             None,
-            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId]} — copy the active photo's settings to the other selected photos: whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
+            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId]}: copy the active photo's settings to the other selected photos: whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
             has_selection,
             |s, p| {
                 let c = "develop.sync";
@@ -1599,7 +1591,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Quick Develop",
             [],
             None,
-            "{control: develop control id, delta, ids?} — add `delta` to the control on every target photo (each from its own value; Quick Develop) in one undo step → {changed}",
+            "{control: develop control id, delta, ids?}: add `delta` to the control on every target photo (each from its own value; Quick Develop) in one undo step → {changed}",
             has_selection,
             |s, p| {
                 let c = "develop.quickAdjust";
@@ -1629,7 +1621,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Match Total Exposures",
             ["Photo", "Develop Settings"],
             None,
-            "{ids?} — set each selected photo's Exposure so its total exposure (shutter × ISO ÷ aperture², plus the slider) equals the active photo's; photos without exposure data are skipped → {changed, skipped}",
+            "{ids?}: set each selected photo's Exposure so its total exposure (shutter × ISO ÷ aperture², plus the slider) equals the active photo's; photos without exposure data are skipped → {changed, skipped}",
             has_selection,
             |s, p| {
                 let c = "develop.matchExposure";
@@ -1666,7 +1658,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Sync",
             ["Photo", "Develop Settings"],
             Some("Cmd+Alt+Shift+A"),
-            "{on?: bool} (toggles when omitted) — edits to the active photo also change the other selected photos (only the settings that changed; not spot removal / red eye) → {on}",
+            "{on?: bool} (toggles when omitted): edits to the active photo also change the other selected photos (only the settings that changed; not spot removal / red eye) → {on}",
             always,
             |s, p| {
                 s.auto_sync = p.get("on").and_then(Value::as_bool).unwrap_or(!s.auto_sync);
@@ -1718,7 +1710,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Preset",
             ["Photo"],
             None,
-            "{name, group?, groups?: [settingsGroup], settings?: [settingItem]} (default: what New Preset ticked last; White Balance only once ticked) — a group named like an existing one (any case, spaces trimmed) is that group; the choice is remembered → {id, group}",
+            "{name, group?, groups?: [settingsGroup], settings?: [settingItem]} (default: what New Preset ticked last; White Balance only once ticked): a group named like an existing one (any case, spaces trimmed) is that group; the choice is remembered → {id, group}",
             has_active,
             |s, p| {
                 let c = "preset.create";
@@ -1764,7 +1756,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Import Recipe as Preset",
             [],
             None,
-            "{name (up to 100 characters), group?: default Import Recipes, recipe: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}]} → {id, name} — save a batch-edit recipe (as library.import takes it) as a user preset, so it can be reused from the Preset list; only the settings the recipe names are stored, so applying it later never overrides the rest. The preset gets an id no other preset has; saving the same recipe under the same name and group again returns the preset that already is",
+            "{name (up to 100 characters), group?: default Import Recipes, recipe: [{id: a plain develop control (develop.controls; no white balance, geometry or crop), value}]} → {id, name}: save a batch-edit recipe (as library.import takes it) as a user preset, so it can be reused from the Preset list; only the settings the recipe names are stored, so applying it later never overrides the rest. The preset gets an id no other preset has; saving the same recipe under the same name and group again returns the preset that already is",
             always,
             |s, p| {
                 const C: &str = "preset.saveRecipe";
@@ -1816,7 +1808,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mark Preset At Import",
             [],
             None,
-            "{id, on?: bool} — the import pickers list presets marked At Import first",
+            "{id, on?: bool}: the import pickers list presets marked At Import first",
             always,
             |s, p| { toggle_mark(s, p, "preset.forImport", "on", |s| &mut s.preset_at_import) }
         ),
@@ -1825,7 +1817,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Preset",
             [],
             None,
-            "{id, hidden?: bool} — out of the Presets panel and the pickers, kept in the Presets Manager",
+            "{id, hidden?: bool}: out of the Presets panel and the pickers, kept in the Presets Manager",
             always,
             |s, p| { toggle_mark(s, p, "preset.hide", "hidden", |s| &mut s.preset_hidden) }
         ),
@@ -1834,7 +1826,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Preset",
             [],
             None,
-            "{id, name} — built-in presets too (preset.restoreBuiltins gives them their names back)",
+            "{id, name}: built-in presets too (preset.restoreBuiltins gives them their names back)",
             always,
             |s, p| {
                 let c = "preset.rename";
@@ -1843,7 +1835,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 ok()
             }
         ),
-        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group} — built-in presets too", always, |s, p| {
+        cmd!("preset.move", "Move Preset to Group", [], None, "{id, group}: built-in presets too", always, |s, p| {
             let c = "preset.move";
             let group = str_param(p, "group").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing group"))?;
             // (a group named like one there is is that group: never two "Wedding" groups)
@@ -1856,7 +1848,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Preset Group",
             [],
             None,
-            "{group, hidden?: bool} — every preset in the group (and the groups under it) out of the Presets panel and the pickers, or back → {hidden, count}",
+            "{group, hidden?: bool}: every preset in the group (and the groups under it) out of the Presets panel and the pickers, or back → {hidden, count}",
             always,
             |s, p| {
                 let c = "preset.hideGroup";
@@ -1880,7 +1872,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Restore Built-in Presets",
             [],
             None,
-            "{} — built-in presets get their own names and groups back and are shown again → {restored}",
+            "{}: built-in presets get their own names and groups back and are shown again → {restored}",
             always,
             |s, _p| {
                 let builtin: std::collections::HashSet<String> = s.presets.iter().filter(|q| q.builtin).map(|q| q.id.clone()).collect();
@@ -1913,7 +1905,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": group}))
         }),
-        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name} — built-in groups too", always, |s, p| {
+        cmd!("preset.renameGroup", "Rename Preset Folder", [], None, "{group, name}: built-in groups too", always, |s, p| {
             let c = "preset.renameGroup";
             let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?;
@@ -1929,7 +1921,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(json!({"group": new_group}))
         }),
-        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null} — built-in groups too", always, |s, p| {
+        cmd!("preset.moveGroup", "Move Preset Folder", [], None, "{group, parent?: group | null}: built-in groups too", always, |s, p| {
             let c = "preset.moveGroup";
             let old_group = str_param(p, "group").map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(c, "missing group"))?.to_string();
             let parent = str_param(p, "parent").map(str::trim).filter(|p| !p.is_empty());
@@ -1953,7 +1945,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Copy Presets to Folder",
             [],
             None,
-            "{ids: [presetId], group} → {ids: [new presetId], skipped} — user presets with the same settings under a new id, built-in presets included, unstarred; a preset identical to one already in the folder is skipped",
+            "{ids: [presetId], group} → {ids: [new presetId], skipped}: user presets with the same settings under a new id, built-in presets included, unstarred; a preset identical to one already in the folder is skipped",
             always,
             |s, p| {
                 let c = "preset.copy";
@@ -1988,7 +1980,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Presets",
             [],
             None,
-            "{ids: [presetId]} → {deleted, skipped} — user presets; built-in and unknown ids are skipped",
+            "{ids: [presetId]} → {deleted, skipped}: user presets; built-in and unknown ids are skipped",
             always,
             |s, p| {
                 let c = "preset.deleteMany";
@@ -2008,7 +2000,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Preset Folder",
             [],
             None,
-            "{group, expect?: how many presets it should hold} — refused when `expect` is given and wrong",
+            "{group, expect?: how many presets it should hold}: refused when `expect` is given and wrong",
             always,
             |s, p| {
                 let c = "preset.deleteGroup";
@@ -2038,7 +2030,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Preset with Current Settings",
             [],
             None,
-            "{id, groups?: [settingsGroup], settings?: [settingItem] (default: the settings the preset already has)} — from the active photo; keeps the preset's name, group, place, favourite and marks; preset.undoUpdate puts the old settings back → {id, groups, settings}",
+            "{id, groups?: [settingsGroup], settings?: [settingItem] (default: the settings the preset already has)}: from the active photo; keeps the preset's name, group, place, favourite and marks; preset.undoUpdate puts the old settings back → {id, groups, settings}",
             has_active,
             |s, p| {
                 let c = "preset.update";
@@ -2061,7 +2053,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Undo Update Preset",
             [],
             None,
-            "{} — put back the settings the last Update with Current Settings replaced",
+            "{}: put back the settings the last Update with Current Settings replaced",
             |s| if s.preset_undo.is_some() { Ok(()) } else { Err("no preset update to undo".into()) },
             |s, _| {
                 let c = "preset.undoUpdate";
@@ -2122,7 +2114,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("version.update", "Update Version with Current Settings", [], None, "{index}", has_active, |s, p| {
             edit_version(s, p, "version.update", "Update Version", |v, current| v.settings = current)
         }),
-        cmd!("history.clear", "Clear History", [], None, "{} — keeps the current settings as the only step", has_active, |s, _| {
+        cmd!("history.clear", "Clear History", [], None, "{}: keeps the current settings as the only step", has_active, |s, _| {
             let id = active(s, "history.clear")?;
             let d = s.develop_of(id).unwrap_or_default();
             let history = vec![lcc_catalog::HistoryStep { label: "Cleared History".into(), settings: d, batch: None }];
@@ -2134,7 +2126,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Go to History Step",
             [],
             None,
-            "{index} — loads that step's settings and moves the History cursor there; later steps stay listed until a new edit",
+            "{index}: loads that step's settings and moves the History cursor there; later steps stay listed until a new edit",
             has_active,
             |s, p| {
                 let c = "history.restore";
@@ -2143,7 +2135,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 go_to_history_step(s, c, id, i)
             }
         ),
-        cmd!("history.previous", "Previous History Step", [], None, "{} — steps the History cursor back one step", has_history_before, |s, _| {
+        cmd!("history.previous", "Previous History Step", [], None, "{}: steps the History cursor back one step", has_history_before, |s, _| {
             let c = "history.previous";
             let id = active(s, c)?;
             let i = s
@@ -2154,7 +2146,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 .ok_or_else(|| bad(c, "at the first History step"))?;
             go_to_history_step(s, c, id, i)
         }),
-        cmd!("history.next", "Next History Step", [], None, "{} — steps the History cursor forward one step", has_history_after, |s, _| {
+        cmd!("history.next", "Next History Step", [], None, "{}: steps the History cursor forward one step", has_history_after, |s, _| {
             let c = "history.next";
             let id = active(s, c)?;
             let ph = s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?;
@@ -2170,7 +2162,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Return to Latest History Step",
             [],
             None,
-            "{} — loads the latest step's settings (after editing at an earlier one)",
+            "{}: loads the latest step's settings (after editing at an earlier one)",
             has_history_after,
             |s, _| {
                 let c = "history.latest";
@@ -2184,7 +2176,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit at History Step",
             [],
             None,
-            "{index, control?: controlId, value?: number, values?: {controlId: number}} — changes controls as of step `index`: on that step's group's section it replaces the group's later steps, otherwise it starts a new group there; every later group is kept and replayed on top (one undo step); the settings stay at the new step",
+            "{index, control?: controlId, value?: number, values?: {controlId: number}}: changes controls as of step `index`: on that step's group's section it replaces the group's later steps, otherwise it starts a new group there; every later group is kept and replayed on top (one undo step); the settings stay at the new step",
             has_active,
             |s, p| {
                 let c = "history.editAt";
@@ -2223,7 +2215,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Begin Interaction",
             [],
             None,
-            "{label, ids?} — ids: more photos develop.adjust moves along, live (a multi-photo edit; one undo step)",
+            "{label, ids?}: ids: more photos develop.adjust moves along, live (a multi-photo edit; one undo step)",
             has_active,
             |s, p| {
                 let ids: Vec<PhotoId> = p

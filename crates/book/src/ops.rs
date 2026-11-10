@@ -28,7 +28,7 @@ pub const OPS: &[(&str, &str, &str)] = &[
     ("book.addPage", "Add Page", "{template?: id (default 1-margin), after?: page, blank?: bool}"),
     ("book.removePage", "Remove Page", "{page}"),
     ("book.movePage", "Move Page", "{page, to}"),
-    ("book.template", "Change Page Template", "{page, template} — the page's photos move to the new slots in order"),
+    ("book.template", "Change Page Template", "{page, template}: the page's photos move to the new slots in order"),
     ("book.place", "Place Photo", "{page, cell, photo: id | null}"),
     ("book.swap", "Swap Photos", "{from: {page, cell}, to: {page, cell}}"),
     (

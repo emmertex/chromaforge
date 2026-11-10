@@ -155,7 +155,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Blemishes",
             [],
             None,
-            "{sensitivity?: 0..100 (50), add?: bool (true), maxPerFace?: 1..20 (6), body?: bool (false: faces only; true: also shoulders, arms, back)} — find small blemishes (darker or redder round spots) on the skin of the active photo's faces and add a heal spot on each (one undo step). Needs the open MediaPipe people and face models (`ai.models.download {id: \"people\" | \"face\"}`). Eyes, brows, nostrils and lips are cut out by the face's landmarks; faces in profile (no landmarks), faces narrower than 160 px at 1600 px, and faces with more than 14 candidates (stubble, freckles, pores) get none. In the desktop app it runs in the background and returns {queued: true}; otherwise → {faces, facesWithLandmarks, spots: [{x, y, size, face, body}], added}",
+            "{sensitivity?: 0..100 (50), add?: bool (true), maxPerFace?: 1..20 (6), body?: bool (false: faces only; true: also shoulders, arms, back)}: find small blemishes (darker or redder round spots) on the skin of the active photo's faces and add a heal spot on each (one undo step). Needs the open MediaPipe people and face models (`ai.models.download {id: \"people\" | \"face\"}`). Eyes, brows, nostrils and lips are cut out by the face's landmarks; faces in profile (no landmarks), faces narrower than 160 px at 1600 px, and faces with more than 14 candidates (stubble, freckles, pores) get none. In the desktop app it runs in the background and returns {queued: true}; otherwise → {faces, facesWithLandmarks, spots: [{x, y, size, face, body}], added}",
             has_active,
             |s, p| {
                 let c = "spot.findBlemishes";
@@ -182,7 +182,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Smooth Skin",
             [],
             None,
-            "{off?: bool} — switch Smooth Skin on for the active photo with subtle settings (Amount 35, Texture 0, Even Tone 25, Redness 20; the area and person it had are kept), or off with `off: true` (one undo step), and find the skin with the open MediaPipe models (in the background in the desktop app) → skin.status",
+            "{off?: bool}: switch Smooth Skin on for the active photo with subtle settings (Amount 35, Texture 0, Even Tone 25, Redness 20; the area and person it had are kept), or off with `off: true` (one undo step), and find the skin with the open MediaPipe models (in the background in the desktop app) → skin.status",
             has_active,
             |s, p| {
                 let off = bool_or(p, "off", false);
@@ -201,7 +201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Smooth Skin",
             [],
             None,
-            "{amount?: 0..100, texture?: -100..100, evenTone?: 0..100, redness?: 0..100, shine?: 0..100 (Reduce Shine), area?: face|body|both, person?: 0 (everyone) | 1..4 (counted from the left by their face)} — change the active photo's Smooth Skin (one undo step); the sliders are also develop controls (`skin.amount`, `skin.texture`, `skin.evenTone`, `skin.redness`, `skin.shine`). A new area or person finds the skin again → skin.status",
+            "{amount?: 0..100, texture?: -100..100, evenTone?: 0..100, redness?: 0..100, shine?: 0..100 (Reduce Shine), area?: face|body|both, person?: 0 (everyone) | 1..4 (counted from the left by their face)}: change the active photo's Smooth Skin (one undo step); the sliders are also develop controls (`skin.amount`, `skin.texture`, `skin.evenTone`, `skin.redness`, `skin.shine`). A new area or person finds the skin again → skin.status",
             has_active,
             |s, p| {
                 let c = "skin.set";
@@ -245,7 +245,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Skin",
             [],
             None,
-            "{} — look for the skin Smooth Skin works on again, on the active photo (after installing the models, or when the first try failed); needs Smooth Skin on. In the desktop app it runs in the background → skin.status",
+            "{}: look for the skin Smooth Skin works on again, on the active photo (after installing the models, or when the first try failed); needs Smooth Skin on. In the desktop app it runs in the background → skin.status",
             has_active,
             |s, _| {
                 let c = "skin.find";
@@ -346,7 +346,7 @@ pub fn retouch_specs() -> Vec<CommandSpec> {
             "Set Retouch",
             [],
             None,
-            "{section: teeth, person?: 0 (everyone) | 1..4 (counted from the left by their face), …the section's sliders: teeth {whiten?: 0..100, brighten?: 0..100}} — change one Retouch section of the active photo (one undo step); the sliders are also develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`). The parts it needs are found with the open MediaPipe models (in the background in the desktop app) → retouch.status",
+            "{section: teeth, person?: 0 (everyone) | 1..4 (counted from the left by their face), …the section's sliders: teeth {whiten?: 0..100, brighten?: 0..100}}: change one Retouch section of the active photo (one undo step); the sliders are also develop controls (`retouch.teethWhiten`, `retouch.teethBrighten`, `retouch.teethPerson`). The parts it needs are found with the open MediaPipe models (in the background in the desktop app) → retouch.status",
             has_active,
             |s, p| {
                 let c = "retouch.set";
@@ -376,7 +376,7 @@ pub fn retouch_specs() -> Vec<CommandSpec> {
             "Turn Off Retouch",
             [],
             None,
-            "{section?: teeth} — set one Retouch section of the active photo (or, without `section`, every one but Skin) back to zero, keeping its person (one undo step) → retouch.status",
+            "{section?: teeth}: set one Retouch section of the active photo (or, without `section`, every one but Skin) back to zero, keeping its person (one undo step) → retouch.status",
             has_active,
             |s, p| {
                 let c = "retouch.off";
@@ -395,7 +395,7 @@ pub fn retouch_specs() -> Vec<CommandSpec> {
             "Find Retouch Parts",
             [],
             None,
-            "{} — look again for the parts the active photo's Retouch sections work on (after installing the models, or when the first try failed). In the desktop app it runs in the background → retouch.status",
+            "{}: look again for the parts the active photo's Retouch sections work on (after installing the models, or when the first try failed). In the desktop app it runs in the background → retouch.status",
             has_active,
             |s, _| {
                 let c = "retouch.find";

@@ -370,6 +370,47 @@ fn damaged_or_missing_store_is_an_error_not_a_crash() {
 }
 
 #[test]
+fn loading_reads_the_store_from_memory() {
+    use redb::StorageBackend;
+    let s = Scratch::new("mem");
+    let want = {
+        let (mut j, mut c, _) = open(s.path());
+        fill(&mut j, &mut c, 300);
+        j.snapshot(&c).unwrap();
+        c.to_snapshot()
+    };
+    let p = s.path().join(DB_FILE);
+    {
+        let (_j, got, r) = open(s.path());
+        assert_eq!(r.failed, 0);
+        assert_eq!(got.to_snapshot(), want);
+    }
+    let before = std::fs::read(&p).unwrap();
+
+    // the copy in memory: the file's bytes, and no offset or length redb could ask for panics
+    let mem = crate::db::MemFile::read(&p, u64::MAX).unwrap();
+    let len = mem.len().unwrap();
+    assert_eq!(len, before.len() as u64);
+    let mut all = vec![0u8; before.len()];
+    mem.read(0, &mut all).unwrap();
+    assert_eq!(all, before);
+    let mut buf = [0u8; 16];
+    for at in [len - 8, len, len + 1, u64::MAX - 4, u64::MAX] {
+        assert!(mem.read(at, &mut buf).is_err(), "read at {at}");
+        assert!(mem.write(at, &buf).is_err(), "write at {at}");
+    }
+    assert!(mem.set_len(u64::MAX).is_err());
+    mem.set_len(len + 32).unwrap();
+    mem.read(len + 16, &mut buf).unwrap();
+    assert_eq!(buf, [0u8; 16], "new bytes are zero");
+    mem.set_len(4).unwrap();
+    assert!(mem.read(0, &mut buf).is_err());
+    // a store larger than the limit is not read into memory (the load reads the file instead)
+    assert!(crate::db::MemFile::read(&p, len - 1).is_err());
+    assert!(crate::db::MemFile::read(&s.path().join("missing"), u64::MAX).is_err());
+}
+
+#[test]
 fn a_store_changed_by_another_writer_is_rewritten_whole() {
     // (the app allows one session per library, `LibraryLock`; this is the store's own guard)
     let s = Scratch::new("twice");

@@ -440,7 +440,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Metadata Presets",
             [],
             None,
-            "{paths: [file or folder], dryRun?} — .lcmeta, Lightroom Classic metadata presets (.lrtemplate), XMP metadata templates and .zip bundles of these; a preset whose name is taken by a different one is added as `name (2)`, an identical one skipped; preset.import (Import Profiles & Presets…) routes these files here too → {imported: [{name, file, unmapped: [fields not carried over], fields?, skipped?}], failed: [[file, reason]]}",
+            "{paths: [file or folder], dryRun?}: .lcmeta, Lightroom Classic metadata presets (.lrtemplate), XMP metadata templates and .zip bundles of these; a preset whose name is taken by a different one is added as `name (2)`, an identical one skipped; preset.import (Import Profiles & Presets…) routes these files here too → {imported: [{name, file, unmapped: [fields not carried over], fields?, skipped?}], failed: [[file, reason]]}",
             always,
             import
         ),
