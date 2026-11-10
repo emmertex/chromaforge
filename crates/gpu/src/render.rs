@@ -2263,7 +2263,15 @@ fn masks(
 /// The alpha planes of the visible masks `list`: concatenated, then the blurred chromaticity, or
 /// one buffer per mask when together they exceed the device's buffer limit ([`MaskAlpha`]).
 #[allow(clippy::too_many_arguments)]
-fn mask_alpha(cx: &mut Cx<'_>, src: &Arc<Rgb32f>, lin: &Buf, prep: &Prep, plan: &Plan<'_>, host: &mut Host, list: &[&lcc_develop::Mask]) -> MaskAlpha {
+fn mask_alpha(
+    cx: &mut Cx<'_>,
+    src: &Arc<Rgb32f>,
+    lin: &Buf,
+    prep: &Prep,
+    plan: &Plan<'_>,
+    host: &mut Host,
+    list: &[&lcc_develop::Mask],
+) -> MaskAlpha {
     let n = plan.w * plan.h;
     let joined = n.checked_mul(list.len()).and_then(|v| v.checked_add(if prep.chroma.is_some() { 3 * n } else { 0 }));
     match joined.filter(|&len| cx.gpu.fits(len)) {
@@ -2496,12 +2504,7 @@ fn mask_plane(
             cx.copy_into(&plane, alpha, mi * n);
         }
         let amt = (m.adjust.amount / 100.0) as f32;
-        cx.run(
-            "finalize",
-            &[n as u32, 0, mi as u32, m.invert as u32, amt.to_bits()],
-            &[None, None, None, Some(comp_plane), Some(alpha)],
-            groups1(n),
-        );
+        cx.run("finalize", &[n as u32, 0, mi as u32, m.invert as u32, amt.to_bits()], &[None, None, None, Some(comp_plane), Some(alpha)], groups1(n));
     }
 }
 
