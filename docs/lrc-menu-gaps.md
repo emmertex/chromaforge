@@ -72,8 +72,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Metadata for Target Photo Only | The Metadata panel shows the active photo, not the selection's mixed values. | S | feature | `soon.metadataTargetOnly` |
-| Revert Capture Time to Original | Undo Edit Capture Time from the file's own date. | S | feature | `soon.revertCaptureTime` |
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
 
 ## Library module ▸ View
