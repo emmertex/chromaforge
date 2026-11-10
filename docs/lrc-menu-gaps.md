@@ -198,7 +198,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ Play
@@ -212,12 +211,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
-
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
 
 ## Print module ▸ View
 
