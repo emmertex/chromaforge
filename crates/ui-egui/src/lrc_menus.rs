@@ -410,7 +410,7 @@ const DEVELOP_PHOTO: &[&str] = &[
 const SETTINGS: &[&str] = &[
     "develop.reset=Reset All Settings",
     "develop.updateProcess=Update to Current Process Version",
-    "soon.processVersion",
+    "@Process Version",
     "---",
     "view.softProof=Proof",
     "---",
@@ -437,9 +437,9 @@ const SETTINGS: &[&str] = &[
     "develop.hdr=Toggle HDR Edit Mode",
     "---",
     "crop.reset",
-    "soon.cropAsShot",
+    "crop.asShot",
     "crop.lockAspect=Constrain Aspect Ratio",
-    "soon.cropSameAspect",
+    "crop.sameAspect",
     "crop.rotateAspect",
     "---",
     "beforeAfter.copyAfterToBefore",
@@ -873,12 +873,9 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
     soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
-    soon("soon.cropAsShot", "Crop As Shot", Some("Cmd+Alt+Shift+R"), 'S', false, "Reset the crop to the camera's own crop (aspect from the raw)."),
-    soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.addToMask", "Add to Mask with", None, 'S', true, "Add a component to the chosen mask (the Masking panel does it)."),
     soon(
