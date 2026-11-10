@@ -600,49 +600,49 @@ fn next_seed(prev: u64, now: &str) -> u64 {
 
 /// `library.source`: show the source `p` names (the part of it that is not Go Back's bookkeeping).
 fn show_source(s: &mut Session, p: &Value) -> Result<Value> {
-        let kind = str_param(p, "kind").unwrap_or("all");
-        s.source = match kind {
-            "all" => LibrarySource::All,
-            "recentlyAdded" => LibrarySource::RecentlyAdded,
-            "recentlyDeleted" => LibrarySource::RecentlyDeleted,
-            "picks" => LibrarySource::Picks,
-            "missing" => LibrarySource::Missing,
-            "previousImport" => LibrarySource::PreviousImport,
-            "quickCollection" => LibrarySource::QuickCollection,
-            "previousExport" => LibrarySource::PreviousExport,
-            "album" => {
-                let a = album_param(p, "id", "library.source")?;
-                if s.catalog.album(a).is_none_or(|a| a.folder) {
-                    return Err(bad("library.source", "no such collection"));
-                }
-                // one album at a time: `to_filter` makes the album shown replace the filter's, and the
-                // filter bar has no album chip, so a left-over one would narrow the next source unseen
-                s.filter.album = None;
-                LibrarySource::Album(a)
+    let kind = str_param(p, "kind").unwrap_or("all");
+    s.source = match kind {
+        "all" => LibrarySource::All,
+        "recentlyAdded" => LibrarySource::RecentlyAdded,
+        "recentlyDeleted" => LibrarySource::RecentlyDeleted,
+        "picks" => LibrarySource::Picks,
+        "missing" => LibrarySource::Missing,
+        "previousImport" => LibrarySource::PreviousImport,
+        "quickCollection" => LibrarySource::QuickCollection,
+        "previousExport" => LibrarySource::PreviousExport,
+        "album" => {
+            let a = album_param(p, "id", "library.source")?;
+            if s.catalog.album(a).is_none_or(|a| a.folder) {
+                return Err(bad("library.source", "no such collection"));
             }
-            "libraryFolder" => {
-                let path = str_param(p, "path").filter(|d| !d.trim().is_empty() && !lcc_catalog::query::folder_key(d).is_empty());
-                let path = path.ok_or_else(|| bad("library.source", "libraryFolder needs the `path` of a folder from library.folders"))?;
-                if lcc_catalog::folders::is_startup_disk(path) {
-                    return Err(bad("library.source", "the startup disk's path covers every disk: choose a folder in it"));
-                }
-                let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
-                let ids = s.catalog.query(&f, &Sort::default());
-                if ids.is_empty() {
-                    return Err(bad("library.source", format!("{path}: no photo in the catalog was imported from it")));
-                }
-                if covers_other_disks(s, path, &ids) {
-                    return Err(bad("library.source", format!("{path} holds other disks as well: choose a disk or a folder on one")));
-                }
-                s.library_folder = Some(path.to_string());
-                // one folder at a time: a folder filter left over would be ignored
-                s.filter.library_folder = None;
-                LibrarySource::LibraryFolder
+            // one album at a time: `to_filter` makes the album shown replace the filter's, and the
+            // filter bar has no album chip, so a left-over one would narrow the next source unseen
+            s.filter.album = None;
+            LibrarySource::Album(a)
+        }
+        "libraryFolder" => {
+            let path = str_param(p, "path").filter(|d| !d.trim().is_empty() && !lcc_catalog::query::folder_key(d).is_empty());
+            let path = path.ok_or_else(|| bad("library.source", "libraryFolder needs the `path` of a folder from library.folders"))?;
+            if lcc_catalog::folders::is_startup_disk(path) {
+                return Err(bad("library.source", "the startup disk's path covers every disk: choose a folder in it"));
             }
-            other => return Err(bad("library.source", format!("unknown source `{other}`"))),
-        };
-        s.keep_active_in_view();
-        Ok(json!({"count": s.visible().len()}))
+            let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
+            let ids = s.catalog.query(&f, &Sort::default());
+            if ids.is_empty() {
+                return Err(bad("library.source", format!("{path}: no photo in the catalog was imported from it")));
+            }
+            if covers_other_disks(s, path, &ids) {
+                return Err(bad("library.source", format!("{path} holds other disks as well: choose a disk or a folder on one")));
+            }
+            s.library_folder = Some(path.to_string());
+            // one folder at a time: a folder filter left over would be ignored
+            s.filter.library_folder = None;
+            LibrarySource::LibraryFolder
+        }
+        other => return Err(bad("library.source", format!("unknown source `{other}`"))),
+    };
+    s.keep_active_in_view();
+    Ok(json!({"count": s.visible().len()}))
 }
 
 fn can_source_back(s: &Session) -> std::result::Result<(), String> {
