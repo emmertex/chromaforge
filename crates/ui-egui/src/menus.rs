@@ -75,6 +75,8 @@ pub fn language_from_command(id: &str) -> Option<crate::i18n::Locale> {
 pub const UI_COMMANDS: &[UiCommand] = &[
     ("ui.dock", "Arrange Panel", None, ""),
     ("ui.dock.reset", "Reset Panel Layout", None, "Window>Panels"),
+    // {title, hint?, value?, command, params?, key}: asks for one line of text, then runs `command`
+    ("ui.prompt", "Ask for a Name", None, ""),
     // re-reads midi.toml, so a controller map can be edited without restarting
     ("midi.reload", "Reload MIDI Map", None, ""),
     ("view.photoGrid", "Photo Grid", None, "View"),
@@ -687,6 +689,32 @@ fn color_mixer_layout(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     Ok(json!({"tab": tab, "adjust": app.ui.mixer_adjust, "group": app.ui.mixer_group, "band": app.ui.mixer_mode}))
 }
 
+/// `ui.prompt {title, hint?, value?, command, params?, key}`: the menu-callable way to ask for one
+/// line of text. Opens the name prompt (`Dialog::TextPrompt`) titled `title` (greyed `hint` when
+/// empty, `value` pre-filled); OK runs `command` with `{...params, <key>: <the text, trimmed>}`.
+/// A menu slot uses it as `ui.prompt{"title":"Create Saved Print","hint":"Name","command":
+/// "printui.saveCreation","key":"name"}=Create Saved Print…`; any command that wants a name from the
+/// user and is not already a dialog can be reached this way. Errors on a missing `title`, `command`
+/// or `key`, a `params` that is not an object, or `command` naming `ui.prompt` itself.
+fn prompt_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    let text = |k: &str| p.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    let title = text("title").ok_or("missing `title`")?;
+    let command = text("command").ok_or("missing `command`")?;
+    let key = text("key").ok_or("missing `key`")?;
+    if command == "ui.prompt" {
+        return Err("`command` can't be ui.prompt".into());
+    }
+    let params = match p.get("params") {
+        None | Some(Value::Null) => json!({}),
+        Some(v @ Value::Object(_)) => v.clone(),
+        Some(_) => return Err("`params` must be an object".into()),
+    };
+    let hint = p.get("hint").and_then(Value::as_str).unwrap_or("");
+    let value = p.get("value").and_then(Value::as_str).unwrap_or("");
+    crate::panels::dialogs::prompt(app, title, hint, value, command, params, key);
+    Ok(Value::Null)
+}
+
 /// Handle UI commands; `None` means "not a UI command — send it to the engine".
 pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if matches!(id, "ui.dock" | "ui.dock.reset") {
@@ -701,6 +729,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         // the app's own context: a fresh one's repaints reach no window and its clock starts at zero
         let ctx = app.tasks.repaint.clone().unwrap_or_default();
         return Some(crate::lightroom_import::command(app, id, p, &ctx));
+    }
+    if id == "ui.prompt" {
+        return Some(prompt_command(app, p));
     }
     if id == "photo.reload" {
         // the files are read in the background (a raw's decode takes a second or more)

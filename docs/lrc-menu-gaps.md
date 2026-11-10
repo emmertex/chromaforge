@@ -110,12 +110,6 @@ Generated from the menu tables; don't edit by hand.
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
 
-## Develop module ▸ Develop
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Preset Folder… | Create a preset group (the Presets panel's menu has it). | S | wire-up | `soon.newPresetFolder` |
-
 ## Develop module ▸ Settings
 
 | Item | What it does | Size | Kind | Slot |
@@ -194,7 +188,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Book | Save the book as a collection (book.save needs a name dialog). | S | wire-up | `soon.createSavedBook` |
 | Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
 | Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
 | Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
@@ -211,8 +204,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Slideshow | Save the slideshow as a collection (needs a name dialog). | S | wire-up | `soon.createSavedSlideshow` |
-| New Template | Save the settings as a template (needs a name dialog). | S | wire-up | `soon.newSlideshowTemplate` |
 | New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
@@ -232,8 +223,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Print | Save the print as a collection (needs a name dialog). | S | wire-up | `soon.createSavedPrint` |
-| New Template | Save the print settings as a template (needs a name dialog). | S | wire-up | `soon.newPrintTemplate` |
 | New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
 
 ## Print module ▸ View
@@ -248,7 +237,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Web Gallery | Save the web gallery as a collection. | S | feature | `soon.createSavedWebGallery` |
 | New Template | Save the web gallery settings as a template. | S | feature | `soon.newWebTemplate` |
 | New Template Folder | Group web templates in folders. | S | feature | `soon.newWebTemplateFolder` |
 
