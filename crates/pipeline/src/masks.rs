@@ -93,6 +93,23 @@ impl Mattes {
         self.mattes.iter().map(|(k, m)| (*k, m.as_ref()))
     }
 
+    /// Whether `a` and `b` hold the very same mattes (each plane and the automatic selections by
+    /// identity), so mask planes evaluated with one fit the other. A render's plan wraps the
+    /// source's mattes and its cached automatic selections in a new [`Mattes`] every time
+    /// (`auto_mask::needed`), so comparing the outer `Arc`s missed on every slider tick of a photo
+    /// with an AI mask and evaluated all its masks again (about 55 ms of each 45 MP draft).
+    pub fn same(a: &std::sync::Arc<Mattes>, b: &std::sync::Arc<Mattes>) -> bool {
+        use std::sync::Arc;
+        Arc::ptr_eq(a, b)
+            || (a.mattes.len() == b.mattes.len()
+                && a.mattes.iter().zip(&b.mattes).all(|((ka, ma), (kb, mb))| ka == kb && Arc::ptr_eq(ma, mb))
+                && match (&a.auto, &b.auto) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                    _ => false,
+                })
+    }
+
     fn of(&self, kinds: &[MatteKind]) -> Vec<&Image<u8>> {
         self.mattes.iter().filter(|(k, _)| kinds.contains(k)).map(|(_, m)| &**m).collect()
     }

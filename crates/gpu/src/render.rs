@@ -77,7 +77,7 @@ impl MaskBufs {
             && self.chroma == chroma
             && match (&self.mattes, mattes) {
                 (None, None) => true,
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (Some(a), Some(b)) => lcc_pipeline::masks::Mattes::same(a, b),
                 _ => false,
             }
     }

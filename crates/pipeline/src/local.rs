@@ -856,7 +856,7 @@ impl MaskPlanes {
         self.key == key
             && match (&self.mattes, mattes) {
                 (None, None) => true,
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (Some(a), Some(b)) => masks::Mattes::same(a, b),
                 _ => false,
             }
     }

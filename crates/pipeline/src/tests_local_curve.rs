@@ -201,3 +201,53 @@ fn cached_mask_planes_render_what_a_fresh_render_does() {
     s.masks[1].visible = false;
     same(&s, "hidden mask");
 }
+
+/// A global slider drag on a photo with an AI mask (Subject: an automatic selection) keeps the
+/// masks' alpha planes: the render's plan wraps the cached selection in a new `Mattes` each time,
+/// and the planes were compared with it by pointer, so every tick evaluated every mask again.
+#[test]
+fn a_global_drag_keeps_the_mask_planes_of_a_photo_with_an_ai_mask() {
+    use lcc_develop::LocalAdjustments;
+    let src = std::sync::Arc::new(Rgb32f::from_fn(W, H, |x, y| {
+        let v = 0.05 + 0.6 * x as f32 / W as f32;
+        [v, v * 0.9, v * (0.5 + y as f32 / H as f32)]
+    }));
+    let comp = |shape| MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape };
+    let mut s = masked(left(), PointCurves::default(), 100.0);
+    s.masks.push(Mask {
+        id: 2,
+        components: vec![comp(MaskShape::Subject)],
+        adjust: LocalAdjustments { contrast: 40.0, ..Default::default() },
+        ..Default::default()
+    });
+    assert!(crate::auto_mask::needed(&s));
+    let cache = crate::StageCache::default();
+    let req = RenderRequest::fit(W, H);
+    let info = SourceInfo::default();
+    let alphas = |c: &crate::StageCache| {
+        let e = c.entries.lock().unwrap();
+        e.first().and_then(|e| e.planes.masks.clone()).expect("mask planes kept").alphas
+    };
+    crate::render_cached(&src, &info, &s, &req, &cache);
+    let mut first = alphas(&cache);
+    let mut compared = 0;
+    for ev in [0.3, 0.6, -0.4, 0.1, 0.9] {
+        s.light.exposure = ev;
+        let generation = crate::auto_mask::model_generation();
+        let cached = crate::render_cached(&src, &info, &s, &req, &cache).image;
+        let fresh = render(&src, &info, &s, &req).image;
+        let now = alphas(&cache);
+        // (a test running alongside installed or removed a model: the selections are new, rightly)
+        if crate::auto_mask::model_generation() != generation {
+            first = now;
+            continue;
+        }
+        assert!(cached.data == fresh.data, "exposure {ev}: the cached render differs");
+        assert_eq!(now.len(), first.len());
+        for (a, b) in first.iter().zip(&now) {
+            assert!(std::sync::Arc::ptr_eq(a, b), "exposure {ev}: the masks were evaluated again");
+        }
+        compared += 1;
+    }
+    assert!(compared > 0, "every step raced a model change");
+}
