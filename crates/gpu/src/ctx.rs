@@ -500,8 +500,13 @@ fn constants() -> String {
             "const GRAIN_P_MIN: f32 = {P_MIN:?};\nconst GRAIN_P_MAX: f32 = {P_MAX:?};\nconst GRAIN_MAX_PER_CELL: u32 = {MAX_PER_CELL}u;\nconst GRAIN_MAX_SUB: u32 = {MAX_SUB}u;\nconst GRAIN_MAX_REACH: i32 = {MAX_REACH};\n"
         );
         let phases: Vec<String> = lcc_pipeline::grain::PHASES.iter().map(|p| format!("vec2<f32>({:?}, {:?})", p[0], p[1])).collect();
-        // a private array: indexed at run time (a const array may not be, on every backend)
-        s += &format!("var<private> GRAIN_PHASES: array<vec2<f32>, 16> = array<vec2<f32>, 16>({});\n", phases.join(", "));
+        // a switch, not an array: a private array shares naga's strided array type, which Vulkan's validation layer
+        // refuses ("explicit layout in the Private storage class"), and a const array may not be indexed at run time
+        s += "fn grain_phase(i: u32) -> vec2<f32> {\n    switch i {\n";
+        for (i, ph) in phases.iter().enumerate().take(15) {
+            s += &format!("        case {i}u: {{ return {ph}; }}\n");
+        }
+        s += &format!("        default: {{ return {}; }}\n    }}\n}}\n", phases.get(15).map(String::as_str).unwrap_or("vec2<f32>(0.0, 0.0)"));
         for (name, salt) in ["R", "G", "B"].iter().zip(CHANNEL_SALT) {
             s += &format!("const GRAIN_SALT_{name}: u32 = {salt}u;\n");
         }
