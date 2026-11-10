@@ -11,8 +11,9 @@
 //!
 //! 1. [`find_chart`] looks for the chart by its colours (or [`refine`] moves hand-placed corners
 //!    onto it).
-//! 2. [`build`] measures the patches ([`reference::measure_rotated`]), fits a forward matrix, a
-//!    colour matrix and a correction table ([`profile::fit`]), and expresses them as a DCP
+//! 2. [`build`] measures the patches ([`reference::measure_rotated`]), evens out the light on the
+//!    chart ([`uneven::even_out`]), fits a forward matrix, a colour matrix and a correction table
+//!    ([`profile::fit`]), and expresses them as a DCP
 //!    ([`dcp::build`]): `ColorMatrix1`, `ForwardMatrix1` and a `ProfileHueSatMap`.
 //! 3. The [`Built`] report says how closely the profile reproduces each patch (CIEDE2000).
 #![forbid(unsafe_code)]
@@ -39,6 +40,7 @@ pub mod simplex;
 pub mod spectrum;
 pub mod synthetic;
 pub mod target;
+pub mod uneven;
 
 pub use frame::RawFrame;
 pub use linalg::{Mat3, Vec3};
@@ -137,11 +139,14 @@ pub struct BuildOptions {
     pub camera_model: String,
     /// `ProfileName`.
     pub name: String,
+    /// Even out the light on the chart ([`uneven::even_out`]): divide out the falloff across the
+    /// card and subtract the glare on the patches, kept only when the grey ramp ends more linear.
+    pub even_light: bool,
 }
 
 impl Default for BuildOptions {
     fn default() -> Self {
-        Self { illuminant: "D55".into(), natural: true, correction_table: true, camera_model: String::new(), name: String::new() }
+        Self { illuminant: "D55".into(), natural: true, correction_table: true, camera_model: String::new(), name: String::new(), even_light: true }
     }
 }
 
@@ -205,10 +210,15 @@ pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result
     }
     let white = illuminants::white_point_by_name("1931_2", &illuminant).map_err(|e| CamprofError::Options(e.to_string()))?;
     let turns = located.turns % 4;
-    let measurement = reference::measure_rotated(frame, chart, &located.corners, SAMPLE_FRACTION, turns);
+    let mut measurement = reference::measure_rotated(frame, chart, &located.corners, SAMPLE_FRACTION, turns);
     if measurement.sample_counts.contains(&0) {
         return Err(CamprofError::NoChart("part of the chart grid lies outside the picture".into()));
     }
+    let light_notes = if opts.even_light {
+        uneven::even_out(frame, &located.corners, uneven::frame_layout(chart.layout, turns), &mut measurement).describe()
+    } else {
+        Vec::new()
+    };
     let patch_set = measurement.to_patch_set(white);
     let fit_options = profile::FitOptions {
         illuminant_name: Some(illuminant.clone()),
@@ -257,7 +267,7 @@ pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result
         patches_used: report.patches_used,
         neutral_ids: report.neutral_ids,
         patches,
-        notes: report.notes,
+        notes: light_notes.into_iter().chain(report.notes).collect(),
         illuminant,
         neutral: [prof.white_balance[0], prof.white_balance[1], prof.white_balance[2]],
     })

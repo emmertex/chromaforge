@@ -362,7 +362,7 @@ impl ChartCorners {
     }
 }
 
-fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
+pub(crate) fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 

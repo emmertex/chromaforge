@@ -32,6 +32,8 @@ pub struct ChartProfileDialog {
     /// Each photo's light: `D55` (Daylight / Flash) or `A` (Tungsten).
     pub lights: [String; 2],
     pub natural: bool,
+    /// Even out the light on the chart (falloff across the card, glare on the patches).
+    pub even_light: bool,
     /// Each photo's chart corners (normalised to its frame) and quarter turns, once known.
     pub corners: [Option<[[f64; 2]; 4]>; 2],
     pub turns: [u8; 2],
@@ -57,6 +59,7 @@ impl Default for ChartProfileDialog {
             name_edited: false,
             lights: ["D55".into(), "A".into()],
             natural: true,
+            even_light: true,
             corners: [None, None],
             turns: [0, 0],
             charts: [camprof::chart().key.to_string(), camprof::chart().key.to_string()],
@@ -364,6 +367,7 @@ fn build_now(app: &mut LccApp, opts: &ChartProfileDialog, on_exists: cp::OnExist
         correction_table: true,
         camera_model: String::new(),
         name: opts.name.clone(),
+        even_light: opts.even_light,
     };
     let apply: Vec<PhotoId> = (0..2).filter_map(|i| shot(i).and_then(|s| s.photo)).collect();
     // the chart photos' bodies start with the new profile
@@ -1146,6 +1150,15 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) 
                 }))
                 .color(t.text_dim),
             );
+            let r = ui
+                .checkbox(&mut opts.even_light, crate::i18n::tr("Even out the light on the chart"))
+                .on_hover_text(crate::i18n::tr(
+                    "Corrects light that falls off across the chart and glare on its patches. Kept only when it makes the grey patches more even.",
+                ));
+            crate::widgets::register(ui.ctx(), "check:chartProfileEvenLight", r.rect);
+            if r.changed() {
+                app.chart_profile.report = None;
+            }
             ui.separator();
             ui.label(egui::RichText::new(crate::i18n::tr("Second chart (other light)")).color(t.text_label));
             match app.chart_profile.shots[1].as_ref().map(|s| file_name(&s.path)) {
