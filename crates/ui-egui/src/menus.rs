@@ -75,6 +75,8 @@ pub fn language_from_command(id: &str) -> Option<crate::i18n::Locale> {
 pub const UI_COMMANDS: &[UiCommand] = &[
     ("ui.dock", "Arrange Panel", None, ""),
     ("ui.dock.reset", "Reset Panel Layout", None, "Window>Panels"),
+    // {title, hint?, value?, command, params?, key}: asks for one line of text, then runs `command`
+    ("ui.prompt", "Ask for a Name", None, ""),
     // re-reads midi.toml, so a controller map can be edited without restarting
     ("midi.reload", "Reload MIDI Map", None, ""),
     ("view.photoGrid", "Photo Grid", None, "View"),
@@ -218,7 +220,20 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.object", "Object Selection", None, "Window>Tools"),
+    // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q stays
+    // `spot.cycleMode`'s module key). People opens its picker, Color Range waits for a click on the photo.
+    ("tool.people", "Select People", None, ""),
+    ("tool.colorRange", "Color Range", None, ""),
+    ("tool.luminanceRange", "Luminance Range", None, ""),
+    // Color Mixer ▸ Point Color with its picker armed
+    ("tool.pointColor", "Point Color Selector", None, ""),
+    // Remove Options ▸ Use Generative AI: the Remove tool's Generative mode on / off ({on?}; no params toggles); with no
+    // service set up it opens Settings ▸ Generative Fill instead
+    ("remove.useGenerative", "Use Generative AI", None, ""),
     ("tool.none", "No Tool", None, ""),
+    ("tool.tat", "Targeted Adjustment", None, ""),
+    ("mask.startComponent", "Combine Mask with", None, ""),
+    ("dialog.keywordSet", "Edit Keyword Set…", None, ""),
     // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
     ("mask.editComponent", "Edit Mask Component", None, ""),
     // brush size / feather of the active brush (Masking brush, Remove tool and its selected spot)
@@ -687,6 +702,32 @@ fn color_mixer_layout(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     Ok(json!({"tab": tab, "adjust": app.ui.mixer_adjust, "group": app.ui.mixer_group, "band": app.ui.mixer_mode}))
 }
 
+/// `ui.prompt {title, hint?, value?, command, params?, key}`: the menu-callable way to ask for one
+/// line of text. Opens the name prompt (`Dialog::TextPrompt`) titled `title` (greyed `hint` when
+/// empty, `value` pre-filled); OK runs `command` with `{...params, <key>: <the text, trimmed>}`.
+/// A menu slot uses it as `ui.prompt{"title":"Create Saved Print","hint":"Name","command":
+/// "printui.saveCreation","key":"name"}=Create Saved Print…`; any command that wants a name from the
+/// user and is not already a dialog can be reached this way. Errors on a missing `title`, `command`
+/// or `key`, a `params` that is not an object, or `command` naming `ui.prompt` itself.
+fn prompt_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    let text = |k: &str| p.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    let title = text("title").ok_or("missing `title`")?;
+    let command = text("command").ok_or("missing `command`")?;
+    let key = text("key").ok_or("missing `key`")?;
+    if command == "ui.prompt" {
+        return Err("`command` can't be ui.prompt".into());
+    }
+    let params = match p.get("params") {
+        None | Some(Value::Null) => json!({}),
+        Some(v @ Value::Object(_)) => v.clone(),
+        Some(_) => return Err("`params` must be an object".into()),
+    };
+    let hint = p.get("hint").and_then(Value::as_str).unwrap_or("");
+    let value = p.get("value").and_then(Value::as_str).unwrap_or("");
+    crate::panels::dialogs::prompt(app, title, hint, value, command, params, key);
+    Ok(Value::Null)
+}
+
 /// Handle UI commands; `None` means "not a UI command — send it to the engine".
 pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if matches!(id, "ui.dock" | "ui.dock.reset") {
@@ -701,6 +742,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         // the app's own context: a fresh one's repaints reach no window and its clock starts at zero
         let ctx = app.tasks.repaint.clone().unwrap_or_default();
         return Some(crate::lightroom_import::command(app, id, p, &ctx));
+    }
+    if id == "ui.prompt" {
+        return Some(prompt_command(app, p));
     }
     if id == "photo.reload" {
         // the files are read in the background (a raw's decode takes a second or more)
@@ -1933,6 +1977,19 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     return Some(r);
                 }
                 // W again puts the selector away without sampling (OneSlips, test notes 2026-10-25 note 13)
+                // {target: curve|hue|sat|lum; none or missing puts the targeted adjustment away}
+                "tat" => match p.get("target").and_then(Value::as_str).filter(|t| !t.is_empty() && *t != "none") {
+                    None => {
+                        if app.ui.tool.starts_with("tat:") {
+                            app.ui.tool.clear();
+                        }
+                    }
+                    Some(t) => {
+                        if let Err(e) = crate::panels::edit::start_tat(app, t) {
+                            return Some(Err(e));
+                        }
+                    }
+                },
                 "wbPicker" if app.ui.tool == "wbPicker" && p.get("sample").is_none() => app.ui.tool.clear(),
                 "wbPicker" => {
                     app.ui.right = RightPanel::Edit;
@@ -1943,10 +2000,43 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         app.ui.wb_sample = crate::panels::detail::wb_sample_step(n);
                     }
                 }
+                "people" | "colorRange" | "luminanceRange" => {
+                    if app.session.active().is_none() {
+                        return Some(Err(format!("tool.{tool}: no photo")));
+                    }
+                    app.cancel_brush_gesture();
+                    crate::panels::masking::disarm(app);
+                    app.ui.people_pick = None;
+                    app.ui.concept_pick = false;
+                    app.mask_pick_op = None;
+                    app.ui.right = RightPanel::Masking;
+                    app.ui.view = ViewMode::Detail;
+                    let ctx = app.tasks.repaint.clone().unwrap_or_default();
+                    crate::panels::masking::start_new(app, &ctx, tool);
+                    return Some(Ok(json!({"started": tool})));
+                }
+                "pointColor" => {
+                    let Some(photo) = app.session.active() else {
+                        return Some(Err("tool.pointColor: no photo".into()));
+                    };
+                    let d = app.session.develop_of(photo).unwrap_or_default();
+                    if crate::is_bw(&d) {
+                        return Some(Err("tool.pointColor: Point Color needs a colour photo".into()));
+                    }
+                    if d.point_colors.len() >= lcc_develop::MAX_POINT_COLORS {
+                        return Some(Err(format!("tool.pointColor: a photo keeps at most {} point colours", lcc_develop::MAX_POINT_COLORS)));
+                    }
+                    if let Err(e) = color_mixer_layout(app, &json!({"tab": "point"})) {
+                        return Some(Err(e));
+                    }
+                    crate::panels::masking::disarm(app);
+                    app.ui.tool = "pointColor".into();
+                }
                 other => return Some(Err(format!("unknown tool `{other}`"))),
             }
             Ok(Value::Null)
         }
+        "remove.useGenerative" => crate::panels::genfill::use_generative(app, p),
         "dialog.cameraProfile" => crate::chart_profile::open(app),
         "cameraProfile.second" => crate::chart_profile::choose_second(app, p),
         "cameraProfile.removeSecond" => crate::chart_profile::remove_second(app),
@@ -2035,6 +2125,33 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             let mode = p.get("mode").and_then(Value::as_str).unwrap_or("set").to_string();
             app.ui.dialog =
                 Some(Dialog::CaptureTime { mode, time: time.get(..19).unwrap_or(&time).to_string(), days: 0, hours: 0, minutes: 0, zone: 0.0 });
+            Ok(Value::Null)
+        }
+        "dialog.keywordSet" => {
+            crate::panels::right::edit_keyword_set(app);
+            Ok(Value::Null)
+        }
+        "mask.startComponent" => {
+            // {kind, op: add|subtract|intersect}: Add / Subtract / Intersect Mask with (the Masking panel's menus)
+            let kind = p.get("kind").and_then(Value::as_str).ok_or("missing `kind`");
+            let op = p
+                .get("op")
+                .and_then(Value::as_str)
+                .filter(|o| matches!(*o, "add" | "subtract" | "intersect"))
+                .ok_or("`op` is add|subtract|intersect");
+            let (kind, op) = match (kind, op) {
+                (Ok(k), Ok(o)) => (k.to_string(), o.to_string()),
+                (Err(e), _) | (_, Err(e)) => return Some(Err(format!("mask.startComponent: {e}"))),
+            };
+            if !crate::panels::masking::MASK_KINDS.iter().any(|(k, _)| *k == kind) {
+                return Some(Err(format!("mask.startComponent: unknown mask kind `{kind}`")));
+            }
+            if app.session.active_mask.is_none() {
+                return Some(Err("mask.startComponent: no mask is selected".into()));
+            }
+            app.ui.right = RightPanel::Masking;
+            app.ui.view = ViewMode::Detail;
+            crate::panels::masking::start_component(app, &ctx, &kind, &op);
             Ok(Value::Null)
         }
         "dialog.labelNames" => {
@@ -3219,7 +3336,9 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "dialog.slideshowExport" | "app.slideshowExport" => {
             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
         }
-        s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
+        s if s.starts_with("panel.") || s.starts_with("tool.") || s == "remove.useGenerative" || s.starts_with("section.") => {
+            app.session.active().is_some() || s == "panel.close"
+        }
         "app.export" | "dialog.export" | "file.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
             app.session.active().is_some()
         }
@@ -3233,6 +3352,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
         "dialog.updatePreset" => app.session.active().is_some(),
+        "mask.startComponent" => app.session.active().is_some() && app.session.active_mask.is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone
