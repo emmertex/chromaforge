@@ -271,11 +271,12 @@ fn op_variants_are_versioned() {
             Op::SetVideoMeta { .. } | Op::SetVideoTrim { .. } | Op::SetVideoPoster { .. } => 10,
             Op::SetHistoryCursor { .. } => 11,
             Op::SetBefore { .. } => 16,
+            Op::SetExported { .. } => 17,
         }
     }
     /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
     const NEWEST_FIELDS: u32 = 15;
-    let newest = since(&Op::SetBefore { id: crate::PhotoId(1), before: None });
+    let newest = since(&Op::SetExported { id: crate::PhotoId(1), exported: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
 
@@ -415,4 +416,30 @@ fn fs_store_reports_folders() {
     assert!(Store::has_folder(&mut s, "segments").unwrap());
     assert!(!Store::has_folder(&mut s, "nothing").unwrap());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Export status (format 17): a library from the previous format opens with every photo never exported, setting and
+/// clearing it undoes, and an unset status is not written.
+#[test]
+fn exported_status_round_trips_and_old_libraries_load() {
+    let (base, _, _) = legacy_parts();
+    let id = base.photos().next().unwrap().id;
+    let mut c = base.clone();
+    assert!(!c.to_snapshot().contains("exported"), "unset, it is not written");
+    let undo_set = c.apply(Op::SetExported { id, exported: Some("2026-11-10T08:00:00Z".into()) }).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported.as_deref(), Some("2026-11-10T08:00:00Z"));
+    assert!(c.to_snapshot().contains("exported"));
+    let undo_clear = c.apply(Op::SetExported { id, exported: None }).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported, None);
+    c.apply(undo_clear).unwrap();
+    assert!(c.photo(id).unwrap().exported.is_some(), "undo of a reset brings the status back");
+    c.apply(undo_set).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported, None);
+
+    // a format-16 snapshot (no such field) opens and is upgraded
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(16, &base, ""));
+    let (_, loaded, r) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(loaded.photo(id).unwrap().exported, None);
+    assert_eq!(r.upgraded_from, Some(16));
 }

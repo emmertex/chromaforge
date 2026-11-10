@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use lcc_catalog::PhotoId;
-use lcc_publish::{Capabilities, PublishError, PublishService, Published, Upload};
+use lcc_publish::{Capabilities, Comment, PublishError, PublishService, Published, Upload};
 use serde::{Deserialize, Serialize};
 
 use crate::ImmichError;
@@ -111,6 +111,11 @@ fn mime_of(name: &str) -> &'static str {
         "heic" | "heif" => "image/heif",
         _ => "application/octet-stream",
     }
+}
+
+/// `s` cut to at most `max` characters (never inside one).
+fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
 }
 
 /// `(render, original)` ids of a remote id.
@@ -206,6 +211,21 @@ impl ImmichPublish {
         Ok(id)
     }
 
+    /// The collection's album if it exists (remembered, else by name); never creates or renames one.
+    fn existing_album(&mut self) -> Result<Option<String>, PublishError> {
+        if let Some(a) = &self.album {
+            return Ok(Some(a.clone()));
+        }
+        let albums = self.client.albums().map_err(err)?;
+        let found = self
+            .remembered()
+            .and_then(|id| albums.iter().find(|a| a.id == id))
+            .or_else(|| albums.iter().find(|a| a.album_name == self.album_name))
+            .map(|a| a.id.clone());
+        self.album = found.clone();
+        Ok(found)
+    }
+
     /// Whether the app uploaded `id` (as its own device): only those renders may be trashed; a
     /// render that matched a pre-existing asset by checksum is the user's and is left alone.
     fn is_ours(&self, id: &str) -> bool {
@@ -276,7 +296,7 @@ impl PublishService for ImmichPublish {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { comments: false, likes: true }
+        Capabilities { comments: true, likes: true }
     }
 
     fn publish(&mut self, up: &Upload<'_>) -> Result<Published, PublishError> {
@@ -333,6 +353,29 @@ impl PublishService for ImmichPublish {
             }
         }
         Ok(Published { remote_id: remote_id(render.as_deref(), original.as_deref()) })
+    }
+
+    fn comments(&mut self, remote_id: &str) -> Result<Vec<Comment>, PublishError> {
+        let Some(album) = self.existing_album()? else { return Ok(Vec::new()) };
+        let (r, o) = parse_remote(remote_id);
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<(String, Comment)> = Vec::new();
+        // the render and the original are both in the album: a comment may be on either
+        for asset in r.iter().chain(o.iter().filter(|o| Some(**o) != r)) {
+            for a in self.client.activities(&album, asset, "comment").map_err(err)? {
+                let Some(text) = a.comment.as_deref().map(str::trim).filter(|t| !t.is_empty()) else { continue };
+                if (!a.kind.is_empty() && a.kind != "comment") || !seen.insert(a.id.clone()) {
+                    continue;
+                }
+                let user = a.user.unwrap_or_default();
+                let author = [user.name.trim(), user.email.trim()].into_iter().find(|x| !x.is_empty()).unwrap_or_default();
+                let date = a.created_at.filter(|d| !d.trim().is_empty()).map(|d| clip(&d, 64));
+                out.push((date.clone().unwrap_or_default(), Comment { author: clip(author, 200), text: clip(text, 4000), date }));
+            }
+        }
+        // ISO 8601 UTC strings sort by time; a stable sort keeps the server's order for equal ones
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out.into_iter().map(|(_, c)| c).collect())
     }
 
     fn remove(&mut self, id: &str) -> Result<(), PublishError> {

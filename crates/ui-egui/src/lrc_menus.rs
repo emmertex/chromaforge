@@ -177,7 +177,7 @@ const LIBRARY: &[&str] = &[
     "library.showSubfolderPhotos",
     "---",
     "library.refine",
-    "soon.reviewComments",
+    "dialog.reviewComments",
     "---",
     "dialog.rename",
     "photo.convertToDng=Convert Photo to DNG…",
@@ -185,7 +185,7 @@ const LIBRARY: &[&str] = &[
     "photo.flatField=Flat-Field Correction…",
     "---",
     "file.findMissing=Find All Missing Photos",
-    "soon.validateDng",
+    "library.validateDng",
     "soon.synchronizeFolder",
     "---",
     "faces.detect=Find Faces Again…",
@@ -229,7 +229,7 @@ const PHOTO: &[&str] = &[
     "@Set Flag",
     "@Set Rating",
     "@Set Color Label",
-    "soon.resetExportStatus",
+    "photo.resetExportStatus",
     "view.autoAdvance",
     "---",
     "@Set Keyword",
@@ -284,11 +284,11 @@ const VIEW: &[&str] = &[
     "view.zoomIn",
     "view.zoomOut",
     "view.zoom100=Zoom To 100%",
-    "soon.lockZoomPosition",
+    "view.lockZoomPosition",
     "---",
     "view.thumbSizeUp=Increase Grid Size",
     "view.thumbSizeDown=Decrease Grid Size",
-    "soon.scrollByRow",
+    "view.scrollByRow",
     "---",
     "@Sort",
     "---",
@@ -311,7 +311,7 @@ const VIEW: &[&str] = &[
     "@Loupe Info",
     "@Loupe Overlay",
     "---",
-    "soon.mirrorImageMode",
+    "view.mirrorImage",
 ];
 
 const WINDOW: &[&str] = &[
@@ -802,8 +802,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon("soon.reviewComments", "Review Comments", None, 'L', false, "Comments from shared web galleries."),
-    soon("soon.validateDng", "Validate DNG Files", None, 'S', false, "Check the DNGs' embedded checksums and list the damaged ones."),
     soon(
         "soon.synchronizeFolder",
         "Synchronize Folder…",
@@ -814,7 +812,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
-    soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
     soon(
@@ -827,16 +824,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     // View
     soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
-    soon(
-        "soon.lockZoomPosition",
-        "Lock Zoom Position",
-        Some("Cmd+Shift+="),
-        'S',
-        false,
-        "Zoom every photo to the same place while stepping through them.",
-    ),
-    soon("soon.scrollByRow", "Scroll By Row", None, 'S', false, "The grid scrolls a whole row at a time."),
-    soon("soon.mirrorImageMode", "Enable Mirror Image Mode", None, 'S', false, "Show every photo flipped left to right (view only)."),
     // Window
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),

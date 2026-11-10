@@ -33,6 +33,7 @@ pub mod dctjpeg;
 pub mod defects;
 pub mod demosaic;
 mod dng;
+pub mod dngdigest;
 pub mod dngwrite;
 pub mod flatfield;
 pub mod gaintable;

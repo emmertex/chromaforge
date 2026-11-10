@@ -183,6 +183,29 @@ impl Client {
         self.get("/api-keys/me", true)
     }
 
+    /// `GET /auth/status`: whether this session is elevated (locked-folder assets are visible to
+    /// its listings), whether the account unlocks with a password or a PIN code, and when the
+    /// elevation ends (the server locks the session again later).
+    pub fn auth_status(&self) -> Result<AuthStatus, ImmichError> {
+        self.get("/auth/status", true)
+    }
+
+    /// `POST /auth/session/unlock`: elevate this session with the account's password or PIN code
+    /// ([`SessionUnlock`]), so its listings include locked-folder assets. Answers 204 with an
+    /// empty body; a wrong secret (400/401) is an [`ImmichError::Status`] that names the refusal,
+    /// not a key problem (unlocking an already unlocked session is harmless, so the offline/5xx
+    /// retries of `send` are fine to keep).
+    pub fn unlock_session(&self, u: &SessionUnlock) -> Result<(), ImmichError> {
+        const PATH: &str = "/auth/session/unlock";
+        let v = serde_json::to_value(u).map_err(|e| ImmichError::Protocol(e.to_string()))?;
+        self.send(Method::Post, PATH, Some(&v), true).map(|_| ()).map_err(|e| match e {
+            // the server answers 401 (v3.3.1) or 400 for a wrong secret: the user's typo, not the
+            // API key this client holds
+            ImmichError::BadKey => ImmichError::Status(401, format!("{PATH}: the PIN or password was refused")),
+            e => e,
+        })
+    }
+
     /// Everything IMM-CONNECT shows: version (checked), user and the key's permissions.
     pub fn status(&self) -> Result<ServerStatus, ImmichError> {
         let version = self.check_version()?;
@@ -283,6 +306,29 @@ impl Client {
             return Err(too_big());
         }
         Ok(out)
+    }
+
+    /// `GET /activities?albumId=&assetId=&type=`: the comments (`kind` `comment`) or likes (`like`)
+    /// on one asset of an album, oldest first. Needs `activity.read`. The answer is capped at
+    /// [`MAX_ACTIVITY_BYTES`] and the list at [`MAX_ACTIVITIES`]; both are an error or a cut, never a crash.
+    pub fn activities(&self, album: &str, asset: &str, kind: &str) -> Result<Vec<Activity>, ImmichError> {
+        if !matches!(kind, "comment" | "like") {
+            return Err(ImmichError::Protocol(format!("not an activity type: {kind:?}")));
+        }
+        let path = format!("/activities?albumId={}&assetId={}&type={kind}", path_id(album)?, path_id(asset)?);
+        let mut r = self.send(Method::Get, &path, None, true)?;
+        let too_big = || ImmichError::Protocol(format!("the activity list is larger than {MAX_ACTIVITY_BYTES} bytes"));
+        if r.header("content-length").and_then(|v| v.trim().parse::<u64>().ok()).is_some_and(|n| n > MAX_ACTIVITY_BYTES) {
+            return Err(too_big());
+        }
+        let mut body = Vec::new();
+        (&mut r).take(MAX_ACTIVITY_BYTES.saturating_add(1)).read_to_end(&mut body).map_err(|e| ImmichError::Io(e.to_string()))?;
+        if body.len() as u64 > MAX_ACTIVITY_BYTES {
+            return Err(too_big());
+        }
+        let mut list: Vec<Activity> = serde_json::from_slice(&body).map_err(|e| ImmichError::Protocol(format!("/activities: {e}")))?;
+        list.truncate(MAX_ACTIVITIES);
+        Ok(list)
     }
 
     /// `POST /assets/bulk-upload-check`: which checksums the server already has.
