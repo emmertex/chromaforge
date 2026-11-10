@@ -776,8 +776,8 @@ fn metadata_field_ui(ui: &mut egui::Ui, plugin: &str, photo: u64, f: &Value, mix
         if read_only {
             let text = match value {
                 _ if mixed => super::metadata::MIXED.to_string(),
-                Value::Null => "—".to_string(),
-                Value::Bool(b) => if *b { "✓" } else { "—" }.to_string(),
+                Value::Null => crate::i18n::tr("None").to_string(),
+                Value::Bool(b) => crate::i18n::tr(if *b { "On" } else { "Off" }).to_string(),
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
@@ -815,12 +815,12 @@ fn metadata_field_ui(ui: &mut egui::Ui, plugin: &str, photo: u64, f: &Value, mix
                 let shown = if mixed {
                     super::metadata::MIXED
                 } else if cur.is_empty() {
-                    "—"
+                    crate::i18n::tr("None")
                 } else {
                     &cur
                 };
                 let r = egui::ComboBox::from_id_salt(("plugin-meta", plugin, key)).selected_text(shown).show_ui(ui, |ui| {
-                    if ui.selectable_label(cur.is_empty() && !mixed, "—").clicked() && (mixed || !cur.is_empty()) {
+                    if ui.selectable_label(cur.is_empty() && !mixed, crate::i18n::tr("None")).clicked() && (mixed || !cur.is_empty()) {
                         out = Some(Value::Null);
                     }
                     for o in f["options"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -1802,7 +1802,7 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     };
     fact_row(ui, tr("Measures"), measures);
     fact_row(ui, tr("Base tone"), if p["baseTone"] == "neutral" { tr("Neutral (its own rendering)") } else { tr("The camera's") });
-    fact_row(ui, tr("Parameters"), &if params.is_empty() { "—".to_string() } else { params.join(", ") });
+    fact_row(ui, tr("Parameters"), &if params.is_empty() { tr("None").to_string() } else { params.join(", ") });
     let module = format!("{} KB · sha256 {}…", kilobytes(p), hash.get(..12).unwrap_or(hash));
     fact_row(ui, tr("Module"), &module).on_hover_text(format!("sha256 {hash}"));
 }

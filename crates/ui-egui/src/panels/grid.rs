@@ -1268,7 +1268,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     } else if square && app.ui.show_filenames {
         let m = &photo.meta;
         let name = match app.ui.grid_info.as_str() {
-            "exposure" => exposure_line(m).unwrap_or_else(|| "—".to_string()),
+            "exposure" => exposure_line(m).unwrap_or_default(),
             "date" => photo.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into()),
             _ => photo.file_name.rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or(photo.file_name.clone()),
         };
@@ -1362,7 +1362,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         p.galley(pos2(br.left() + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
         register(ui.ctx(), format!("badge:previewOnly:{}", id.0), br);
         ui.interact(br, egui::Id::new(("preview-only-badge", id.0)), Sense::hover())
-            .on_hover_text(crate::i18n::tr_format!("Preview only — {}", crate::widgets::preview_only_explanation(why)));
+            .on_hover_text(crate::i18n::tr_format!("Preview only: {}", crate::widgets::preview_only_explanation(why)));
     }
     #[cfg(not(target_arch = "wasm32"))]
     super::connections::grid_badge(app, ui, id, img_rect);
@@ -1826,9 +1826,9 @@ pub fn stack_badge(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, sid: lcc_ca
     let origin = if square { r.min + vec2(10.0, 26.0) } else { r.min + vec2(5.0, 5.0) };
     let br = Rect::from_min_size(origin, vec2(g.size().x + 30.0, 20.0));
     let resp = ui.interact(br, egui::Id::new(("stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-        "Stack — click to expand (S)"
+        "Stack: click to expand (S)"
     } else {
-        "Stack — click to collapse (S)"
+        "Stack: click to collapse (S)"
     });
     crate::widgets::announce(&resp, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
     register(ui.ctx(), format!("stack:{}", id.0), br);

@@ -448,7 +448,7 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
                 Err(r) => format!("it couldn't be set aside ({r})"),
             };
             let msg = format!(
-                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
+                "The app settings ({}) are damaged ({e}); {what}. Defaults are used. Reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
                 path.display()
             );
             (None, Some(msg), kept.is_err())
@@ -1118,7 +1118,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
 
 /// `--help` text; `{bin}`, `{app}`, `{P}` and `{lib}` are filled by [`help`].
 const HELP: &str = "\
-{bin} — photo library + raw developer
+{bin}: photo library + raw developer
 
 USAGE: {bin} [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported; a library's catalog.snap or
                                           folder opens that library)

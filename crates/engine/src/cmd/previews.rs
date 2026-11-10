@@ -948,7 +948,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Build Smart Previews",
             [],
             None,
-            "{ids?, discard?: bool, background?: bool} — build (or discard) the smart previews of the selected photos (else all in view): compact proxies in the library that keep photos editable and exportable (at proxy size) while their originals are offline; a damaged proxy (cut short) is rebuilt → {built, repaired, removed, failed}; with background (the app's menu) the files are read and written on a worker thread → {total, done, failed, repaired, running, what} like library.buildPreviews (progress: library.previewProgress, stop: library.cancelPreviews)",
+            "{ids?, discard?: bool, background?: bool}: build (or discard) the smart previews of the selected photos (else all in view): compact proxies in the library that keep photos editable and exportable (at proxy size) while their originals are offline; a damaged proxy (cut short) is rebuilt → {built, repaired, removed, failed}; with background (the app's menu) the files are read and written on a worker thread → {total, done, failed, repaired, running, what} like library.buildPreviews (progress: library.previewProgress, stop: library.cancelPreviews)",
             always,
             smart
         ),
@@ -958,7 +958,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Smart Previews Location",
             [],
             None,
-            "{path?: absolute folder, reset?: bool, existing?: move|leave|discard} — without path/reset: where this library keeps its smart previews → {path, default, custom, available, count, bytes}. With path (or reset = back to `Smart Previews` in the library): use that folder instead (must exist or have an existing parent, and accept writes; never falls back to another drive). Smart previews already in the old folder need `existing`: move them, leave them (build again), or discard them → also {handled, failed}",
+            "{path?: absolute folder, reset?: bool, existing?: move|leave|discard}: without path/reset: where this library keeps its smart previews → {path, default, custom, available, count, bytes}. With path (or reset = back to `Smart Previews` in the library): use that folder instead (must exist or have an existing parent, and accept writes; never falls back to another drive). Smart previews already in the old folder need `existing`: move them, leave them (build again), or discard them → also {handled, failed}",
             always,
             smart_location
         ),
@@ -975,7 +975,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Build Previews",
             [],
             None,
-            "{size?: standard (the library's standard size, or `edge`) | full (1:1), ids?, wait?: bool, force?: bool, from?: id, backward?: bool, background?: bool} — render the grid thumbnail and loupe view of the selected photos (else all in view) into the preview cache (memory and disk), in the background unless `wait`. Photos whose previews are there already (big enough) are skipped unless `force`; the photos nearest `from` go first, in the direction of travel. `background`: the background preparation's build (at least the loupe's size, two lanes, waits while the photo on screen renders and while an export or import runs; a build asked for replaces it) → {total, done, failed, skipped, shared, background, running}",
+            "{size?: standard (the library's standard size, or `edge`) | full (1:1), ids?, wait?: bool, force?: bool, from?: id, backward?: bool, background?: bool}: render the grid thumbnail and loupe view of the selected photos (else all in view) into the preview cache (memory and disk), in the background unless `wait`. Photos whose previews are there already (big enough) are skipped unless `force`; the photos nearest `from` go first, in the direction of travel. `background`: the background preparation's build (at least the loupe's size, two lanes, waits while the photo on screen renders and while an export or import runs; a build asked for replaces it) → {total, done, failed, skipped, shared, background, running}",
             always,
             build
         ),
@@ -984,7 +984,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Discard 1:1 Previews",
             [],
             None,
-            "{size?: full, ids?, auto?: bool} — discard the 1:1 previews of the selected photos (else all in view), or with auto those past the library's discardFull age (library.previewSettings); standard previews stay → {removed, kept}",
+            "{size?: full, ids?, auto?: bool}: discard the 1:1 previews of the selected photos (else all in view), or with auto those past the library's discardFull age (library.previewSettings); standard previews stay → {removed, kept}",
             always,
             discard
         ),
@@ -993,14 +993,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "Preview Settings",
             [],
             None,
-            "{standardEdge?: 256–8192 px, discardFull?: day|week|month|never, atImport?: minimal|standard|full} — the library's preview store: the size of standard previews, when 1:1 previews are discarded on their own, and which previews an import builds (saved with the library) → {standardEdge, discardFull, atImport}",
+            "{standardEdge?: 256–8192 px, discardFull?: day|week|month|never, atImport?: minimal|standard|full}: the library's preview store: the size of standard previews, when 1:1 previews are discarded on their own, and which previews an import builds (saved with the library) → {standardEdge, discardFull, atImport}",
             always,
             settings
         ),
         cmd!(query "library.previewProgress", "Preview Build Progress", [], None, "{} → {total, done, failed, repaired, skipped, shared, background, running, cancelled, what, error} | null", always, |s, _| {
             Ok(s.preview_build.as_ref().map_or(Value::Null, |b| b.json()))
         }),
-        cmd!(query "prefs.backgroundPrep", "Background Preparation Settings", [], None, "{} → {app, library|null, settings (in use), own: bool (this library keeps its own), building} — what is prepared in the background per mode (culling | library: previews = build the previews of every photo in view in the spare time, ahead = photos each way rendered for the loupe before they are reached, eyeAhead = photos ahead whose eye focus strip is worked out, scope all|marked|onScreen; develop: ahead = photos each way made ready to edit, scope)", always, |s, _| {
+        cmd!(query "prefs.backgroundPrep", "Background Preparation Settings", [], None, "{} → {app, library|null, settings (in use), own: bool (this library keeps its own), building}: what is prepared in the background per mode (culling | library: previews = build the previews of every photo in view in the spare time, ahead = photos each way rendered for the loupe before they are reached, eyeAhead = photos ahead whose eye focus strip is worked out, scope all|marked|onScreen; develop: ahead = photos each way made ready to edit, scope)", always, |s, _| {
             Ok(s.prep_json())
         }),
         cmd!(

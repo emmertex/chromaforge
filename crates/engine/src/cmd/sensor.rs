@@ -525,7 +525,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hot Pixel Map",
             [],
             None,
-            "{body?: bodyKey | \"all\" (default: the active photo's camera body), list?: bool} → {bodies: [{body, label, model, photos, pixels: {confirmed, candidates, hot, dead, stuck, fromDarkFrames}, dustPhotos, dust, list?}], folder, job} — what the app remembers about a camera body's hot, dead and stuck pixels (bodies: the serial number, else file:XX from the file names)",
+            "{body?: bodyKey | \"all\" (default: the active photo's camera body), list?: bool} → {bodies: [{body, label, model, photos, pixels: {confirmed, candidates, hot, dead, stuck, fromDarkFrames}, dustPhotos, dust, list?}], folder, job}: what the app remembers about a camera body's hot, dead and stuck pixels (bodies: the serial number, else file:XX from the file names)",
             always,
             |s, p| status("pixels", s, p)
         ),
@@ -534,7 +534,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rebuild Hot Pixel Map",
             ["Photo", "Develop Settings"],
             None,
-            "{body?: bodyKey (only that body's photos), ids?: [photoId] (default: the selection, else the photos in view), clear?: bool (true: start the map afresh), wait?: bool} → job {what, total, done, running, bodies…} — reads the raws in the background (activity row \"Mapping hot pixels\"); a pixel found in 3 photos from 3 different 5-minute periods is confirmed and fixed on every photo of the body",
+            "{body?: bodyKey (only that body's photos), ids?: [photoId] (default: the selection, else the photos in view), clear?: bool (true: start the map afresh), wait?: bool} → job {what, total, done, running, bodies…}: reads the raws in the background (activity row \"Mapping hot pixels\"); a pixel found in 3 photos from 3 different 5-minute periods is confirmed and fixed on every photo of the body",
             always,
             |s, p| pixel_build(s, p, true)
         ),
@@ -543,7 +543,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Photos to Hot Pixel Map",
             [],
             None,
-            "{ids?, body?, wait?} → job — like camera.pixelMap.rebuild without clearing: adds photos to the maps (photos already counted are skipped)",
+            "{ids?, body?, wait?} → job: like camera.pixelMap.rebuild without clearing: adds photos to the maps (photos already counted are skipped)",
             always,
             |s, p| pixel_build(s, p, false)
         ),
@@ -552,7 +552,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Hot Pixel Map",
             [],
             None,
-            "{body?: bodyKey (default: the active photo's)} → {body, cleared} — forget a camera body's hot pixels",
+            "{body?: bodyKey (default: the active photo's)} → {body, cleared}: forget a camera body's hot pixels",
             always,
             |s, p| clear_map(s, p, true)
         ),
@@ -561,7 +561,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Calibrate from Dark Frames",
             [],
             None,
-            "{paths: [file] (raws shot with the lens cap on, at the exposure and ISO you use), body?: bodyKey (default: from each file)} → {frames: [{file, body, hot, iso, exposure, offset, noise, rowNoise, columnNoise, saved} | {file, error}]} — every hot pixel of the frame is confirmed at once; the frame's noise figures are kept as JSON (docs/sensor-defects.md)",
+            "{paths: [file] (raws shot with the lens cap on, at the exposure and ISO you use), body?: bodyKey (default: from each file)} → {frames: [{file, body, hot, iso, exposure, offset, noise, rowNoise, columnNoise, saved} | {file, error}]}: every hot pixel of the frame is confirmed at once; the frame's noise figures are kept as JSON (docs/sensor-defects.md)",
             always,
             calibrate
         ),
@@ -570,7 +570,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sensor Dust Map",
             [],
             None,
-            "{body?: bodyKey | \"all\", list?: bool} → {bodies: [{…, dust: {confirmed, suggested, windows}, list?: [{x, y, confirmed, windows, apertures}]}], job} — the dust the app remembers per camera body (sensor positions, time windows, size per aperture)",
+            "{body?: bodyKey | \"all\", list?: bool} → {bodies: [{…, dust: {confirmed, suggested, windows}, list?: [{x, y, confirmed, windows, apertures}]}], job}: the dust the app remembers per camera body (sensor positions, time windows, size per aperture)",
             always,
             |s, p| status("dust", s, p)
         ),
@@ -579,7 +579,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rebuild Sensor Dust Map",
             ["Photo", "Develop Settings"],
             None,
-            "{body?, ids?, clear?: bool (true), sensitivity?: 0..100 (50), wait?} → job — analyses the photos for dust in the background, oldest first (activity row \"Mapping sensor dust\"); a spot in 3 photos over 2 periods is confirmed",
+            "{body?, ids?, clear?: bool (true), sensitivity?: 0..100 (50), wait?} → job: analyses the photos for dust in the background, oldest first (activity row \"Mapping sensor dust\"); a spot in 3 photos over 2 periods is confirmed",
             always,
             |s, p| dust_rebuild(s, p, true)
         ),
@@ -588,7 +588,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Photos to Sensor Dust Map",
             [],
             None,
-            "{ids?, body?, sensitivity?, wait?} → job — like camera.dustMap.rebuild without clearing",
+            "{ids?, body?, sensitivity?, wait?} → job: like camera.dustMap.rebuild without clearing",
             always,
             |s, p| dust_rebuild(s, p, false)
         ),
@@ -597,7 +597,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Sensor Dust Map",
             [],
             None,
-            "{body?} → {body, cleared} — forget a camera body's dust",
+            "{body?} → {body, cleared}: forget a camera body's dust",
             always,
             |s, p| clear_map(s, p, false)
         ),
@@ -606,7 +606,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stop Camera Sensor Map Build",
             [],
             None,
-            "{} → job — stop the map build or batch Remove Dust (what it did so far is kept)",
+            "{} → job: stop the map build or batch Remove Dust (what it did so far is kept)",
             always,
             |s, _| {
                 if let Some(j) = &s.sensor_job {
@@ -620,7 +620,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hot Pixels of Photo",
             [],
             None,
-            "{id?, limit?: 500} → {on, body, fromMap: [[x, y, s]], fromMapCount, found: [{x, y, s, kind, level}], candidates, noise, overflow} — what decoding the photo corrects: the body's confirmed pixels and the ones found in it (raw data coordinates); reads the file, changes nothing",
+            "{id?, limit?: 500} → {on, body, fromMap: [[x, y, s]], fromMapCount, found: [{x, y, s, kind, level}], candidates, noise, overflow}: what decoding the photo corrects: the body's confirmed pixels and the ones found in it (raw data coordinates); reads the file, changes nothing",
             has_active,
             pixel_defects
         ),
@@ -629,7 +629,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Dust Pump",
             [],
             None,
-            "{} → {applied, job} — called every frame by the app: puts finished background Remove Dust results on their photos",
+            "{} → {applied, job}: called every frame by the app: puts finished background Remove Dust results on their photos",
             always,
             pump
         ),
@@ -638,7 +638,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Dust",
             ["Photo", "Develop Settings"],
             None,
-            "{sensitivity?: 0..100 (50), add?: bool (true), useMap?: bool (true: add the camera body's known dust, re-checked on this photo), replace?: bool (true: earlier auto-dust spots go), ids?: [photoId] (several: in the background, activity row \"Removing dust\"; default: the selection when more than one, else the active photo), wait?: bool} → one photo: {spots: [{x, y, size, mode, confirmed, confidence}], added, found, confirmed, fromMap, skippedOnDetail, body, learnt}; several: job — find sensor dust (small soft dark spots on smooth areas) and heal each (or even it out: large faint ones); the spots are tagged auto dust; the photo also teaches its body's dust map",
+            "{sensitivity?: 0..100 (50), add?: bool (true), useMap?: bool (true: add the camera body's known dust, re-checked on this photo), replace?: bool (true: earlier auto-dust spots go), ids?: [photoId] (several: in the background, activity row \"Removing dust\"; default: the selection when more than one, else the active photo), wait?: bool} → one photo: {spots: [{x, y, size, mode, confirmed, confidence}], added, found, confirmed, fromMap, skippedOnDetail, body, learnt}; several: job. Find sensor dust (small soft dark spots on smooth areas) and heal each (or even it out: large faint ones); the spots are tagged auto dust; the photo also teaches its body's dust map",
             has_active,
             find_dust
         ),

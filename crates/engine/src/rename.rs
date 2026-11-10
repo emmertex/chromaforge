@@ -223,7 +223,7 @@ pub const TEMPLATE_NOTES: &[&str] = &[
     "A blank template keeps the original names.",
     "{date} is the capture time; a photo without one uses the time it was imported.",
     "Missing metadata ({camera}, {title}…) leaves an empty gap; a name that comes out empty keeps the original name.",
-    "Unknown tags stay as typed — check the preview for a {typo}.",
+    "Unknown tags stay as typed, so check the preview for a {typo}.",
     "Characters not allowed in file names (/ \\ : * ? \" < > |) become -; an existing name gets -1, -2….",
 ];
 

@@ -338,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata to Files",
             [],
             None,
-            "{path, background?: false} — as photo.saveMetadataToFile for every library photo imported from the folder or a folder inside it (not Local-only browse records, Recently Deleted or virtual copies), with a row in the activity stack (`saveMetadata`); a photo whose file can't be written lands in `failed` and the rest go on. Plain, it does every photo before it returns → {total, done, cancelled, written: [path], merged: [path], backups: [{path, backup}], failed: [{id, error}]}. With `background: true` it only plans the work → {started, total}; each `folder.metadataPump` call (the caller repeats it; the app doesn't yet) then does it a few milliseconds at a time, and the row's ✕ or `activity.cancel` stops it (the sidecars already written stay)",
+            "{path, background?: false}: as photo.saveMetadataToFile for every library photo imported from the folder or a folder inside it (not Local-only browse records, Recently Deleted or virtual copies), with a row in the activity stack (`saveMetadata`); a photo whose file can't be written lands in `failed` and the rest go on. Plain, it does every photo before it returns → {total, done, cancelled, written: [path], merged: [path], backups: [{path, backup}], failed: [{id, error}]}. With `background: true` it only plans the work → {started, total}; each `folder.metadataPump` call (the caller repeats it; the app doesn't yet) then does it a few milliseconds at a time, and the row's ✕ or `activity.cancel` stops it (the sidecars already written stay)",
             always,
             |s, p| run(s, p, Direction::Save)
         ),
@@ -347,7 +347,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Read Metadata from Files",
             [],
             None,
-            "{path, background?: false} — as photo.readMetadataFromFile for every library photo imported from the folder or a folder inside it (not Local-only browse records, Recently Deleted or virtual copies), with a row in the activity stack (`readMetadata`): one undo step, never writes the sidecars it reads, even with auto-write on; a photo without a readable sidecar lands in `failed` and the rest go on, and so does one edited while a background read ran. Plain, it does every photo before it returns → {total, done, cancelled, read: [{id, from}], failed: [{id, error}], warnings?}. With `background: true` it only plans the work → {started, total}; `folder.metadataPump` then does it, and a stopped read commits what it had read",
+            "{path, background?: false}: as photo.readMetadataFromFile for every library photo imported from the folder or a folder inside it (not Local-only browse records, Recently Deleted or virtual copies), with a row in the activity stack (`readMetadata`): one undo step, never writes the sidecars it reads, even with auto-write on; a photo without a readable sidecar lands in `failed` and the rest go on, and so does one edited while a background read ran. Plain, it does every photo before it returns → {total, done, cancelled, read: [{id, from}], failed: [{id, error}], warnings?}. With `background: true` it only plans the work → {started, total}; `folder.metadataPump` then does it, and a stopped read commits what it had read",
             always,
             |s, p| run(s, p, Direction::Read)
         ),
@@ -356,7 +356,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save or Read Folder Metadata in the Background",
             [],
             None,
-            "{budgetMs?: 10} → {running: false} when no background job is waiting, {running: true, done, total} while one is, or {running: false, result} with the job's result (as the plain command's) when it ended — cheap enough to call every frame: does photos for about `budgetMs` (0–1000; at least one photo is done) and ends the job after the last, or at the next call after its row was stopped",
+            "{budgetMs?: 10} → {running: false} when no background job is waiting, {running: true, done, total} while one is, or {running: false, result} with the job's result (as the plain command's) when it ended. Cheap enough to call every frame: does photos for about `budgetMs` (0–1000; at least one photo is done) and ends the job after the last, or at the next call after its row was stopped",
             always,
             pump
         ),

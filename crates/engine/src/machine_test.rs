@@ -306,7 +306,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
     use serde_json::Value;
     vec![
         cmd!(query "app.testMachine", "Test My Machine", [], None,
-        "{paths?: [file], quick?: bool, apply?: bool = true} — export a few photos (yours, else the demo's) at several numbers side by side, with and without the GPU, and use the fastest; returns the report {summary, lanes, useGpu, gpuJobs, photosPerMin, limit, runs}",
+        "{paths?: [file], quick?: bool, apply?: bool = true}: export a few photos (yours, else the demo's) at several numbers side by side, with and without the GPU, and use the fastest; returns the report {summary, lanes, useGpu, gpuJobs, photosPerMin, limit, runs}",
         always, |s, p| {
             const C: &str = "app.testMachine";
             let paths: Vec<String> = match p.get("paths") {
@@ -329,7 +329,7 @@ pub(crate) fn specs() -> Vec<crate::cmd::CommandSpec> {
             Ok(serde_json::to_value(&r).unwrap_or_default())
         }),
         cmd!(query "app.exportTuning", "Export Performance", [], None,
-        "{lanes?: number (0 = automatic), gpu?: bool, gpuJobs?: number (0 = automatic), cards?: both | editing | second} — photos exported side by side, the GPU for exports, exports sharing the GPU at once, the graphics cards exports use with a second one (`second`: only it, to measure it); returns what is in use",
+        "{lanes?: number (0 = automatic), gpu?: bool, gpuJobs?: number (0 = automatic), cards?: both | editing | second}: photos exported side by side, the GPU for exports, exports sharing the GPU at once, the graphics cards exports use with a second one (`second`: only it, to measure it); returns what is in use",
         always, |_, p| {
             const C: &str = "app.exportTuning";
             if let Some(v) = p.get("lanes") {
