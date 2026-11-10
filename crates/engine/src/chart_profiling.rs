@@ -287,7 +287,7 @@ pub fn normalized_corners(frame: &RawFrame, c: &ChartCorners) -> [[f64; 2]; 4] {
     c.points().map(|p| [p[0] / w, p[1] / h])
 }
 
-/// What the chart's mid greys (D02–D05) measure, taken to a white point through the file's own
+/// What the chart's mid greys ([`lcc_camprof::reference::Chart::mid_grey_ids`]) measure, taken to a white point through the file's own
 /// colour model (DNG 6.3): information only. `None` without a colour matrix.
 pub fn estimate_light(prep: &Prepared, located: &Located) -> Option<LightEstimate> {
     measured_light(prep, located).map(|cct| LightEstimate { cct, illuminant: lcc_camprof::nearest_illuminant(cct) })
@@ -297,11 +297,12 @@ fn measured_light(prep: &Prepared, located: &Located) -> Option<f64> {
     if !lcc_raw::color::has_matrix(&prep.color) {
         return None;
     }
-    let chart = lcc_camprof::chart();
+    let chart = located.chart;
+    let greys = chart.mid_grey_ids();
     let m = lcc_camprof::reference::measure_rotated(&prep.frame, chart, &located.corners, lcc_camprof::SAMPLE_FRACTION, located.turns % 4);
     let mut sum = [0.0f64; 3];
     for (id, rgb) in m.ids.iter().zip(&m.camera_rgb) {
-        if ["D02", "D03", "D04", "D05"].contains(&id.as_str()) {
+        if greys.contains(&id.as_str()) {
             for c in 0..3 {
                 sum[c] += rgb[c];
             }
@@ -328,6 +329,9 @@ pub struct Request {
     /// The light ([`lcc_camprof::ILLUMINANTS`]); empty or `auto`: [`estimate_light`] (an error
     /// when there is none: the light must be chosen).
     pub illuminant: String,
+    /// Which chart the corners outline ([`lcc_camprof::reference::CHARTS`] key); `None`: the one [`prepare`]
+    /// found, else the ColorChecker 24.
+    pub chart: Option<String>,
 }
 
 /// Where the chart of `prep` lies for `req`.
@@ -339,14 +343,18 @@ pub fn locate(prep: &Prepared, req: &Request) -> Result<Located, String> {
             if !corners.is_usable() {
                 return Err("the chart corners don't make a usable grid".into());
             }
-            let corners = if req.refine { lcc_camprof::refine(frame, &corners, 0).map(|l| l.corners).unwrap_or(corners) } else { corners };
+            let chart = match req.chart.as_deref() {
+                Some(key) => lcc_camprof::reference::by_key(key).ok_or_else(|| format!("unknown chart `{key}`"))?,
+                None => prep.located.map(|l| l.chart).unwrap_or_else(lcc_camprof::chart),
+            };
+            let corners = if req.refine { lcc_camprof::refine(frame, chart, &corners, 0).map(|l| l.corners).unwrap_or(corners) } else { corners };
             let turns = match req.turns {
                 Some(t) => t % 4,
-                None => lcc_camprof::orient(frame, &corners),
+                None => lcc_camprof::orient(frame, chart, &corners),
             };
-            Ok(Located { corners, turns, score: None })
+            Ok(Located { corners, turns, score: None, chart })
         }
-        None => prep.located.ok_or_else(|| "no ColorChecker found in the photo: place its corners by hand".into()),
+        None => prep.located.ok_or_else(|| "no color chart found in the photo: place its corners by hand".into()),
     }
 }
 
@@ -508,6 +516,7 @@ pub fn report_json(preps: &[&Prepared], out: &Outcome) -> Value {
                 "neutralIds": b.neutral_ids,
                 "corners": corners,
                 "turns": b.located.turns,
+                "chart": b.located.chart.key,
                 "notes": b.notes,
                 "patches": b.patches.iter().map(|p| json!({
                     "id": p.id,
@@ -536,6 +545,7 @@ pub fn report_json(preps: &[&Prepared], out: &Outcome) -> Value {
         "patchesUsed": primary["patchesUsed"],
         "corners": primary["corners"],
         "turns": primary["turns"],
+        "chart": primary["chart"],
         "illuminant": primary["illuminant"],
         "patches": primary["patches"],
         "calibrations": calibrations,
@@ -894,7 +904,7 @@ mod tests {
             let req = Request { corners: Some(corners), turns: Some(9), ..Default::default() };
             assert!(build((&prep, &req), None, &Default::default()).is_err());
         }
-        assert!(build((&prep, &Request::default()), None, &Default::default()).unwrap_err().contains("no ColorChecker"));
+        assert!(build((&prep, &Request::default()), None, &Default::default()).unwrap_err().contains("no color chart"));
         assert!(prepare(b"not a raw file").is_err());
         assert!(prepare(&[]).is_err());
     }

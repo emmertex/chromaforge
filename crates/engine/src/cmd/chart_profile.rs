@@ -43,6 +43,8 @@ fn find_chart(s: &mut Session, p: &Value) -> Result<Value> {
             "corners": cp::normalized_corners(&prep.frame, &l.corners),
             "turns": l.turns,
             "score": l.score,
+            "chartKey": l.chart.key,
+            "chartName": l.chart.name,
             "estimatedCct": light.map(|e| e.cct.round()),
             "estimatedIlluminant": light.map(|e| e.illuminant),
         })
@@ -58,7 +60,7 @@ fn find_chart(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-/// One chart photo's part of a request: `{corners?, turns?, refine?, illuminant?}`.
+/// One chart photo's part of a request: `{corners?, turns?, refine?, illuminant?, chart?}`.
 fn chart_request(p: &Value, c: &str) -> Result<cp::Request> {
     let illuminant = str_param(p, "illuminant").unwrap_or("");
     if illuminant.len() > 64 {
@@ -69,6 +71,7 @@ fn chart_request(p: &Value, c: &str) -> Result<cp::Request> {
         turns: p.get("turns").and_then(Value::as_u64).map(|t| (t % 4) as u8),
         refine: p.get("refine").and_then(Value::as_bool).unwrap_or(false),
         illuminant: illuminant.to_string(),
+        chart: str_param(p, "chart").map(str::to_string),
     })
 }
 

@@ -27,7 +27,19 @@ pub fn camera_signal(xyz: Vec3) -> Vec3 {
 /// 24 lit by `illuminant_white` (XYZ, Y = 1) at `exposure` (the white patch's Y), with the patch
 /// grid's outer corners at `corners` and patch A01 `turns` quarter turns round.
 pub fn chart_frame(width: usize, height: usize, corners: &ChartCorners, turns: u8, illuminant_white: Vec3, exposure: f64) -> Vec<[f32; 3]> {
-    let chart = crate::chart();
+    chart_frame_of(crate::chart(), width, height, corners, turns, illuminant_white, exposure)
+}
+
+/// [`chart_frame`] for any built-in chart.
+pub fn chart_frame_of(
+    chart: &crate::reference::Chart,
+    width: usize,
+    height: usize,
+    corners: &ChartCorners,
+    turns: u8,
+    illuminant_white: Vec3,
+    exposure: f64,
+) -> Vec<[f32; 3]> {
     let count = width.saturating_mul(height).min(crate::frame::MAX_PIXELS);
     let mut out = vec![[0.0f32; 3]; count];
     let mut seed = 0x2545_f491_4f6c_dd1du64;

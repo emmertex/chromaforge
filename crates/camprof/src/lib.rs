@@ -86,35 +86,41 @@ pub struct Located {
     pub turns: u8,
     /// How closely the cells' colours follow the chart's (−1 to 1), when found by them.
     pub score: Option<f64>,
+    /// Which chart it is ([`reference::CHARTS`]).
+    pub chart: &'static reference::Chart,
 }
 
-/// The ColorChecker 24 this crate profiles from.
+/// The chart assumed when none was found: the ColorChecker 24.
 pub fn chart() -> &'static reference::Chart {
     &reference::COLORCHECKER_CLASSIC
 }
 
-/// Look for the ColorChecker in `frame` by its colours (any position, size and quarter turn).
+/// Look for a chart in `frame` by its colours (any position, size and quarter turn): every built-in chart
+/// ([`reference::CHARTS`]) is tried and the best match wins.
 pub fn find_chart(frame: &RawFrame) -> Option<Located> {
-    let found = detect::find_by_pattern(frame, chart())?;
-    Some(Located { corners: found.corners, turns: found.quarter_turns % 4, score: Some(found.score) })
+    reference::CHARTS
+        .iter()
+        .filter_map(|chart| detect::find_by_pattern(frame, chart).map(|found| (found, *chart)))
+        .max_by(|a, b| a.0.score.total_cmp(&b.0.score))
+        .map(|(found, chart)| Located { corners: found.corners, turns: found.quarter_turns % 4, score: Some(found.score), chart })
 }
 
 /// Move corners placed by hand onto the chart (`turns` is kept: the refinement cannot tell a grid
 /// from its half turn). `None` when they are too far from a chart.
-pub fn refine(frame: &RawFrame, corners: &ChartCorners, turns: u8) -> Option<Located> {
+pub fn refine(frame: &RawFrame, chart: &'static reference::Chart, corners: &ChartCorners, turns: u8) -> Option<Located> {
     if !corners.is_usable() {
         return None;
     }
-    let placement = align::align(frame, chart(), corners, SAMPLE_FRACTION)?;
-    Some(Located { corners: placement.corners, turns: turns % 4, score: None })
+    let placement = align::align(frame, chart, corners, SAMPLE_FRACTION)?;
+    Some(Located { corners: placement.corners, turns: turns % 4, score: None, chart })
 }
 
 /// Which way round the chart lies inside corners placed by hand: the quarter turn whose matrix
 /// fit is best (the corners' shape only says upright or on its side).
-pub fn orient(frame: &RawFrame, corners: &ChartCorners) -> u8 {
-    let start = corners.plausible_turns(chart())[0];
+pub fn orient(frame: &RawFrame, chart: &reference::Chart, corners: &ChartCorners) -> u8 {
+    let start = corners.plausible_turns(chart)[0];
     let placement = align::Placement { corners: *corners, quarter_turns: start, variation: f64::NAN };
-    align::resolve_orientation(frame, chart(), &placement, &profile::FitOptions::default(), SAMPLE_FRACTION).placement.quarter_turns % 4
+    align::resolve_orientation(frame, chart, &placement, &profile::FitOptions::default(), SAMPLE_FRACTION).placement.quarter_turns % 4
 }
 
 /// How to build a profile.
@@ -185,7 +191,7 @@ pub struct Built {
 
 /// Measure the chart at `located` in `frame` and build a profile from it.
 pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result<Built, CamprofError> {
-    let chart = chart();
+    let chart = located.chart;
     if !located.corners.is_usable() {
         return Err(CamprofError::NoChart("the chart corners don't make a usable grid".into()));
     }
