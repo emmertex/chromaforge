@@ -39,6 +39,8 @@ const FILE_VERSION: u64 = 1;
 /// Largest template file read, bytes.
 pub const MAX_FILE: u64 = 256 * 1024;
 
+pub use crate::template_folders::{DEFAULT_FOLDER, MAX_FOLDERS};
+
 /// A saved print template: the layout, image settings, page and job of a print, without the
 /// photos assigned to cells and without the guides (a view preference). The settings are kept as
 /// JSON so a template written by another version never makes the preferences file unreadable;
@@ -47,7 +49,22 @@ pub const MAX_FILE: u64 = 256 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct PrintTemplate {
     pub name: String,
+    /// The Template Browser folder the template is listed in; `None`: [`DEFAULT_FOLDER`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
     pub settings: serde_json::Value,
+}
+
+impl crate::template_folders::Foldered for PrintTemplate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn folder(&self) -> Option<&str> {
+        self.folder.as_deref()
+    }
+    fn set_folder(&mut self, folder: Option<String>) {
+        self.folder = folder;
+    }
 }
 
 /// A template name: trimmed, 1 to [`MAX_NAME`] characters, no control characters.
@@ -71,7 +88,7 @@ impl PrintTemplate {
         if let Some(o) = value.as_object_mut() {
             o.remove("guides");
         }
-        Ok(Self { name: clean_name(name)?, settings: value })
+        Ok(Self { name: clean_name(name)?, folder: None, settings: value })
     }
 
     /// The settings, checked: unknown fields, hostile numbers and inconsistent layouts are errors.
@@ -111,7 +128,7 @@ impl PrintTemplate {
         }
         let name = clean_name(v.get("name").and_then(serde_json::Value::as_str).ok_or("a print template file needs a `name`")?)?;
         let settings = v.get("settings").cloned().ok_or("a print template file needs `settings`")?;
-        let checked = PrintTemplate { name: name.clone(), settings }.settings(&Guides::default())?;
+        let checked = PrintTemplate { name: name.clone(), folder: None, settings }.settings(&Guides::default())?;
         Self::new(&name, &checked)
     }
 }
@@ -168,7 +185,7 @@ mod tests {
         for name in ["", "   ", "a\nb", &"x".repeat(MAX_NAME + 1)] {
             assert!(PrintTemplate::new(name, &PrintSettings::default()).is_err(), "{name:?}");
         }
-        let bad = |v: serde_json::Value| PrintTemplate { name: "t".into(), settings: v }.settings(&Guides::default()).is_err();
+        let bad = |v: serde_json::Value| PrintTemplate { name: "t".into(), folder: None, settings: v }.settings(&Guides::default()).is_err();
         assert!(bad(json!("text")));
         assert!(bad(json!({"surprise": 1})));
         assert!(bad(json!({"job": {"ppi": 1e30}})));

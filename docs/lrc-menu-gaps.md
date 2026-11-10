@@ -21,12 +21,12 @@ Generated from the menu tables; don't edit by hand.
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
 
-## Every module ▸ File ▸ Library Filters
+## Every module ▸ File ▸ Auto Import
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Lock Filters | Keep the filter bar's filter when another folder or collection is chosen. | S | feature | `soon.lockFilters` |
-| Remember Each Source's Filters Separately | Each folder and collection keeps its own filter. | S | feature | `soon.rememberFilters` |
+| Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
+| Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
 
 ## Every module ▸ Edit
 
@@ -103,22 +103,12 @@ Generated from the menu tables; don't edit by hand.
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
 
-## Develop module ▸ Develop
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Preset Folder… | Create a preset group (the Presets panel's menu has it). | S | wire-up | `soon.newPresetFolder` |
-
 ## Develop module ▸ Settings
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
-| Proof | Soft-proof the photo (View ▸ Soft Proofing exists). | S | wire-up | `soon.proof` |
 | Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
 | Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-| Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
-| Crop to Same Aspect Ratio (Shift+A) | Apply the active photo's crop ratio to the selection. | S | feature | `soon.cropSameAspect` |
 
 ## Develop module ▸ Tools
 
@@ -128,23 +118,18 @@ Generated from the menu tables; don't edit by hand.
 | Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
 | Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
 | Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
-| Point Color Selector (Ctrl+Alt+P) | Pick a point colour on the photo (Color Mixer has Point Color). | S | wire-up | `soon.pointColorSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Use Generative AI | Generative fill for the Remove tool (needs an open, shippable model). | L | feature | `soon.removeGenerative` |
 | Detect Objects | Remove tool: pick objects to remove by detection. | M | feature | `soon.removeDetectObjects` |
 
 ## Develop module ▸ Tools ▸ Create New Mask
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Select People | AI mask of people and their parts (face, skin, hair, clothes…). | M | feature | `soon.selectPeople` |
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
-| Color Range (Shift+J) | Start a colour-range mask (the Masking panel does it). | S | wire-up | `soon.colorRange` |
-| Luminance Range (Shift+Q) | Start a luminance-range mask (the Masking panel does it). | S | wire-up | `soon.luminanceRange` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
 ## Develop module ▸ Tools ▸ Target Adjustment
@@ -187,7 +172,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Book | Save the book as a collection (book.save needs a name dialog). | S | wire-up | `soon.createSavedBook` |
 | Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
 | Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
 | Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
@@ -204,9 +188,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Slideshow | Save the slideshow as a collection (needs a name dialog). | S | wire-up | `soon.createSavedSlideshow` |
-| New Template | Save the settings as a template (needs a name dialog). | S | wire-up | `soon.newSlideshowTemplate` |
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ Play
@@ -221,14 +202,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
 
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Create Saved Print | Save the print as a collection (needs a name dialog). | S | wire-up | `soon.createSavedPrint` |
-| New Template | Save the print settings as a template (needs a name dialog). | S | wire-up | `soon.newPrintTemplate` |
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
-
 ## Print module ▸ View
 
 | Item | What it does | Size | Kind | Slot |
@@ -241,7 +214,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Create Saved Web Gallery | Save the web gallery as a collection. | S | feature | `soon.createSavedWebGallery` |
 | New Template | Save the web gallery settings as a template. | S | feature | `soon.newWebTemplate` |
 | New Template Folder | Group web templates in folders. | S | feature | `soon.newWebTemplateFolder` |
 
