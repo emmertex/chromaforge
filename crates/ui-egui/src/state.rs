@@ -656,6 +656,9 @@ pub struct AppSettings {
     pub double_click_develop: bool,
     /// Hide active filter text / indicator in Develop mode (Settings ▸ Interface ▸ Detail).
     pub hide_filter_in_develop: bool,
+    /// Metadata > Show Metadata for Target Photo Only: the Metadata panel shows and edits the active photo,
+    /// not the whole selection's mixed values (`metadata.targetOnly`).
+    pub metadata_target_only: bool,
     /// Presets panel: list the "User Presets" group first, after Favorites (issue #476; off by
     /// default, as Lightroom Classic keeps groups in name order).
     pub user_presets_first: bool,
@@ -813,6 +816,7 @@ impl Default for AppSettings {
             space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
+            metadata_target_only: false,
             user_presets_first: false,
             loupe_info: LoupeInfo::default(),
             lightroom_import: LightroomImport::Ask,
@@ -1801,6 +1805,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -2149,6 +2155,14 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
     },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
@@ -2608,6 +2622,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,

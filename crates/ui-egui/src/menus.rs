@@ -316,6 +316,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.updatePreset", "Update Preset with Current Settings…", None, ""),
     ("dialog.pasteSettings", "Paste Selected Settings…", Some("Cmd+Shift+V"), "Photo>Develop Settings"),
     ("dialog.syncSettings", "Sync Settings…", Some("Cmd+Shift+S"), "Photo>Develop Settings"),
+    ("dialog.syncCopies", "Sync Copies…", None, ""),
+    ("dialog.syncSnapshots", "Sync Snapshots…", None, ""),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
     ("dialog.import", "Import…", Some("Cmd+Shift+I"), "File"),
     ("file.export", "Export…", None, "File"),
@@ -441,6 +443,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.rename", "Rename Photos…", Some("F2"), "Library"),
     ("dialog.labelNames", "Edit Color Label Names…", None, ""),
     ("dialog.captureTime", "Edit Capture Time…", None, "Metadata"),
+    ("metadata.targetOnly", "Show Metadata for Target Photo Only", None, "Metadata"),
     ("photo.tagFromTracklog", "Auto-Tag from Tracklog…", None, "Metadata"),
     ("app.exportPrevious", "Export with Previous", Some("Cmd+Alt+Shift+E"), "File"),
     // control surfaces (`surface`): what their keys run, and their settings for agents
@@ -918,6 +921,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "view.compare" => crate::panels::compare::enter_compare(app),
+        "metadata.targetOnly" => {
+            // {on?}; no params toggles. The Metadata panel shows and edits the active photo alone.
+            app.ui.settings.metadata_target_only = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.metadata_target_only);
+            Ok(json!({"on": app.ui.settings.metadata_target_only}))
+        }
         "view.focusPoint" => {
             // {on?}; no params toggles. The camera's focus point (Sony, from the file) over the photo.
             app.ui.settings.focus_point = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.focus_point);
@@ -2242,6 +2250,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.dialog = Some(Dialog::SyncSettings { groups: app.session.dialogs.sync.to_ids(), controls: Vec::new() });
             Ok(Value::Null)
         }
+        "dialog.syncCopies" => {
+            app.ui.dialog = Some(Dialog::SyncCopies { groups: app.session.dialogs.sync.to_ids() });
+            Ok(Value::Null)
+        }
+        "dialog.syncSnapshots" => {
+            app.ui.dialog = Some(Dialog::SyncSnapshots { groups: app.session.dialogs.sync.to_ids() });
+            Ok(Value::Null)
+        }
         "dialog.copySettings" => {
             let groups = app.session.dialogs.copy.to_ids();
             app.ui.dialog = Some(Dialog::CopySettings { groups });
@@ -3379,6 +3395,11 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "dialog.updatePreset" => app.session.active().is_some(),
         "mask.startComponent" => app.session.active().is_some() && app.session.active_mask.is_some(),
         "dialog.syncSettings" => app.session.active().is_some() && app.session.selection.ids.len() > 1,
+        "dialog.syncCopies" => app.session.active().is_some_and(|id| {
+            let master = app.session.catalog.photo(id).map(|p| p.copy_of.unwrap_or(p.id));
+            master.is_some_and(|m| app.session.catalog.photos().any(|p| !p.deleted && p.id != id && (p.id == m || p.copy_of == Some(m))))
+        }),
+        "dialog.syncSnapshots" => app.session.active().and_then(|id| app.session.catalog.photo(id)).is_some_and(|p| !p.versions.is_empty()),
         "photo.openOriginalInExternal" => {
             // only a file type the app reads can be handed over (#2135); the extension alone
             // decides, so no disk or share is touched while a menu is drawn
