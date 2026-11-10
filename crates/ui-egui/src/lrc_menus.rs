@@ -421,8 +421,8 @@ const SETTINGS: &[&str] = &[
     "develop.pastePrevious",
     "---",
     "dialog.syncSettings",
-    "soon.syncCopies",
-    "soon.syncSnapshots",
+    "dialog.syncCopies",
+    "dialog.syncSnapshots",
     "develop.matchExposure",
     "---",
     "masks.updateAi=Update AI Settings",
@@ -604,15 +604,15 @@ const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.i
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
-    "soon.newWebTemplate",
-    "soon.newWebTemplateFolder",
+    r#"ui.prompt{"title":"New Template","hint":"Template name","command":"webui.saveTemplate","key":"name"}=New Template…"#,
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"webui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "webui.reload=Reload",
     "webui.export=Export Web Photo Gallery…",
     "webui.previewInBrowser",
 ];
 
-const WEB_VIEW: &[&str] = &["panel.toolbar", "soon.webGuides"];
+const WEB_VIEW: &[&str] = &["panel.toolbar", "webui.guides=Show Guides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
@@ -631,7 +631,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["soon.findSimilarFaces", "soon.moveToUnnamedPeople", "soon.removeFaceRegion", "soon.editFaceName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
     (
         "Photo",
         "Stacking",
@@ -827,10 +827,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.findPreviousProcess", "Find Previous Process Photos", None, 'S', false, "Show the photos edited with an older process version."),
     // Photo
     soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
-    soon("soon.findSimilarFaces", "Find Similar Faces", None, 'S', true, "People view: faces like the chosen one."),
-    soon("soon.moveToUnnamedPeople", "Move to Unnamed People", None, 'S', true, "Take a face's name off."),
-    soon("soon.removeFaceRegion", "Remove Face Region", None, 'S', true, "Delete the chosen face box."),
-    soon("soon.editFaceName", "Edit Name", Some("Shift+O"), 'S', true, "Rename the chosen face."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
@@ -868,8 +864,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
-    soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
@@ -892,9 +886,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     // Web
-    soon("soon.newWebTemplate", "New Template", None, 'S', false, "Save the web gallery settings as a template."),
-    soon("soon.newWebTemplateFolder", "New Template Folder", None, 'S', false, "Group web templates in folders."),
-    soon("soon.webGuides", "Show Guides", None, 'S', false, "Layout guides in the gallery preview."),
 ];
 
 /// The "Coming soon" item `id`.

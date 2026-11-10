@@ -1439,6 +1439,9 @@ pub struct UiState {
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
+    /// The face box the pointer last rested on in the loupe (photo, region): the "chosen face" of Photo ▸ People.
+    #[serde(skip)]
+    pub face_focus: Option<(u64, usize)>,
     /// The person whose page the People view shows (their faces and the faces that look like them); `None`: everyone.
     #[serde(skip)]
     pub person_page: Option<String>,
@@ -1771,6 +1774,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -2111,6 +2116,14 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
     },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
@@ -2475,6 +2488,7 @@ impl Default for UiState {
             section_open: Default::default(),
             tree_open: Default::default(),
             name_edit: None,
+            face_focus: None,
             person_page: None,
             person_from: None,
             last_person: None,
@@ -2567,6 +2581,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,

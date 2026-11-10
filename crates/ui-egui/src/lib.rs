@@ -36,6 +36,7 @@ pub mod export_module;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
+pub mod face_menu;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
@@ -109,6 +110,7 @@ pub mod titlebar;
 pub mod video_ui;
 pub mod video_view;
 pub mod web_module;
+pub mod web_templates;
 pub mod widgets;
 pub mod window_place;
 
