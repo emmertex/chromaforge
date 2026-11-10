@@ -500,8 +500,8 @@ fn grain_sub_cover(hj: u32, dx: f32, dy: f32, d2: f32) -> f32 {
         }
         if (lump > 0.0) {
             let m = 0.5 + f32((shp >> 28u) & 15u) * (1.0 / 30.0);
-            let p2 = GRAIN_PHASES[(shp >> 20u) & 15u];
-            let p3 = GRAIN_PHASES[(shp >> 24u) & 15u];
+            let p2 = grain_phase((shp >> 20u) & 15u);
+            let p3 = grain_phase((shp >> 24u) & 15u);
             let c2 = c * c - sn * sn;
             let s2 = 2.0 * c * sn;
             let c3 = c * (4.0 * c * c - 3.0);

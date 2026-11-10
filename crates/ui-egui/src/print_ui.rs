@@ -3,7 +3,7 @@
 //!
 //! The settings are a [`lcc_print::PrintSettings`]; the pages come from
 //! [`lcc_print::PrintSettings::build`] over the selected photos (all photos in the filmstrip when
-//! one or none is selected… as Print One prints just the active photo). The canvas draws the same
+//! none is selected… as Print One prints just the active photo). The canvas draws the same
 //! layout from thumbnails; Print renders every photo with the export pipeline at the print
 //! resolution on a worker thread and writes a PDF or JPEG files, or sends the PDF to an IPP/CUPS
 //! printer.
@@ -157,14 +157,16 @@ fn sync_trust(pu: &mut PrintUi) {
     pu.trusted_certs = lcc_print::ipp::trusted_certificates();
 }
 
-/// The photos a print takes: the selection when it has more than one photo, else every photo in
-/// the filmstrip (Print One: the active photo).
+/// The photos a print takes: the filmstrip's selection when it has one, else every photo in the
+/// filmstrip (Print One: the active photo).
 pub fn job_photos(app: &mut LccApp, one: bool) -> Vec<PhotoId> {
     if one {
         return app.session.active().into_iter().collect();
     }
+    // the photos the filmstrip selects are what prints (Lightroom's Print module works on the
+    // filmstrip selection); only with nothing selected does the job fall back to the whole view
     let sel = app.session.selection.ids.clone();
-    if sel.len() > 1 {
+    if !sel.is_empty() {
         return sel.into_iter().take(MAX_JOB_PHOTOS).collect();
     }
     app.session.visible().iter().copied().take(MAX_JOB_PHOTOS).collect()

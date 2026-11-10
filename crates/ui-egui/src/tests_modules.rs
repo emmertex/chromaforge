@@ -623,3 +623,18 @@ fn test_square_grid_view_state_persists_across_restart() {
     let sanitized_square = ui_square.sanitized();
     assert_eq!(sanitized_square.view, ViewMode::SquareGrid, "StartupView::SquareGrid opens in SquareGrid");
 }
+
+/// The Export module's preview of a single photo draws the loupe's own render (the thumbnail
+/// ladder stops at 512 px; the preview area is larger), with the thumbnail standing in first.
+#[test]
+fn export_module_single_photo_preview_renders_full_quality() {
+    let mut h = demo();
+    let id = h.app.session.visible_cloned()[0];
+    run(&mut h, "library.select", json!({"ids": [id.0]}));
+    run(&mut h, "module.export", json!({}));
+    assert!(h.settle(SETTLE));
+    let main = h.app.renderer.textures.get(&crate::render::Slot::Main);
+    assert!(main.is_some_and(|t| t.photo == id && t.quick.is_none()), "the preview has the loupe's render of the photo");
+    let long = main.map(|t| t.size[0].max(t.size[1])).unwrap_or(0);
+    assert!(long > 512, "the render is bigger than the thumbnail ladder's 512 px cap (got {long})");
+}
