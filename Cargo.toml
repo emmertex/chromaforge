@@ -228,6 +228,10 @@ png = { opt-level = 3 }
 miniz_oxide = { opt-level = 3 }
 
 [patch.crates-io]
+# candle-core 0.9.2 + zip 9 (vendor/candle-core): upstream pins zip 7.x, whose extract-to-disk
+# advisories (RUSTSEC-2026-0367/68/69) have no fixed 7.x release. Same 0.9.2 sources; only the
+# zip dependency version and its API breaks (vendor/candle-core/src/{npy,pickle}.rs) change.
+candle-core = { path = "vendor/candle-core" }
 # egui-wgpu 0.36.2 + HDR display output (an Rgba16Float / extended-linear surface, the display's
 # HDR facts, egui's output scaled to SDR white): see vendor/README.md
 egui-wgpu = { path = "vendor/egui-wgpu" }
