@@ -185,7 +185,7 @@ const LIBRARY: &[&str] = &[
     "soon.flatField",
     "---",
     "file.findMissing=Find All Missing Photos",
-    "soon.validateDng",
+    "library.validateDng",
     "soon.synchronizeFolder",
     "---",
     "faces.detect=Find Faces Again…",
@@ -229,7 +229,7 @@ const PHOTO: &[&str] = &[
     "@Set Flag",
     "@Set Rating",
     "@Set Color Label",
-    "soon.resetExportStatus",
+    "photo.resetExportStatus",
     "view.autoAdvance",
     "---",
     "@Set Keyword",
@@ -803,7 +803,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
     soon("soon.flatField", "Flat-Field Correction…", None, 'L', false, "Correct lens cast and vignetting from a flat-field reference frame."),
-    soon("soon.validateDng", "Validate DNG Files", None, 'S', false, "Check the DNGs' embedded checksums and list the damaged ones."),
     soon(
         "soon.synchronizeFolder",
         "Synchronize Folder…",
@@ -814,7 +813,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
-    soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
     soon(

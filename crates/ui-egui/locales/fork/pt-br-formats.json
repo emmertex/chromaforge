@@ -24,6 +24,7 @@
   "Capture One import failed: {e}{warning}": "Falha na importação do Capture One: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Falha na inspeção do Capture One: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Cartão · cinzas em cerca de {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "{checked} de {total} arquivos DNG verificados: {intact} íntegros, {damaged} danificados, {unverifiable} não verificáveis",
   "Collection imported: {n} photos found, {m} not in this catalog": "Coleção importada: {n} fotos encontradas, {m} não estão neste catálogo",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Espaço de cor: Rec. 2020 {curve} (AVIF HDR)",
   "Create Folder in “{name}”": "Criar pasta em “{name}”",

@@ -35,6 +35,7 @@
   "Capture One import failed: {e}{warning}": "Nhập Capture One thất bại: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Kiểm tra Capture One thất bại: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Bảng màu · xám khoảng {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Đã kiểm tra {checked} trong {total} tệp DNG: {intact} nguyên vẹn, {damaged} bị hỏng, {unverifiable} không thể xác minh",
   "Collection imported: {n} photos found, {m} not in this catalog": "Đã nhập bộ sưu tập: tìm thấy {n} ảnh, {m} ảnh không có trong catalog này",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Không gian màu: Rec. 2020 {curve} (HDR AVIF)",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Chi phí: khoảng ${usd} cho {} yêu cầu, {name} tính vào tài khoản của bạn.",

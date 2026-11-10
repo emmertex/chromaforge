@@ -5014,6 +5014,7 @@ dependencies = [
 name = "lcc-hash"
 version = "26.46.1"
 dependencies = [
+ "md-5",
  "sha1 0.10.7",
 ]
 
@@ -5330,6 +5331,7 @@ dependencies = [
  "lcc-codecs",
  "lcc-color",
  "lcc-geom",
+ "lcc-hash",
  "lcc-meta",
  "lcc-raster",
  "lcc-testkit",

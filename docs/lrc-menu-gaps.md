@@ -36,14 +36,12 @@ Generated from the menu tables; don't edit by hand.
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
-| Validate DNG Files | Check the DNGs' embedded checksums and list the damaged ones. | S | feature | `soon.validateDng` |
 | Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
 
 ## Library module ▸ Photo
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
