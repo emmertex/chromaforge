@@ -178,6 +178,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
     ("view.shotInfo", "Shot Info", Some("Shift+I"), "View>Loupe Info"),
+    ("view.lockZoomPosition", "Lock Zoom Position", Some("Cmd+Shift+="), "View>Zoom"),
+    ("view.scrollByRow", "Scroll By Row", None, "View>Grid View Style"),
+    ("view.mirrorImage", "Enable Mirror Image Mode", None, "View"),
     ("view.viewOptions", "View Options…", None, "View>Loupe Info"),
     ("view.chooseLayoutImage", "Choose Layout Image…", None, "View"),
     ("view.layoutImage", "Layout Image", Some("Cmd+Alt+O"), "View"),
@@ -1290,6 +1293,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.filmstrip" => {
             app.ui.filmstrip = !app.ui.filmstrip;
             Ok(Value::Null)
+        }
+        "view.lockZoomPosition" | "view.scrollByRow" | "view.mirrorImage" => {
+            // {on?: bool} (toggles when omitted) → {on}: view-only switches (`crate::view_state`)
+            let flag = match id {
+                "view.lockZoomPosition" => &mut app.ui.settings.lock_zoom,
+                "view.scrollByRow" => &mut app.ui.settings.scroll_by_row,
+                _ => &mut app.ui.settings.mirror_image,
+            };
+            *flag = p.get("on").and_then(Value::as_bool).unwrap_or(!*flag);
+            Ok(json!({"on": *flag}))
         }
         "view.shotInfo" => {
             // {on?: bool} (toggles when omitted): the line of shot info under the loupe's photo

@@ -284,11 +284,11 @@ const VIEW: &[&str] = &[
     "view.zoomIn",
     "view.zoomOut",
     "view.zoom100=Zoom To 100%",
-    "soon.lockZoomPosition",
+    "view.lockZoomPosition",
     "---",
     "view.thumbSizeUp=Increase Grid Size",
     "view.thumbSizeDown=Decrease Grid Size",
-    "soon.scrollByRow",
+    "view.scrollByRow",
     "---",
     "@Sort",
     "---",
@@ -311,7 +311,7 @@ const VIEW: &[&str] = &[
     "@Loupe Info",
     "@Loupe Overlay",
     "---",
-    "soon.mirrorImageMode",
+    "view.mirrorImage",
 ];
 
 const WINDOW: &[&str] = &[
@@ -828,16 +828,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     // View
     soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
-    soon(
-        "soon.lockZoomPosition",
-        "Lock Zoom Position",
-        Some("Cmd+Shift+="),
-        'S',
-        false,
-        "Zoom every photo to the same place while stepping through them.",
-    ),
-    soon("soon.scrollByRow", "Scroll By Row", None, 'S', false, "The grid scrolls a whole row at a time."),
-    soon("soon.mirrorImageMode", "Enable Mirror Image Mode", None, 'S', false, "Show every photo flipped left to right (view only)."),
     // Window
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
