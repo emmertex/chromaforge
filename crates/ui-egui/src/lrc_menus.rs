@@ -621,7 +621,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["soon.findSimilarFaces", "soon.moveToUnnamedPeople", "soon.removeFaceRegion", "soon.editFaceName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["soon.findSimilarFaces", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
     (
         "Photo",
         "Stacking",
@@ -823,9 +823,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // Photo
     soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
     soon("soon.findSimilarFaces", "Find Similar Faces", None, 'S', true, "People view: faces like the chosen one."),
-    soon("soon.moveToUnnamedPeople", "Move to Unnamed People", None, 'S', true, "Take a face's name off."),
-    soon("soon.removeFaceRegion", "Remove Face Region", None, 'S', true, "Delete the chosen face box."),
-    soon("soon.editFaceName", "Edit Name", Some("Shift+O"), 'S', true, "Rename the chosen face."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.setKeyword", "Set Keyword", None, 'S', true, "The keyword set's nine keywords as a submenu (Alt+1…9 work today)."),

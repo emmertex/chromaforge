@@ -1461,6 +1461,57 @@ mod tests {
         assert!(h.app.ui.name_edit.is_none());
     }
 
+    /// Photo > People acts on the chosen face (the box the pointer rested on in the loupe): disabled without one,
+    /// Edit Name opens its name box, Move to Unnamed takes the name off, Remove Face Region deletes the box.
+    #[test]
+    fn people_menu_items_act_on_the_chosen_face() {
+        use lcc_catalog::Op;
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let id = h.app.session.active().unwrap();
+        let mut meta = h.app.session.catalog.photo(id).unwrap().meta.clone();
+        meta.regions = vec![lcc_meta::Region {
+            rect: lcc_geom::Rect { x0: 0.3, y0: 0.2, x1: 0.55, y1: 0.6 },
+            kind: lcc_meta::RegionKind::Face,
+            name: Some("Ann".into()),
+            description: None,
+        }];
+        h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
+        h.settle(SETTLE);
+        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName"] {
+            assert!(!crate::menus::ui_enabled(&h.app, c), "{c} is off with no face chosen");
+            let r = h.request("engine.execute", json!({"command": c}), t);
+            assert_eq!(r["ok"], false, "{c}: {r}");
+        }
+        h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
+        h.step();
+        h.step();
+        h.step();
+        assert_eq!(crate::face_menu::chosen_face(&h.app), Some((id.0, 0)));
+        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName"] {
+            assert!(crate::menus::ui_enabled(&h.app, c), "{c}");
+        }
+        let r = h.request("engine.execute", json!({"command": "face.editName"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == 0 && e.text == "Ann"));
+        h.app.ui.name_edit = None;
+        // Shift+O does the same while a face is chosen (it cycles the crop overlay otherwise)
+        h.request("ui.key", json!({"key": "O", "shift": true}), t);
+        h.step();
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == 0), "Shift+O opens the name box");
+        h.app.ui.name_edit = None;
+        let r = h.request("engine.execute", json!({"command": "face.moveToUnnamed"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.session.catalog.photo(id).unwrap().meta.regions[0].name, None);
+        assert!(!crate::menus::ui_enabled(&h.app, "face.moveToUnnamed"), "nothing left to take off");
+        let r = h.request("engine.execute", json!({"command": "face.removeRegion"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(h.app.session.catalog.photo(id).unwrap().meta.regions.is_empty());
+        assert!(!crate::menus::ui_enabled(&h.app, "face.removeRegion"));
+    }
+
     /// Adding a face model: the dialog shows the file's terms, the model is installed only once they are
     /// accepted, and a file the app cannot use only says why.
     #[test]

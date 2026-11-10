@@ -1780,6 +1780,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         // while the name box is open and recognition is not set up, the box offers the next step
         let setup = if app.ui.name_edit.is_some() { super::faces::setup(app, ui.ctx()) } else { super::faces::Setup::Running };
         match region_overlay(ui, &p, &map, &photo, d.orientation, hints.as_deref(), &people, &mut app.ui.name_edit, setup) {
+            Some(RegionEdit::Focus(index)) => app.ui.face_focus = Some((id.0, index)),
             Some(RegionEdit::SetUp) => {
                 app.ui.name_edit = None;
                 super::faces::take_step(app, ui.ctx(), setup);
@@ -2089,6 +2090,8 @@ enum RegionEdit {
     Name(usize, String),
     /// The name box's offer to set up face recognition was pressed.
     SetUp,
+    /// The pointer rests on this box: the loupe's chosen face.
+    Focus(usize),
 }
 
 /// Handles of a box: (x, y) as fractions of its width and height, and the cursor they show.
@@ -2126,6 +2129,7 @@ fn region_overlay(
     let drag_key = egui::Id::new("region-drag");
     let live: Option<(usize, lcc_geom::Rect)> = ui.data(|d| d.get_temp(drag_key));
     let mut edit = None;
+    let mut focus = None;
     for (index, r) in photo.meta.regions.iter().enumerate() {
         let dragging = live.filter(|(i, _)| *i == index);
         let norm = orient.map_norm_rect(dragging.map_or(r.rect, |(_, n)| n));
@@ -2199,6 +2203,9 @@ fn region_overlay(
         let is_face = r.kind == lcc_meta::RegionKind::Face;
         let hint = hints.and_then(|h| h.by_index.get(&index));
         let hovered = pointer.is_some_and(|h| rect.expand(3.0).contains(h));
+        if hovered && is_face && live.is_none() {
+            focus = Some(index);
+        }
         let editing_this = editing.as_ref().is_some_and(|e| e.photo == photo.id.0 && e.index == index);
         let (text, text_color, fill_alpha, invitation) = match (&r.name, hint.and_then(|h| h.suggestion.as_ref())) {
             (Some(n), _) => (n.clone(), Color32::from_gray(225), 235, false),
@@ -2249,7 +2256,7 @@ fn region_overlay(
             }
         }
     }
-    edit
+    edit.or(focus.map(RegionEdit::Focus))
 }
 
 /// The filter pill's inset from the canvas' top-left corner and its height (the same inset from

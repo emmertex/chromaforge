@@ -45,6 +45,7 @@ pub mod i18n;
 mod i18n_fork;
 pub mod icons;
 pub mod import;
+pub mod face_menu;
 pub mod import_report;
 mod import_screen;
 pub mod import_tab;
