@@ -551,6 +551,14 @@ pub struct Renderer {
     ready_views: HashMap<Slot, (RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
     /// Adopted prefetches, collected as finished loupe renders by the next [`Self::collect`].
     adopted: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// Finished stand-ins made ahead ([`Slot::QuickAhead`]) held for a later frame: at most one big
+    /// picture made ahead is uploaded per frame ([`BIG_UPLOAD_BYTES`]), so that a set of 1:1
+    /// previews landing together never stalls the frame of a drag or a zoom.
+    held: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// The frame a big picture made ahead was last uploaded in.
+    big_upload_frame: Option<u64>,
+    /// [`BIG_UPLOAD_BYTES`] (smaller in tests, whose context takes no texture over 2048 px).
+    big_upload_bytes: usize,
     /// Variant key → frame it was last asked for (LRU of [`Slot::Variant`] textures).
     variant_used: HashMap<u64, u64>,
     /// How many variants the last frame's views showed at once (see [`Self::want_variants`]).
@@ -592,6 +600,10 @@ pub struct Renderer {
 
 /// How many [`Slot::QuickAhead`] stand-ins the loupe keeps ready.
 pub const AHEAD_SLOTS: u8 = 6;
+
+/// A picture made ahead bigger than this (a 1:1 preview of a 45 MP photo is 180 MB) waits for a
+/// frame without another such upload: each takes the UI thread some 50 ms to copy to the GPU.
+pub const BIG_UPLOAD_BYTES: usize = 32 << 20;
 
 /// The [`Slot::Prefetch`] of the open photo's full-resolution source, decoded ahead of a zoom to 1:1.
 pub const FULL_SOURCE_PREFETCH: u8 = 2;
@@ -711,6 +723,9 @@ impl Renderer {
             prefetched: HashMap::new(),
             ready_views: HashMap::new(),
             adopted: Vec::new(),
+            held: Vec::new(),
+            big_upload_frame: None,
+            big_upload_bytes: BIG_UPLOAD_BYTES,
             variant_used: HashMap::new(),
             variant_want: 0,
             frame: 0,
@@ -1607,6 +1622,7 @@ impl Renderer {
         self.prefetched.clear();
         self.ready_views.clear();
         self.adopted.clear();
+        self.held.clear();
         self.pending.clear();
         self.queue.clear();
         self.tiles.clear();
@@ -1989,6 +2005,7 @@ impl Renderer {
     /// Turn finished jobs into textures. Returns true if anything changed.
     fn collect(&mut self, ctx: &egui::Context, session: &mut Session, inline_ms: f64) -> bool {
         let mut finished: Vec<_> = std::mem::take(&mut self.adopted).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)).collect();
+        finished.extend(std::mem::take(&mut self.held).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)));
         while let Some(done) = self.pool.try_recv() {
             finished.push((done.slot, done.result.result, done.result.color, done.result.texels, if done.ms > 0.0 { done.ms } else { inline_ms }));
         }
@@ -1998,6 +2015,17 @@ impl Renderer {
         self.dispatch();
         let mut changed = false;
         for (mut slot, mut r, mut color, texels, ms) in finished {
+            // (not when the loupe waits for that very photo: it is shown at once)
+            if matches!(slot, Slot::QuickAhead(_))
+                && r.rendered.as_ref().is_ok_and(|x| x.image.width.saturating_mul(x.image.height).saturating_mul(4) > self.big_upload_bytes)
+                && !self.pending.get(&Slot::Preview).is_some_and(|p| p.0 == r.key)
+            {
+                if self.big_upload_frame == Some(self.frame) {
+                    self.held.push((slot, r, color, ms));
+                    continue;
+                }
+                self.big_upload_frame = Some(self.frame);
+            }
             self.completed += 1;
             let main_draft = slot == Slot::Main && self.main_drafts.remove(&r.request_id);
             // made for another display profile than the one in use: obsolete
@@ -2729,6 +2757,47 @@ mod thumbnail_tests {
         assert_eq!(app.renderer.prefetches_pending(), 0, "not counted as a neighbour");
         app.renderer.prefetch(Slot::Prefetch(0), job, 10);
         assert_eq!(app.renderer.prefetches_pending(), 1, "the neighbour is");
+    }
+
+    /// 1:1 previews made ahead for the neighbours (180 MB each for a 45 MP photo) that finish
+    /// together are uploaded one per frame, never all in the frame of a drag or a zoom; the photo
+    /// the loupe waits for is never held back (2026-11-10: two landing in one frame made a 106 ms
+    /// paint).
+    #[test]
+    fn big_pictures_made_ahead_are_uploaded_one_per_frame() {
+        let (mut app, _work, ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        app.renderer.big_upload_bytes = 4 << 20;
+        let side = 1200; // 5.8 MB, over that
+        let big = |app: &mut crate::LccApp, slot: Slot, key: u64| {
+            let mut out = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().run();
+            let r = &mut app.renderer;
+            let id = lcc_preview::next_tick();
+            r.requests.insert(slot, Requested { id, source: None });
+            r.pending.insert(slot, (key, 1));
+            out.request_id = id;
+            out.key = key;
+            if let Ok(x) = out.rendered.as_mut() {
+                x.image = lcc_raster::Rgba8::new(side, side);
+            }
+            r.adopted.push((slot, out, None, 1.0));
+        };
+        big(&mut app, Slot::QuickAhead(0), 11);
+        big(&mut app, Slot::QuickAhead(1), 12);
+        app.renderer.poll(&ctx, &mut app.session);
+        let has = |r: &Renderer, s: Slot| r.textures.get(&s).is_some_and(|t| t.size[0] == side);
+        assert!(has(&app.renderer, Slot::QuickAhead(0)), "the first is uploaded at once");
+        assert!(!has(&app.renderer, Slot::QuickAhead(1)), "the second waits for the next frame");
+        assert!(app.renderer.is_pending(Slot::QuickAhead(1)), "still on its way, so the next frame is asked for");
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(1)), "uploaded in the next frame");
+        // the photo the loupe waits for: shown at once, even after a big upload in this frame
+        big(&mut app, Slot::QuickAhead(2), 13);
+        big(&mut app, Slot::QuickAhead(3), 14);
+        app.renderer.pending.insert(Slot::Preview, (14, 110));
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(2)));
+        assert!(has(&app.renderer, Slot::Preview), "the loupe's stand-in is never held back");
     }
 
     fn fixture() -> (crate::LccApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
