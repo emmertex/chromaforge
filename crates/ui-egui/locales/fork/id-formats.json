@@ -86,6 +86,7 @@
   "MIT AND Apache-2.0. Fonts: {} (OFL). Icons: original.": "MIT DAN Apache-2.0. Font: {} (OFL). Ikon: karya asli.",
   "Measured as part of a roll of {n}": "Diukur sebagai bagian dari rol berisi {n} foto",
   "Module: {size} KB": "Modul: {size} KB",
+  "Moved {name} to {folder}": "{name} dipindahkan ke {folder}",
   "Name this face {who}": "Beri nama wajah ini {who}",
   "New {n}": "Baru {n}",
   "Not available on this computer: keeping them needs about {need} MB of graphics memory on this screen, and the graphics card has {have} MB. The app uses at most a quarter of it for them, so the rest stays free for the photo itself and other apps. Zoomed HDR views still work; going back to one renders it again.": "Tidak tersedia di komputer ini: menyimpannya memerlukan sekitar {need} MB memori grafis di layar ini, sedangkan kartu grafis memiliki {have} MB. Aplikasi memakai paling banyak seperempatnya untuk itu, agar sisanya tetap bebas untuk foto itu sendiri dan aplikasi lain. Tampilan HDR yang diperbesar tetap berfungsi; kembali ke salah satunya akan merendernya ulang.",

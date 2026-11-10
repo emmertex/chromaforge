@@ -601,6 +601,7 @@ fn next_seed(prev: u64, now: &str) -> u64 {
 /// `library.source`: show the source `p` names (the part of it that is not Go Back's bookkeeping).
 fn show_source(s: &mut Session, p: &Value) -> Result<Value> {
     let kind = str_param(p, "kind").unwrap_or("all");
+    let left = (s.source_key(), s.filter.clone());
     s.source = match kind {
         "all" => LibrarySource::All,
         "recentlyAdded" => LibrarySource::RecentlyAdded,
@@ -641,6 +642,7 @@ fn show_source(s: &mut Session, p: &Value) -> Result<Value> {
         }
         other => return Err(bad("library.source", format!("unknown source `{other}`"))),
     };
+    s.switch_source_filter(left.0, left.1);
     s.keep_active_in_view();
     Ok(json!({"count": s.visible().len()}))
 }
@@ -700,6 +702,35 @@ pub fn specs() -> Vec<CommandSpec> {
             "{}: show the source Go Back left; choosing another source clears these; sources that are gone are skipped → {count}",
             can_source_forward,
             |s, _| walk_sources(s, 1)
+        ),
+        cmd!(
+            "library.lockFilters",
+            "Lock Filters",
+            [],
+            None,
+            "{on?: bool (default: toggle)}: on (the default), the filter bar's filter stays when another folder or collection is chosen; off, choosing a source drops the filter (or restores that source's own, see library.rememberFilters) → {on}",
+            always,
+            |s, p| {
+                s.lock_filters = bool_or(p, "on", !s.lock_filters);
+                s.save_view();
+                Ok(json!({"on": s.lock_filters}))
+            }
+        ),
+        cmd!(
+            "library.rememberFilters",
+            "Remember Each Source's Filters Separately",
+            [],
+            None,
+            "{on?: bool (default: toggle)}: with Lock Filters off, each source gets back the filter it had when it was left → {on}",
+            always,
+            |s, p| {
+                s.remember_filters = bool_or(p, "on", !s.remember_filters);
+                if !s.remember_filters {
+                    s.source_filters.clear();
+                }
+                s.save_view();
+                Ok(json!({"on": s.remember_filters}))
+            }
         ),
         cmd!(
             "library.showSubfolderPhotos",
