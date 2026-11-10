@@ -139,6 +139,8 @@ impl Installed {
             "settings": m.settings,
             // its own pictures (`plugin.picture` gives them)
             "icon": m.icon.is_some(), "header": m.header.is_some(),
+            // where it comes from: homepage, repository, changelog, license, issues
+            "about": m.about.info(),
             // a page showing the settings is out of date when either changes (an update, or a
             // value set by the plug-in or another window)
             "moduleHash": self.plugin.module_hash(), "settingsRevision": self.settings().revision(),
@@ -841,7 +843,8 @@ impl Manager {
                 });
                 let unknown = &i.plugin.manifest().unknown_fields;
                 let unknown = (!unknown.is_empty()).then(|| format!("unknown manifest fields: {}", unknown.join(", ")));
-                for line in dropped.into_iter().chain(widened).chain(unknown) {
+                let ignored = i.plugin.manifest().dropped.iter().map(|d| format!("manifest value dropped: {d}")).collect::<Vec<_>>();
+                for line in dropped.into_iter().chain(widened).chain(unknown).chain(ignored) {
                     i.push_log(line);
                 }
                 &*i

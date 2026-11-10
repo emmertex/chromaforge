@@ -789,3 +789,92 @@ fn going_back_drops_a_picture_the_old_version_lacks() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(after, with_header + 1, "the page's name comes back in place of the header ({with_header} before, {after} after)");
 }
+
+/// Where a plug-in or filter comes from, on its page: Homepage, Source Code and Changelog as links
+/// named by their host, Report a Problem beside a GitHub repository, Licence as text, and no row
+/// for a field the manifest leaves out. Each link opens in the browser through `plugins.openLink`,
+/// clicked or asked for by an agent; showing the page fetches nothing.
+#[test]
+fn the_about_tab_shows_where_a_plugin_comes_from() {
+    let _turn = turn();
+    let dir = folder("about");
+    // nothing may connect to the links' host while the page shows (a fetched favicon or preview)
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    lcc_engine::cmd::plugins::use_in_memory_manager();
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let seen = opened.clone();
+    let services = Services {
+        png: None,
+        // the desktop's browser service: https links only
+        open_url: Some(Box::new(move |url: &str| {
+            lcc_ui_egui::links::check_browser_url(url)?;
+            seen.borrow_mut().push(url.to_string());
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1400.0, 900.0], 1.0);
+    exec(&mut h, "plugins.manager", json!({"open": false}));
+    let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::in_memory());
+    let homepage = format!("https://127.0.0.1:{port}/geo");
+    let full = json!({"id": "test.mgr.about", "name": "Geo", "version": "1.0.0", "homepage": homepage,
+        "repository": "https://github.com/me/plugins/tree/main/geo", "changelog": "https://changes.example.org/geo",
+        "license": "MIT OR Apache-2.0"});
+    let bare = json!({"id": "test.mgr.bare", "name": "Bare", "version": "1.0.0", "repository": "https://gitlab.com/me/bare"});
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "about", &full)}));
+    exec(&mut h, "plugin.install", json!({"path": module_file(&dir, "bare", &bare)}));
+    let filter = json!({"id": "test.mgr.aboutfilter", "name": "Tone", "version": "1", "kind": "filter", "params": {},
+        "homepage": "https://filters.example.net/tone", "license": "CC0-1.0"});
+    lcc_engine::filter_plugins::install_in_memory(&filter_module(&filter, false)).unwrap();
+
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.mgr.about", "tab": "about"}));
+    for _ in 0..30 {
+        h.step();
+    }
+    let text = h.painted_text();
+    for t in
+        ["Homepage", "127.0.0.1", "Source Code", "github.com", "Report a Problem", "Changelog", "changes.example.org", "Licence", "MIT OR Apache-2.0"]
+    {
+        assert!(text.iter().any(|p| p.contains(t)), "{t:?} on the About tab: {text:?}");
+    }
+    assert!(!text.iter().any(|p| p.contains("https://")), "links show their host, not the whole link: {text:?}");
+    let refused = listener.accept().map(|_| ()).map_err(|e| e.kind());
+    assert_eq!(refused, Err(std::io::ErrorKind::WouldBlock), "showing the tab connected to the link's host");
+
+    click(&mut h, "link:plugin-homepage-test.mgr.about");
+    click(&mut h, "link:plugin-issues-test.mgr.about");
+    click(&mut h, "link:plugin-changelog-test.mgr.about");
+    exec(&mut h, "plugins.openLink", json!({"id": "test.mgr.about", "link": "repository"}));
+    assert_eq!(
+        *opened.borrow(),
+        [homepage.as_str(), "https://github.com/me/plugins/issues", "https://changes.example.org/geo", "https://github.com/me/plugins/tree/main/geo"],
+        "each link opens its own page"
+    );
+    // a repository not on GitHub: Source, no Report a Problem; no rows for what the manifest leaves out
+    ui_cmd(&mut h, "plugins.page", json!({"id": "test.mgr.bare", "tab": "about"}));
+    let text = h.painted_text();
+    assert!(text.iter().any(|p| p.contains("gitlab.com")), "{text:?}");
+    for t in ["Report a Problem", "Homepage", "Changelog", "Licence"] {
+        assert!(!text.iter().any(|p| p.contains(t)), "no {t:?} row: {text:?}");
+    }
+    assert!(!has_widget(&mut h, "link:plugin-issues-test.mgr.bare"));
+    // a filter's page shows its fields the same way
+    click(&mut h, "pluginEntry:test.mgr.aboutfilter");
+    let text = h.painted_text();
+    assert!(text.iter().any(|p| p.contains("filters.example.net")) && text.iter().any(|p| p.contains("CC0-1.0")), "{text:?}");
+    exec(&mut h, "plugins.openLink", json!({"id": "test.mgr.aboutfilter", "link": "homepage"}));
+    assert_eq!(opened.borrow().last().map(String::as_str), Some("https://filters.example.net/tone"));
+    // an unknown entry, an unknown link or one the manifest lacks: an error, nothing opens
+    let count = opened.borrow().len();
+    assert!(fails(&mut h, "plugins.openLink", json!({"id": "test.mgr.nowhere", "link": "homepage"})).contains("no such plug-in"));
+    assert!(fails(&mut h, "plugins.openLink", json!({"id": "test.mgr.about", "link": "license"})).contains("no link"));
+    assert!(fails(&mut h, "plugins.openLink", json!({"id": "test.mgr.bare", "link": "issues"})).contains("no issues link"));
+    assert!(fails(&mut h, "plugins.openLink", json!({"id": "test.mgr.about"})).contains("needs `id` and `link`"));
+    assert_eq!(opened.borrow().len(), count, "nothing opened");
+
+    *lcc_engine::cmd::plugins::manager() = before;
+    let _ = lcc_engine::filter_plugins::uninstall("test.mgr.aboutfilter");
+    let _ = std::fs::remove_dir_all(&dir);
+}

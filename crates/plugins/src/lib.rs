@@ -27,6 +27,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod about;
 mod b64;
 mod context;
 pub mod manager;
@@ -39,6 +40,7 @@ mod safe_io;
 pub mod settings;
 mod store;
 
+pub use about::About;
 pub use context::{HostApi, JobReporter, JobUnit, NoHost, PIXELS_DEFAULT_EDGE, PIXELS_MAX_EDGE, PIXELS_MIN_EDGE, Unwatched};
 pub use manager::{Begun, Denial, Failed, Installed, Manager, PendingCall, Prepared, RequestState, SettingsView, duplicate_error, read_module};
 pub use manifest::{

@@ -557,3 +557,25 @@ fn print_cell_rejects_hostile_arguments() {
     }
     bad(&mut h, json!({"w": 1, "h": 1}));
 }
+
+/// The Print module prints the filmstrip's selection: the one photo chosen there is what the
+/// preview shows and the job takes, and only an empty selection falls back to the whole filmstrip.
+#[test]
+fn print_module_follows_the_filmstrip_selection() {
+    let mut h = demo(Services::default());
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    cmd(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    cmd(&mut h, "module.print", json!({}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0]]);
+    // choosing another photo in the filmstrip moves the print to it
+    cmd(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[1]]);
+    // several selected print those, in the selection's order
+    cmd(&mut h, "library.select", json!({"ids": [ids[0], ids[2]]}));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0], ids[2]]);
+    // nothing selected: the whole filmstrip
+    cmd(&mut h, "library.select", json!({"ids": []}));
+    assert!(crate::print_ui::job_photos(&mut h.app, false).len() >= ids.len());
+}

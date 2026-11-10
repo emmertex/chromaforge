@@ -15,7 +15,6 @@ use lcc_plugin_sdk::{Request, base64, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.export-tools",
   "name": "Export Tools (example)",
-  "version": "0.1.0",
   "description": "Checksums after export, and a WebDAV export destination",
   "author": "the app's authors",
   "permissions": {"network": ["*.example.com"]},
@@ -95,9 +94,7 @@ fn content_type(name: &str) -> &'static str {
 
 /// Percent-encodes a URL path segment (everything but unreserved characters).
 fn encode_segment(s: &str) -> String {
-    s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") })
-        .collect()
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { char::from(b).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 /// CRC-32 (IEEE 802.3, reflected polynomial 0xEDB88320).
@@ -112,7 +109,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {
