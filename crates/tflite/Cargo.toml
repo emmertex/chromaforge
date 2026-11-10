@@ -11,6 +11,10 @@ workspace = true
 [dependencies]
 thiserror = { workspace = true }
 rayon = { workspace = true }
+log = { workspace = true }
+web-time = { workspace = true }
+# the device program and accelerator the face recognisers already run on (the GPU, in lcc-gpu)
+lcc-faces = { workspace = true }
 
 [dev-dependencies]
 lcc-testkit = { workspace = true }
