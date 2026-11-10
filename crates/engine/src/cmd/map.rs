@@ -333,7 +333,7 @@ mod geocoding {
         let mut lookup: Box<dyn FnMut(LatLon) -> Result<Option<Place>>> = match provider {
             "offline" => {
                 let dir = geonames_dir(p).ok_or_else(|| bad(C, "no settings folder: give `dataset`"))?;
-                let g = GeoNames::load(&dir).map_err(|e| bad(C, format!("{e} — run map.geonamesDownload first")))?;
+                let g = GeoNames::load(&dir).map_err(|e| bad(C, format!("{e}: run map.geonamesDownload first")))?;
                 Box::new(move |at| Ok(g.reverse(at)))
             }
             "online" => {
@@ -415,13 +415,13 @@ fn apply_given(s: &mut crate::Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
-        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|visible|tagged|untagged|location:<name> (visible: the same pins as tagged)} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}} — the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
+        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|visible|tagged|untagged|location:<name> (visible: the same pins as tagged)} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}}: the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
         cmd!(
             "map.geotag",
             "Geotag",
             [],
             None,
-            "{ids?, lat, lon} | {ids?, clear: true} — set (or remove) the GPS position of the photos; one undo step",
+            "{ids?, lat, lon} | {ids?, clear: true}: set (or remove) the GPS position of the photos; one undo step",
             has_selection,
             geotag
         ),
@@ -431,19 +431,19 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Location",
             [],
             None,
-            "{name, lat, lon, radius?: metres (100), private?: bool — photos inside a private location are exported without GPS or location fields, rename?: old name} — create or change a saved location (undoable)",
+            "{name, lat, lon, radius?: metres (100), private?: bool (photos inside a private location are exported without GPS or location fields), rename?: old name}: create or change a saved location (undoable)",
             always,
             save_location
         ),
         cmd!("map.deleteLocation", "Delete Location", [], None, "{name}", always, delete_location),
-        cmd!(query "map.track", "Track Info", [], None, "{path: .gpx|.kml|.geojson file | text} → {name, points, segments, timed, start, end, fit} — read a track log (Auto-Tag: photo.autoTagTracklog)", always, track_info),
-        cmd!(query "map.trackOffset", "Track Time Offset", [], None, "{path | gpx, id?: photo (active), lat?, lon?: where it was taken (else its GPS)} → {offset: \"+HH:MM\", minutes, distance} — the camera clock's UTC offset from one photo at a known point of the track; pass it as photo.autoTagTracklog's offset", always, track_offset),
+        cmd!(query "map.track", "Track Info", [], None, "{path: .gpx|.kml|.geojson file | text} → {name, points, segments, timed, start, end, fit}: read a track log (Auto-Tag: photo.autoTagTracklog)", always, track_info),
+        cmd!(query "map.trackOffset", "Track Time Offset", [], None, "{path | gpx, id?: photo (active), lat?, lon?: where it was taken (else its GPS)} → {offset: \"+HH:MM\", minutes, distance}: the camera clock's UTC offset from one photo at a known point of the track; pass it as photo.autoTagTracklog's offset", always, track_offset),
     ];
     #[cfg(not(target_arch = "wasm32"))]
     v.extend([
         cmd!(query "map.geocodeStatus", "Reverse Geocoding Status", [], None, "{dataset?: folder} → {offline: {downloaded, bytes, path, attribution}, online: {endpoint, attribution, rateLimit}}", always, geocoding::status),
-        cmd!(query "map.geonamesDownload", "Download Place Names", [], None, "{consent: true — contacts download.geonames.org, dataset?: folder} → {places, path, attribution} — the offline GeoNames cities list (CC-BY 4.0) for reverse geocoding", always, geocoding::download),
-        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country, countryCode}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution} — fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
+        cmd!(query "map.geonamesDownload", "Download Place Names", [], None, "{consent: true (contacts download.geonames.org), dataset?: folder} → {places, path, attribution}: the offline GeoNames cities list (CC-BY 4.0) for reverse geocoding", always, geocoding::download),
+        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country, countryCode}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution}: fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
     ]);
     v
 }

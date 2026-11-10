@@ -305,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Upload Edit Version to Immich",
             [],
             None,
-            "{id?, resave?: keepBoth|replace, background?: true} — upload an Edit In version whose stack holds an Immich-linked photo, link it, and stack it on Immich as the primary; a version already on Immich (saved again) is uploaded as a new asset: keepBoth keeps the previous one in the stack, replace trashes it (albums carried over); without resave the setting decides, `ask` → {ask: true, photo, asset} → {started} | the outcome {photo, asset, duplicate, stacked, trashed, warnings} | {skipped}",
+            "{id?, resave?: keepBoth|replace, background?: true}: upload an Edit In version whose stack holds an Immich-linked photo, link it, and stack it on Immich as the primary; a version already on Immich (saved again) is uploaded as a new asset: keepBoth keeps the previous one in the stack, replace trashes it (albums carried over); without resave the setting decides, `ask` → {ask: true, photo, asset} → {started} | the outcome {photo, asset, duplicate, stacked, trashed, warnings} | {skipped}",
             always,
             upload_version
         ),
@@ -314,10 +314,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Immich Version Settings",
             [],
             None,
-            "{resave?: ask|keepBoth|replace} — what saving an Edit In version that is already on Immich again does (kept in the library's Immich folder) → {resave}",
+            "{resave?: ask|keepBoth|replace}: what saving an Edit In version that is already on Immich again does (kept in the library's Immich folder) → {resave}",
             always,
             version_settings
         ),
-        cmd!(query "immich.versionResults", "Immich Version Results", [], None, "{} — finished version uploads since the last call → {results: [{photo, asset?, stacked?, trashed?, warnings?, error?}]}", always, version_results),
+        cmd!(query "immich.versionResults", "Immich Version Results", [], None, "{}: finished version uploads since the last call → {results: [{photo, asset?, stacked?, trashed?, warnings?, error?}]}", always, version_results),
     ]
 }

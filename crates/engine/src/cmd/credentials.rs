@@ -188,10 +188,10 @@ pub(crate) fn take_in(s: &mut Session, m: Msg) -> Option<Msg> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "credentials.status", "Key Storage Status", [], None, "{refresh?: bool — probe the system keychain again} → {active: store name|null, preference: system|file, system: {state: ok|unsupported|unavailable|locked, message?}, file: {path, exists, unlocked}, needsPassphrase, unlocking, error?}", always, status),
-        cmd!(query "credentials.unlock", "Unlock Key File", [], None, "{passphrase, background?: bool} — open (or create, ≥ 8 characters) the encrypted key file and keep account keys there this session (never journaled) → {ok, store, created} | {ok: false, error: {kind: wrongPassphrase|corrupt|io, message}} | {started} (background: see credentials.status)", always, unlock),
+        cmd!(query "credentials.status", "Key Storage Status", [], None, "{refresh?: bool (probe the system keychain again)} → {active: store name|null, preference: system|file, system: {state: ok|unsupported|unavailable|locked, message?}, file: {path, exists, unlocked}, needsPassphrase, unlocking, error?}", always, status),
+        cmd!(query "credentials.unlock", "Unlock Key File", [], None, "{passphrase, background?: bool}: open (or create, ≥ 8 characters) the encrypted key file and keep account keys there this session (never journaled) → {ok, store, created} | {ok: false, error: {kind: wrongPassphrase|corrupt|io, message}} | {started} (background: see credentials.status)", always, unlock),
         cmd!(query "credentials.lock", "Lock Key File", [], None, "forget the unlocked key file until its passphrase is given again → {locked}", always, lock),
-        cmd!(query "credentials.useStore", "Choose Key Storage", [], None, "{store: system|file} — where account keys are kept from now on (existing keys stay where they are) → {preference}", always, use_store),
+        cmd!(query "credentials.useStore", "Choose Key Storage", [], None, "{store: system|file}: where account keys are kept from now on (existing keys stay where they are) → {preference}", always, use_store),
         cmd!(query "credentials.unlockSystem", "Unlock System Keychain", [], None, "ask the system keychain to unlock (it shows its own prompt), in the background → {started} | {ok: false, error}", always, unlock_system),
     ]
 }

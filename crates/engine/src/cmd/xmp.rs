@@ -157,7 +157,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Metadata to File",
             ["Metadata"],
             Some("Cmd+S"),
-            "{ids?} — writes each photo's XMP sidecar (metadata + develop settings) next to the original, merged into an existing one (other apps' data kept; an unreadable one is backed up first) → {written: [path], merged: [path], backups: [{path, backup}], failed}",
+            "{ids?}: writes each photo's XMP sidecar (metadata + develop settings) next to the original, merged into an existing one (other apps' data kept; an unreadable one is backed up first) → {written: [path], merged: [path], backups: [{path, backup}], failed}",
             has_selection,
             save
         ),
@@ -166,7 +166,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Read Metadata from File",
             ["Metadata"],
             None,
-            "{ids?} — reads each photo's XMP sidecar, or embedded XMP in raw/DNG and JPEG files when no sidecar exists: metadata and develop settings, one undo step; never writes the sidecar, even with auto-write on; JPEG uses the first complete standard XMP APP1 before SOS/EOI, within 16 MiB of headers and 4096 marker/fill steps; an unreadable sidecar fails without embedded fallback → {read, failed, warnings?: [{path, code, profile?, mode?, fields?}]}",
+            "{ids?}: reads each photo's XMP sidecar, or embedded XMP in raw/DNG and JPEG files when no sidecar exists: metadata and develop settings, one undo step; never writes the sidecar, even with auto-write on; JPEG uses the first complete standard XMP APP1 before SOS/EOI, within 16 MiB of headers and 4096 marker/fill steps; an unreadable sidecar fails without embedded fallback → {read, failed, warnings?: [{path, code, profile?, mode?, fields?}]}",
             has_selection,
             read
         ),
@@ -175,7 +175,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Read Changed Metadata Files",
             [],
             None,
-            "{ids?} — reads the XMP sidecars that changed on disk (another app edited them) of photos unchanged in the catalog since the last sync, through Read Metadata from File (one undo step); photos changed on both sides are left as conflicts. The app runs it when a sidecar check finds such a change and library.xmpPreferences autoRead is on → {read, failed, conflicts: [id], warnings?}",
+            "{ids?}: reads the XMP sidecars that changed on disk (another app edited them) of photos unchanged in the catalog since the last sync, through Read Metadata from File (one undo step); photos changed on both sides are left as conflicts. The app runs it when a sidecar check finds such a change and library.xmpPreferences autoRead is on → {read, failed, conflicts: [id], warnings?}",
             always,
             auto_read
         ),
@@ -184,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Metadata File Status",
             [],
             None,
-            "{ids?} — per photo: unknown (never read from / written to its XMP) | inSync | changedInCatalog | changedOnDisk | conflict → {photos: [{id, status}], counts}",
+            "{ids?}: per photo: unknown (never read from / written to its XMP) | inSync | changedInCatalog | changedOnDisk | conflict → {photos: [{id, status}], counts}",
             always,
             status
         ),
@@ -202,7 +202,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Write Waiting XMP Sidecars",
             [],
             None,
-            "{} — writes again the automatic XMP sidecars that failed (folder offline, read-only or full) whose originals are reachable now → {written, waiting}",
+            "{}: writes again the automatic XMP sidecars that failed (folder offline, read-only or full) whose originals are reachable now → {written, waiting}",
             always,
             |s, _| {
                 s.flush_sidecar_writes();

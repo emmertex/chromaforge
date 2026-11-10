@@ -713,7 +713,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Export Presets",
             [],
             None,
-            "{paths: [file or folder], dryRun?} — .lcexport, Lightroom Classic export presets (.lrtemplate) and .zip bundles of these: format, quality, file-size limit, colour space, bit depth, sizing, sharpening, metadata, file naming, destination folder and subfolder; a name in use by a different preset (or a built-in) becomes `name (2)`, an identical preset is skipped; preset.import (Import Profiles & Presets…) routes these files here too → {imported: [{name, file, unmapped: [settings not carried over], params?, skipped?}], failed: [[file, reason]]}",
+            "{paths: [file or folder], dryRun?}: .lcexport, Lightroom Classic export presets (.lrtemplate) and .zip bundles of these: format, quality, file-size limit, colour space, bit depth, sizing, sharpening, metadata, file naming, destination folder and subfolder; a name in use by a different preset (or a built-in) becomes `name (2)`, an identical preset is skipped; preset.import (Import Profiles & Presets…) routes these files here too → {imported: [{name, file, unmapped: [settings not carried over], params?, skipped?}], failed: [[file, reason]]}",
             always,
             import
         ),
@@ -726,6 +726,6 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             export
         ),
-        cmd!("export.renamePreset", "Rename Export Preset", [], None, "{name, newName} — a user preset → presets", always, rename),
+        cmd!("export.renamePreset", "Rename Export Preset", [], None, "{name, newName}: a user preset → presets", always, rename),
     ]
 }

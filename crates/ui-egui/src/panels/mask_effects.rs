@@ -676,7 +676,7 @@ pub fn manage_body(
             }
             ui.separator();
             let r = crate::text_field::TextField::singleline("field:effectNewGroup", new_group)
-                .hint(crate::i18n::tr("New group — Return"))
+                .hint(crate::i18n::tr("New group (press Return)"))
                 .width(180.0)
                 .show(ui);
             if r.ending == Some(crate::text_field::Ending::Return) && !new_group.trim().is_empty() {
@@ -713,7 +713,7 @@ pub fn import_toast(v: &Value) -> String {
     skipped.sort_unstable();
     skipped.dedup();
     if !skipped.is_empty() {
-        msg += &crate::i18n::tr_format!(" — kept but not applied: {}", skipped.join(", "));
+        msg += &crate::i18n::tr_format!(" (kept but not applied: {})", skipped.join(", "));
     }
     msg
 }
