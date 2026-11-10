@@ -153,6 +153,7 @@
   "{n} keywords removed": "Видалено ключових слів: {n}",
   "{n} new photos in {folders} folders: see the badges in Folders": "Нових фото: {n} у папках ({folders}). Див. позначки в розділі «Папки»",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "Нових фото в «{folder}»: {n}. Клацніть папку правою кнопкою → Додати нові фото",
+  "{n} new photo{} from the camera roll": "Нових фото з фотоплівки: {n}{:.0}",
   "{n} operations in progress…": "Виконується операцій: {n}…",
   "{n} paper size(s) from the printer": "Форматів паперу від принтера: {n}",
   "{n} photos relinked": "Повторно пов’язано фото: {n}",

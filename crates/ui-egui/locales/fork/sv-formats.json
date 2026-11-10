@@ -189,6 +189,7 @@
   "{n} keywords removed": "{n} nyckelord borttagna",
   "{n} new photos in {folders} folders: see the badges in Folders": "{n} nya foton i {folders} mappar: se markeringarna under Mappar",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "{n} nya foton i ”{folder}”: högerklicka på mappen → Lägg till nya foton",
+  "{n} new photo{} from the camera roll": "Nya foton från kamerarullen: {n}{:.0}",
   "{n} operations in progress…": "{n} åtgärder pågår…",
   "{n} paper size(s) from the printer": "Pappersstorlekar från skrivaren: {n}",
   "{n} photos relinked": "{n} foton har länkats om",

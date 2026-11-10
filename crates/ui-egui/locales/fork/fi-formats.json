@@ -184,6 +184,7 @@
   "{n} keywords removed": "Poistettuja avainsanoja: {n}",
   "{n} new photos in {folders} folders: see the badges in Folders": "Uusia kuvia: {n} ({folders} kansiossa) – katso merkit Kansiot-paneelissa",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "Uusia kuvia kansiossa ”{folder}”: {n} · napsauta kansiota hiiren kakkospainikkeella → Lisää uudet kuvat",
+  "{n} new photo{} from the camera roll": "Uusia kuvia kamerarullassa: {n}{:.0}",
   "{n} operations in progress…": "Toimintoja käynnissä: {n}…",
   "{n} paper size(s) from the printer": "Paperikokoja tulostimelta: {n}",
   "{n} photos relinked": "Uudelleen yhdistettyjä kuvia: {n}",
