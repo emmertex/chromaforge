@@ -21,6 +21,29 @@ pub mod catalog_ui;
 pub mod chart_profile;
 pub mod color_readout;
 mod command_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod comments_ui;
+/// Review Comments needs the publish services, which the browser build doesn't have.
+#[cfg(target_arch = "wasm32")]
+pub mod comments_ui {
+    use serde_json::Value;
+
+    pub const OPEN: &str = "dialog.reviewComments";
+    pub const COMMANDS: &[crate::menus::UiCommand] = &[(OPEN, "Review Comments", None, "")];
+
+    #[derive(Default)]
+    pub struct View;
+
+    pub fn enabled(_: &crate::LccApp, id: &str) -> Option<bool> {
+        (id == OPEN).then_some(false)
+    }
+
+    pub fn run(_: &mut crate::LccApp, id: &str, _: &Value) -> Option<Result<Value, String>> {
+        (id == OPEN).then(|| Err("publish services are not available in the browser".to_string()))
+    }
+
+    pub fn show(_: &mut crate::LccApp, _: &egui::Context) {}
+}
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
@@ -919,6 +942,8 @@ pub struct LccApp {
     pub import: Option<import::ImportTask>,
     /// The last import's XMP warnings (File ▸ More Imports ▸ Import Warnings…).
     pub import_report: Option<import_report::Report>,
+    /// Library ▸ Review Comments.
+    pub review_comments: comments_ui::View,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
     /// A Synchronize Folder scan in progress (feeds its dialog).
@@ -1231,6 +1256,7 @@ impl LccApp {
             enhance: enhance_ui::EnhanceUi::default(),
             import: None,
             import_report: None,
+            review_comments: comments_ui::View::default(),
             scan: None,
             sync: None,
             sync_owns_changes: false,
@@ -2981,6 +3007,7 @@ impl LccApp {
         panels::second::show(self, &ctx);
         panels::notices::show(self, &ctx);
         import_report::show(self, &ctx);
+        comments_ui::show(self, &ctx);
         panels::dialogs::show(self, &ctx);
         catalog_ui::show(self, &ctx);
         plate::show_setup(self, &ctx);
