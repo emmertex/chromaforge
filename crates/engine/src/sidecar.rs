@@ -2015,6 +2015,7 @@ mod tests {
         list.push(lcc_raw::dcp::Calibrated {
             make: "LOOKTEST".into(),
             names: vec!["LOOKTEST ONE".into()],
+            lens: None,
             looks: vec![("cal:adobe-vivid".into(), dcp)],
             default: Some("cal:adobe-vivid".into()),
         });

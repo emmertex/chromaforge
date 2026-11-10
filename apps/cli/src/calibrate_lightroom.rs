@@ -3,10 +3,12 @@
 //! contributor's own raws (`lcc_colourfit`), and the developer step that adds a contributed file to the repository.
 //!
 //! - `preset -o FILE`: the baseline Lightroom preset contributors apply before exporting.
-//! - `fit --raws DIR… --exports DIR… [-o OUTDIR] [--contributor NAME] [--dry-run]`: pair, sample, fit; writes the
-//!   calibration JSON (the file to send) and one `.dcp` per look for the contributor's own local testing.
-//! - `add FILE [--repo DIR] [--contributor NAME]`: validate a contribution and commit-ready write it into
-//!   `crates/camdb/data/calibrations/` with its `assets/ATTRIBUTION.md` row.
+//! - `fit --raws DIR… --exports DIR… [-o OUTDIR] [--contributor NAME] [--lens MODEL] [--dry-run]`: pair, sample,
+//!   fit; writes the calibration JSON (the file to send) and one `.dcp` per look for the contributor's own local
+//!   testing. `--lens` makes the fit one lens's (the photos' Exif lens model, e.g. one of a phone's cameras).
+//! - `add FILE [--repo DIR] [--contributor NAME] [--lens MODEL] [--replace]`: validate a contribution and
+//!   commit-ready write it into `crates/camdb/data/calibrations/` with its `assets/ATTRIBUTION.md` row. A file for
+//!   the same camera, lens and editor is kept unless `--replace` (issue #1015); another lens's fit gets its own file.
 //! - `list`: the calibrations built into this binary.
 //! - `probe -o DIR (--like RAW | --make M --model M)`: synthetic probe DNGs and slider sweeps for Lightroom to render;
 //!   `probe-check --probes DIR --exports DIR`: read them back (`lcc_colourfit::probe`).
@@ -246,6 +248,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
     let mut out = PathBuf::from(".");
     let mut contributor = None;
     let mut dry_run = false;
+    let mut lens = None;
     let mut editor = calibration::Editor::Lightroom;
     // `--raws A B --exports C D`: plain arguments go to the list the last flag opened
     let mut list: Option<bool> = None; // Some(true) = raws, Some(false) = exports
@@ -257,6 +260,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
             "-o" | "--out" => out = take(args, &mut i, "-o")?.into(),
             "--contributor" => contributor = Some(take(args, &mut i, "--contributor")?.to_string()),
             "--dry-run" => dry_run = true,
+            "--lens" => lens = Some(take(args, &mut i, "--lens")?.to_string()),
             "--editor" => {
                 let v = take(args, &mut i, "--editor")?;
                 editor = calibration::Editor::parse(v).ok_or_else(|| {
@@ -313,6 +317,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
     eprintln!("calibrate-lightroom: fitting (this can take a few minutes)…");
     let mut cal = fit::fit(&photos, &FitOptions { contributor, editor, rounds: 0 }).map_err(|e| e.to_string())?;
     cal.tool_version = env!("CARGO_PKG_VERSION").to_string();
+    cal.lens = lens;
     cal.validate().map_err(|e| format!("the fit produced an invalid calibration: {e}"))?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let json_path = out.join(cal.file_name());
@@ -332,7 +337,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
     print_contents(&cal);
     println!();
     println!("Send this file: {}", json_path.display());
-    println!("  It holds only the numbers listed above: no images, file names, dates, serial numbers, locations or lenses.");
+    println!("  It holds only the numbers listed above: no images, file names, dates, serial numbers or locations (a lens model only with --lens).");
     if lcc_brand::CALIBRATION_DISCORD.is_empty() {
         println!("  Open an issue on {} and attach it (licence {}).", lcc_brand::REPOSITORY, calibration::LICENCE);
     } else {
@@ -352,6 +357,9 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
 /// Everything a calibration file holds, in words.
 fn print_contents(c: &Calibration) {
     println!("{} {} — calibration matched to {}", c.make, c.model, c.editor.name());
+    if let Some(l) = &c.lens {
+        println!("  lens: {l} (only photos taken with this lens use it)");
+    }
     if !c.aliases.is_empty() {
         println!("  also sold as: {}", c.aliases.join(", "));
     }
@@ -406,11 +414,15 @@ fn add(args: &[String]) -> Result<(), String> {
     let mut file = None;
     let mut repo = PathBuf::from(".");
     let mut contributor = None;
+    let mut lens = None;
+    let mut replace = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--repo" => repo = take(args, &mut i, "--repo")?.into(),
             "--contributor" => contributor = Some(take(args, &mut i, "--contributor")?.to_string()),
+            "--lens" => lens = Some(take(args, &mut i, "--lens")?.to_string()),
+            "--replace" => replace = true,
             a if a.starts_with('-') => return Err(format!("unknown option `{a}`")),
             a if file.is_none() => file = Some(a.to_string()),
             a => return Err(format!("unexpected argument `{a}`")),
@@ -424,8 +436,13 @@ fn add(args: &[String]) -> Result<(), String> {
     }
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
     let mut cal = Calibration::parse(&text).map_err(|e| format!("{file}: {e}"))?;
-    if let Some(c) = contributor {
-        cal.contributor = Some(c);
+    if contributor.is_some() || lens.is_some() {
+        if let Some(c) = contributor {
+            cal.contributor = Some(c);
+        }
+        if let Some(l) = lens {
+            cal.lens = Some(l);
+        }
         cal.validate().map_err(|e| format!("{file}: {e}"))?;
     }
     let attribution = repo.join("assets/ATTRIBUTION.md");
@@ -435,6 +452,19 @@ fn add(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let name = cal.file_name();
     let dest = dir.join(&name);
+    if !replace {
+        let taken = calibration_files(&dir).into_iter().find(|(path, existing)| path == &dest || existing.same_slot(&cal));
+        if let Some((path, _)) = taken {
+            let lens = cal.lens.as_deref().map(|l| format!(", lens {l}")).unwrap_or_default();
+            return Err(format!(
+                "{} already holds a {} calibration for {} {}{lens}; pass --replace to replace it, or --lens MODEL if this fit is for another lens",
+                path.display(),
+                cal.editor.name(),
+                cal.make,
+                cal.model
+            ));
+        }
+    }
     std::fs::write(&dest, cal.to_json().map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", dest.display()))?;
     let today = chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).date_naive().format("%Y-%m-%d").to_string();
     let updated = with_attribution_row(&table, &format!("{DATA_DIR}/{name}"), &cal, &today);
@@ -443,6 +473,21 @@ fn add(args: &[String]) -> Result<(), String> {
     println!("updated {}", attribution.display());
     print_contents(&cal);
     Ok(())
+}
+
+/// The calibrations already in `dir` (files that don't read as one are left out: they hold no slot).
+fn calibration_files(dir: &Path) -> Vec<(PathBuf, Calibration)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("json")))
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= calibration::MAX_FILE as u64))
+        .filter_map(|p| {
+            let c = Calibration::parse(&std::fs::read_to_string(&p).ok()?).ok()?;
+            Some((p, c))
+        })
+        .collect()
 }
 
 /// The ATTRIBUTION table with `path`'s row added after the last calibration or camera-profile row, or replacing
@@ -538,6 +583,7 @@ mod tests {
             make: "SONY".into(),
             model: "ILCE-7M4".into(),
             aliases: vec![],
+            lens: None,
             editor: Default::default(),
             method: calibration::METHOD.into(),
             tool_version: "0".into(),
