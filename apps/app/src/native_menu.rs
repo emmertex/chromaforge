@@ -742,7 +742,7 @@ mod tests {
             all(&v, &mut installed);
         }
         // (Shift+P left the menu bar with upstream #1822: it picks and advances in every view, a grid key)
-        for sc in ["E", "C", "Cmd+Shift+H", "F2"] {
+        for sc in ["E", "C", "Cmd+0", "F2"] {
             assert!(installed.iter().any(|s| s == sc), "{sc} is in the menu bar");
         }
         let owned = owned_by_menu(installed.iter().map(String::as_str), false);
@@ -750,7 +750,7 @@ mod tests {
             assert!(installed.iter().any(|s| s == sc), "{sc} is displayed in the menu");
             assert!(!owned.contains(sc), "{sc} must be left to egui");
         }
-        for sc in ["Cmd+Shift+H", "F2"] {
+        for sc in ["Cmd+0", "F2"] {
             assert!(owned.contains(sc), "{sc} is run by the menu bar");
         }
         // while typing, the menu bar gives up F2 too (the text field has it)
