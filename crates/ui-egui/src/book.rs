@@ -109,6 +109,10 @@ pub struct BookUi {
     pub type_target: TypeTarget,
     /// The name typed in the Saved Books box.
     pub save_name: String,
+    /// View ▸ Show Header Bar: a strip over the pages naming the book and its page count.
+    pub header_bar: bool,
+    /// View ▸ Show Info Overlay: size, type, page count and current page in a corner box.
+    pub info_overlay: bool,
     /// The saved creation (catalog collection) this book was saved to or opened from.
     pub creation: Option<u64>,
     /// The text cursor in the last focused text box (which text, character index), for the
@@ -136,6 +140,8 @@ impl Default for BookUi {
             thumb: 150.0,
             type_target: TypeTarget::Cell,
             save_name: String::new(),
+            header_bar: false,
+            info_overlay: false,
             creation: None,
             kern_caret: None,
             undo: Vec::new(),
@@ -233,6 +239,11 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             let m = p.get("mode").and_then(Value::as_str).ok_or("missing mode (multi|spread|single|zoomed)")?;
             st.view = BookView::ALL.into_iter().find(|v| v.key().eq_ignore_ascii_case(m)).ok_or_else(|| format!("unknown view: {m}"))?;
             Ok(json!({"view": st.view}))
+        }
+        "book.headerBar" | "book.infoOverlay" => {
+            let flag = if id == "book.headerBar" { &mut st.header_bar } else { &mut st.info_overlay };
+            *flag = p.get("on").and_then(Value::as_bool).unwrap_or(!*flag);
+            Ok(json!({"headerBar": st.header_bar, "infoOverlay": st.info_overlay}))
         }
         "book.go" => {
             let v = p.get("page").ok_or("missing page")?;
@@ -1105,8 +1116,58 @@ fn center(ui: &mut egui::Ui, app: &mut LccApp) {
     }
     let bar = Rect::from_min_max(pos2(area.left(), area.bottom() - 34.0), area.max);
     area.max.y = bar.top();
+    if app.ui.book.header_bar {
+        let strip = Rect::from_min_max(area.min, pos2(area.right(), (area.top() + HEADER_H).min(area.bottom())));
+        area.min.y = strip.bottom();
+        header_bar(ui, app, strip);
+    }
     canvas(ui, app, area);
+    if app.ui.book.info_overlay {
+        let t = Tokens::get(ui.ctx());
+        let rows = info_rows(&app.ui.book);
+        if let Some(r) = crate::overlay::paint(&ui.painter_at(area), &t, area, crate::overlay::Corner::BottomLeft, egui::Vec2::ZERO, &rows) {
+            register(ui.ctx(), "book:info", r);
+        }
+    }
     toolbar(ui, app, bar);
+}
+
+/// Height of the header bar (View ▸ Show Header Bar).
+const HEADER_H: f32 = 26.0;
+
+/// The header bar's text: the book's name (or "Unsaved Book" before it is saved) and its pages.
+pub fn header_text(b: &BookUi) -> String {
+    let name = if b.creation.is_some() { b.book.name.clone() } else { crate::i18n::tr("Unsaved Book").to_string() };
+    format!("{name}  ·  {}: {}", crate::i18n::tr("Pages"), b.book.pages.len())
+}
+
+/// The info overlay's rows: size, type, page count and the current page.
+pub fn info_rows(b: &BookUi) -> Vec<crate::overlay::Row> {
+    use crate::overlay::Row;
+    let s = &b.book.settings;
+    let kind = match s.kind {
+        lcc_book::BookKind::Pdf => "PDF",
+        lcc_book::BookKind::Jpeg => "JPEG",
+    };
+    let current = match b.current {
+        PageRef::Page(i) => crate::i18n::tr_format!("Page {page} of {pages}", page = i + 1, pages = b.book.pages.len()),
+        cover => crate::i18n::tr(&cover.label()).to_string(),
+    };
+    vec![
+        Row::text(format!("{}: {}", crate::i18n::tr("Size"), crate::i18n::tr(&s.size.label()))),
+        Row::text(format!("{}: {kind}", crate::i18n::tr("Type"))),
+        Row::text(format!("{}: {}", crate::i18n::tr("Pages"), b.book.pages.len())),
+        Row::text(current),
+    ]
+}
+
+fn header_bar(ui: &mut egui::Ui, app: &LccApp, r: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(r);
+    p.rect_filled(r, 0.0, t.chrome);
+    p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.divider));
+    p.text(r.center(), Align2::CENTER_CENTER, header_text(&app.ui.book), t.font(12.0), t.text);
+    register(ui.ctx(), "book:header", r);
 }
 
 // ------------------------------------------------------------------ panels
@@ -1907,6 +1968,42 @@ mod tests {
         assert_eq!(std::fs::read(&orig).unwrap(), b"original");
         assert_eq!(std::fs::read(dir.join("scan.xmp")).unwrap(), b"<x/>");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn header_bar_and_info_overlay_follow_their_menu_toggles() {
+        let mut h = demo();
+        run(&mut h, "module.book", json!({}));
+        run(&mut h, "book.autoLayout", json!({"preset": "Two Per Page"}));
+        h.settle(Duration::from_secs(60));
+        let on = |h: &Headless, id: &str| h.app.widgets.iter().any(|(w, _)| w == id);
+        assert!(!on(&h, "book:header") && !on(&h, "book:info"), "both start hidden");
+        assert_eq!(crate::menubar::checked(&h.app, "book.headerBar"), Some(false));
+
+        run(&mut h, "book.headerBar", json!({}));
+        run(&mut h, "book.infoOverlay", json!({}));
+        h.settle(Duration::from_secs(60));
+        assert_eq!(crate::menubar::checked(&h.app, "book.headerBar"), Some(true));
+        assert!(on(&h, "book:header") && on(&h, "book:info"));
+        // the strip says "Unsaved Book" until the book is saved, then its name; the pages are counted
+        let b = &h.app.ui.book;
+        assert!(header_text(b).starts_with(crate::i18n::tr("Unsaved Book")), "{}", header_text(b));
+        assert!(header_text(b).ends_with(&b.book.pages.len().to_string()));
+        let mut named = b.clone();
+        named.creation = Some(7);
+        named.book.name = "Holiday".into();
+        assert!(header_text(&named).starts_with("Holiday"));
+        let rows = info_rows(b);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|r| r.text.contains("PDF")));
+        // both are part of the saved book state, off unless asked for
+        let back: BookUi = serde_json::from_str(&serde_json::to_string(b).unwrap()).unwrap();
+        assert!(back.header_bar && back.info_overlay);
+        assert!(!serde_json::from_str::<BookUi>("{}").unwrap().header_bar);
+
+        run(&mut h, "book.headerBar", json!({"on": false}));
+        h.settle(Duration::from_secs(60));
+        assert!(!on(&h, "book:header") && on(&h, "book:info"));
     }
 
     #[test]
