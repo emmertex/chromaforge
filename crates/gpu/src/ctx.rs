@@ -606,10 +606,16 @@ impl Gpu {
         }
         let generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
         let lost = Arc::new(AtomicBool::new(false));
-        // Errors outside a render's error scopes (see `ErrorScopes`): log, and replace the device.
+        // Errors outside a render's error scopes (see `ErrorScopes`): log, and replace the device,
+        // unless it is the window's own surface failing on the window's device (adapted from upstream #4032).
         device.on_uncaptured_error(std::sync::Arc::new(move |e| {
-            log::error!("gpu: {e}");
-            crate::mark_broken(generation, &format!("device error: {e}"));
+            let text = e.to_string();
+            if stops_renderer(window, &text) {
+                log::error!("gpu: {text}");
+                crate::mark_broken(generation, &format!("device error: {text}"));
+            } else {
+                log::warn!("gpu: the window's surface: {text}");
+            }
         }));
         // wgpu reports a lost device (driver reset, GPU hang, watchdog) only here — never as an
         // error — so without this callback a lost device went unnoticed. (A device dropped after
@@ -1244,8 +1250,28 @@ pub fn groups1(n: usize) -> [u32; 3] {
     [x as u32, g.div_ceil(x) as u32, 1]
 }
 
+/// Whether an uncaptured error on the renderer's device stops the GPU renderer. The renderer's own
+/// work runs inside error scopes, so on the window's device ([`Gpu::adopt`]) an uncaptured error
+/// naming a `Surface` is the window's swapchain: one failed `Surface::configure` (a resize or desktop
+/// switch) leaves the device fine, and eframe configures it again. A device that is really gone is
+/// reported by the device-lost callback.
+pub(crate) fn stops_renderer(window: bool, error: &str) -> bool {
+    !(window && error.contains("Surface::"))
+}
+
 #[cfg(test)]
 mod tests {
+    /// On the window's device, the window's surface failing to configure is logged, not a reason to stop the GPU
+    /// renderer; any other uncaptured error still stops it, and on a device of the renderer's own every one does.
+    #[test]
+    fn only_the_window_surface_failing_leaves_the_renderer_on_the_gpu() {
+        let surface =
+            "Validation Error\n\nCaused by:\n  In Surface::configure\n    Failed to wait for GPU to come idle before reconfiguring the Surface";
+        assert!(!super::stops_renderer(true, surface));
+        assert!(super::stops_renderer(false, surface));
+        assert!(super::stops_renderer(true, "Validation Error\n  In Queue::submit\n    Buffer is destroyed"));
+    }
+
     #[test]
     fn limits_override_is_in_mebibytes_and_never_overflows() {
         assert_eq!(super::parse_limits("512MiB"), Some((512 << 20, 1024 << 20)));

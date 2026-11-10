@@ -11,7 +11,7 @@
 ### The histogram's tonal zones adjust the Basic tones
 - The histogram is a control surface again, as in Lightroom Classic: hovering one of its five zones (Blacks, Shadows,
   Exposure, Highlights, Whites) tints it and shows its name and value under the plot ("Exposure: +0.45 EV"). Dragging one
-  sideways moves that control — the zone you pressed stays locked while the pointer crosses the others, Shift drags a
+  sideways moves that control: the zone you pressed stays locked while the pointer crosses the others, Shift drags a
   tenth as far, and the whole drag is one undo step. Double-clicking a zone puts its control back to its default.
 
 ### Drag the parametric Tone Curve
@@ -699,7 +699,7 @@
   on the CPU and explains how to turn the GPU back on.
 
 ### Resetting a slider
-- Resting the pointer on a slider's name or its thumb now says that a double-click resets it ("Exposure — double-click
+- Resting the pointer on a slider's name or its thumb now says that a double-click resets it ("Exposure: double-click
   to reset it"), in every language (issue #1436).
 - A double-click on the thumb is a single step in History and Undo. Its first click no longer nudges the value to
   where the pointer landed, and a single click on the thumb leaves the value alone.
@@ -1111,7 +1111,7 @@
 - File extensions match whatever their letter case: `IMG_0001.JPG` and `DSC_0002.NEF` as Nikon writes them, `.Jpg`
   after a rename, an `.XMP` sidecar. Adding photos or a folder, Browse Folder (Local), drag-and-drop, the CLI and the
   sidecar lookup always did; the Add Photos dialog on Linux did not until 0.5.0 (GTK and the desktop portal match
-  `*.jpg` case-sensitively, so `.JPG` and `.NEF` files were hidden — issues #342 and #705).
+  `*.jpg` case-sensitively, so `.JPG` and `.NEF` files were hidden; issues #342 and #705).
 
 ### Reliability
 - Closing a library releases its lock explicitly (issue #680). On Linux and macOS the lock used to go with the file
@@ -1294,7 +1294,7 @@
 
 ### Formats
 - HEIC / HEIF photos (iPhone and Mac) open now: the optional `lcc-heif` crate (heic-rs, pure Rust) behind
-  codecs' `heif` feature — 8- and 10-bit, alpha, grid tiles, the container's rotation/mirror/crop, ICC, EXIF and XMP.
+  codecs' `heif` feature: 8- and 10-bit, alpha, grid tiles, the container's rotation/mirror/crop, ICC, EXIF and XMP.
   Off by default (HEVC patents are the distributor's call, same as PhotoCraft); official builds pass `--features heif`.
 - HEIC colours now match libheif to within one code value (they were up to ~10 off): the HEVC stream's own
   full-range/matrix signalling is honoured (iPhone photos are full range), chroma is upsampled like libheif, grids
@@ -1447,23 +1447,23 @@
   never leaves a truncated file; the XMP sidecar of an "Original" export follows the "If file exists" choice too.
 - Convert to DNG, Copy as DNG, Photo Merge and smart previews no longer write straight to the final file (issue
   #106): a DNG is checked against the raw data, written to a temp file, synced and read back before it gets its
-  name (never replacing a file), and only then is the photo relinked or the raw copy removed — a failed write
+  name (never replacing a file), and only then is the photo relinked or the raw copy removed, so a failed write
   leaves no DNG and keeps the raw. Smart previews are written the same way; a damaged one (cut short by a crash or
   a full drive) no longer counts as built and Build Smart Previews replaces it.
 - Import ▸ Copy verifies every copy, like Move (issue #96): each file is written as a new file, synced to disk and
   checked against the content read from the card. A copy that fails or differs is removed and reported as a failed
-  import — so "import complete" means the copies are good before you format the card — and a name that is taken
+  import, so "import complete" means the copies are good before you format the card, and a name that is taken
   gets -1, -2… instead of being replaced.
 - Faster exports and card imports, with the same protection for what can't be recreated (issue #134): exports,
   renders and screenshots are still written to a temp file and renamed into place, but no longer forced to disk
-  one by one — they can always be exported again, and on a USB drive or a NAS that per-file sync dominated a large
+  one by one, as they can always be exported again, and on a USB drive or a NAS that per-file sync dominated a large
   export. The catalog, XMP sidecars, settings, DNGs, merges, smart previews and the copies an import makes are still
   synced. Import ▸ Copy now checks each copy against the content hash taken while scanning the card instead of
   reading the card a third time (Move still compares byte for byte before it deletes a source); a file that changed
   on the card after Review Import is reported instead of being imported with stale details. Checking an export path
   against the library's originals no longer scans the whole library when nothing is at that path.
 - Saving metadata to an XMP sidecar another application wrote no longer replaces it (issue #92): {app} merges its
-  fields in and keeps the rest — e.g. that application's develop settings and edit history — byte for byte. A
+  fields in and keeps the rest (e.g. that application's develop settings and edit history) byte for byte. A
   sidecar that isn't valid XMP is copied to `<name>.xmp.bak-<time>` first. With the default stem naming, a raw and a
   JPEG with the same name (`IMG_0001.CR3` + `IMG_0001.JPG`) no longer share one sidecar: the raw keeps `IMG_0001.xmp`,
   the JPEG uses `IMG_0001.JPG.xmp`.
@@ -1473,7 +1473,7 @@
   still saves your queued changes in the closing snapshot.
 - The catalog has a format version (issue #102). Opening a library from an older {app} upgrades it; a library
   written by a newer {app} is refused with "this library was written by a newer version of {app}" and left
-  untouched — older versions no longer read part of it as a damaged log. Once this version has opened a library,
+  untouched, and older versions no longer read part of it as a damaged log. Once this version has opened a library,
   {app} 0.2.0 and older refuse it ("unsupported format … v2").
 - The control port (`--control`) closes a connection as soon as it receives anything that isn't a JSON request
   (issue #94): an HTTP request from a web page can no longer carry a command in its body. Lines are capped at
@@ -1493,7 +1493,7 @@
   layout is read from each file instead of assumed.
 - Exports are never black because of the GPU (issue #78): a GPU render that runs out of device
   memory, exceeds the GPU's buffer limits, hits a driver error or reset, or comes back
-  incomplete is redone on the CPU — the file is the same image either way. Work is sent to the GPU
+  incomplete is redone on the CPU; the file is the same image either way. Work is sent to the GPU
   in short pieces so slow integrated GPUs aren't reset by their watchdog. `ui.inspect` → `perf`
   (`gpuReason`, `gpuFallback`), Help ▸ System Info and Settings ▸ Performance say why the GPU isn't
   used (e.g. a skipped software adapter such as llvmpipe) and why the last render fell back.
@@ -1509,7 +1509,7 @@
 
 ### Presets and profiles
 - Import presets from other editors: XMP presets, classic `.lrtemplate` files, "DNG presets" from mobile apps and `.zip`
-  bundles of any of these — whole folders at once, grouped by pack. Masks inside presets come along.
+  bundles of any of these, whole folders at once, grouped by pack. Masks inside presets come along.
 - Luminar looks: `.lmp` files and `.mplumpack` collections import as presets (grouped by collection); the sliders
   with a counterpart here come along, the rest is listed.
 - 23 new built-in presets: Portrait, Landscape, Urban, Food, Seasons, Vintage and B&W toners.
@@ -1559,10 +1559,10 @@
   "saved in memory but not written to disk", the top bar shows a warning, and {app} keeps retrying until the
   save goes through.
 - Smaller, faster catalogs: photos you only looked at in Local (never added, rated or edited) are forgotten once
-  their folder has not been browsed for 30 days — your files and sidecars stay, and browsing the folder shows them
+  their folder has not been browsed for 30 days; your files and sidecars stay, and browsing the folder shows them
   again. Change the period (or turn it off) in Settings → Performance.
 - A library is open in one program at a time (issue #99): opening a library that {app} or the command-line tool already
-  has open — on this computer or another one sharing the folder — says who has it ("already open in {app} (process
+  has open (on this computer or another one sharing the folder) says who has it ("already open in {app} (process
   123 on studio-mac)") instead of letting both write and silently drop each other's edits. A crash never leaves the
   library locked: the lock is the operating system's and goes away with the program.
 - If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,
@@ -1592,7 +1592,7 @@
 - Slideshow, second window, All Metadata, System Info.
 - Edit in External Editor (⇧⌘E): a 16-bit TIFF copy, stacked, refreshed when you come back.
 - Lossy DNG files and Smart Previews open as raw photos.
-- Compressed Nikon NEFs (lossless and lossy compressed, 12- and 14-bit — e.g. D3200, D5100, D7000, D750, D850, Z 50)
+- Compressed Nikon NEFs (lossless and lossy compressed, 12- and 14-bit, e.g. D3200, D5100, D7000, D750, D850, Z 50)
   now develop from the raw data instead of the camera's embedded JPEG, so a B&W or other picture style set in the
   camera no longer gets baked in. Photos already imported as "preview only" switch over on Reload. (Files that
   Nikon splits into two differently compressed halves still use the preview for now.)

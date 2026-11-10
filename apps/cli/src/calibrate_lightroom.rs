@@ -351,7 +351,7 @@ fn fit_cmd(args: &[String]) -> Result<(), String> {
 
 /// Everything a calibration file holds, in words.
 fn print_contents(c: &Calibration) {
-    println!("{} {} — calibration matched to {}", c.make, c.model, c.editor.name());
+    println!("{} {}: calibration matched to {}", c.make, c.model, c.editor.name());
     if !c.aliases.is_empty() {
         println!("  also sold as: {}", c.aliases.join(", "));
     }

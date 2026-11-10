@@ -198,30 +198,30 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "lens.db.status", "Lens Database Status", [], None, "{} → {dir, origin: env | folder | null, env, configured, downloaded, lenses, cameras, updated: YYYY-MM-DD, download: {state: running | done | failed | cancelled, bytes, total, lenses, error}, canDownload, attribution} — the lensfun-format database lens corrections fall back to (the environment variable `env` overrides the Settings folder)", always, status),
-        cmd!(query "lens.db.setDir", "Set Lens Database Folder", [], None, "{dir: folder of lensfun-format .xml files | null} — used at once and remembered in the app settings → status", always, set_dir),
-        cmd!(query "lens.db.download", "Download Lens Database", [], None, "{wait?} — fetch lensfun's database (CC-BY-SA 3.0) into the settings folder in the background (activity stack, cancellable) and use it; again to update → status (poll lens.db.status; `wait: true` blocks until it is in, for one-shot callers)", always, download),
+        cmd!(query "lens.db.status", "Lens Database Status", [], None, "{} → {dir, origin: env | folder | null, env, configured, downloaded, lenses, cameras, updated: YYYY-MM-DD, download: {state: running | done | failed | cancelled, bytes, total, lenses, error}, canDownload, attribution}: the lensfun-format database lens corrections fall back to (the environment variable `env` overrides the Settings folder)", always, status),
+        cmd!(query "lens.db.setDir", "Set Lens Database Folder", [], None, "{dir: folder of lensfun-format .xml files | null}: used at once and remembered in the app settings → status", always, set_dir),
+        cmd!(query "lens.db.download", "Download Lens Database", [], None, "{wait?}: fetch lensfun's database (CC-BY-SA 3.0) into the settings folder in the background (activity stack, cancellable) and use it; again to update → status (poll lens.db.status; `wait: true` blocks until it is in, for one-shot callers)", always, download),
         cmd!(query "lens.db.downloadCancel", "Cancel Lens Database Download", [], None, "{} → {cancelled}", always, |s, _| Ok(json!({"cancelled": s.lens_db.cancel_download()}))),
-        cmd!(query "lens.db.remove", "Remove Lens Database", [], None, "{} — stop using the database (a downloaded one is deleted) → status + {deleted}", always, remove),
+        cmd!(query "lens.db.remove", "Remove Lens Database", [], None, "{}: stop using the database (a downloaded one is deleted) → status + {deleted}", always, remove),
         cmd!(
             "lens.db.refresh",
             "Look Up Lens Profiles Again",
             [],
             None,
-            "{ids?} — re-read the targets' lens data after the lens database changed → {changed: [ids]}",
+            "{ids?}: re-read the targets' lens data after the lens database changed → {changed: [ids]}",
             always,
             refresh
         ),
-        cmd!(query "lens.db.photo", "Lens Profile for Photo", [], None, "{id?, lens?: {maker?, model, focal?, aperture?} | model} → {state: embedded | chosen | found | noDatabase | notRaw | noLensName | notFound, lens} — which correction applies, in order: the file's own, the given lens, the match by the metadata's lens name", always, photo_status),
+        cmd!(query "lens.db.photo", "Lens Profile for Photo", [], None, "{id?, lens?: {maker?, model, focal?, aperture?} | model} → {state: embedded | chosen | found | noDatabase | notRaw | noLensName | notFound, lens}: which correction applies, in order: the file's own, the given lens, the match by the metadata's lens name", always, photo_status),
         cmd!(
             "lens.choose",
             "Choose Lens Profile",
             [],
             None,
-            "{lens: {maker?, model, focal?} | model | null} — the lens whose database profile corrects the active raw (over the file's own correction; `focal` for a photo without one), or null for the automatic choice; one undo step, not written to XMP → as lens.db.photo",
+            "{lens: {maker?, model, focal?} | model | null}: the lens whose database profile corrects the active raw (over the file's own correction; `focal` for a photo without one), or null for the automatic choice; one undo step, not written to XMP → as lens.db.photo",
             has_active,
             choose
         ),
-        cmd!(query "lens.db.list", "List Lens Profiles", [], None, "{mount?, crop?, query?, limit? (default 100, at most 500), offset?} → {total, offset, more, database, lenses: [{maker, model, models, mounts, cropFactor, focal: [min, max], distortion, vignetting, tca}]} — the database's lenses for a camera's mount and crop factor (a lens calibrated on a larger frame fits a smaller one), sorted by maker and name; pass `model` back as lens.db.photo's lens", always, list),
+        cmd!(query "lens.db.list", "List Lens Profiles", [], None, "{mount?, crop?, query?, limit? (default 100, at most 500), offset?} → {total, offset, more, database, lenses: [{maker, model, models, mounts, cropFactor, focal: [min, max], distortion, vignetting, tca}]}: the database's lenses for a camera's mount and crop factor (a lens calibrated on a larger frame fits a smaller one), sorted by maker and name; pass `model` back as lens.db.photo's lens", always, list),
     ]
 }

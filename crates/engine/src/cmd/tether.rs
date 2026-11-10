@@ -370,7 +370,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Connect Camera…",
             ["File", "Tethered Capture"],
             None,
-            "{device?: \"usb\" (first PTP camera, default) | \"usb:<bus>:<addr>\" | \"ptpip:<host>[:port]\" (Wi-Fi) | \"sim\" | \"sim-nikon\" (simulated), deleteFromCard?: bool, session?, preset?, metadataPreset?, keywords?, collection?, sameAsPrevious?} — shots download into the studio session's folder (a new session in <library>/Tethered/<session> when none is active) → the camera {name, vendor, link, canCapture, liveView, readouts}. A camera that can't be tethered natively is an error that says to use studio capture",
+            "{device?: \"usb\" (first PTP camera, default) | \"usb:<bus>:<addr>\" | \"ptpip:<host>[:port]\" (Wi-Fi) | \"sim\" | \"sim-nikon\" (simulated), deleteFromCard?: bool, session?, preset?, metadataPreset?, keywords?, collection?, sameAsPrevious?}: shots download into the studio session's folder (a new session in <library>/Tethered/<session> when none is active) → the camera {name, vendor, link, canCapture, liveView, readouts}. A camera that can't be tethered natively is an error that says to use studio capture",
             always,
             connect
         ),
@@ -398,7 +398,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Capture",
             ["File", "Tethered Capture"],
             None,
-            "{} — fires the connected camera, downloads the shot into the session folder and imports it (the newest becomes the selection) → {files, imported, newest, error?}",
+            "{}: fires the connected camera, downloads the shot into the session folder and imports it (the newest becomes the selection) → {files, imported, newest, error?}",
             always,
             capture
         ),
@@ -407,7 +407,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Live View Frame",
             [],
             None,
-            "{stop?: bool} — grabs one live view frame where the camera supports it → {live, width, height}",
+            "{stop?: bool}: grabs one live view frame where the camera supports it → {live, width, height}",
             always,
             live_view
         ),
@@ -416,7 +416,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Press Simulated Shutter",
             [],
             None,
-            "{} — the simulated camera (device \"sim\") takes a shot on its own, as if its shutter button was pressed → {handle} or null",
+            "{}: the simulated camera (device \"sim\") takes a shot on its own, as if its shutter button was pressed → {handle} or null",
             always,
             |_s, _p| Ok(lcc_tether::link::sim_shoot().map(|h| json!({"handle": h})).unwrap_or(Value::Null))
         ),
@@ -425,7 +425,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import New Shots",
             [],
             None,
-            "{listing?: [[path, size]]} — imports the watched folder's new shots (a file whose size held still since the last scan); the newest becomes the selection → {active, imported: ids, newest, shots, error?}",
+            "{listing?: [[path, size]]}: imports the watched folder's new shots (a file whose size held still since the last scan); the newest becomes the selection → {active, imported: ids, newest, shots, error?}",
             always,
             scan
         ),

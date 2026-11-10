@@ -176,7 +176,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Virtual Copy",
             ["Photo"],
             Some("Cmd+'"),
-            "{ids?, name?} → {ids: [new photo ids]} — a new catalog entry sharing the original file, with independent settings; stacked with its original and named `name` or \"Copy N\"",
+            "{ids?, name?} → {ids: [new photo ids]}: a new catalog entry sharing the original file, with independent settings; stacked with its original and named `name` or \"Copy N\"",
             has_selection,
             |s, p| {
                 let targets = s.targets(p)?;
@@ -202,7 +202,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group into Stack",
             ["Photo", "Stack"],
             Some("Cmd+G"),
-            "{ids?, top?: photoId (default: the active photo), collapsed?: bool (default true)} — stacks the photos are already in are merged",
+            "{ids?, top?: photoId (default: the active photo), collapsed?: bool (default true)}: stacks the photos are already in are merged",
             has_selection,
             |s, p| {
                 let targets = s.targets(p)?;
@@ -236,12 +236,12 @@ pub fn specs() -> Vec<CommandSpec> {
             let op = s.catalog.set_top_ops(id);
             Ok(json!({"changed": commit_ops(s, "Set Top of Stack", op.into_iter().collect())?}))
         }),
-        cmd!("stack.moveUp", "Move Up in Stack", ["Photo", "Stack"], None, "{id?} — one place towards the top", in_stack, |s, p| {
+        cmd!("stack.moveUp", "Move Up in Stack", ["Photo", "Stack"], None, "{id?}: one place towards the top", in_stack, |s, p| {
             let id = s.photo_or_active(p, "stack.moveUp")?;
             let op = s.catalog.move_in_stack_ops(id, -1);
             Ok(json!({"changed": commit_ops(s, "Move in Stack", op.into_iter().collect())?}))
         }),
-        cmd!("stack.moveDown", "Move Down in Stack", ["Photo", "Stack"], None, "{id?} — one place away from the top", in_stack, |s, p| {
+        cmd!("stack.moveDown", "Move Down in Stack", ["Photo", "Stack"], None, "{id?}: one place away from the top", in_stack, |s, p| {
             let id = s.photo_or_active(p, "stack.moveDown")?;
             let op = s.catalog.move_in_stack_ops(id, 1);
             Ok(json!({"changed": commit_ops(s, "Move in Stack", op.into_iter().collect())?}))
@@ -251,7 +251,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Split Stack",
             ["Photo", "Stack"],
             None,
-            "{id?} — this photo and the ones after it become their own stack",
+            "{id?}: this photo and the ones after it become their own stack",
             in_stack,
             |s, p| {
                 let id = s.photo_or_active(p, "stack.split")?;
@@ -267,7 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "Expand/Collapse Stack",
                 ["Photo", "Stack"],
                 Some("S"),
-                "{ids?, collapsed?: bool} — the stacks of the named photos (else of the selection)",
+                "{ids?, collapsed?: bool}: the stacks of the named photos (else of the selection)",
                 in_stack,
                 |s, p| {
                     let stacks = stacks_of(s, &s.targets(p)?);
