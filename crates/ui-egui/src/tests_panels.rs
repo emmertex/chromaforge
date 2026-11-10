@@ -3151,12 +3151,37 @@ fn an_imported_folder_is_listed_by_its_own_name() {
     let h = folders_app(&["/Users/me/Desktop/shoot/c.jpg"]);
     assert!(has(&h, "source:libfolder:/Users/me/Desktop/shoot"), "the imported folder is a row straight under its disk");
     assert!(!has(&h, "source:libfolder:/Users") && !has(&h, "source:libfolder:/Users/me"), "no rows for the folders on the way");
-    let h = folders_app(&["/Users/me/Pictures/2024/trip/a.jpg", "/Users/me/Pictures/2025/trip/b.jpg"]);
+    let h = folders_app(&["/Users/me/2024/trip/a.jpg", "/Users/you/2025/trip/b.jpg"]);
     let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree());
-    let pictures = &tree[0].children[0];
-    assert_eq!((pictures.name.as_str(), pictures.path.as_str()), ("Pictures", "/Users/me/Pictures"), "where the two branch");
-    let names: Vec<(&str, &str)> = pictures.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect();
-    assert_eq!(names, [("trip (2024)", "/Users/me/Pictures/2024/trip"), ("trip (2025)", "/Users/me/Pictures/2025/trip")]);
+    let users = &tree[0].children[0];
+    assert_eq!((users.name.as_str(), users.path.as_str()), ("Users", "/Users"), "where the two branch");
+    let names: Vec<(&str, &str)> = users.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect();
+    assert_eq!(names, [("me", "/Users/me"), ("you", "/Users/you")], "below it every folder keeps its row");
+    let h = folders_app(&["/a/2024/trip/a.jpg", "/b/2025/trip/b.jpg"]);
+    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree());
+    let names: Vec<(&str, &str)> = tree[0].children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect();
+    assert_eq!(names, [("trip (2024)", "/a/2024/trip"), ("trip (2025)", "/b/2025/trip")]);
+}
+
+/// Below the first folder that is kept, every folder keeps its row, as in Lightroom Classic: an
+/// empty month folder stays between its year and its days instead of giving its row to the one
+/// day inside it (#1022).
+#[test]
+fn folders_inside_an_imported_folder_keep_their_place() {
+    let h = folders_app(&["/Users/me/Pictures/2026/January/31/a.jpg", "/Users/me/Pictures/2026/August/31/b.jpg"]);
+    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree());
+    let year = &tree[0].children[0];
+    assert_eq!((year.name.as_str(), year.path.as_str()), ("2026", "/Users/me/Pictures/2026"), "the folders on the way are lifted");
+    let rows = |n: &lcc_catalog::FolderNode| -> Vec<(String, String)> { n.children.iter().map(|c| (c.name.clone(), c.path.clone())).collect() };
+    assert_eq!(
+        rows(year),
+        [
+            ("August".to_string(), "/Users/me/Pictures/2026/August".to_string()),
+            ("January".to_string(), "/Users/me/Pictures/2026/January".to_string())
+        ],
+        "the empty month folders keep their rows"
+    );
+    assert_eq!(rows(&year.children[1]), [("31".to_string(), "/Users/me/Pictures/2026/January/31".to_string())], "each day is inside its month");
 }
 
 #[test]

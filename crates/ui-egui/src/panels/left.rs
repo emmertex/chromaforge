@@ -2009,17 +2009,26 @@ pub(crate) fn reveal_chosen(app: &mut LccApp, ui: &egui::Ui, tree: &[FolderNode]
 /// folder) gives its row to that folder, so an imported folder is listed under its own name
 /// instead of under every folder from the disk down to it (the full path is the row's hover
 /// text). Folders listed side by side with the same name say which folder each is in:
-/// `trip (2024)`, `trip (2025)`. Disk rows stay as they are.
-pub(crate) fn sidebar_folders(mut nodes: Vec<FolderNode>) -> Vec<FolderNode> {
-    fn lift(mut n: FolderNode) -> FolderNode {
-        while !n.volume && n.own == 0 && n.label.is_none() && n.children.len() == 1 {
+/// `trip (2024)`, `trip (2025)`. Disk rows stay as they are. Below the first folder that keeps
+/// its row, every folder keeps its row, as in Lightroom Classic: an empty `January` stays between
+/// `2026` and `31` (#1022).
+pub(crate) fn sidebar_folders(nodes: Vec<FolderNode>) -> Vec<FolderNode> {
+    shape_folders(nodes, true)
+}
+
+/// [`sidebar_folders`] for one level; `lifting` while still on the way from a disk to the first
+/// folder that keeps its row.
+fn shape_folders(mut nodes: Vec<FolderNode>, lifting: bool) -> Vec<FolderNode> {
+    fn shape(mut n: FolderNode, lifting: bool) -> FolderNode {
+        while lifting && !n.volume && n.own == 0 && n.label.is_none() && n.children.len() == 1 {
             let Some(child) = n.children.pop() else { break };
             n = child;
         }
-        n.children = sidebar_folders(std::mem::take(&mut n.children));
+        // a disk's folders are still on the way; a folder's are its own and keep their rows
+        n.children = shape_folders(std::mem::take(&mut n.children), lifting && n.volume);
         n
     }
-    nodes = nodes.into_iter().map(lift).collect();
+    nodes = nodes.into_iter().map(|n| shape(n, lifting)).collect();
     disambiguate(&mut nodes);
     nodes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name)));
     nodes

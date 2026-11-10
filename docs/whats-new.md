@@ -1,5 +1,11 @@
 # What's new in {app}
 
+## 2026-11-10
+
+### Folders inside an imported folder keep their place
+- The Folders list now nests every folder below the imported one under its own parent. An empty month folder stays
+  between its year and its days instead of its days being listed under the year as `31 (January)`, `31 (August)`.
+
 ## 2026-10-24
 
 ### Relative-date filters and smart albums follow the clock
