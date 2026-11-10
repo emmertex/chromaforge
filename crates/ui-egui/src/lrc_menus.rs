@@ -164,10 +164,10 @@ const LIBRARY: &[&str] = &[
     "dialog.cull",
     "---",
     "library.toggleFilters=Enable Filters",
-    "soon.filterByPreset",
-    "soon.filterByFlag",
+    "@Filter by Preset",
+    "@Filter by Flag",
     "@Filter by Rating",
-    "soon.filterByColorLabel",
+    "@Filter by Color Label",
     "soon.filterByKind",
     "soon.filterByMetadata",
     "@Filters",
@@ -230,7 +230,7 @@ const PHOTO: &[&str] = &[
     "soon.resetExportStatus",
     "view.autoAdvance",
     "---",
-    "soon.setKeyword",
+    "@Set Keyword",
     "panel.keywords=Add Keywords…",
     "---",
     "@Develop Settings",
@@ -248,7 +248,7 @@ const METADATA: &[&str] = &[
     "keyword.toggleShortcut=Toggle Shortcut Keyword",
     "tool.painter=Enable Painting",
     "---",
-    "soon.keywordSet",
+    "@Keyword Set",
     "@Color Label Set",
     "---",
     "soon.metadataTargetOnly",
@@ -456,9 +456,9 @@ const TOOLS: &[&str] = &[
     "---",
     "panel.masking=Masking",
     "@Create New Mask",
-    "soon.addToMask",
-    "soon.subtractFromMask",
-    "soon.intersectMask",
+    "@Add to Mask with",
+    "@Subtract from Mask with",
+    "@Intersect Mask with",
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
@@ -503,7 +503,7 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "soon.locationFilter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",
@@ -532,7 +532,7 @@ const MAP_VIEW: &[&str] = &[
     "soon.savedLocationOverlay",
     "soon.lockMarkers",
     "---",
-    "soon.mapStyle",
+    "@Map Style",
 ];
 
 const BOOK: &[&str] =
@@ -573,7 +573,7 @@ const PLAY: &[&str] = &[
     "slideshow.next",
     "slideshow.previous",
     "---",
-    "soon.slideshowContent",
+    "@Content=Slideshow Content",
 ];
 
 const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
@@ -689,7 +689,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
     ),
     ("View", "Create New Mask", &["tool.brush=Brush", "tool.linear=Linear Gradient", "tool.radial=Radial Gradient"]),
     ("Tools", "Remove Options", &["soon.removeGenerative", "soon.removeDetectObjects"]),
-    ("Tools", "Target Adjustment", &["soon.targetAdjustment"]),
+    ("Tools", "Target Adjustment", &[]),
     ("Tools", "Tool Overlay", &[]),
     (
         "Tools",
@@ -802,9 +802,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         true,
         "Create a folder on disk inside the chosen folder (the engine's folder.create exists).",
     ),
-    soon("soon.filterByPreset", "Filter by Preset", None, 'S', true, "The filter bar's saved filter presets as a submenu."),
-    soon("soon.filterByFlag", "Filter by Flag", None, 'S', true, "Flagged / Unflagged / Rejected filters as a submenu."),
-    soon("soon.filterByColorLabel", "Filter by Color Label", None, 'S', true, "Colour-label filters as a submenu."),
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
     soon("soon.refinePhotos", "Refine Photos…", Some("Cmd+Alt+R"), 'S', false, "Reject unflagged photos and unflag flagged ones (a culling pass)."),
@@ -828,10 +825,8 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.editFaceName", "Edit Name", Some("Shift+O"), 'S', true, "Rename the chosen face."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
-    soon("soon.setKeyword", "Set Keyword", None, 'S', true, "The keyword set's nine keywords as a submenu (Alt+1…9 work today)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon("soon.keywordSet", "Keyword Set", None, 'S', true, "Choose the keyword set (keyword sets exist in the Keywording panel)."),
     soon(
         "soon.metadataTargetOnly",
         "Show Metadata for Target Photo Only",
@@ -875,16 +870,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
     soon("soon.removeGenerative", "Use Generative AI", None, 'L', false, "Generative fill for the Remove tool (needs an open, shippable model)."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
-    soon("soon.addToMask", "Add to Mask with", None, 'S', true, "Add a component to the chosen mask (the Masking panel does it)."),
-    soon(
-        "soon.subtractFromMask",
-        "Subtract from Mask with",
-        None,
-        'S',
-        true,
-        "Subtract a component from the chosen mask (the Masking panel does it).",
-    ),
-    soon("soon.intersectMask", "Intersect Mask with", None, 'S', true, "Intersect the chosen mask with a component (the Masking panel does it)."),
     soon("soon.selectPeople", "Select People", None, 'M', false, "AI mask of people and their parts (face, skin, hair, clothes…)."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.colorRange", "Color Range", Some("Shift+J"), 'S', true, "Start a colour-range mask (the Masking panel does it)."),
@@ -899,25 +884,15 @@ pub const COMING_SOON: &[ComingSoon] = &[
         true,
         "Pick a point colour on the photo (Color Mixer has Point Color).",
     ),
-    soon(
-        "soon.targetAdjustment",
-        "Targeted Adjustment tools",
-        None,
-        'M',
-        false,
-        "Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu.",
-    ),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
-    soon("soon.locationFilter", "Location Filter", None, 'S', true, "Visible on Map / Tagged / Untagged / None (map.filter exists)."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
     soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.mapInfo", "Show Map Info", None, 'S', false, "The map's info overlay."),
     soon("soon.mapKey", "Show Map Key", None, 'S', false, "The map's legend of pin types."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
-    soon("soon.mapStyle", "Map Style", None, 'S', true, "The map's tile styles as a submenu (map.style exists)."),
     // Book
     soon("soon.createSavedBook", "Create Saved Book", None, 'S', true, "Save the book as a collection (book.save needs a name dialog)."),
     soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
@@ -931,7 +906,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.newSlideshowTemplate", "New Template", None, 'S', true, "Save the settings as a template (needs a name dialog)."),
     soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
-    soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
     soon("soon.createSavedPrint", "Create Saved Print", None, 'S', true, "Save the print as a collection (needs a name dialog)."),
