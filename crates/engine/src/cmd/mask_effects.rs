@@ -654,7 +654,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Mask Effect",
             [],
             None,
-            "{name, id? | ids?: [maskId] | all?: bool, photos?: \"selected\" (also the masks of the same names on the other selected photos, one undo step), remember?: bool (true: new masks of this kind start with it)} — sets the effect's sliders (all, or the ones it keeps; Amount only if it carries it) → {name, masks, photos, brush}",
+            "{name, id? | ids?: [maskId] | all?: bool, photos?: \"selected\" (also the masks of the same names on the other selected photos, one undo step), remember?: bool (true: new masks of this kind start with it)}: sets the effect's sliders (all, or the ones it keeps; Amount only if it carries it) → {name, masks, photos, brush}",
             has_active,
             apply_effect
         ),
@@ -663,7 +663,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Mask Effect",
             [],
             None,
-            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask, auto_range?}} — the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
+            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask, auto_range?}}: the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
             has_active,
             save_effect
         ),
@@ -672,7 +672,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Mask Effect",
             [],
             None,
-            "{name, id?, fields?, amount?, brush?} — overwrite the effect with the selected mask's sliders (keeps its group, star and which sliders it carries unless given)",
+            "{name, id?, fields?, amount?, brush?}: overwrite the effect with the selected mask's sliders (keeps its group, star and which sliders it carries unless given)",
             has_active,
             update_effect
         ),
@@ -686,7 +686,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             duplicate_effect
         ),
-        cmd!("mask.deleteEffect", "Delete Mask Effect", [], None, "{name | names: [name]} — removes effect presets", always, delete_effect),
+        cmd!("mask.deleteEffect", "Delete Mask Effect", [], None, "{name | names: [name]}: removes effect presets", always, delete_effect),
         cmd!("mask.favoriteEffect", "Favorite Mask Effect", [], None, "{name | names, favorite?: bool (default: toggle)}", always, favorite_effect),
         cmd!("mask.setEffectGroup", "Move Mask Effect to Group", [], None, "{name | names, group: name (\"\" = none)}", always, set_group),
         cmd!(
@@ -703,7 +703,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Effect for New Masks",
             [],
             None,
-            "{tool: brush|linear|radial|subject|…, name?} — the effect new masks of that kind start with (no name: none)",
+            "{tool: brush|linear|radial|subject|…, name?}: the effect new masks of that kind start with (no name: none)",
             always,
             tool_effect
         ),
@@ -712,7 +712,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Mask Effects",
             [],
             None,
-            "{path | paths: [file or folder], group?, dryRun?} — Lightroom Classic local adjustment presets (.lrtemplate), Camera Raw local correction presets (.xmp), .lceffect files and .zip bundles of these; folders and Lightroom's divider presets (\"10 ----- DETAIL ----- 10\") become groups; same-named effects are replaced → {imported: [{name, group, file, unmapped}], dividers: [{name, group, file}], failed: [[file, error]]}",
+            "{path | paths: [file or folder], group?, dryRun?}: Lightroom Classic local adjustment presets (.lrtemplate), Camera Raw local correction presets (.xmp), .lceffect files and .zip bundles of these; folders and Lightroom's divider presets (\"10 ----- DETAIL ----- 10\") become groups; same-named effects are replaced → {imported: [{name, group, file, unmapped}], dividers: [{name, group, file}], failed: [[file, error]]}",
             always,
             files::import_effects
         ),
@@ -721,7 +721,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Mask Effects",
             [],
             None,
-            "{path, names?: [name], group?: name (default: all)} — writes an .lceffect JSON file (groups, stars and kept Lightroom settings included) → {path, count}",
+            "{path, names?: [name], group?: name (default: all)}: writes an .lceffect JSON file (groups, stars and kept Lightroom settings included) → {path, count}",
             always,
             files::export_effects
         ),

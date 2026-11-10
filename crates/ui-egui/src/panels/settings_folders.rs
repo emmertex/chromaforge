@@ -208,7 +208,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 Some(p) if id == "deviceStorage" => tr(p).to_string(),
                 Some(p) if custom || id == "library" => p.clone(),
                 Some(p) => format!("{p}  ({})", tr("default")),
-                None if id == "library" => tr("In memory — nothing is saved").to_string(),
+                None if id == "library" => tr("In memory (nothing is saved)").to_string(),
                 None => tr("None").to_string(),
             };
             // a long path is shortened (in full on hover), so it never widens the dialog

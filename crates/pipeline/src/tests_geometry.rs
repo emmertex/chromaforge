@@ -612,3 +612,19 @@ fn a_render_with_lightrooms_matrix_shows_lightrooms_frame() {
     assert!(ncc > 0.8, "the render follows Lightroom's stored correction: NCC {ncc:.3}");
     assert_eq!(blank, 0, "Lightroom's crop shows no blank corner");
 }
+
+/// Decoding keeps negative channels (upstream #2278); Upright's line finding still sees the source clipped at zero.
+#[test]
+fn upright_analysis_clips_negative_channels_first() {
+    let mut img = keystoned_grid(300, 200, lcc_geom::Homography::IDENTITY, 20.0);
+    for (i, p) in img.data.iter_mut().enumerate() {
+        if i % 7 == 0 {
+            p[0] = -0.2;
+        }
+    }
+    let clipped = img.map(|p| p.map(|v| v.max(0.0)));
+    let s = DevelopSettings::default();
+    let a = crate::upright::analysis_luminance(&img, &SourceInfo::default(), &s, 200);
+    let b = crate::upright::analysis_luminance(&clipped, &SourceInfo::default(), &s, 200);
+    assert!(a.data == b.data, "negative channels changed the analysis plane");
+}

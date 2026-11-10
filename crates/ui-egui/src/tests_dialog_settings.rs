@@ -51,7 +51,7 @@ fn a_short_path_is_shown_whole_and_has_no_tooltip() {
     // Given the in-memory library, whose Location is a short sentence
     let mut h = demo([1600.0, 1000.0]);
     show(&mut h, "general");
-    assert!(h.painted_text().iter().any(|text| text == "In memory — nothing is saved"), "it is all there");
+    assert!(h.painted_text().iter().any(|text| text == "In memory (nothing is saved)"), "it is all there");
     let before = h.painted_text().len();
     // When the pointer rests on it
     assert_eq!(h.request("ui.hoverWidget", json!({"id": "text:settingsLocation"}), T)["ok"], true);

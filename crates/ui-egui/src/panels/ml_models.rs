@@ -20,7 +20,7 @@ fn licence_line(m: &Value) -> String {
     let spdx = m["licence"]["spdx"].as_str().unwrap_or("");
     let summary = m["licence"]["summary"].as_str().unwrap_or("");
     match (spdx.is_empty(), summary.is_empty()) {
-        (false, false) => format!("{} ({spdx}) — {}", tr("Licence"), tr(summary)),
+        (false, false) => format!("{} ({spdx}): {}", tr("Licence"), tr(summary)),
         (false, true) => format!("{}: {spdx}", tr("Licence")),
         (true, false) => tr(summary).into(),
         (true, true) => String::new(),

@@ -198,7 +198,7 @@ impl ProblemKind {
             ProblemKind::Missing => "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.",
             ProblemKind::Permission => "{app} isn't allowed to read or write its folder. Check the folder's permissions, then try again.",
             ProblemKind::NoLocation | ProblemKind::Other => {
-                "Your photos and edits in it are untouched. You can try again (e.g. after closing another program that has it open or reconnecting its drive), open a different catalog or create a new one, or continue without a catalog — then nothing you do is saved."
+                "Your photos and edits in it are untouched. You can try again (e.g. after closing another program that has it open or reconnecting its drive), open a different catalog or create a new one, or continue without a catalog, though then nothing you do is saved."
             }
         }
     }
@@ -1206,7 +1206,7 @@ pub fn banner(app: &mut LccApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 let r = ui.label(
-                    RichText::new(crate::i18n::tr("Temporary session — your catalog isn't open, and nothing you do here is saved."))
+                    RichText::new(crate::i18n::tr("Temporary session: your catalog isn't open, and nothing you do here is saved."))
                         .font(t.semibold(12.5))
                         .color(t.canvas),
                 );

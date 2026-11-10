@@ -668,13 +668,13 @@ pub fn text(r: &ProbeReport) -> String {
             "Lightroom setting", "value", "app control", "mapped", "best", "err now", "err best", "LR Δ"
         );
         for st in &r.steps {
-            let opt = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "—".into());
+            let opt = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "n/a".into());
             let _ = writeln!(
                 s,
                 "{:<26} {:>+8.2}  {:<26} {:>8} {:>8}   {:>7.2} {:>7}  {:>7.2}",
                 st.setting,
                 st.lightroom,
-                st.control.as_deref().unwrap_or("—"),
+                st.control.as_deref().unwrap_or("n/a"),
                 opt(st.mapped),
                 opt(st.best),
                 st.error_mapped,

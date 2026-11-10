@@ -775,7 +775,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Push XMP Sidecars to Immich",
             [],
             None,
-            "{account?, ids?, externalOnly?: bool, full?: bool = false, refresh?: bool = true, dryRun?: bool, background?: bool} — \
+            "{account?, ids?, externalOnly?: bool, full?: bool = false, refresh?: bool = true, dryRun?: bool, background?: bool}: \
 write the whole XMP sidecar beside each linked photo in a mapped external-library folder (Immich re-reads it), \
 and send the fields Immich keeps in its own sidecar (rating, description, capture time, location, tags) for \
 managed assets, which Immich merges into the sidecar it holds; `full` replaces a managed asset's whole sidecar \
@@ -791,7 +791,7 @@ asset.delete; creates and removes one tiny asset per photo). `externalOnly` writ
             "Pull XMP Sidecars from Immich",
             ["Library", "Immich"],
             None,
-            "{account?, ids?, all?, overwrite?: bool, writeFiles?: bool = true, dryRun?: bool, background?: bool} — \
+            "{account?, ids?, all?, overwrite?: bool, writeFiles?: bool = true, dryRun?: bool, background?: bool}: \
 download each linked asset's XMP sidecar (v3.2.0+; the one Immich stored, with the app's `lc:settings` when it was \
 sent), apply it to the catalog as one undo step and write it beside the original; a photo edited here after the \
 asset changed is left alone unless `overwrite` (needs `assetFile.read`) → {pulled, applied, written, skipped, \
