@@ -42,7 +42,7 @@ pub fn folders(app: &mut LccApp) -> Value {
     ));
     if !cfg!(target_arch = "wasm32") {
         let auto = app.session.import_defaults.auto_folder.clone();
-        let on = auto.is_some();
+        let on = app.session.import_defaults.auto_active_folder().is_some();
         out.push(entry("autoImport", "Auto Import", auto, on, can_pick, on, "Photos that arrive here are added as soon as they're complete."));
     }
     #[cfg(not(target_arch = "wasm32"))]
