@@ -368,7 +368,7 @@ const HELP: &[&str] = &[
 const DEVELOP: &[&str] = &[
     "version.create=New Snapshot",
     "dialog.createPreset=New Preset…",
-    "soon.newPresetFolder",
+    r#"ui.prompt{"title":"New Preset Folder","hint":"Folder name","command":"preset.createGroup","key":"name"}=New Preset Folder…"#,
     "history.clear=Clear History",
     "---",
     "library.previous=Previous Photo",
@@ -414,7 +414,7 @@ const SETTINGS: &[&str] = &[
     "develop.updateProcess=Update to Current Process Version",
     "soon.processVersion",
     "---",
-    "soon.proof",
+    "view.softProof=Proof",
     "---",
     "dialog.copySettings=Copy Settings…",
     "develop.paste=Paste Settings",
@@ -465,7 +465,7 @@ const TOOLS: &[&str] = &[
     "tool.guidedUpright",
     "tool.wbPicker",
     "soon.fringeSelector",
-    "soon.pointColorSelector",
+    "tool.pointColor",
     "---",
     "@Target Adjustment",
     "---",
@@ -537,8 +537,16 @@ const MAP_VIEW: &[&str] = &[
     "soon.mapStyle",
 ];
 
-const BOOK: &[&str] =
-    &["soon.createSavedBook", "---", "soon.bookPageNavigation", "---", "soon.updateMetadataCaptions", "soon.bookPreferences", "---", "book.export"];
+const BOOK: &[&str] = &[
+    r#"ui.prompt{"title":"Create Saved Book","hint":"Name","command":"book.save","key":"name"}=Create Saved Book…"#,
+    "---",
+    "soon.bookPageNavigation",
+    "---",
+    "soon.updateMetadataCaptions",
+    "soon.bookPreferences",
+    "---",
+    "book.export",
+];
 
 const BOOK_VIEW: &[&str] = &[
     "soon.bookHeaderBar",
@@ -552,8 +560,8 @@ const BOOK_VIEW: &[&str] = &[
 ];
 
 const SLIDESHOW: &[&str] = &[
-    "soon.createSavedSlideshow",
-    "soon.newSlideshowTemplate",
+    r#"ui.prompt{"title":"Create Saved Slideshow","hint":"Name","command":"slideshow.saveSlideshow","key":"name"}=Create Saved Slideshow…"#,
+    r#"ui.prompt{"title":"New Template","hint":"Template name","command":"slideshow.saveTemplate","key":"name"}=New Template…"#,
     "soon.newSlideshowTemplateFolder",
     "---",
     "slideshow.exportPdf",
@@ -581,8 +589,8 @@ const PLAY: &[&str] = &[
 const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
 
 const PRINT: &[&str] = &[
-    "soon.createSavedPrint",
-    "soon.newPrintTemplate",
+    r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
+    r#"ui.prompt{"title":"New Template","hint":"Template name","command":"printui.saveTemplate","key":"name"}=New Template…"#,
     "soon.newPrintTemplateFolder",
     "---",
     r#"printui.page{"delta":-1}=Previous Page"#,
@@ -595,7 +603,7 @@ const PRINT: &[&str] = &[
 const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "soon.printInfoOverlay"];
 
 const WEB: &[&str] = &[
-    "soon.createSavedWebGallery",
+    r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
     "soon.newWebTemplate",
     "soon.newWebTemplateFolder",
     "---",
@@ -676,7 +684,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             r#"mask.add{"kind":"subject"}=Select Subject"#,
             r#"mask.add{"kind":"sky"}=Select Sky"#,
             r#"mask.add{"kind":"background"}=Select Background"#,
-            "soon.selectPeople",
+            "tool.people=Select People",
             "soon.selectLandscape",
             "tool.object=Select Objects",
             "---",
@@ -684,13 +692,13 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "tool.linear=Linear Gradient",
             "tool.radial=Radial Gradient",
             "---",
-            "soon.colorRange",
-            "soon.luminanceRange",
+            "tool.colorRange",
+            "tool.luminanceRange",
             "soon.depthRange",
         ],
     ),
     ("View", "Create New Mask", &["tool.brush=Brush", "tool.linear=Linear Gradient", "tool.radial=Radial Gradient"]),
-    ("Tools", "Remove Options", &["soon.removeGenerative", "soon.removeDetectObjects"]),
+    ("Tools", "Remove Options", &["remove.useGenerative", "soon.removeDetectObjects"]),
     ("Tools", "Target Adjustment", &["soon.targetAdjustment"]),
     ("Tools", "Tool Overlay", &[]),
     (
@@ -865,15 +873,12 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.newPresetFolder", "New Preset Folder…", None, 'S', true, "Create a preset group (the Presets panel's menu has it)."),
     soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
-    soon("soon.proof", "Proof", None, 'S', true, "Soft-proof the photo (View ▸ Soft Proofing exists)."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
     soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.cropAsShot", "Crop As Shot", Some("Cmd+Alt+Shift+R"), 'S', false, "Reset the crop to the camera's own crop (aspect from the raw)."),
     soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
-    soon("soon.removeGenerative", "Use Generative AI", None, 'L', false, "Generative fill for the Remove tool (needs an open, shippable model)."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.addToMask", "Add to Mask with", None, 'S', true, "Add a component to the chosen mask (the Masking panel does it)."),
     soon(
@@ -885,20 +890,9 @@ pub const COMING_SOON: &[ComingSoon] = &[
         "Subtract a component from the chosen mask (the Masking panel does it).",
     ),
     soon("soon.intersectMask", "Intersect Mask with", None, 'S', true, "Intersect the chosen mask with a component (the Masking panel does it)."),
-    soon("soon.selectPeople", "Select People", None, 'M', false, "AI mask of people and their parts (face, skin, hair, clothes…)."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
-    soon("soon.colorRange", "Color Range", Some("Shift+J"), 'S', true, "Start a colour-range mask (the Masking panel does it)."),
-    soon("soon.luminanceRange", "Luminance Range", Some("Shift+Q"), 'S', true, "Start a luminance-range mask (the Masking panel does it)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
     soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
-    soon(
-        "soon.pointColorSelector",
-        "Point Color Selector",
-        Some("Cmd+Alt+P"),
-        'S',
-        true,
-        "Pick a point colour on the photo (Color Mixer has Point Color).",
-    ),
     soon(
         "soon.targetAdjustment",
         "Targeted Adjustment tools",
@@ -919,7 +913,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     soon("soon.mapStyle", "Map Style", None, 'S', true, "The map's tile styles as a submenu (map.style exists)."),
     // Book
-    soon("soon.createSavedBook", "Create Saved Book", None, 'S', true, "Save the book as a collection (book.save needs a name dialog)."),
     soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
     soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
@@ -927,21 +920,16 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
-    soon("soon.createSavedSlideshow", "Create Saved Slideshow", None, 'S', true, "Save the slideshow as a collection (needs a name dialog)."),
-    soon("soon.newSlideshowTemplate", "New Template", None, 'S', true, "Save the settings as a template (needs a name dialog)."),
     soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.createSavedPrint", "Create Saved Print", None, 'S', true, "Save the print as a collection (needs a name dialog)."),
-    soon("soon.newPrintTemplate", "New Template", None, 'S', true, "Save the print settings as a template (needs a name dialog)."),
     soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
     // Web
-    soon("soon.createSavedWebGallery", "Create Saved Web Gallery", None, 'S', false, "Save the web gallery as a collection."),
     soon("soon.newWebTemplate", "New Template", None, 'S', false, "Save the web gallery settings as a template."),
     soon("soon.newWebTemplateFolder", "New Template Folder", None, 'S', false, "Group web templates in folders."),
     soon("soon.webGuides", "Show Guides", None, 'S', false, "Layout guides in the gallery preview."),

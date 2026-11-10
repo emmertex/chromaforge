@@ -234,6 +234,7 @@
   "{n} keywords removed": "ამოშლილია {n} საკვანძო სიტყვა",
   "{n} new photos in {folders} folders: see the badges in Folders": "{folders} საქაღალდეში {n} ახალი ფოტოა: იხილეთ ნიშნები საქაღალდეებში",
   "{n} new photos in “{folder}”: right-click the folder ▸ Add New Photos": "„{folder}“-ში {n} ახალი ფოტოა: დააწკაპუნეთ საქაღალდეზე მარჯვენა ღილაკით → ახალი ფოტოების დამატება",
+  "{n} new photo{} from the camera roll": "ახალი ფოტოები კამერის გალერეიდან: {n}{:.0}",
   "{n} operations in progress…": "მიმდინარე ოპერაციები: {n}…",
   "{n} pages": "გვერდი: {n}",
   "{n} paper size(s) from the printer": "პრინტერიდან {n} ქაღალდის ზომა",

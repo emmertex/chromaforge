@@ -97,6 +97,8 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("tool.linear", Some("M")),
     ("tool.radial", Some("Shift+M")),
     ("tool.guidedUpright", Some("Shift+T")),
+    ("tool.colorRange", Some("Shift+J")),
+    ("tool.pointColor", Some("Cmd+Alt+P")),
     ("panel.keywords", Some("Cmd+K")),
     // flags, collections
     // ` toggles the Pick flag as in Lightroom Classic; cycling all three states (the

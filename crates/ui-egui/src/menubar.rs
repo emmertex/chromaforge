@@ -381,6 +381,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.colorReadoutHsl" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Hsl),
         "view.colorReadoutLab" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Lab),
         "view.softProof" => Some(u.soft_proof),
+        "remove.useGenerative" => Some(crate::panels::genfill::generative_on(app)),
         "view.maskOverlay" => Some(u.mask_overlay),
         "view.maskOverlayAll" => Some(u.mask_overlay_all),
         "view.maskPins" => Some(u.mask_pins),
