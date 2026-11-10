@@ -5,7 +5,7 @@ members = ["crates/*", "apps/*", "xtask"]
 exclude = ["vendor"]
 
 [workspace.package]
-version = "26.46.0"
+version = "26.46.1"
 edition = "2024"
 license = "MIT OR GPL-3.0-or-later"
 rust-version = "1.95"
