@@ -178,7 +178,7 @@ impl eframe::App for App {
             catalog_hooks::backup_if_due(&mut self.0.session);
         }
         if let Err(e) = self.0.session.close_library() {
-            log::error!("saving the library failed: {e}");
+            log::error!("saving the catalog failed: {e}");
         }
         // last, with everything saved: no render may be inside the GPU driver when the process ends
         if !self.0.shutdown(EXIT_WAIT) {
@@ -448,7 +448,7 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
                 Err(r) => format!("it couldn't be set aside ({r})"),
             };
             let msg = format!(
-                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your library with Settings → Open Library… if it isn't shown.",
+                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
                 path.display()
             );
             (None, Some(msg), kept.is_err())
@@ -728,7 +728,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .map(|p| p.to_string_lossy().to_string())
         }),
         pick_folder: picker!(|| {
-            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Library")).pick_folder().map(|p| p.to_string_lossy().to_string())
+            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Catalog")).pick_folder().map(|p| p.to_string_lossy().to_string())
         }),
         #[cfg(target_os = "linux")]
         open_model_folder: Some(std::sync::Arc::new(|path: &str| {
@@ -991,7 +991,27 @@ fn surface_store() -> Option<Box<dyn lcc_ui_egui::surface::SurfaceStore>> {
     if lcc_brand::env_is_set("NO_PREFS") {
         return None;
     }
-    config_dir().map(|d| Box::new(SurfaceFile(d.join("control-surfaces.json"))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+    config_dir().map(|d| Box::new(SurfaceFile(d.join(SURFACE_FILE))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+}
+
+/// The control-surface settings file's name in the settings folder.
+const SURFACE_FILE: &str = "control-surfaces.json";
+
+/// Control-surface layouts a previous name kept: a settings folder that existed before the first start under
+/// this name is not copied as a whole ([`lcc_brand::migrate_legacy_settings`]), so its `control-surfaces.json`
+/// is brought over on its own, when this one has none. Only into the platform settings folder the legacy ones
+/// sit beside: not into a `<PREFIX>_CONFIG_DIR` override or a portable data folder, which stay isolated. A
+/// failed copy is logged; the app starts without the layouts.
+fn migrate_legacy_surface_file() {
+    let (Some(current), Some(platform)) = (config_dir(), lcc_brand::settings_dir()) else { return };
+    if current != platform {
+        return;
+    }
+    match lcc_brand::migrate_legacy_settings_file(SURFACE_FILE) {
+        Ok(Some(from)) => log::info!("control-surface settings copied from {}", from.display()),
+        Ok(None) => {}
+        Err(e) => log::warn!("could not copy the previous control-surface settings: {e}"),
+    }
 }
 
 /// A session with no library yet (one opens later), with the folders face models and slideshow
@@ -1061,7 +1081,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
     };
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
-        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
+        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the catalog in. Choose a folder for it.")));
     };
     // a library the settings remember (or the default location) is opened, never created: on a drive that isn't
     // connected its folder is missing, and opening it would make an empty library there, with demo photos, that
@@ -1070,7 +1090,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
         log::warn!("the remembered library {} isn't there; not creating one", dir.display());
         let mut problem = LibraryProblem::new(
             dir.to_string_lossy(),
-            format!("{}: no library found here (is its drive connected, or was it moved or renamed?)", dir.display()),
+            format!("{}: no catalog found here (is its drive connected, or was it moved or renamed?)", dir.display()),
         );
         problem.never_create = true;
         return (unopened(), Some(problem));
@@ -1090,7 +1110,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             (s, None)
         }
         Err(e) => {
-            log::error!("can't open library {}: {e}", dir.display());
+            log::error!("can't open catalog {}: {e}", dir.display());
             (unopened(), Some(LibraryProblem::new(dir.to_string_lossy(), e.to_string())))
         }
     }
@@ -1170,7 +1190,7 @@ fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Optio
             Some(LaunchPath::Library(dir)) => {
                 log::warn!("one library at a time: not opening {dir} given at launch");
                 notices
-                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one library at a time. Open it with File ▸ Open Library…")));
+                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one catalog at a time. Open it with File ▸ Open Catalog…")));
             }
             Some(LaunchPath::Import(p)) => files.push(p),
             Some(LaunchPath::Refused { path, why }) => {
@@ -1320,6 +1340,8 @@ fn main() -> eframe::Result {
             Ok(None) => {}
             Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
         }
+        // a settings folder that already existed: its control-surface layouts still come over
+        migrate_legacy_surface_file();
     }
     // The log file: opened after the arguments, so `--version`, `--help` and a usage error leave
     // no file behind. Records logged until now are written to it first.
@@ -1808,7 +1830,7 @@ mod tests {
         let lib = dir.join("unmounted").join("Library");
         let (_, problem) = open_library_session(false, Some(lib.clone()), true, false);
         let problem = problem.expect("a problem is reported");
-        assert!(problem.never_create && problem.error.contains("no library found"), "{}", problem.error);
+        assert!(problem.never_create && problem.error.contains("no catalog found"), "{}", problem.error);
         assert!(!lib.exists() && !dir.exists(), "nothing was created where the library should be");
         // named on the command line: created
         let (s, problem) = open_library_session(false, Some(lib.clone()), false, true);

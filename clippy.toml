@@ -2,3 +2,9 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
+
+# Every wgpu instance comes from lcc_gpu::new_instance: it makes them one at a time and keeps the
+# Vulkan loader loaded (the loader crashed when threads made and dropped instances at once).
+disallowed-methods = [
+    { path = "wgpu::Instance::new", reason = "use lcc_gpu::new_instance (lcc_engine::gpu::new_instance): one at a time, with the Vulkan loader kept loaded" },
+]

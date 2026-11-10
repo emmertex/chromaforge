@@ -25,6 +25,7 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::modern_library::COMMANDS)
         .chain(crate::modern_sheets::COMMANDS)
         .chain(GRADING_COMMANDS)
+        .chain(crate::lrc_menus::SOON_COMMANDS.iter())
 }
 
 /// The Edit panel's grading modes: Eboda, the Lightroom Classic panels (the default), and
@@ -61,6 +62,10 @@ const PLUGIN_COMMANDS: &[UiCommand] = &[];
 
 /// The fork's modules' commands, then the fork's own UI command arms.
 pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    // a greyed "Coming soon" menu item never runs anything
+    if let Some(c) = crate::lrc_menus::coming_soon(id) {
+        return Some(Err(format!("{} is coming soon", c.label)));
+    }
     if let Some(r) = crate::module::run(app, id, p) {
         return Some(r);
     }
@@ -253,6 +258,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
 
 /// Enabled state of the fork's modules' commands.
 pub(super) fn enabled(app: &LccApp, id: &str) -> Option<bool> {
+    if crate::lrc_menus::is_coming_soon(id) {
+        return Some(false);
+    }
     crate::module::enabled(app, id)
         .or_else(|| crate::catalog_ui::enabled(app, id))
         .or_else(|| crate::timelapse_ui::enabled(app, id))

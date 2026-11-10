@@ -2104,7 +2104,7 @@ impl Session {
         }
         if self.denoise_products_dir().is_none() {
             return PhotoState::Failed {
-                why: "AI Denoise keeps its pictures in the library folder, and this session has none.".into(),
+                why: "AI Denoise keeps its pictures in the catalog folder, and this session has none.".into(),
                 unsupported: true,
             };
         }
@@ -2576,7 +2576,7 @@ impl Session {
             ));
         }
         if self.denoise_products_dir().is_none() {
-            return Err(format!("{name}: Denoise needs a library on disk to keep its pictures in"));
+            return Err(format!("{name}: Denoise needs a catalog on disk to keep its pictures in"));
         }
         self.denoise_check_photo(id);
         let Some(job) = self.denoise_job_spec(&p, Pace::Full.parallel(std::thread::available_parallelism().map_or(1, |n| n.get()), None)) else {

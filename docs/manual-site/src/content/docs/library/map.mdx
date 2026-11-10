@@ -1,0 +1,29 @@
+---
+title: Map and GPS
+description: Geotag by dragging, track logs, saved locations.
+sidebar:
+  order: 13
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<Shot name="lib-map" alt="The Map module with the location filter bar and filmstrip" menu="Window ▸ Modules ▸ Map" />
+
+- **Map** module (module bar, or **Window ▸ Modules ▸ Map**): pan, wheel or double-click to zoom, zoom buttons, scale bar.
+- **Map Style**: OpenStreetMap and user-added XYZ tile servers (**Add Tile Server**); tiles are cached, only visible ones are fetched.
+- **Location Filter**: **Visible on Map**, **Tagged**, **Untagged**, **None**, or a **Saved Location**, with counts. It filters the filmstrip too.
+- **Pins** cluster per zoom level with counts; click selects; hover shows a thumbnail.
+- **Geotag**: drag photos from the filmstrip or grid onto the map, drag pins to move them, or right-click ▸ **Geotag Selected Photos Here**. One undo step each.
+- **Saved Locations**: name, centre and radius; **private** locations export without GPS and place fields.
+- **Search** box: latitude, longitude, a saved location or a place name (asks consent before using an online service).
+- **Auto-Tag from Tracklog…** (**Metadata** menu): a GPX file sets GPS by capture time, interpolated along the track. The camera's time zone is read from the photo or asked.
+- **Fill Location from GPS**: city, state, country from coordinates (offline GeoNames or an online server; opt-in).
+- The Metadata panel's *Location* view edits GPS and place fields in the Library.
+
+<Aside type="note" title="Modern layout">
+  **Window ▸ Modules ▸ Map**. Auto-Tag from Tracklog: **Metadata** menu.
+</Aside>

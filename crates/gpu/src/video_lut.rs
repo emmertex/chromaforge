@@ -275,7 +275,7 @@ mod tests {
     // that never answers skips the test instead of hanging it
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         crate::init::create(wgpu::Backends::all(), || {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let instance = crate::new_instance(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).map_err(|e| e.to_string())?;
             // the sRGB view of the frame needs view formats, which downlevel (GL) adapters lack;
             // the app grades on the CPU there

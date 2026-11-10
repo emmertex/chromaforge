@@ -227,7 +227,7 @@ pub fn preload_library(files: &Files, reads: Vec<(&str, Result<Option<Vec<u8>>, 
             Err(e) => failed.push(format!("{name}: {e}")),
         }
     }
-    if failed.is_empty() { Ok(()) } else { Err(format!("couldn't read the library from browser storage ({})", failed.join("; "))) }
+    if failed.is_empty() { Ok(()) } else { Err(format!("couldn't read the catalog from browser storage ({})", failed.join("; "))) }
 }
 
 #[cfg(test)]

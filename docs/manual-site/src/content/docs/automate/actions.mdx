@@ -1,0 +1,21 @@
+---
+title: Actions
+description: Record a sequence of commands and replay it on other photos.
+sidebar:
+  order: 6
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Record**: type a name in the **Actions** panel and press **Record**; do the steps; stop. The steps come from the command journal.
+- **Parameters**: a step value written `{{name}}` becomes a parameter asked for when the action plays.
+- **Play**: runs once per selected photo (the default), then restores your selection. It stops at the first failing step.
+- **Shortcut**: give a saved action a key in the panel; the desktop app plays it on that key.
+- **From scripts**: `<cli> run-action NAME [param=value…] [ids=[…]]`, or the `actions.*` commands (`list`, `get`, `play`, `delete`) through MCP.
+
+<Shot name="actions-panel" alt="The Actions panel" menu="Window ▸ Panels ▸ Actions" />
+
+<Aside type="note" title="Modern layout">
+Open **☰ ▸ Window ▸ Panels ▸ Actions**.
+</Aside>

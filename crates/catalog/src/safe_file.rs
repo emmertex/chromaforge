@@ -516,7 +516,7 @@ pub fn open_regular(path: &Path, opts: &OpenOptions) -> io::Result<Option<File>>
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "{} is a link or not a regular file; the app won't read or write a library file through one. Remove it or put the real file there.",
+                "{} is a link or not a regular file; the app won't read or write a catalog file through one. Remove it or put the real file there.",
                 path.display()
             ),
         ));

@@ -509,7 +509,7 @@ pub(crate) fn options_for(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDia
         egui::RichText::new(crate::i18n::tr(match (d.copy, d.move_files) {
             (true, false) => "The files are copied; the originals are left as they are.",
             (true, true) => "Each original is removed from the source only after its copy is verified.",
-            _ => "The library uses the files where they are; nothing is copied or moved.",
+            _ => "The catalog uses the files where they are; nothing is copied or moved.",
         }))
         .color(if d.copy && d.move_files { t.caution } else { t.text_dim })
         .small(),
@@ -518,7 +518,7 @@ pub(crate) fn options_for(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDia
     if d.copy {
         form_row(ui, "Into", |ui| {
             ui.horizontal_wrapped(|ui| {
-                let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Library Originals").to_string() } else { d.destination.clone() };
+                let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Catalog Originals").to_string() } else { d.destination.clone() };
                 ui.label(egui::RichText::new(shown).color(t.text_label));
                 if app.services.pick_folder.is_some()
                     && crate::widgets::text_button(ui, "importDest", crate::i18n::tr("Choose…"), false).clicked()

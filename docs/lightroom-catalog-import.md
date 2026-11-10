@@ -13,7 +13,7 @@ transactional SQLite snapshot. The app owns subsequent edits.
 The same command also opens a Capture One catalog (`.cocatalogdb`, see *Capture One catalogs* below); the file
 dialog offers both kinds together and each on its own.
 
-File → Open Library… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
+File → Open Catalog… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
 doesn't make a library of the app there: it offers this import instead, with the catalog found
 (`crates/engine/src/lightroom_folder.rs`, issue #891), and then asks where the catalog goes as described next
 (unless the question is turned off, below).
@@ -26,9 +26,9 @@ unless Settings says to always merge (*Turning the question off*, below):
   already in the library open now (the library's name is its folder's name).
 - **Create a new library**: named after the catalog file (`Travel.lrcat` → "Travel", or "Travel 2" when a
   "Travel" folder is already there) and placed next to the open library (in its parent folder); both can be
-  changed (Choose… picks the folder). The app creates and opens it as File → New Library… does (the folder
+  changed (Choose… picks the folder). The app creates and opens it as File → New Catalog… does (the folder
   must be new or empty; it is refused while another import runs), then imports the catalog into it. The library
-  left behind stays in File → Open Recent Library.
+  left behind stays in File → Open Recent Catalog.
 - **Cancel** does nothing.
 
 The window opens on *Merge* when the open library has no photos (there is nothing to merge with) and on *Create a

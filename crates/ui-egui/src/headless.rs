@@ -4166,7 +4166,7 @@ mod tests {
     }
 
     /// File → Import from Folder… on a folder that was browsed in Local offers its photos, adding
-    /// them in place (they aren't "In library" yet), and confirming brings them into the library.
+    /// them in place (they aren't "In catalog" yet), and confirming brings them into the library.
     #[test]
     fn import_from_folder_offers_the_photos_browsed_in_local() {
         let mut h = demo([1300.0, 900.0]);
@@ -4531,7 +4531,8 @@ mod tests {
         exec(&mut h, "develop.set", json!({"values": {"light.exposure": 1.0, "color.vibrance": 30}}));
         exec(&mut h, "develop.copy", json!({"groups": ["light", "color"]}));
         exec(&mut h, "library.select", json!({"ids": [ids[1]]}));
-        h.request("ui.key", json!({"key": "V", "cmd": true, "shift": true}), t);
+        // (⇧⌘V pastes at once in the Classic set; the dialog is Paste Selected Settings…)
+        exec(&mut h, "dialog.pasteSettings", json!({}));
         h.settle(SETTLE);
         let Some(crate::state::Dialog::PasteSettings { groups }) = &h.app.ui.dialog else { panic!("dialog not open: {:?}", h.app.ui.dialog) };
         assert_eq!(lcc_develop::SettingsPick::from_ids(groups), lcc_develop::SettingsPick::from_ids(&["light", "color"]));

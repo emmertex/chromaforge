@@ -535,7 +535,7 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
                     if task.cancel.load(Ordering::Relaxed) {
                         json!({"cancelled": true})
                     } else {
-                        json!({"error": "Lightroom import belongs to a different open library"})
+                        json!({"error": "Lightroom import belongs to a different open catalog"})
                     },
                 );
                 return;
@@ -754,7 +754,7 @@ mod tests {
         h.step();
         h.step();
         let text = h.painted_text().join(" ");
-        assert!(text.contains("Destination library"), "{text}");
+        assert!(text.contains("Destination catalog"), "{text}");
         assert!(text.contains("C:/Pictures/Photo Library"), "{text}");
         assert!(text.contains("1 originals are missing"), "{text}");
         assert!(text.contains("Show in Library"), "{text}");

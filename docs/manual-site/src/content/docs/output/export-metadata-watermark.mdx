@@ -1,0 +1,25 @@
+---
+title: Metadata and watermark
+description: What travels with the file and the watermark options.
+sidebar:
+  order: 5
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## Metadata
+- **All**, **No camera**, **Copyright**, **Copyright & Contact**, **None**.
+- **Remove location info** strips GPS. An original copied byte for byte is refused when it embeds GPS, with JPEG or TIFF offered instead.
+
+## Watermarking
+- **Watermark** checkbox with a live preview on the photo.
+- **Style**: **Text** or **Graphic** (an image file).
+- **Text direction**: **Horizontal text** or **Vertical text** (columns run down, a newline starts the next column to the left; built for Japanese).
+- **Position**: nine anchors; **Rotate** 0°, 90°, 180°, 270°.
+- **Size** (% of short edge), **Opacity**, **Horizontal / Vertical inset**, **Shadow**.
+- 🟡 Complex scripts: Thai mark positioning is incomplete and Arabic is not supported in the watermark. Japanese and Chinese need the bundled CJK fonts.
+- Vertical text keeps Latin upright; no rotated runs, tate-chu-yoko or ruby.
+
+<Shot name="export-watermark" alt="Watermarking section with text options" menu="☰ ▸ Shortcuts ▸ Export…" />

@@ -205,7 +205,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         "catalog.new" => new_catalog(app, p),
         "catalog.open" => match str_of(p, "path") {
             Some(path) => open_catalog(app, path, p),
-            None => match pick_folder(app, id, p, "path", "Open Library") {
+            None => match pick_folder(app, id, p, "path", "Open Catalog") {
                 Ok(Some(path)) => open_catalog(app, &path, p),
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(e),
@@ -244,7 +244,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
             let scope = if app.session.selection.ids.len() > 1 { "selected" } else { "all" };
             let parent = app.session.catalog_dir().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
             app.catalog_ui.dialog =
-                Some(CatalogDialog::ExportCatalog { parent, name: "Exported Library".into(), scope: scope.into(), originals: false, previews: true });
+                Some(CatalogDialog::ExportCatalog { parent, name: "Exported Catalog".into(), scope: scope.into(), originals: false, previews: true });
             Ok(Value::Null)
         }
         // a library in the catalog format of this app's earlier name (`crate::legacy`)
@@ -255,7 +255,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
                 app.catalog_ui.dialog = Some(CatalogDialog::ImportCatalog { path: path.into(), plan, rule: "replaceSettingsAndMetadata".into() });
                 Ok(Value::Null)
             }
-            None => match pick_folder(app, id, p, "path", "Import from Another Library") {
+            None => match pick_folder(app, id, p, "path", "Import from Another Catalog") {
                 Ok(Some(path)) => run(app, id, &json!({"path": path}))?,
                 Ok(None) => Ok(Value::Null),
                 Err(e) => Err(e),
@@ -306,7 +306,7 @@ fn new_catalog(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 .map(str::to_string)
                 .or_else(|| app.session.catalog_dir().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            app.catalog_ui.dialog = Some(CatalogDialog::NewCatalog { parent, name: str_of(p, "name").unwrap_or("New Library").into() });
+            app.catalog_ui.dialog = Some(CatalogDialog::NewCatalog { parent, name: str_of(p, "name").unwrap_or("New Catalog").into() });
             Ok(Value::Null)
         }
     }
@@ -354,10 +354,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
     let title = match &dlg {
         CatalogDialog::Welcome { .. } => "Welcome to {app}",
-        CatalogDialog::NewCatalog { .. } => "New Library",
-        CatalogDialog::Settings { .. } => "Library Settings",
-        CatalogDialog::ExportCatalog { .. } => "Export as Library",
-        CatalogDialog::ImportCatalog { .. } => "Import from Another Library",
+        CatalogDialog::NewCatalog { .. } => "New Catalog",
+        CatalogDialog::Settings { .. } => "Catalog Settings",
+        CatalogDialog::ExportCatalog { .. } => "Export as Catalog",
+        CatalogDialog::ImportCatalog { .. } => "Import from Another Catalog",
         CatalogDialog::XmpConflict { command, .. } if command == "photo.readMetadataFromFile" => "Read Metadata from File",
         CatalogDialog::XmpConflict { .. } => "Save Metadata to File",
     };
@@ -387,7 +387,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     welcome_ui(app, ui, &t, parent, name, demo, updates, foreign, &mut action);
                 }
                 CatalogDialog::NewCatalog { parent, name } => {
-                    ui.label(dim("A library is a folder: its photos' records, settings and history. The photos themselves stay where they are."));
+                    ui.label(dim("A catalog is a folder: its photos' records, settings and history. The photos themselves stay where they are."));
                     text_row(ui, "Name", name, "field:catalogName");
                     folder_row(app, ui, "Location", parent, "field:catalogParent", "button:catalogParent");
                     if buttons(ui, "Create", "button:catalogCreate", &mut close) {
@@ -405,11 +405,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     });
                     text_row(ui, "Name", name, "field:exportCatalogName");
                     folder_row(app, ui, "Location", parent, "field:exportCatalogParent", "button:exportCatalogParent");
-                    let r = ui.checkbox(originals, crate::i18n::tr("Export the original files (copied into the new library's Originals folder)"));
+                    let r = ui.checkbox(originals, crate::i18n::tr("Export the original files (copied into the new catalog's Originals folder)"));
                     crate::widgets::register(ui.ctx(), "check:exportCatalogOriginals", r.rect);
                     let r = ui.checkbox(previews, crate::i18n::tr("Include available previews"));
                     crate::widgets::register(ui.ctx(), "check:exportCatalogPreviews", r.rect);
-                    if buttons(ui, "Export Library", "button:exportCatalog", &mut close) {
+                    if buttons(ui, "Export Catalog", "button:exportCatalog", &mut close) {
                         action = Some((
                             "catalog.export".into(),
                             json!({"parent": parent, "name": name, "scope": scope, "originals": originals, "previews": previews}),
@@ -436,9 +436,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 CatalogDialog::XmpConflict { command, ids, affected } => {
                     let read = command == "photo.readMetadataFromFile";
                     ui.label(crate::i18n::tr(if read {
-                            "Photos changed in the library since their metadata file was last read or written: reading replaces those changes with what the file says."
+                            "Photos changed in the catalog since their metadata file was last read or written: reading replaces those changes with what the file says."
                         } else {
-                            "Photos whose metadata file another program changed: saving replaces those changes with the library's."
+                            "Photos whose metadata file another program changed: saving replaces those changes with the catalog's."
                         }));
                     ui.label(egui::RichText::new(format!("{}: {affected}", crate::i18n::tr("Photos affected"))).strong());
                     if buttons(ui, if read { "Read" } else { "Overwrite" }, "button:xmpConflictConfirm", &mut close) {
@@ -506,7 +506,7 @@ fn welcome_ui(
     ui.set_width(460.0);
     let dim = |s: &str| egui::RichText::new(crate::i18n::tr(s)).color(t.text_dim);
     ui.label(dim(
-        "{app} keeps the records of your photos, their edits and history in a library. Create one to start, or open one you already have. Your photos stay where they are.",
+        "{app} keeps the records of your photos, their edits and history in a catalog. Create one to start, or open one you already have. Your photos stay where they are.",
     ));
     // Open Library…'s folder dialog is up: everything here waits for it
     if picking_catalog(app) {
@@ -514,7 +514,7 @@ fn welcome_ui(
         ui.disable();
     }
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(crate::i18n::tr("Create a new library")).strong());
+    ui.label(egui::RichText::new(crate::i18n::tr("Create a new catalog")).strong());
     ui.horizontal(|ui| {
         ui.add_sized([80.0, 20.0], egui::Label::new(crate::i18n::tr("Name")));
         crate::text_field::TextField::singleline("field:welcomeName", name).width(360.0).show(ui);
@@ -535,13 +535,13 @@ fn welcome_ui(
     let r = ui.checkbox(updates, crate::i18n::tr("Check for updates when the app starts"));
     crate::widgets::register(ui.ctx(), "check:welcomeUpdates", r.rect);
     let ready = !name.trim().is_empty() && !parent.trim().is_empty();
-    let r = ui.add_enabled(ready, egui::Button::new(egui::RichText::new(crate::i18n::tr("Create Library")).strong()).min_size(egui::vec2(0.0, 26.0)));
+    let r = ui.add_enabled(ready, egui::Button::new(egui::RichText::new(crate::i18n::tr("Create Catalog")).strong()).min_size(egui::vec2(0.0, 26.0)));
     crate::widgets::register(ui.ctx(), "button:welcomeCreate", r.rect);
     if r.clicked() {
         *action = Some(("catalog.new".into(), json!({"parent": parent.trim(), "name": name.trim(), "demo": *demo, "checkAtStartup": *updates})));
     }
     ui.separator();
-    ui.label(egui::RichText::new(crate::i18n::tr("Open an existing library")).strong());
+    ui.label(egui::RichText::new(crate::i18n::tr("Open an existing catalog")).strong());
     // this app's libraries only: another app's never open here
     let recent: Vec<PathBuf> = recent_existing(app)
         .into_iter()
@@ -556,14 +556,14 @@ fn welcome_ui(
         }
     }
     if !foreign.is_empty() {
-        ui.label(dim("A library of another app was found here. {app} can't open its catalog format, and leaves it untouched:"));
+        ui.label(dim("A catalog of another app was found here. {app} can't open its format, and leaves it untouched:"));
         for f in foreign {
             ui.label(egui::RichText::new(f.as_str()).color(t.text_label));
         }
     }
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        let r = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr("Open Library…")));
+        let r = ui.add_enabled(app.services.pick_folder.is_some(), egui::Button::new(crate::i18n::tr("Open Catalog…")));
         crate::widgets::register(ui.ctx(), "button:welcomeOpen", r.rect);
         if r.clicked() {
             *action = Some(("catalog.open".into(), json!({"checkAtStartup": *updates})));
@@ -578,8 +578,8 @@ fn welcome_ui(
 
 fn done_message(cmd: &str, v: &Value) -> Option<String> {
     Some(match cmd {
-        "catalog.export" => format!("{}: {}", crate::i18n::tr("Photos exported as a library"), v["photos"]),
-        "catalog.import" if v["imported"] == true => crate::i18n::tr("Imported from the other library").to_string(),
+        "catalog.export" => format!("{}: {}", crate::i18n::tr("Photos exported as a catalog"), v["photos"]),
+        "catalog.import" if v["imported"] == true => crate::i18n::tr("Imported from the other catalog").to_string(),
         "catalog.import" => crate::i18n::tr("Nothing to import").to_string(),
         // Back Up, Test Integrity and Optimise say how they went wherever they run from (`LccApp::run_typed`)
         _ => return None,
@@ -656,13 +656,13 @@ fn combo(ui: &mut egui::Ui, id: &str, label: &str, value: &mut Value, options: &
 
 fn settings_ui(app: &mut LccApp, ui: &mut egui::Ui, s: &mut Value, action: &mut Option<(String, Value)>, close: &mut bool) {
     ui.label(egui::RichText::new(crate::i18n::tr("Backup")).strong());
-    combo(ui, "catalogBackup", "Back up library", &mut s["backup"], SCHEDULES);
+    combo(ui, "catalogBackup", "Back up catalog", &mut s["backup"], SCHEDULES);
     let mut dir = s["backupDir"].as_str().unwrap_or("").to_string();
     folder_row(app, ui, "Backup folder", &mut dir, "field:catalogBackupDir", "button:catalogBackupDir");
     s["backupDir"] = json!(dir);
     for (key, label, widget) in [
         ("testIntegrity", "Test integrity before backing up", "check:catalogIntegrity"),
-        ("optimize", "Optimise library after backing up", "check:catalogOptimize"),
+        ("optimize", "Optimize catalog after backing up", "check:catalogOptimize"),
     ] {
         let mut b = s[key].as_bool().unwrap_or(false);
         let r = ui.checkbox(&mut b, crate::i18n::tr(label));
@@ -746,7 +746,7 @@ fn import_preview(ui: &mut egui::Ui, v: &Value, rule: &mut String, t: &crate::th
         });
     }
     let rules = [
-        ("keep", "Nothing (keep this library's version)"),
+        ("keep", "Nothing (keep this catalog's version)"),
         ("replaceSettings", "Develop settings only"),
         ("replaceMetadata", "Metadata only"),
         ("replaceSettingsAndMetadata", "Metadata and develop settings"),

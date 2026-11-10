@@ -533,7 +533,7 @@ pub(crate) fn instance(backends: wgpu::Backends) -> wgpu::Instance {
     desc.backend_options = crate::backend::backend_options();
     // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    wgpu::Instance::new(desc)
+    crate::new_instance(desc)
 }
 
 impl Gpu {
@@ -1479,7 +1479,7 @@ mod tests {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = backends;
         desc.backend_options = crate::backend::backend_options();
-        let instance = wgpu::Instance::new(desc);
+        let instance = crate::new_instance(desc);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         let info = adapter.get_info();
         if info.device_type == wgpu::DeviceType::Cpu {

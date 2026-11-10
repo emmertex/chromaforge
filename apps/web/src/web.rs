@@ -194,11 +194,11 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
                 })
                 .collect();
             let files = backup_files.clone();
-            notice("Backing up the library… (the download starts when it's ready)");
+            notice("Backing up the catalog… (the download starts when it's ready)");
             wasm_bindgen_futures::spawn_local(async move {
                 match safety::backup(files, b, names).await {
                     Ok((n, bytes)) => notice(format!(
-                        "Library backed up: {n} original{} ({:.1} MB). Keep the file somewhere safe.",
+                        "Catalog backed up: {n} original{} ({:.1} MB). Keep the file somewhere safe.",
                         if n == 1 { "" } else { "s" },
                         bytes / 1e6
                     )),
@@ -357,7 +357,7 @@ async fn boot(opts: Options) -> Boot {
             }
             Ok(None) => {}
             // not knowing which library is in use, any library opened could be the wrong one
-            Err(e) => load_error = Some(format!("couldn't read which library is in use from browser storage ({e})")),
+            Err(e) => load_error = Some(format!("couldn't read which catalog is in use from browser storage ({e})")),
         }
         if load_error.is_none() {
             let mut reads = Vec::new();
@@ -465,7 +465,7 @@ impl WebApp {
             ),
             Err(e) => {
                 // never a silent demo session (issue #100): an empty one, and the window says why
-                log::error!("opening the library failed: {e}");
+                log::error!("opening the catalog failed: {e}");
                 session = Session::new();
                 originals.install(&mut session);
                 problem = Some(lcc_ui_egui::panels::library_problem::LibraryProblem {

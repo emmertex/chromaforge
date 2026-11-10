@@ -1,0 +1,37 @@
+---
+title: Super resolution
+description: AI Super Resolution and AI Sharpen with an installed upscaler, plus the classical methods.
+sidebar:
+  order: 5
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="ai-enhance" alt="Enhance Preview dialog: Raw Details, Super Resolution, and a note that AI Super Resolution and AI Sharpen need an upscaler" />
+
+- **Where**: Photo ▸ **Enhance…** (Ctrl+Alt+I, Cmd+Option+I on macOS). The dialog notes when no upscaler is installed and links **Open AI Models**.
+- **Classical** (no model): **Raw Details** and **Super Resolution** (2x per side) write a new linear DNG.
+- **AI Super Resolution**: twice the pixels across (four times the pixels); 4x across is possible by command. Filled in by a neural upscaler.
+- **AI Sharpen**: same upscaler, answer averaged back to the photo's own size: finer detail and slightly sharper edges.
+- **Output**: a new 16-bit TIFF next to the photo (`-Enhanced-SR`), imported and stacked with it (**Create Stack**). Nothing is replaced and the photo's edits are untouched.
+
+<NeedsImage what="Before and after crop of an AI Super Resolution result, 2x, at 100%" />
+
+## Needs
+
+- **An upscaler model.** None is bundled. Real-ESRGAN General v3 (about 5 MB, BSD-3-Clause) can be offered for download by builds that enable it; otherwise install the file from disk. It uses the same model folder and install steps as [AI Denoise](../denoise/) models. See [Models and set-up](../models/).
+- The photo is rendered as an export would (all edits, crop, masks, denoise) to 16-bit sRGB first. Display P3 and Adobe RGB are also offered; ProPhoto RGB and Rec. 2020 are refused.
+
+## Limits
+
+- Result at most 110 megapixels: 2x for photos up to about 27 MP, 4x up to about 6.8 MP.
+- Slow: about 11 s for a 1200 by 900 picture to 2x on an Apple M2 GPU; about four minutes for 24 MP. A progress row in the activity stack cancels it.
+- The result has the look baked in and is a TIFF, not an editable raw (unlike Lightroom's Super Resolution). Edit it like any photo.
+- Restores slight softness, noise and compression artefacts. Does not undo motion blur or heavy misfocus.
+- Partial: raw-preserving AI enhance is a later step.
+
+<Aside type="note" title="Modern layout">
+**☰ ▸ Photo ▸ Enhance…**
+</Aside>

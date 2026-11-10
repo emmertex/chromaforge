@@ -361,7 +361,7 @@ fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, entry: &PluginFi
     });
     for id in &ids {
         if s.catalog.photo(*id).is_none() {
-            return Err(bad(c, format!("photo {} is not in the library", id.0)));
+            return Err(bad(c, format!("photo {} is not in the catalog", id.0)));
         }
     }
     // the active photo's entry is the one asked for; the others' is looked up by plug-in
@@ -376,7 +376,7 @@ fn frames(s: &mut Session, p: &Value, c: &str, active: PhotoId, entry: &PluginFi
     ids.retain(|x| s.catalog.photo(*x).is_some());
     let mut out: Vec<Frame> = Vec::with_capacity(ids.len());
     for id in ids {
-        let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, format!("photo {} is not in the library", id.0)))?;
+        let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, format!("photo {} is not in the catalog", id.0)))?;
         let settings = s.develop_of(id).map(|d| (*d).clone()).unwrap_or_default();
         let found = if id == active {
             settings.plugin_filters.iter().find(|f| f.uid == entry.uid)

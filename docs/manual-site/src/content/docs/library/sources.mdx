@@ -1,0 +1,29 @@
+---
+title: Sources and folders
+description: Catalog, dates, folders and Local in the left panel.
+sidebar:
+  order: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<Shot name="lib-grid" alt="Left panel: Catalog, By Date, Folders, Collections" />
+
+- **Catalog**: **All Photographs**, **Quick Collection**, **Previous Import**, **Recently Added**, **Picks**, **Recently Deleted**; **Missing** and **Previous Export** appear when they apply. Counts show beside each.
+- **By Date**: year, month, day tree from capture time.
+- **Folders**: the folders your photos were imported from, with counts including subfolders. Each disk is a row of its own.
+  - Right-click: **Rename Folder…**, **Move Folder To…** (on disk; photos relinked; undoable), **Create Folder**, **Show in File Manager**, **Synchronize**, **Remove**, a colour **Label**.
+  - **Show photos from subfolders** includes subfolder photos.
+- **Local**: browse any folder on disk without importing; see [Import](../import/).
+- **Quick Collection** (`B` toggles a photo in): **Cmd/Ctrl+B** shows it, **Cmd/Ctrl+Alt+B** clears it, **Cmd/Ctrl+Shift+B** saves it as a collection.
+- **Move to Folder**, **Show in file manager**, **Delete** (to Recently Deleted), **Restore**, **Delete Permanently**, **Delete from Disk**.
+- **Delete Rejected** removes every rejected photo; **Hide Rejected Photos** just filters them out.
+- Drag the left-panel sections to reorder; show or hide them with **View ▸ Show Sidebar Section**.
+
+<Aside type="note" title="Modern layout">
+  Sources and folders: the ☰ menu ▸ **Library** (and **Window** for the left panel). Delete, Restore, Locate Missing File: **Photo** menu.
+</Aside>

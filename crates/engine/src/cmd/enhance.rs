@@ -12,7 +12,7 @@ fn can_enhance(s: &Session) -> std::result::Result<(), String> {
         return Err("Enhance needs access to the photo files".into());
     }
     // the targets are checked when run (an explicit `ids` parameter may name them)
-    if s.catalog.photos().next().is_none() { Err("the library has no photos".into()) } else { Ok(()) }
+    if s.catalog.photos().next().is_none() { Err("the catalog has no photos".into()) } else { Ok(()) }
 }
 
 /// `enhance.superResolution`: the classical method, or the installed upscaler (`method`, `scale`).

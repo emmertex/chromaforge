@@ -19,12 +19,13 @@ fn app_in(dir: &std::path::Path) -> LccApp {
     LccApp::new(s, Services::default())
 }
 
-/// The first item of File ▸ Libraries: the recent library listed first.
+/// The first item of File ▸ Open Recent: the recent library listed first.
 fn first_in_file_libraries(app: &LccApp) -> Option<String> {
     use crate::menubar::MenuNode;
     let bar = crate::menubar::menu_bar(app);
     let file = &bar.iter().find(|(t, _)| t == "File")?.1;
-    let Some(MenuNode::Submenu { children, .. }) = file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Libraries")) else {
+    let Some(MenuNode::Submenu { children, .. }) = file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Open Recent"))
+    else {
         return None;
     };
     children.iter().find_map(|n| match n {
@@ -203,15 +204,18 @@ fn choose_library_opens_the_launch_list() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The command ids in File ▸ Libraries.
+/// The command ids of File's catalog items (Open Recent's included).
 fn file_libraries_ids(app: &LccApp) -> Vec<String> {
     use crate::menubar::MenuNode;
     let bar = crate::menubar::menu_bar(app);
     let file = &bar.iter().find(|(t, _)| t == "File").unwrap().1;
-    let Some(MenuNode::Submenu { children, .. }) = file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Libraries")) else {
-        panic!("no Libraries submenu in {file:?}");
-    };
-    children.iter().filter_map(|n| if let MenuNode::Item { id, .. } = n { Some(id.clone()) } else { None }).collect()
+    // (File's catalog group: its items, and Open Recent's)
+    let recent = file.iter().find_map(|n| match n {
+        MenuNode::Submenu { label, children } if label == "Open Recent" => Some(children.clone()),
+        _ => None,
+    });
+    let Some(recent) = recent else { panic!("no Open Recent submenu in {file:?}") };
+    file.iter().chain(&recent).filter_map(|n| if let MenuNode::Item { id, .. } = n { Some(id.clone()) } else { None }).collect()
 }
 
 /// Issue #871 (AC-5): the desktop's File ▸ Libraries backs the library up (into its backup folder)

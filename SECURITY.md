@@ -2,13 +2,19 @@
 
 The app reads camera raw files, image formats, metadata and sidecars, imports other photo catalogs, downloads and runs machine-learning models, and exposes CLI, JSON control, and MCP automation. Treat files, paths, metadata, catalogs, model files, automation requests, and command parameters as potentially malicious.
 
+## Supported versions
+
+Only the latest release and `main` receive security fixes. Older releases and tags are not supported; please update before reporting.
+
 ## Reporting a vulnerability
 
+**Do not open a public issue for a security vulnerability.**
+
+Use GitHub's **private vulnerability reporting** for this repository (*Security → Report a vulnerability*) — it reaches the maintainers directly and privately. If that is unavailable, contact the repository maintainers through the repository owner/maintainer channels already listed in the project, provide only a minimal non-exploitable summary in public, and ask for an appropriate private transfer method before sharing sensitive details.
+
+We aim to acknowledge a report within a week. This is a volunteer-maintained project, so complex fixes can take longer; we will keep you informed, practise coordinated disclosure (the fix lands first, the advisory follows), and credit you in the fix unless you prefer to stay anonymous.
+
 Please give the repository maintainers a reasonable opportunity to investigate and coordinate a fix before publishing exploitable details, proof-of-concept code, or weaponized files.
-
-This repository does not currently document a dedicated private security email or private reporting channel. Contact the repository maintainers through the repository owner/maintainer channels already listed in the project, provide only a minimal non-exploitable summary in public, and ask for an appropriate private transfer method before sharing sensitive details. Do not open a public issue containing a working exploit, secret, sensitive crash dump, or malicious attachment.
-
-If no private channel can be established, withhold weaponized material and report the smallest safe description that allows maintainers to make contact.
 
 ## What to include
 

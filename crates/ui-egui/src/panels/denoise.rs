@@ -444,7 +444,7 @@ fn work_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
         ui,
         t,
         &tr_format!(
-            "{} · {}. Kept in the library's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.",
+            "{} · {}. Kept in the catalog's “denoise” folder; the oldest ones that no photo uses go first when the limit is reached.",
             count(files, "cached picture", "cached pictures"),
             mb(Some(bytes))
         ),

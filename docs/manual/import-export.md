@@ -17,7 +17,7 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
   imported fresh.
 
 Other sources: File → Import Lightroom Catalog… ([migration guide](migrating-from-lightroom.md)), File → Import
-from Immich… ([immich.md](../immich.md)), File → More Imports → Import from Another Library… ([catalogs.md](catalogs.md)), and
+from Immich… ([immich.md](../immich.md)), File → More Imports → Import from Another Catalog… ([catalogs.md](catalogs.md)), and
 tethered capture ([tethering.md](tethering.md)). File → Import Profiles & Presets… reads presets (including
 Lightroom `.xmp` presets); Import Keywords… reads keyword lists.
 
