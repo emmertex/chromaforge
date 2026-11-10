@@ -606,7 +606,7 @@ const WEB_VIEW: &[&str] = &["panel.toolbar", "soon.webGuides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
-    ("File", "Auto Import", &["soon.autoImportEnable", "soon.autoImportSettings"]),
+    ("File", "Auto Import", &["app.autoImportToggle", r#"app.settings{"section":"autoImport"}=Auto Import Settings…"#]),
     (
         "File",
         "Library Filters",
@@ -747,15 +747,6 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
     soon("soon.renameCatalog", "Rename Catalog…", None, 'S', false, "Rename the open catalog's folder and file, then reopen it."),
-    soon("soon.autoImportEnable", "Enable Auto Import", None, 'M', false, "Watch a folder and import new files as they arrive."),
-    soon(
-        "soon.autoImportSettings",
-        "Auto Import Settings…",
-        None,
-        'M',
-        false,
-        "Choose the watched folder, destination, naming and develop settings for Auto Import.",
-    ),
     soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
     soon(
         "soon.quickCollectionTarget",

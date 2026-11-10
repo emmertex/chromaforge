@@ -371,6 +371,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.exportCurvePresets", "Export Point Curve Presets…", None, ""),
     ("dialog.watermark", "Edit Watermarks…", None, "Edit"),
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
+    ("app.autoImportToggle", "Enable Auto Import", None, "File>Auto Import"),
     ("app.newLibrary", "New Catalog…", None, "File>Libraries"),
     ("app.openLibrary", "Open Catalog…", Some("Cmd+O"), "File>Libraries"),
     // libraries (crate::catalog_ui; the ids keep their older catalog name)
@@ -1205,6 +1206,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.dialog = Some(Dialog::Settings { tab: tab.into() });
             app.ui.settings_section = section.map(str::to_string);
             Ok(json!({"tab": tab, "section": section}))
+        }
+        "app.autoImportToggle" => {
+            // {on?}: switch watching the folder on or off (kept when off); with no folder yet, Settings opens at it
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(app.session.import_defaults.auto_active_folder().is_none());
+            if on && app.session.import_defaults.auto_folder.is_none() {
+                return run_ui_command(app, "app.settings", &json!({"section": "autoImport"}));
+            }
+            app.session.execute("library.autoImport", &json!({"enabled": on})).map_err(|e| e.to_string())
         }
         "app.openLibrary" => crate::panels::settings::open_library(app, p),
         "app.newLibrary" => crate::panels::settings::new_library(app, p),

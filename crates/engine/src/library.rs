@@ -1241,6 +1241,7 @@ impl Session {
                 if let serde_json::Value::Object(im) = &mut import {
                     im.insert("autoFolder".into(), serde_json::to_value(&self.import_defaults.auto_folder).unwrap_or_default());
                     im.insert("autoCopy".into(), serde_json::Value::Bool(self.import_defaults.auto_copy));
+                    im.insert("autoPaused".into(), serde_json::Value::Bool(self.import_defaults.auto_paused));
                     im.insert("autoAlbum".into(), serde_json::to_value(&self.import_defaults.auto_album).unwrap_or_default());
                 }
                 map.insert("import".into(), import);

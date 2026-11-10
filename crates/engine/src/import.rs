@@ -392,6 +392,11 @@ pub struct ImportDefaults {
     pub auto_folder: Option<String>,
     pub auto_copy: bool,
     pub auto_album: Option<String>,
+    /// Auto import is switched off (File ▸ Auto Import ▸ Enable Auto Import unticked) while the watched
+    /// folder stays set. Stored inverted so settings written before the switch (folder set, no flag)
+    /// keep watching.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_paused: bool,
     /// Open the import review when a camera or memory card is connected.
     pub show_on_card: bool,
     /// New photos start with Constrain Crop off (Settings ▸ Import ▸ "Constrain crop by default"
@@ -410,6 +415,13 @@ pub struct ImportDefaults {
     /// After an import, Remove Dust runs on the new raw photos in the background (`spot.findDust`; off by default).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub remove_dust: bool,
+}
+
+impl ImportDefaults {
+    /// The folder Auto Import watches right now: set and not switched off.
+    pub fn auto_active_folder(&self) -> Option<&String> {
+        self.auto_folder.as_ref().filter(|_| !self.auto_paused)
+    }
 }
 
 impl ImportDefaults {

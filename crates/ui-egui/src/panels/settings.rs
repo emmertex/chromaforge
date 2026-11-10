@@ -23,7 +23,7 @@ use crate::theme::Tokens;
 use crate::widgets::register;
 
 /// Sections `app.settings {section}` can open, with their tab.
-pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import")];
+pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import")];
 
 /// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
 /// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
@@ -1109,8 +1109,19 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if check(ui, "settings.importOnCard", &mut on_card, "Show the import review when a camera or card is connected") {
             let _ = app.run("library.preferences", json!({"import": {"showOnCard": on_card}}));
         }
-        heading(ui, t, crate::i18n::tr("Auto Import"));
+        let r = ui.scope(|ui| heading(ui, t, crate::i18n::tr("Auto Import"))).response;
+        register(ui.ctx(), "section:autoImport", r.rect);
+        if app.ui.settings_section.as_deref() == Some("autoImport") {
+            r.scroll_to_me(Some(egui::Align::TOP));
+            app.ui.settings_section = None;
+        }
         hint(ui, t, crate::i18n::tr("Photos that arrive in this folder (tethering, a scanner, a sync app) are added as soon as they're complete."));
+        if d.auto_folder.is_some() {
+            let mut on = !d.auto_paused;
+            if check(ui, "settings.autoImportEnabled", &mut on, "Enable Auto Import") {
+                let _ = app.run("library.autoImport", json!({"enabled": on}));
+            }
+        }
         row(ui, t, crate::i18n::tr("Watched folder"), |ui| {
             match &d.auto_folder {
                 Some(folder) => path_label(

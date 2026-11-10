@@ -396,6 +396,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.navigator" => Some(u.navigator),
         "view.layoutImage" => Some(u.layout_image.show && !u.layout_image.path.trim().is_empty()),
         "library.holdView" => Some(app.session.hold_view),
+        "app.autoImportToggle" => Some(app.session.import_defaults.auto_active_folder().is_some()),
         "view.fullScreenPreview" => Some(u.fullscreen),
         "view.lightsOut" => Some(u.lights_out != crate::module::LightsOut::Off),
         "view.enterFullScreen" => Some(app.window_is_fullscreen),

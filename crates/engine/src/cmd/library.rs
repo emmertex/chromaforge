@@ -2159,7 +2159,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Import Settings",
             [],
             None,
-            "{folder?: path | null (off), copy?: bool (copy into the library's Originals, else add in place), album?: name | null} — a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
+            "{folder?: path | null (clear), enabled?: bool (switch watching on or off, keeping the folder; choosing a folder switches it on), copy?: bool (copy into the library's Originals, else add in place), album?: name | null} — a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
             always,
             |s, p| {
                 if let Some(f) = p.get("folder") {
@@ -2168,6 +2168,12 @@ pub fn specs() -> Vec<CommandSpec> {
                         Some(f) => return Err(bad("library.autoImport", format!("`{f}` is not a folder"))),
                         None => None,
                     };
+                    if s.import_defaults.auto_folder.is_some() {
+                        s.import_defaults.auto_paused = false;
+                    }
+                }
+                if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
+                    s.import_defaults.auto_paused = !on;
                 }
                 if let Some(c) = p.get("copy").and_then(Value::as_bool) {
                     s.import_defaults.auto_copy = c;
@@ -2177,7 +2183,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 s.save_prefs()?;
                 let d = &s.import_defaults;
-                Ok(json!({"folder": d.auto_folder, "copy": d.auto_copy, "album": d.auto_album}))
+                Ok(json!({"folder": d.auto_folder, "enabled": d.auto_folder.is_some() && !d.auto_paused, "copy": d.auto_copy, "album": d.auto_album}))
             }
         ),
         cmd!(
@@ -2188,7 +2194,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{listing?: [[path, size]] (the folder as listed by the caller, e.g. on a worker thread), start?: bool (false: return the `library.import` params as `import` instead of importing)} — add the watched folder's new photos (files the library doesn't have yet; partial / still-copying files wait for the next scan) → {imported, folder, warnings?: [{path, code, profile?, mode?, fields?}], import?}",
             always,
             |s, p| {
-                let Some(folder) = s.import_defaults.auto_folder.clone() else { return Ok(json!({"imported": [], "folder": null})) };
+                let Some(folder) = s.import_defaults.auto_active_folder().cloned() else { return Ok(json!({"imported": [], "folder": null})) };
                 // only files that stopped growing: a file still being written is left for later
                 let known: std::collections::HashSet<String> = s
                     .catalog

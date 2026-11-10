@@ -21,13 +21,6 @@ Generated from the menu tables; don't edit by hand.
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
 
-## Every module ▸ File ▸ Auto Import
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
-| Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
-
 ## Every module ▸ File ▸ Library Filters
 
 | Item | What it does | Size | Kind | Slot |
