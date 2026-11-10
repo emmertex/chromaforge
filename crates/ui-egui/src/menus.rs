@@ -178,6 +178,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
     ("view.shotInfo", "Shot Info", Some("Shift+I"), "View>Loupe Info"),
+    ("view.lockZoomPosition", "Lock Zoom Position", Some("Cmd+Shift+="), "View>Zoom"),
+    ("view.scrollByRow", "Scroll By Row", None, "View>Grid View Style"),
+    ("view.mirrorImage", "Enable Mirror Image Mode", None, "View"),
     ("view.viewOptions", "View Options…", None, "View>Loupe Info"),
     ("view.chooseLayoutImage", "Choose Layout Image…", None, "View"),
     ("view.layoutImage", "Layout Image", Some("Cmd+Alt+O"), "View"),
@@ -390,6 +393,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.exportCurvePresets", "Export Point Curve Presets…", None, ""),
     ("dialog.watermark", "Edit Watermarks…", None, "Edit"),
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
+    ("app.autoImportToggle", "Enable Auto Import", None, "File>Auto Import"),
     ("app.newLibrary", "New Catalog…", None, "File>Libraries"),
     ("app.openLibrary", "Open Catalog…", Some("Cmd+O"), "File>Libraries"),
     ("app.renameLibrary", "Rename Catalog…", None, "File>Libraries"),
@@ -1261,6 +1265,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.settings_section = section.map(str::to_string);
             Ok(json!({"tab": tab, "section": section}))
         }
+        "app.autoImportToggle" => {
+            // {on?}: switch watching the folder on or off (kept when off); with no folder yet, Settings opens at it
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(app.session.import_defaults.auto_active_folder().is_none());
+            if on && app.session.import_defaults.auto_folder.is_none() {
+                return run_ui_command(app, "app.settings", &json!({"section": "autoImport"}));
+            }
+            app.session.execute("library.autoImport", &json!({"enabled": on})).map_err(|e| e.to_string())
+        }
         "app.openLibrary" => crate::panels::settings::open_library(app, p),
         "app.newLibrary" => crate::panels::settings::new_library(app, p),
         "app.renameLibrary" => crate::panels::settings::rename_library(app, p),
@@ -1281,6 +1293,16 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.filmstrip" => {
             app.ui.filmstrip = !app.ui.filmstrip;
             Ok(Value::Null)
+        }
+        "view.lockZoomPosition" | "view.scrollByRow" | "view.mirrorImage" => {
+            // {on?: bool} (toggles when omitted) → {on}: view-only switches (`crate::view_state`)
+            let flag = match id {
+                "view.lockZoomPosition" => &mut app.ui.settings.lock_zoom,
+                "view.scrollByRow" => &mut app.ui.settings.scroll_by_row,
+                _ => &mut app.ui.settings.mirror_image,
+            };
+            *flag = p.get("on").and_then(Value::as_bool).unwrap_or(!*flag);
+            Ok(json!({"on": *flag}))
         }
         "view.shotInfo" => {
             // {on?: bool} (toggles when omitted): the line of shot info under the loupe's photo

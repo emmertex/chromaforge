@@ -20,13 +20,6 @@ Generated from the menu tables; don't edit by hand.
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
 
-## Every module ▸ File ▸ Auto Import
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
-| Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
-
 ## Every module ▸ Edit
 
 | Item | What it does | Size | Kind | Slot |
@@ -77,9 +70,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Toggle Loupe View | Switch between the grid and the large view of the selected photo. | S | wire-up | `soon.toggleLoupeView` |
-| Lock Zoom Position (Ctrl+Shift+=) | Zoom every photo to the same place while stepping through them. | S | feature | `soon.lockZoomPosition` |
-| Scroll By Row | The grid scrolls a whole row at a time. | S | feature | `soon.scrollByRow` |
-| Enable Mirror Image Mode | Show every photo flipped left to right (view only). | S | feature | `soon.mirrorImageMode` |
 
 ## Every module ▸ Window
 
