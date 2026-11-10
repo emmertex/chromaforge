@@ -655,6 +655,54 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "library.findPreviousProcess",
+            "Find Previous Process Photos",
+            ["Library"],
+            None,
+            "{}: filters the view to the photos that render with an older process version than this build's newest (the rule `processVersion < latest`; Clear Filters to go back) → {count, latest}",
+            always,
+            |s, _| {
+                let latest = lcc_develop::ProcessVersion::LATEST.0;
+                s.execute(
+                    "library.filter",
+                    &json!({"ruleSet": {"match": "all", "rules": [{"field": "processVersion", "op": "lt", "value": latest}]}}),
+                )?;
+                Ok(json!({"count": s.visible().len(), "latest": latest}))
+            }
+        ),
+        cmd!(
+            "library.refine",
+            "Refine Photos…",
+            ["Library"],
+            Some("Cmd+Alt+R"),
+            "{}: a culling pass over the photos in view: picks become unflagged, unflagged photos become rejected, rejected ones stay; one undo step → {changed, rejected, unflagged}",
+            always,
+            |s, _| {
+                let ids = s.visible_cloned();
+                let mut ops = Vec::new();
+                let (mut rejected, mut unflagged) = (0, 0);
+                for id in ids {
+                    match s.catalog.photo(id).map(|p| p.flag) {
+                        Some(Flag::Pick) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::None });
+                            unflagged += 1;
+                        }
+                        Some(Flag::None) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::Reject });
+                            rejected += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let changed = ops.len();
+                if changed > 0 {
+                    s.commit("Refine Photos", Op::Batch { ops })?;
+                    s.keep_active_in_view();
+                }
+                Ok(json!({"changed": changed, "rejected": rejected, "unflagged": unflagged}))
+            }
+        ),
+        cmd!(
             "library.showSubfolderPhotos",
             "Show Photos in Subfolders",
             [],

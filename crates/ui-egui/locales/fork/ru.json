@@ -1982,6 +1982,8 @@
   "Refine": "Уточнить",
   "Refine AI Mask Detail": "Уточнить детали ИИ-маски",
   "Refine Edges": "Уточнить края",
+  "Refine Photos": "Уточнить фотографии",
+  "Refine Photos unflags the picked photos in view and rejects the unflagged ones. Rejected photos stay as they are.": "Уточнение снимает отметку с выбранных фотографий в представлении и отклоняет фотографии без отметки. Отклонённые фотографии не меняются.",
   "Refine Photos…": "Уточнить фото…",
   "Refine Saturation": "Уточнить насыщенность",
   "Refining the mask's detail…": "Уточнение деталей маски…",
