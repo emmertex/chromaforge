@@ -1933,7 +1933,8 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
 /// The paper's name when it is one of Page Setup's, else its size in the ruler unit.
 fn paper_text(size: lcc_layout::Size, unit: Unit) -> String {
     let near = |a: f32, b: f32| (a - b).abs() < 0.6;
-    if let Some(p) = PAPERS.iter().find(|p| (near(p.size.w, size.w) && near(p.size.h, size.h)) || (near(p.size.w, size.h) && near(p.size.h, size.w))) {
+    if let Some(p) = PAPERS.iter().find(|p| (near(p.size.w, size.w) && near(p.size.h, size.h)) || (near(p.size.w, size.h) && near(p.size.h, size.w)))
+    {
         return crate::i18n::tr(p.label).to_string();
     }
     let per = unit.per_inch() as f32 / 72.0;

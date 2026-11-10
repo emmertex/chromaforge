@@ -78,7 +78,8 @@ pub fn paint(painter: &Painter, t: &Tokens, area: Rect, corner: Corner, offset: 
     let galleys: Vec<_> = rows.iter().map(|r| painter.layout_no_wrap(r.text.clone(), font.clone(), t.text)).collect();
     let lead = if rows.iter().any(|r| r.symbol.is_some()) { SYMBOL + GAP } else { 0.0 };
     let text_w = galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max);
-    let rows_h: f32 = galleys.iter().map(|g| g.size().y.max(if lead > 0.0 { SYMBOL } else { 0.0 })).sum::<f32>() + LINE_GAP * (galleys.len() - 1) as f32;
+    let rows_h: f32 =
+        galleys.iter().map(|g| g.size().y.max(if lead > 0.0 { SYMBOL } else { 0.0 })).sum::<f32>() + LINE_GAP * (galleys.len() - 1) as f32;
     let size = vec2(text_w + lead + 2.0 * PAD, rows_h + 2.0 * PAD);
     let r = place(area, corner, size, offset);
     let p = painter.with_clip_rect(area);
@@ -105,7 +106,10 @@ fn draw_symbol(p: &Painter, t: &Tokens, s: Symbol, r: Rect) {
             }
         }
         Symbol::Line { color } => {
-            p.line_segment([pos2(r.left() + 1.0, c.y), pos2(r.right() - 1.0, c.y)], Stroke::new(4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 170)));
+            p.line_segment(
+                [pos2(r.left() + 1.0, c.y), pos2(r.right() - 1.0, c.y)],
+                Stroke::new(4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 170)),
+            );
             p.line_segment([pos2(r.left() + 1.0, c.y), pos2(r.right() - 1.0, c.y)], Stroke::new(2.0, color));
         }
         Symbol::Ring { color } => {

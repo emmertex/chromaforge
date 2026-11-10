@@ -1987,7 +1987,7 @@ mod tests {
         assert!(on(&h, "book:header") && on(&h, "book:info"));
         // the strip says "Unsaved Book" until the book is saved, then its name; the pages are counted
         let b = &h.app.ui.book;
-        assert!(header_text(b).starts_with(&*crate::i18n::tr("Unsaved Book")), "{}", header_text(b));
+        assert!(header_text(b).starts_with(crate::i18n::tr("Unsaved Book")), "{}", header_text(b));
         assert!(header_text(b).ends_with(&b.book.pages.len().to_string()));
         let mut named = b.clone();
         named.creation = Some(7);
