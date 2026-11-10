@@ -48,8 +48,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
-| Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
-| Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
 | Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
 | Review Comments | Comments from shared web galleries. | L | feature | `soon.reviewComments` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
