@@ -222,7 +222,7 @@ pub fn browser(ui: &mut egui::Ui, app: &mut LccApp) {
     let b = ui.small_button(crate::i18n::tr("Save Template"));
     crate::widgets::register(ui.ctx(), "webTemplateSave", b.rect);
     if b.clicked() {
-        crate::panels::dialogs::prompt(app, &crate::i18n::tr("New Template"), "Template name", "", "webui.saveTemplate", json!({}), "name");
+        crate::panels::dialogs::prompt(app, crate::i18n::tr("New Template"), "Template name", "", "webui.saveTemplate", json!({}), "name");
     }
 }
 
