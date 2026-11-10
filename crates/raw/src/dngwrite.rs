@@ -463,6 +463,8 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
             ifd.set_image(ImageData::Tiles { tile_width: tile as u32, tile_height: tile as u32, tiles });
         }
         (RawData::U16(v), _) => {
+            // what Library ▸ Validate DNG Files checks the stored samples against (DNG spec: `RawImageDigest`)
+            ifd.set(crate::dngdigest::RAW_IMAGE_DIGEST, Value::Byte(crate::dngdigest::raw_image_digest(&raw.data).0.to_vec()));
             let maxv = v.iter().copied().max().unwrap_or(0);
             let bits = (16 - maxv.leading_zeros()).max(raw.bits.min(16)).max(2) as u8;
             ifd.set(

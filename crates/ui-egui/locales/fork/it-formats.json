@@ -27,6 +27,7 @@
   "Capture One import failed: {e}{warning}": "Importazione da Capture One non riuscita: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Analisi di Capture One non riuscita: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Target · grigi a circa {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Controllati {checked} di {total} file DNG: {intact} integri, {damaged} danneggiati, {unverifiable} non verificabili",
   "Collection imported: {n} photos found, {m} not in this catalog": "Raccolta importata: {n} foto trovate, {m} non in questo catalogo",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Costo: circa ${usd} per {} richieste, addebitato da {name} sul tuo account.",
   "Create Folder in “{name}”": "Crea cartella in “{name}”",

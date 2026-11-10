@@ -46,7 +46,6 @@ Generated from the menu tables; don't edit by hand.
 | Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
 | Review Comments | Comments from shared web galleries. | L | feature | `soon.reviewComments` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
-| Validate DNG Files | Check the DNGs' embedded checksums and list the damaged ones. | S | feature | `soon.validateDng` |
 | Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
 | Find Previous Process Photos | Show the photos edited with an older process version. | S | feature | `soon.findPreviousProcess` |
 
@@ -55,7 +54,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
-| Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People

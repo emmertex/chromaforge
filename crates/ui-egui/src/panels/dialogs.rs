@@ -260,6 +260,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::NewSmartAlbum { .. } => "Create Smart Collection",
         Dialog::AllMetadata { .. } => "All Metadata",
         Dialog::SystemInfo { .. } => "System Info",
+        Dialog::DngValidation { .. } => "Validate DNG Files",
         Dialog::DenoiseModel { .. } => "AI Denoise Model",
         Dialog::FaceModel { info, .. } if info["download"].is_string() => "Download Face Model",
         Dialog::FaceModel { .. } => "Add Face Model",
@@ -575,6 +576,21 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     for detail in details.iter() {
                         ui.add(egui::Label::new(detail).wrap().selectable(true));
+                    }
+                }
+                Dialog::DngValidation { summary, damaged, unverifiable } => {
+                    ui.label(summary.as_str());
+                    for (heading, lines) in [(crate::i18n::tr("Damaged files"), damaged), (crate::i18n::tr("Could not be verified"), unverifiable)] {
+                        if lines.is_empty() {
+                            continue;
+                        }
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(heading).color(t.text_dim));
+                        egui::ScrollArea::vertical().id_salt(heading).max_height(160.0).show(ui, |ui| {
+                            for line in lines.iter() {
+                                ui.add(egui::Label::new(line.as_str()).wrap().selectable(true));
+                            }
+                        });
                     }
                 }
                 Dialog::SystemInfo { rows } => {
@@ -2239,7 +2255,9 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
-        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => Ok(serde_json::Value::Null),
+        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::DngValidation { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => {
+            Ok(serde_json::Value::Null)
+        }
         Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
             let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity));
@@ -4073,6 +4091,7 @@ fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::ViewOptions
             | Dialog::Settings { .. }
             | Dialog::SystemInfo { .. }
+            | Dialog::DngValidation { .. }
             | Dialog::AllMetadata { .. }
             | Dialog::WhatsNew
             | Dialog::ManageEffects { .. }

@@ -153,6 +153,7 @@ impl Headless {
         if cancelled {
             return Err("cancelled".into());
         }
+        lcc_engine::export::mark_exported(&mut self.session, &files);
         // Single-photo exports also report path/width/height at the top level (back-compat).
         let mut out = files.first().cloned().unwrap_or_else(|| json!({}));
         if let Some(photos) = after.run(&files, false) {

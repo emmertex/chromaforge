@@ -36,6 +36,7 @@
   "Capture One import failed: {e}{warning}": "Capture One-იდან იმპორტი ვერ მოხერხდა: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Capture One-ის შემოწმება ვერ მოხერხდა: {e}{warning}",
   "Chart · greys about {cct:.0} K": "სამიზნე · ნაცრისფრები დაახლ. {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "შემოწმებულია {checked} / {total} DNG ფაილი: {intact} მთლიანი, {damaged} დაზიანებული, {unverifiable} გადაუმოწმებელი",
   "Collection imported: {n} photos found, {m} not in this catalog": "კოლექცია იმპორტირებულია: ნაპოვნია {n} ფოტო, {m} ამ კატალოგში არ არის",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "ფერთა სივრცე: Rec. 2020 {curve} (HDR AVIF)",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "ღირებულება: დაახლ. ${usd} {} მოთხოვნისთვის, {name} ჩამოჭრის თქვენი ანგარიშიდან.",

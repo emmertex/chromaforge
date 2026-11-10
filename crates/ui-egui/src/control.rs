@@ -746,6 +746,7 @@ pub fn export_active(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     } else {
         let w = app.services.write.as_mut().ok_or("no writer")?;
         let files = export_batch(&mut app.session, &ids, &opts, &to, &mut |path, bytes| w(path, bytes), &|path| std::path::Path::new(path).exists())?;
+        lcc_engine::export::mark_exported(&mut app.session, &files);
         // plug-in export hooks and destination, as after a background export
         #[cfg(not(target_arch = "wasm32"))]
         let plugins = lcc_engine::cmd::plugins::after_export(&mut app.session, &files, p.get("pluginDestination"));

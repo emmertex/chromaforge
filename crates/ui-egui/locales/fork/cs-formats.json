@@ -27,6 +27,7 @@
   "Capture One import failed: {e}{warning}": "Import z Capture One selhal: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Prohlížení katalogu Capture One selhalo: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Terč · šedé kolem {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Zkontrolováno {checked} z {total} souborů DNG: {intact} neporušených, {damaged} poškozených, {unverifiable} neověřitelných",
   "Collection imported: {n} photos found, {m} not in this catalog": "Sbírka importována: nalezeno {n} fotek, {m} není v tomto katalogu",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Cena: asi ${usd} za požadavky ({}), účtuje {name} na váš účet.",
   "Create Folder in “{name}”": "Vytvořit složku v „{name}“",

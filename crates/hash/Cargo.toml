@@ -7,6 +7,8 @@ description = "Streaming content hashes (L0): SHA-1 of originals, as remote serv
 
 [dependencies]
 sha1 = { version = "0.10", default-features = false }
+# MD5 for the DNG raw-image digests (NewRawImageDigest, RawImageDigest): a content identifier the format fixes.
+md-5 = { version = "0.11", default-features = false }
 
 [lints]
 workspace = true

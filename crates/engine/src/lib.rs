@@ -45,6 +45,7 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_validate;
 pub mod doc_path;
 pub mod dust_map;
 pub mod enhance;
@@ -2622,6 +2623,8 @@ mod tests_denoise;
 #[cfg(test)]
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
+#[cfg(test)]
+mod tests_dng_validate;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
