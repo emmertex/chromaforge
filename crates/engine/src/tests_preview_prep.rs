@@ -72,6 +72,7 @@ fn wait_done(b: &crate::cmd::previews::PreviewBuild) -> bool {
 /// whose preview is too small, and its previews are on disk when it is done, for the next session.
 #[test]
 fn a_build_skips_what_is_there_and_leaves_it_on_disk() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("skip", 4);
     let r = s.execute("library.buildPreviews", &json!({"ids": ids_json(&ids), "edge": 300, "wait": true})).unwrap();
     assert_eq!((r["done"].as_u64(), r["skipped"].as_u64(), r["failed"].as_u64()), (Some(4), Some(0), Some(0)), "{r}");
@@ -100,6 +101,7 @@ fn a_build_skips_what_is_there_and_leaves_it_on_disk() {
 /// screen asks for, so the loupe can show them.
 #[test]
 fn background_previews_are_as_big_as_the_loupe() {
+    let _keys = crate::sensor_maps::keep_generation();
     let mut s = Session::with_demo();
     let standard = s.preview_prefs.standard_edge();
     assert_eq!(crate::cmd::previews::standard_edge(&s), standard);
@@ -114,6 +116,7 @@ fn background_previews_are_as_big_as_the_loupe() {
 #[test]
 fn the_background_build_starts_where_the_user_is() {
     use crate::cmd::previews::PreviewBuild;
+    let _keys = crate::sensor_maps::keep_generation();
     let b = PreviewBuild { order: (10..20).collect(), ..Default::default() };
     let mut queue: Vec<Option<u64>> = (10..20).map(Some).collect();
     b.focus_on(PhotoId(14), false);
@@ -140,6 +143,7 @@ fn the_background_build_starts_where_the_user_is() {
 /// activity stack that can be cancelled, and gives way to a build that is asked for.
 #[test]
 fn the_background_build_waits_for_the_photo_on_screen_and_gives_way() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("replace", 3);
     // held back: the photo on screen is being made all along
     let hold = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -179,6 +183,7 @@ fn the_background_build_waits_for_the_photo_on_screen_and_gives_way() {
 /// library opens), builds the view's previews, and is not started again for the same view.
 #[test]
 fn the_background_preparation_starts_when_culling() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("prep", 4);
     let mode = Mode::Library;
     s.prep_tick(mode, None, false);
@@ -207,6 +212,7 @@ fn the_background_preparation_starts_when_culling() {
 /// "Only the photo on screen" prepares nothing in the background.
 #[test]
 fn picks_only_leaves_the_unflagged_photos_alone() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("marked", 6);
     s.selection = crate::Selection { ids: ids.clone(), active: Some(ids[0]) };
     s.execute("photo.flag", &json!({"ids": [ids[1].0], "flag": "pick"})).unwrap();
@@ -238,6 +244,7 @@ fn picks_only_leaves_the_unflagged_photos_alone() {
 /// a reset takes the library back to the app-wide ones.
 #[test]
 fn the_settings_round_trip_app_wide_and_per_library() {
+    let _keys = crate::sensor_maps::keep_generation();
     let root = temp_dir("own");
     let store = root.join("store");
     let mut s2 = Session::new().with_fs().with_app_store(&store);
@@ -283,6 +290,7 @@ fn the_settings_round_trip_app_wide_and_per_library() {
 /// leave the app-wide and the library's own settings as they were.
 #[test]
 fn background_prep_flags_must_be_booleans() {
+    let _keys = crate::sensor_maps::keep_generation();
     let root = temp_dir("flags");
     let mut s = Session::new().with_fs();
     s.open_library(root.join("lib"), false).unwrap();
@@ -309,6 +317,7 @@ fn background_prep_flags_must_be_booleans() {
 /// settings as they were.
 #[test]
 fn background_prep_reset_needs_an_open_library() {
+    let _keys = crate::sensor_maps::keep_generation();
     let mut s = Session::new();
     s.execute("prefs.setBackgroundPrep", &json!({"settings": {"culling": {"ahead": 2}}})).unwrap();
     assert!(s.execute("prefs.setBackgroundPrep", &json!({"reset": true})).is_err());
@@ -322,6 +331,7 @@ fn background_prep_reset_needs_an_open_library() {
 /// loupe.
 #[test]
 fn photos_changed_off_screen_are_rendered_again_in_the_background() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("resync", 5);
     let edge = crate::cmd::previews::standard_edge(&s);
     for at in [ids[0], ids[1], ids[0]] {
@@ -363,6 +373,7 @@ fn photos_changed_off_screen_are_rendered_again_in_the_background() {
 /// says so; it carries on once the export ends.
 #[test]
 fn the_background_build_pauses_while_an_export_runs() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("pause", 3);
     let export = s.activity.start_batch("export", "Exporting", crate::activity::Cancel::Yes);
     assert_eq!(s.activity.user_work(), Some("export"));
@@ -383,6 +394,7 @@ fn the_background_build_pauses_while_an_export_runs() {
 /// (already edited) gallery.
 #[test]
 fn the_background_build_prepares_around_the_photo_on_screen() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("around", 130);
     let at = ids[100];
     for a in [ids[98], ids[99], at] {
@@ -421,6 +433,7 @@ fn in_view(s: &mut Session) -> Vec<PhotoId> {
 /// nothing started for the wedding when it ended).
 #[test]
 fn browsing_another_folder_prepares_that_folder() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, [first, second]) = two_folders("refolder", 4);
     // held back all along, so the first folder's build is still running when the user moves on
     let hold = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -465,6 +478,7 @@ fn browsing_another_folder_prepares_that_folder() {
 /// still waits for a few steps, [`crate::prep::STEPS_BEFORE_BUILD`]).
 #[test]
 fn a_folder_being_culled_is_prepared_from_the_first_photo() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, [first, _]) = two_folders("first-photo", 3);
     s.execute("library.browse", &json!({"path": first})).unwrap();
     let a = in_view(&mut s);
@@ -489,6 +503,7 @@ fn a_folder_being_culled_is_prepared_from_the_first_photo() {
 /// in 70 s of culling a wedding).
 #[test]
 fn the_background_build_keeps_going_while_the_user_steps() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (mut s, root, ids) = library("steady", 2);
     let hold = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let h = hold.clone();
@@ -513,6 +528,7 @@ fn the_background_build_keeps_going_while_the_user_steps() {
 /// building while the user steps, the photo on screen never finished in a 1.5 s look).
 #[test]
 fn the_background_builds_decodes_are_background_work() {
+    let _keys = crate::sensor_maps::keep_generation();
     let (s, root, ids) = library("bg-decode", 1);
     // a session that has not decoded the photo yet (the import's decode is kept in memory)
     drop(s);
@@ -550,6 +566,7 @@ fn the_background_builds_decodes_are_background_work() {
 #[test]
 fn the_background_build_leaves_the_photo_on_screen_to_the_loupe() {
     use crate::cmd::previews::PreviewBuild;
+    let _keys = crate::sensor_maps::keep_generation();
     let b = PreviewBuild { order: (10..20).collect(), background: true, ..Default::default() };
     let mut queue: Vec<Option<u64>> = (10..20).map(Some).collect();
     b.focus_on(PhotoId(14), false);

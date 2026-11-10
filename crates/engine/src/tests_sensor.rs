@@ -44,6 +44,7 @@ fn green_at(img: &lcc_raster::Rgb32f, x: usize, y: usize) -> f32 {
 /// A clear hot pixel is corrected while a raw is decoded, unless the photo's switch is off; the decode reports it.
 #[test]
 fn decode_corrects_a_hot_pixel_unless_switched_off() {
+    let _maps = crate::sensor_maps::change_generation();
     let (w, h) = (96usize, 64usize);
     let dng = synthetic_dng_of(w, h, "RGGB", mosaic(w, h, 1, &[(41, 30, 0.7)]), None, meta(0, None));
     let on = crate::media::LoadOptions { path: Some("_P1_0001.dng".into()), ..Default::default() };
@@ -66,6 +67,7 @@ fn decode_corrects_a_hot_pixel_unless_switched_off() {
 #[test]
 fn a_body_map_confirms_a_faint_hot_pixel_across_photos() {
     use lcc_raw::defects::{Thresholds, detect, refine};
+    let _maps = crate::sensor_maps::change_generation();
     let (w, h) = (96usize, 64usize);
     // (above what a map learns, 0.04 here; under what one photo corrects, 0.056)
     let faint = (50usize, 20usize, 0.05f32);
@@ -105,6 +107,7 @@ fn a_body_map_confirms_a_faint_hot_pixel_across_photos() {
 #[test]
 fn sensor_switch_and_auto_dust_spots_round_trip() {
     use lcc_develop::{AutoSpot, AutoSpotKind, DevelopSettings, Spot, SpotMode};
+    let _maps = crate::sensor_maps::change_generation();
     let d = DevelopSettings::default();
     assert!(!d.to_json().to_string().contains("sensor"), "default settings JSON unchanged");
     assert_eq!(lcc_develop::controls::get(&d, "sensor.pixelFix"), Some(1.0));
@@ -145,6 +148,7 @@ fn sensor_switch_and_auto_dust_spots_round_trip() {
 /// Turning the switch off decodes the photo again without corrections, and on again with them.
 #[test]
 fn the_switch_reloads_the_photo() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-switch");
     let (w, h) = (96usize, 64usize);
     let path = dir.join("_P2_0001.dng");
@@ -182,6 +186,7 @@ fn wait_job(s: &mut Session) -> Value {
 /// photos agree on, and `status` / `clear` show and forget it.
 #[test]
 fn pixel_map_commands_build_show_and_clear_a_body_map() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-rebuild");
     let (w, h) = (128usize, 96usize);
     let mut paths = Vec::new();
@@ -230,6 +235,7 @@ fn pixel_map_commands_build_show_and_clear_a_body_map() {
 /// Dark frames confirm their hot pixels at once and keep their noise figures.
 #[test]
 fn dark_frame_calibration_confirms_hot_pixels() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dark");
     let (w, h) = (96usize, 64usize);
     let mut n = 5u64;
@@ -265,6 +271,7 @@ fn dark_frame_calibration_confirms_hot_pixels() {
 /// it again replaces them instead of adding more; moving one makes it the user's own.
 #[test]
 fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dust");
     let (w, h) = (900usize, 600usize);
     let spots = [(180.0f32, 140.0f32), (600.0, 300.0)];
@@ -308,6 +315,7 @@ fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
 /// right place; a selection runs in the background and `dust.pump` applies it.
 #[test]
 fn a_body_dust_map_finds_faint_dust_on_later_photos() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dustmap");
     let (w, h) = (1200usize, 800usize);
     // a smooth bright mosaic with a soft dark spot at (cx, cy) on the sensor, `depth` deep
@@ -383,6 +391,7 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
 /// by default; a PNG is never included).
 #[test]
 fn remove_dust_on_import_runs_on_new_raws() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-import");
     let (w, h) = (96usize, 64usize);
     let raw = dir.join("_I1_0001.dng");

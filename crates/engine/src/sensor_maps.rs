@@ -704,6 +704,27 @@ static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 /// [`generation`]'s value (0: not worked out yet).
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// [`generation`] is part of every photo's render and preview keys, so a test that changes a body's corrections
+/// changes the keys of the previews a test running alongside has just built, which then look missing or stale
+/// (in the same test binary, `tests_sensor` rebuilding a body map while `tests_preview_prep` checks its builds).
+/// Tests that look previews up by their keys hold this shared ([`keep_generation`]), tests that change body maps
+/// hold it exclusively ([`change_generation`]).
+#[cfg(test)]
+static TEST_GENERATION: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// [`generation`] stays as it is while the guard lives (tests only; see [`TEST_GENERATION`]).
+#[cfg(test)]
+pub(crate) fn keep_generation() -> std::sync::RwLockReadGuard<'static, ()> {
+    TEST_GENERATION.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The guard of a test that changes body maps, and with them [`generation`]: it waits until no test keeping the
+/// generation runs (tests only; see [`TEST_GENERATION`]).
+#[cfg(test)]
+pub(crate) fn change_generation() -> std::sync::RwLockWriteGuard<'static, ()> {
+    TEST_GENERATION.write().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
     let reg = REGISTRY.get_or_init(Default::default);
     let mut g = reg.lock().unwrap_or_else(PoisonError::into_inner);
