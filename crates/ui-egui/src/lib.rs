@@ -1667,7 +1667,7 @@ impl LccApp {
                 let t = ctx.input(|i| i.time);
                 self.ui.show_toast((
                     crate::i18n::tr_format!(
-                        "{n} change{} saved in memory but not written to disk: {e} — {app} will retry",
+                        "{n} change{} saved in memory but not written to disk: {e}. {app} will retry",
                         if n == 1 { "" } else { "s" },
                         n = n,
                         e = e
@@ -2847,7 +2847,7 @@ impl LccApp {
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
     pub fn window_title(&self) -> String {
         match panels::settings::open_library_name(self) {
-            Some(name) => format!("{} — {name}", lcc_brand::DISPLAY_NAME),
+            Some(name) => format!("{}: {name}", lcc_brand::DISPLAY_NAME),
             None => lcc_brand::DISPLAY_NAME.to_string(),
         }
     }
@@ -2859,7 +2859,7 @@ impl LccApp {
     pub fn page_title(&self, unsaved: bool) -> String {
         let dot = if unsaved { " •" } else { "" };
         match self.session.active().and_then(|id| self.session.catalog.photo(id)) {
-            Some(p) => format!("{}{dot} — {}", p.file_name, lcc_brand::DISPLAY_NAME),
+            Some(p) => format!("{}{dot}: {}", p.file_name, lcc_brand::DISPLAY_NAME),
             None => format!("{}{dot}", self.window_title()),
         }
     }

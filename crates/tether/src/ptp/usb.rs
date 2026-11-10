@@ -85,7 +85,7 @@ pub fn open(id: &str) -> Result<(Box<dyn Transport>, u16), PtpError> {
     let d = found.ok_or_else(|| PtpError::Io(format!("no PTP camera at {id} (is it on, in PTP/PC mode, and connected?)")))?;
     let iface_no = still_image_interface(&d).ok_or_else(|| PtpError::Io("no still-image interface".into()))?;
     let dev = d.open().wait().map_err(|e| {
-        PtpError::Io(format!("can't open the camera: {e} (Linux: install the udev rule; macOS: quit apps that hold the camera; Windows: WinUSB driver — see docs/tethering.md)"))
+        PtpError::Io(format!("can't open the camera: {e} (Linux: install the udev rule; macOS: quit apps that hold the camera; Windows: WinUSB driver; see docs/tethering.md)"))
     })?;
     let iface = dev
         .detach_and_claim_interface(iface_no)

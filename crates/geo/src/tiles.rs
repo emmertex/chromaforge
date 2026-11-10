@@ -112,7 +112,7 @@ pub fn builtin() -> Vec<TileServer> {
             id: "esri-imagery".into(),
             name: "Esri World Imagery (satellite)".into(),
             url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}".into(),
-            attribution: "Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community".into(),
+            attribution: "Tiles © Esri. Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community".into(),
             max_zoom: 19,
             kind: TileKind::Satellite,
             subdomains: Vec::new(),

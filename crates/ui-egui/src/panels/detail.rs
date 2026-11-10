@@ -2329,7 +2329,7 @@ fn all_masks_pill(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, over: Rect)
 fn preview_only_pill(ui: &mut egui::Ui, canvas: Rect, reason: &str, top: f32) {
     let t = Tokens::get(ui.ctx());
     let p = ui.painter_at(canvas);
-    let text = crate::i18n::tr_format!("Preview only — editing the camera's embedded JPEG ({})", crate::widgets::preview_only_variant(reason));
+    let text = crate::i18n::tr_format!("Preview only: editing the camera's embedded JPEG ({})", crate::widgets::preview_only_variant(reason));
     let g = p.layout_no_wrap(text, t.font(12.0), Color32::WHITE);
     let size = vec2(g.size().x + 40.0, 26.0);
     let r = Rect::from_min_size(pos2(canvas.center().x - size.x / 2.0, canvas.top().max(ui.ctx().content_rect().top()) + top), size);
@@ -6266,9 +6266,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(g.size().x + 22.0, 15.0));
                         // like the grid's badge: a click expands / collapses the stack
                         let badge = ui.interact(br, egui::Id::new(("film-stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-                            "Stack — click to expand"
+                            "Stack (click to expand)"
                         } else {
-                            "Stack — click to collapse"
+                            "Stack (click to collapse)"
                         });
                         crate::widgets::announce(&badge, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
                         register(ui.ctx(), format!("filmstack:{}", id.0), br);

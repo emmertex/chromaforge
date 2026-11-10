@@ -106,7 +106,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reset Tone Curve",
             [],
             None,
-            "{channel?: all|point|parametric|master|red|green|blue (default all), mask?: id} — the active photo's tone curve (or one channel) back to linear; with `mask`, that mask's local Curve (no parametric part)",
+            "{channel?: all|point|parametric|master|red|green|blue (default all), mask?: id}: the active photo's tone curve (or one channel) back to linear; with `mask`, that mask's local Curve (no parametric part)",
             has_active,
             reset
         ),
@@ -124,7 +124,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Point Curve Preset",
             [],
             None,
-            "{name, mask?: id} — sets the active photo's point curves (all four channels; the parametric curve stays), or with `mask` that mask's local Curve",
+            "{name, mask?: id}: sets the active photo's point curves (all four channels; the parametric curve stays), or with `mask` that mask's local Curve",
             has_active,
             apply_preset
         ),
@@ -133,7 +133,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Point Curve Preset",
             [],
             None,
-            "{name, mask?: id} — the active photo's point curves (or that mask's local Curve) under a name (replaces a user preset of that name; built-in names are reserved), saved with the library",
+            "{name, mask?: id}: the active photo's point curves (or that mask's local Curve) under a name (replaces a user preset of that name; built-in names are reserved), saved with the library",
             has_active,
             save_preset
         ),
@@ -142,7 +142,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Point Curve Preset",
             [],
             None,
-            "{name} — a user preset (built-ins can't be deleted)",
+            "{name}: a user preset (built-ins can't be deleted)",
             always,
             delete_preset
         ),
@@ -151,7 +151,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Point Curve Presets",
             [],
             None,
-            "{path | paths: [file]} — .lccurve JSON files ({format, version, presets: [...]}, an array of presets, or one preset); same-named user presets are replaced → {imported: [name], failed: [[file, error]]}",
+            "{path | paths: [file]}: .lccurve JSON files ({format, version, presets: [...]}, an array of presets, or one preset); same-named user presets are replaced → {imported: [name], failed: [[file, error]]}",
             always,
             import_presets
         ),
@@ -160,7 +160,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Point Curve Presets",
             [],
             None,
-            "{path, names?: [name] (default: every user preset)} — writes a .lccurve JSON file → {path, count}",
+            "{path, names?: [name] (default: every user preset)}: writes a .lccurve JSON file → {path, count}",
             always,
             export_presets
         ),

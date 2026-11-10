@@ -332,7 +332,7 @@ fn recent_existing(app: &LccApp) -> Vec<String> {
 fn display_name(p: &Path) -> String {
     let dir = if p.is_file() { p.parent().unwrap_or(p) } else { p };
     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
-    format!("{name} — {}", dir.parent().map(|d| d.display().to_string()).unwrap_or_default())
+    format!("{name}: {}", dir.parent().map(|d| d.display().to_string()).unwrap_or_default())
 }
 
 /// Whether Open Library…'s folder dialog (of the welcome dialog) is still up.
