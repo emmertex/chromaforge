@@ -1629,7 +1629,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.rename)
                     .id(rename_id)
-                    .hint_text(crate::i18n::tr("keep names — or e.g. {date}_{seq:3}"))
+                    .hint_text(crate::i18n::tr("keep names, or e.g. {date}_{seq:3}"))
                     .desired_width(w),
             );
             register(ui.ctx(), "field:importRename", r.rect);

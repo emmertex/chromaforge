@@ -691,7 +691,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Plug-in Filter",
             [],
             None,
-            "{plugin, module_hash, name, params?: {key: number|bool|string}, stage?: source|display} — appends a pixel-filter plug-in to the active photo; returns {uid}",
+            "{plugin, module_hash, name, params?: {key: number|bool|string}, stage?: source|display}: appends a pixel-filter plug-in to the active photo; returns {uid}",
             has_active,
             add
         ),
@@ -705,13 +705,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_active,
             set
         ),
-        cmd!("develop.pluginFilter.move", "Move Plug-in Filter", [], None, "{uid, index} — new position in the stack", has_active, move_to),
+        cmd!("develop.pluginFilter.move", "Move Plug-in Filter", [], None, "{uid, index}: new position in the stack", has_active, move_to),
         cmd!(
             "develop.pluginFilter.setAnalysis",
             "Measure Plug-in Filter",
             [],
             None,
-            "{uid, analysis: JSON (null clears)} — stores the filter's whole-image measurement",
+            "{uid, analysis: JSON (null clears)}: stores the filter's whole-image measurement",
             has_active,
             set_analysis
         ),
@@ -720,7 +720,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Measure Plug-in Filter on Photo",
             [],
             None,
-            "{uid, ids?: [photo], roll?: false, wait?: false} — runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (one without an entry of the plug-in gets a copy of this one first, without its measurement; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
+            "{uid, ids?: [photo], roll?: false, wait?: false}: runs the plug-in's whole-image measurement (pc_analyze) in the background (an activity row; `develop.pluginFilter.pump` stores each as one History step when done) → {started}: on the active photo, or on every photo of `ids` (one without an entry of the plug-in gets a copy of this one first, without its measurement; measured one by one, each getting its own measurement); `roll: true` measures them together (the plug-in's pc_merge of all of them, stored on each with `_roll`: their number). `wait: true` measures before returning → {analysis (the active photo's), analyses: [{photo, uid, analysis}]}. An `unsupported` error when the plug-in has no pc_analyze (or, for a roll, no pc_merge)",
             has_active,
             analyze
         ),
@@ -729,7 +729,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Plug-in Filter to Photos",
             [],
             None,
-            "{plugin, ids?: [photo] (the selection)} — a new entry of the installed plug-in (its defaults) on every photo that has none yet → {added, had}",
+            "{plugin, ids?: [photo] (the selection)}: a new entry of the installed plug-in (its defaults) on every photo that has none yet → {added, had}",
             has_active,
             add_to
         ),
@@ -738,7 +738,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Plug-in Filter to Photos",
             [],
             None,
-            "{uid, ids?: [photo] (the selection), measurement?: true} — copies the active photo's entry (parameters, stage, on/off and its measurement unless `measurement: false`) onto the other photos: one with an entry of the same plug-in gets it replaced, any other gets it added → {changed}",
+            "{uid, ids?: [photo] (the selection), measurement?: true}: copies the active photo's entry (parameters, stage, on/off and its measurement unless `measurement: false`) onto the other photos: one with an entry of the same plug-in gets it replaced, any other gets it added → {changed}",
             has_active,
             apply_to
         ),
@@ -747,11 +747,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Plug-in Filter Measurements",
             [],
             None,
-            "{} → {running: [{photo, uid}], failed: [{photo, uid, error}]} — stores finished measurements (each one History step); called every frame by the app",
+            "{} → {running: [{photo, uid}], failed: [{photo, uid, error}]}: stores finished measurements (each one History step); called every frame by the app",
             always,
             pump
         ),
-        cmd!(query "develop.pluginFilter.list", "List Plug-in Filters", [], None, "{} — returns {enabled, filters: [...]}", has_active, list),
+        cmd!(query "develop.pluginFilter.list", "List Plug-in Filters", [], None, "{}: returns {enabled, filters: [...]}", has_active, list),
     ]
 }
 

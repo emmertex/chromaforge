@@ -1289,18 +1289,18 @@ pub fn specs() -> Vec<CommandSpec> {
             "Ignore Faces",
             [],
             None,
-            "{faces: [{photo, index, rect?}], ignored?: true} — ignore blurry or false faces (kept, never detected again, left out of People), or restore them with ignored: false; one undo step; catalog only",
+            "{faces: [{photo, index, rect?}], ignored?: true}: ignore blurry or false faces (kept, never detected again, left out of People), or restore them with ignored: false; one undo step; catalog only",
             super::always,
             ignore_faces
         ),
         cmd!(query "faces.ignored", "Ignored Faces", [], None,
-            "{offset?: 0, limit?: 1000} → {total, offset, faces: [{photo, index, rect, name, view}]} — the ignored faces in catalog order; limit 1..5000", super::always, ignored_faces),
+            "{offset?: 0, limit?: 1000} → {total, offset, faces: [{photo, index, rect, name, view}]}: the ignored faces in catalog order; limit 1..5000", super::always, ignored_faces),
         cmd!(
             "faces.index",
             "Index Faces",
             [],
             None,
-            "{budgetMs?: 200, ids?: [photo ids to do first]} → {embedded, photosDone, pendingPhotos, indexedFaces, ms} — embed the faces in the library with the chosen recognition model, as many photos as fit in the time (at least one); call again until `pendingPhotos` is 0. `budgetMs: 0` only reports",
+            "{budgetMs?: 200, ids?: [photo ids to do first]} → {embedded, photosDone, pendingPhotos, indexedFaces, ms}: embed the faces in the library with the chosen recognition model, as many photos as fit in the time (at least one); call again until `pendingPhotos` is 0. `budgetMs: 0` only reports",
             super::always,
             imp::index
         ),
@@ -1309,7 +1309,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Suggest Names for Faces",
             [],
             None,
-            "{ids?, threshold?, margin?, topFaces?: 1..8 | null, budgetMs?} → {topFaces, photos: [{id, faces: [{index, suggestion: {name, score, runnerUp} | null, candidates: [{name, score}]}]}]} — who the unnamed faces in these photos might be, from the faces already named in the library. Only suggestions: nothing is named",
+            "{ids?, threshold?, margin?, topFaces?: 1..8 | null, budgetMs?} → {topFaces, photos: [{id, faces: [{index, suggestion: {name, score, runnerUp} | null, candidates: [{name, score}]}]}]}: who the unnamed faces in these photos might be, from the faces already named in the library. Only suggestions: nothing is named",
             super::always,
             imp::suggest
         ),
@@ -1318,7 +1318,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Index Faces in the Background",
             [],
             None,
-            "{pace?: pause | light | normal | full} → {active, inFlight, pendingPhotos, indexedFaces, searchedPhotos, workers} — cheap to call every frame: takes in what the background workers have finished and gives them the next photos, as many at once as the pace allows (none when paused, one when light, half the machine's threads when normal, four fifths when full); inactive until face recognition is on in Settings with a model chosen",
+            "{pace?: pause | light | normal | full} → {active, inFlight, pendingPhotos, indexedFaces, searchedPhotos, workers}: cheap to call every frame: takes in what the background workers have finished and gives them the next photos, as many at once as the pace allows (none when paused, one when light, half the machine's threads when normal, four fifths when full); inactive until face recognition is on in Settings with a model chosen",
             super::always,
             imp::pump
         ),
@@ -1327,7 +1327,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Evaluate Face Recognition",
             [],
             None,
-            "{budgetMs?: 0, burstSecs?: 5, margin?, thresholds?: [..], topFaces?: 1..8 | null, scope?: \"visible\"} → {queries, top1, topFaces, sweep: [{threshold, suggested, correct, precision, recall}]} — leave-one-out over your named faces: each is ranked against the others (ignoring shots within burstSecs of it) to show how well the chosen model recognises people in *your* photos and which threshold to trust. Faces not yet embedded are done within budgetMs (`faces.index` does them all); counts only",
+            "{budgetMs?: 0, burstSecs?: 5, margin?, thresholds?: [..], topFaces?: 1..8 | null, scope?: \"visible\"} → {queries, top1, topFaces, sweep: [{threshold, suggested, correct, precision, recall}]}: leave-one-out over your named faces: each is ranked against the others (ignoring shots within burstSecs of it) to show how well the chosen model recognises people in *your* photos and which threshold to trust. Faces not yet embedded are done within budgetMs (`faces.index` does them all); counts only",
             super::always,
             imp::evaluate
         ),
@@ -1336,7 +1336,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Unnamed Faces",
             [],
             None,
-            "{limit?: 600, scope?: \"filter\"} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready} — the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
+            "{limit?: 600, scope?: \"filter\"} → {total, faces: [{photo, index, rect, view, suggestion: {name, score} | null}], ordered, ready}: the faces nobody has named (with `scope: \"filter\"`, only in the photos the library filter shows, any person filter aside); with a recognition model chosen, look-alikes are next to each other and a face the named ones recognise carries the name they suggest. `view` is the box to show the face by. Name them with `faces.nameFaces`",
             super::always,
             unnamed
         ),
@@ -1345,7 +1345,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Name Faces",
             [],
             None,
-            "{faces: [{photo, index}], name} → {named, photos} — name (or, with a null or empty name, clear) many face regions as one undoable step; the sidecar is not touched",
+            "{faces: [{photo, index}], name} → {named, photos}: name (or, with a null or empty name, clear) many face regions as one undoable step; the sidecar is not touched",
             super::always,
             name_faces
         ),
@@ -1354,7 +1354,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Faces of a Person",
             [],
             None,
-            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos} — the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library filter shows (any person filter aside); `total` still counts the whole library",
+            "{name, more?: 120, scope?: \"filter\"} → {name, total, confirmed: [{photo, index, rect}], more: [{photo, index, rect, score}], ready, pendingPhotos}: the faces named `name` across the library, and the unnamed faces that look most like them (best first, already embedded ones only, once a recognition model is chosen); confirm one with `faces.setName`. `scope: \"filter\"` shows only the faces in the photos the library filter shows (any person filter aside); `total` still counts the whole library",
             super::always,
             person
         ),
@@ -1363,7 +1363,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Name Face",
             [],
             None,
-            "{id?, index, name} — name a face region (null or empty clears it); undoable; the sidecar is not touched",
+            "{id?, index, name}: name a face region (null or empty clears it); undoable; the sidecar is not touched",
             super::always,
             set_name
         ),
@@ -1372,7 +1372,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Person",
             [],
             None,
-            "{from, to, merge?: bool} → {faces, photos, from, to, merged} — give every in-library face of `from` the name `to` (trimmed, any capitalization), one undo step; refused when `to` is already someone else unless `merge` is true, which combines the two; the sidecar is not touched",
+            "{from, to, merge?: bool} → {faces, photos, from, to, merged}: give every in-library face of `from` the name `to` (trimmed, any capitalization), one undo step; refused when `to` is already someone else unless `merge` is true, which combines the two; the sidecar is not touched",
             super::always,
             rename_person
         ),

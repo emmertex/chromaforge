@@ -226,7 +226,7 @@ fn row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, b: &Bindable, sc: Option
     }
     // keys whose command changes in the Library grids (see `shortcuts::handle`)
     let hover = match b.id {
-        "view.softProof" => format!("{} — {}", b.id, crate::i18n::tr("In Photo Grid and Square Grid: expand or collapse the stack")),
+        "view.softProof" => format!("{}: {}", b.id, crate::i18n::tr("In Photo Grid and Square Grid: expand or collapse the stack")),
         _ => b.id.to_string(),
     };
     ui.label(name).on_hover_text(hover);
@@ -236,7 +236,7 @@ fn row(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, b: &Bindable, sc: Option
     } else {
         match sc {
             Some(sc) => RichText::new(menu_text(sc, mac)).color(t.text),
-            None => RichText::new("—").color(t.text_dim),
+            None => RichText::new(crate::i18n::tr("None")).color(t.text_dim),
         }
     };
     let r = ui.add(egui::Button::new(text).min_size(egui::vec2(110.0, 0.0)).selected(recording));

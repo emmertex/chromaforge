@@ -220,7 +220,7 @@ fn card(app: &mut LccApp, ui: &mut egui::Ui, person: &Person, r: Rect, edge: f32
     // a long name must not run past the card
     let name = fit(p, &person.name, t.semibold(13.0), edge);
     p.text(pos2(r.left() + 2.0, face.bottom() + 14.0), Align2::LEFT_CENTER, name, t.semibold(13.0), t.text);
-    let resp = resp.on_hover_text(crate::i18n::tr_format!("{} — show their photos", person.name));
+    let resp = resp.on_hover_text(crate::i18n::tr_format!("{}: show their photos", person.name));
     let full = person.name.clone();
     crate::widgets::context_menu(&resp, |ui| {
         let r = ui.button(crate::i18n::tr("Rename Person…"));
