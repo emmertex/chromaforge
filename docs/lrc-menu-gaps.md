@@ -134,7 +134,6 @@ Generated from the menu tables; don't edit by hand.
 | Add to Mask with | Add a component to the chosen mask (the Masking panel does it). | S | wire-up | `soon.addToMask` |
 | Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
 | Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
-| Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
 | Point Color Selector (Ctrl+Alt+P) | Pick a point colour on the photo (Color Mixer has Point Color). | S | wire-up | `soon.pointColorSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
@@ -178,7 +177,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-| Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
 ## Map module ▸ View
 

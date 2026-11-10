@@ -2713,6 +2713,7 @@
   "This page setup is not valid": "Pengaturan halaman ini tidak valid",
   "This person wasn't found in this photo.": "Orang ini tidak ditemukan di foto ini.",
   "This plug-in can't measure a roll": "Plug-in ini tidak dapat mengukur rol film",
+  "This spot has no colour to defringe: click on the fringe itself": "Titik ini tidak punya warna untuk di-defringe: klik pada tepi warnanya langsung",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Versi ini tidak disertai model Pengurangan noise AI, dan belum ada yang bisa diunduh dari sini.",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Versi ini sudah ada di Immich. Immich tidak dapat mengganti file, sehingga simpanan baru diunggah sebagai aset baru di atas tumpukan.",
   "This {app} can't install it: open {app}.lplug4 from the {app} download to install it in Logi Options+.": "{app} ini tidak dapat menginstalnya: buka {app}.lplug4 dari unduhan {app} untuk menginstalnya di Logi Options+.",

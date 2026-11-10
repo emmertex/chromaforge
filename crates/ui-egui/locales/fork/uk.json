@@ -2497,6 +2497,7 @@
   "This page setup is not valid": "Ці параметри сторінки недійсні",
   "This person wasn't found in this photo.": "Цю людину на фото не знайдено.",
   "This plug-in can't measure a roll": "Цей плагін не може виміряти плівку",
+  "This spot has no colour to defringe: click on the fringe itself": "У цій точці немає кольору для усунення каймки: клацніть саме на каймці",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Ця версія вже є в Immich. Immich не вміє замінювати файл, тож нове збереження завантажується як новий об’єкт нагору стосу.",
   "Three with Caption": "Три з підписом",
   "Thumbnail size": "Розмір мініатюр",

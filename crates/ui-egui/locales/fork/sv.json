@@ -2779,6 +2779,7 @@
   "This person wasn't found in this photo.": "Den här personen hittades inte i det här fotot.",
   "This plug-in can't measure a roll": "Det här tillägget kan inte mäta en filmrulle",
   "This row covers more than one disk: drop on a folder inside it": "Den här raden omfattar mer än en disk: släpp på en mapp inuti den",
+  "This spot has no colour to defringe: click on the fringe itself": "Den här punkten har ingen färg att ta bort: klicka på själva färgkanten",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Den här versionen levereras inte med någon modell för AI-brusreducering, och ingen kan hämtas härifrån än.",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Den här versionen finns redan på Immich. Immich kan inte ersätta en fil, så det nya sparandet laddas upp som ett nytt objekt överst i stapeln.",
   "This {app} can't install it: open {app}.lplug4 from the {app} download to install it in Logi Options+.": "Den här installationen av {app} kan inte installera det: öppna {app}.lplug4 från nedladdningen av {app} för att installera det i Logi Options+.",

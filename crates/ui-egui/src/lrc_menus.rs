@@ -462,7 +462,7 @@ const TOOLS: &[&str] = &[
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
-    "soon.fringeSelector",
+    "tool.fringe",
     "soon.pointColorSelector",
     "---",
     "@Target Adjustment",
@@ -521,7 +521,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Color Label=Photo>Set Color Label",
     "---",
     "soon.deleteGps",
-    "soon.deleteLocationMetadata",
+    "map.clearLocationMetadata",
 ];
 
 const MAP_VIEW: &[&str] = &[
@@ -890,7 +890,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.colorRange", "Color Range", Some("Shift+J"), 'S', true, "Start a colour-range mask (the Masking panel does it)."),
     soon("soon.luminanceRange", "Luminance Range", Some("Shift+Q"), 'S', true, "Start a luminance-range mask (the Masking panel does it)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
     soon(
         "soon.pointColorSelector",
         "Point Color Selector",
@@ -912,7 +911,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.locationFilter", "Location Filter", None, 'S', true, "Visible on Map / Tagged / Untagged / None (map.filter exists)."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.mapInfo", "Show Map Info", None, 'S', false, "The map's info overlay."),
     soon("soon.mapKey", "Show Map Key", None, 'S', false, "The map's legend of pin types."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),

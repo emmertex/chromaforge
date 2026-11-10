@@ -2631,6 +2631,7 @@
   "This module has no keys of its own.": "У этого модуля нет собственных клавиш.",
   "This person wasn't found in this photo.": "Этот человек на фото не найден.",
   "This plug-in can't measure a roll": "Этот плагин не умеет измерять плёнку",
+  "This spot has no colour to defringe: click on the fringe itself": "В этой точке нет цвета для устранения каймы: щёлкните прямо по кайме",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Эта версия уже есть в Immich. Immich не умеет заменять файл, поэтому новое сохранение загружается как новый объект наверх стопки.",
   "Three with Caption": "Три с подписью",
   "Thumbnail size": "Размер миниатюр",
