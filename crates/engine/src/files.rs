@@ -904,6 +904,8 @@ fn load_bytes_now(
                 generated: None,
                 avoid: None,
                 pixels: Some(pixels),
+                // (the catalog knows which photo this is: `media::source_info`)
+                identity: None,
             },
             used_reduced,
         ));
@@ -3195,7 +3197,7 @@ pub(crate) mod tests {
         assert_eq!(p.kind, MediaKind::Raw, "still a raw file (filters, Convert to DNG…)");
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
-        assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
+        assert_eq!(SourceInfo { native_long: None, identity: None, ..crate::media::source_info(&p) }, SourceInfo::default());
         // (new photos start with Constrain Crop on, which is not an edit)
         assert!(p.develop.is_unedited() && p.develop.geometry.constrain_crop, "{:?}", p.develop);
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());

@@ -83,6 +83,17 @@ pub struct CameraColor {
     pub developed_for: lcc_color::Xy,
 }
 
+/// Which photo a source shows ([`SourceInfo::identity`]), whatever size it was decoded at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceIdentity {
+    /// The original's file and content.
+    pub key: u64,
+    /// The original's size (px, either orientation; `[0, 0]` unknown): the shape every decode of
+    /// it describes its framing on, so decodes whose sizes round differently (a 683- and a
+    /// 684-px-wide preview of one photo) share the photo's analyses.
+    pub size: [usize; 2],
+}
+
 /// Facts about the source the settings are interpreted against.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceInfo {
@@ -137,6 +148,12 @@ pub struct SourceInfo {
     pub avoid: Option<Arc<Vec<[f64; 4]>>>,
     /// Raw sources: what was done about hot, dead and stuck pixels before demosaic (`None`: not a raw).
     pub pixels: Option<PixelRepair>,
+    /// The original's identity (its file and content), the same at every size it is decoded at:
+    /// per-photo analyses that take seconds (the Subject and scene models' selections,
+    /// [`auto_mask::for_source`]) are kept by it, so the loupe's, a 1:1 window's and an export's
+    /// renders share one run. `None`: they are kept by the pixels (a source of another size
+    /// runs them again).
+    pub identity: Option<SourceIdentity>,
 }
 
 /// Hot, dead and stuck pixels corrected on a raw's mosaic while it was decoded.
@@ -179,6 +196,7 @@ impl Default for SourceInfo {
             generated: None,
             avoid: None,
             pixels: None,
+            identity: None,
         }
     }
 }
