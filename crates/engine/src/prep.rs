@@ -386,33 +386,54 @@ pub fn background_lanes() -> usize {
     if cores >= 8 { 2 } else { 1 }
 }
 
-/// The background preparation's own thread pool: its threads run at the lowest priority
-/// ([`lcc_sysmem::lowest_thread_priority`]), below the render workers that make the photo on screen,
-/// so the preparation takes only the processor time the photo on screen leaves. `None` when it
-/// couldn't be made (the shared pool does the work then).
-pub fn background_pool() -> Option<&'static rayon::ThreadPool> {
-    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(cores.saturating_sub(2).max(1))
-            .thread_name(|i| format!("lc-prep-{i}"))
-            .start_handler(|_| {
-                lcc_sysmem::lowest_thread_priority();
-            })
-            .build()
-            .map_err(|e| log::warn!("background preparation: no thread pool of its own ({e})"))
-            .ok()
-    })
-    .as_ref()
+/// How many photos the background preparation renders on pools of its own at once
+/// ([`on_background_pool`]); a build with more lanes renders the others on the lane's thread.
+pub const BACKGROUND_POOLS: usize = 4;
+
+/// The background preparation's thread pool `i` (< [`BACKGROUND_POOLS`]): its threads run at the
+/// lowest priority ([`lcc_sysmem::lowest_thread_priority`]), below the render workers that make
+/// the photo on screen, so the preparation takes only the processor time the photo on screen
+/// leaves. `None` when it couldn't be made.
+pub fn background_pool(i: usize) -> Option<&'static rayon::ThreadPool> {
+    static POOLS: [std::sync::OnceLock<Option<rayon::ThreadPool>>; BACKGROUND_POOLS] = [const { std::sync::OnceLock::new() }; BACKGROUND_POOLS];
+    POOLS
+        .get(i)?
+        .get_or_init(|| {
+            let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(cores.saturating_sub(2).max(1))
+                .thread_name(move |k| format!("lc-prep-{i}-{k}"))
+                .start_handler(|_| {
+                    lcc_sysmem::lowest_thread_priority();
+                })
+                .build()
+                .map_err(|e| log::warn!("background preparation: no thread pool of its own ({e})"))
+                .ok()
+        })
+        .as_ref()
 }
 
-/// Run `f` (one photo of the background preparation) on [`background_pool`], else here.
+/// Run `f` (one photo of the background preparation) on a [`background_pool`] no other photo is
+/// using, else here. One photo a pool: two photos installed on one pool let a worker waiting
+/// inside one photo's parallel work pick up the other photo's whole render on its own stack,
+/// which mixes their per-thread state (the GPU context's failure slot, the background flag) and
+/// can deadlock at the memory gate (the inner photo waits for memory the outer one holds).
 pub fn on_background_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    match background_pool() {
-        Some(pool) => pool.install(f),
-        None => f(),
+    static IN_USE: [std::sync::Mutex<()>; BACKGROUND_POOLS] = [const { std::sync::Mutex::new(()) }; BACKGROUND_POOLS];
+    for (i, slot) in IN_USE.iter().enumerate() {
+        // (a poisoned slot only means a photo panicked there: the pool is still fine)
+        let held = match slot.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(_held) = held
+            && let Some(pool) = background_pool(i)
+        {
+            return pool.install(f);
+        }
     }
+    f()
 }
 
 /// A cheap identity of the photos in view: a build is started once per view.

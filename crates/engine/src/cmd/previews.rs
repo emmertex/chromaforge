@@ -1263,11 +1263,15 @@ mod tests {
         assert!(!s.being_prepared(id), "released once built");
     }
 
+    /// The pool tests take turns: one using every pool leaves the other's photo to run here.
+    static POOL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // Given the background preparation's renders, they run on its own pool (lowest priority, below the
     // render workers that make the photo on screen), not on the shared one
     #[test]
     fn background_preparation_renders_on_its_own_pool() {
-        let pool = crate::prep::background_pool().expect("the pool starts");
+        let _one_at_a_time = POOL_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let pool = crate::prep::background_pool(0).expect("the pool starts");
         let inside = crate::prep::on_background_pool(|| {
             rayon::current_thread_index().is_some() && std::thread::current().name().is_some_and(|n| n.starts_with("lc-prep-"))
         });
@@ -1279,6 +1283,40 @@ mod tests {
             (0..64).into_par_iter().map(|_| std::thread::current().name().is_some_and(|n| n.starts_with("lc-prep-"))).collect()
         });
         assert!(names.iter().all(|b| *b));
+    }
+
+    // Given photos of the background preparation rendered side by side, no thread ever runs one
+    // photo inside another (a worker waiting in one photo's parallel work stole the other photo's
+    // render onto its stack when both were installed on one pool: per-thread state mixed, and the
+    // inner photo could wait at the memory gate for memory the outer one held)
+    #[test]
+    fn background_photos_never_run_inside_one_another() {
+        let _one_at_a_time = POOL_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        thread_local! { static DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+        let nested = std::sync::Arc::new(AtomicBool::new(false));
+        let lanes: Vec<_> = (0..4)
+            .map(|_| {
+                let nested = nested.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        crate::prep::on_background_pool(|| {
+                            if DEPTH.with(|d| d.replace(d.get() + 1)) > 0 {
+                                nested.store(true, Ordering::Relaxed);
+                            }
+                            // parallel work whose waits let a worker take other jobs
+                            (0..16).into_par_iter().for_each(|_| std::thread::sleep(std::time::Duration::from_millis(1)));
+                            DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+                        });
+                    }
+                })
+            })
+            .collect();
+        for l in lanes {
+            l.join().unwrap();
+        }
+        assert!(!nested.load(Ordering::Relaxed), "a photo ran inside another on one thread");
     }
 
     // Given many photos, a standard preview build renders them side by side and counts every one
