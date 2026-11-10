@@ -353,6 +353,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         // Every language's command is checked when it is the active one.
         _ if crate::menus::language_from_command(id).is_some() => Some(crate::menus::language_from_command(id) == Some(u.language)),
         "develop.autoSync" => Some(app.session.auto_sync),
+        "webui.guides" => Some(u.web.show_guides),
         "view.photoCounts" => Some(u.show_counts),
         "view.cellCompact" => Some(u.lib.cell_style == crate::libtools::CellStyle::Compact),
         "view.cellExpanded" => Some(u.lib.cell_style == crate::libtools::CellStyle::Expanded),

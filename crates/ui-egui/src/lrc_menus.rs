@@ -602,15 +602,15 @@ const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "soon.prin
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
-    "soon.newWebTemplate",
-    "soon.newWebTemplateFolder",
+    r#"ui.prompt{"title":"New Template","hint":"Template name","command":"webui.saveTemplate","key":"name"}=New Template…"#,
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"webui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "webui.reload=Reload",
     "webui.export=Export Web Photo Gallery…",
     "webui.previewInBrowser",
 ];
 
-const WEB_VIEW: &[&str] = &["panel.toolbar", "soon.webGuides"];
+const WEB_VIEW: &[&str] = &["panel.toolbar", "webui.guides=Show Guides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
@@ -928,9 +928,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
     // Web
-    soon("soon.newWebTemplate", "New Template", None, 'S', false, "Save the web gallery settings as a template."),
-    soon("soon.newWebTemplateFolder", "New Template Folder", None, 'S', false, "Group web templates in folders."),
-    soon("soon.webGuides", "Show Guides", None, 'S', false, "Layout guides in the gallery preview."),
 ];
 
 /// The "Coming soon" item `id`.

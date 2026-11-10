@@ -107,6 +107,7 @@ pub mod titlebar;
 pub mod video_ui;
 pub mod video_view;
 pub mod web_module;
+pub mod web_templates;
 pub mod widgets;
 pub mod window_place;
 

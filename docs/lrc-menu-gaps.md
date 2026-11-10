@@ -220,19 +220,6 @@ Generated from the menu tables; don't edit by hand.
 | Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
 | Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
 
-## Web module ▸ Web
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template | Save the web gallery settings as a template. | S | feature | `soon.newWebTemplate` |
-| New Template Folder | Group web templates in folders. | S | feature | `soon.newWebTemplateFolder` |
-
-## Web module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides in the gallery preview. | S | feature | `soon.webGuides` |
-
 ## Not in this list yet
 
 - The long Classic submenus whose top item is here but whose every choice isn't: View ▸ Sort's extra keys
