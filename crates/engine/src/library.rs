@@ -279,6 +279,11 @@ struct ViewFile {
     /// Show Photos in Subfolders turned off (`false` is the default, so it is written only when off).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     folder_direct: bool,
+    /// Lock Filters turned off (`true` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_filters: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    remember_filters: bool,
     // No filter: a library opens unfiltered. A date, keyword or person left over from the last session
     // would silently hide photos, with only a small badge to say so.
     sort: lcc_catalog::Sort,
@@ -795,6 +800,8 @@ impl Session {
             self.browse = v.browse;
             self.library_folder = v.library_folder.filter(|f| !f.trim().is_empty());
             self.folder_subfolders = !v.folder_direct;
+            self.lock_filters = v.lock_filters.unwrap_or(true);
+            self.remember_filters = v.remember_filters;
             if self.source == LibrarySource::LibraryFolder {
                 // a folder that is gone (or none): everything, not an empty grid
                 let f = lcc_catalog::Filter { library_folder: self.library_folder.clone(), ..Default::default() };
@@ -1154,6 +1161,8 @@ impl Session {
             // only while it is shown: a leftover would be a stale choice nobody made
             library_folder: self.library_folder.clone().filter(|_| self.source == LibrarySource::LibraryFolder),
             folder_direct: !self.folder_subfolders,
+            lock_filters: (!self.lock_filters).then_some(false),
+            remember_filters: self.remember_filters,
             sort: self.sort,
             selection: self.selection.clone(),
             previous_export: self.previous_export.clone(),
