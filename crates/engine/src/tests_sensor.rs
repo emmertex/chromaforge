@@ -405,3 +405,99 @@ fn remove_dust_on_import_runs_on_new_raws() {
     s.execute("dust.pump", &json!({})).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Confirm a pixel on `body`'s map: the same sample found in photos of three capture periods.
+fn confirm_pixel(body: &str, x: u32) {
+    use lcc_raw::defects::{Defect, DefectKind};
+    let found = [Defect { x, y: 7, s: 1, kind: DefectKind::Hot, level: 0.2 }];
+    let mut changed = false;
+    for k in 0..3u32 {
+        let shot = crate::sensor_maps::Shot {
+            fingerprint: 0x5e7_0000 + u64::from(x) * 16 + u64::from(k),
+            captured: Some(format!("2026-09-27T1{k}:00:00")),
+            exposure: Some(0.01),
+            iso: Some(400),
+            f_number: Some(8.0),
+        };
+        changed |= crate::sensor_maps::record_pixels(body, "Testmaker", "Sensor Test 1", [96, 64], &shot, &found) == Some(true);
+    }
+    assert!(changed, "{body}: the pixel is confirmed");
+}
+
+/// Confirming a hot pixel on one camera body changes the preview keys of that body's photos and of no other body's:
+/// the rest of a library keeps its thumbnails, loupe and 1:1 previews.
+#[test]
+fn a_body_map_changes_only_that_bodys_preview_keys() {
+    let dir = temp_dir("sensor-keys");
+    let (w, h) = (96usize, 64usize);
+    let mut s = Session::new().with_fs();
+    // two bodies with a serial number, and two cameras that write none and are known by their file names
+    let mut photo = |name: &str, serial: Option<&str>| {
+        let path = dir.join(name);
+        // (different pixels: an identical file would be skipped as a duplicate)
+        let seed = name.bytes().map(u64::from).sum::<u64>();
+        std::fs::write(&path, synthetic_dng_of(w, h, "RGGB", mosaic(w, h, seed, &[]), None, meta(0, serial))).unwrap();
+        s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+        s.catalog.photos().find(|p| p.file_name == name).unwrap().id
+    };
+    let serial_a = photo("a_0001.dng", Some("SN-KEYS-A"));
+    let serial_b = photo("b_0001.dng", Some("SN-KEYS-B"));
+    let named_a = photo("_K1_0001.dng", None);
+    let named_b = photo("_K2_0001.dng", None);
+    // (each file-named body has a map, as it does once one of its raws has been decoded)
+    for b in ["file:K1", "file:K2"] {
+        crate::sensor_maps::update(b, "Testmaker", "Sensor Test 1", [96, 64], |_| ()).unwrap();
+    }
+    let keys = |s: &mut Session, id| {
+        let p = s.catalog.photo(id).unwrap().clone();
+        let thumb = s.thumb_job(id, 256).unwrap().cache.unwrap().1;
+        (thumb, Session::full_view_key(&p), Session::variant_key(&p, &p.develop, 128))
+    };
+    let all = |s: &mut Session| [serial_a, serial_b, named_a, named_b].map(|id| keys(s, id));
+    let differ = |a: &(lcc_preview::Hash128, lcc_preview::Hash128, lcc_preview::Hash128),
+                  b: &(lcc_preview::Hash128, lcc_preview::Hash128, lcc_preview::Hash128)| { a.0 != b.0 && a.1 != b.1 && a.2 != b.2 };
+
+    let before = all(&mut s);
+    confirm_pixel("SN-KEYS-A", 11);
+    let after = all(&mut s);
+    assert!(differ(&before[0], &after[0]), "the body whose map changed gets new keys");
+    assert_eq!(before[1], after[1], "another body's keys stay");
+    assert_eq!(before[2], after[2], "a file-named body's keys stay");
+    assert_eq!(before[3], after[3], "a file-named body's keys stay");
+
+    let before = after;
+    confirm_pixel("file:K1", 13);
+    let after = all(&mut s);
+    assert_eq!(before[0], after[0]);
+    assert_eq!(before[1], after[1]);
+    assert!(differ(&before[2], &after[2]), "a body known by its file names gets new keys too");
+    assert_eq!(before[3], after[3]);
+
+    for b in ["SN-KEYS-A", "file:K1", "file:K2"] {
+        let _ = crate::sensor_maps::clear(b, true, true);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Confirming a pixel on one body makes that body's decoded raws out of date, and no other photo's.
+#[test]
+fn a_body_map_change_drops_only_that_bodys_decoded_sources() {
+    use crate::media::{DecodedSource, SourceLevel};
+    use lcc_catalog::PhotoId;
+    let mut s = Session::new();
+    let source = |body: Option<&str>| {
+        let pixels = body.map(|b| lcc_pipeline::PixelRepair { on: true, body: Some(b.into()), ..Default::default() });
+        let info = lcc_pipeline::SourceInfo { pixels, ..Default::default() };
+        DecodedSource::new(std::sync::Arc::new(lcc_raster::Rgb32f::from_fn(8, 8, |_, _| [0.5; 3])), Some(info))
+    };
+    let (a, b, none) = (PhotoId(901), PhotoId(902), PhotoId(903));
+    s.media.get(a, SourceLevel::Preview);
+    s.media.insert_source(a, SourceLevel::Preview, source(Some("SN-SRC-A")));
+    s.media.insert_source(b, SourceLevel::Preview, source(Some("SN-SRC-B")));
+    s.media.insert_source(none, SourceLevel::Preview, source(None));
+    confirm_pixel("SN-SRC-A", 17);
+    assert!(s.media.get(a, SourceLevel::Preview).is_none(), "decoded before its body's map changed");
+    assert!(s.media.get(b, SourceLevel::Preview).is_some(), "another body's decode is still right");
+    assert!(s.media.get(none, SourceLevel::Preview).is_some(), "no map went into this one");
+    let _ = crate::sensor_maps::clear("SN-SRC-A", true, true);
+}

@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use lcc_raw::defects::{Defect, DefectKind, Fix};
 use serde::{Deserialize, Serialize};
@@ -698,6 +698,10 @@ struct Registry {
     fixes: HashMap<String, Arc<Vec<Fix>>>,
     /// Every map file was read ([`generation`] needs them all).
     all_loaded: bool,
+    /// The preview keys' starting point, read or made with the first [`Registry::combined`].
+    baseline: Option<Arc<KeyBaseline>>,
+    /// The bodies the published [`PreviewKeys`] know.
+    keyed: HashSet<String>,
 }
 
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
@@ -710,8 +714,18 @@ fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
     f(&mut g)
 }
 
+/// What the preview keys are worked out from, published whole so a key never waits for the registry (which writes
+/// map files while it is held).
+static PREVIEW_KEYS: OnceLock<RwLock<Arc<PreviewKeys>>> = OnceLock::new();
+
+/// The largest baseline file read.
+const MAX_BASELINE: u64 = 1 << 20;
+/// The baseline's file in [`dir`] (not a `.json`: those are the bodies' maps).
+const BASELINE_FILE: &str = "preview-key-baseline.dat";
+
 /// A number made from every body's corrections (their confirmed pixels): it changes when any of them changes, and
-/// is the same from one run to the next while they don't. Part of the render and preview cache keys.
+/// is the same from one run to the next while they don't. Says when decoded sources are out of date; a preview's
+/// key has [`preview_key`], which only its own body's corrections change.
 pub fn generation() -> u64 {
     match GENERATION.load(Ordering::Relaxed) {
         0 => with(|r| {
@@ -720,6 +734,106 @@ pub fn generation() -> u64 {
         }),
         g => g,
     }
+}
+
+/// The sensor-map part of a preview's cache key, for a photo with this catalogued `serial` and `file_name`:
+/// it changes when the corrections of the photo's own body change, and not when another body's do.
+/// `develops_raw` false: no map applies to the photo, so nothing changes it.
+pub fn preview_key(develops_raw: bool, serial: &str, file_name: &str) -> u64 {
+    generation();
+    let keys = PREVIEW_KEYS.get_or_init(Default::default).read().unwrap_or_else(PoisonError::into_inner).clone();
+    keys.key_of(develops_raw, serial, file_name)
+}
+
+/// Each body with a map and a number for its corrections (0: none): a body whose number moved has new corrections.
+pub fn body_corrections() -> HashMap<String, u64> {
+    generation();
+    PREVIEW_KEYS.get_or_init(Default::default).read().unwrap_or_else(PoisonError::into_inner).terms.clone()
+}
+
+/// The corrections in use when the app first kept per-body preview keys, kept in a small file beside the maps. A
+/// body whose corrections are still these keeps the number previews were cached under until then
+/// ([`Self::generation`]), so updating the app rebuilds nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct KeyBaseline {
+    /// [`generation`] at that moment (1: no body had corrections).
+    generation: u64,
+    /// Each body with corrections then, and [`body_term`] of them.
+    bodies: HashMap<String, u64>,
+}
+
+impl KeyBaseline {
+    /// The baseline saved in `dir`, else a new one from the corrections now (saved there). A damaged file only means
+    /// a new baseline: previews cached under the old one are rendered again.
+    fn read_or_make(dir: Option<&std::path::Path>, generation: u64, terms: &HashMap<String, u64>) -> KeyBaseline {
+        let path = dir.map(|d| d.join(BASELINE_FILE));
+        let saved = path.as_ref().filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() <= MAX_BASELINE)).and_then(|p| std::fs::read(p).ok());
+        if let Some(b) = saved.and_then(|t| serde_json::from_slice::<KeyBaseline>(&t).ok()).filter(|b| b.generation != 0) {
+            return b;
+        }
+        let made = KeyBaseline { generation, bodies: terms.iter().filter(|(_, t)| **t != 0).map(|(b, t)| (b.clone(), *t)).collect() };
+        if let Some(path) = path {
+            let saved = path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(|e| e.to_string()).and_then(|()| {
+                let json = serde_json::to_vec(&made).map_err(|e| e.to_string())?;
+                lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| e.to_string())
+            });
+            if let Err(e) = saved {
+                log::warn!("sensor maps: {}: {e}", path.display());
+            }
+        }
+        made
+    }
+
+    fn term(&self, body: &str) -> u64 {
+        self.bodies.get(body).copied().unwrap_or(0)
+    }
+}
+
+/// Every body's corrections as the preview keys see them.
+#[derive(Clone, Debug, Default)]
+struct PreviewKeys {
+    /// [`generation`].
+    generation: u64,
+    /// Every body with a map, and [`body_term`] of its corrections (0: none).
+    terms: HashMap<String, u64>,
+    baseline: Arc<KeyBaseline>,
+}
+
+impl PreviewKeys {
+    fn term(&self, body: &str) -> u64 {
+        self.terms.get(body).copied().unwrap_or(0)
+    }
+
+    fn key_of(&self, develops_raw: bool, serial: &str, file_name: &str) -> u64 {
+        if !develops_raw {
+            return self.baseline.generation;
+        }
+        let by_serial = body_key(Some(serial), None);
+        let by_name = body_key(None, Some(file_name));
+        // catalogued without a serial, and no map goes by its file name: the file may state a serial the catalog
+        // doesn't have (it was browsed before the app kept them), so any body's change may be this photo's
+        if by_serial.is_none() && !by_name.as_ref().is_some_and(|b| self.terms.contains_key(b)) {
+            return self.generation;
+        }
+        // both names: a decode goes by the serial it reads from the file, or by the file name when it reads none
+        let bodies = || by_serial.iter().chain(by_name.iter());
+        if bodies().all(|b| self.term(b) == self.baseline.term(b)) {
+            return self.baseline.generation;
+        }
+        bodies().fold(1u64, |g, b| g.wrapping_add(self.term(b))).max(1)
+    }
+}
+
+/// What a body's confirmed pixels add to the keys (0: it has none).
+fn body_term(body: &str, m: &BodyMap) -> u64 {
+    if !m.pixels.iter().any(|p| p.confirmed) {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for c in body.bytes() {
+        h = (h ^ u64::from(c)).wrapping_mul(0x0100_0000_01b3);
+    }
+    h ^ m.confirmed_set()
 }
 
 fn read_file(body: &str) -> Option<BodyMap> {
@@ -766,11 +880,13 @@ impl Registry {
 
     fn refresh_fixes(&mut self, body: &str, before: Option<u64>) {
         let Some(m) = self.maps.get(body) else { return };
-        if before != Some(m.confirmed_set()) {
+        let changed = before != Some(m.confirmed_set());
+        if changed {
             self.fixes.insert(body.to_string(), Arc::new(m.fixes()));
-            if GENERATION.load(Ordering::Relaxed) != 0 {
-                self.combined();
-            }
+        }
+        // (a new map counts too: it says a photo's file name is what its body goes by)
+        if (changed || !self.keyed.contains(body)) && GENERATION.load(Ordering::Relaxed) != 0 {
+            self.combined();
         }
     }
 
@@ -787,17 +903,16 @@ impl Registry {
 
     /// Work out [`generation`] from the maps in memory (all of them, after [`Self::load_all`]) and store it.
     fn combined(&mut self) -> u64 {
-        let mut g: u64 = 1;
-        for (b, m) in &self.maps {
-            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-            for c in b.bytes() {
-                h = (h ^ u64::from(c)).wrapping_mul(0x0100_0000_01b3);
-            }
-            if m.pixels.iter().any(|p| p.confirmed) {
-                g = g.wrapping_add(h ^ m.confirmed_set());
-            }
-        }
-        let g = g.max(1);
+        let terms: HashMap<String, u64> = self.maps.iter().map(|(b, m)| (b.clone(), body_term(b, m))).collect();
+        let g = terms.values().fold(1u64, |g, t| g.wrapping_add(*t)).max(1);
+        let baseline = match &self.baseline {
+            Some(b) => b.clone(),
+            None => Arc::new(KeyBaseline::read_or_make(dir().as_deref(), g, &terms)),
+        };
+        self.baseline = Some(baseline.clone());
+        self.keyed = terms.keys().cloned().collect();
+        let keys = Arc::new(PreviewKeys { generation: g, terms, baseline });
+        *PREVIEW_KEYS.get_or_init(Default::default).write().unwrap_or_else(PoisonError::into_inner) = keys;
         GENERATION.store(g, Ordering::Relaxed);
         g
     }
@@ -969,3 +1084,67 @@ pub fn flush() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod preview_key_tests {
+    use super::*;
+
+    fn keys(generation: u64, terms: &[(&str, u64)], baseline: &[(&str, u64)], base_generation: u64) -> PreviewKeys {
+        let map = |l: &[(&str, u64)]| l.iter().map(|(b, t)| (b.to_string(), *t)).collect::<HashMap<_, _>>();
+        PreviewKeys { generation, terms: map(terms), baseline: Arc::new(KeyBaseline { generation: base_generation, bodies: map(baseline) }) }
+    }
+
+    /// Updating the app keeps every key a library's previews were cached under.
+    #[test]
+    fn unchanged_bodies_keep_the_number_previews_are_cached_under() {
+        let k = keys(77, &[("SN-A", 30), ("SN-B", 46), ("file:SA", 0)], &[("SN-A", 30), ("SN-B", 46)], 77);
+        for (serial, name) in [("SN-A", "a.CR3"), ("SN-B", "b.CR3"), ("", "_SA0001.ARW")] {
+            assert_eq!(k.key_of(true, serial, name), 77, "{serial} {name}");
+        }
+        assert_eq!(k.key_of(false, "", "a.jpg"), 77);
+        // no body has corrections and none had: the number the app has always used
+        assert_eq!(keys(1, &[("SN-A", 0)], &[], 1).key_of(true, "SN-A", "a.CR3"), 1);
+    }
+
+    #[test]
+    fn a_change_moves_only_that_bodys_key_and_going_back_restores_it() {
+        let base = [("SN-A", 30), ("SN-B", 46)];
+        let k = keys(99, &[("SN-A", 52), ("SN-B", 46)], &base, 77);
+        let a = k.key_of(true, "SN-A", "a.CR3");
+        assert_ne!(a, 77);
+        assert_eq!(k.key_of(true, "SN-B", "b.CR3"), 77, "the other body keeps its previews");
+        assert_eq!(k.key_of(false, "", "a.jpg"), 77, "no map applies to a JPEG");
+        assert_ne!(keys(121, &[("SN-A", 74), ("SN-B", 46)], &base, 77).key_of(true, "SN-A", "a.CR3"), a);
+        assert_eq!(keys(77, &base, &base, 77).key_of(true, "SN-A", "a.CR3"), 77);
+    }
+
+    /// A decode may go by the file name although the catalog knows a serial, so either body's change counts.
+    #[test]
+    fn a_photo_follows_both_of_its_possible_bodies() {
+        let k = keys(99, &[("file:71", 52)], &[], 1);
+        assert_ne!(k.key_of(true, "SN-A", "_71_0001.CR3"), 1);
+    }
+
+    /// A photo catalogued without a serial, with no map under its file name, may belong to any body.
+    #[test]
+    fn a_photo_of_an_unknown_body_follows_every_change() {
+        let k = keys(99, &[("SN-A", 52)], &[("SN-A", 30)], 77);
+        assert_eq!(k.key_of(true, "", "_71_0001.CR3"), 99);
+    }
+
+    #[test]
+    fn the_baseline_survives_a_restart_and_a_damaged_file_only_starts_a_new_one() {
+        let dir = std::env::temp_dir().join(format!("lc-key-baseline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let terms: HashMap<String, u64> = [("SN-A".to_string(), 30), ("SN-B".to_string(), 0)].into_iter().collect();
+        let first = KeyBaseline::read_or_make(Some(&dir), 31, &terms);
+        assert_eq!(first.bodies.len(), 1, "only bodies with corrections");
+        let later = KeyBaseline::read_or_make(Some(&dir), 500, &HashMap::new());
+        assert_eq!(later, first, "the saved one stays what it was");
+        assert_eq!(std::path::Path::new(BASELINE_FILE).extension().and_then(|x| x.to_str()), Some("dat"), "not read as a body's map");
+        std::fs::write(dir.join(BASELINE_FILE), b"{ not json").unwrap();
+        assert_eq!(KeyBaseline::read_or_make(Some(&dir), 500, &HashMap::new()).generation, 500);
+        assert_eq!(KeyBaseline::read_or_make(None, 8, &terms).generation, 8, "no folder: for this run only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
