@@ -364,6 +364,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         // Every language's command is checked when it is the active one.
         _ if crate::menus::language_from_command(id).is_some() => Some(crate::menus::language_from_command(id) == Some(u.language)),
         "develop.autoSync" => Some(app.session.auto_sync),
+        "webui.guides" => Some(u.web.show_guides),
         "view.photoCounts" => Some(u.show_counts),
         "view.cellCompact" => Some(u.lib.cell_style == crate::libtools::CellStyle::Compact),
         "view.cellExpanded" => Some(u.lib.cell_style == crate::libtools::CellStyle::Expanded),
@@ -381,6 +382,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.faceBoxes" => Some(u.face_boxes),
         "view.hdrPreview" => Some(u.hdr_preview),
         "view.focusPoint" => Some(u.settings.focus_point),
+        "metadata.targetOnly" => Some(u.settings.metadata_target_only),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
         "view.shotInfo" => Some(u.shot_info),
@@ -408,6 +410,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.navigator" => Some(u.navigator),
         "view.layoutImage" => Some(u.layout_image.show && !u.layout_image.path.trim().is_empty()),
         "library.holdView" => Some(app.session.hold_view),
+        "app.autoImportToggle" => Some(app.session.import_defaults.auto_active_folder().is_some()),
         "view.fullScreenPreview" => Some(u.fullscreen),
         "view.lightsOut" => Some(u.lights_out != crate::module::LightsOut::Off),
         "view.enterFullScreen" => Some(app.window_is_fullscreen),

@@ -16,17 +16,9 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Rename Catalog… | Rename the open catalog's folder and file, then reopen it. | S | feature | `soon.renameCatalog` |
 | Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
-
-## Every module ▸ File ▸ Auto Import
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
-| Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
 
 ## Every module ▸ Edit
 
@@ -43,17 +35,16 @@ Generated from the menu tables; don't edit by hand.
 | New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
-| Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
 | Review Comments | Comments from shared web galleries. | L | feature | `soon.reviewComments` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
+| Validate DNG Files | Check the DNGs' embedded checksums and list the damaged ones. | S | feature | `soon.validateDng` |
 | Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
-| Find Previous Process Photos | Show the photos edited with an older process version. | S | feature | `soon.findPreviousProcess` |
 
 ## Library module ▸ Photo
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
+| Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
@@ -72,8 +63,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Metadata for Target Photo Only | The Metadata panel shows the active photo, not the selection's mixed values. | S | feature | `soon.metadataTargetOnly` |
-| Revert Capture Time to Original | Undo Edit Capture Time from the file's own date. | S | feature | `soon.revertCaptureTime` |
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
 
 ## Library module ▸ View
@@ -91,19 +80,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
-
-## Develop module ▸ Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
-| Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-
-## Develop module ▸ Tools
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
 
@@ -135,7 +111,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-| Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
 ## Map module ▸ View
 
@@ -158,12 +133,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
 
-## Slideshow module ▸ Slideshow
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
-
 ## Slideshow module ▸ View
 
 | Item | What it does | Size | Kind | Slot |
@@ -176,19 +145,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
 | Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
-
-## Web module ▸ Web
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template | Save the web gallery settings as a template. | S | feature | `soon.newWebTemplate` |
-| New Template Folder | Group web templates in folders. | S | feature | `soon.newWebTemplateFolder` |
-
-## Web module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides in the gallery preview. | S | feature | `soon.webGuides` |
 
 ## Not in this list yet
 

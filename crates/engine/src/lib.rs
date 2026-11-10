@@ -727,6 +727,16 @@ impl Default for Session {
 }
 
 impl Session {
+    /// What the next Auto Import listing looks at (`None`: no active watched folder).
+    pub fn auto_import_scope(&self) -> Option<cmd::library::AutoImportScope> {
+        let folder = self.import_defaults.auto_active_folder()?.clone();
+        Some(cmd::library::AutoImportScope {
+            folder,
+            subfolders: self.import_defaults.auto_options.subfolders,
+            skip: self.library.as_ref().map(|l| l.dir.clone()),
+        })
+    }
+
     pub fn library_generation(&self) -> u64 {
         self.library_generation
     }
@@ -2577,6 +2587,8 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
+mod tests_auto_import;
+#[cfg(test)]
 mod tests_auto_mask_range;
 #[cfg(test)]
 mod tests_autosync;
@@ -2776,6 +2788,8 @@ mod tests_source_report;
 mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_sync_copies;
 #[cfg(test)]
 mod tests_target_params;
 #[cfg(test)]
