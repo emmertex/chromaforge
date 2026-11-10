@@ -41,9 +41,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
-| Filter by Preset | The filter bar's saved filter presets as a submenu. | S | wire-up | `soon.filterByPreset` |
-| Filter by Flag | Flagged / Unflagged / Rejected filters as a submenu. | S | wire-up | `soon.filterByFlag` |
-| Filter by Color Label | Colour-label filters as a submenu. | S | wire-up | `soon.filterByColorLabel` |
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
 | Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
@@ -59,7 +56,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
-| Set Keyword | The keyword set's nine keywords as a submenu (Alt+1…9 work today). | S | wire-up | `soon.setKeyword` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
@@ -82,7 +78,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Keyword Set | Choose the keyword set (keyword sets exist in the Keywording panel). | S | wire-up | `soon.keywordSet` |
 | Show Metadata for Target Photo Only | The Metadata panel shows the active photo, not the selection's mixed values. | S | feature | `soon.metadataTargetOnly` |
 | Revert Capture Time to Original | Undo Edit Capture Time from the file's own date. | S | feature | `soon.revertCaptureTime` |
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
@@ -114,9 +109,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Add to Mask with | Add a component to the chosen mask (the Masking panel does it). | S | wire-up | `soon.addToMask` |
-| Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
-| Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
 | Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
@@ -132,12 +124,6 @@ Generated from the menu tables; don't edit by hand.
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
-## Develop module ▸ Tools ▸ Target Adjustment
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Targeted Adjustment tools | Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu. | M | feature | `soon.targetAdjustment` |
-
 ## Develop module ▸ Tools ▸ Crop Guide Overlay
 
 | Item | What it does | Size | Kind | Slot |
@@ -149,7 +135,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Search… (Ctrl+F) | Focus the map's search box. | S | wire-up | `soon.mapSearch` |
-| Location Filter | Visible on Map / Tagged / Untagged / None (map.filter exists). | S | wire-up | `soon.locationFilter` |
 
 ## Map module ▸ Photo
 
@@ -166,7 +151,6 @@ Generated from the menu tables; don't edit by hand.
 | Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
 | Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
 | Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
-| Map Style | The map's tile styles as a submenu (map.style exists). | S | wire-up | `soon.mapStyle` |
 
 ## Book module ▸ Book
 
@@ -189,12 +173,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
-
-## Slideshow module ▸ Play
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Content | Play the selected / filmstrip / flagged photos. | S | feature | `soon.slideshowContent` |
 
 ## Slideshow module ▸ View
 

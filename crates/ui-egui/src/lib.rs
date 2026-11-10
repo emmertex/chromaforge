@@ -58,6 +58,7 @@ pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
+mod menu_choices;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
