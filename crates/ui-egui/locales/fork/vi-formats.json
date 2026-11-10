@@ -107,6 +107,7 @@
   "Module: {size} KB": "Mô-đun: {size} KB",
   "Move {n} photo{} to “{}”": "Di chuyển {n} ảnh{:.0} đến «{}»",
   "Move {n} photo{} to “{}”?": "Di chuyển {n} ảnh{:.0} đến «{}»?",
+  "Moved {name} to {folder}": "Đã chuyển {name} vào {folder}",
   "Moved {n} photo{} to “{}”. Edit → Undo moves them back.": "Đã di chuyển {n} ảnh{:.0} đến «{}». Chỉnh sửa → Hoàn tác sẽ chuyển chúng về.",
   "Name this face {who}": "Đặt tên cho khuôn mặt này {who}",
   "New {n}": "Mới {n}",

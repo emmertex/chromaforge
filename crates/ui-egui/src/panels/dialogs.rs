@@ -2378,8 +2378,21 @@ fn sheet_w(screen: egui::Rect, insets: crate::modern::Insets) -> f32 {
 /// listed (one opened by automation) has no verb to name and keeps "OK".
 fn prompt_verb(command: &str) -> &'static str {
     match command {
-        "album.rename" | "folder.rename" | "version.rename" | "preset.rename" | "mask.renameEffect" => "Rename",
-        "folder.create" | "mask.setEffectGroup" | "app.newLibrary" | "preset.createGroup" => "Create",
+        "album.rename"
+        | "folder.rename"
+        | "version.rename"
+        | "preset.rename"
+        | "mask.renameEffect"
+        | "printui.renameTemplateFolder"
+        | "slideshow.renameTemplateFolder"
+        | "print.template.folder.rename" => "Rename",
+        "folder.create"
+        | "mask.setEffectGroup"
+        | "app.newLibrary"
+        | "preset.createGroup"
+        | "printui.createTemplateFolder"
+        | "slideshow.createTemplateFolder"
+        | "print.template.folder.create" => "Create",
         "preset.move" => "Move",
         "keyword.saveSet"
         | "printui.saveCreation"

@@ -560,7 +560,7 @@ const BOOK_VIEW: &[&str] = &[
 const SLIDESHOW: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Slideshow","hint":"Name","command":"slideshow.saveSlideshow","key":"name"}=Create Saved Slideshow…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"slideshow.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newSlideshowTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"slideshow.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "slideshow.exportPdf",
     "slideshow.exportJpeg",
@@ -589,7 +589,7 @@ const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"printui.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newPrintTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"printui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     r#"printui.page{"delta":-1}=Previous Page"#,
     r#"printui.page{"delta":1}=Next Page"#,
@@ -920,12 +920,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
-    soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
