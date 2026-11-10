@@ -578,6 +578,9 @@ pub struct Renderer {
     /// Since when nothing has been pending, and whether the GPU pool was trimmed since.
     #[cfg(not(target_arch = "wasm32"))]
     idle: Option<(std::time::Instant, bool)>,
+    /// Bytes still pooled after the last idle trim ([`Self::trim_when_idle`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pooled_after_trim: u64,
     /// Surface is extended linear sRGB (macOS EDR / Windows scRGB): skip monitor profile
     /// conversion, let the compositor do it (P2-3).
     surface_is_extended_linear: bool,
@@ -711,6 +714,8 @@ impl Renderer {
             display: None,
             #[cfg(not(target_arch = "wasm32"))]
             idle: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pooled_after_trim: 0,
             surface_is_extended_linear: false,
             screen: None,
             natives: HashMap::new(),
@@ -2253,7 +2258,10 @@ impl Renderer {
     }
 
     /// Free the GPU renderer's recycled buffers once nothing has rendered for [`IDLE_TRIM`] (they
-    /// are reallocated by the next render; while working, renders reuse them).
+    /// are reallocated by the next render; while working, renders reuse them). Batch work (an
+    /// export, Build Previews) renders on other threads and fills the pools again after a trim:
+    /// once it has finished, the pools are trimmed again (they kept up to the pool limit per card,
+    /// 2 GB each with a 16 GB budget, for the rest of the session).
     #[cfg(not(target_arch = "wasm32"))]
     fn trim_when_idle(&mut self, ctx: &egui::Context) {
         if !self.pending.is_empty() {
@@ -2263,12 +2271,22 @@ impl Renderer {
         let now = std::time::Instant::now();
         let (since, trimmed) = *self.idle.get_or_insert((now, false));
         if trimmed {
+            let batch = lcc_engine::gpu::batch_usage().jobs + lcc_engine::gpu::helper_usage().0;
+            if batch > 0 {
+                // (looked at again once it has had time to finish)
+                ctx.request_repaint_after(IDLE_TRIM);
+            } else if lcc_engine::gpu::memory().pooled > self.pooled_after_trim {
+                self.idle = Some((now, false));
+                ctx.request_repaint_after(IDLE_TRIM);
+            }
             return;
         }
         let waited = now.duration_since(since);
         if waited >= IDLE_TRIM {
             lcc_engine::gpu::trim_pool(0);
             lcc_engine::memory::release();
+            // (what a trim cannot free does not start another one)
+            self.pooled_after_trim = lcc_engine::gpu::memory().pooled;
             self.idle = Some((since, true));
         } else {
             ctx.request_repaint_after(IDLE_TRIM - waited);
@@ -4138,6 +4156,46 @@ mod stage_budget_tests {
     #[test]
     fn empty_caches_are_left_alone() {
         assert_eq!(stage_trim_order(&[(Slot::Hover, 0), (Slot::Second, 900 * MB)], 100 * MB), vec![Slot::Second]);
+    }
+
+    /// Batch work that pools GPU buffers after the idle trim (an export, Build Previews: renders on
+    /// other threads) gets them trimmed again once it is done: before, the trim ran once per idle
+    /// spell of the view and the pools kept up to their limit for the rest of the session.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn buffers_pooled_by_batch_work_after_the_idle_trim_are_trimmed_again() {
+        if !lcc_engine::gpu::available() {
+            lcc_testkit::skip!(Gpu, "no GPU adapter");
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut r = Renderer::default();
+        let long_ago = std::time::Instant::now().checked_sub(IDLE_TRIM * 2).unwrap();
+        r.idle = Some((long_ago, true));
+        r.pooled_after_trim = lcc_engine::gpu::memory().pooled;
+        // an export's photo, rendered on another thread after the view's trim
+        std::thread::spawn(|| {
+            let src = std::sync::Arc::new(lcc_raster::Rgb32f::from_fn(640, 480, |x, y| [x as f32 / 640.0, y as f32 / 480.0, 0.3]));
+            let mut s = lcc_engine::develop::DevelopSettings::default();
+            s.effects.clarity = 30.0;
+            let info = lcc_engine::pipeline::SourceInfo { raw: true, ..Default::default() };
+            lcc_engine::gpu::render(&src, &info, &s, &lcc_engine::pipeline::RenderRequest::fit(640, 480), None).expect("gpu render");
+        })
+        .join()
+        .unwrap();
+        assert!(lcc_engine::gpu::memory().pooled > r.pooled_after_trim, "the render pooled its buffers");
+        r.trim_when_idle(&ctx);
+        assert_eq!(r.idle.map(|(_, trimmed)| trimmed), Some(false), "a new idle spell starts for the trim");
+        let pooled = lcc_engine::gpu::memory().pooled;
+        r.idle = Some((long_ago, false));
+        r.trim_when_idle(&ctx);
+        // (other tests may pool buffers meanwhile: less than before, not necessarily none)
+        assert!(lcc_engine::gpu::memory().pooled < pooled, "trimmed again");
+        assert_eq!(r.idle.map(|(_, trimmed)| trimmed), Some(true));
+        // what a trim could not free starts no further trims (no repaint every few seconds)
+        r.pooled_after_trim = u64::MAX;
+        r.trim_when_idle(&ctx);
+        assert_eq!(r.idle.map(|(_, trimmed)| trimmed), Some(true));
     }
 
     // Given real stage caches over the budget, the renderer clears them (the open photo's last)
