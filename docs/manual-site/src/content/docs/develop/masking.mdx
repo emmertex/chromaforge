@@ -1,13 +1,41 @@
 ---
 title: Masks
-description: Local adjustments with linear, radial and brush masks.
+description: Local adjustments, step by step.
 ---
 
 import Shot from '../../../components/Shot.astro';
+import { Aside, Steps } from '@astrojs/starlight/components';
 
-<Shot name="masking" alt="A linear mask darkening the sky" />
+<Steps>
 
-- **Linear** and **radial** gradients, **brush**, and AI selections where a model is installed.
-- Each mask has its own light, colour and detail sliders.
+1. **Open the Masks tool.** The panel offers every way to make a mask.
+
+   <Shot name="mask-1-open" alt="The Masks tool open, Create New Mask choices" />
+
+2. **Pick a type and mark the area.** Here: **Linear**, then drag on the photo from the top edge down to where the effect should fade out.
+
+   <Shot name="mask-2-linear" alt="A linear mask dragged on the sky" />
+
+3. **Adjust the mask.** Its own Light, Colour, Effects and Detail sliders only touch the masked area.
+
+   <Shot name="mask-3-adjust" alt="Exposure, temperature, saturation and dehaze changed for the sky mask" />
+
+4. **Add another mask.** Pick **Radial** and drag out from the centre of the sun. Each mask is listed in the panel.
+
+   <Shot name="mask-4-radial" alt="A radial mask around the sun" />
+
+5. **Leave the tool** to see the result without the overlay.
+
+   <Shot name="mask-5-result" alt="The finished photo with both masks applied" />
+
+</Steps>
+
+- **Create from the photo**: Object, Describe (text prompt), Subject, Sky, Background, People, Remembered (reuse a saved selection). AI selections need their model installed.
+- **Draw**: Brush, Linear, Radial.
+- **Range**: Luminance, Color.
+- Add, subtract and intersect to refine; **Refine Edges** and **Feather** soften the border.
 - Masks use image-relative coordinates, so previews and exports match at any size.
-- Add, subtract and intersect to refine.
+
+<Aside type="note" title="Modern layout">
+  **Masks** is in the dock. Show or hide the mask overlay: **View ▸ Tool Overlay**. Brush size and feather: **Window ▸ Tools**.
+</Aside>

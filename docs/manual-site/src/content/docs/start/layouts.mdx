@@ -4,11 +4,41 @@ description: Classic, Modern and Compact show the same app in three ways.
 ---
 
 import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 - **Classic**: module bar on top, panels left and right. The default.
-- **Modern**: larger controls for touch and tablets.
+- **Modern**: large touch controls. Library and Develop only on screen.
 - **Compact**: Classic, drawn denser: one-line slider rows, tighter spacing.
-- Switch in **Settings ▸ General ▸ Layout**. The open photo and panel stay put.
-- Pick a layout tab on any screenshot here; every screenshot follows your choice.
+- Switch in **Edit ▸ Settings ▸ General ▸ Layout**. The open photo and panel stay put.
+- Pick a layout tab on any screenshot; every screenshot follows your choice.
 
 <Shot name="library" alt="The Library grid" />
+
+## Modern: what is on screen, what is in the menu
+
+<Aside type="tip" title="Open the menu">
+  In Modern, **☰** (top left) opens the full menu bar. Anything below marked *menu* lives there.
+</Aside>
+
+**On screen**
+- Library / Develop switch, Import, grid style, filter, search chips, flag, stars, delete, Info.
+- Develop dock: Presets, Light, Colour, Tone, Detail, Optics, Effects, Crop, Masks, Heal, Dodge, Burn.
+- Each dock group's **more** buttons open the full sections: Color Mixer, Color Grading, Calibration, Tone Curve, Retouch, Lens Corrections, Transform, Plug-in Filters.
+- Undo, redo, hold-to-see-original, histogram.
+
+**Menu only**
+
+| Feature | Where |
+|---|---|
+| Map, Book, Print, Web, Slideshow modules | **Window ▸ Modules ▸ …** |
+| Export | **☰ ▸ Shortcuts ▸ Export…**, **File ▸ Export with Preset** |
+| Settings, Layout, Grading Mode | **Edit ▸ Settings…**, **Window ▸ Grading Mode** |
+| Copy / Paste / Sync settings, Create / Manage Presets, camera profile from chart | **Photo ▸ Develop Settings** |
+| Before / After split views, zoom | **View ▸ Before/After**, **View ▸ Zoom** |
+| Mask and crop overlays | **View ▸ Tool Overlay** |
+| Profile Browser, Red Eye, Guided Upright, WB picker, brush size | **Window ▸ Edit Panels**, **Window ▸ Tools** |
+| Libraries: new, open, back up, restore | **File ▸ Libraries** |
+| Other imports and exports (Lightroom, Capture One, Immich, contact sheet) | **File ▸ More Imports / More Exports** |
+| Stacks, Photo Merge (HDR, panorama, focus stack), Edit In | **Photo ▸ Stack / Photo Merge / Edit In** |
+| Sort and view options | **View ▸ Sort**, **View ▸ Grid View Style** |
+| Help, updates, secondary display, screen modes | **Help**, **Window** |

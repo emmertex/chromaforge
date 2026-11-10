@@ -1,25 +1,423 @@
 {
   "layouts": {
-    "classic": { "size": "1600x1000", "steps": [
-      { "method": "engine.execute", "params": { "command": "view.modernLayout", "params": { "on": false } } },
-      { "method": "engine.execute", "params": { "command": "view.compactLayout", "params": { "on": false } } } ] },
-    "modern": { "size": "1280x800", "steps": [
-      { "method": "engine.execute", "params": { "command": "view.modernLayout", "params": { "on": true } } } ] },
-    "compact": { "size": "1600x1000", "steps": [
-      { "method": "engine.execute", "params": { "command": "view.compactLayout", "params": { "on": true } } } ] }
+    "classic": {
+      "size": "1600x1000",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.modernLayout",
+            "params": {
+              "on": false
+            }
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.compactLayout",
+            "params": {
+              "on": false
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "icon:masking",
+        "$colour": "",
+        "$presets": "",
+        "$profiles": ""
+      }
+    },
+    "modern": {
+      "size": "1280x800",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.modernLayout",
+            "params": {
+              "on": true
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "modern:group:masks"
+      }
+    },
+    "compact": {
+      "size": "1600x1000",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.compactLayout",
+            "params": {
+              "on": true
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "icon:masking",
+        "$colour": "",
+        "$presets": "",
+        "$profiles": ""
+      }
+    }
   },
   "shots": [
-    { "name": "library", "steps": [
-      { "method": "engine.execute", "params": { "command": "module.library" } },
-      { "method": "engine.execute", "params": { "command": "view.squareGrid" } },
-      { "method": "ui.set", "params": { "leftPanel": true, "thumbSize": 150 } } ] },
-    { "name": "develop", "steps": [
-      { "method": "engine.execute", "params": { "command": "library.select", "params": { "ids": [1] } } },
-      { "method": "engine.execute", "params": { "command": "module.develop" } },
-      { "method": "engine.execute", "params": { "command": "develop.set", "params": { "values": { "light.highlights": -55, "light.shadows": 35, "color.vibrance": 25, "effects.clarity": 15 } } } } ] },
-    { "name": "masking", "steps": [
-      { "method": "engine.execute", "params": { "command": "panel.masking" } },
-      { "method": "engine.execute", "params": { "command": "mask.add", "params": { "kind": "linear", "start": [0.5, 0.0], "end": [0.5, 0.45], "name": "Sky" } } },
-      { "method": "engine.execute", "params": { "command": "mask.adjust", "params": { "values": { "exposure": -0.6, "temp": 25, "saturation": 20, "dehaze": 20 } } } } ] }
+    {
+      "name": "library",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "module.library"
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.squareGrid"
+          }
+        },
+        {
+          "method": "ui.set",
+          "params": {
+            "leftPanel": true,
+            "thumbSize": 150
+          }
+        }
+      ]
+    },
+    {
+      "name": "develop",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "library.select",
+            "params": {
+              "ids": [
+                1
+              ]
+            }
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "module.develop"
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "develop.set",
+            "params": {
+              "values": {
+                "light.highlights": -55,
+                "light.shadows": 35,
+                "color.vibrance": 25,
+                "effects.clarity": 15
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "mask-1-open",
+      "steps": [
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "$masks"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mask-2-linear",
+      "steps": [
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "maskNew:linear"
+          }
+        },
+        {
+          "method": "ui.pointer",
+          "params": {
+            "events": [
+              {
+                "kind": "down",
+                "x": 0.5,
+                "y": 0.02
+              },
+              {
+                "kind": "drag",
+                "x": 0.5,
+                "y": 0.25
+              },
+              {
+                "kind": "drag",
+                "x": 0.5,
+                "y": 0.45
+              },
+              {
+                "kind": "up",
+                "x": 0.5,
+                "y": 0.45
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mask-3-adjust",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "mask.adjust",
+            "params": {
+              "values": {
+                "exposure": -0.6,
+                "temp": 25,
+                "saturation": 20,
+                "dehaze": 20
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "mask-4-radial",
+      "steps": [
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "maskNew:radial"
+          }
+        },
+        {
+          "method": "ui.pointer",
+          "params": {
+            "events": [
+              {
+                "kind": "down",
+                "x": 0.62,
+                "y": 0.4
+              },
+              {
+                "kind": "drag",
+                "x": 0.7,
+                "y": 0.46
+              },
+              {
+                "kind": "drag",
+                "x": 0.8,
+                "y": 0.52
+              },
+              {
+                "kind": "up",
+                "x": 0.8,
+                "y": 0.52
+              }
+            ]
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "mask.adjust",
+            "params": {
+              "values": {
+                "exposure": 0.5,
+                "temp": 40,
+                "saturation": 15
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "mask-5-result",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "panel.edit"
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "modern:group:light"
+          },
+          "only": [
+            "modern"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grading-witchcraft",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.gradingMode",
+            "params": {
+              "mode": "witchcraft"
+            }
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "panel.edit"
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "section.primaries",
+            "params": {
+              "solo": true
+            }
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "modern:group:colour"
+          },
+          "only": [
+            "modern"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grading-hsl",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "section.hsl",
+            "params": {
+              "solo": true
+            }
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "modern:group:colour"
+          },
+          "only": [
+            "modern"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "grading-eboda",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.gradingMode",
+            "params": {
+              "mode": "eboda"
+            }
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "section.grading",
+            "params": {
+              "solo": true
+            }
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "modern:group:colour"
+          },
+          "only": [
+            "modern"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "profiles",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "panel.profiles"
+          }
+        }
+      ],
+      "layouts": [
+        "classic",
+        "compact"
+      ]
+    },
+    {
+      "name": "presets",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "panel.presets"
+          },
+          "only": [
+            "classic",
+            "compact"
+          ]
+        },
+        {
+          "method": "ui.clickWidget",
+          "params": {
+            "id": "modern:group:presets"
+          },
+          "only": [
+            "modern"
+          ]
+        }
+      ]
+    }
   ]
 }
