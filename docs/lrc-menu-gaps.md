@@ -16,7 +16,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Rename Catalog… | Rename the open catalog's folder and file, then reopen it. | S | feature | `soon.renameCatalog` |
 | Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
@@ -34,17 +33,12 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
-| Filter by Preset | The filter bar's saved filter presets as a submenu. | S | wire-up | `soon.filterByPreset` |
-| Filter by Flag | Flagged / Unflagged / Rejected filters as a submenu. | S | wire-up | `soon.filterByFlag` |
-| Filter by Color Label | Colour-label filters as a submenu. | S | wire-up | `soon.filterByColorLabel` |
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
-| Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
 | Review Comments | Comments from shared web galleries. | L | feature | `soon.reviewComments` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
 | Validate DNG Files | Check the DNGs' embedded checksums and list the damaged ones. | S | feature | `soon.validateDng` |
 | Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
-| Find Previous Process Photos | Show the photos edited with an older process version. | S | feature | `soon.findPreviousProcess` |
 
 ## Library module ▸ Photo
 
@@ -52,17 +46,12 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
-| Set Keyword | The keyword set's nine keywords as a submenu (Alt+1…9 work today). | S | wire-up | `soon.setKeyword` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Find Similar Faces | People view: faces like the chosen one. | S | wire-up | `soon.findSimilarFaces` |
-| Move to Unnamed People | Take a face's name off. | S | wire-up | `soon.moveToUnnamedPeople` |
-| Remove Face Region | Delete the chosen face box. | S | wire-up | `soon.removeFaceRegion` |
-| Edit Name (Shift+O) | Rename the chosen face. | S | wire-up | `soon.editFaceName` |
 | Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
 
 ## Library module ▸ Photo ▸ Develop Settings
@@ -75,9 +64,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Keyword Set | Choose the keyword set (keyword sets exist in the Keywording panel). | S | wire-up | `soon.keywordSet` |
-| Show Metadata for Target Photo Only | The Metadata panel shows the active photo, not the selection's mixed values. | S | feature | `soon.metadataTargetOnly` |
-| Revert Capture Time to Original | Undo Edit Capture Time from the file's own date. | S | feature | `soon.revertCaptureTime` |
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
 
 ## Library module ▸ View
@@ -96,22 +82,6 @@ Generated from the menu tables; don't edit by hand.
 | Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
 | Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
 
-## Develop module ▸ Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
-| Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-
-## Develop module ▸ Tools
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Add to Mask with | Add a component to the chosen mask (the Masking panel does it). | S | wire-up | `soon.addToMask` |
-| Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
-| Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
-| Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
-
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
@@ -125,12 +95,6 @@ Generated from the menu tables; don't edit by hand.
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
-## Develop module ▸ Tools ▸ Target Adjustment
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Targeted Adjustment tools | Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu. | M | feature | `soon.targetAdjustment` |
-
 ## Develop module ▸ Tools ▸ Crop Guide Overlay
 
 | Item | What it does | Size | Kind | Slot |
@@ -142,24 +106,19 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Search… (Ctrl+F) | Focus the map's search box. | S | wire-up | `soon.mapSearch` |
-| Location Filter | Visible on Map / Tagged / Untagged / None (map.filter exists). | S | wire-up | `soon.locationFilter` |
 
 ## Map module ▸ Photo
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-| Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
 ## Map module ▸ View
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Map Info | The map's info overlay. | S | feature | `soon.mapInfo` |
-| Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
 | Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
 | Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
-| Map Style | The map's tile styles as a submenu (map.style exists). | S | wire-up | `soon.mapStyle` |
 
 ## Book module ▸ Book
 
@@ -173,21 +132,13 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Header Bar | The book's header bar. | S | feature | `soon.bookHeaderBar` |
 | Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-| Show Info Overlay | Page and book info over the view. | S | feature | `soon.bookInfoOverlay` |
 
 ## Slideshow module ▸ Slideshow
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
-
-## Slideshow module ▸ Play
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Content | Play the selected / filmstrip / flagged photos. | S | feature | `soon.slideshowContent` |
 
 ## Slideshow module ▸ View
 
@@ -201,20 +152,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
 | Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
-| Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
-
-## Web module ▸ Web
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template | Save the web gallery settings as a template. | S | feature | `soon.newWebTemplate` |
-| New Template Folder | Group web templates in folders. | S | feature | `soon.newWebTemplateFolder` |
-
-## Web module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides in the gallery preview. | S | feature | `soon.webGuides` |
 
 ## Not in this list yet
 

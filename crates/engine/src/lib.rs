@@ -2786,6 +2786,8 @@ mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
 #[cfg(test)]
+mod tests_sync_copies;
+#[cfg(test)]
 mod tests_target_params;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
