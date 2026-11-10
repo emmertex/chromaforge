@@ -53,7 +53,12 @@ fn sam3_folder(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let custom = !app.ui.settings.sam3_dir.is_empty();
     super::settings::hint(ui, t, "SAM 3 is large. Choose another folder (another drive, say), or point to one that already holds it.");
     super::settings::row(ui, t, crate::i18n::tr("Folder"), |ui| {
-        ui.add(egui::Label::new(egui::RichText::new(if current.is_empty() { "—".to_string() } else { current.clone() }).color(t.text)).truncate());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(if current.is_empty() { crate::i18n::tr("Not chosen").to_string() } else { current.clone() }).color(t.text),
+            )
+            .truncate(),
+        );
     });
     crate::dialog_frame::control_row(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;

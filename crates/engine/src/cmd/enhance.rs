@@ -45,7 +45,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Raw Details",
             [],
             None,
-            "{ids?, stack?: true, wait?: false} → {queued} or with `wait` {made: [{id, source, path, size, bytes}], failed: [{id, error}]} — demosaic each raw again with the slower edge-aware method (finer detail, less false colour and zipper) into a new linear DNG `<name>-Enhanced-RD.dng` next to it, imported with the source's develop settings and stacked with it. Runs in the background with a row in the activity stack; `wait: true` returns when done (scripts)",
+            "{ids?, stack?: true, wait?: false} → {queued} or with `wait` {made: [{id, source, path, size, bytes}], failed: [{id, error}]}: demosaic each raw again with the slower edge-aware method (finer detail, less false colour and zipper) into a new linear DNG `<name>-Enhanced-RD.dng` next to it, imported with the source's develop settings and stacked with it. Runs in the background with a row in the activity stack; `wait: true` returns when done (scripts)",
             can_enhance,
             |s, p| s.enhance_command(EnhanceKind::RawDetails, p)
         ),
@@ -54,7 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Super Resolution",
             [],
             None,
-            "{ids?, stack?: true, wait?: false, method?: classical | ai | auto, scale?: 2 | 4, space?: srgb | displayP3 | adobeRgb} → as `enhance.rawDetails` — `classical` (the default): Raw Details, then twice the width and height (four times the pixels) by iterative back-projection, into `<name>-Enhanced-SR.dng`; also takes JPEG, TIFF and other photos; at most 400 MP out. `ai`: the photo as an export renders it (its edits and crop baked in), enlarged `scale` times across by the installed upscaler (`denoise.models.select {kind: \"upscale\"}`), into a 16-bit TIFF `<name>-Enhanced-SR.tif` stacked with it, in `space` (default srgb; ProPhoto RGB and Rec. 2020 are refused, too far from what the upscaler learned on); at most 110 MP out. `auto`: `ai` when an upscaler is chosen, else `classical`",
+            "{ids?, stack?: true, wait?: false, method?: classical | ai | auto, scale?: 2 | 4, space?: srgb | displayP3 | adobeRgb} → as `enhance.rawDetails`. `classical` (the default): Raw Details, then twice the width and height (four times the pixels) by iterative back-projection, into `<name>-Enhanced-SR.dng`; also takes JPEG, TIFF and other photos; at most 400 MP out. `ai`: the photo as an export renders it (its edits and crop baked in), enlarged `scale` times across by the installed upscaler (`denoise.models.select {kind: \"upscale\"}`), into a 16-bit TIFF `<name>-Enhanced-SR.tif` stacked with it, in `space` (default srgb; ProPhoto RGB and Rec. 2020 are refused, too far from what the upscaler learned on); at most 110 MP out. `auto`: `ai` when an upscaler is chosen, else `classical`",
             can_enhance,
             super_resolution
         ),
@@ -63,10 +63,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "AI Sharpen",
             [],
             None,
-            "{ids?, stack?: true, wait?: false, space?: srgb | displayP3 | adobeRgb} → as `enhance.rawDetails` — like `enhance.superResolution {method: \"ai\"}`, but the upscaler's answer is averaged back down to the photo's own size: finer detail at the same pixel dimensions, into a 16-bit TIFF `<name>-Enhanced-SR.tif`",
+            "{ids?, stack?: true, wait?: false, space?: srgb | displayP3 | adobeRgb} → as `enhance.rawDetails`: like `enhance.superResolution {method: \"ai\"}`, but the upscaler's answer is averaged back down to the photo's own size: finer detail at the same pixel dimensions, into a 16-bit TIFF `<name>-Enhanced-SR.tif`",
             can_enhance,
             |s, p| s.enhance_command(EnhanceKind::AiSharpen, p)
         ),
-        cmd!(query "enhance.pump", "Enhance Pump", [], None, "{} → {active, running, made, failed} — called every frame by the app: imports the photos Enhance has finished", super::always, pump),
+        cmd!(query "enhance.pump", "Enhance Pump", [], None, "{} → {active, running, made, failed}: called every frame by the app: imports the photos Enhance has finished", super::always, pump),
     ]
 }

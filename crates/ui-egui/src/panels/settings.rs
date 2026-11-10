@@ -601,7 +601,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     heading(ui, t, crate::i18n::tr("Catalog"));
     let location = match &app.session.library {
         Some(l) => l.dir.display().to_string(),
-        None => crate::i18n::tr("In memory — nothing is saved").to_string(),
+        None => crate::i18n::tr("In memory (nothing is saved)").to_string(),
     };
     row(ui, t, crate::i18n::tr("Location"), |ui| {
         path_label(ui, "settingsLocation", &location, egui::TextStyle::Body.resolve(ui.style()), t.text, 0.0);

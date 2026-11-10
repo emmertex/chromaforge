@@ -327,7 +327,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Pick Metadata Value",
             [],
             None,
-            "{field: a library.facets field, value?: a value as library.facets lists it (null: clear the field), none?: true (toggle the photos without a value)} → {field, chosen, none, count} — a Metadata filter column's click: flag, rating (exactly; 0 = unrated), kind and year take the one value, and a second click clears it; the other fields toggle the value among the chosen ones (any matches). `none` adds or removes the photos without a value (no camera, keyword, label, capture date, title…), which any chosen value also lets through",
+            "{field: a library.facets field, value?: a value as library.facets lists it (null: clear the field), none?: true (toggle the photos without a value)} → {field, chosen, none, count}: a Metadata filter column's click: flag, rating (exactly; 0 = unrated), kind and year take the one value, and a second click clears it; the other fields toggle the value among the chosen ones (any matches). `none` adds or removes the photos without a value (no camera, keyword, label, capture date, title…), which any chosen value also lets through",
             always,
             pick
         ),
@@ -336,7 +336,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Metadata Facets",
         [],
         None,
-        "{fields?: [camera | lens | keyword | person | label | flag | rating | kind | year | iso | focal | format | title | headline | caption | creator | copyright | location | city | country | aspect | preset | ai] (default: all), limit? (values per field, default 200, at most 2000)} → {<field>: {photos, none, distinct, values: [{value, count}], chosen: [the values the filter picked], noneChosen}} — format: the file format (JPG, CR3, TIFF…); aspect: the developed aspect ratio (3:2, 4:5, 16:9…); preset: develop presets applied (from History); ai: AI tools in use (Denoise, Subject mask…) — the values each field takes among the photos in view (the source, and the filter without that field's own constraint), with how many photos have each; `none`: photos without one. Counts by most photos first; rating, year, ISO and focal length by value",
+        "{fields?: [camera | lens | keyword | person | label | flag | rating | kind | year | iso | focal | format | title | headline | caption | creator | copyright | location | city | country | aspect | preset | ai] (default: all), limit? (values per field, default 200, at most 2000)} → {<field>: {photos, none, distinct, values: [{value, count}], chosen: [the values the filter picked], noneChosen}}. format: the file format (JPG, CR3, TIFF…); aspect: the developed aspect ratio (3:2, 4:5, 16:9…); preset: develop presets applied (from History); ai: AI tools in use (Denoise, Subject mask…). The values each field takes among the photos in view (the source, and the filter without that field's own constraint), with how many photos have each; `none`: photos without one. Counts by most photos first; rating, year, ISO and focal length by value",
             always,
             facets
         ),

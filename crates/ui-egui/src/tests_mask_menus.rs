@@ -81,3 +81,51 @@ fn add_subtract_and_intersect_offer_every_mask_kind() {
     h.step();
     assert!(!h.app.ui.concept_pick && h.app.mask_pick_op.is_none());
 }
+
+/// Tools ▸ Create New Mask ▸ Select People / Color Range / Luminance Range do what the Masking panel's tiles do.
+#[test]
+fn create_new_mask_menu_items_start_the_tiles_tools() {
+    let mut h = masking();
+    exec(&mut h, "panel.remove", json!({}));
+    exec(&mut h, "tool.people", json!({}));
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Masking);
+    assert!(h.app.ui.people_pick.is_some(), "the People picker is open");
+    exec(&mut h, "tool.colorRange", json!({}));
+    assert!(h.app.ui.people_pick.is_none(), "one picker or tool at a time");
+    assert_eq!((h.app.ui.tool.as_str(), h.app.ui.mask_new.as_ref().map(|(_, k)| k.as_str())), ("colorRange", Some("colorRange")));
+    let before = develop(&h).masks.len();
+    exec(&mut h, "tool.luminanceRange", json!({}));
+    let d = develop(&h);
+    assert_eq!(d.masks.len(), before + 1);
+    assert!(matches!(d.masks.last().map(|m| &m.components[0].shape), Some(MaskShape::LuminanceRange { .. })));
+}
+
+/// Tools ▸ Point Color Selector opens Color Mixer ▸ Point Color with its picker armed.
+#[test]
+fn point_color_selector_opens_the_point_color_tab_with_its_picker() {
+    let mut h = masking();
+    exec(&mut h, "tool.pointColor", json!({}));
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit);
+    assert!(h.app.ui.flyout_open("pointColor"));
+    assert_eq!(h.app.ui.tool, "pointColor");
+}
+
+/// Remove Options ▸ Use Generative AI: with a service set up it switches the Remove tool to Generative and back; without
+/// one it opens the setup and leaves the tool alone.
+#[test]
+fn use_generative_ai_toggles_the_remove_tool_or_opens_the_setup() {
+    let mut h = masking();
+    h.app.ui.genfill.providers = Some((std::time::Instant::now(), vec![]));
+    let r = exec(&mut h, "remove.useGenerative", json!({}));
+    assert_eq!(r["setup"], true, "{r}");
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "genfill"));
+    assert_ne!(h.app.ui.tool, "generate");
+    h.app.ui.dialog = None;
+    h.app.ui.genfill.providers = Some((std::time::Instant::now(), vec![json!({"id": "x", "configured": true})]));
+    exec(&mut h, "remove.useGenerative", json!({}));
+    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (crate::state::RightPanel::Remove, "generate"));
+    assert_eq!(crate::menubar::checked(&h.app, "remove.useGenerative"), Some(true));
+    exec(&mut h, "remove.useGenerative", json!({}));
+    assert_eq!(h.app.ui.tool, "remove");
+    assert_eq!(crate::menubar::checked(&h.app, "remove.useGenerative"), Some(false));
+}

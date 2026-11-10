@@ -576,7 +576,7 @@ fn tile(app: &mut LccApp, ui: &mut egui::Ui, r: Rect, f: &Face, ppp: f32, more: 
             hit = Hit::Confirm;
         }
     } else {
-        let _ = resp.clone().on_hover_text(crate::i18n::tr_format!("{name} — click to open this photo", name = name));
+        let _ = resp.clone().on_hover_text(crate::i18n::tr_format!("{name}: click to open this photo", name = name));
         if resp.clicked() {
             hit = Hit::Open;
         }

@@ -151,7 +151,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Show Alternatives",
             ["Photo", "Stack"],
             None,
-            "{id?, around?: n (default 5)} → {original, photos: [{id, file, inLibrary}]} — the frames around the photo in its folder on disk (a burst's neighbours, imported or not), shown as a view of that folder with the photo selected; photo.importAlternatives brings chosen ones in, photo.closeAlternatives goes back",
+            "{id?, around?: n (default 5)} → {original, photos: [{id, file, inLibrary}]}: the frames around the photo in its folder on disk (a burst's neighbours, imported or not), shown as a view of that folder with the photo selected; photo.importAlternatives brings chosen ones in, photo.closeAlternatives goes back",
             always,
             show
         ),
@@ -160,11 +160,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Alternatives",
             [],
             None,
-            "{ids?, sameEdit?: bool (default true)} → {imported, chosen, sameEdit} — the chosen frames (default: the selection) join the library, with the original's edit (not its spot removal or red eye) when sameEdit; one undo step; then back to the view the alternatives were asked from, the original and the new ones selected",
+            "{ids?, sameEdit?: bool (default true)} → {imported, chosen, sameEdit}: the chosen frames (default: the selection) join the library, with the original's edit (not its spot removal or red eye) when sameEdit; one undo step; then back to the view the alternatives were asked from, the original and the new ones selected",
             always,
             import
         ),
-        cmd!("photo.closeAlternatives", "Close Alternatives", [], None, "{} — back to the view the alternatives were asked from", always, close),
+        cmd!("photo.closeAlternatives", "Close Alternatives", [], None, "{}: back to the view the alternatives were asked from", always, close),
     ]
 }
 

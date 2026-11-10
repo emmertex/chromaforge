@@ -1388,11 +1388,14 @@ mod tests {
         ok(&mut h, "library.select", json!({"ids": [first]}));
         let r = ok(&mut h, "slideshow.exportJpeg", json!({"dir": dir.display().to_string(), "width": 320, "height": 200}));
         assert_eq!(r["background"], true, "{r}");
-        assert!(exec(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string()}))["ok"] == false, "one export at a time");
         let r = wait_export(&mut h);
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{r}");
-        // PDF: one file, a page per slide
-        ok(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"}));
+        // PDF: one file, a page per slide; and one export at a time. The PDF starts from the command's
+        // function, not a request: an export's result lands on a frame and none runs before the second
+        // export, so the PDF is still running then (a request runs frames, and a small export can finish)
+        let pdf = json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"});
+        assert_eq!(super::export(&mut h.app, &pdf, super::Out::Pdf).unwrap()["background"], true);
+        assert!(super::export(&mut h.app, &json!({"dir": dir.display().to_string()}), super::Out::Jpeg).is_err(), "one export at a time");
         let r = wait_export(&mut h);
         let pdf = r["files"][0].as_str().unwrap_or_default().to_string();
         assert!(pdf.ends_with("Show.pdf"), "{r}");

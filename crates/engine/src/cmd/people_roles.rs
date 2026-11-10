@@ -61,7 +61,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Recompute AI Masks",
             [],
             None,
-            "{id? | ids?: [photoId], force?: bool (false: only what is missing)} — complete each photo's mask recipes: People by name or role, gradients anchored to the people, Object and Describe selections (the segmenter: waited for in the CLI / MCP; in the app queued on the AI worker as one activity row, `aiMasks`, and `queued` says how many) → {photos: [{id, changed, notes, queued?}]}",
+            "{id? | ids?: [photoId], force?: bool (false: only what is missing)}: complete each photo's mask recipes: People by name or role, gradients anchored to the people, Object and Describe selections (the segmenter: waited for in the CLI / MCP; in the app queued on the AI worker as one activity row, `aiMasks`, and `queued` says how many) → {photos: [{id, changed, notes, queued?}]}",
             always,
             |s, p| {
                 let c = "masks.recompute";
@@ -97,7 +97,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update AI Mask",
             [],
             None,
-            "{id?: maskId (default: the selected mask), photo?: photoId} — compute the mask's AI selections again from this photo, replacing what it holds (copied, synced or stale); an Object needs its clicks on this photo. In the app on the AI worker (activity row `aiMasks`) → {changed, notes, queued?}",
+            "{id?: maskId (default: the selected mask), photo?: photoId}: compute the mask's AI selections again from this photo, replacing what it holds (copied, synced or stale); an Object needs its clicks on this photo. In the app on the AI worker (activity row `aiMasks`) → {changed, notes, queued?}",
             super::has_active,
             |s, p| {
                 let c = "mask.updateAi";
@@ -115,7 +115,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update All AI Masks",
             ["Photo", "Develop Settings"],
             None,
-            "{ids?: [photoId] (default: the selection)} — every AI mask on the photos computed again from each photo's own pixels (as `mask.updateAi` on each); in the app one activity row for the batch → {photos: [{id, changed, notes, queued?}]}",
+            "{ids?: [photoId] (default: the selection)}: every AI mask on the photos computed again from each photo's own pixels (as `mask.updateAi` on each); in the app one activity row for the batch → {photos: [{id, changed, notes, queued?}]}",
             super::has_selection,
             |s, p| {
                 let c = "masks.updateAi";
@@ -136,7 +136,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Role",
             [],
             None,
-            "{role: \"Bride\", person: \"Sam\", id?, scope?: \"folder\" (the photo's folder, default) | {folder} | {album} | {from, to} (dates) | {ids}} — who has the role in this shoot; masks and presets saying \"Bride\" find that person → {role, person, scope}",
+            "{role: \"Bride\", person: \"Sam\", id?, scope?: \"folder\" (the photo's folder, default) | {folder} | {album} | {from, to} (dates) | {ids}}: who has the role in this shoot; masks and presets saying \"Bride\" find that person → {role, person, scope}",
             always,
             |s, p| {
                 let c = "people.setRole";
@@ -178,7 +178,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Forget This Person",
             [],
             None,
-            "{person} — delete the roles and appearance examples kept for them in people.json (biometric data; their name on the photos stays) → {forgotten}",
+            "{person}: delete the roles and appearance examples kept for them in people.json (biometric data; their name on the photos stays) → {forgotten}",
             always,
             |s, p| {
                 let person = name_param(p, "person", "people.forget")?;
@@ -191,7 +191,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Learn People's Looks",
             [],
             None,
-            "{ids?} — remember how the people named on the photos (their named Face regions) look (clothes, hair, face proportions; MediaPipe faces, SAM 2.1 when installed), so People masks by name find them on photos where nobody named them; kept in people.json → {learned, pending} (the app: computed in the background)",
+            "{ids?}: remember how the people named on the photos (their named Face regions) look (clothes, hair, face proportions; MediaPipe faces, SAM 2.1 when installed), so People masks by name find them on photos where nobody named them; kept in people.json → {learned, pending} (the app: computed in the background)",
             super::has_selection,
             |s, p| {
                 let c = "people.learn";
@@ -216,7 +216,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Forget All Roles and Appearance Data",
             [],
             None,
-            "{} — empty people.json: every role and appearance example (names on the photos and face recognition stay; see faces.* for those) → {deleted: [files]}",
+            "{}: empty people.json: every role and appearance example (names on the photos and face recognition stay; see faces.* for those) → {deleted: [files]}",
             always,
             |s, _| {
                 s.with_people(|st| *st = crate::people_store::PeopleStore::default()).map_err(crate::EngineError::Other)?;

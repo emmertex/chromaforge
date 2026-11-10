@@ -262,7 +262,7 @@ pub fn check_writable(dir: &Path) -> Result<(), String> {
     if !dir.is_dir() {
         let parent_ok = dir.parent().is_some_and(|p| p.is_dir());
         if !parent_ok {
-            return Err(format!("{} is not available — reconnect the drive or choose another folder", dir.display()));
+            return Err(format!("{} is not available. Reconnect the drive or choose another folder", dir.display()));
         }
         std::fs::create_dir(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     }

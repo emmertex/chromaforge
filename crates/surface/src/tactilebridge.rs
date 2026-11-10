@@ -439,7 +439,7 @@ pub fn map_key(key: &str) -> Mapped {
         "LayerOpacity" => vn("mask.amount", "a mask's Amount"),
         "SpotRadius" => vn("ui.removeSize", "the Remove brush size"),
         "BrushSize" => v("ui.brushSize"),
-        "BrushHardness" => vn("ui.brushFeather", "Feather (softness) — turn the other way for harder"),
+        "BrushHardness" => vn("ui.brushFeather", "Feather (softness). Turn the other way for harder"),
         "BrushOpacity" => Mapped::Dropped("{app} brushes have Size, Feather and Flow"),
         "BrushFlow" => v("ui.brushFlow"),
         "Zoom" => v("ui.zoom"),
