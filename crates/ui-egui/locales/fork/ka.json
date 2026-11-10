@@ -2934,6 +2934,7 @@
   "This raw variant still can't be decoded": "raw-ის ეს ვარიანტი ჯერ კიდევ ვერ დეკოდირდება",
   "This row covers more than one disk: drop on a folder inside it": "ეს სტრიქონი ერთზე მეტ დისკს მოიცავს: ჩააგდეთ მასში არსებულ საქაღალდეზე",
   "This screen is off: turn it on under Titles to play it.": "ეს ეკრანი გამორთულია: დასაკრავად ჩართეთ „სათაურებში“.",
+  "This spot has no colour to defringe: click on the fringe itself": "ამ წერტილს ფერი არ აქვს დეფრინჯისთვის: დააწკაპუნეთ თვით ფერად კიდეზე",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "ეს ვერსია AI ხმაურის მოცილების მოდელს არ შეიცავს და აქედან ჩამოტვირთვა ჯერ შეუძლებელია.",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "ეს ვერსია უკვე Immich-შია. Immich-ს ფაილის ჩანაცვლება არ შეუძლია, ამიტომ ახალი შენახვა დასტის თავზე ახალ ფაილად აიტვირთება.",
   "This {app} can't install it: open {app}.lplug4 from the {app} download to install it in Logi Options+.": "აპის ამ ვერსიას ({app}) მისი ინსტალაცია არ შეუძლია: Logi Options+-ში დასაინსტალირებლად გახსენით ფაილი {app}.lplug4 აპის ჩამოტვირთული პაკეტიდან ({app}).",

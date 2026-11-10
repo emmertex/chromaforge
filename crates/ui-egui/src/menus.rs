@@ -220,6 +220,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.object", "Object Selection", None, "Window>Tools"),
+    // Tools > Fringe Color Selector: arms the eyedropper; a click points Defringe at the colour under it
+    ("tool.fringe", "Fringe Color Selector", None, ""),
     // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q stays
     // `spot.cycleMode`'s module key). People opens its picker, Color Range waits for a click on the photo.
     ("tool.people", "Select People", None, ""),
@@ -505,11 +507,11 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
             app.ui.view = ViewMode::Detail;
         }
     }
-    if p != RightPanel::Masking && app.ui.tool != "wbPicker" {
+    if p != RightPanel::Masking && !matches!(app.ui.tool.as_str(), "wbPicker" | "fringe") {
         app.ui.tool.clear();
     }
     // an Edit panel picker doesn't follow into Masking, where it would claim the photo's clicks
-    if app.ui.right == RightPanel::Masking && (app.ui.tool.starts_with("tat:") || app.ui.tool == "pointColor") {
+    if app.ui.right == RightPanel::Masking && (app.ui.tool.starts_with("tat:") || matches!(app.ui.tool.as_str(), "pointColor" | "fringe")) {
         app.ui.tool.clear();
     }
     app.end_midi_interaction();
@@ -1307,7 +1309,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 }
             } else {
                 app.ui.right_collapsed = !app.ui.right_collapsed;
-                if app.ui.right_collapsed && app.ui.right.is_edit_tool() && app.ui.tool != "wbPicker" {
+                if app.ui.right_collapsed && app.ui.right.is_edit_tool() && !matches!(app.ui.tool.as_str(), "wbPicker" | "fringe") {
                     // hiding a tool ends it, as closing its panel does
                     app.ui.tool.clear();
                     let _ = app.session.end_interaction();
@@ -2009,6 +2011,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     if let Some(n) = p.get("sample").and_then(Value::as_f64).filter(|v| v.is_finite()) {
                         app.ui.wb_sample = crate::panels::detail::wb_sample_step(n);
                     }
+                }
+                "fringe" if app.ui.tool == "fringe" => app.ui.tool.clear(),
+                "fringe" => {
+                    app.ui.right = RightPanel::Edit;
+                    app.ui.view = ViewMode::Detail;
+                    app.ui.tool = "fringe".into();
                 }
                 "people" | "colorRange" | "luminanceRange" => {
                     if app.session.active().is_none() {

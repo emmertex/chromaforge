@@ -2670,6 +2670,7 @@
   "This page setup is not valid": "このページ設定は無効です",
   "This person wasn't found in this photo.": "この写真にはこの人物が見つかりませんでした。",
   "This plug-in can't measure a roll": "このプラグインはロールを測定できません",
+  "This spot has no colour to defringe: click on the fringe itself": "この位置には色のにじみがありません。にじみそのものをクリックしてください",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "このバージョンはすでに Immich にあります。Immich はファイルを置き換えられないため、新しい保存はスタックの一番上に新しいアセットとしてアップロードされます。",
   "Three with Caption": "3 枚とキャプション",
   "Thumbnail size": "サムネールのサイズ",

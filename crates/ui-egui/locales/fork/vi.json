@@ -2974,6 +2974,7 @@
   "This raw variant still can't be decoded": "Biến thể raw này vẫn chưa giải mã được",
   "This row covers more than one disk: drop on a folder inside it": "Hàng này trải trên nhiều ổ đĩa: hãy thả vào một thư mục bên trong",
   "This screen is off: turn it on under Titles to play it.": "Màn hình này đang tắt: hãy bật nó trong Tiêu đề để phát.",
+  "This spot has no colour to defringe: click on the fringe itself": "Điểm này không có màu để khử viền: hãy nhấp vào chính viền màu",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Phiên bản này không kèm mô hình Khử nhiễu AI, và hiện chưa thể tải mô hình nào từ đây.",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Phiên bản này đã có trên Immich. Immich không thay thế được tệp, nên lần lưu mới được tải lên như một tài nguyên mới ở đầu chồng.",
   "This {app} can't install it: open {app}.lplug4 from the {app} download to install it in Logi Options+.": "Bản {app} này không cài được nó: hãy mở {app}.lplug4 từ gói tải {app} để cài vào Logi Options+.",

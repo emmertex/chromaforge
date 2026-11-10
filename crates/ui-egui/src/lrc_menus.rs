@@ -464,7 +464,7 @@ const TOOLS: &[&str] = &[
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
-    "soon.fringeSelector",
+    "tool.fringe",
     "tool.pointColor",
     "---",
     "@Target Adjustment",
@@ -523,7 +523,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Color Label=Photo>Set Color Label",
     "---",
     "soon.deleteGps",
-    "soon.deleteLocationMetadata",
+    "map.clearLocationMetadata",
 ];
 
 const MAP_VIEW: &[&str] = &[
@@ -856,12 +856,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book

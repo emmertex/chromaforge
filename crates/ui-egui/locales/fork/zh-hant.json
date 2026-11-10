@@ -2667,6 +2667,7 @@
   "This page setup is not valid": "此頁面設定無效",
   "This person wasn't found in this photo.": "未在這張照片中找到此人。",
   "This plug-in can't measure a roll": "此外掛程式無法測量整卷底片",
+  "This spot has no colour to defringe: click on the fringe itself": "此處沒有可去除的色彩：請直接點擊色邊",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "此版本已在 Immich 上。Immich 無法取代檔案，因此新的儲存會作為新資產上傳到堆疊頂端。",
   "Three with Caption": "三張含說明文字",
   "Thumbnail size": "縮圖大小",

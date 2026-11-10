@@ -2732,6 +2732,7 @@
   "This module has no keys of its own.": "Tällä moduulilla ei ole omia näppäimiä.",
   "This person wasn't found in this photo.": "Tätä henkilöä ei löytynyt tästä kuvasta.",
   "This plug-in can't measure a roll": "Tämä laajennus ei voi mitata filmirullaa",
+  "This spot has no colour to defringe: click on the fringe itself": "Tässä kohdassa ei ole poistettavaa väriä: napsauta itse värireunaa",
   "This version doesn't come with an AI Denoise model, and none can be downloaded from here yet.": "Tämän version mukana ei tule tekoälykohinanpoiston mallia, eikä sellaista voi vielä ladata täältä.",
   "This version is already on Immich. Immich can't replace a file, so the new save is uploaded as a new asset on top of the stack.": "Tämä versio on jo Immichissä. Immich ei voi korvata tiedostoa, joten uusi tallennus lähetetään uutena kohteena pinon päällimmäiseksi.",
   "This {app} can't install it: open {app}.lplug4 from the {app} download to install it in Logi Options+.": "Tämä versio ({app}) ei voi asentaa sitä: avaa {app}.lplug4 latauspaketista ({app}) asentaaksesi sen Logi Options+ -ohjelmaan.",
