@@ -597,6 +597,37 @@ impl PrefsWriter {
     }
 }
 
+/// The program that opens `url` in the default browser.
+fn open_url_command(url: &str) -> std::process::Command {
+    if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        windows_open_url_command(url)
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    }
+}
+
+/// Start `cmd` without waiting for it: a launcher such as `xdg-open` can stay attached to the browser, and
+/// waiting for it froze the window. The child is reaped on its own thread (adapted from upstream #4033).
+fn launch(mut cmd: std::process::Command) -> Result<(), String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd.spawn().map_err(|e| format!("{program}: {e}"))?;
+    let reaper = std::thread::Builder::new().name("lc-open-url".into()).spawn(move || match child.wait() {
+        Ok(s) if s.success() => {}
+        Ok(s) => log::warn!("{program} exited with {s}"),
+        Err(e) => log::warn!("{program}: {e}"),
+    });
+    if let Err(e) = reaper {
+        log::warn!("could not watch the link opener: {e}");
+    }
+    Ok(())
+}
+
 /// The Windows command that opens `url` in the default browser. `explorer <url>` opened File
 /// Explorer instead for links with a query or fragment, like the Map button's OpenStreetMap link
 /// (issue #234). The URL protocol handler hands the URL to the browser as is; no shell runs, so
@@ -747,14 +778,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         open_url: Some(Box::new(|url: &str| {
             // https links, plus the local page Preview in Browser generates (nothing else)
             lcc_ui_egui::links::check_browser_url(url)?;
-            let status = if cfg!(target_os = "macos") {
-                std::process::Command::new("open").arg(url).status()
-            } else if cfg!(target_os = "windows") {
-                windows_open_url_command(url).status()
-            } else {
-                std::process::Command::new("xdg-open").arg(url).status()
-            };
-            status.map(|_| ()).map_err(|e| e.to_string())
+            launch(open_url_command(url))
         })),
         reveal: Some(Box::new(|path: &str| {
             let status = if cfg!(target_os = "macos") {
@@ -1738,6 +1762,25 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A link opener that stays running (xdg-open attached to the browser) must not hold the caller; a missing one is an error naming it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_opener_is_not_waited_for() {
+        let mut slow = std::process::Command::new("sleep");
+        slow.arg("3");
+        let t = std::time::Instant::now();
+        launch(slow).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        let err = launch(std::process::Command::new("definitely-not-a-launcher")).unwrap_err();
+        assert!(err.contains("definitely-not-a-launcher"), "{err}");
+    }
+
+    #[test]
+    fn the_link_opener_gets_the_url_last() {
+        let c = open_url_command("https://example.org/");
+        assert_eq!(c.get_args().last().and_then(|a| a.to_str()).map(|a| a.contains("example.org")), Some(true));
+    }
 
     /// The HDR window guard (ported from OneSlips): an HDR monitor keeps the window's device from the
     /// renderer only where the guard holds (Linux / BSD); `<PREFIX>_GPU_WINDOW` decides over both.
