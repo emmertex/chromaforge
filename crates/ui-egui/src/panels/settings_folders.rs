@@ -9,7 +9,7 @@
 use egui::RichText;
 use serde_json::{Value, json};
 
-use super::settings::{heading, hint, row};
+use super::settings::{check, heading, hint, row};
 use crate::LccApp;
 use crate::theme::Tokens;
 use crate::widgets::register;
@@ -67,15 +67,17 @@ pub fn folders(app: &mut LccApp) -> Value {
         ));
     }
     if app.services.camera_roll.is_some() {
-        out.push(entry(
+        let mut e = entry(
             "cameraRoll",
             "Camera roll",
             Some("DCIM/Camera".to_string()),
             true,
             true,
             false,
-            "Adds the photos taken with this device to the catalog (asks for access to your photos).",
-        ));
+            "Adds the photos taken with this device to the catalog (asks for access to your photos). While watched, new photos are added on their own.",
+        );
+        e["watch"] = json!(app.ui.camera_roll_watch);
+        out.push(e);
     }
     let st = app.session.lens_db.status();
     let lens = st["dir"].as_str().map(str::to_string);
@@ -175,7 +177,7 @@ fn act(app: &mut LccApp, id: &str, reset: bool) -> Result<Value, String> {
         ("smartPreviews", true) => app.run("library.smartPreviewsLocation", json!({"reset": true, "existing": "move"})),
         ("lensProfiles", false) => app.run("app.lensDbFolder", json!({})),
         ("deviceStorage", false) => app.run("app.allFilesAccess", json!({})),
-        ("cameraRoll", false) => app.run("file.addCameraRoll", json!({})),
+        ("cameraRoll", false) => crate::camera_roll::add_and_watch(app),
         _ => Ok(Value::Null),
     }
 }
@@ -226,6 +228,13 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 if crate::widgets::text_button(ui, &format!("folderReset-{id}"), label, false).clicked() {
                     action = Some((id.to_string(), true));
                 }
+            }
+            // the camera roll's watch (`watch` on its row; a boolean only where a roll exists)
+            if let Some(mut on) = f["watch"].as_bool()
+                && check(ui, "folderWatchCameraRoll", &mut on, "Watch for new photos")
+            {
+                crate::camera_roll::set_watch(app, on);
+                ui.data_mut(|d| d.remove::<(f64, Value)>(cache));
             }
             ui.label(RichText::new(tr(f["note"].as_str().unwrap_or_default())).size(11.0).color(t.text_dim));
         });
