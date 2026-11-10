@@ -251,7 +251,7 @@ const METADATA: &[&str] = &[
     "soon.keywordSet",
     "@Color Label Set",
     "---",
-    "soon.metadataTargetOnly",
+    "metadata.targetOnly",
     "---",
     "photo.copyMetadata=Copy Metadata…",
     "photo.pasteMetadata",
@@ -261,7 +261,7 @@ const METADATA: &[&str] = &[
     "@Metadata Presets=Metadata Preset",
     "---",
     "dialog.captureTime",
-    "soon.revertCaptureTime",
+    "photo.setCaptureTime{\"fromExif\":true}=Revert Capture Time to Original",
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
@@ -840,15 +840,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
     soon("soon.keywordSet", "Keyword Set", None, 'S', true, "Choose the keyword set (keyword sets exist in the Keywording panel)."),
-    soon(
-        "soon.metadataTargetOnly",
-        "Show Metadata for Target Photo Only",
-        None,
-        'S',
-        false,
-        "The Metadata panel shows the active photo, not the selection's mixed values.",
-    ),
-    soon("soon.revertCaptureTime", "Revert Capture Time to Original", None, 'S', false, "Undo Edit Capture Time from the file's own date."),
     soon(
         "soon.updateDngPreview",
         "Update DNG Preview & Metadata",

@@ -200,6 +200,20 @@ fn auto_tag_tracklog(s: &mut crate::Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// The capture time the original file's own Exif states (`DateTimeOriginal` with its `OffsetTimeOriginal` and
+/// `SubSecTimeOriginal`) as an ISO time; `None` when the file is missing, unreadable, or states none (or only a
+/// partial one).
+fn exif_time(p: &lcc_catalog::Photo) -> Option<String> {
+    use std::io::Read;
+    /// Exif lives in the first part of every format we read; a hostile or huge file is not read beyond this.
+    const MAX_READ: u64 = 256 << 20;
+    let lcc_catalog::Source::File { path } = &p.source else { return None };
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_READ).read_to_end(&mut bytes).ok()?;
+    let exif = lcc_meta::embedded(&bytes).exif?;
+    lcc_meta::read_exif(&exif).capture_time.filter(lcc_meta::DateTime::is_full).map(|d| d.to_iso())
+}
+
 /// The original file's modification time as an ISO time (UTC), if it has a readable file.
 fn file_time(p: &lcc_catalog::Photo) -> Option<String> {
     let lcc_catalog::Source::File { path } = &p.source else { return None };
@@ -286,7 +300,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Capture Time",
             [],
             None,
-            "{ids?, time?: `2026-09-30T14:05:00` (the active photo gets it, the others shift by the same amount), or a year or month alone (`1983`, `1983-04`; kept as stated, for one photo or with `each`), each?: bool (every photo gets `time`), fromFile?: bool (each photo gets its original file's modification time, UTC), fromFilename?: bool (each photo gets the date and time its file name states, as in `IMG_20260921_143000.jpg` or `2026-09-21 14.30.00.heic`; a date alone is midnight), shift?: seconds, hours?: time-zone shift in hours (both also move fromFile / fromFilename times), dryRun?: bool (report, change nothing)} → {changed, captured: [..], noFile, noDateInName: photos whose file name holds no date, unreadable: photos skipped because their capture time can't be read, noTime: photos skipped because their capture time is a year or month alone, with no time to shift}",
+            "{ids?, time?: `2026-09-30T14:05:00` (the active photo gets it, the others shift by the same amount), or a year or month alone (`1983`, `1983-04`; kept as stated, for one photo or with `each`), each?: bool (every photo gets `time`), fromFile?: bool (each photo gets its original file's modification time, UTC), fromExif?: bool (each photo gets the capture time its original file's Exif states, DateTimeOriginal with its offset and sub-seconds: Revert Capture Time to Original; photos whose file states none are left alone), fromFilename?: bool (each photo gets the date and time its file name states, as in `IMG_20260921_143000.jpg` or `2026-09-21 14.30.00.heic`; a date alone is midnight), shift?: seconds, hours?: time-zone shift in hours (both also move fromFile / fromFilename times), dryRun?: bool (report, change nothing)} → {changed, captured: [..], noFile, noExif: photos whose file states no capture time, noDateInName: photos whose file name holds no date, unreadable: photos skipped because their capture time can't be read, noTime: photos skipped because their capture time is a year or month alone, with no time to shift}",
             has_selection,
             |s, p| {
                 use lcc_catalog::dates::{iso_seconds, normalize_iso, partial_capture, shift_iso};
@@ -352,9 +366,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let from_file = bool_or(p, "fromFile", false);
                 let from_name = bool_or(p, "fromFilename", false);
-                if from_file && from_name {
-                    return Err(bad(c, "choose fromFile or fromFilename, not both"));
+                let from_exif = bool_or(p, "fromExif", false);
+                if [from_file, from_name, from_exif].iter().filter(|b| **b).count() > 1 {
+                    return Err(bad(c, "choose one of fromFile, fromFilename and fromExif"));
                 }
+                let mut no_exif = 0usize;
                 let dry_run = bool_or(p, "dryRun", false);
                 let mut no_name = 0usize;
                 let mut ops = Vec::new();
@@ -364,12 +380,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut unreadable = 0usize;
                 let mut no_time = 0usize;
                 // a year or a month alone typed is given as it is (a file's time replaces it)
-                let as_stated = partial.is_some() && !from_file && !from_name;
+                let as_stated = partial.is_some() && !from_file && !from_name && !from_exif;
                 for id in &targets {
                     let from = if from_file {
                         // the original's modification time (UTC; `hours` moves it to the camera's zone)
                         let Some(t) = s.catalog.photo(*id).and_then(|p| file_time(p)) else {
                             no_file += 1;
+                            continue;
+                        };
+                        t
+                    } else if from_exif {
+                        let Some(t) = s.catalog.photo(*id).and_then(|p| exif_time(p)) else {
+                            no_exif += 1;
                             continue;
                         };
                         t
@@ -411,6 +433,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 if from_file && out.is_empty() {
                     return Err(bad(c, "none of the photos has a readable original file"));
                 }
+                if from_exif && out.is_empty() {
+                    return Err(bad(c, "none of the photos' files states a capture time"));
+                }
                 if from_name && out.is_empty() {
                     return Err(bad(c, "none of the photos' file names holds a date"));
                 }
@@ -418,7 +443,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.commit("Edit Capture Time", Op::Batch { ops })?;
                 }
                 Ok(
-                    json!({"changed": n, "captured": out, "noFile": no_file, "noDateInName": no_name, "unreadable": unreadable, "noTime": no_time, "dryRun": dry_run}),
+                    json!({"changed": n, "captured": out, "noFile": no_file, "noExif": no_exif, "noDateInName": no_name, "unreadable": unreadable, "noTime": no_time, "dryRun": dry_run}),
                 )
             }
         ),

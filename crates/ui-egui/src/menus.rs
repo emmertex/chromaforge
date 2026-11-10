@@ -424,6 +424,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.rename", "Rename Photos…", Some("F2"), "Library"),
     ("dialog.labelNames", "Edit Color Label Names…", None, ""),
     ("dialog.captureTime", "Edit Capture Time…", None, "Metadata"),
+    ("metadata.targetOnly", "Show Metadata for Target Photo Only", None, "Metadata"),
     ("photo.tagFromTracklog", "Auto-Tag from Tracklog…", None, "Metadata"),
     ("app.exportPrevious", "Export with Previous", Some("Cmd+Alt+Shift+E"), "File"),
     // control surfaces (`surface`): what their keys run, and their settings for agents
@@ -901,6 +902,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "view.compare" => crate::panels::compare::enter_compare(app),
+        "metadata.targetOnly" => {
+            // {on?}; no params toggles. The Metadata panel shows and edits the active photo alone.
+            app.ui.settings.metadata_target_only = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.metadata_target_only);
+            Ok(json!({"on": app.ui.settings.metadata_target_only}))
+        }
         "view.focusPoint" => {
             // {on?}; no params toggles. The camera's focus point (Sony, from the file) over the photo.
             app.ui.settings.focus_point = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.settings.focus_point);

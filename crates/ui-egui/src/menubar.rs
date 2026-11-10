@@ -370,6 +370,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.faceBoxes" => Some(u.face_boxes),
         "view.hdrPreview" => Some(u.hdr_preview),
         "view.focusPoint" => Some(u.settings.focus_point),
+        "metadata.targetOnly" => Some(u.settings.metadata_target_only),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
         "view.shotInfo" => Some(u.shot_info),
