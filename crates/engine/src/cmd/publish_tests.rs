@@ -256,3 +256,27 @@ fn a_published_collection_lists_new_then_modified_then_published() {
     let plain = plain["id"].as_u64().or_else(|| plain.as_u64()).unwrap();
     assert!(crate::cmd::publish::sections(&s, lcc_catalog::AlbumId(plain)).is_none());
 }
+
+/// A service without comments says so, without being contacted; an Immich one reports the capability.
+#[test]
+fn review_comments_says_when_a_service_has_none() {
+    let (mut s, root) = library("comments");
+    let ids = import(&mut s, &root, 2);
+    let out = root.join("published");
+    let disk = json!({"name": "Disk", "dir": out.to_string_lossy(), "export": {"format": "jpeg", "longEdge": 20}});
+    s.execute("publish.createService", &disk).unwrap();
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    let made = s.execute("publish.createCollection", &json!({"service": "Disk", "name": "Web", "addSelected": true})).unwrap();
+    let coll = made["collection"].as_u64().unwrap();
+    s.execute("publish.run", &json!({"collection": coll})).unwrap();
+    let r = s.execute("publish.reviewComments", &json!({"collection": coll})).unwrap();
+    assert_eq!((r["supported"].clone(), r["photos"].clone()), (json!(false), json!([])), "{r}");
+    let one = s.execute("publish.comments", &json!({"collection": coll, "id": ids[0]})).unwrap();
+    assert_eq!((one["supported"].clone(), one["comments"].clone()), (json!(false), json!([])), "{one}");
+    assert!(s.execute("publish.reviewComments", &json!({})).is_err(), "a collection is required");
+    assert!(s.execute("publish.reviewComments", &json!({"collection": 987654})).is_err());
+    s.execute("publish.createService", &json!({"kind": "immich", "name": "Immich", "settings": {"account": "x"}})).unwrap();
+    let list = s.execute("publish.services", &json!({})).unwrap();
+    let immich = list["services"].as_array().unwrap().iter().find(|x| x["kind"] == "immich").unwrap();
+    assert_eq!(immich["capabilities"]["comments"], true);
+}

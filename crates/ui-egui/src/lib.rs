@@ -21,6 +21,29 @@ pub mod catalog_ui;
 pub mod chart_profile;
 pub mod color_readout;
 mod command_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod comments_ui;
+/// Review Comments needs the publish services, which the browser build doesn't have.
+#[cfg(target_arch = "wasm32")]
+pub mod comments_ui {
+    use serde_json::Value;
+
+    pub const OPEN: &str = "dialog.reviewComments";
+    pub const COMMANDS: &[crate::menus::UiCommand] = &[(OPEN, "Review Comments", None, "")];
+
+    #[derive(Default)]
+    pub struct View;
+
+    pub fn enabled(_: &crate::LccApp, id: &str) -> Option<bool> {
+        (id == OPEN).then_some(false)
+    }
+
+    pub fn run(_: &mut crate::LccApp, id: &str, _: &Value) -> Option<Result<Value, String>> {
+        (id == OPEN).then(|| Err("publish services are not available in the browser".to_string()))
+    }
+
+    pub fn show(_: &mut crate::LccApp, _: &egui::Context) {}
+}
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
@@ -109,7 +132,9 @@ pub mod timelapse_ui;
 pub mod titlebar;
 pub mod video_ui;
 pub mod video_view;
+pub mod view_state;
 pub mod web_module;
+pub mod web_templates;
 pub mod widgets;
 pub mod window_place;
 
@@ -429,6 +454,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_view_state;
 #[cfg(test)]
 mod tests_viewperf;
 #[cfg(test)]
@@ -843,6 +870,8 @@ pub struct LccApp {
     /// Scroll offsets (points) of the photo grid (vertical) and the filmstrip (horizontal) as
     /// drawn last (`ui.inspect` → `scroll`).
     pub grid_scroll: Option<f32>,
+    /// Per-photo zoom memory and the mirror mode's pointer rects ([`view_state`]).
+    pub view_state: view_state::ViewState,
     pub film_scroll: Option<f32>,
     /// Widget registry from the last frame (automation ids → rects).
     pub widgets: Vec<(String, egui::Rect)>,
@@ -911,6 +940,8 @@ pub struct LccApp {
     pub import: Option<import::ImportTask>,
     /// The last import's XMP warnings (File ▸ More Imports ▸ Import Warnings…).
     pub import_report: Option<import_report::Report>,
+    /// Library ▸ Review Comments.
+    pub review_comments: comments_ui::View,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
     /// A Synchronize Folder scan in progress (feeds its dialog).
@@ -1190,6 +1221,7 @@ impl LccApp {
             image_rect: None,
             right_panel_rect: None,
             grid_scroll: None,
+            view_state: Default::default(),
             film_scroll: None,
             widgets: vec![],
             gesture: None,
@@ -1220,6 +1252,7 @@ impl LccApp {
             enhance: enhance_ui::EnhanceUi::default(),
             import: None,
             import_report: None,
+            review_comments: comments_ui::View::default(),
             scan: None,
             sync: None,
             sync_owns_changes: false,
@@ -2227,6 +2260,7 @@ impl LccApp {
             self.drain_control(ctx);
             self.drain_midi(ctx);
             surface::tick(self, ctx);
+            view_state::track(self);
         }
         self.apply_settings(ctx);
         // input this frame: batch work leaves the editing card to the interface for a moment
@@ -2275,11 +2309,11 @@ impl LccApp {
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
         // a folder that couldn't be read stops being one once another is watched (or none)
-        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_folder.as_ref() != Some(f)) {
+        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_active_folder() != Some(f)) {
             self.ui.auto_import_error = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(folder) = self.session.import_defaults.auto_folder.clone() {
+        if let Some(folder) = self.session.import_defaults.auto_active_folder().cloned() {
             const LABEL: &str = "Auto Import";
             let now = ctx.input(|i| i.time);
             if now - self.ui.auto_import_at >= 3.0
@@ -2289,11 +2323,14 @@ impl LccApp {
                 && !self.tasks.is_running(LABEL)
             {
                 self.ui.auto_import_at = now;
-                let listed = folder.clone();
-                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&listed);
+                let scope = self.session.auto_import_scope();
+                let work = move || match scope {
+                    Some(scope) => scope.list(),
+                    None => Ok(Vec::new()),
+                };
                 let done = move |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
                     // the watched folder changed while this one was listed: its result is for nothing on screen
-                    if app.session.import_defaults.auto_folder.as_ref() != Some(&folder) {
+                    if app.session.import_defaults.auto_active_folder() != Some(&folder) {
                         return;
                     }
                     let listing = match listing {
@@ -2642,6 +2679,7 @@ impl LccApp {
         self.take_nav_buttons(raw);
         drop_space_repeats(raw);
         modern::after_input(self, raw);
+        view_state::mirror_input(self, raw);
     }
 
     /// Take the mouse's Back / Forward button events (`Extra1` / `Extra2`) out of `raw` and keep
@@ -2963,6 +3001,7 @@ impl LccApp {
         panels::second::show(self, &ctx);
         panels::notices::show(self, &ctx);
         import_report::show(self, &ctx);
+        comments_ui::show(self, &ctx);
         panels::dialogs::show(self, &ctx);
         catalog_ui::show(self, &ctx);
         plate::show_setup(self, &ctx);

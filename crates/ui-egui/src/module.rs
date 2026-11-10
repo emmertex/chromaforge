@@ -618,14 +618,15 @@ fn views(ui: &mut egui::Ui, app: &mut LccApp) {
     // the originals the view keeps decoded (the loupe's even over budget), as the docked centre does
     panels::compare::prepare(app);
     panels::alternatives::show(app, ui);
-    match app.ui.view {
+    let rect = ui.available_rect_before_wrap();
+    crate::view_state::around(app, ui, rect, |app, ui| match app.ui.view {
         ViewMode::PhotoGrid | ViewMode::SquareGrid => panels::grid::show(app, ui),
         ViewMode::Detail => panels::detail::show(app, ui),
         ViewMode::Compare => panels::compare::show_compare(app, ui),
         ViewMode::Survey => panels::compare::show_survey(app, ui),
         ViewMode::Reference => panels::compare::show_reference(app, ui),
         ViewMode::People => panels::people::show(app, ui),
-    }
+    })
 }
 
 /// The module the view, the right panel and the module in use imply (Library or Develop).
@@ -903,6 +904,15 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("webui.shareImmich", "Share Web Gallery via Immich", None, ""),
     ("webui.reload", "Reload Preview", None, "Web"),
     ("webui.previewInBrowser", "Preview in Browser…", None, "Web"),
+    ("webui.applyTemplate", "Apply Web Template", None, ""),
+    ("webui.saveTemplate", "Save Web Template", None, "Web"),
+    ("webui.deleteTemplate", "Delete Web Template", None, ""),
+    ("webui.createTemplateFolder", "New Web Template Folder", None, ""),
+    ("webui.renameTemplateFolder", "Rename Web Template Folder", None, ""),
+    ("webui.deleteTemplateFolder", "Delete Web Template Folder", None, ""),
+    ("webui.moveTemplate", "Move Web Template to Folder", None, ""),
+    ("webui.templates", "Web Templates", None, ""),
+    ("webui.guides", "Show Web Guides", None, "Web"),
     // the Book module (crate::book)
     ("book.new", "New Book", None, ""),
     ("book.get", "Book Document", None, ""),
@@ -981,6 +991,9 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         return r;
     }
     if let Some(r) = crate::web_module::run(app, id, p) {
+        return r;
+    }
+    if let Some(r) = crate::web_templates::run(app, id, p) {
         return r;
     }
     if id == crate::help_overlay::COMMAND {
