@@ -279,6 +279,36 @@ mod in_the_loupe {
             .collect()
     }
 
+    // Given a photo seen at 1:1, back to fit and at 1:1 again with nothing changed, the tiles
+    // rendered the first time are drawn again at once: no tile renders again (every tile of the
+    // view rendered again, about 5 s for a 45 MP raw, CF-ZOOM-FREEZE 2026-11-10). Another photo's
+    // tiles are not kept.
+    #[test]
+    fn returning_to_one_to_one_draws_the_tiles_already_rendered() {
+        let (mut h, _) = detail();
+        h.request("engine.execute", json!({"command": "view.zoom100"}), T);
+        h.settle(SETTLE);
+        let first = side_tiles(&h, false).iter().map(|(k, _)| *k).collect::<Vec<_>>();
+        assert!(!first.is_empty(), "the view at 1:1 is tiled");
+        h.request("engine.execute", json!({"command": "view.zoomFit"}), T);
+        h.settle(SETTLE);
+        assert!(h.app.region_view.is_none(), "fit: no zoomed view");
+        h.request("engine.execute", json!({"command": "view.zoom100"}), T);
+        h.step();
+        h.step();
+        assert_eq!(h.app.renderer.tiles_pending(), 0, "no tile renders again");
+        let again = side_tiles(&h, false).iter().map(|(k, _)| *k).collect::<Vec<_>>();
+        for k in &first {
+            assert!(h.app.renderer.tiles.has_render(k), "tile {:?} is still held", k.tile);
+        }
+        assert_eq!(again.len(), first.len(), "the same view, the same tiles");
+        // the next photo at fit: the first photo's tiles go
+        h.request("engine.execute", json!({"command": "view.zoomFit"}), T);
+        h.request("engine.execute", json!({"command": "library.next"}), T);
+        h.settle(SETTLE);
+        assert!(first.iter().all(|k| !h.app.renderer.tiles.contains(k)), "another photo's tiles are let go");
+    }
+
     // Given a fit view, the whole-frame render is all there is: no second render, no original decoded
     #[test]
     fn a_fit_view_makes_no_window_render() {

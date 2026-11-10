@@ -1476,10 +1476,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         } else {
             app.region_view = shown;
         }
-        // a side no longer shown zoomed frees its tiles
+        // a side no longer shown zoomed frees the tiles of other photos; the photo on screen keeps
+        // its own (the cache's budget bounds them), so a return to 100 % with the same look draws
+        // at once instead of rendering every tile again (about 5 s on a 45 MP raw)
         if shown.is_none() {
             let pane = if before { crate::render::PANE_BEFORE } else { crate::render::PANE_AFTER };
-            app.renderer.tiles.retain(|k| k.pane != pane);
+            app.renderer.tiles.retain(|k| k.pane != pane || k.photo == id);
             app.renderer.release(Slot::Window(pane));
         }
     }
@@ -1716,8 +1718,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     // …and the window renders go over the whole-frame ones, all of them, where they belong in the
     // frame (clipped to their pane, or their side of the line)
-    let window_drawn =
-        app.renderer.tiles.has_render_of(id) || app.renderer.window_texture(crate::render::PANE_AFTER).is_some_and(|(_, g)| g.photo == id);
+    let window_drawn = app.region_view.is_some_and(|v| v.photo == id && app.renderer.tiles.has_render_of_look(id, v.settings))
+        || app.renderer.window_texture(crate::render::PANE_AFTER).is_some_and(|(_, g)| g.photo == id);
     if camera_full_drawn && !window_drawn {
         app.loupe_shown = Some((id, "embedded"));
         camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
