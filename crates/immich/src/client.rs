@@ -183,6 +183,29 @@ impl Client {
         self.get("/api-keys/me", true)
     }
 
+    /// `GET /auth/status`: whether this session is elevated (locked-folder assets are visible to
+    /// its listings), whether the account unlocks with a password or a PIN code, and when the
+    /// elevation ends (the server locks the session again later).
+    pub fn auth_status(&self) -> Result<AuthStatus, ImmichError> {
+        self.get("/auth/status", true)
+    }
+
+    /// `POST /auth/session/unlock`: elevate this session with the account's password or PIN code
+    /// ([`SessionUnlock`]), so its listings include locked-folder assets. Answers 204 with an
+    /// empty body; a wrong secret (400/401) is an [`ImmichError::Status`] that names the refusal,
+    /// not a key problem (unlocking an already unlocked session is harmless, so the offline/5xx
+    /// retries of `send` are fine to keep).
+    pub fn unlock_session(&self, u: &SessionUnlock) -> Result<(), ImmichError> {
+        const PATH: &str = "/auth/session/unlock";
+        let v = serde_json::to_value(u).map_err(|e| ImmichError::Protocol(e.to_string()))?;
+        self.send(Method::Post, PATH, Some(&v), true).map(|_| ()).map_err(|e| match e {
+            // the server answers 401 (v3.3.1) or 400 for a wrong secret: the user's typo, not the
+            // API key this client holds
+            ImmichError::BadKey => ImmichError::Status(401, format!("{PATH}: the PIN or password was refused")),
+            e => e,
+        })
+    }
+
     /// Everything IMM-CONNECT shows: version (checked), user and the key's permissions.
     pub fn status(&self) -> Result<ServerStatus, ImmichError> {
         let version = self.check_version()?;

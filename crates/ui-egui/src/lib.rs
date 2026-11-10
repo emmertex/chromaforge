@@ -132,6 +132,7 @@ pub mod timelapse_ui;
 pub mod titlebar;
 pub mod video_ui;
 pub mod video_view;
+pub mod view_state;
 pub mod web_module;
 pub mod web_templates;
 pub mod widgets;
@@ -453,6 +454,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_view_state;
 #[cfg(test)]
 mod tests_viewperf;
 #[cfg(test)]
@@ -867,6 +870,8 @@ pub struct LccApp {
     /// Scroll offsets (points) of the photo grid (vertical) and the filmstrip (horizontal) as
     /// drawn last (`ui.inspect` → `scroll`).
     pub grid_scroll: Option<f32>,
+    /// Per-photo zoom memory and the mirror mode's pointer rects ([`view_state`]).
+    pub view_state: view_state::ViewState,
     pub film_scroll: Option<f32>,
     /// Widget registry from the last frame (automation ids → rects).
     pub widgets: Vec<(String, egui::Rect)>,
@@ -1216,6 +1221,7 @@ impl LccApp {
             image_rect: None,
             right_panel_rect: None,
             grid_scroll: None,
+            view_state: Default::default(),
             film_scroll: None,
             widgets: vec![],
             gesture: None,
@@ -2254,6 +2260,7 @@ impl LccApp {
             self.drain_control(ctx);
             self.drain_midi(ctx);
             surface::tick(self, ctx);
+            view_state::track(self);
         }
         self.apply_settings(ctx);
         // input this frame: batch work leaves the editing card to the interface for a moment
@@ -2672,6 +2679,7 @@ impl LccApp {
         self.take_nav_buttons(raw);
         drop_space_repeats(raw);
         modern::after_input(self, raw);
+        view_state::mirror_input(self, raw);
     }
 
     /// Take the mouse's Back / Forward button events (`Extra1` / `Extra2`) out of `raw` and keep

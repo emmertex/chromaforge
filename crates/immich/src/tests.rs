@@ -23,6 +23,7 @@ const KEY_ME: &str = include_str!("../tests/fixtures/api-keys-me.json");
 const PAGE1: &str = include_str!("../tests/fixtures/search-page1.json");
 const PAGE2: &str = include_str!("../tests/fixtures/search-page2.json");
 const ALBUMS: &str = include_str!("../tests/fixtures/albums.json");
+const AUTH_STATUS: &str = include_str!("../tests/fixtures/auth-status.json");
 
 const KEY: &str = "test-key-0123456789";
 
@@ -109,6 +110,16 @@ fn recorded(req: &Req) -> Vec<u8> {
                 _ => response("200 OK", br#"{"albums":{"total":0,"count":0,"items":[]},"assets":{"total":0,"count":0,"items":[],"nextPage":null}}"#),
             }
         }
+        ("GET", "/api/auth/status") => response("200 OK", AUTH_STATUS.as_bytes()),
+        ("POST", "/api/auth/session/unlock") => {
+            // a recorded 204 has an empty body; the right PIN or password unlocks, anything else is refused
+            let b: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            if b["pinCode"] == "2468" || b["password"] == "square lamp house" {
+                response("204 No Content", b"")
+            } else {
+                response("401 Unauthorized", br#"{"message":"Wrong password or PIN code","statusCode":401,"error":"Unauthorized"}"#)
+            }
+        }
         _ => response("404 Not Found", br#"{"message":"Not found"}"#),
     }
 }
@@ -141,6 +152,55 @@ fn connect_reads_version_user_and_permissions() {
     let seen = seen.lock().unwrap();
     assert!(seen.iter().all(|r| !r.target.contains(KEY)));
     assert!(seen.iter().any(|r| r.header("x-api-key") == Some(KEY)));
+}
+
+#[test]
+fn auth_status_reads_elevation_and_unlock_secrets() {
+    let (url, _) = serve(recorded);
+    let c = client(&url, KEY);
+    let st = c.auth_status().unwrap();
+    assert!(!st.is_elevated, "the recorded server's session is locked");
+    assert!(st.password && st.pin_code);
+    assert_eq!(st.pin_expires_at, None);
+    // an elevated session may carry an end of its elevation (parsed, not required)
+    let (url, _) = serve(|req| {
+        let path = req.target.split('?').next().unwrap_or_default();
+        match (req.method.as_str(), path) {
+            ("GET", "/api/auth/status") => {
+                response("200 OK", br#"{"isElevated": true, "expiresAt": "2026-11-10T18:00:00.000Z", "password": true, "pinCode": false}"#)
+            }
+            _ => response("404 Not Found", br#"{}"#),
+        }
+    });
+    let st = client(&url, KEY).auth_status().unwrap();
+    assert!(st.is_elevated);
+    assert_eq!(st.expires_at.as_deref(), Some("2026-11-10T18:00:00.000Z"));
+    assert!(!st.pin_code);
+}
+
+#[test]
+fn unlock_sends_the_secret_in_the_body_and_names_a_refusal() {
+    let (url, seen) = serve(recorded);
+    let c = client(&url, KEY);
+    // the right PIN: 204 with an empty body
+    c.unlock_session(&SessionUnlock { pin_code: Some("2468".into()), password: None }).unwrap();
+    // the right password, sent as such
+    c.unlock_session(&SessionUnlock { pin_code: None, password: Some("square lamp house".into()) }).unwrap();
+    // a wrong secret is refused and the error says so, without the secret
+    let e = c.unlock_session(&SessionUnlock { pin_code: Some("9999".into()), password: None }).unwrap_err();
+    assert!(!e.retryable());
+    assert!(e.to_string().contains("refused"), "{e}");
+    assert!(!e.to_string().contains("9999"), "{e}");
+    // the secret travels in the request body, never in the URL or a query
+    let seen = seen.lock().unwrap();
+    let unlocks: Vec<&Req> = seen.iter().filter(|r| r.target == "/api/auth/session/unlock").collect();
+    assert_eq!(unlocks.len(), 3);
+    assert!(unlocks.iter().all(|r| !r.target.contains("2468") && !r.target.contains("square")));
+    let first: serde_json::Value = serde_json::from_slice(&unlocks[0].body).unwrap();
+    assert_eq!(first, serde_json::json!({"pinCode": "2468"}), "only the chosen secret is sent");
+    let second: serde_json::Value = serde_json::from_slice(&unlocks[1].body).unwrap();
+    assert_eq!(second, serde_json::json!({"password": "square lamp house"}));
+    assert!(unlocks.iter().all(|r| r.header("x-api-key") == Some(KEY)), "unlocking needs the key's session");
 }
 
 #[test]
