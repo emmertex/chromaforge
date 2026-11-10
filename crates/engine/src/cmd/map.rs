@@ -511,7 +511,9 @@ mod tests {
         let r = s.execute("map.clearLocationMetadata", &json!({"ids": [ids[0].0, ids[1].0, ids[2].0]})).unwrap();
         assert!(r["changed"].as_u64() >= Some(2), "{r}");
         let m = &s.catalog.photo(ids[0]).unwrap().meta;
-        assert!(m.gps.is_none() && m.city.is_empty() && m.country.is_empty() && m.country_code.is_empty() && m.location.is_empty() && m.state.is_empty());
+        assert!(
+            m.gps.is_none() && m.city.is_empty() && m.country.is_empty() && m.country_code.is_empty() && m.location.is_empty() && m.state.is_empty()
+        );
         s.undo_step().unwrap();
         let m = &s.catalog.photo(ids[0]).unwrap().meta;
         assert!(m.gps.is_some() && m.city == "Paris" && m.country_code == "FR");

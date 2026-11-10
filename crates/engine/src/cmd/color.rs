@@ -263,7 +263,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     o.defringe_green_amount
                 };
                 s.set_develop(id, d, "Fringe Color Selector")?;
-                Ok(json!({"applied": true, "colour": if pick.purple { "purple" } else { "green" }, "hueLo": pick.lo, "hueHi": pick.hi, "amount": amount}))
+                Ok(
+                    json!({"applied": true, "colour": if pick.purple { "purple" } else { "green" }, "hueLo": pick.lo, "hueHi": pick.hi, "amount": amount}),
+                )
             }
         ),
         cmd!(
