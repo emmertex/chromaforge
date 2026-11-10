@@ -146,7 +146,7 @@ pub(crate) fn transform_body(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             if guided {
                 ui.label(
                     egui::RichText::new(crate::i18n::tr_format!(
-                        "{} of 4 guides — drag along lines that should be vertical or horizontal.",
+                        "{} of 4 guides. Drag along lines that should be vertical or horizontal.",
                         d.geometry.guides.len()
                     ))
                     .size(11.0)

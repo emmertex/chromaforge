@@ -96,7 +96,7 @@ impl eframe::App for Probe {
         }
         let left = self.until.saturating_duration_since(Instant::now());
         egui::Frame::new().fill(egui::Color32::from_gray(40)).inner_margin(16.0).show(ui, |ui| {
-            ui.heading(format!("HDR probe — closes in {} s", left.as_secs() + 1));
+            ui.heading(format!("HDR probe (closes in {} s)", left.as_secs() + 1));
             ui.label(match headroom {
                 Some(h) => format!("HDR: the display has {h:.2}× SDR white; the ramp should keep brightening up to that point."),
                 None => "SDR: the ramp clips at the reference patch's white (1×).".to_string(),

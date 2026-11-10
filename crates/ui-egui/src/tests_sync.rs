@@ -560,7 +560,7 @@ fn while_the_folder_is_listed_its_row_says_what_was_listed_and_its_bar_moves_on_
     p.files_listed.store(18402, Relaxed);
     let (done, total, detail) = crate::sync::scan_row(&p, "photos/Various");
     assert_eq!((done, total), (0, 0), "a bar that moves on its own, not 0 of 64085");
-    assert_eq!(detail, "Listing folders — folders: 312, files: 18402 · photos/Various");
+    assert_eq!(detail, "Listing folders (folders: 312, files: 18402) · photos/Various");
     // the listing is over: the files and photos checked, of how many
     p.listed.store(true, Relaxed);
     p.checked.store(10, Relaxed);

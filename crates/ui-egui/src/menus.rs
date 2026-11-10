@@ -2852,7 +2852,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         return String::new();
                     }
                     let shown: Vec<&str> = names.iter().take(max).copied().collect();
-                    crate::i18n::tr_format!(" — not carried over: {}{}", shown.join(", "), if names.len() > max { "…" } else { "" })
+                    crate::i18n::tr_format!(" (not carried over: {}{})", shown.join(", "), if names.len() > max { "…" } else { "" })
                 };
                 if metas > 0 {
                     let msg = crate::i18n::tr_format!("Imported {n} metadata preset{}", if metas == 1 { "" } else { "s" }, n = metas);
@@ -2894,7 +2894,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     skipped.dedup();
                     if !skipped.is_empty() {
                         let names: Vec<&str> = skipped.iter().take(3).copied().collect();
-                        msg += &crate::i18n::tr_format!(" — not carried over: {}{}", names.join(", "), if skipped.len() > 3 { "…" } else { "" });
+                        msg += &crate::i18n::tr_format!(" (not carried over: {}{})", names.join(", "), if skipped.len() > 3 { "…" } else { "" });
                     }
                     parts.push(msg);
                 }
@@ -2987,7 +2987,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 let refuses: Vec<&str> = v["captureOneRefuses"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 if !refuses.is_empty() {
                     msg.push_str(&crate::i18n::tr_format!(
-                        " — Capture One won't import a list with ; , < or > in a keyword: {names}",
+                        ". Capture One won't import a list with ; , < or > in a keyword: {names}",
                         names = refuses.iter().take(5).copied().collect::<Vec<_>>().join(" · ")
                     ));
                 }
@@ -2995,7 +2995,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 let left: Vec<&str> = v["unwritable"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 if !left.is_empty() {
                     msg.push_str(&crate::i18n::tr_format!(
-                        " — left out, as a keyword list can't hold them: {names}",
+                        ". Left out, as a keyword list can't hold them: {names}",
                         // escaped: a line break in a name would break the toast
                         names = left.iter().take(5).map(|n| n.escape_debug().to_string()).collect::<Vec<_>>().join(" · ")
                     ));
@@ -3245,7 +3245,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "app.exportPrevious" => match app.session.last_export.clone() {
             Some(prev) => crate::control::export_active(app, &lcc_engine::export::ExportOptions::known_keys_only(&prev)),
-            None => Err("nothing exported yet — use Export…".into()),
+            None => Err("nothing exported yet; use Export…".into()),
         },
         _ => return None,
     };

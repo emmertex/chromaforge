@@ -799,13 +799,13 @@ pub fn control_open(_: &Control, _: &Path) -> std::result::Result<Value, String>
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "editIn.presets", "Edit In Presets", [], None, "{} — external editor presets → {builtin: [preset], user: [preset]}; a preset is {name, app, args, format: tiff|psd, colorSpace, bitDepth: 8|16, mode: copyWithAdjustments|copy|original, naming, stack, control?: {port, tokenFile, root}}", always, presets),
+        cmd!(query "editIn.presets", "Edit In Presets", [], None, "{}: external editor presets → {builtin: [preset], user: [preset]}; a preset is {name, app, args, format: tiff|psd, colorSpace, bitDepth: 8|16, mode: copyWithAdjustments|copy|original, naming, stack, control?: {port, tokenFile, root}}", always, presets),
         cmd!(
             "editIn.savePreset",
             "Save Edit In Preset",
             [],
             None,
-            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}} — add or replace an external editor preset (kept in editors.json in the settings folder); app, args and control choose a program, so over MCP, the control channel or in an action they can't be set or changed → the preset",
+            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}}: add or replace an external editor preset (kept in editors.json in the settings folder); app, args and control choose a program, so over MCP, the control channel or in an action they can't be set or changed → the preset",
             always,
             save_preset
         ),
@@ -814,7 +814,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Delete Edit In Preset",
             [],
             None,
-            "{name} — delete a saved external editor preset → {deleted}",
+            "{name}: delete a saved external editor preset → {deleted}",
             always,
             delete_preset
         ),
@@ -825,7 +825,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
                 "Edit In…",
                 ["Photo", "Edit In"],
                 None,
-                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false} — Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); app and args (and a preset's control) choose a program, so they're for the command line and the Edit In Presets dialog only: over MCP, the control channel or in an action, name a saved preset instead; wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
+                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false}: Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); app and args (and a preset's control) choose a program, so they're for the command line and the Edit In Presets dialog only: over MCP, the control channel or in an action, name a saved preset instead; wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
                 has_active,
                 edit_in
             )
@@ -835,7 +835,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Open as Layers in PhotoCraft…",
             ["Photo", "Edit In"],
             None,
-            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} (app, args and control choose a program: command line only, never over MCP, the control channel or in an action) — one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
+            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} (app, args and control choose a program: command line only, never over MCP, the control channel or in an action): one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
             has_selection,
             open_as_layers
         ),

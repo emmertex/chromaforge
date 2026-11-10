@@ -1,6 +1,6 @@
 ### Histogram display modes, vectorscope, scales and colour-coded clipping (issue #206)
-- The histogram is no longer one fixed plot: the small selector under it — or a right-click on the plot, or
-  `view.histogram.mode` — switches between **RGB Overlay**, the additive R/G/B view whose pairwise overlaps read
+- The histogram is no longer one fixed plot: the small selector under it (or a right-click on the plot, or
+  `view.histogram.mode`) switches between **RGB Overlay**, the additive R/G/B view whose pairwise overlaps read
   yellow, cyan and magenta and whose three-way overlap reads neutral grey (with the luminance as a hairline over it);
   **Luminance**, one monochrome curve; **Separated Channels**, three stacked tracks on one shared scale, so a single
   channel's clipping and colour-balance shifts are unambiguous; **Chroma**, the photo's saturation as one curve; and
@@ -13,5 +13,5 @@
   distribution. Both choices are saved with the app settings, and either command can be given a keyboard shortcut, run
   from the control channel or reached from MCP.
 - The clip indicators in the plot's top corners are triangles again: hollow while nothing clips, filled with the
-  colour of the channels that do — white for all three, yellow / cyan / magenta for a pair, one channel's own colour
+  colour of the channels that do: white for all three, yellow / cyan / magenta for a pair, one channel's own colour
   for one. Resting the pointer on one previews the clipping mask on the photo without switching it on.

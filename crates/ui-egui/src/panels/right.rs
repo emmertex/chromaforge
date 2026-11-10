@@ -638,7 +638,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             if guided {
                 ui.label(
                     egui::RichText::new(crate::i18n::tr_format!(
-                        "{} of 4 guides — drag along lines that should be vertical or horizontal.",
+                        "{} of 4 guides. Drag along lines that should be vertical or horizontal.",
                         d.geometry.guides.len()
                     ))
                     .size(11.0)
@@ -1446,7 +1446,7 @@ fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
                     [bw, 22.0],
                     egui::Button::new(egui::RichText::new(short).size(11.5).color(if on { t.text } else { t.text_label })).selected(on).truncate(),
                 )
-                .on_hover_text(format!("{} — {}", k.replace('|', " › "), key(i)));
+                .on_hover_text(format!("{}: {}", k.replace('|', " › "), key(i)));
             register(ui.ctx(), format!("kwSet:{}", i + 1), r.rect);
             if on {
                 register(ui.ctx(), format!("kwSetOn:{}", i + 1), r.rect);

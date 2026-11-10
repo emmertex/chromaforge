@@ -163,7 +163,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Status",
             [],
             None,
-            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, feed? (a feed other than the release's own), available?: {version, current, title, tag, published, notes, file, size, action, verified (this build can check the release's signature; false: it downloads and installs nothing), kind, page (the release's own page)}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?} — what the updater knows right now",
+            "{} → {version, platform, supported, check: never | running | current | found, download: idle | running | ready | failed | cancelled, checkAtStartup, prerelease, lastChecked, seenVersion, repo, page, staging, feed? (a feed other than the release's own), available?: {version, current, title, tag, published, notes, file, size, action, verified (this build can check the release's signature; false: it downloads and installs nothing), kind, page (the release's own page)}, progress?: {bytes, total}, staged?: {version, file, bytes, sha256, path, kind}, installed?: {version, message, exit}, error?}: what the updater knows right now",
             always,
             status
         ),
@@ -172,7 +172,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Check for Updates",
             [],
             None,
-            "{wait?: bool} — read the project's own release feed in the background and compare it with this build (one request; a recent answer is reused). Only files on the project's GitHub releases, over https, are offered. `wait: true` runs it now and answers with the outcome, for one-shot callers → status",
+            "{wait?: bool}: read the project's own release feed in the background and compare it with this build (one request; a recent answer is reused). Only files on the project's GitHub releases, over https, are offered. `wait: true` runs it now and answers with the outcome, for one-shot callers → status",
             always,
             check
         ),
@@ -181,7 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download Update",
             [],
             None,
-            "{wait?: bool} — fetch the file the check offered for this system into the cache folder: the release's SHA256SUMS.txt must carry a valid signature from the key this build was made with, and the file must match the size and the SHA-256 that signed list records (resumable; the activity stack shows it and can cancel it). A build without an update key refuses (\"this build can't verify updates\"). `wait: true` blocks until it is in, for one-shot callers → status",
+            "{wait?: bool}: fetch the file the check offered for this system into the cache folder: the release's SHA256SUMS.txt must carry a valid signature from the key this build was made with, and the file must match the size and the SHA-256 that signed list records (resumable; the activity stack shows it and can cancel it). A build without an update key refuses (\"this build can't verify updates\"). `wait: true` blocks until it is in, for one-shot callers → status",
             always,
             download
         ),
@@ -190,7 +190,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Cancel Update Download",
             [],
             None,
-            "{} → {cancelled} — stop the transfer; nothing is left behind",
+            "{} → {cancelled}: stop the transfer; nothing is left behind",
             always,
             cancel_download
         ),
@@ -199,7 +199,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Install Update",
             [],
             None,
-            "{confirm?: bool} — refused by a build without an update key (\"this build can't verify updates\"). Without `confirm`: what installing the downloaded file would do ({summary, steps, destination, restart: quitAndRelaunch | quit | manual}). With `confirm: true`: do it — run the installer, replace the AppImage, or open the file's folder — and say whether the app has to quit ({message, exit})",
+            "{confirm?: bool}: refused by a build without an update key (\"this build can't verify updates\"). Without `confirm`: what installing the downloaded file would do ({summary, steps, destination, restart: quitAndRelaunch | quit | manual}). With `confirm: true`: do it (run the installer, replace the AppImage, or open the file's folder) and say whether the app has to quit ({message, exit})",
             always,
             install
         ),
@@ -208,7 +208,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Discard Downloaded Update",
             [],
             None,
-            "{} — delete the downloaded file → status",
+            "{}: delete the downloaded file → status",
             always,
             discard
         ),
@@ -217,7 +217,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Preferences",
             [],
             None,
-            "{checkAtStartup?: bool, prerelease?: bool} — ask the feed when the app starts, and whether prereleases count as updates (saved in the app's own settings folder, `updates.json`; `--memory`, `--demo` and `{env}_NO_PREFS` runs keep them in memory only). The start-up check is off by default, and headless sessions never run it. A file that can't be written is an error naming it, and the settings stay as they were → status + {persistent, staging}",
+            "{checkAtStartup?: bool, prerelease?: bool}: ask the feed when the app starts, and whether prereleases count as updates (saved in the app's own settings folder, `updates.json`; `--memory`, `--demo` and `{env}_NO_PREFS` runs keep them in memory only). The start-up check is off by default, and headless sessions never run it. A file that can't be written is an error naming it, and the settings stay as they were → status + {persistent, staging}",
             always,
             prefs
         ),
@@ -226,7 +226,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Dismiss Update",
             [],
             None,
-            "{version?, skipped?: bool} — remember that the user answered about this version, so a start-up check does not ask again (defaults to the version on offer) → status",
+            "{version?, skipped?: bool}: remember that the user answered about this version, so a start-up check does not ask again (defaults to the version on offer) → status",
             always,
             dismiss
         ),
