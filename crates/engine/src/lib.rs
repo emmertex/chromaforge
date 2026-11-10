@@ -2525,6 +2525,8 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_albums_local;
 #[cfg(test)]
+mod tests_select_menu;
+#[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
 mod tests_auto_mask_range;

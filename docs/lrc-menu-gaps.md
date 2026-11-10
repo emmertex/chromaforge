@@ -18,8 +18,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Rename Catalog… | Rename the open catalog's folder and file, then reopen it. | S | feature | `soon.renameCatalog` |
 | Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
-| Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
-| Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
 
 ## Every module ▸ File ▸ Auto Import
 
@@ -35,19 +33,10 @@ Generated from the menu tables; don't edit by hand.
 | Lock Filters | Keep the filter bar's filter when another folder or collection is chosen. | S | feature | `soon.lockFilters` |
 | Remember Each Source's Filters Separately | Each folder and collection keeps its own filter. | S | feature | `soon.rememberFilters` |
 
-## Every module ▸ Edit
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Invert Selection | Select the photos in view that aren't selected, and deselect the others. | S | feature | `soon.invertSelection` |
-| Deselect Active Photo (/) | Take the active photo out of the selection (/ is the filmstrip key here today). | S | feature | `soon.deselectActive` |
-| Deselect Unflagged Photos (Ctrl+Alt+Shift+D) | Keep only the flagged photos of the selection selected. | S | feature | `soon.deselectUnflagged` |
-
 ## Library module ▸ Library
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
 | Filter by Preset | The filter bar's saved filter presets as a submenu. | S | wire-up | `soon.filterByPreset` |
 | Filter by Flag | Flagged / Unflagged / Rejected filters as a submenu. | S | wire-up | `soon.filterByFlag` |
 | Filter by Color Label | Colour-label filters as a submenu. | S | wire-up | `soon.filterByColorLabel` |
@@ -57,7 +46,6 @@ Generated from the menu tables; don't edit by hand.
 | Review Comments | Comments from shared web galleries. | L | feature | `soon.reviewComments` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
 | Validate DNG Files | Check the DNGs' embedded checksums and list the damaged ones. | S | feature | `soon.validateDng` |
-| Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
 | Find Previous Process Photos | Show the photos edited with an older process version. | S | feature | `soon.findPreviousProcess` |
 
 ## Library module ▸ Photo
@@ -67,7 +55,6 @@ Generated from the menu tables; don't edit by hand.
 | Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Set Keyword | The keyword set's nine keywords as a submenu (Alt+1…9 work today). | S | wire-up | `soon.setKeyword` |
-| Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
 
@@ -98,7 +85,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Toggle Loupe View | Switch between the grid and the large view of the selected photo. | S | wire-up | `soon.toggleLoupeView` |
 | Lock Zoom Position (Ctrl+Shift+=) | Zoom every photo to the same place while stepping through them. | S | feature | `soon.lockZoomPosition` |
 | Scroll By Row | The grid scrolls a whole row at a time. | S | feature | `soon.scrollByRow` |
 | Enable Mirror Image Mode | Show every photo flipped left to right (view only). | S | feature | `soon.mirrorImageMode` |

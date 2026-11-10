@@ -1120,6 +1120,71 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(
+            "library.invertSelection",
+            "Invert Selection",
+            ["Edit"],
+            None,
+            "{} — selects the photos in view that aren't selected and deselects the others → {selected}",
+            always,
+            |s, _| {
+                let chosen: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
+                let ids: Vec<PhotoId> = s.visible_cloned().into_iter().filter(|id| !chosen.contains(id)).collect();
+                // the active photo stays active if it is still selected; else the first of the new selection
+                let active = s.selection.active.filter(|a| ids.contains(a)).or(ids.first().copied());
+                let n = ids.len();
+                s.selection = Selection { ids, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectActive",
+            "Deselect Active Photo",
+            ["Edit"],
+            None,
+            "{} — takes the active photo out of the selection; the next selected photo (wrapping round) becomes active, and with none left nothing stays selected → {selected}",
+            has_active,
+            |s, _| {
+                let Some(active) = s.selection.active else { return Err(bad("library.deselectActive", "no active photo")) };
+                let ids = s.selection.ids.clone();
+                let Some(at) = ids.iter().position(|i| *i == active) else {
+                    // the active photo isn't in the selection: nothing to take out
+                    return Ok(json!({"selected": ids.len()}));
+                };
+                let mut rest = ids;
+                rest.remove(at);
+                // "next" is the next selected photo after the old one, wrapping round
+                let next = rest.get(at).or_else(|| rest.first()).copied();
+                let n = rest.len();
+                s.selection = Selection { ids: rest, active: next };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectUnflagged",
+            "Deselect Unflagged Photos",
+            ["Edit"],
+            None,
+            "{} — keeps only the flagged (picked) photos of the selection selected; with none flagged it acts as Deselect All (the active photo stays) → {selected}",
+            always,
+            |s, _| {
+                let keep: Vec<PhotoId> =
+                    s.selection.ids.iter().copied().filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Pick)).collect();
+                if keep.is_empty() {
+                    let a = s.selection.active;
+                    s.selection = Selection { ids: a.into_iter().collect(), active: a };
+                    s.all_selected = None;
+                    return Ok(json!({"selected": s.selection.ids.len()}));
+                }
+                let active = s.selection.active.filter(|a| keep.contains(a)).or(keep.first().copied());
+                let n = keep.len();
+                s.selection = Selection { ids: keep, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
             "library.next",
             "Next Photo",
             [],
@@ -1447,6 +1512,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.end_interaction()?;
                 let op = s.catalog.delete_photos_permanently_ops(&t);
                 s.commit("Delete Permanently", op)?;
+                select_after_deletion(s, &before);
+                Ok(json!({"deleted": t.len()}))
+            }
+        ),
+        cmd!(
+            "photo.removeFromCatalog",
+            "Remove Photo from Catalog",
+            ["Photo"],
+            None,
+            "{ids?} — removes the photos from the library without asking; the files stay on disk. One undo step (browsed photos not in the library are left alone) → {deleted}",
+            has_selection,
+            |s, p| {
+                let before = s.visible_cloned();
+                let t = not_browsed(s, s.targets(p)?, "photo.removeFromCatalog")?;
+                s.end_interaction()?;
+                let op = s.catalog.delete_photos_permanently_ops(&t);
+                s.commit("Remove from Catalog", op)?;
                 select_after_deletion(s, &before);
                 Ok(json!({"deleted": t.len()}))
             }
