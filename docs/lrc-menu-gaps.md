@@ -115,7 +115,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
-| Proof | Soft-proof the photo (View ▸ Soft Proofing exists). | S | wire-up | `soon.proof` |
 | Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
 | Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
 | Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
@@ -129,23 +128,18 @@ Generated from the menu tables; don't edit by hand.
 | Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
 | Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
 | Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
-| Point Color Selector (Ctrl+Alt+P) | Pick a point colour on the photo (Color Mixer has Point Color). | S | wire-up | `soon.pointColorSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Use Generative AI | Generative fill for the Remove tool (needs an open, shippable model). | L | feature | `soon.removeGenerative` |
 | Detect Objects | Remove tool: pick objects to remove by detection. | M | feature | `soon.removeDetectObjects` |
 
 ## Develop module ▸ Tools ▸ Create New Mask
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Select People | AI mask of people and their parts (face, skin, hair, clothes…). | M | feature | `soon.selectPeople` |
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
-| Color Range (Shift+J) | Start a colour-range mask (the Masking panel does it). | S | wire-up | `soon.colorRange` |
-| Luminance Range (Shift+Q) | Start a luminance-range mask (the Masking panel does it). | S | wire-up | `soon.luminanceRange` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
 ## Develop module ▸ Tools ▸ Target Adjustment

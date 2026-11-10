@@ -220,6 +220,16 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.object", "Object Selection", None, "Window>Tools"),
+    // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q stays
+    // `spot.cycleMode`'s module key). People opens its picker, Color Range waits for a click on the photo.
+    ("tool.people", "Select People", None, ""),
+    ("tool.colorRange", "Color Range", None, ""),
+    ("tool.luminanceRange", "Luminance Range", None, ""),
+    // Color Mixer ▸ Point Color with its picker armed
+    ("tool.pointColor", "Point Color Selector", None, ""),
+    // Remove Options ▸ Use Generative AI: the Remove tool's Generative mode on / off ({on?}; no params toggles); with no
+    // service set up it opens Settings ▸ Generative Fill instead
+    ("remove.useGenerative", "Use Generative AI", None, ""),
     ("tool.none", "No Tool", None, ""),
     // {id?, component}: the component edited on the photo (a Brush component arms the brush on it)
     ("mask.editComponent", "Edit Mask Component", None, ""),
@@ -1974,10 +1984,43 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         app.ui.wb_sample = crate::panels::detail::wb_sample_step(n);
                     }
                 }
+                "people" | "colorRange" | "luminanceRange" => {
+                    if app.session.active().is_none() {
+                        return Some(Err(format!("tool.{tool}: no photo")));
+                    }
+                    app.cancel_brush_gesture();
+                    crate::panels::masking::disarm(app);
+                    app.ui.people_pick = None;
+                    app.ui.concept_pick = false;
+                    app.mask_pick_op = None;
+                    app.ui.right = RightPanel::Masking;
+                    app.ui.view = ViewMode::Detail;
+                    let ctx = app.tasks.repaint.clone().unwrap_or_default();
+                    crate::panels::masking::start_new(app, &ctx, tool);
+                    return Some(Ok(json!({"started": tool})));
+                }
+                "pointColor" => {
+                    let Some(photo) = app.session.active() else {
+                        return Some(Err("tool.pointColor: no photo".into()));
+                    };
+                    let d = app.session.develop_of(photo).unwrap_or_default();
+                    if crate::is_bw(&d) {
+                        return Some(Err("tool.pointColor: Point Color needs a colour photo".into()));
+                    }
+                    if d.point_colors.len() >= lcc_develop::MAX_POINT_COLORS {
+                        return Some(Err(format!("tool.pointColor: a photo keeps at most {} point colours", lcc_develop::MAX_POINT_COLORS)));
+                    }
+                    if let Err(e) = color_mixer_layout(app, &json!({"tab": "point"})) {
+                        return Some(Err(e));
+                    }
+                    crate::panels::masking::disarm(app);
+                    app.ui.tool = "pointColor".into();
+                }
                 other => return Some(Err(format!("unknown tool `{other}`"))),
             }
             Ok(Value::Null)
         }
+        "remove.useGenerative" => crate::panels::genfill::use_generative(app, p),
         "dialog.cameraProfile" => crate::chart_profile::open(app),
         "cameraProfile.second" => crate::chart_profile::choose_second(app, p),
         "cameraProfile.removeSecond" => crate::chart_profile::remove_second(app),
@@ -3250,7 +3293,9 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "dialog.slideshowExport" | "app.slideshowExport" => {
             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
         }
-        s if s.starts_with("panel.") || s.starts_with("tool.") || s.starts_with("section.") => app.session.active().is_some() || s == "panel.close",
+        s if s.starts_with("panel.") || s.starts_with("tool.") || s == "remove.useGenerative" || s.starts_with("section.") => {
+            app.session.active().is_some() || s == "panel.close"
+        }
         "app.export" | "dialog.export" | "file.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {
             app.session.active().is_some()
         }
