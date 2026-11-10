@@ -339,7 +339,68 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"index": n - 1, "dabs": dabs}))
             }
         ),
+        cmd!(
+            "spot.detectObject",
+            "Remove Detected Object",
+            [],
+            None,
+            "{points: [[x,y],…] (a Remove brush stroke, normalized), mode?: fill|generate (fill)}: Remove ▸ Detect Objects: the stroke picks the object under it (a few of its points are Object clicks for SAM 3, or SAM 2.1 when that is the chosen Object model) and the selection becomes a Fill or Generative spot, as `spot.fromMask` makes it. Without an Object model it is a ModelMissing error (its download is offered); in the app it returns {pending: true, mask} and the spot appears when the object is found",
+            has_active,
+            |s, p| {
+                let c = "spot.detectObject";
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let mode = match str_param(p, "mode").unwrap_or("fill") {
+                    m @ ("fill" | "generate") => m,
+                    m => return Err(bad(c, format!("mode must be fill or generate, not `{m}`"))),
+                };
+                let stroke: Vec<[f64; 2]> = p
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|q| Some([q.get(0)?.as_f64()?, q.get(1)?.as_f64()?]))
+                            .filter(|q| q[0].is_finite() && q[1].is_finite())
+                            .map(|q| [q[0].clamp(0.0, 1.0), q[1].clamp(0.0, 1.0)])
+                            .take(MAX_STROKE_POINTS)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if stroke.is_empty() {
+                    return Err(bad(c, "paint over the object first (`points`)"));
+                }
+                // checked first so a missing model is a ModelMissing error before anything is changed
+                s.segmenter.require_object_model()?;
+                let out = s.execute("mask.add", &json!({"kind": "object", "points": prompt_points(&stroke), "name": "Detected object"}))?;
+                let mid = out["activeMask"].as_u64().and_then(|m| u32::try_from(m).ok()).ok_or_else(|| bad(c, "the object mask was not created"))?;
+                if out["pending"] == true {
+                    s.segmenter.then_remove = Some((id, mid, mode.to_string()));
+                    return Ok(json!({"pending": true, "mask": mid}));
+                }
+                match s.execute("spot.fromMask", &json!({"mask": mid, "mode": mode, "deleteMask": true})) {
+                    Ok(v) => Ok(v),
+                    Err(e) => {
+                        // nothing was found under the stroke: leave no empty mask behind
+                        let _ = s.execute("mask.delete", &json!({"id": mid}));
+                        Err(e)
+                    }
+                }
+            }
+        ),
     ]
+}
+
+/// Most stroke points one Detect Objects call reads.
+const MAX_STROKE_POINTS: usize = 4096;
+/// Most Object clicks a stroke becomes.
+const MAX_PROMPT_POINTS: usize = 8;
+
+/// A stroke's points thinned to at most [`MAX_PROMPT_POINTS`] evenly spaced ones: the Object clicks.
+fn prompt_points(stroke: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if stroke.len() <= MAX_PROMPT_POINTS {
+        return stroke.to_vec();
+    }
+    let last = stroke.len() - 1;
+    (0..MAX_PROMPT_POINTS).filter_map(|i| stroke.get(i * last / (MAX_PROMPT_POINTS - 1)).copied()).collect()
 }
 
 /// Most dabs a spot made from a mask gets.
