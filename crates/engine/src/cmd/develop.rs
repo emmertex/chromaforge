@@ -355,6 +355,12 @@ fn set_aspect(d: &mut DevelopSettings, w: f64, h: f64, aspect: Option<(u32, u32)
     d.crop.geometry = crop_fit_angle(w, h, angle, a);
 }
 
+/// Another photo is selected besides the active one (Crop to Same Aspect Ratio has someone to act on).
+fn has_other_selected(s: &Session) -> std::result::Result<(), String> {
+    let id = s.active().ok_or("no photo selected")?;
+    if s.selection.ids.iter().any(|o| *o != id && s.catalog.photo(*o).is_some()) { Ok(()) } else { Err("select more than one photo".into()) }
+}
+
 /// Photo `id` is on an older rendering process than [`ProcessVersion::LATEST`].
 fn outdated(s: &Session, id: PhotoId) -> bool {
     s.catalog.photo(id).is_some_and(|p| p.develop.process.is_outdated())
@@ -1146,6 +1152,101 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(())
             })
         }),
+        cmd!(
+            "crop.asShot",
+            "Crop As Shot",
+            [],
+            Some("Cmd+Alt+Shift+R"),
+            "{} — the crop goes back to the decoded camera frame (the sensor's own crop, which decoding already applies): full frame, no angle, no ratio lock; flips stay",
+            has_active,
+            |s, _| {
+                edit(s, "crop.asShot", "Crop As Shot", |d| {
+                    d.crop.geometry = CropGeometry::default();
+                    d.crop.aspect = None;
+                    Ok(())
+                })
+            }
+        ),
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "crop.sameAspect",
+                "Crop to Same Aspect Ratio",
+                [],
+                Some("Shift+A"),
+                "{ids?} — gives every other selected photo (or `ids`) the active photo's crop ratio: the largest centred crop of that ratio, as one undo step → {changed}. Needs an active photo and at least one other target",
+                has_other_selected,
+                |s, p| {
+                    const C: &str = "crop.sameAspect";
+                    let id = active(s, C)?;
+                    let (w, h) = crop_dims(s, id);
+                    let r = s.develop_of(id).unwrap_or_default().crop.geometry.rect_px(w, h);
+                    // a crop of no size has no ratio to hand on
+                    let (qa, qb) =
+                        aspect_tuple(C, r.width(), r.height()).map_err(|_| bad(C, "the active photo's crop has no usable aspect ratio"))?;
+                    let targets: Vec<PhotoId> = match named_photos(s, p, C)? {
+                        Some(ids) => ids,
+                        None => s.targets(p)?,
+                    }
+                    .into_iter()
+                    .filter(|t| *t != id)
+                    .collect();
+                    let mut ops = Vec::new();
+                    for t in targets {
+                        let Some(mut d) = s.develop_of(t).map(|d| (*d).clone()) else { continue };
+                        let (tw, th) = crop_dims(s, t);
+                        d.crop.aspect = Some((qa, qb));
+                        let angle = d.crop.geometry.angle;
+                        d.crop.geometry = crop_fit_angle(tw, th, angle, Some(f64::from(qa) / f64::from(qb)));
+                        ops.extend(s.develop_op(t, d, "Crop to Same Aspect Ratio"));
+                    }
+                    let n = ops.len();
+                    if n > 0 {
+                        s.commit("Crop to Same Aspect Ratio", Op::Batch { ops })?;
+                    }
+                    Ok(json!({"changed": n}))
+                }
+            )
+        },
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "develop.setProcess",
+                "Set Process Version",
+                [],
+                None,
+                "{version: number, ids?} — puts the target photos (`ids`, else the selection) on rendering process `version` (1..=latest; unknown versions are refused), as one undo step. Their look can change; the sliders keep their values (docs/process-versions.md) → {changed, process}",
+                has_selection,
+                |s, p| {
+                    const C: &str = "develop.setProcess";
+                    let label = "Process Version";
+                    let v = p
+                        .get("version")
+                        .and_then(|v| {
+                            v.as_u64().or_else(|| v.as_f64().filter(|x| x.fract() == 0.0 && *x >= 0.0 && *x < f64::from(u32::MAX)).map(|x| x as u64))
+                        })
+                        .and_then(|v| u32::try_from(v).ok())
+                        .map(ProcessVersion)
+                        .filter(|v| v.is_known())
+                        .ok_or_else(|| bad(C, format!("`version` must be a process version from 1 to {}", ProcessVersion::LATEST.0)))?;
+                    let targets = match named_photos(s, p, C)? {
+                        Some(ids) => ids,
+                        None => s.targets(p)?,
+                    };
+                    let ops: Vec<Op> = targets
+                        .into_iter()
+                        .filter_map(|id| s.develop_of(id).map(|d| (id, d)))
+                        .filter(|(_, d)| d.process != v)
+                        .filter_map(|(id, d)| s.develop_op(id, DevelopSettings { process: v, ..(*d).clone() }, label))
+                        .collect();
+                    let n = ops.len();
+                    if n > 0 {
+                        s.commit(label, Op::Batch { ops })?;
+                    }
+                    Ok(json!({"changed": n, "process": v}))
+                }
+            )
+        },
         // ---- HDR editing
         cmd!(
             "develop.hdr",

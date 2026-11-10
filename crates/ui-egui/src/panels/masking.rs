@@ -337,36 +337,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             app.ui.concept_pick = false;
                             app.mask_pick_op = None;
                         } else {
-                            match *kind {
-                                // armed: the first click on the photo makes the mask and picks there
-                                "colorRange" => match arm_new(app, "colorRange") {
-                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
-                                    Err(e) => app.toast(ui.ctx(), e),
-                                },
-                                "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
-                                    Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
-                                    Err(e) => app.toast(ui.ctx(), e),
-                                },
-                                "object" => {}
-                                "prompt" => start_describe(app, "new"),
-                                // a picker under the tiles: who and which parts, or which object
-                                "people" => {
-                                    app.ui.concept_pick = false;
-                                    app.mask_pick_op = None;
-                                    app.ui.people_pick = Some((0, Vec::new()));
-                                }
-                                "concept" => {
-                                    app.ui.people_pick = None;
-                                    app.mask_pick_op = None;
-                                    app.ui.concept_pick = true;
-                                }
-                                "brush" | "linear" | "radial" => {
-                                    let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
-                                }
-                                k => {
-                                    let _ = app.run("mask.add", json!({"kind": k}));
-                                }
-                            }
+                            start_new(app, ui.ctx(), kind);
                         }
                     }
                     if i % cols == cols - 1 {
@@ -2256,6 +2227,41 @@ fn object_settings(app: &mut LccApp, ui: &mut egui::Ui) {
                 .color(t.text_dim),
         );
     });
+}
+
+/// What a Create New Mask tile of `kind` does when clicked (also Tools ▸ Create New Mask ▸ Select People / Color Range /
+/// Luminance Range): arm the tool for the first click on the photo, open the picker under the tiles, or make the mask.
+pub(crate) fn start_new(app: &mut LccApp, ctx: &egui::Context, kind: &str) {
+    match kind {
+        // armed: the first click on the photo makes the mask and picks there
+        "colorRange" => match arm_new(app, "colorRange") {
+            Ok(_) => app.toast(ctx, crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
+            Err(e) => app.toast(ctx, e),
+        },
+        "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
+            Ok(_) => app.toast(ctx, crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
+            Err(e) => app.toast(ctx, e),
+        },
+        "object" => {}
+        "prompt" => start_describe(app, "new"),
+        // a picker under the tiles: who and which parts, or which object
+        "people" => {
+            app.ui.concept_pick = false;
+            app.mask_pick_op = None;
+            app.ui.people_pick = Some((0, Vec::new()));
+        }
+        "concept" => {
+            app.ui.people_pick = None;
+            app.mask_pick_op = None;
+            app.ui.concept_pick = true;
+        }
+        "brush" | "linear" | "radial" => {
+            let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
+        }
+        k => {
+            let _ = app.run("mask.add", json!({"kind": k}));
+        }
+    }
 }
 
 pub(crate) fn is_mask_tool(tool: &str) -> bool {

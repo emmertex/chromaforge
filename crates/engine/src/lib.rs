@@ -140,6 +140,7 @@ pub mod smart_masks;
 pub mod source_report;
 pub mod sync;
 mod sync_same;
+pub mod template_folders;
 pub mod text;
 pub mod timelapse;
 #[cfg(not(target_arch = "wasm32"))]
@@ -555,6 +556,9 @@ pub struct Session {
     pub print: print::template::PrintSettings,
     /// Saved print templates (`print.template.*`), persisted in prefs.json.
     pub print_templates: Vec<print::template::PrintTemplate>,
+    /// The Template Browser's folders besides [`template_folders::DEFAULT_FOLDER`], sorted by name
+    /// (`print.template.folder.*`), persisted in prefs.json.
+    pub print_template_folders: Vec<String>,
     /// Metadata presets (`metadata.*`), persisted in prefs.json.
     pub metadata_presets: Vec<cmd::metadata::MetadataPreset>,
     /// Import presets: named sets of the Import tab's settings (persisted in prefs.json).
@@ -853,6 +857,7 @@ impl Session {
             export_presets: Vec::new(),
             print: Default::default(),
             print_templates: Vec::new(),
+            print_template_folders: Vec::new(),
             metadata_presets: Vec::new(),
             import_presets: Vec::new(),
             filter_presets: Vec::new(),
@@ -2566,6 +2571,8 @@ mod tests_crop_angle;
 mod tests_crop_aspect;
 #[cfg(test)]
 mod tests_crop_aspects;
+#[cfg(test)]
+mod tests_crop_same;
 #[cfg(test)]
 mod tests_denoise;
 #[cfg(test)]
