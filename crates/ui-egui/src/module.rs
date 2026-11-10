@@ -618,14 +618,15 @@ fn views(ui: &mut egui::Ui, app: &mut LccApp) {
     // the originals the view keeps decoded (the loupe's even over budget), as the docked centre does
     panels::compare::prepare(app);
     panels::alternatives::show(app, ui);
-    match app.ui.view {
+    let rect = ui.available_rect_before_wrap();
+    crate::view_state::around(app, ui, rect, |app, ui| match app.ui.view {
         ViewMode::PhotoGrid | ViewMode::SquareGrid => panels::grid::show(app, ui),
         ViewMode::Detail => panels::detail::show(app, ui),
         ViewMode::Compare => panels::compare::show_compare(app, ui),
         ViewMode::Survey => panels::compare::show_survey(app, ui),
         ViewMode::Reference => panels::compare::show_reference(app, ui),
         ViewMode::People => panels::people::show(app, ui),
-    }
+    })
 }
 
 /// The module the view, the right panel and the module in use imply (Library or Develop).
