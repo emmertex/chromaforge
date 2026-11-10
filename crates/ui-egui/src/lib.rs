@@ -71,6 +71,7 @@ mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
 pub mod motion;
+pub mod overlay;
 pub mod panels;
 pub mod pick;
 pub mod plate;
