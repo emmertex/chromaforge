@@ -355,7 +355,22 @@ fn merge(base: &mut serde_json::Value, patch: &serde_json::Value) {
 #[serde(default, rename_all = "camelCase")]
 pub struct Template {
     pub name: String,
+    /// The Template Browser folder the template is listed in; `None`: "User Templates".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
     pub settings: Settings,
+}
+
+impl lcc_engine::template_folders::Foldered for Template {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn folder(&self) -> Option<&str> {
+        self.folder.as_deref()
+    }
+    fn set_folder(&mut self, folder: Option<String>) {
+        self.folder = folder;
+    }
 }
 
 /// A saved slideshow: a template plus its photos (a special collection).
@@ -395,12 +410,12 @@ pub fn builtin_templates() -> Vec<Template> {
     simple.backdrop.color = [0, 0, 0];
     simple.layout.margins = [0.03; 4];
     vec![
-        Template { name: "Default".into(), settings: default },
-        Template { name: "Caption and Rating".into(), settings: caption },
-        Template { name: "Crop to Fill".into(), settings: fill },
-        Template { name: "Exif Metadata".into(), settings: exif },
-        Template { name: "Simple".into(), settings: simple },
-        Template { name: "Widescreen".into(), settings: wide },
+        Template { name: "Default".into(), folder: None, settings: default },
+        Template { name: "Caption and Rating".into(), folder: None, settings: caption },
+        Template { name: "Crop to Fill".into(), folder: None, settings: fill },
+        Template { name: "Exif Metadata".into(), folder: None, settings: exif },
+        Template { name: "Simple".into(), folder: None, settings: simple },
+        Template { name: "Widescreen".into(), folder: None, settings: wide },
     ]
 }
 

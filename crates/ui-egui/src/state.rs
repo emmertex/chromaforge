@@ -1190,6 +1190,11 @@ pub struct UiState {
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
+    /// Android: the camera roll is watched (`camera_roll::watch_tick`): it is listed when the
+    /// library opens, when the app comes to the front and every few minutes, and photos new to
+    /// the library are imported without the review. Set by adding the roll for keeps (the
+    /// first-start prompt's Add Camera Roll, Settings ▸ Folders); the toggle there turns it off.
+    pub camera_roll_watch: bool,
     /// The Build Previews run last announced (its identity, finished?).
     #[serde(skip)]
     pub preview_build_seen: Option<(usize, bool)>,
@@ -2384,6 +2389,7 @@ impl Default for UiState {
             eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
+            camera_roll_watch: false,
             preview_build_seen: None,
             unsaved_seen: false,
             frame_rate: lcc_brand::env("FPS").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")),
