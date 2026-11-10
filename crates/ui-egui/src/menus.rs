@@ -220,6 +220,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
     ("tool.wbPicker", "White Balance Selector", Some("W"), "Window>Tools"),
     ("tool.object", "Object Selection", None, "Window>Tools"),
+    // Tools > Fringe Color Selector: arms the eyedropper; a click points Defringe at the colour under it
+    ("tool.fringe", "Fringe Color Selector", None, ""),
     // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q stays
     // `spot.cycleMode`'s module key). People opens its picker, Color Range waits for a click on the photo.
     ("tool.people", "Select People", None, ""),
@@ -388,8 +390,10 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("file.exportCurvePresets", "Export Point Curve Presets…", None, ""),
     ("dialog.watermark", "Edit Watermarks…", None, "Edit"),
     ("app.settings", "Settings…", Some("Cmd+,"), "Edit"),
+    ("app.autoImportToggle", "Enable Auto Import", None, "File>Auto Import"),
     ("app.newLibrary", "New Catalog…", None, "File>Libraries"),
     ("app.openLibrary", "Open Catalog…", Some("Cmd+O"), "File>Libraries"),
+    ("app.renameLibrary", "Rename Catalog…", None, "File>Libraries"),
     // libraries (crate::catalog_ui; the ids keep their older catalog name)
     ("catalog.new", "New Catalog…", None, ""),
     ("catalog.open", "Open Catalog…", None, ""),
@@ -504,11 +508,11 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
             app.ui.view = ViewMode::Detail;
         }
     }
-    if p != RightPanel::Masking && app.ui.tool != "wbPicker" {
+    if p != RightPanel::Masking && !matches!(app.ui.tool.as_str(), "wbPicker" | "fringe") {
         app.ui.tool.clear();
     }
     // an Edit panel picker doesn't follow into Masking, where it would claim the photo's clicks
-    if app.ui.right == RightPanel::Masking && (app.ui.tool.starts_with("tat:") || app.ui.tool == "pointColor") {
+    if app.ui.right == RightPanel::Masking && (app.ui.tool.starts_with("tat:") || matches!(app.ui.tool.as_str(), "pointColor" | "fringe")) {
         app.ui.tool.clear();
     }
     app.end_midi_interaction();
@@ -1258,8 +1262,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.settings_section = section.map(str::to_string);
             Ok(json!({"tab": tab, "section": section}))
         }
+        "app.autoImportToggle" => {
+            // {on?}: switch watching the folder on or off (kept when off); with no folder yet, Settings opens at it
+            let on = p.get("on").and_then(Value::as_bool).unwrap_or(app.session.import_defaults.auto_active_folder().is_none());
+            if on && app.session.import_defaults.auto_folder.is_none() {
+                return run_ui_command(app, "app.settings", &json!({"section": "autoImport"}));
+            }
+            app.session.execute("library.autoImport", &json!({"enabled": on})).map_err(|e| e.to_string())
+        }
         "app.openLibrary" => crate::panels::settings::open_library(app, p),
         "app.newLibrary" => crate::panels::settings::new_library(app, p),
+        "app.renameLibrary" => crate::panels::settings::rename_library(app, p),
         "app.recentLibraries" => crate::panels::settings::recent_libraries(app, p),
         "app.clearRecentLibraries" => crate::panels::settings::recent_libraries(app, &json!({"clear": true})),
         "app.displayProfile" => crate::panels::settings::display_profile(app, p),
@@ -1305,7 +1318,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 }
             } else {
                 app.ui.right_collapsed = !app.ui.right_collapsed;
-                if app.ui.right_collapsed && app.ui.right.is_edit_tool() && app.ui.tool != "wbPicker" {
+                if app.ui.right_collapsed && app.ui.right.is_edit_tool() && !matches!(app.ui.tool.as_str(), "wbPicker" | "fringe") {
                     // hiding a tool ends it, as closing its panel does
                     app.ui.tool.clear();
                     let _ = app.session.end_interaction();
@@ -2007,6 +2020,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     if let Some(n) = p.get("sample").and_then(Value::as_f64).filter(|v| v.is_finite()) {
                         app.ui.wb_sample = crate::panels::detail::wb_sample_step(n);
                     }
+                }
+                "fringe" if app.ui.tool == "fringe" => app.ui.tool.clear(),
+                "fringe" => {
+                    app.ui.right = RightPanel::Edit;
+                    app.ui.view = ViewMode::Detail;
+                    app.ui.tool = "fringe".into();
                 }
                 "people" | "colorRange" | "luminanceRange" => {
                     if app.session.active().is_none() {
@@ -3415,6 +3434,7 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "view.compare" => app.session.catalog.len() > 1,
         "view.fullScreenPreview" | "view.infoOverlay" | "view.navigator" => app.session.active().is_some() || app.ui.fullscreen,
         "app.openLibrary" | "app.newLibrary" => app.services.pick_folder.is_some() && crate::panels::settings::can_switch_library(app).is_ok(),
+        "app.renameLibrary" => app.session.library.as_ref().is_some_and(|l| l.on_disk) && crate::panels::settings::can_switch_library(app).is_ok(),
         "dialog.import" => !crate::lightroom_import::is_running(app),
         "file.addFolder" => (app.services.pick_folder.is_some() || app.services.picker.is_some()) && !crate::lightroom_import::is_running(app),
         "file.backupLibrary" => app.services.backup_library.is_some(),

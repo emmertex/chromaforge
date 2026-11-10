@@ -2280,11 +2280,11 @@ impl LccApp {
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
         // a folder that couldn't be read stops being one once another is watched (or none)
-        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_folder.as_ref() != Some(f)) {
+        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_active_folder() != Some(f)) {
             self.ui.auto_import_error = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(folder) = self.session.import_defaults.auto_folder.clone() {
+        if let Some(folder) = self.session.import_defaults.auto_active_folder().cloned() {
             const LABEL: &str = "Auto Import";
             let now = ctx.input(|i| i.time);
             if now - self.ui.auto_import_at >= 3.0
@@ -2294,11 +2294,14 @@ impl LccApp {
                 && !self.tasks.is_running(LABEL)
             {
                 self.ui.auto_import_at = now;
-                let listed = folder.clone();
-                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&listed);
+                let scope = self.session.auto_import_scope();
+                let work = move || match scope {
+                    Some(scope) => scope.list(),
+                    None => Ok(Vec::new()),
+                };
                 let done = move |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
                     // the watched folder changed while this one was listed: its result is for nothing on screen
-                    if app.session.import_defaults.auto_folder.as_ref() != Some(&folder) {
+                    if app.session.import_defaults.auto_active_folder() != Some(&folder) {
                         return;
                     }
                     let listing = match listing {
