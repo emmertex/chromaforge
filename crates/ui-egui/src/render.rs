@@ -1425,6 +1425,12 @@ impl Renderer {
         );
     }
 
+    /// Whether a [`Slot::QuickAhead`] stand-in of `photo` for `key` is made (or being made).
+    pub fn made_ahead(&self, photo: PhotoId, key: u64) -> bool {
+        self.textures.iter().any(|(s, t)| matches!(s, Slot::QuickAhead(_)) && t.photo == photo && t.key == key)
+            || self.quick_tried.iter().any(|(s, k)| matches!(s, Slot::QuickAhead(_)) && *k == key)
+    }
+
     /// Move a [`Slot::QuickAhead`] texture of `photo` made for `key` into [`Slot::Preview`].
     fn take_ahead(&mut self, photo: PhotoId, key: u64) -> bool {
         let Some(slot) = self.textures.iter().find(|(s, t)| matches!(s, Slot::QuickAhead(_)) && t.photo == photo && t.key == key).map(|(s, _)| *s)

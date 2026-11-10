@@ -232,6 +232,9 @@ pub struct PrepState {
     pub library: Option<PrepSettings>,
     /// The background build this preparation started.
     build: Option<Arc<PreviewBuild>>,
+    /// The running build still has photos whose render jobs aren't made ([`crate::cmd::previews::feed`]):
+    /// the frontend ticks again soon ([`Session::prep_feeding`]).
+    feeding: bool,
     /// The view (its signature) whose build was started, or that the user stopped.
     started_for: Option<u64>,
     declined_for: Option<u64>,
@@ -383,6 +386,35 @@ pub fn background_lanes() -> usize {
     if cores >= 8 { 2 } else { 1 }
 }
 
+/// The background preparation's own thread pool: its threads run at the lowest priority
+/// ([`lcc_sysmem::lowest_thread_priority`]), below the render workers that make the photo on screen,
+/// so the preparation takes only the processor time the photo on screen leaves. `None` when it
+/// couldn't be made (the shared pool does the work then).
+pub fn background_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cores.saturating_sub(2).max(1))
+            .thread_name(|i| format!("lc-prep-{i}"))
+            .start_handler(|_| {
+                lcc_sysmem::lowest_thread_priority();
+            })
+            .build()
+            .map_err(|e| log::warn!("background preparation: no thread pool of its own ({e})"))
+            .ok()
+    })
+    .as_ref()
+}
+
+/// Run `f` (one photo of the background preparation) on [`background_pool`], else here.
+pub fn on_background_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    match background_pool() {
+        Some(pool) => pool.install(f),
+        None => f(),
+    }
+}
+
 /// A cheap identity of the photos in view: a build is started once per view.
 fn signature(ids: &[PhotoId], s: &Session) -> u64 {
     let mut h = lcc_preview::Hasher128::new();
@@ -399,6 +431,14 @@ pub fn marked(s: &Session, id: PhotoId) -> bool {
 }
 
 impl Session {
+    /// Whether the background preparation (or another preview build) is making `id`'s preview right
+    /// now. A step onto the photo the build is halfway through started a second render of the same raw
+    /// beside it (two decodes of a 45 MP CR3 instead of one), and that render on screen held the build
+    /// back while it ran: the loupe waits for the build's preview instead (2026-11-10 culling sweep).
+    pub fn being_prepared(&self, id: PhotoId) -> bool {
+        crate::cmd::previews::being_built(self, id)
+    }
+
     /// The background preparation settings in use (this library's own, else the app-wide ones).
     pub fn prep_settings(&self) -> PrepSettings {
         self.prep.settings()
@@ -413,6 +453,19 @@ impl Session {
     /// updated look, even after 15 min"). In a library the rest is prepared around the photo on screen
     /// ([`AROUND`]), not the whole view; a folder being culled is prepared whole.
     pub fn prep_tick(&mut self, mode: Mode, at: Option<PhotoId>, backward: bool) {
+        self.prep_tick_inner(mode, at, backward);
+        // the build's render jobs, a few photos a tick, nearest the user first (making all of them
+        // when it started froze the UI for 1.3 s in a 2,597-photo folder, 2026-11-10)
+        self.prep.feeding = crate::cmd::previews::feed(self);
+    }
+
+    /// Whether the background build is still making its photos' render jobs: tick again within a
+    /// frame or so, not only every half second.
+    pub fn prep_feeding(&self) -> bool {
+        self.prep.feeding
+    }
+
+    fn prep_tick_inner(&mut self, mode: Mode, at: Option<PhotoId>, backward: bool) {
         self.note_changes(at);
         let settings = self.prep.settings();
         let want = settings.mode(mode);
@@ -507,7 +560,8 @@ impl Session {
         if ids.is_empty() {
             return;
         }
-        let p = json!({"ids": ids, "background": true, "from": at.0, "backward": backward});
+        // (`feed`: its jobs are made a few photos a frame, `feed` in the frontend's tick)
+        let p = json!({"ids": ids, "background": true, "from": at.0, "backward": backward, "feed": true});
         match self.execute("library.buildPreviews", &p) {
             Ok(_) => self.prep.build = self.preview_build.clone(),
             Err(e) => log::info!("background preparation: {e}"),
