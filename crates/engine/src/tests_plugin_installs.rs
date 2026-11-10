@@ -384,3 +384,121 @@ fn a_plugin_that_failed_to_load_still_holds_its_id() {
     assert!(e.contains(id) && e.contains("plug-in"), "{e}");
     assert!(!filter_kept, "no filter installed");
 }
+
+/// A plug-in's About fields (host feature `about`): known fields, so no unknown-field warning;
+/// `plugin.inspectFile` and `plugin.list` give them, with Report a Problem's issues page for a
+/// GitHub repository; a value the host can't use is dropped, named in the plug-in's log and
+/// `dropped`, and the install still goes ahead.
+#[test]
+fn about_fields_are_listed_and_bad_ones_dropped() {
+    let _turn = turn();
+    let mut s = Session::with_demo();
+    let dir = folder("about");
+    let id = "test.installs.about";
+    let good = module_file(
+        "about-good",
+        &json!({"id": id, "name": "A", "version": "1.0.0", "requires": ["about", "pictures"],
+            "homepage": "https://example.com/a", "repository": "https://github.com/me/plugins/tree/main/a",
+            "changelog": "https://example.com/a/changes", "license": "MIT OR Apache-2.0"}),
+    );
+    let bad = module_file(
+        "about-bad",
+        &json!({"id": id, "name": "A", "version": "1.0.1", "homepage": "http://example.com", "repository": 7,
+            "changelog": "javascript:alert(1)", "license": "MIT"}),
+    );
+    let before = crate::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
+    let inspected = s.execute("plugin.inspectFile", &json!({"path": good}));
+    let installed = s.execute("plugin.install", &json!({"path": good}));
+    let first = listed(&mut s, id);
+    let features = s.execute("plugin.list", &json!({})).map(|l| l["host"]["features"].clone());
+    let inspected_bad = s.execute("plugin.inspectFile", &json!({"path": bad}));
+    let installed_bad = s.execute("plugin.install", &json!({"path": bad}));
+    let second = listed(&mut s, id);
+    let log = s.execute("plugin.log", &json!({"id": id}));
+    *crate::cmd::plugins::manager() = before;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let about = json!({"homepage": "https://example.com/a", "repository": "https://github.com/me/plugins/tree/main/a",
+        "changelog": "https://example.com/a/changes", "license": "MIT OR Apache-2.0", "issues": "https://github.com/me/plugins/issues"});
+    let inspected = inspected.unwrap();
+    assert_eq!(inspected["manifest"]["about"], about, "{inspected}");
+    assert_eq!((&inspected["unknownFields"], &inspected["dropped"]), (&json!([]), &json!([])), "all four are known and kept");
+    assert_eq!(installed.unwrap()["about"], about, "a manifest that requires `about` and `pictures` installs");
+    assert_eq!(first.unwrap()["about"], about);
+    let features = features.unwrap();
+    assert!(["about", "pictures"].iter().all(|f| features.as_array().unwrap().iter().any(|x| x == f)), "{features}");
+
+    let inspected_bad = inspected_bad.unwrap();
+    let mut dropped: Vec<String> = serde_json::from_value(inspected_bad["dropped"].clone()).unwrap();
+    dropped.sort();
+    assert_eq!(dropped, ["changelog: not an https:// link", "homepage: not an https:// link", "repository: not text"]);
+    assert_eq!(inspected_bad["unknownFields"], json!([]), "dropped, not unknown");
+    assert!(installed_bad.is_ok(), "a bad value never stops the install: {installed_bad:?}");
+    assert_eq!(second.unwrap()["about"], json!({"license": "MIT"}), "only the value it can use");
+    let log = log.unwrap().to_string();
+    for field in ["homepage", "repository", "changelog"] {
+        assert!(log.contains(&format!("manifest value dropped: {field}: ")), "the log names {field}: {log}");
+    }
+}
+
+/// A pixel filter takes the same About fields with the same checks as a plug-in: shown in
+/// `plugin.list` the same way, a value it can't use dropped and named in `plugin.inspectFile`.
+#[test]
+fn a_filters_about_fields_are_checked_as_a_plugins() {
+    let _turn = turn();
+    let mut s = Session::with_demo();
+    let id = "test.installs.filterabout";
+    let manifest = format!(
+        r#"{{"id":"{id}","name":"F","version":"1","kind":"filter","params":{{}},"homepage":"https://example.com/f","repository":"https://github.com/me/filters","changelog":7,"license":"MIT"}}"#
+    );
+    let dir = folder("filterabout");
+    let file = dir.join("filter.wasm");
+    std::fs::write(&file, crate::tests_plugin_filters::module(&manifest, None)).unwrap();
+    let info = s.execute("plugin.inspectFile", &json!({"path": file})).unwrap();
+    s.execute("plugin.install", &json!({"path": file})).unwrap();
+    let row = listed(&mut s, id);
+    s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let about = json!({"homepage": "https://example.com/f", "repository": "https://github.com/me/filters", "license": "MIT",
+        "issues": "https://github.com/me/filters/issues"});
+    assert_eq!(info["manifest"]["about"], about, "{info}");
+    assert_eq!(info["dropped"], json!(["changelog: not text"]));
+    // a value dropped for its type is still a known field (the lenient list), not an unknown one
+    assert_eq!(info["unknownFields"], json!([]), "{info}");
+    assert_eq!(row.unwrap()["about"], about);
+}
+
+/// Plug-ins and pixel filters keep the About checks in two copies (`lcc-filters` doesn't depend on
+/// the plug-in host): both copies keep and drop the same values, with the same reasons.
+#[test]
+fn plugin_and_filter_about_checks_agree() {
+    let huge = format!("https://example.com/{}", "a".repeat(lcc_plugins::about::MAX_LINK_BYTES));
+    let values = [
+        json!("https://example.com"),
+        json!("https://github.com/me/x/tree/main/y"),
+        json!("http://example.com"),
+        json!("javascript:alert(1)"),
+        json!("https://a@b.com/"),
+        json!("https://éxample.com/"),
+        json!(""),
+        json!(null),
+        json!(7),
+        json!({"a": 1}),
+        json!(huge),
+        json!("MIT\nOR GPL"),
+        json!("MIT\u{202E}LPG"),
+        json!("x".repeat(lcc_plugins::about::MAX_LICENSE_BYTES + 1)),
+    ];
+    for field in lcc_plugins::about::ABOUT_FIELDS {
+        for v in &values {
+            let raw = json!({ *field: v });
+            let (p, pd) = lcc_plugins::About::parse(&raw);
+            let (f, fd) = lcc_filters::About::parse(&raw);
+            assert_eq!((p.info(), pd), (f.info(), fd), "{raw}");
+        }
+    }
+    for url in ["https://GitHub.com/a", "https://x.com:1/", "https://x.com:/", "https://a..b/"] {
+        assert_eq!(lcc_plugins::about::link_host(url), lcc_filters::about::link_host(url), "{url}");
+    }
+}

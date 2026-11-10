@@ -70,6 +70,12 @@ fn example_plugin_end_to_end() {
     let info = m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap().info();
     assert_eq!(info["id"], "org.example.catalog-tools");
     assert_eq!(info["granted"]["catalog"], true);
+    // `export_plugin!(package: …)`: what the manifest JSON leaves out comes from the crate's Cargo.toml
+    let cargo = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/examples/catalog-tools/Cargo.toml")).unwrap();
+    let version = cargo.lines().find_map(|l| l.strip_prefix("version = \"")?.strip_suffix('"')).unwrap();
+    assert_eq!(info["version"], version, "the version is the crate's");
+    assert_eq!(info["about"]["license"], "MIT", "so is the licence");
+    assert_eq!(info["description"], "Example plug-in for the SDK", "the manifest's own description stays");
     let id = "org.example.catalog-tools";
     let mut host = FakeCatalog { calls: vec![] };
 

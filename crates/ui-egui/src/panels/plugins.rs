@@ -175,7 +175,8 @@ fn app_ctx(app: &LccApp) -> egui::Context {
 /// one; refused while another waits, and a module that is already installed selects its entry); `plugins.runItem {plugin, command}` runs a plug-in command from the menu (asking its
 /// dialog first, if it has one); `plugins.page {id, tab?, open?}` opens the window on a plug-in's
 /// page (`tab`: settings, permissions, about or log; `open: false` closes the window if it shows
-/// that page); `plugins.showFolder` opens the plug-ins folder in the system file manager.
+/// that page); `plugins.showFolder` opens the plug-ins folder in the system file manager;
+/// `plugins.openLink {id, link}` opens a link of a plug-in's About ([`open_link`]).
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     let ctx = app_ctx(app);
     let mut s = state(&ctx);
@@ -208,6 +209,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         }
         "plugins.page" => page_command(app, &mut s, p),
         "plugins.showFolder" => show_folder(app),
+        "plugins.openLink" => open_link(app, p),
         _ => return None,
     };
     set_state(&ctx, s);
@@ -1010,6 +1012,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     s.message = e;
                 }
             }
+            "plugins.openLink" => {
+                if let Err(e) = open_link(app, &p) {
+                    s.message = e;
+                }
+            }
             "plugins.revertSettings" => match settings_page(app, p["id"].as_str().unwrap_or("")) {
                 Ok(page) => s.page = page,
                 Err(e) => s.message = e,
@@ -1202,6 +1209,14 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                     ui.label(tr_format!(
                         "Its manifest has fields this version doesn't know, which it ignores: {fields}",
                         fields = unknown.join(", ")
+                    ));
+                }
+                // values it can't use (a link that isn't https://): left out, the install goes ahead
+                let dropped: Vec<&str> = pending.info["dropped"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if !dropped.is_empty() {
+                    ui.label(tr_format!(
+                        "Its manifest has values this version can't use, which it leaves out: {values}",
+                        values = dropped.join("; ")
                     ));
                 }
                 ui.separator();
@@ -1755,7 +1770,79 @@ fn about_tab(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Valu
             }
         });
     }
+    ui.add_space(4.0);
+    about_rows(ui, e, actions);
     ui.weak(tr_format!("Module: {size} KB", size = kilobytes(p)));
+}
+
+/// The links an entry's About may open (`plugins.openLink` → `link`) besides `issues`, in the
+/// order of their rows.
+const ABOUT_LINKS: &[&str] = &["homepage", "repository", "changelog"];
+
+/// The name of link `key`'s row.
+fn about_link_name(key: &str) -> &'static str {
+    match key {
+        "homepage" => tr("Homepage"),
+        "repository" => tr("Source Code"),
+        _ => tr("Changelog"),
+    }
+}
+
+/// Where a plug-in or filter comes from (`plugin.list` → `about`): Homepage, Source Code and Changelog
+/// as links named by their host, so the user sees where one goes before clicking (the whole link
+/// on hover); Report a Problem beside a GitHub repository; Licence as text. Only the fields the
+/// manifest has get a row, and nothing is fetched to show them.
+fn about_rows(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Value)>) {
+    let about = &e.info["about"];
+    let mut link = |ui: &mut egui::Ui, key: &'static str, text: &str, url: &str| {
+        let r = ui.link(text).on_hover_text(url);
+        crate::widgets::register(ui.ctx(), format!("link:plugin-{key}-{}", e.id), r.rect);
+        if r.clicked() {
+            actions.push(("plugins.openLink", json!({"id": e.id, "link": key})));
+        }
+    };
+    for &key in ABOUT_LINKS {
+        let Some(url) = about[key].as_str() else { continue };
+        let Some(host) = lcc_engine::cmd::plugins::link_host(url) else { continue };
+        about_row(ui, about_link_name(key), |ui| {
+            link(ui, key, &host, url);
+            if let Some(issues) = about["issues"].as_str().filter(|_| key == "repository") {
+                ui.weak("·");
+                link(ui, "issues", tr("Report a Problem"), issues);
+            }
+        });
+    }
+    if let Some(l) = about["license"].as_str() {
+        fact_row(ui, tr("Licence"), l);
+    }
+}
+
+/// A fact row ([`fact_row`]) whose value is drawn by `value` (links).
+fn about_row(ui: &mut egui::Ui, name: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(FACT_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(FACT_W);
+            ui.weak(name);
+        });
+        ui.horizontal_wrapped(value);
+    });
+}
+
+/// `plugins.openLink {id, link}`: opens link `link` (`homepage`, `repository`, `issues` or
+/// `changelog`) of installed plug-in or filter `id`'s About in the browser, as its page's link
+/// does. The browser service opens only `https://` links.
+fn open_link(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    let (Some(id), Some(link)) = (p.get("id").and_then(Value::as_str), p.get("link").and_then(Value::as_str)) else {
+        return Err("plugins.openLink needs `id` and `link`".into());
+    };
+    if link != "issues" && !ABOUT_LINKS.contains(&link) {
+        return Err(format!("plugins.openLink: no link {link:?} (homepage, repository, issues or changelog)"));
+    }
+    let list = app.session.execute("plugin.list", &json!({})).map_err(|e| e.to_string())?;
+    let entry = entries(&list).into_iter().find(|e| e.id == id && e.mark != Mark::Failed);
+    let entry = entry.ok_or_else(|| format!("{id}: {}", tr("no such plug-in is installed")))?;
+    let url = entry.info["about"][link].as_str().ok_or_else(|| format!("{id}: {}", tr_format!("its manifest has no {link} link", link = link)))?;
+    crate::links::open(app, url)
 }
 
 /// What the plug-in has logged.
@@ -1805,6 +1892,7 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     fact_row(ui, tr("Parameters"), &if params.is_empty() { "—".to_string() } else { params.join(", ") });
     let module = format!("{} KB · sha256 {}…", kilobytes(p), hash.get(..12).unwrap_or(hash));
     fact_row(ui, tr("Module"), &module).on_hover_text(format!("sha256 {hash}"));
+    about_rows(ui, e, actions);
 }
 
 /// The width of a filter fact's name.

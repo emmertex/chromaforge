@@ -18,7 +18,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.keyword-picker",
   "name": "Keyword Picker (example)",
-  "version": "0.1.0",
   "requires": ["settings"],
   "description": "Adds one of the catalog's keywords to the selected photos, picked from the keywords in use",
   "author": "the app's authors",
@@ -102,7 +101,7 @@ fn collect(nodes: &Value, out: &mut Vec<(String, f64)>, depth: usize) {
     }
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {

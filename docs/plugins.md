@@ -25,6 +25,27 @@ and above the title of its command dialogs. The same rules apply: at most 24 KiB
 manifest's 64 KiB, drawn as untrusted documents (their own shapes only), and a picture that isn't
 an SVG document is dropped. `plugin.list` shows `icon` and `header` as booleans, and
 `plugin.picture {id, picture?, theme?}` gives the SVG text, for plug-ins and pixel filters alike.
+The host feature `pictures` names them (a plug-in may require it; one that just looks better with
+them needn't, as an older host ignores them).
+
+**Where it comes from.** A manifest may carry `"homepage"`, `"repository"` and `"changelog"`
+(`https://` links) and `"license"` (text, an SPDX expression such as `MIT OR Apache-2.0`), named as
+in `Cargo.toml`. The Plug-in Manager's About tab shows each one present: Homepage, Source Code and
+Changelog as links named by their host (`github.com`), so the user sees where a link goes before
+clicking (the whole link shows on hover), and Licence as text. A `repository` on
+`https://github.com/<owner>/<repo>`, or a page inside one (`…/tree/main/plugins/geo`), adds *Report
+a Problem*, the repository's `/issues` page; any other host doesn't. Nothing is fetched to show the
+tab: a link opens in the browser only when clicked, or through `plugins.openLink`. A value the host
+can't use is dropped, never an install error: one that isn't a string, has control or invisible
+characters (direction overrides, zero-width spaces), is over its cap (2 KiB a link, 256 bytes the
+licence), or a link that isn't `https://` with a plain host (letters, digits, dots and dashes, an
+optional port, no user name: `https://a.com@b.com/` is refused, as its real host is hidden). The
+plug-in's log names each one dropped and why (`manifest value dropped: homepage: not an https://
+link`), and so do the install dialog and `plugin.inspectFile` (`dropped`). `plugin.list` and
+`plugin.inspectFile` (`manifest.about`) give them as `about: {homepage?, repository?, changelog?,
+license?, issues?}`, `issues` being Report a Problem's page. The host feature `about` names them.
+The SDK can fill them from the plug-in crate's `Cargo.toml` ([Writing one in
+Rust](#2-declare-a-manifest-and-handle-requests)).
 
 Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?, wait?}`. The UI, CLI,
 control channel and MCP all use this command. `plugin.commands` lists the commands so front
@@ -392,7 +413,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -547,7 +568,13 @@ fn handle(req: &Request) -> Result<Value, String> {
 export_plugin!(MANIFEST, handle);
 ```
 
-`export_plugin!` exports the ABI; `handle` gets every request. Reply with `Ok(value)` or
+`export_plugin!` exports the ABI; `handle` gets every request. `export_plugin!(package: MANIFEST,
+handle)` also fills `version`, `description`, `author`, `homepage`, `repository` and `license`
+from the crate's own `Cargo.toml` wherever the manifest JSON leaves them out (`author` joins
+`authors` with ", "; a field `Cargo.toml` doesn't set stays out), so the plug-in's version can't
+drift from its crate's. It reads them when the plug-in is compiled (`lcc_plugin_sdk::package!()`);
+`lcc_plugin_sdk::with_package(json, &package)` does the same for a manifest built another way. The
+examples use it. Reply with `Ok(value)` or
 `Err(message)`: an error is shown to the user and written to the plug-in's log. A `message` in a
 command's or destination's reply is shown as a notice.
 
@@ -559,6 +586,8 @@ The manifest fields:
 | `version` | required, semver `MAJOR.MINOR.PATCH` (see [Compatibility](#compatibility-requires-and-version)) |
 | `requires` | `[names]`: the host features the plug-in uses beyond the baseline (see [Compatibility](#compatibility-requires-and-version)) |
 | `name`, `description`, `author` | shown in the Plug-in Manager |
+| `homepage`, `repository`, `changelog`, `license` | optional, shown on the About tab: `https://` links and the licence as text (see [Where it comes from](#what-a-plug-in-can-add)); host feature `about` |
+| `icon`, `header` | optional SVG pictures (see [Its own pictures](#what-a-plug-in-can-add)); host feature `pictures` |
 | `permissions` | what the plug-in asks for (see [Permissions](#permissions)); ask for as little as possible |
 | `commands` | `[{id, label, menu?, dialog?, prepare?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false` |
 | `settings` | `[{key, label, type, …, prepare?}]`, at most 32; needs `requires: ["settings"]` |
@@ -664,9 +693,9 @@ right:
 
 - **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), and tabs: Settings (when it declares settings), Permissions (each
   one it may ask for: allowed, denied on a date, not asked yet or refused, with Allow / Revoke), About (description, what it adds, its commands
-  to run, the module's size) and Log.
+  to run, where it comes from: Homepage, Source Code with *Report a Problem*, Changelog, Licence; the module's size) and Log.
 - **A pixel filter:** Remove, its stage, whether it measures the photo (the cropped photo or the
-  whole one), its base tone, parameters, and the module's size and hash. Filters have no Enabled
+  whole one), its base tone, parameters, the module's size and hash, and where it comes from (as a plug-in's About). Filters have no Enabled
   box.
 - **A module that didn't load:** why, and Remove.
 
@@ -689,7 +718,10 @@ while the app runs): `plugins.manager {open?}` (toggles the window), `plugins.in
 install dialog for `path`, or the file picker without one: `{pending: path}`, or `{installed: id,
 message}` when that module is already installed; an error while another install waits), `plugins.page {id, tab?, open?}` (the
 window with that entry selected, on `tab`: `settings`, `permissions`, `about` or `log`; it fails
-for a tab the entry doesn't have), `plugins.showFolder` (the folder in the system file manager) and
+for a tab the entry doesn't have), `plugins.showFolder` (the folder in the system file manager),
+`plugins.openLink {id, link}` (opens `link`, one of `homepage`, `repository`, `issues` or
+`changelog`, of that plug-in's or filter's About in the browser, which opens only `https://`
+links; an unknown id or link, or one the manifest doesn't have, is an error that opens nothing) and
 `plugins.runItem {plugin, command}`.
 
 `app.export` runs the enabled export hooks after every export (the Export dialog, Export with
@@ -829,6 +861,13 @@ untrusted document: only its own shapes, never an image it links to (a file on d
 one that isn't an SVG document is dropped (the icon from the id, the name). Hosts without the fields ignore them.
 `plugin.list` shows `icon` and `header` as booleans; `plugin.picture {id, picture?: header|icon,
 theme?: dark|light}` gives the SVG text.
+
+**Where a filter comes from (ABI v1.1 proposal).** A manifest may carry `"homepage"`,
+`"repository"`, `"changelog"` and `"license"`, with the same checks as a plug-in's
+([Where it comes from](#what-a-plug-in-can-add)); the filter's page in the Plug-in Manager shows
+them the same way, and `plugin.list` gives them as `about`. A filter has no log: a value dropped is
+named in the install dialog, in `plugin.inspectFile` (`dropped`) and as a warning in the app's log.
+Hosts without the fields ignore them.
 
 **Pixel scale.** A Source filter that reads neighbours (manifest `overlap` > 0: an unsharp mask,
 grain, a blur) would look different at each render size, its kernel spanning more of the photo in

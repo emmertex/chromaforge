@@ -408,5 +408,7 @@ fn placeholder_manifest() -> Manifest {
         unknown_fields: Vec::new(),
         icon: None,
         header: None,
+        about: Default::default(),
+        dropped: Vec::new(),
     }
 }
