@@ -279,6 +279,11 @@ struct ViewFile {
     /// Show Photos in Subfolders turned off (`false` is the default, so it is written only when off).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     folder_direct: bool,
+    /// Lock Filters turned off (`true` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_filters: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    remember_filters: bool,
     // No filter: a library opens unfiltered. A date, keyword or person left over from the last session
     // would silently hide photos, with only a small badge to say so.
     sort: lcc_catalog::Sort,
@@ -363,6 +368,8 @@ struct PrefsFile {
     export_presets: Vec<crate::export::ExportPreset>,
     /// Print templates.
     print_templates: Vec<crate::print::template::PrintTemplate>,
+    /// Print Template Browser folders, empty ones included.
+    print_template_folders: Vec<String>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
     /// Import presets (the Import tab's settings, by name).
@@ -709,6 +716,8 @@ impl Session {
         self.last_merge = prefs.last_merge;
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
+        self.print_template_folders = prefs.print_template_folders;
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         self.metadata_presets = prefs.metadata_presets;
         self.import_presets = prefs.import_presets;
         self.filter_presets = prefs.filter_presets;
@@ -795,6 +804,8 @@ impl Session {
             self.browse = v.browse;
             self.library_folder = v.library_folder.filter(|f| !f.trim().is_empty());
             self.folder_subfolders = !v.folder_direct;
+            self.lock_filters = v.lock_filters.unwrap_or(true);
+            self.remember_filters = v.remember_filters;
             if self.source == LibrarySource::LibraryFolder {
                 // a folder that is gone (or none): everything, not an empty grid
                 let f = lcc_catalog::Filter { library_folder: self.library_folder.clone(), ..Default::default() };
@@ -1154,6 +1165,8 @@ impl Session {
             // only while it is shown: a leftover would be a stale choice nobody made
             library_folder: self.library_folder.clone().filter(|_| self.source == LibrarySource::LibraryFolder),
             folder_direct: !self.folder_subfolders,
+            lock_filters: (!self.lock_filters).then_some(false),
+            remember_filters: self.remember_filters,
             sort: self.sort,
             selection: self.selection.clone(),
             previous_export: self.previous_export.clone(),
@@ -1195,6 +1208,7 @@ impl Session {
             last_merge: self.last_merge.clone(),
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
+            print_template_folders: self.print_template_folders.clone(),
             metadata_presets: self.metadata_presets.clone(),
             import_presets: self.import_presets.clone(),
             filter_presets: self.filter_presets.clone(),
