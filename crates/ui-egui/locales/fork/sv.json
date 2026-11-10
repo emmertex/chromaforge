@@ -203,6 +203,7 @@
   "Ask (show “N new”)": "Fråga (visa ”N nya”)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Be Immich att söka igenom de externa biblioteken nu (kräver en administratörsnyckel)",
   "Ask Which Catalog to Open at Launch": "Fråga vilken katalog som ska öppnas vid start",
+  "Ask for a Name": "Fråga efter ett namn",
   "Ask me": "Fråga mig",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "Fråga mig listar dina senaste kataloger vid start. Om du håller ned Alt (Option på Mac) när fönstret visas frågar appen en gång.",
   "Ask where to import it": "Fråga var den ska importeras",
