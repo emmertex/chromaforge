@@ -17,32 +17,14 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
-| Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
-| Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
-
-## Every module ▸ Edit
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Invert Selection | Select the photos in view that aren't selected, and deselect the others. | S | feature | `soon.invertSelection` |
-| Deselect Active Photo (/) | Take the active photo out of the selection (/ is the filmstrip key here today). | S | feature | `soon.deselectActive` |
-| Deselect Unflagged Photos (Ctrl+Alt+Shift+D) | Keep only the flagged photos of the selection selected. | S | feature | `soon.deselectUnflagged` |
 
 ## Library module ▸ Library
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
 | Flat-Field Correction… | Correct lens cast and vignetting from a flat-field reference frame. | L | feature | `soon.flatField` |
-| Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
-
-## Library module ▸ Photo
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
 
@@ -61,12 +43,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
-
-## Library module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Toggle Loupe View | Switch between the grid and the large view of the selected photo. | S | wire-up | `soon.toggleLoupeView` |
 
 ## Every module ▸ Window
 
