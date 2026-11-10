@@ -580,6 +580,9 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
     register(ui.ctx(), "gridArea", scroll_rect);
     crate::widgets::register(ui.ctx(), "grid:scroll", scroll_rect);
     let wheel = wheel_step(ui, egui::Id::new("grid-wheel"), scroll_rect, scroll_rect.height(), false, app.ui.settings.wheel_scroll_speed);
+    // (one notch is `step` points of wheel, positive = up; Scroll By Row counts notches, not points)
+    let by_row = app.ui.settings.scroll_by_row;
+    let step = (scroll_rect.height() * crate::theme::WHEEL_STRIP_SHARE * app.ui.settings.wheel_scroll_speed.clamp(0.25, 3.0)).max(1.0);
     // keep a photo where it is on screen when the layout reflows (a side panel or the window
     // resized, the thumbnail size or the filter changed): the pixel offset alone would land elsewhere
     let anchor_id = egui::Id::new("grid-anchor");
@@ -609,6 +612,11 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
             }
         });
         if wheel != egui::Vec2::ZERO {
+            // Scroll By Row: the notches become whole rows, ending on a row's top
+            let wheel = match (by_row, crate::view_state::row_scroll(&lay.rows, viewport.top(), -wheel.y / step)) {
+                (true, Some(to)) => egui::vec2(0.0, viewport.top() - to),
+                _ => wheel,
+            };
             ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
         }
         let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), total_h), Sense::hover());

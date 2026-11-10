@@ -480,6 +480,24 @@ fn two_way_sync_dry_run_conflicts_and_deletions() {
 }
 
 #[test]
+fn sync_touches_a_locked_folder_asset() {
+    let Setup { mut s, state, one, dir, .. } = setup("sync-locked");
+    // Immich's locked folders: the asset carries visibility `locked`. Since the app can unlock
+    // its server session (`immich.unlockSession`), such an asset takes part like any other; a
+    // locked session would simply not list it.
+    {
+        let mut st = state.lock().unwrap();
+        st.asset_mut("aaaa-1").unwrap()["visibility"] = json!("locked");
+    }
+    s.execute("photo.rate", &json!({"ids": [one.0], "rating": 2})).unwrap();
+    let r = s.execute("immich.sync", &json!({})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["pushed"], 1, "{r}");
+    assert_eq!(remote(&state, "aaaa-1")["exifInfo"]["rating"], 2, "the locked asset is updated");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn background_sync_runs_off_the_session_thread_and_on_a_schedule() {
     let Setup { mut s, state, hits, one, dir, .. } = setup("bg");
     s.execute("photo.rate", &json!({"ids": [one.0], "rating": 2})).unwrap();

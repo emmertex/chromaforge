@@ -211,6 +211,38 @@ impl AssetFile {
     }
 }
 
+/// `GET /auth/status` (`AuthStatusResponseDto`): whether the server session is elevated (locked
+/// folders are visible to its listings), what unlock secrets the account has, and when an
+/// elevation ends (the server locks the session again later).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    pub is_elevated: bool,
+    /// When the current elevation ends (ISO 8601), if the server says.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// The account has a password it can unlock with.
+    #[serde(default)]
+    pub password: bool,
+    /// The account has a PIN code it can unlock with.
+    #[serde(default)]
+    pub pin_code: bool,
+    /// When the PIN's current elevation ends (ISO 8601), if the server says.
+    #[serde(default)]
+    pub pin_expires_at: Option<String>,
+}
+
+/// `POST /auth/session/unlock` body (`SessionUnlockDto`): exactly one of the two, the account's
+/// password or its PIN code (4–6 digits).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnlock {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_code: Option<String>,
+}
+
 /// `POST /search/metadata` body (the filters the app uses).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
