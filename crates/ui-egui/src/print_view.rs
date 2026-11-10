@@ -49,6 +49,9 @@ pub struct PrintUi {
     drag: Option<Drag>,
     /// The name typed for Save Template.
     pub template_name: String,
+    /// The folder chosen for Save and Import; `None` until one is picked (a save over an existing
+    /// name then leaves that template in its folder, a new one goes to User Templates).
+    pub folder: Option<String>,
     /// Size of the next cell added, inches.
     pub new_cell: Option<(f64, f64)>,
 }
@@ -210,41 +213,104 @@ fn settings(app: &mut LccApp, ui: &mut Ui, t: &Tokens, pu: &mut PrintUi, st: &Pr
             .width(140.0)
             .show(ui);
         if text_button(ui, "printSaveTemplate", "Save", false).clicked() && !pu.template_name.trim().is_empty() {
-            run(app, &ctx, "print.template.save", json!({"name": pu.template_name}));
+            let mut params = json!({"name": pu.template_name});
+            if let Some(f) = &pu.folder {
+                params["folder"] = json!(f);
+            }
+            run(app, &ctx, "print.template.save", params);
         }
         if app.services.pick_print_templates.is_some() && text_button(ui, "printTemplateImport", "Import…", false).clicked() {
             let paths = app.services.pick_print_templates.as_mut().map(|pick| pick()).unwrap_or_default();
             for path in paths {
-                if let Some(r) = run(app, &ctx, "print.template.import", json!({"path": path})) {
+                let mut params = json!({"path": path});
+                if let Some(f) = &pu.folder {
+                    params["folder"] = json!(f);
+                }
+                if let Some(r) = run(app, &ctx, "print.template.import", params) {
                     app.toast(&ctx, crate::i18n::tr_format!("Imported {name}", name = r["name"].as_str().unwrap_or_default()));
                 }
             }
         }
     });
-    let names: Vec<String> = app.session.print_templates.iter().map(|t| t.name.clone()).collect();
-    for (i, name) in names.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(name).color(t.text_label));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if text_button(ui, &format!("printTemplateDelete-{i}"), "Delete", false).clicked() {
-                    run(app, &ctx, "print.template.delete", json!({"name": name}));
+    let folders: Vec<String> = app.session.print_template_folders.clone();
+    let default_folder = lcc_engine::template_folders::DEFAULT_FOLDER;
+    // the folder Save and Import use, and a way to make one
+    ui.horizontal(|ui| {
+        let shown = pu.folder.clone().unwrap_or_else(|| crate::i18n::tr(default_folder).to_string());
+        let c = egui::ComboBox::from_id_salt("printTemplateFolder").width(140.0).selected_text(shown).show_ui(ui, |ui| {
+            let picked = pu.folder.clone();
+            if ui.selectable_label(picked.as_deref() == Some(default_folder), crate::i18n::tr(default_folder)).clicked() {
+                pu.folder = Some(default_folder.to_string());
+            }
+            for f in &folders {
+                if ui.selectable_label(picked.as_deref() == Some(f.as_str()), f.as_str()).clicked() {
+                    pu.folder = Some(f.clone());
                 }
-                if app.services.save_print_template.is_some() && text_button(ui, &format!("printTemplateExport-{i}"), "Export…", false).clicked() {
-                    let stem = lcc_engine::slide_template::file_stem(name).unwrap_or_else(|| "Print Template".into());
-                    let file = format!("{stem}.{}", lcc_engine::print::template::FILE_EXT);
-                    if let Some(path) = app.services.save_print_template.as_mut().and_then(|save| save(&file))
-                        && let Some(r) = run(app, &ctx, "print.template.export", json!({"name": name, "path": path}))
-                    {
-                        app.toast(&ctx, crate::i18n::tr_format!("Exported to {path}", path = r["path"].as_str().unwrap_or_default()));
-                    }
-                }
-                if text_button(ui, &format!("printTemplateApply-{i}"), "Apply", false).clicked() {
-                    run(app, &ctx, "print.template.apply", json!({"name": name}));
-                    pu.page = 0;
-                    pu.selected = None;
+            }
+        });
+        register(ui.ctx(), "combo:printTemplateFolder", c.response.rect);
+        if text_button(ui, "printNewTemplateFolder", "New Template Folder", false).clicked() {
+            crate::template_browser::prompt_new_folder(app, "print.template.folder.create");
+        }
+    });
+    let templates: Vec<(String, Option<String>)> = app.session.print_templates.iter().map(|t| (t.name.clone(), t.folder.clone())).collect();
+    let groups: Vec<Option<String>> = std::iter::once(None).chain(folders.iter().cloned().map(Some)).collect();
+    for (g, group) in groups.iter().enumerate() {
+        if !folders.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(group.as_deref().unwrap_or_else(|| crate::i18n::tr(default_folder))).strong().color(t.text_dim));
+                if let Some(f) = group {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if text_button(ui, &format!("printFolderDelete-{g}"), "Delete Folder", false).clicked() {
+                            run(app, &ctx, "print.template.folder.delete", json!({"name": f}));
+                        }
+                        if text_button(ui, &format!("printFolderRename-{g}"), "Rename Folder…", false).clicked() {
+                            crate::template_browser::prompt_rename_folder(app, "print.template.folder.rename", f);
+                        }
+                    });
                 }
             });
-        });
+        }
+        for (i, (name, folder)) in templates.iter().enumerate().filter(|(_, (_, f))| f == group) {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(name).color(t.text_label));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if text_button(ui, &format!("printTemplateDelete-{i}"), "Delete", false).clicked() {
+                        run(app, &ctx, "print.template.delete", json!({"name": name}));
+                    }
+                    if app.services.save_print_template.is_some() && text_button(ui, &format!("printTemplateExport-{i}"), "Export…", false).clicked()
+                    {
+                        let stem = lcc_engine::slide_template::file_stem(name).unwrap_or_else(|| "Print Template".into());
+                        let file = format!("{stem}.{}", lcc_engine::print::template::FILE_EXT);
+                        if let Some(path) = app.services.save_print_template.as_mut().and_then(|save| save(&file))
+                            && let Some(r) = run(app, &ctx, "print.template.export", json!({"name": name, "path": path}))
+                        {
+                            app.toast(&ctx, crate::i18n::tr_format!("Exported to {path}", path = r["path"].as_str().unwrap_or_default()));
+                        }
+                    }
+                    if text_button(ui, &format!("printTemplateApply-{i}"), "Apply", false).clicked() {
+                        run(app, &ctx, "print.template.apply", json!({"name": name}));
+                        pu.page = 0;
+                        pu.selected = None;
+                    }
+                    // the template's folder: another choice moves it there
+                    let here = folder.clone().unwrap_or_else(|| crate::i18n::tr(default_folder).to_string());
+                    let c = egui::ComboBox::from_id_salt(format!("printTemplateMove-{i}")).width(110.0).selected_text(here).show_ui(ui, |ui| {
+                        let targets = std::iter::once((None, crate::i18n::tr(default_folder).to_string()))
+                            .chain(folders.iter().map(|f| (Some(f.clone()), f.clone())));
+                        for (target, label) in targets {
+                            if ui.selectable_label(*folder == target, label.as_str()).clicked() && *folder != target {
+                                let to = target.unwrap_or_else(|| default_folder.to_string());
+                                if run(app, &ctx, "print.template.move", json!({"name": name, "folder": to})).is_some() {
+                                    app.toast(&ctx, crate::i18n::tr_format!("Moved {name} to {folder}", name = name, folder = to));
+                                }
+                            }
+                        }
+                    });
+                    register(ui.ctx(), format!("combo:printTemplateMove-{i}"), c.response.rect);
+                });
+            });
+        }
     }
 
     heading(ui, t, "Layout Style");

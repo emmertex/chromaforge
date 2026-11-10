@@ -28,13 +28,6 @@ Generated from the menu tables; don't edit by hand.
 | Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
 | Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
 
-## Every module ▸ File ▸ Library Filters
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Lock Filters | Keep the filter bar's filter when another folder or collection is chosen. | S | feature | `soon.lockFilters` |
-| Remember Each Source's Filters Separately | Each folder and collection keeps its own filter. | S | feature | `soon.rememberFilters` |
-
 ## Every module ▸ Edit
 
 | Item | What it does | Size | Kind | Slot |
@@ -67,10 +60,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Find Similar Faces | People view: faces like the chosen one. | S | wire-up | `soon.findSimilarFaces` |
-| Move to Unnamed People | Take a face's name off. | S | wire-up | `soon.moveToUnnamedPeople` |
-| Remove Face Region | Delete the chosen face box. | S | wire-up | `soon.removeFaceRegion` |
-| Edit Name (Shift+O) | Rename the chosen face. | S | wire-up | `soon.editFaceName` |
 | Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
 
 ## Library module ▸ Photo ▸ Develop Settings
@@ -107,11 +96,8 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
 | Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
 | Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-| Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
-| Crop to Same Aspect Ratio (Shift+A) | Apply the active photo's crop ratio to the selection. | S | feature | `soon.cropSameAspect` |
 
 ## Develop module ▸ Tools
 
@@ -155,8 +141,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Map Info | The map's info overlay. | S | feature | `soon.mapInfo` |
-| Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
 | Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
 | Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
 
@@ -172,15 +156,12 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Header Bar | The book's header bar. | S | feature | `soon.bookHeaderBar` |
 | Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-| Show Info Overlay | Page and book info over the view. | S | feature | `soon.bookInfoOverlay` |
 
 ## Slideshow module ▸ Slideshow
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ View
@@ -189,19 +170,12 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
 
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
-
 ## Print module ▸ View
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
 | Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
-| Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
 
 ## Web module ▸ Web
 

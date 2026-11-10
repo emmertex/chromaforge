@@ -923,3 +923,31 @@ fn show_photos_in_subfolders_off_shows_the_folder_alone() {
     assert!(s.folder_subfolders, "no `on` toggles it back");
     assert_eq!(s.visible().len(), 3);
 }
+
+/// Lock Filters (default on) keeps the filter across sources; off, a source starts unfiltered, and with
+/// Remember Each Source's Filters Separately it gets back the filter it was left with.
+#[test]
+fn lock_filters_and_per_source_filters() {
+    let mut s = session();
+    assert!(s.lock_filters, "locked by default");
+    s.execute("library.filter", &json!({"text": "x"})).unwrap();
+    source_folder(&mut s, "/pics/trip");
+    assert_eq!(s.filter.text, "x", "locked: the filter survives a source change");
+
+    s.execute("library.lockFilters", &json!({"on": false})).unwrap();
+    source_folder(&mut s, "/pics/trip"); // same source again: nothing changes
+    assert_eq!(s.filter.text, "x");
+    s.execute("library.source", &json!({"kind": "all"})).unwrap();
+    assert_eq!(s.filter, Default::default(), "unlocked: a new source starts unfiltered");
+
+    s.execute("library.rememberFilters", &json!({"on": true})).unwrap();
+    s.execute("library.filter", &json!({"text": "all-filter"})).unwrap();
+    source_folder(&mut s, "/pics/trip");
+    assert_eq!(s.filter.text, "", "never filtered here");
+    s.execute("library.filter", &json!({"text": "trip-filter"})).unwrap();
+    s.execute("library.source", &json!({"kind": "all"})).unwrap();
+    assert_eq!(s.filter.text, "all-filter");
+    source_folder(&mut s, "/pics/trip");
+    assert_eq!(s.filter.text, "trip-filter");
+    assert_eq!(s.filter.library_folder, None);
+}

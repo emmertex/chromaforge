@@ -172,6 +172,8 @@ const LIBRARY: &[&str] = &[
     "@Filter by Metadata",
     "@Filters",
     "---",
+    "library.lockFilters",
+    "library.rememberFilters",
     "library.showSubfolderPhotos",
     "---",
     "soon.refinePhotos",
@@ -410,7 +412,7 @@ const DEVELOP_PHOTO: &[&str] = &[
 const SETTINGS: &[&str] = &[
     "develop.reset=Reset All Settings",
     "develop.updateProcess=Update to Current Process Version",
-    "soon.processVersion",
+    "@Process Version",
     "---",
     "view.softProof=Proof",
     "---",
@@ -437,9 +439,9 @@ const SETTINGS: &[&str] = &[
     "develop.hdr=Toggle HDR Edit Mode",
     "---",
     "crop.reset",
-    "soon.cropAsShot",
+    "crop.asShot",
     "crop.lockAspect=Constrain Aspect Ratio",
-    "soon.cropSameAspect",
+    "crop.sameAspect",
     "crop.rotateAspect",
     "---",
     "beforeAfter.copyAfterToBefore",
@@ -527,8 +529,8 @@ const MAP_PHOTO: &[&str] = &[
 const MAP_VIEW: &[&str] = &[
     "panel.toolbar",
     "view.filterBar=Show Filter Bar",
-    "soon.mapInfo",
-    "soon.mapKey",
+    "map.showInfo=Show Map Info",
+    "map.showKey=Show Map Key",
     "soon.savedLocationOverlay",
     "soon.lockMarkers",
     "---",
@@ -547,9 +549,9 @@ const BOOK: &[&str] = &[
 ];
 
 const BOOK_VIEW: &[&str] = &[
-    "soon.bookHeaderBar",
+    "book.headerBar=Show Header Bar",
     "soon.bookGuides",
-    "soon.bookInfoOverlay",
+    "book.infoOverlay=Show Info Overlay",
     "---",
     r#"book.view{"mode":"multi"}=Multi-Page View"#,
     r#"book.view{"mode":"spread"}=Spread View"#,
@@ -560,7 +562,7 @@ const BOOK_VIEW: &[&str] = &[
 const SLIDESHOW: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Slideshow","hint":"Name","command":"slideshow.saveSlideshow","key":"name"}=Create Saved Slideshow…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"slideshow.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newSlideshowTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"slideshow.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     "slideshow.exportPdf",
     "slideshow.exportJpeg",
@@ -589,7 +591,7 @@ const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
     r#"ui.prompt{"title":"New Template","hint":"Template name","command":"printui.saveTemplate","key":"name"}=New Template…"#,
-    "soon.newPrintTemplateFolder",
+    r#"ui.prompt{"title":"New Template Folder","hint":"Folder name","command":"printui.createTemplateFolder","key":"name"}=New Template Folder"#,
     "---",
     r#"printui.page{"delta":-1}=Previous Page"#,
     r#"printui.page{"delta":1}=Next Page"#,
@@ -598,7 +600,7 @@ const PRINT: &[&str] = &[
     "soon.pageSetup",
 ];
 
-const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "soon.printInfoOverlay"];
+const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.infoOverlay=Show Info Overlay"];
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
@@ -620,8 +622,8 @@ const SUB: &[(&str, &str, &[&str])] = &[
         "Library Filters",
         &[
             "library.toggleFilters=Enable Filters",
-            "soon.lockFilters",
-            "soon.rememberFilters",
+            "library.lockFilters",
+            "library.rememberFilters",
             "---",
             "view.filterBar=Show Filter Bar",
             "library.clearFilter",
@@ -629,7 +631,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["soon.findSimilarFaces", "soon.moveToUnnamedPeople", "soon.removeFaceRegion", "soon.editFaceName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
     (
         "Photo",
         "Stacking",
@@ -773,8 +775,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         false,
         "Make the Quick Collection the target collection again (B adds to the target).",
     ),
-    soon("soon.lockFilters", "Lock Filters", None, 'S', false, "Keep the filter bar's filter when another folder or collection is chosen."),
-    soon("soon.rememberFilters", "Remember Each Source's Filters Separately", None, 'S', false, "Each folder and collection keeps its own filter."),
     soon(
         "soon.pageSetup",
         "Page Setup…",
@@ -825,10 +825,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.findPreviousProcess", "Find Previous Process Photos", None, 'S', false, "Show the photos edited with an older process version."),
     // Photo
     soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
-    soon("soon.findSimilarFaces", "Find Similar Faces", None, 'S', true, "People view: faces like the chosen one."),
-    soon("soon.moveToUnnamedPeople", "Move to Unnamed People", None, 'S', true, "Take a face's name off."),
-    soon("soon.removeFaceRegion", "Remove Face Region", None, 'S', true, "Delete the chosen face box."),
-    soon("soon.editFaceName", "Edit Name", Some("Shift+O"), 'S', true, "Rename the chosen face."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
@@ -866,12 +862,9 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
     soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
-    soon("soon.cropAsShot", "Crop As Shot", Some("Cmd+Alt+Shift+R"), 'S', false, "Reset the crop to the camera's own crop (aspect from the raw)."),
-    soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
@@ -881,26 +874,19 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
     soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
-    soon("soon.mapInfo", "Show Map Info", None, 'S', false, "The map's info overlay."),
-    soon("soon.mapKey", "Show Map Key", None, 'S', false, "The map's legend of pin types."),
     soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
     soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
     soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
     soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
-    soon("soon.bookHeaderBar", "Show Header Bar", None, 'S', false, "The book's header bar."),
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
-    soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
-    soon("soon.newSlideshowTemplateFolder", "New Template Folder", None, 'S', false, "Group slideshow templates in folders."),
     soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.newPrintTemplateFolder", "New Template Folder", None, 'S', false, "Group print templates in folders."),
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
     soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
-    soon("soon.printInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and printer info over the view."),
     // Web
     soon("soon.newWebTemplate", "New Template", None, 'S', false, "Save the web gallery settings as a template."),
     soon("soon.newWebTemplateFolder", "New Template Folder", None, 'S', false, "Group web templates in folders."),

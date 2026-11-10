@@ -424,7 +424,14 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.keywords" => panel(RightPanel::Keywords),
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
+        "map.showInfo" => Some(app.map.prefs.show_info),
+        "map.showKey" => Some(app.map.prefs.show_key),
+        "book.headerBar" => Some(u.book.header_bar),
+        "book.infoOverlay" => Some(u.book.info_overlay),
+        "printui.infoOverlay" => Some(app.print.info_overlay),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
+        "library.lockFilters" => Some(app.session.lock_filters),
+        "library.rememberFilters" => Some(app.session.remember_filters),
         _ => None,
     }
 }
@@ -829,6 +836,24 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             v.push(MenuNode::Separator);
             v.push(item("dialog.labelNames", Value::Null, "Edit…", None, true, None));
             v
+        }
+        // Classic's Settings ▸ Process Version: every process this build renders, the active photo's checked
+        "Process Version" => {
+            let current = active.as_ref().map(|p| p.develop.process);
+            lcc_develop::Process::ALL
+                .iter()
+                .map(|p| {
+                    let v = p.version();
+                    item(
+                        "develop.setProcess",
+                        json!({"version": v.0}),
+                        crate::i18n::tr_format!("Version: {}", v.0),
+                        None,
+                        has,
+                        Some(current == Some(v)),
+                    )
+                })
+                .collect()
         }
         "Select by" => {
             let mut v: Vec<MenuNode> = [("pick", "Picks"), ("reject", "Rejects"), ("none", "Unflagged")]
