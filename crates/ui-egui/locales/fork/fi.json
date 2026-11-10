@@ -2095,6 +2095,7 @@
   "Removing the surface plugin": "Poistetaan ohjauspinnan laajennusta",
   "Removing things without a prompt (Erase), and large areas: up to 3072 px per request, so big areas stay sharper. Fast and cheap.": "Kohteiden poisto ilman kehotetta (Pyyhi) ja suuret alueet: enintään 3072 px pyyntöä kohden, joten suuret alueet pysyvät terävämpinä. Nopea ja edullinen.",
   "Removing…": "Poistetaan…",
+  "Rename Catalog": "Nimeä katalogi uudelleen",
   "Rename Catalog…": "Nimeä katalogi uudelleen…",
   "Rename Export Preset": "Nimeä vientiesiasetus uudelleen",
   "Rename Group": "Nimeä ryhmä uudelleen",
