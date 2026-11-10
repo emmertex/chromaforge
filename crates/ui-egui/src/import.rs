@@ -1115,6 +1115,10 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     }
 }
 
+/// The activity kind of a browse's folder read (`library.browse` in the Import tab): a scan, not
+/// [`lcc_engine::activity::Activity::user_work`].
+pub(crate) const BROWSE_READ_KIND: &str = "scan";
+
 /// Advance the import in progress (called every frame): start its worker, then add the batches it
 /// has readied to the catalog.
 pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
@@ -1131,8 +1135,11 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         }
         match started {
             Ok(run) => {
-                let label = if task.browse { "Reading folder" } else { "Importing" };
-                task.guard = Some(app.session.activity.start("import", label, lcc_engine::activity::Cancel::Flag(run.cancel.clone())));
+                // (reading a folder to browse it is not the user's own work the way an import is:
+                // the photos being culled meanwhile are prepared, and their neighbours made ahead;
+                // as an "import" it held all of that back for the whole read, 90 s for a wedding)
+                let (kind, label) = if task.browse { (BROWSE_READ_KIND, "Reading folder") } else { ("import", "Importing") };
+                task.guard = Some(app.session.activity.start(kind, label, lcc_engine::activity::Cancel::Flag(run.cancel.clone())));
                 task.run = Some(run);
             }
             Err(e) => {

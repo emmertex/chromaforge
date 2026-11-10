@@ -1061,3 +1061,28 @@ fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Reading a folder to browse it (the Import tab) is not the user's own work: the photos culled
+/// meanwhile are prepared and their neighbours made ahead. As an "import" row it held all of that
+/// back for the whole read (2026-11-09: 90 s for a wedding's 2,597 raws, the loupe never ahead).
+#[test]
+fn reading_a_browsed_folder_holds_no_preparation_back() {
+    let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let n = lcc_engine::import::batch_size() + 4;
+    let (mut h, dir) = gated_import("browse-read", n, Some(gate.clone()));
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(
+        h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 1)),
+        "the folder is being read: {:?}",
+        h.app.session.activity.list()
+    );
+    // held at the gate until now, so the read cannot have ended
+    assert!(h.app.import.is_some(), "still reading");
+    let tasks = h.app.session.activity.list();
+    assert!(tasks.iter().any(|t| t.label == "Reading folder"), "{tasks:?}");
+    assert_eq!(h.app.session.activity.user_work(), None, "a browse's read holds nothing back: {tasks:?}");
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
