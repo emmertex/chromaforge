@@ -58,12 +58,6 @@ Generated from the menu tables; don't edit by hand.
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
-## Library module ▸ Photo ▸ People
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
-
 ## Library module ▸ Photo ▸ Develop Settings
 
 | Item | What it does | Size | Kind | Slot |
