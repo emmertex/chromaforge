@@ -343,6 +343,7 @@ fn mask_effects_import_apply_save_export_and_persist() {
 
 #[test]
 fn resizing_the_disk_cache_keeps_the_cache_and_its_thumbnails() {
+    let _keys = crate::sensor_maps::keep_generation();
     let lib = temp_dir("resize");
     let mut s = Session::new().with_fs();
     s.open_library(&lib, false).unwrap();
@@ -367,6 +368,7 @@ fn resizing_the_disk_cache_keeps_the_cache_and_its_thumbnails() {
 
 #[test]
 fn reopening_a_library_retires_the_old_cache_so_its_jobs_cannot_write_after_a_clear() {
+    let _keys = crate::sensor_maps::keep_generation();
     let lib = temp_dir("reopen-writer");
     let mut s = Session::new().with_fs();
     s.open_library(&lib, true).unwrap();

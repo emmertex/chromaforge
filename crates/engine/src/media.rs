@@ -3241,6 +3241,7 @@ mod thumbnail_hash_tests {
 
     #[test]
     fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
+        let _keys = crate::sensor_maps::keep_generation();
         let mut s = session();
         for edge in [256, 384, 512, 256] {
             let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
@@ -3613,6 +3614,7 @@ mod tests {
     // fitted, with no render; a larger size, a draft or other settings render
     #[test]
     fn the_loupe_uses_a_kept_view_render_at_least_as_big() {
+        let _keys = crate::sensor_maps::keep_generation();
         let mut s = crate::Session::with_demo();
         let id = s.active().unwrap();
         let job = s.loupe_job(id, 1024, 1024, true).unwrap();
