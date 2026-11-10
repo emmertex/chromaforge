@@ -52,6 +52,34 @@ fn providers(app: &mut LccApp) -> Vec<Value> {
     list
 }
 
+/// Whether the Remove tool is in Generative mode (Tools ▸ Remove Options ▸ Use Generative AI is ticked).
+pub fn generative_on(app: &LccApp) -> bool {
+    app.ui.right == crate::state::RightPanel::Remove && app.ui.tool == "generate"
+}
+
+/// `remove.useGenerative {on?}`: switch the Remove tool between Generative and Remove (no `on` toggles). Turning it on
+/// opens the Remove panel; with no service set up it opens Settings ▸ Generative Fill instead and changes nothing else.
+pub fn use_generative(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("remove.useGenerative: no photo".into());
+    }
+    let on = match p.get("on") {
+        None | Some(Value::Null) => !generative_on(app),
+        Some(Value::Bool(b)) => *b,
+        Some(other) => return Err(format!("remove.useGenerative: `on` must be true or false, not {other}")),
+    };
+    if on && !providers(app).iter().any(|p| p["configured"] == true) {
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
+        return Ok(json!({"on": false, "setup": true}));
+    }
+    let tool = if on { "generate" } else { "remove" };
+    app.ui.right = crate::state::RightPanel::Remove;
+    app.ui.view = crate::state::ViewMode::Detail;
+    app.ui.tool = tool.into();
+    app.ui.remove_tool = tool.into();
+    Ok(json!({"on": on, "setup": false}))
+}
+
 /// The generated fills in the library for `photo` that no spot keeps (each one paid for). Reading them lists a
 /// folder, so the panel keeps the answer for a couple of seconds.
 fn not_on_photo(app: &mut LccApp, photo: lcc_catalog::PhotoId) -> Vec<Value> {
