@@ -38,14 +38,36 @@ const RULER: f32 = 18.0;
 /// The selected custom cell's resize handle, screen points.
 const RESIZE_HANDLE: f32 = 10.0;
 
+/// A user template: `{name, folder, settings}`; `folder` `None` is "User Templates".
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserTemplate {
+    pub name: String,
+    pub folder: Option<String>,
+    pub settings: PrintSettings,
+}
+
+impl lcc_engine::template_folders::Foldered for UserTemplate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn folder(&self) -> Option<&str> {
+        self.folder.as_deref()
+    }
+    fn set_folder(&mut self, folder: Option<String>) {
+        self.folder = folder;
+    }
+}
+
 /// The module's state (lives in [`LccApp::print`]).
 #[derive(Clone, Debug)]
 pub struct PrintUi {
     pub settings: PrintSettings,
     /// The template last applied.
     pub template: Option<String>,
-    /// User templates (name, settings), saved with `printui.saveTemplate`.
-    pub user_templates: Vec<(String, PrintSettings)>,
+    /// User templates, saved with `printui.saveTemplate`.
+    pub user_templates: Vec<UserTemplate>,
+    /// The Template Browser's folders besides "User Templates" (empty ones too), sorted by name.
+    pub template_folders: Vec<String>,
     /// Preview page (0-based).
     pub page: usize,
     pub rulers: bool,
@@ -96,6 +118,7 @@ impl Default for PrintUi {
             settings,
             template: Some(name),
             user_templates: Vec::new(),
+            template_folders: Vec::new(),
             page: 0,
             rulers: true,
             margins: true,
@@ -140,6 +163,10 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.profile", "Printer Color Profile", None, ""),
     ("printui.saveTemplate", "New Print Template", None, ""),
     ("printui.deleteTemplate", "Delete Print Template", None, ""),
+    ("printui.createTemplateFolder", "New Print Template Folder", None, ""),
+    ("printui.renameTemplateFolder", "Rename Print Template Folder", None, ""),
+    ("printui.deleteTemplateFolder", "Delete Print Template Folder", None, ""),
+    ("printui.moveTemplate", "Move Print Template to Folder", None, ""),
     ("printui.media", "Printer Paper Sizes", None, ""),
     ("printui.state", "Print State", None, ""),
     ("printui.saveCreation", "Create Saved Print", None, ""),
@@ -251,7 +278,14 @@ fn stored_json(pu: &PrintUi) -> Value {
     json!({
         "settings": serde_json::to_value(&pu.settings).unwrap_or(Value::Null),
         "template": pu.template,
-        "userTemplates": pu.user_templates.iter().map(|(n, s)| json!({"name": n, "settings": serde_json::to_value(s).unwrap_or(Value::Null)})).collect::<Vec<_>>(),
+        "userTemplates": pu.user_templates.iter().map(|t| {
+            let mut v = json!({"name": t.name, "settings": serde_json::to_value(&t.settings).unwrap_or(Value::Null)});
+            if let (Some(f), Some(o)) = (&t.folder, v.as_object_mut()) {
+                o.insert("folder".into(), json!(f));
+            }
+            v
+        }).collect::<Vec<_>>(),
+        "templateFolders": pu.template_folders,
         "printerUri": pu.printer_uri,
         "cupsServer": pu.cups_server,
         "trustedCertificates": pu.trusted_certs.iter().map(|(h, f)| json!({"printer": h, "fingerprint": f})).collect::<Vec<_>>(),
@@ -273,11 +307,23 @@ fn apply_stored(pu: &mut PrintUi, v: &Value) {
     if let Some(list) = v.get("userTemplates").and_then(Value::as_array) {
         pu.user_templates = list
             .iter()
-            .filter_map(|t| Some((t.get("name")?.as_str()?.trim().to_string(), settings(t.get("settings")?)?)))
-            .filter(|(n, _)| !n.is_empty())
+            .filter_map(|t| {
+                Some(UserTemplate {
+                    name: t.get("name")?.as_str()?.trim().to_string(),
+                    folder: t.get("folder").and_then(Value::as_str).map(str::to_string),
+                    settings: settings(t.get("settings")?)?,
+                })
+            })
+            .filter(|t| !t.name.is_empty())
             .take(500)
             .collect();
     }
+    if let Some(list) = v.get("templateFolders").and_then(Value::as_array) {
+        pu.template_folders = list.iter().filter_map(|f| f.as_str().map(str::to_string)).collect();
+    }
+    // folders and templates agree: bad or repeated folder names dropped, a template in an unlisted
+    // folder gets it listed (or goes to User Templates)
+    lcc_engine::template_folders::tidy_folders(&mut pu.template_folders, &mut pu.user_templates);
     if let Some(u) = v.get("printerUri").and_then(Value::as_str) {
         pu.printer_uri = u.to_string();
     }
@@ -392,8 +438,9 @@ fn state_json(app: &mut LccApp) -> Value {
         "busy": pu.busy,
         "creation": pu.creation,
         "last": pu.last,
-        "templates": builtin_templates().into_iter().map(|t| t.0).chain(pu.user_templates.iter().map(|t| t.0.clone())).collect::<Vec<_>>(),
-        "userTemplates": pu.user_templates.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "templates": builtin_templates().into_iter().map(|t| t.0).chain(pu.user_templates.iter().map(|t| t.name.clone())).collect::<Vec<_>>(),
+        "userTemplates": pu.user_templates.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        "templateFolders": crate::template_browser::listing(&pu.template_folders, &pu.user_templates),
         "media": pu.media.iter().map(|m| json!({"name": m.name, "w": m.size.w, "h": m.size.h, "margins": m.margins})).collect::<Vec<_>>(),
         "printerOptions": {
             "mediaTypes": pu.options.media_types, "mediaTypeDefault": pu.options.media_type_default,
@@ -619,7 +666,10 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
     match id {
         "printui.template" => {
             let name = p.get("name").and_then(Value::as_str).ok_or("missing name")?;
-            let found = builtin_templates().into_iter().chain(app.print.user_templates.iter().cloned()).find(|(n, _)| n == name);
+            let found = builtin_templates()
+                .into_iter()
+                .chain(app.print.user_templates.iter().map(|t| (t.name.clone(), t.settings.clone())))
+                .find(|(n, _)| n == name);
             let (n, s) = found.ok_or_else(|| format!("no print template named {name}"))?;
             app.print.settings = s;
             app.print.template = Some(n);
@@ -695,15 +745,29 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "printui.saveTemplate" => {
             let name = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).ok_or("missing name")?.to_string();
-            let s = app.print.settings.clone();
-            app.print.user_templates.retain(|t| t.0 != name);
-            app.print.user_templates.push((name.clone(), s));
+            let settings = app.print.settings.clone();
+            let given = crate::template_browser::folder_param(&app.print.template_folders, p)?;
+            // a template saved over its own name stays in its folder unless the call names another
+            let kept = app.print.user_templates.iter().find(|t| t.name == name).and_then(|t| t.folder.clone());
+            let folder = given.unwrap_or(kept);
+            app.print.user_templates.retain(|t| t.name != name);
+            app.print.user_templates.push(UserTemplate { name: name.clone(), folder, settings });
             app.print.template = Some(name);
+        }
+        "printui.createTemplateFolder" | "printui.renameTemplateFolder" | "printui.deleteTemplateFolder" | "printui.moveTemplate" => {
+            let op = match id {
+                "printui.createTemplateFolder" => "create",
+                "printui.renameTemplateFolder" => "rename",
+                "printui.deleteTemplateFolder" => "delete",
+                _ => "move",
+            };
+            let pu = &mut app.print;
+            return crate::template_browser::folder_command(op, &mut pu.template_folders, &mut pu.user_templates, p);
         }
         "printui.deleteTemplate" => {
             let name = p.get("name").and_then(Value::as_str).ok_or("missing name")?;
             let before = app.print.user_templates.len();
-            app.print.user_templates.retain(|t| t.0 != name);
+            app.print.user_templates.retain(|t| t.name != name);
             if app.print.user_templates.len() == before {
                 return Err(format!("no user print template named {name}"));
             }
@@ -1190,37 +1254,35 @@ fn heading(ui: &mut egui::Ui, title: &str) {
     ui.separator();
 }
 
+/// The commands the Template Browser runs.
+const TEMPLATE_CMDS: crate::template_browser::Cmds = crate::template_browser::Cmds {
+    apply: "printui.template",
+    delete: "printui.deleteTemplate",
+    move_to: "printui.moveTemplate",
+    create_folder: "printui.createTemplateFolder",
+    rename_folder: "printui.renameTemplateFolder",
+    delete_folder: "printui.deleteTemplateFolder",
+};
+
 fn template_browser(ui: &mut egui::Ui, app: &mut LccApp) {
-    let t = Tokens::get(ui.ctx());
     let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical().id_salt("print-templates").show(ui, |ui| {
         heading(ui, "Template Browser");
         let current = app.print.template.clone();
-        let mut groups: Vec<(&str, Vec<String>)> = vec![("Built-in", builtin_templates().into_iter().map(|t| t.0).collect())];
-        if !app.print.user_templates.is_empty() {
-            groups.push(("User Templates", app.print.user_templates.iter().map(|t| t.0.clone()).collect()));
-        }
-        for (group, names) in groups {
-            ui.label(egui::RichText::new(crate::i18n::tr(group)).color(t.text_dim).size(11.0));
-            for name in names {
-                // built-in templates show in the UI language, the user's own as named
-                let shown = if group == "Built-in" { crate::i18n::tr(&name).to_string() } else { name.clone() };
-                let r = ui.selectable_label(current.as_deref() == Some(name.as_str()), shown);
-                register(&ctx, format!("print:template:{name}"), r.rect);
-                if r.clicked() {
-                    cmd(app, &ctx, "printui.template", json!({"name": name}));
-                }
-                if group == "User Templates" {
-                    r.context_menu(|ui| {
-                        if ui.button(crate::i18n::tr("Delete")).clicked() {
-                            cmd(app, &ctx, "printui.deleteTemplate", json!({"name": name}));
-                            ui.close();
-                        }
-                    });
-                }
-            }
-            ui.add_space(6.0);
-        }
+        let mut rows: Vec<crate::template_browser::Row> = builtin_templates()
+            .into_iter()
+            .map(|t| crate::template_browser::Row { shown: crate::i18n::tr(&t.0).to_string(), name: t.0, builtin: true, folder: None })
+            .collect();
+        rows.extend(app.print.user_templates.iter().map(|t| crate::template_browser::Row {
+            name: t.name.clone(),
+            shown: t.name.clone(),
+            builtin: false,
+            folder: t.folder.clone(),
+        }));
+        let ids = crate::template_browser::Ids { template: "print:template:", folder: "print:templateFolder:", salt: "print-template-folder" };
+        let actions = crate::template_browser::show(ui, &ids, &rows, &app.print.template_folders, current.as_deref());
+        crate::template_browser::dispatch(app, &ctx, actions, &TEMPLATE_CMDS);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             let id = egui::Id::new("print-new-template");
             let mut name: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
@@ -2154,6 +2216,77 @@ mod tests {
         let mut a = json!({"page": {"size": {"w": 1, "h": 2}}, "job": {"dpi": 240}});
         merge(&mut a, &json!({"job": {"dpi": 300}, "page": {"size": {"w": 5}}}));
         assert_eq!(a, json!({"page": {"size": {"w": 5, "h": 2}}, "job": {"dpi": 300}}));
+    }
+
+    /// The Print module's own templates: folders (empty ones too) are made through the menu's
+    /// prompt, templates move in and out, everything survives a new session, and deleting a folder
+    /// keeps its templates.
+    #[test]
+    fn template_folders_group_user_templates_and_persist() {
+        let dir = std::env::temp_dir().join(format!("lcc-print-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = || {
+            let mut s = lcc_engine::Session::with_demo();
+            s.remote.connections_path = Some(dir.join("connections.json"));
+            LccApp::new(s, crate::Services::default())
+        };
+        let mut app = open();
+        // New Template Folder asks for a name first
+        app.run(
+            "ui.prompt",
+            json!({"title": "New Template Folder", "hint": "Folder name", "command": "printui.createTemplateFolder", "key": "name"}),
+        )
+        .unwrap();
+        let Some(crate::state::Dialog::TextPrompt { command, key, .. }) = &app.ui.dialog else { panic!("{:?}", app.ui.dialog) };
+        assert_eq!((command.as_str(), key.as_str()), ("printui.createTemplateFolder", "name"));
+        let r = app.run("printui.createTemplateFolder", json!({"name": " Weddings "})).unwrap();
+        assert_eq!(r["folders"][1], json!({"name": "Weddings", "default": false, "templates": 0}));
+        app.run("printui.createTemplateFolder", json!({"name": "Proofs"})).unwrap();
+        app.run("printui.saveTemplate", json!({"name": "Sheet", "folder": "weddings"})).unwrap();
+        app.run("printui.saveTemplate", json!({"name": "Plain"})).unwrap();
+        // saving over a name keeps its folder; a move changes only the folder
+        app.run("printui.saveTemplate", json!({"name": "Sheet"})).unwrap();
+        assert_eq!(app.print.user_templates.iter().find(|t| t.name == "Sheet").and_then(|t| t.folder.clone()).as_deref(), Some("Weddings"));
+        let r = app.run("printui.moveTemplate", json!({"name": "Plain", "folder": "Proofs"})).unwrap();
+        assert_eq!(r["moved"], true);
+        for (id, p) in [
+            ("printui.moveTemplate", json!({"name": "Plain", "folder": "Nope"})),
+            ("printui.moveTemplate", json!({"name": "Nope", "folder": "Proofs"})),
+            ("printui.createTemplateFolder", json!({"name": "PROOFS"})),
+            ("printui.renameTemplateFolder", json!({"name": "User Templates", "to": "X"})),
+            ("printui.deleteTemplateFolder", json!({"name": "Nope"})),
+            ("printui.saveTemplate", json!({"name": "New", "folder": "Nope"})),
+        ] {
+            assert!(app.run(id, p.clone()).is_err(), "{id} {p}");
+        }
+        // a new session finds the folders and where each template is
+        let mut again = open();
+        let st = again.run("printui.state", json!({})).unwrap();
+        assert_eq!(st["templateFolders"]["folders"].as_array().unwrap().len(), 3, "{st}");
+        let places: Vec<(String, String)> = st["templateFolders"]["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["name"].as_str().unwrap().into(), t["folder"].as_str().unwrap().into()))
+            .collect();
+        assert!(places.contains(&("Sheet".into(), "Weddings".into())) && places.contains(&("Plain".into(), "Proofs".into())), "{places:?}");
+        // a folder's rename follows its templates; its deletion keeps them
+        let r = again.run("printui.renameTemplateFolder", json!({"name": "proofs", "to": "Contact Sheets"})).unwrap();
+        assert!(r["templates"].as_array().unwrap().iter().any(|t| t["name"] == "Plain" && t["folder"] == "Contact Sheets"));
+        let r = again.run("printui.deleteTemplateFolder", json!({"name": "Contact Sheets"})).unwrap();
+        assert!(r["templates"].as_array().unwrap().iter().any(|t| t["name"] == "Plain" && t["folder"] == "User Templates"));
+        assert_eq!(r["moved"], 1);
+        // a damaged print.json is ignored, and a stored template in an unlisted or hostile folder is tidied
+        let hostile = json!({"userTemplates": [
+            {"name": "Odd", "folder": "a\nb", "settings": serde_json::to_value(PrintSettings::default()).unwrap()},
+            {"name": "Kept", "folder": " family ", "settings": serde_json::to_value(PrintSettings::default()).unwrap()},
+        ], "templateFolders": ["Family", "", "family", "User Templates"]});
+        let mut pu = open().print;
+        apply_stored(&mut pu, &hostile);
+        assert_eq!(pu.template_folders, ["Family"]);
+        assert_eq!(pu.user_templates.iter().map(|t| t.folder.clone()).collect::<Vec<_>>(), [None, Some("Family".to_string())]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

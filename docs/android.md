@@ -102,6 +102,16 @@ The Storage Access Framework hands out `content://` documents, but the engine re
   files it doesn't (CR3 on most devices) are looked up in its Files table by extension, which only All files access
   can see on Android 11+. In the Play build such raws are left out of the camera roll; pick their folder instead
   (copied).
+- **Watching.** Adding the roll for keeps — the first-start question's Add Camera Roll, or Settings ▸ Folders ▸
+  Camera roll ▸ Import… — sets `cameraRollWatch` in `ui.json`: the roll is watched (issue #1024). The watch lists
+  it again through the same service when the library opens, when the app comes to the front and every five
+  minutes (`camera_roll::watch_tick`, folder polling's cadence), and hands the paths the library doesn't have
+  (a photo in Recently Deleted counts as had) to an import in place, without the review and with the library's
+  import settings; the activity stack shows the import, and the toast when it is done says how many new photos
+  the roll brought. Nothing found says nothing. While an import, a scan, a waiting review or a folder
+  synchronize runs, nothing is listed — a listing made then is dropped, and the next one picks the news up.
+  Settings ▸ Folders ▸ Camera roll has a *Watch for new photos* checkbox to turn the watch off and on
+  (`camera_roll::set_watch`); declining the first-start question never enables it.
 - **Asking.** In the GitHub build the activity asks once, at the first start (remembered in its `storage`
   SharedPreferences): the system's All files access page on 11+, the runtime permission before. The Play build
   never asks. `app.allFilesAccess` (Settings ▸ Folders ▸
