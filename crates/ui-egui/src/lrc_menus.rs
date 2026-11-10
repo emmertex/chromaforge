@@ -172,6 +172,8 @@ const LIBRARY: &[&str] = &[
     "soon.filterByMetadata",
     "@Filters",
     "---",
+    "library.lockFilters",
+    "library.rememberFilters",
     "library.showSubfolderPhotos",
     "---",
     "soon.refinePhotos",
@@ -620,8 +622,8 @@ const SUB: &[(&str, &str, &[&str])] = &[
         "Library Filters",
         &[
             "library.toggleFilters=Enable Filters",
-            "soon.lockFilters",
-            "soon.rememberFilters",
+            "library.lockFilters",
+            "library.rememberFilters",
             "---",
             "view.filterBar=Show Filter Bar",
             "library.clearFilter",
@@ -773,8 +775,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         false,
         "Make the Quick Collection the target collection again (B adds to the target).",
     ),
-    soon("soon.lockFilters", "Lock Filters", None, 'S', false, "Keep the filter bar's filter when another folder or collection is chosen."),
-    soon("soon.rememberFilters", "Remember Each Source's Filters Separately", None, 'S', false, "Each folder and collection keeps its own filter."),
     soon(
         "soon.pageSetup",
         "Page Setup…",

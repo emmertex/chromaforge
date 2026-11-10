@@ -414,6 +414,8 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
+        "library.lockFilters" => Some(app.session.lock_filters),
+        "library.rememberFilters" => Some(app.session.remember_filters),
         _ => None,
     }
 }
