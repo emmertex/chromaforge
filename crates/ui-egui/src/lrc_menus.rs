@@ -320,8 +320,8 @@ const WINDOW: &[&str] = &[
     "@Lights Out",
     "@Secondary Display",
     "---",
-    "soon.goBack",
-    "soon.goForward",
+    "library.sourceBack",
+    "library.sourceForward",
     "---",
     "module.library",
     "module.develop",
@@ -870,8 +870,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.scrollByRow", "Scroll By Row", None, 'S', false, "The grid scrolls a whole row at a time."),
     soon("soon.mirrorImageMode", "Enable Mirror Image Mode", None, 'S', false, "Show every photo flipped left to right (view only)."),
     // Window
-    soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
-    soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
     soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),

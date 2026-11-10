@@ -103,13 +103,6 @@ Generated from the menu tables; don't edit by hand.
 | Scroll By Row | The grid scrolls a whole row at a time. | S | feature | `soon.scrollByRow` |
 | Enable Mirror Image Mode | Show every photo flipped left to right (view only). | S | feature | `soon.mirrorImageMode` |
 
-## Every module ▸ Window
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
-| Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
-
 ## Develop module ▸ Settings
 
 | Item | What it does | Size | Kind | Slot |
