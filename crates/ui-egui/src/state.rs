@@ -105,6 +105,29 @@ pub enum CropOverlay {
     None,
 }
 
+impl CropOverlay {
+    /// Every guide, in the order the cycle visits them (`None` hides the guides).
+    pub const ALL: [CropOverlay; 7] = [
+        CropOverlay::Thirds,
+        CropOverlay::Grid,
+        CropOverlay::Golden,
+        CropOverlay::Diagonal,
+        CropOverlay::Triangle,
+        CropOverlay::Spiral,
+        CropOverlay::None,
+    ];
+
+    /// The next guide after `self` among those in `cycle` (Tools ▸ Crop Guide Overlay ▸ Choose
+    /// Overlays to Cycle). An empty cycle falls back to all of them; a current guide outside the
+    /// cycle steps to the first one in cycle order after it.
+    pub fn next_in(self, cycle: &[CropOverlay]) -> CropOverlay {
+        let all = CropOverlay::ALL;
+        let at = all.iter().position(|o| *o == self).unwrap_or(0);
+        let allowed = |o: &CropOverlay| cycle.is_empty() || cycle.contains(o);
+        (1..=all.len()).filter_map(|d| all.get((at + d) % all.len())).copied().find(allowed).unwrap_or(self)
+    }
+}
+
 /// Tool Overlay: when the retouching tools' pins (Remove / Heal / Clone spots, mask pins) show on
 /// the photo. Shift+H steps through the modes in this order (`view.toolOverlay`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1393,6 +1416,10 @@ pub struct UiState {
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// The guides Cycle Crop Overlay visits (Choose Overlays to Cycle…); never empty.
+    pub crop_overlay_cycle: Vec<CropOverlay>,
+    /// Book ▸ Book Preferences…: what a new book starts with.
+    pub book_prefs: crate::book::BookPrefs,
     /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
     pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
@@ -1879,6 +1906,14 @@ pub struct NameEdit {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Dialog {
+    /// Tools ▸ Crop Guide Overlay ▸ Choose Overlays to Cycle…: the guides `view.cropOverlay` visits.
+    CropOverlays {
+        picked: Vec<CropOverlay>,
+    },
+    /// Book ▸ Book Preferences…: what `book.new` starts a book with.
+    BookPrefs {
+        prefs: crate::book::BookPrefs,
+    },
     /// File ▸ Export ▸ Timelapse Video… (`crate::timelapse_ui`); `size` is "WxH".
     Timelapse {
         fps: u32,
@@ -2461,6 +2496,8 @@ impl Default for UiState {
             tool_overlay: ToolOverlay::Auto,
             mask_overlay_all: false,
             crop_overlay: CropOverlay::Thirds,
+            crop_overlay_cycle: CropOverlay::ALL.to_vec(),
+            book_prefs: Default::default(),
             crop_default_aspect: None,
             crop_overlay_orient: 0,
             crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,

@@ -157,6 +157,10 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("crop.lockAspect", "Lock Aspect Ratio", Some("A"), ""),
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View>Tool Overlay"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View>Tool Overlay"),
+    ("dialog.cropOverlays", "Choose Overlays to Cycle…", None, ""),
+    ("dialog.bookPreferences", "Book Preferences…", None, ""),
+    // {overlays: [guide names]}: which crop guides Cycle Crop Overlay visits (at least one)
+    ("view.cropOverlays", "Set Crop Overlays to Cycle", None, ""),
     ("view.cropMaskOpacity", "Crop Mask Opacity", None, ""),
     ("photo.rate0", "Clear Rating", Some("0"), ""),
     ("photo.rate1", "Rate ★", Some("1"), ""),
@@ -1684,17 +1688,38 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         // A under the Crop panel: the aspect lock (the panel's button runs the same toggle)
         "crop.lockAspect" => app.run("crop.aspect", json!({"aspect": "toggle"})),
         "view.cropOverlay" => {
-            use crate::state::CropOverlay::*;
-            app.ui.crop_overlay = match app.ui.crop_overlay {
-                Thirds => Grid,
-                Grid => Golden,
-                Golden => Diagonal,
-                Diagonal => Triangle,
-                Triangle => Spiral,
-                Spiral => None,
-                None => Thirds,
-            };
+            app.ui.crop_overlay = app.ui.crop_overlay.next_in(&app.ui.crop_overlay_cycle);
             Ok(json!({"overlay": app.ui.crop_overlay}))
+        }
+        "dialog.bookPreferences" => {
+            app.ui.dialog = Some(Dialog::BookPrefs { prefs: app.ui.book_prefs });
+            Ok(Value::Null)
+        }
+        "dialog.cropOverlays" => {
+            app.ui.dialog = Some(Dialog::CropOverlays { picked: app.ui.crop_overlay_cycle.clone() });
+            Ok(Value::Null)
+        }
+        // {overlays: ["thirds", "grid", "golden", "diagonal", "triangle", "spiral", "none"]}: the guides
+        // Cycle Crop Overlay visits; at least one must stay
+        "view.cropOverlays" => {
+            use crate::state::CropOverlay;
+            let Some(names) = p.get("overlays").and_then(Value::as_array) else {
+                return Some(Err("view.cropOverlays: missing overlays (a list of guide names)".into()));
+            };
+            let mut picked: Vec<CropOverlay> = Vec::new();
+            for n in names {
+                let Ok(o) = serde_json::from_value::<CropOverlay>(n.clone()) else {
+                    return Some(Err(format!("view.cropOverlays: unknown overlay {n}")));
+                };
+                if !picked.contains(&o) {
+                    picked.push(o);
+                }
+            }
+            if picked.is_empty() {
+                return Some(Err("view.cropOverlays: at least one overlay must stay ticked".into()));
+            }
+            app.ui.crop_overlay_cycle = CropOverlay::ALL.into_iter().filter(|o| picked.contains(o)).collect();
+            Ok(json!({"overlays": app.ui.crop_overlay_cycle}))
         }
         "view.cropMaskOpacity" => {
             let level = p

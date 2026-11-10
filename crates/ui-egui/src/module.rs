@@ -906,6 +906,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     // the Book module (crate::book)
     ("book.new", "New Book", None, ""),
     ("book.get", "Book Document", None, ""),
+    ("book.preferences", "Book Preferences", None, ""),
     ("book.autoLayout", "Auto Layout", None, ""),
     ("book.clearLayout", "Clear Layout", None, ""),
     ("book.addPage", "Add Page", None, ""),

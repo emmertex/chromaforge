@@ -425,7 +425,7 @@ const SETTINGS: &[&str] = &[
     "---",
     "masks.updateAi=Update AI Settings",
     "---",
-    "soon.deleteEmptyMasks",
+    "mask.deleteEmpty=Delete All Empty Masks",
     "---",
     "develop.autoSync=Enable Auto Sync",
     "---",
@@ -541,7 +541,7 @@ const BOOK: &[&str] = &[
     "soon.bookPageNavigation",
     "---",
     "soon.updateMetadataCaptions",
-    "soon.bookPreferences",
+    "dialog.bookPreferences",
     "---",
     "book.export",
 ];
@@ -661,7 +661,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "develop.pastePrevious",
             "dialog.syncSettings",
             "masks.updateAi=Update AI Settings",
-            "soon.deleteEmptyMasks",
+            "mask.deleteEmpty=Delete All Empty Masks",
             r#"develop.wb{"mode":"auto"}=Auto White Balance"#,
             "develop.auto",
             "develop.treatment=Convert to Black & White",
@@ -702,7 +702,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
     (
         "Tools",
         "Crop Guide Overlay",
-        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "soon.chooseCropOverlays"],
+        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "dialog.cropOverlays"],
     ),
     (
         "Tools",
@@ -876,7 +876,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.processVersion", "Process Version", None, 'L', false, "Choose an older process version per photo, rendering as it did."),
     soon("soon.syncCopies", "Sync Copies…", None, 'S', false, "Sync the settings to the photo's virtual copies."),
     soon("soon.syncSnapshots", "Sync Snapshots…", None, 'M', false, "Apply chosen settings to every snapshot of the photo."),
-    soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.cropAsShot", "Crop As Shot", Some("Cmd+Alt+Shift+R"), 'S', false, "Reset the crop to the camera's own crop (aspect from the raw)."),
     soon("soon.cropSameAspect", "Crop to Same Aspect Ratio", Some("Shift+A"), 'S', false, "Apply the active photo's crop ratio to the selection."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
@@ -901,7 +900,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         false,
         "Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu.",
     ),
-    soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
     soon("soon.locationFilter", "Location Filter", None, 'S', true, "Visible on Map / Tagged / Untagged / None (map.filter exists)."),
@@ -915,7 +913,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // Book
     soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
     soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
-    soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
     soon("soon.bookHeaderBar", "Show Header Bar", None, 'S', false, "The book's header bar."),
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),

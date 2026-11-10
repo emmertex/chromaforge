@@ -79,12 +79,6 @@ Generated from the menu tables; don't edit by hand.
 | Edit Name (Shift+O) | Rename the chosen face. | S | wire-up | `soon.editFaceName` |
 | Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
 
-## Library module ▸ Photo ▸ Develop Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Delete All Empty Masks | Remove masks whose components select nothing. | S | feature | `soon.deleteEmptyMasks` |
-
 ## Library module ▸ Metadata
 
 | Item | What it does | Size | Kind | Slot |
@@ -148,12 +142,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Targeted Adjustment tools | Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu. | M | feature | `soon.targetAdjustment` |
 
-## Develop module ▸ Tools ▸ Crop Guide Overlay
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Choose Overlays to Cycle… | Which crop guides O cycles through. | S | feature | `soon.chooseCropOverlays` |
-
 ## Map module ▸ Map
 
 | Item | What it does | Size | Kind | Slot |
@@ -184,7 +172,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
 | Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
-| Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
 
 ## Book module ▸ View
 
