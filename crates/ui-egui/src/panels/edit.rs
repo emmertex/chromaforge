@@ -1816,7 +1816,7 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
                     "green" => "Green channel",
                     _ => "Blue channel",
                 };
-                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name} — double-click to reset it", name = name));
+                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name}: double-click to reset it", name = name));
                 if resp.double_clicked() {
                     target.set_channel(app, ch);
                     let _ = app.run("curve.reset", target.params(json!({"channel": ch})));
@@ -3144,7 +3144,7 @@ fn lens_note(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, has_
     let Some(state) = app.session.catalog.photo(id).and_then(|p| app.session.lens_match(p)) else { return };
     let text = match state {
         Match::NoDatabase => {
-            let link = egui::RichText::new(tr("No lens database — set one up or download it…")).size(11.0).color(t.accent).underline();
+            let link = egui::RichText::new(tr("No lens database. Set one up or download it…")).size(11.0).color(t.accent).underline();
             let r = ui.add(egui::Label::new(link).sense(egui::Sense::click()));
             crate::widgets::register(ui.ctx(), "link:lensDbSetup", r.rect);
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

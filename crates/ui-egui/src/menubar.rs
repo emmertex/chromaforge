@@ -392,6 +392,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.colorReadoutHsl" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Hsl),
         "view.colorReadoutLab" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Lab),
         "view.softProof" => Some(u.soft_proof),
+        "remove.useGenerative" => Some(crate::panels::genfill::generative_on(app)),
         "view.maskOverlay" => Some(u.mask_overlay),
         "view.maskOverlayAll" => Some(u.mask_overlay_all),
         "view.maskPins" => Some(u.mask_pins),
@@ -745,7 +746,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             let recent = &recent;
             let label = |r: &str| {
                 let d = std::path::Path::new(r);
-                format!("{} — {}", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
+                format!("{} ({})", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
             };
             let mut v: Vec<MenuNode> = recent
                 .iter()

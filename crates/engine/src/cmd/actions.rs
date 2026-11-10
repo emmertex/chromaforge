@@ -241,14 +241,14 @@ fn run_steps(s: &mut Session, name: &str, steps: &[Step], photos: Vec<lcc_catalo
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "actions.list", "Actions", [], None, "{} — the saved actions and the one being recorded → {actions: [{name, description, steps, params, shortcut, perPhoto}], recording}", always, list),
-        cmd!(query "actions.get", "Get Action", [], None, "{name} — one action in full → {name, description, steps: [{command, params}], params: [{name, default, description}], shortcut, perPhoto}", always, get),
+        cmd!(query "actions.list", "Actions", [], None, "{}: the saved actions and the one being recorded → {actions: [{name, description, steps, params, shortcut, perPhoto}], recording}", always, list),
+        cmd!(query "actions.get", "Get Action", [], None, "{name}: one action in full → {name, description, steps: [{command, params}], params: [{name, default, description}], shortcut, perPhoto}", always, get),
         cmd!(
             "actions.record",
             "Start Recording Action…",
             [],
             None,
-            "{name, keepTargets?: false} — start recording the commands that follow into action `name` (selection, view and filter commands are left out; unless keepTargets the photos a call names are dropped, so steps apply to the selection when played) → {recording}",
+            "{name, keepTargets?: false}: start recording the commands that follow into action `name` (selection, view and filter commands are left out; unless keepTargets the photos a call names are dropped, so steps apply to the selection when played) → {recording}",
             always,
             record
         ),
@@ -257,11 +257,11 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Stop Recording",
             [],
             None,
-            "{} — save what was recorded since actions.record (re-recording keeps the description, parameters and shortcut) → {name, steps}",
+            "{}: save what was recorded since actions.record (re-recording keeps the description, parameters and shortcut) → {name, steps}",
             always,
             stop
         ),
-        cmd!("actions.cancel", "Cancel Recording", [], None, "{} — stop recording without saving → {cancelled}", always, cancel),
+        cmd!("actions.cancel", "Cancel Recording", [], None, "{}: stop recording without saving → {cancelled}", always, cancel),
         cmd!(
             "actions.save",
             "Save Action",
@@ -271,7 +271,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             always,
             save
         ),
-        cmd!("actions.delete", "Delete Action", [], None, "{name} — delete a saved action → {deleted}", always, delete),
+        cmd!("actions.delete", "Delete Action", [], None, "{name}: delete a saved action → {deleted}", always, delete),
         CommandSpec {
             explicit_targets: true,
             ..cmd!(
@@ -279,7 +279,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
                 "Play Action",
                 [],
                 None,
-                "{name, args?: {param: value}, ids?, perPhoto?} — run the action's steps; a per-photo action (the default) runs once for each target photo with that photo alone selected, then restores the selection. Stops at the first failing step → {name, steps, photos, ran}",
+                "{name, args?: {param: value}, ids?, perPhoto?}: run the action's steps; a per-photo action (the default) runs once for each target photo with that photo alone selected, then restores the selection. Stops at the first failing step → {name, steps, photos, ran}",
                 always,
                 play
             )

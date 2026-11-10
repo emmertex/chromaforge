@@ -39,7 +39,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Quick Develop Settings",
         [],
         None,
-        "{ids?, treatment?: color|bw, wb?: asShot|auto|daylight|cloudy|shade|tungsten|fluorescent|flash, aspect?: as crop.aspect, autoTone?: true, preset?: preset id} — one choice of the Quick Develop panel applied to every target photo (each from its own settings) in one undo step → {changed, errors}",
+        "{ids?, treatment?: color|bw, wb?: asShot|auto|daylight|cloudy|shade|tungsten|fluorescent|flash, aspect?: as crop.aspect, autoTone?: true, preset?: preset id}: one choice of the Quick Develop panel applied to every target photo (each from its own settings) in one undo step → {changed, errors}",
         has_selection,
         |s, p| {
             let c = "develop.quickSet";

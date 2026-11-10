@@ -41,7 +41,7 @@ pub(crate) fn scan_row(progress: &SyncProgress, name: &str) -> (u64, u64, String
 }
 
 fn listing_text(folders: usize, files: usize) -> String {
-    crate::i18n::tr_format!("Listing folders — folders: {folders}, files: {files}", folders = folders, files = files)
+    crate::i18n::tr_format!("Listing folders (folders: {folders}, files: {files})", folders = folders, files = files)
 }
 
 /// Open the dialog for folder `path` (called `name` in it) and start scanning.
