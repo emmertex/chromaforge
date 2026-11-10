@@ -3769,7 +3769,7 @@ fn crop_overlays_body(ui: &mut egui::Ui, picked: &mut Vec<crate::state::CropOver
         let mut on = picked.contains(&o);
         let only = on && picked.len() == 1;
         let r = ui.add_enabled_ui(!only, |ui| crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr(name))).inner;
-        crate::widgets::register(ui.ctx(), &format!("check:cropOverlay-{o:?}"), r.rect);
+        crate::widgets::register(ui.ctx(), format!("check:cropOverlay-{o:?}"), r.rect);
         if on && !picked.contains(&o) {
             picked.push(o);
         } else if !on && picked.len() > 1 {
@@ -3788,7 +3788,7 @@ fn book_prefs_body(ui: &mut egui::Ui, prefs: &mut crate::book::BookPrefs) {
     ];
     for (value, label, id) in rows {
         let r = crate::dialog_frame::checkbox(ui, value, crate::i18n::tr(label));
-        crate::widgets::register(ui.ctx(), &format!("check:{id}"), r.rect);
+        crate::widgets::register(ui.ctx(), format!("check:{id}"), r.rect);
     }
 }
 
