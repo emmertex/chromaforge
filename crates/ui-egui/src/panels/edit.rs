@@ -2248,6 +2248,40 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
     }
 }
 
+/// Targeted adjustment `target` (`curve|hue|sat|lum`) on, from Tools > Target Adjustment: the Edit panel
+/// opens on the section whose control the drag changes, and a Color Mixer group is chosen the way its
+/// button chooses it. Dragging on the photo then adjusts; Esc or None puts it away.
+pub(crate) fn start_tat(app: &mut LccApp, target: &str) -> Result<(), String> {
+    let Some(id) = app.session.active() else { return Err("tool.tat: no photo is open".into()) };
+    let bw = app.session.develop_of(id).is_some_and(|d| crate::is_bw(&d));
+    let section = match target {
+        "curve" => "curve",
+        "hue" | "sat" | "lum" => {
+            if bw && target != "lum" {
+                return Err(format!("tool.tat: a B&W photo has the B&W Mix (`lum`) only, not `{target}`"));
+            }
+            "mixer"
+        }
+        other => return Err(format!("tool.tat: unknown target `{other}` (curve|hue|sat|lum)")),
+    };
+    app.ui.right = RightPanel::Edit;
+    app.ui.view = crate::state::ViewMode::Detail;
+    if !app.ui.section_open(section) {
+        app.ui.toggle_section(section);
+    }
+    if section == "mixer" {
+        // the Mixer tab (not Point Color), on the group the drag changes unless All shows them all
+        if app.ui.flyout_open("pointColor") {
+            app.ui.toggle_flyout("pointColor");
+        }
+        if app.ui.mixer_adjust != "color" && app.ui.mixer_group != "all" {
+            app.ui.mixer_group = target.to_string();
+        }
+    }
+    app.ui.tool = format!("tat:{target}");
+    Ok(())
+}
+
 // ------------------------------------------------------------------------------ colour mixer
 
 /// The Mixer's Adjust choice (HSL | Color) and the HSL groups (Hue | Saturation | Luminance | All),

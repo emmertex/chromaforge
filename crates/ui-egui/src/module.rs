@@ -940,6 +940,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.redo", "Redo Book Edit", None, ""),
     ("book.view", "Book View", None, ""),
     ("book.go", "Go to Book Page", None, ""),
+    ("book.headerBar", "Show Header Bar", None, ""),
+    ("book.infoOverlay", "Show Info Overlay", None, ""),
     ("book.select", "Select Book Cell", None, ""),
     ("book.export", "Export Book…", None, ""),
     ("book.exportStatus", "Book Export Status", None, ""),
