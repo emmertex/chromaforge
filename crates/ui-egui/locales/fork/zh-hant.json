@@ -189,6 +189,7 @@
   "Ask (show “N new”)": "詢問（顯示「N 張新照片」）",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "請求 Immich 立即重新掃描外部照片庫（需要管理員金鑰）",
   "Ask Which Catalog to Open at Launch": "啟動時詢問要開啟的目錄",
+  "Ask for a Name": "詢問名稱",
   "Ask me": "每次詢問",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "「每次詢問」會在啟動時列出最近使用的目錄。在視窗出現時按住 Alt（Mac 上為 Option）則僅詢問一次。",
   "Ask where to import it": "詢問匯入位置",

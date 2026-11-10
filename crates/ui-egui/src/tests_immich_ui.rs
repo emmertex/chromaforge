@@ -314,8 +314,11 @@ fn locked_folders_section_unlocks_with_a_pin() {
             lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &lcc_codecs::EncodeMeta::default()).unwrap_or_default()
         }));
         h.app.services.write = Some(Box::new(|p: &str, b: &[u8]| std::fs::write(p, b).map_err(|e| e.to_string())));
-        let r =
-            h.request("ui.screenshot", json!({"path": std::path::Path::new(&p).join("immich-locked-folders.png").to_string_lossy(), "headless": true}), T);
+        let r = h.request(
+            "ui.screenshot",
+            json!({"path": std::path::Path::new(&p).join("immich-locked-folders.png").to_string_lossy(), "headless": true}),
+            T,
+        );
         assert_eq!(r["ok"], true, "{r}");
     }
     let status = |h: &mut Headless| {

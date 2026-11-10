@@ -200,6 +200,7 @@
   "Ask (show “N new”)": "Kysy (näytä ”N uutta”)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Pyydä Immichiä tarkistamaan ulkoiset kirjastot nyt uudelleen (vaatii ylläpitäjän avaimen)",
   "Ask Which Catalog to Open at Launch": "Kysy käynnistettäessä, mikä katalogi avataan",
+  "Ask for a Name": "Kysy nimi",
   "Ask me": "Kysy minulta",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "Kysy minulta näyttää käynnistyksessä viimeisimmät katalogisi. Alt-näppäimen (Macissa Option) pitäminen painettuna ikkunan avautuessa kysyy vain kerran.",
   "Ask where to import it": "Kysy, minne se tuodaan",

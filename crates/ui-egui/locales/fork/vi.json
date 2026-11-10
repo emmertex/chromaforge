@@ -218,6 +218,7 @@
   "Ask (show “N new”)": "Hỏi (hiện “N mới”)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Yêu cầu Immich quét lại thư viện ngoài ngay bây giờ (cần khóa quản trị)",
   "Ask Which Catalog to Open at Launch": "Hỏi mở catalog nào khi khởi động",
+  "Ask for a Name": "Hỏi tên",
   "Ask me": "Hỏi tôi",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "Hỏi tôi sẽ liệt kê các catalog gần đây khi khởi động. Giữ Alt (Option trên Mac) khi cửa sổ xuất hiện sẽ hỏi một lần.",
   "Ask where to import it": "Hỏi nơi nhập vào",
