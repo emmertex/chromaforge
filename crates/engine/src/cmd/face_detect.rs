@@ -574,7 +574,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Detect Faces: Take Results",
             [],
             None,
-            "{} — cheap every frame: when a Detect Faces run has finished, add its faces (one undo step) and return its summary once → {active, done, photos, …}",
+            "{}: cheap every frame: when a Detect Faces run has finished, add its faces (one undo step) and return its summary once → {active, done, photos, …}",
             always,
             pump
         ),
@@ -583,7 +583,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Faces and Rescan",
             ["Library"],
             None,
-            "{ids?} — the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
+            "{ids?}: the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
             always,
             clear_and_rescan
         ),

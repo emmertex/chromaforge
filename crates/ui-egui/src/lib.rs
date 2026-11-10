@@ -36,6 +36,7 @@ pub mod export_module;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
+pub mod face_menu;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
@@ -58,6 +59,7 @@ pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
+mod menu_choices;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
@@ -70,6 +72,7 @@ mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
 pub mod motion;
+pub mod overlay;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -99,6 +102,7 @@ pub mod surface_icons;
 pub mod surface_plugin;
 pub mod sync;
 pub mod tasks;
+pub mod template_browser;
 pub mod text_field;
 pub mod theme;
 pub mod timelapse_ui;
@@ -809,6 +813,11 @@ pub struct LccApp {
     pub(crate) pending_picks: Vec<pick::Pending>,
     /// The camera roll being listed for `file.addCameraRoll` (`camera_roll::poll`).
     pub(crate) pending_camera_roll: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// The watched camera roll's listing in flight (`camera_roll::watch_tick`), apart from
+    /// [`Self::pending_camera_roll`] so the watch and the review never fight over one.
+    pub(crate) pending_camera_roll_watch: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// When the watch last listed the roll, and for which library: a new library lists at once.
+    pub(crate) camera_roll_watch_at: Option<(web_time::Instant, std::sync::Arc<()>)>,
     /// Modifiers announced for synthetic input (held from a button down to its release).
     synthetic_mods: egui::Modifiers,
     /// Clear `synthetic_mods` on the next frame.
@@ -1166,6 +1175,8 @@ impl LccApp {
             copied: None,
             pending_picks: vec![],
             pending_camera_roll: None,
+            pending_camera_roll_watch: None,
+            camera_roll_watch_at: None,
             synthetic_mods: egui::Modifiers::NONE,
             synthetic_mods_release: false,
             nav_buttons: vec![],
@@ -1666,7 +1677,7 @@ impl LccApp {
                 let t = ctx.input(|i| i.time);
                 self.ui.show_toast((
                     crate::i18n::tr_format!(
-                        "{n} change{} saved in memory but not written to disk: {e} — {app} will retry",
+                        "{n} change{} saved in memory but not written to disk: {e}. {app} will retry",
                         if n == 1 { "" } else { "s" },
                         n = n,
                         e = e
@@ -2256,6 +2267,7 @@ impl LccApp {
             }
         }
         folder_poll::tick(self, ctx, focused && !self.ui.was_focused);
+        camera_roll::watch_tick(self, ctx, focused && !self.ui.was_focused);
         if let Some(url) = self.pending_link.take() {
             folder_poll::follow_link(self, ctx, &url);
         }
@@ -2846,7 +2858,7 @@ impl LccApp {
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
     pub fn window_title(&self) -> String {
         match panels::settings::open_library_name(self) {
-            Some(name) => format!("{} — {name}", lcc_brand::DISPLAY_NAME),
+            Some(name) => format!("{}: {name}", lcc_brand::DISPLAY_NAME),
             None => lcc_brand::DISPLAY_NAME.to_string(),
         }
     }
@@ -2858,7 +2870,7 @@ impl LccApp {
     pub fn page_title(&self, unsaved: bool) -> String {
         let dot = if unsaved { " •" } else { "" };
         match self.session.active().and_then(|id| self.session.catalog.photo(id)) {
-            Some(p) => format!("{}{dot} — {}", p.file_name, lcc_brand::DISPLAY_NAME),
+            Some(p) => format!("{}{dot}: {}", p.file_name, lcc_brand::DISPLAY_NAME),
             None => format!("{}{dot}", self.window_title()),
         }
     }

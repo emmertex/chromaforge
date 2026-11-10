@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 
 /// `--help` text; `{cli}`, `{bin}`, `{app}` and `{P}` are filled by [`usage`].
 const USAGE: &str = "\
-{cli} — headless {app} (photo library + raw developer)
+{cli}: headless {app} (photo library + raw developer)
 
 USAGE:
   {cli} run [OPTIONS] COMMAND [key=value | '{json}']… [COMMAND …]…

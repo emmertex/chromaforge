@@ -1816,7 +1816,7 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
                     "green" => "Green channel",
                     _ => "Blue channel",
                 };
-                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name} — double-click to reset it", name = name));
+                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name}: double-click to reset it", name = name));
                 if resp.double_clicked() {
                     target.set_channel(app, ch);
                     let _ = app.run("curve.reset", target.params(json!({"channel": ch})));
@@ -2246,6 +2246,40 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
         app.ui.tool = tool.to_string();
         app.toast(ctx, crate::i18n::tr("Targeted adjustment on: drag up or down on the photo · Esc to stop"));
     }
+}
+
+/// Targeted adjustment `target` (`curve|hue|sat|lum`) on, from Tools > Target Adjustment: the Edit panel
+/// opens on the section whose control the drag changes, and a Color Mixer group is chosen the way its
+/// button chooses it. Dragging on the photo then adjusts; Esc or None puts it away.
+pub(crate) fn start_tat(app: &mut LccApp, target: &str) -> Result<(), String> {
+    let Some(id) = app.session.active() else { return Err("tool.tat: no photo is open".into()) };
+    let bw = app.session.develop_of(id).is_some_and(|d| crate::is_bw(&d));
+    let section = match target {
+        "curve" => "curve",
+        "hue" | "sat" | "lum" => {
+            if bw && target != "lum" {
+                return Err(format!("tool.tat: a B&W photo has the B&W Mix (`lum`) only, not `{target}`"));
+            }
+            "mixer"
+        }
+        other => return Err(format!("tool.tat: unknown target `{other}` (curve|hue|sat|lum)")),
+    };
+    app.ui.right = RightPanel::Edit;
+    app.ui.view = crate::state::ViewMode::Detail;
+    if !app.ui.section_open(section) {
+        app.ui.toggle_section(section);
+    }
+    if section == "mixer" {
+        // the Mixer tab (not Point Color), on the group the drag changes unless All shows them all
+        if app.ui.flyout_open("pointColor") {
+            app.ui.toggle_flyout("pointColor");
+        }
+        if app.ui.mixer_adjust != "color" && app.ui.mixer_group != "all" {
+            app.ui.mixer_group = target.to_string();
+        }
+    }
+    app.ui.tool = format!("tat:{target}");
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------ colour mixer
@@ -3110,7 +3144,7 @@ fn lens_note(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, has_
     let Some(state) = app.session.catalog.photo(id).and_then(|p| app.session.lens_match(p)) else { return };
     let text = match state {
         Match::NoDatabase => {
-            let link = egui::RichText::new(tr("No lens database — set one up or download it…")).size(11.0).color(t.accent).underline();
+            let link = egui::RichText::new(tr("No lens database. Set one up or download it…")).size(11.0).color(t.accent).underline();
             let r = ui.add(egui::Label::new(link).sense(egui::Sense::click()));
             crate::widgets::register(ui.ctx(), "link:lensDbSetup", r.rect);
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

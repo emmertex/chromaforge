@@ -417,7 +417,7 @@ fn open_recent_library_and_the_command_remove_one_entry() {
     assert_eq!(children.len(), 3, "every entry, missing ones too");
     let MenuNode::Item { id, params, label, enabled, .. } = &children[1] else { panic!("{children:?}") };
     assert_eq!((id.as_str(), params, *enabled), ("app.recentLibraries", &json!({"remove": gone}), true));
-    assert!(label.starts_with("gone — "), "{label}");
+    assert!(label.starts_with("gone ("), "{label}");
     assert_eq!(crate::menubar::display_item_label(id, params, label), label, "a path is never translated");
     // what clicking it runs
     let list = app.run(id, params.clone()).unwrap();

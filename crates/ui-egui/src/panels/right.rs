@@ -638,7 +638,7 @@ fn crop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             if guided {
                 ui.label(
                     egui::RichText::new(crate::i18n::tr_format!(
-                        "{} of 4 guides — drag along lines that should be vertical or horizontal.",
+                        "{} of 4 guides. Drag along lines that should be vertical or horizontal.",
                         d.geometry.guides.len()
                     ))
                     .size(11.0)
@@ -1360,6 +1360,21 @@ fn hold_list_in_place(ui: &mut egui::Ui, top: f32) {
     ui.ctx().request_discard("the Keyword List holds its place");
 }
 
+/// Edit Set…: the current set's nine slots in the Edit Keyword Set dialog (Recent Keywords becomes a named set).
+pub(crate) fn edit_keyword_set(app: &mut LccApp) {
+    let sets = lcc_engine::cmd::keywords::keyword_sets_json(&app.session);
+    let current = sets["current"].as_str().unwrap_or_default().to_string();
+    let mut slots: Vec<String> = sets["keywords"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect();
+    slots.resize(9, String::new());
+    let named = current != lcc_engine::cmd::keywords::RECENT;
+    app.ui.dialog = Some(crate::state::Dialog::KeywordSet {
+        replaces: named.then(|| current.clone()),
+        name: if named { current } else { String::new() },
+        slots,
+        as_new: false,
+    });
+}
+
 /// The keyword set: pick a set, then nine buttons (⌥1–⌥9; Alt+1–Alt+9 off macOS) that toggle its keywords on
 /// the selected photos, empty slots included; "Save as Set…" keeps the current nine under a name.
 fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
@@ -1385,16 +1400,7 @@ fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
                 let edit = ui.button(crate::i18n::tr("Edit Set…"));
                 register(ui.ctx(), "keywordSetMenu:edit", edit.rect);
                 if edit.clicked() {
-                    let mut slots: Vec<String> =
-                        sets["keywords"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_string)).collect();
-                    slots.resize(9, String::new());
-                    let named = current != lcc_engine::cmd::keywords::RECENT;
-                    app.ui.dialog = Some(crate::state::Dialog::KeywordSet {
-                        replaces: named.then(|| current.clone()),
-                        name: if named { current.clone() } else { String::new() },
-                        slots,
-                        as_new: false,
-                    });
+                    edit_keyword_set(app);
                 }
                 if ui.button(crate::i18n::tr("Save Current Keywords as Set…")).clicked() {
                     app.ui.dialog = Some(crate::state::Dialog::TextPrompt {
@@ -1446,7 +1452,7 @@ fn keyword_set(app: &mut LccApp, ui: &mut egui::Ui) {
                     [bw, 22.0],
                     egui::Button::new(egui::RichText::new(short).size(11.5).color(if on { t.text } else { t.text_label })).selected(on).truncate(),
                 )
-                .on_hover_text(format!("{} — {}", k.replace('|', " › "), key(i)));
+                .on_hover_text(format!("{}: {}", k.replace('|', " › "), key(i)));
             register(ui.ctx(), format!("kwSet:{}", i + 1), r.rect);
             if on {
                 register(ui.ctx(), format!("kwSetOn:{}", i + 1), r.rect);

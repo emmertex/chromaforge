@@ -225,7 +225,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Profiles",
             [],
             None,
-            "{paths: [.cube file, XMP look (.xmp with crs:RGBTable), .dcp camera profile, folder or .zip]} — 3D LUTs and XMP looks become creative profiles; .dcp files go to the camera profiles (as camera.importDcp) (Amount 0–200 %; rendered on the CPU) in the profile browser's groups (folder / zip name, else Imported) → {imported: [{id, name, group}], camera: [camera.importDcp's imported], failed}",
+            "{paths: [.cube file, XMP look (.xmp with crs:RGBTable), .dcp camera profile, folder or .zip]}: 3D LUTs and XMP looks become creative profiles; .dcp files go to the camera profiles (as camera.importDcp) (Amount 0–200 %; rendered on the CPU) in the profile browser's groups (folder / zip name, else Imported) → {imported: [{id, name, group}], camera: [camera.importDcp's imported], failed}",
             always,
             import
         ),

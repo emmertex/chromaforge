@@ -75,13 +75,7 @@ pub fn surface_content(app: &LccApp) -> Option<(Readout, f64)> {
                 _ => title,
             };
             let icon = ls::icons::icon_for(&ls::Binding::value(target));
-            Readout {
-                title,
-                value: v.map(|v| spec.format(v)).unwrap_or_else(|| "—".into()),
-                bar: v.map(|v| spec.position(v)),
-                icon,
-                caption: String::new(),
-            }
+            Readout { title, value: v.map(|v| spec.format(v)).unwrap_or_default(), bar: v.map(|v| spec.position(v)), icon, caption: String::new() }
         }
         // a command without a short label of its own names itself by id: show its registry label
         Shown::Command { label, icon } => {

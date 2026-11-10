@@ -1006,7 +1006,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 Dialog::PasteSettings { groups } => {
                     let n = app.session.selected().len();
                     crate::dialog_frame::note(ui,
-                        egui::RichText::new(crate::i18n::tr_format!("Paste into {n} photo{} — only settings that were copied are pasted", if n == 1 { "" } else { "s" }, n = n))
+                        egui::RichText::new(crate::i18n::tr_format!("Paste into {n} photo{}. Only settings that were copied are pasted", if n == 1 { "" } else { "s" }, n = n))
                             .color(t.text_dim),
                     );
                     let copied = app.session.dialogs.copy.clone();
@@ -1311,7 +1311,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         2 => crate::credits::models_ui(ui),
                         _ => {
                             ui.label(egui::RichText::new(lcc_brand::DISPLAY_NAME).font(t.semibold(20.0)).color(t.text));
-                            ui.label(crate::i18n::tr_format!("Version {} — a clean-room, pure-Rust photo library and raw developer.", env!("CARGO_PKG_VERSION")));
+                            ui.label(crate::i18n::tr_format!("Version {}. A clean-room, pure-Rust photo library and raw developer.", env!("CARGO_PKG_VERSION")));
                             ui.label(crate::i18n::tr_format!(
                                 "MIT AND Apache-2.0. Fonts: {} (OFL). Icons: original.",
                                 crate::theme::font_credits(app.chinese_font.is_some())
@@ -1984,7 +1984,7 @@ fn sam_model_body(app: &mut LccApp, ui: &mut egui::Ui, error: Option<&str>) {
     ui.label(format!("{} {:.1} GB, {} {dir}", crate::i18n::tr("A one-time download of about"), gb(MODEL_BYTES), crate::i18n::tr("saved in")));
     ui.label(
         egui::RichText::new(format!(
-            "{} {LICENSE_NAME} — {}",
+            "{} {LICENSE_NAME}: {}",
             crate::i18n::tr("Licence:"),
             crate::i18n::tr("Meta's terms, not {app}'s. Downloading it means accepting them.")
         ))
@@ -2378,10 +2378,32 @@ fn sheet_w(screen: egui::Rect, insets: crate::modern::Insets) -> f32 {
 /// listed (one opened by automation) has no verb to name and keeps "OK".
 fn prompt_verb(command: &str) -> &'static str {
     match command {
-        "album.rename" | "folder.rename" | "version.rename" | "preset.rename" | "mask.renameEffect" => "Rename",
-        "folder.create" | "mask.setEffectGroup" | "app.newLibrary" => "Create",
+        "album.rename"
+        | "folder.rename"
+        | "version.rename"
+        | "preset.rename"
+        | "mask.renameEffect"
+        | "printui.renameTemplateFolder"
+        | "slideshow.renameTemplateFolder"
+        | "print.template.folder.rename" => "Rename",
+        "folder.create"
+        | "mask.setEffectGroup"
+        | "app.newLibrary"
+        | "preset.createGroup"
+        | "printui.createTemplateFolder"
+        | "slideshow.createTemplateFolder"
+        | "print.template.folder.create" => "Create",
         "preset.move" => "Move",
-        "keyword.saveSet" | "filter.savePreset" | "curve.savePreset" | "metadata.savePreset" => "Save",
+        "keyword.saveSet"
+        | "printui.saveCreation"
+        | "printui.saveTemplate"
+        | "book.save"
+        | "slideshow.saveSlideshow"
+        | "slideshow.saveTemplate"
+        | "web.saveGallery"
+        | "filter.savePreset"
+        | "curve.savePreset"
+        | "metadata.savePreset" => "Save",
         "photo.tagFromTracklog" => "Add Locations",
         _ => "OK",
     }
