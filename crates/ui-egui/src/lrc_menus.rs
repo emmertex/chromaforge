@@ -219,7 +219,7 @@ const PHOTO: &[&str] = &[
     "@Stacking=Stack",
     "@People",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -389,7 +389,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "dialog.enhance",
     "---",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -568,7 +568,7 @@ const SLIDESHOW: &[&str] = &[
     "slideshow.exportJpeg",
     "slideshow.exportVideo",
     "---",
-    "soon.addTextOverlay",
+    r#"ui.prompt{"title":"Add Text Overlay…","hint":"{Caption} · {Filename}","command":"slideshow.overlays","key":"addTextString"}=Add Text Overlay…"#,
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -823,7 +823,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
         "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
     ),
     // Photo
-    soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
@@ -868,7 +867,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     // Slideshow
-    soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
     soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),

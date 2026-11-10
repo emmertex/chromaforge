@@ -51,7 +51,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
@@ -140,12 +139,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-
-## Slideshow module ▸ Slideshow
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
 
 ## Slideshow module ▸ View
 
