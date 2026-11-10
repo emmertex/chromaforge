@@ -217,7 +217,7 @@ const PHOTO: &[&str] = &[
     "@Stacking=Stack",
     "@People",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -387,7 +387,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "dialog.enhance",
     "---",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -566,7 +566,7 @@ const SLIDESHOW: &[&str] = &[
     "slideshow.exportJpeg",
     "slideshow.exportVideo",
     "---",
-    "soon.addTextOverlay",
+    r#"ui.prompt{"title":"Add Text Overlay","hint":"Text (tokens like {Caption}, {Filename})","command":"slideshow.overlays","key":"addTextString"}=Add Text Overlay…"#,
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -829,7 +829,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     soon("soon.findPreviousProcess", "Find Previous Process Photos", None, 'S', false, "Show the photos edited with an older process version."),
     // Photo
-    soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
     soon("soon.findSimilarFaces", "Find Similar Faces", None, 'S', true, "People view: faces like the chosen one."),
     soon("soon.moveToUnnamedPeople", "Move to Unnamed People", None, 'S', true, "Take a face's name off."),
     soon("soon.removeFaceRegion", "Remove Face Region", None, 'S', true, "Delete the chosen face box."),
@@ -917,7 +916,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     soon("soon.bookInfoOverlay", "Show Info Overlay", None, 'S', false, "Page and book info over the view."),
     // Slideshow
-    soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
     soon("soon.slideshowContent", "Content", None, 'S', false, "Play the selected / filmstrip / flagged photos."),
     soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
