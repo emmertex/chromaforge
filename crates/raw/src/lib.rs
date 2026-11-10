@@ -34,6 +34,7 @@ pub mod defects;
 pub mod demosaic;
 mod dng;
 pub mod dngwrite;
+pub mod flatfield;
 pub mod gaintable;
 pub mod highlight;
 mod hotpixel;
