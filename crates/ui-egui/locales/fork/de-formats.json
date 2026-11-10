@@ -77,6 +77,7 @@
   "Making the denoised picture… {}%": "Entrauschtes Bild wird berechnet … {}%",
   "Measured as part of a roll of {n}": "Gemessen als Teil eines Films (Fotos: {n})",
   "Module: {size} KB": "Modul: {size} KB",
+  "Moved {name} to {folder}": "{name} nach {folder} verschoben",
   "Name this face {who}": "Dieses Gesicht benennen: {who}",
   "New {n}": "Neu {n}",
   "Not available on this computer: keeping them needs about {need} MB of graphics memory on this screen, and the graphics card has {have} MB. The app uses at most a quarter of it for them, so the rest stays free for the photo itself and other apps. Zoomed HDR views still work; going back to one renders it again.": "Auf diesem Computer nicht verfügbar: Sie zu behalten braucht auf diesem Bildschirm etwa {need} MB Grafikspeicher, und die Grafikkarte hat {have} MB. Die App nutzt höchstens ein Viertel davon, damit der Rest für das Foto selbst und andere Apps frei bleibt. Gezoomte HDR-Ansichten funktionieren weiterhin; die Rückkehr zu einer rendert sie neu.",

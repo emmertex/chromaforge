@@ -8,6 +8,7 @@
 //! (centre, zoom, style, tracks), persisted in `<settings>/map.json`, and the UI commands that
 //! drive it (`map.view`, `map.style`, `map.addServer`, `map.loadTrack`, `map.geotagAt`, …).
 
+mod info;
 mod side;
 #[cfg(test)]
 mod tests;
@@ -49,6 +50,10 @@ pub struct MapPrefs {
     pub lock_markers: bool,
     /// View ▸ Show Saved Location Overlay: the saved locations' circles and names.
     pub show_saved: bool,
+    /// View ▸ Show Map Info: the box naming the centre's place, zoom and style.
+    pub show_info: bool,
+    /// View ▸ Show Map Key: the legend of the map's symbols.
+    pub show_key: bool,
 }
 
 impl Default for MapPrefs {
@@ -65,6 +70,8 @@ impl Default for MapPrefs {
             cache_mb: lcc_geo::cache::DEFAULT_MAX_BYTES / (1024 * 1024),
             lock_markers: false,
             show_saved: true,
+            show_info: false,
+            show_key: false,
         }
     }
 }
@@ -116,6 +123,10 @@ pub struct MapUi {
     pub last_selection: Option<Vec<u64>>,
     /// The map canvas (screen), last frame.
     pub canvas: Option<egui::Rect>,
+    /// The offline place list (`None`: not read yet; `Some(None)`: not downloaded).
+    pub(crate) names: Option<Option<std::sync::Arc<lcc_geo::geocode::GeoNames>>>,
+    /// The place named for the centre last looked up: (centre, name).
+    centre_name: Option<(LatLon, Option<String>)>,
     pins_cache: Option<(u64, usize, String, i64, std::sync::Arc<Vec<lcc_geo::Cluster<u64>>>)>,
 }
 
@@ -142,6 +153,8 @@ impl Default for MapUi {
             drawn: Vec::new(),
             last_selection: None,
             canvas: None,
+            names: None,
+            centre_name: None,
             pins_cache: None,
         }
     }
@@ -376,6 +389,8 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("map.geocoder", "Reverse Geocoding Settings", None, ""),
     ("map.lookup", "Look Up Locations", None, ""),
     ("map.tileCache", "Tile Cache", None, ""),
+    ("map.showInfo", "Show Map Info", None, ""),
+    ("map.showKey", "Show Map Key", None, ""),
 ];
 
 fn f(p: &Value, k: &str) -> Option<f64> {
@@ -389,7 +404,7 @@ fn s<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
 fn view_json(app: &LccApp) -> Value {
     let m = &app.map;
     json!({
-        "lat": m.prefs.lat, "lon": m.prefs.lon, "zoom": m.prefs.zoom, "style": m.prefs.style,
+        "lat": m.prefs.lat, "lon": m.prefs.lon, "zoom": m.prefs.zoom, "style": m.prefs.style, "showInfo": m.prefs.show_info, "showKey": m.prefs.show_key,
         "filter": m.filter.key(), "tracks": m.tracks.iter().map(|t| json!({"name": t.track.name, "path": t.path, "points": t.track.points(), "shown": t.shown})).collect::<Vec<_>>(),
         "pins": m.drawn.iter().map(|(p, ids)| json!({"x": p.x, "y": p.y, "ids": ids})).collect::<Vec<_>>(),
         "tiles": {"loaded": m.tiles.loaded, "failed": m.tiles.failed, "error": m.tiles.last_error, "fetcher": m.tiles.has_fetcher()},
@@ -421,6 +436,13 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 app.map.save();
             }
             Ok(view_json(app))
+        }
+        "map.showInfo" | "map.showKey" => {
+            let flag = if id == "map.showInfo" { &mut app.map.prefs.show_info } else { &mut app.map.prefs.show_key };
+            *flag = p.get("on").and_then(Value::as_bool).unwrap_or(!*flag);
+            let (info, key) = (app.map.prefs.show_info, app.map.prefs.show_key);
+            app.map.save();
+            Ok(json!({"showInfo": info, "showKey": key}))
         }
         "map.style" => {
             let Some(want) = s(p, "id") else {

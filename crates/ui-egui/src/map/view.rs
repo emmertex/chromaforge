@@ -150,9 +150,9 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             let pts: Vec<Pos2> = seg.iter().step_by(step).map(|p| geo_to_screen(&app.map, r, *p)).collect();
             if pts.len() >= 2 {
                 painter.add(egui::Shape::line(pts.clone(), Stroke::new(4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 170))));
-                painter.add(egui::Shape::line(pts, Stroke::new(2.0, Color32::from_rgb(0xe0, 0x40, 0x30))));
+                painter.add(egui::Shape::line(pts, Stroke::new(2.0, super::info::TRACK)));
             } else if let Some(p) = pts.first() {
-                painter.circle_filled(*p, 3.0, Color32::from_rgb(0xe0, 0x40, 0x30));
+                painter.circle_filled(*p, 3.0, super::info::TRACK);
             }
         }
     }
@@ -162,7 +162,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     for l in app.session.catalog.saved_locations().filter(|_| app.map.prefs.show_saved) {
         let c = geo_to_screen(&app.map, r, l.centre());
         let rad = (l.radius / mpp.max(1e-9)).clamp(3.0, 20_000.0) as f32;
-        let col = if l.private { Color32::from_rgb(0xd0, 0x40, 0x40) } else { Color32::from_rgb(0x30, 0x80, 0xe0) };
+        let col = if l.private { super::info::SAVED_PRIVATE } else { super::info::SAVED };
         painter.circle(c, rad, col.gamma_multiply(0.15), Stroke::new(1.5, col));
         painter.text(
             c + vec2(0.0, -rad - 8.0),
@@ -191,7 +191,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         let pr = ui.interact(hit, id, Sense::click_and_drag());
         crate::access::named(&pr, egui::WidgetType::Button, &format!("{} ({n})", crate::i18n::tr("Photos at this place")));
         register(&ctx, format!("map:pin:{}", c.items.first().copied().unwrap_or(0)), hit);
-        let fill = if sel { t.accent } else { Color32::from_rgb(0x20, 0x20, 0x24) };
+        let fill = if sel { t.accent } else { super::info::PIN };
         painter.circle(at, rad, fill, Stroke::new(2.0, Color32::WHITE));
         if n > 1 {
             painter.text(at, Align2::CENTER_CENTER, n.to_string(), t.semibold(if n > 99 { 9.5 } else { 11.0 }), Color32::WHITE);
@@ -298,6 +298,15 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
             ui.close();
         }
     });
+
+    // ---- the corner boxes View ▸ Show Map Info / Show Map Key turn on
+    let (info, key) = super::info::paint(&mut app.map, &painter, &t, r);
+    if let Some(b) = info {
+        register(&ctx, "map:info", b);
+    }
+    if let Some(b) = key {
+        register(&ctx, "map:key", b);
+    }
 
     // ---- attribution (always on screen) and zoom buttons
     let attribution = format!("{}{}", server.attribution, app.map.tiles.last_error.as_ref().map(|e| format!("  ·  {e}")).unwrap_or_default());

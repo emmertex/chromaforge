@@ -28,13 +28,6 @@ Generated from the menu tables; don't edit by hand.
 | Enable Auto Import | Watch a folder and import new files as they arrive. | M | feature | `soon.autoImportEnable` |
 | Auto Import Settings… | Choose the watched folder, destination, naming and develop settings for Auto Import. | M | feature | `soon.autoImportSettings` |
 
-## Every module ▸ File ▸ Library Filters
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Lock Filters | Keep the filter bar's filter when another folder or collection is chosen. | S | feature | `soon.lockFilters` |
-| Remember Each Source's Filters Separately | Each folder and collection keeps its own filter. | S | feature | `soon.rememberFilters` |
-
 ## Every module ▸ Edit
 
 | Item | What it does | Size | Kind | Slot |
@@ -48,9 +41,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
-| Filter by Preset | The filter bar's saved filter presets as a submenu. | S | wire-up | `soon.filterByPreset` |
-| Filter by Flag | Flagged / Unflagged / Rejected filters as a submenu. | S | wire-up | `soon.filterByFlag` |
-| Filter by Color Label | Colour-label filters as a submenu. | S | wire-up | `soon.filterByColorLabel` |
 | Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
 | Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
 | Refine Photos… (Ctrl+Alt+R) | Reject unflagged photos and unflag flagged ones (a culling pass). | S | feature | `soon.refinePhotos` |
@@ -66,17 +56,12 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Set Copy as Original | Swap a virtual copy and its master. | S | feature | `soon.setCopyAsOriginal` |
 | Reset Export Status | Forget that photos were exported (the badge and Export with Previous). | S | feature | `soon.resetExportStatus` |
-| Set Keyword | The keyword set's nine keywords as a submenu (Alt+1…9 work today). | S | wire-up | `soon.setKeyword` |
 | Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
 
 ## Library module ▸ Photo ▸ People
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Find Similar Faces | People view: faces like the chosen one. | S | wire-up | `soon.findSimilarFaces` |
-| Move to Unnamed People | Take a face's name off. | S | wire-up | `soon.moveToUnnamedPeople` |
-| Remove Face Region | Delete the chosen face box. | S | wire-up | `soon.removeFaceRegion` |
-| Edit Name (Shift+O) | Rename the chosen face. | S | wire-up | `soon.editFaceName` |
 | Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
 
 ## Library module ▸ Photo ▸ Develop Settings
@@ -89,7 +74,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Keyword Set | Choose the keyword set (keyword sets exist in the Keywording panel). | S | wire-up | `soon.keywordSet` |
 | Show Metadata for Target Photo Only | The Metadata panel shows the active photo, not the selection's mixed values. | S | feature | `soon.metadataTargetOnly` |
 | Revert Capture Time to Original | Undo Edit Capture Time from the file's own date. | S | feature | `soon.revertCaptureTime` |
 | Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
@@ -114,19 +98,13 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Process Version | Choose an older process version per photo, rendering as it did. | L | feature | `soon.processVersion` |
 | Sync Copies… | Sync the settings to the photo's virtual copies. | S | feature | `soon.syncCopies` |
 | Sync Snapshots… | Apply chosen settings to every snapshot of the photo. | M | feature | `soon.syncSnapshots` |
-| Crop As Shot (Ctrl+Alt+Shift+R) | Reset the crop to the camera's own crop (aspect from the raw). | S | feature | `soon.cropAsShot` |
-| Crop to Same Aspect Ratio (Shift+A) | Apply the active photo's crop ratio to the selection. | S | feature | `soon.cropSameAspect` |
 
 ## Develop module ▸ Tools
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Add to Mask with | Add a component to the chosen mask (the Masking panel does it). | S | wire-up | `soon.addToMask` |
-| Subtract from Mask with | Subtract a component from the chosen mask (the Masking panel does it). | S | wire-up | `soon.subtractFromMask` |
-| Intersect Mask with | Intersect the chosen mask with a component (the Masking panel does it). | S | wire-up | `soon.intersectMask` |
 | Fringe Color Selector | Pick a fringe colour for Defringe on the photo. | S | feature | `soon.fringeSelector` |
 
 ## Develop module ▸ Tools ▸ Remove Options
@@ -142,23 +120,11 @@ Generated from the menu tables; don't edit by hand.
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
-## Develop module ▸ Tools ▸ Target Adjustment
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Targeted Adjustment tools | Tone Curve / Hue / Saturation / Luminance / B&W Mix targeted adjustment, chosen from the menu. | M | feature | `soon.targetAdjustment` |
-
 ## Develop module ▸ Tools ▸ Crop Guide Overlay
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Choose Overlays to Cycle… | Which crop guides O cycles through. | S | feature | `soon.chooseCropOverlays` |
-
-## Map module ▸ Map
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Location Filter | Visible on Map / Tagged / Untagged / None (map.filter exists). | S | wire-up | `soon.locationFilter` |
 
 ## Map module ▸ Photo
 
@@ -166,51 +132,17 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Delete All Location Metadata | Take GPS and place names off the selected photos. | S | feature | `soon.deleteLocationMetadata` |
 
-## Map module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Map Info | The map's info overlay. | S | feature | `soon.mapInfo` |
-| Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
-| Map Style | The map's tile styles as a submenu (map.style exists). | S | wire-up | `soon.mapStyle` |
-
 ## Book module ▸ Book
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
 
-## Book module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Header Bar | The book's header bar. | S | feature | `soon.bookHeaderBar` |
-| Show Info Overlay | Page and book info over the view. | S | feature | `soon.bookInfoOverlay` |
-
 ## Slideshow module ▸ Slideshow
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| New Template Folder | Group slideshow templates in folders. | S | feature | `soon.newSlideshowTemplateFolder` |
 | Add Text Overlay… | Text on the slides. | M | feature | `soon.addTextOverlay` |
-
-## Slideshow module ▸ Play
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Content | Play the selected / filmstrip / flagged photos. | S | feature | `soon.slideshowContent` |
-
-## Print module ▸ Print
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Template Folder | Group print templates in folders. | S | feature | `soon.newPrintTemplateFolder` |
-
-## Print module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
 
 ## Web module ▸ Web
 
