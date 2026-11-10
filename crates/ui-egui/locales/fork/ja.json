@@ -189,6 +189,7 @@
   "Ask (show “N new”)": "確認する（「N 件の新規」を表示）",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "外部ライブラリを今すぐ再スキャンするよう Immich に依頼します（管理者キーが必要）",
   "Ask Which Catalog to Open at Launch": "起動時に開くカタログを確認",
+  "Ask for a Name": "名前を尋ねる",
   "Ask me": "毎回確認",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "「毎回確認」では起動時に最近使ったカタログの一覧を表示します。ウィンドウが表示される間に Alt キー（Mac では Option キー）を押し続けると、その回だけ確認します。",
   "Ask where to import it": "読み込み先を確認",

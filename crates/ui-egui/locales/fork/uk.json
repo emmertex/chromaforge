@@ -173,6 +173,7 @@
   "Ask (show “N new”)": "Питати (показувати «N нових»)",
   "Ask Immich to rescan the external libraries now (needs an admin key)": "Попросити Immich зараз повторно просканувати зовнішні бібліотеки (потрібен ключ адміністратора)",
   "Ask Which Catalog to Open at Launch": "Питати під час запуску, який каталог відкрити",
+  "Ask for a Name": "Запитати назву",
   "Ask me": "Запитувати",
   "Ask me lists your recent catalogs at launch. Holding Alt (Option on a Mac) as the window appears asks once.": "«Запитувати» показує нещодавні каталоги під час запуску. Якщо втримувати Alt (Option на Mac), коли з’являється вікно, запит буде показано один раз.",
   "Ask where to import it": "Запитати, куди імпортувати",
