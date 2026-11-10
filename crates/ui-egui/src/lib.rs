@@ -846,6 +846,10 @@ pub struct LccApp {
     /// A histogram clipping indicator is hovered this frame: the clipping overlay is previewed on
     /// the photo without turning the persistent one on ([`Self::hover_preview`]'s pattern).
     pub clipping_preview: bool,
+    /// Since when (egui time) and up to which pass a clipping indicator has been hovered: the
+    /// preview waits for the pointer to rest there ([`panels::edit::CLIPPING_PREVIEW_REST_S`]), so a
+    /// pointer gliding across the histogram never re-renders the photo (every tile at 100 %).
+    pub clipping_hover: Option<(f64, u64)>,
     /// In-progress on-canvas gesture (brush stroke points, gradient drag…).
     pub gesture: Option<panels::detail::Gesture>,
     /// The crop tool's view held still while the crop is dragged, rotated or straightened (issue #60).
@@ -1239,6 +1243,7 @@ impl LccApp {
             slideshow_export_reported: true,
             hover_preview: None,
             clipping_preview: false,
+            clipping_hover: None,
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,

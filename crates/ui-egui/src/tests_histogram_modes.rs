@@ -344,6 +344,9 @@ fn a_clipping_indicator_previews_the_overlay_it_stands_for() {
     let r = h.request("ui.hoverWidget", json!({"id": "histogram:highlights", "fx": 0.5, "fy": 0.5}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.step();
+    // the pointer rests there a moment first
+    h.time += crate::panels::edit::CLIPPING_PREVIEW_REST_S;
+    h.step();
     assert!(h.app.clipping_preview, "the hovered indicator previews its mask");
     assert!(!h.app.ui.show_clipping, "and does not turn the persistent overlay on");
     assert_eq!(
@@ -606,4 +609,50 @@ fn the_modern_histogram_follows_an_hdr_drag_and_holds_on_release() {
         set(&mut h, "view.histogram.mode", "mode", "luminance");
         drag_and_release(&mut h, hdr_display, &["modern:histogram"], &format!("Modern, HDR display {hdr_display}"));
     }
+}
+
+/// Gliding the pointer across the histogram passes over its clipping triangles: that must not
+/// preview the clipping overlay (each preview re-rendered the photo, every tile at 100 %: the
+/// interface stuttered and the graphics card filled up, CF-ZOOM-FREEZE 2026-11-10). Only a pointer
+/// resting on a triangle previews it.
+#[test]
+fn gliding_over_the_histogram_never_previews_clipping() {
+    let mut h = edit_panel();
+    let id = h.app.session.active().expect("an active photo");
+    h.step();
+    let d = (*h.app.session.develop_of(id).unwrap_or_default()).clone();
+    let rect = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).expect("the widget");
+    let plot = rect(&h, "histogram:plot");
+    let (lo, hi) = (rect(&h, "histogram:shadows"), rect(&h, "histogram:highlights"));
+    // back and forth along the top of the plot, through both triangles, one point a frame
+    for pass in 0..4 {
+        for i in 0..=40 {
+            let f = if pass % 2 == 0 { i as f32 / 40.0 } else { 1.0 - i as f32 / 40.0 };
+            let x = plot.left() + f * plot.width();
+            let r = h.request("ui.move", json!({"x": x, "y": lo.center().y.min(hi.center().y)}), T);
+            assert_eq!(r["ok"], true, "{r}");
+            h.step();
+            assert!(!h.app.clipping_preview, "a pointer passing over a triangle previews nothing (x {x})");
+            assert_eq!(crate::panels::detail::view_overlay(&h.app, &d, false), lcc_pipeline::Overlay::None);
+        }
+    }
+    // resting on one: it previews, and stops as the pointer leaves
+    let r = h.request("ui.move", json!({"x": hi.center().x, "y": hi.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(!h.app.clipping_preview, "not at once");
+    h.time += crate::panels::edit::CLIPPING_PREVIEW_REST_S;
+    h.step();
+    assert!(h.app.clipping_preview, "resting on the triangle previews it");
+    let r = h.request("ui.move", json!({"x": plot.center().x, "y": plot.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(!h.app.clipping_preview);
+    // coming back after a while starts the rest over
+    h.time += 5.0;
+    let r = h.request("ui.move", json!({"x": lo.center().x, "y": lo.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(!h.app.clipping_preview, "an old hover doesn't count as a rest");
 }
