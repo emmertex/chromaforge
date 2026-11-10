@@ -1039,17 +1039,22 @@ mod in_the_loupe {
         // (the drag window's cache is made by the first tick of a drag)
         h.app.session.begin_interaction("Exposure").unwrap();
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.05}}), T);
-        h.settle(SETTLE);
+        assert!(h.settle(SETTLE), "the first tick settles");
         let before = held(&h);
-        assert!(before > 3, "the views hold something ({before} bytes)");
-        // a third of it is the budget: over it, but inside the runaway limit (four times)
-        h.app.renderer.stage_budget_override = Some(before / 3);
+        assert!(before > 10, "the views hold something ({before} bytes)");
+        // just under what they hold is the budget: over it, as on a big canvas, but far inside the
+        // runaway limit (four times). (A third of it was flaky under load: a tick whose render came
+        // back another way, e.g. a CPU fallback beside the GPU cache, could pass 4/3 of one
+        // measurement, and then the drag window's cache is cleared as designed.)
+        let budget = before / 10 * 9;
+        h.app.renderer.stage_budget_override = Some(budget);
         for tick in 0..8 {
             h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": tick as f64 * 0.1}}), T);
-            h.settle(SETTLE);
+            assert!(h.settle(SETTLE), "tick {tick} settles");
         }
-        assert_eq!(h.app.renderer.memory()["stageCaches"]["trimmed"], 0);
-        assert!(held(&h) > before / 3, "and they are still there");
+        let m = h.app.renderer.memory();
+        assert_eq!(m["stageCaches"]["trimmed"], 0, "the open views are not cleared: {}", m["stageCaches"]);
+        assert!(held(&h) > budget, "and they are still there");
     }
 
     // Given a 1:1 preview built (Library → Previews), when I zoom to 1:1, then the tiles on screen
