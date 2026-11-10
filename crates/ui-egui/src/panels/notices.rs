@@ -61,7 +61,7 @@ pub fn may_close(app: &mut LccApp) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     if app.exit_backup.is_none() && app.session.catalog_backup_wanted() {
         app.quit_prompt =
-            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the library is due. Back it up now, before {app} quits?").to_string()));
+            Some(QuitPrompt::Backup(crate::i18n::tr("A backup of the catalog is due. Back it up now, before {app} quits?").to_string()));
         return false;
     }
     if app.session.unsaved().is_none() {
@@ -71,7 +71,7 @@ pub fn may_close(app: &mut LccApp) -> bool {
     if app.session.unsaved().is_some()
         && let Err(e) = app.session.close_library()
     {
-        log::error!("quit: library not saved: {e}");
+        log::error!("quit: catalog not saved: {e}");
     }
     match app.session.unsaved() {
         None => true,
@@ -95,7 +95,7 @@ enum Choice {
     Ok,
 }
 
-/// Where the backup schedule is set, as the menu bar shows it ("Disable backups in Edit ▸ Library Settings…"),
+/// Where the backup schedule is set, as the menu bar shows it ("Disable backups in Edit ▸ Catalog Settings…"),
 /// translated; `None` if the command has no menu path.
 fn backup_hint() -> Option<String> {
     let (_, label, _, menu) = crate::menus::ui_commands().find(|c| c.0 == "dialog.catalogSettings")?;
@@ -175,7 +175,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             ("quitSkipBackup", "Skip This Time", Choice::QuitAnyway),
             ("quitCancel", "Cancel", Choice::Cancel),
         ];
-        let Some(i) = window(ctx, "quit-backup", "Back up the library?", &text, backup_hint().as_deref(), &buttons) else { return };
+        let Some(i) = window(ctx, "quit-backup", "Back up the catalog?", &text, backup_hint().as_deref(), &buttons) else { return };
         app.quit_prompt = None;
         match buttons[i].2 {
             Choice::Retry => app.exit_backup = Some(true),
@@ -213,7 +213,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(text) = app.notices.first().cloned() {
         let buttons = [("noticeOk", "OK", Choice::Ok)];
         // an upgrade is news, not a problem: don't title it like one
-        let title = if text.starts_with(lcc_engine::library::UPGRADE_NOTICE_START) { "Library upgraded" } else { "Settings file problem" };
+        let title = if text.starts_with(lcc_engine::library::UPGRADE_NOTICE_START) { "Catalog upgraded" } else { "Settings file problem" };
         if window(ctx, "settings-notice", title, &text, None, &buttons).is_some() {
             app.notices.remove(0);
         }

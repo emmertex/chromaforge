@@ -472,6 +472,8 @@ fn placeholder_manifest() -> Manifest {
         groups: Vec::new(),
         header: None,
         icon: None,
+        about: Default::default(),
+        dropped: Vec::new(),
         sections: Vec::new(),
         shortcut: None,
     }

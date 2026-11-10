@@ -48,7 +48,7 @@ fn ignore_faces(s: &mut Session, p: &Value) -> Result<Value> {
         if !seen.insert((id, index)) {
             continue;
         }
-        let photo = s.catalog.photo(id).filter(|p| p.in_library()).ok_or_else(|| bad(C, "photo is no longer in the library"))?;
+        let photo = s.catalog.photo(id).filter(|p| p.in_library()).ok_or_else(|| bad(C, "photo is no longer in the catalog"))?;
         let region = photo.meta.regions.get(index).ok_or_else(|| bad(C, "face no longer exists"))?;
         let expected = if ignored { RegionKind::Face } else { RegionKind::IgnoredFace };
         if region.kind != expected {

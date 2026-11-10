@@ -166,7 +166,7 @@ fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
     desc.backends = backends;
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = crate::new_instance(desc);
     let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
     build_dev_from_adapter(adapter, card, None)
 }
@@ -176,7 +176,7 @@ fn make_named_device(backends: wgpu::Backends, key: &AdapterKey) -> Result<Dev, 
     desc.backends = backends;
     desc.backend_options = crate::backend::backend_options();
     desc.flags = crate::backend::instance_flags_from_env(desc.flags);
-    let instance = wgpu::Instance::new(desc);
+    let instance = crate::new_instance(desc);
     let adapters = pollster::block_on(instance.enumerate_adapters(backends));
     let entries = crate::remember_adapters(&adapters);
     let idx = entries

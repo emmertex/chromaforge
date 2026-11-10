@@ -907,8 +907,8 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
     h.step();
     let text = h.painted_text().join("\n");
-    assert!(text.lines().any(|l| l == "Back up the library?"), "the prompt is titled for the library:\n{text}");
-    assert!(text.contains("Disable backups in Edit ▸ Library Settings…"), "the prompt says where the schedule is set:\n{text}");
+    assert!(text.lines().any(|l| l == "Back up the catalog?"), "the prompt is titled for the catalog:\n{text}");
+    assert!(text.contains("Disable backups in Edit ▸ Catalog Settings…"), "the prompt says where the schedule is set:\n{text}");
     click(&mut h, "button:quitCancel");
     assert!(h.app.quit_prompt.is_none() && !h.quit_requested(), "Cancel keeps the app open");
     assert!(!crate::panels::notices::may_close(&mut h.app), "and the next quit asks again");
@@ -930,8 +930,8 @@ fn the_backup_prompt_is_translated_with_its_menu_path() {
     h.step();
     let text = h.painted_text().join("\n");
     crate::i18n::set_language(crate::i18n::Locale::En);
-    assert!(text.lines().any(|l| l == "Bibliothek sichern?"), "the title is translated:\n{text}");
-    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Bibliothekseinstellungen… abschalten"), "{text}");
+    assert!(text.lines().any(|l| l == "Katalog sichern?"), "the title is translated:\n{text}");
+    assert!(text.contains("Sicherungen lassen sich unter Bearbeiten ▸ Katalogeinstellungen… abschalten"), "{text}");
     let _ = h.app.session.close_library();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -943,7 +943,7 @@ fn wait(h: &Headless) -> (lcc_engine::activity::TaskGuard, std::sync::Arc<std::s
     g.name("program", "Converter");
     g.name("plugin", "Prog");
     g.detail("The results come back when {program} closes");
-    g.warn_on_stop("What {program} makes from now on won't come back to the library, and {program} keeps running.");
+    g.warn_on_stop("What {program} makes from now on won't come back to the catalog, and {program} keeps running.");
     (g, flag)
 }
 
@@ -1059,5 +1059,30 @@ fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
     let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Reading a folder to browse it (the Import tab) is not the user's own work: the photos culled
+/// meanwhile are prepared and their neighbours made ahead. As an "import" row it held all of that
+/// back for the whole read (2026-11-09: 90 s for a wedding's 2,597 raws, the loupe never ahead).
+#[test]
+fn reading_a_browsed_folder_holds_no_preparation_back() {
+    let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let n = lcc_engine::import::batch_size() + 4;
+    let (mut h, dir) = gated_import("browse-read", n, Some(gate.clone()));
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(
+        h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 1)),
+        "the folder is being read: {:?}",
+        h.app.session.activity.list()
+    );
+    // held at the gate until now, so the read cannot have ended
+    assert!(h.app.import.is_some(), "still reading");
+    let tasks = h.app.session.activity.list();
+    assert!(tasks.iter().any(|t| t.label == "Reading folder"), "{tasks:?}");
+    assert_eq!(h.app.session.activity.user_work(), None, "a browse's read holds nothing back: {tasks:?}");
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
     let _ = std::fs::remove_dir_all(&dir);
 }

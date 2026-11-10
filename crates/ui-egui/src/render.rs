@@ -593,6 +593,9 @@ pub struct Renderer {
 /// How many [`Slot::QuickAhead`] stand-ins the loupe keeps ready.
 pub const AHEAD_SLOTS: u8 = 6;
 
+/// The [`Slot::Prefetch`] of the open photo's full-resolution source, decoded ahead of a zoom to 1:1.
+pub const FULL_SOURCE_PREFETCH: u8 = 2;
+
 /// After this long without renders the GPU renderer's pool of recycled buffers is freed.
 #[cfg(not(target_arch = "wasm32"))]
 const IDLE_TRIM: std::time::Duration = std::time::Duration::from_secs(3);
@@ -1528,9 +1531,12 @@ impl Renderer {
         );
     }
 
-    /// Prepared-ahead jobs ([`Slot::Prefetch`]) queued or running.
+    /// Prepared-ahead jobs of the photos around the one on screen ([`Slot::Prefetch`]) queued or
+    /// running. Not the open photo's full-resolution source ([`FULL_SOURCE_PREFETCH`]): a slow
+    /// decode for a zoom that may never come, which must neither take a neighbour's turn nor hold
+    /// the background preparation back (it held it for 20 s while a wedding folder was read).
     pub fn prefetches_pending(&self) -> usize {
-        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(_))).count()
+        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).count()
     }
 
     /// Slots of photos prepared around the one on screen asked for since the renderer last forgot
@@ -1542,7 +1548,7 @@ impl Renderer {
     /// The jobs asked for in the slots of photos prepared around the one on screen (queued,
     /// running or made).
     pub fn prefetch_keys(&self) -> Vec<u64> {
-        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != 2)).map(|(_, k)| *k).collect()
+        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).map(|(_, k)| *k).collect()
     }
 
     /// Whether `slot` was last asked for the job of `key` (queued, running or done).
@@ -2684,6 +2690,23 @@ mod thumbnail_tests {
             std::mem::take(&mut self.0.borrow_mut().finished)
         }
     }
+    /// The open photo's full-resolution source decoded ahead of a zoom is no neighbour: while it
+    /// decodes, the neighbours still get both their turns and the background preparation is not
+    /// held back (2026-11-09: it was pending for 20 s while a wedding folder was read, and every
+    /// photo ahead waited behind it).
+    #[test]
+    fn the_full_resolution_warm_up_is_not_a_neighbour_render() {
+        let (mut app, _work, _ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        let id = PhotoId(1);
+        let job = app.session.loupe_job(id, 64, 64, true).expect("a loupe job");
+        app.renderer.prefetch(Slot::Prefetch(FULL_SOURCE_PREFETCH), job.clone(), 10);
+        assert!(app.renderer.is_pending(Slot::Prefetch(FULL_SOURCE_PREFETCH)), "queued");
+        assert_eq!(app.renderer.prefetches_pending(), 0, "not counted as a neighbour");
+        app.renderer.prefetch(Slot::Prefetch(0), job, 10);
+        assert_eq!(app.renderer.prefetches_pending(), 1, "the neighbour is");
+    }
+
     fn fixture() -> (crate::LccApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
         fixture_with(Session::new(), (*photo()).clone())
     }
@@ -2799,7 +2822,7 @@ mod thumbnail_tests {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
             desc.backend_options = lcc_engine::gpu::backend::backend_options();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("test window"), ..Default::default() })).ok()
         })();
@@ -2868,7 +2891,7 @@ mod thumbnail_tests {
         let device = (|| {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
         })();

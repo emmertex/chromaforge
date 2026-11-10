@@ -1216,7 +1216,7 @@ impl Session {
             if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
                 r.skipped = true;
             } else if !crate::library::is_library(dir) {
-                r.problems.push(format!("{} is not a library folder", dir.display()));
+                r.problems.push(format!("{} is not a catalog folder", dir.display()));
             } else {
                 match read_library(dir) {
                     Ok(theirs) => {
@@ -1316,7 +1316,7 @@ impl Session {
         }
         if !self.uses_app_store() {
             return Err(EngineError::Other(
-                "the open library keeps its own presets and profiles; run store.useLibrary {\"keep\": false} first".into(),
+                "the open catalog keeps its own presets and profiles; run store.useLibrary {\"keep\": false} first".into(),
             ));
         }
         Ok(())
@@ -1434,7 +1434,7 @@ impl Session {
         if self.app_store.is_none() {
             return Err(EngineError::Other("there is no shared store (the settings folder isn't available)".into()));
         }
-        let Some(lib) = self.library.as_ref() else { return Err(EngineError::Other("no library is open".into())) };
+        let Some(lib) = self.library.as_ref() else { return Err(EngineError::Other("no catalog is open".into())) };
         let (dir, on_disk, own) = (lib.dir.clone(), lib.on_disk, lib.own_store);
         if keep == own {
             return Ok(self.store_info());

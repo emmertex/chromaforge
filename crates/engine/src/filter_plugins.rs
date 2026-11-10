@@ -201,7 +201,21 @@ pub fn is_older(new: &str, installed: &str) -> bool {
 /// Filter manifest fields read leniently (a value the host can't use is dropped, not an error):
 /// never reported as unknown.
 #[cfg(not(target_arch = "wasm32"))]
-const LENIENT: &[&str] = &["stage", "analyzeArea", "baseTone", "header", "icon", "sections", "shortcut", "params.*.label", "params.*.groups"];
+const LENIENT: &[&str] = &[
+    "stage",
+    "analyzeArea",
+    "baseTone",
+    "header",
+    "icon",
+    "sections",
+    "shortcut",
+    "params.*.label",
+    "params.*.groups",
+    "homepage",
+    "repository",
+    "changelog",
+    "license",
+];
 
 /// Fields of `f`'s manifest the host doesn't know, by path ([`lcc_plugins::manifest::ignored_fields`]).
 #[cfg(not(target_arch = "wasm32"))]
@@ -328,6 +342,7 @@ pub fn info(f: &Filter) -> Value {
         "size": f.size(),
         "header": m.header.is_some(),
         "icon": m.icon.is_some(),
+        "about": m.about.info(),
         "enabled": true,
     })
 }

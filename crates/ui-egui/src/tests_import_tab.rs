@@ -409,7 +409,7 @@ fn develop_without_import_needs_a_browse_and_a_photo() {
 }
 
 /// The browse quick filter: Show All / Show Not Imported in the bar — by default only the files
-/// an import would take, Show All adds the ones the library has already with an "In library"
+/// an import would take, Show All adds the ones the library has already with an "In catalog"
 /// badge on their cells.
 #[test]
 fn browse_show_all_marks_photos_in_the_library() {

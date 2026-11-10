@@ -76,7 +76,7 @@ fn version_settings(s: &mut Session, p: &Value) -> Result<Value> {
     let mut st = load_settings(s);
     if let Some(r) = str_param(p, "resave") {
         st.resave = Resave::parse(r).ok_or_else(|| bad(C, format!("resave `{r}` (ask, keepBoth, replace)")))?;
-        let path = settings_path(s).ok_or_else(|| bad(C, "no library folder to keep the setting in"))?;
+        let path = settings_path(s).ok_or_else(|| bad(C, "no catalog folder to keep the setting in"))?;
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d).map_err(|e| bad(C, format!("{}: {e}", d.display())))?;
         }

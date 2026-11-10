@@ -206,7 +206,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         super::settings::hint(
             ui,
             t,
-            "A shared library exchanges the edits, ratings, flags and colour labels of the photos both devices have. A photo edited on both devices gets a copy in the same stack.",
+            "A shared catalog exchanges the edits, ratings, flags and colour labels of the photos both devices have. A photo edited on both devices gets a copy in the same stack.",
         );
     }
     for d in &paired {
@@ -232,11 +232,11 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             let id = s(o, "deviceId").to_string();
             crate::dialog_frame::note(
                 ui,
-                RichText::new(trf!("{} wants to sync its library “{}” with this library.", s(o, "name"), s(o, "library"))).color(t.text),
+                RichText::new(trf!("{} wants to sync its catalog “{}” with this catalog.", s(o, "name"), s(o, "library"))).color(t.text),
             );
             crate::dialog_frame::control_row(ui, |ui| {
                 for (key, label, accept, primary) in
-                    [("syncOfferAccept", "Sync With This Library", true, true), ("syncOfferDecline", "Decline", false, false)]
+                    [("syncOfferAccept", "Sync With This Catalog", true, true), ("syncOfferDecline", "Decline", false, false)]
                 {
                     if text_button(ui, &format!("{key}-{id}"), tr(label), primary).clicked()
                         && let Some(v) = run(app, "sync.answerOffer", json!({"device": id, "accept": accept}))
@@ -256,7 +256,7 @@ fn device_library(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, st: &Value, i
     crate::dialog_frame::in_control_column(ui, |ui| {
         ui.indent(format!("syncDev-{id}"), |ui| {
             let mut on = shared;
-            let r = ui.checkbox(&mut on, tr("Sync this library"));
+            let r = ui.checkbox(&mut on, tr("Sync this catalog"));
             register(ui.ctx(), format!("check:syncShare-{id}"), r.rect);
             if r.changed()
                 && let Some(v) = run(app, "sync.share", json!({"device": id, "on": on}))

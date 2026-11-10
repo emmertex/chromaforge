@@ -888,7 +888,7 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) {
         crate::widgets::register(ui.ctx(), "check:chartProfileAllCameras", r.rect);
         let r = ui
             .button(crate::i18n::tr("Browse for File…"))
-            .on_hover_text(crate::i18n::tr("A chart photo that isn't in the library: it is used for the profile only and is not imported."));
+            .on_hover_text(crate::i18n::tr("A chart photo that isn't in the catalog: it is used for the profile only and is not imported."));
         crate::widgets::register(ui.ctx(), "button:chartProfileBrowse", r.rect);
         if r.clicked() {
             app.chart_profile.error = browse_second(app).err();
@@ -920,7 +920,7 @@ fn picker(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) {
         ui,
         |ui| {
             if list.is_empty() {
-                ui.label(egui::RichText::new(crate::i18n::tr("No other raw photos from this camera in the library.")).color(t.text_dim));
+                ui.label(egui::RichText::new(crate::i18n::tr("No other raw photos from this camera in the catalog.")).color(t.text_dim));
             }
             egui::Grid::new("chartProfilePickerGrid").spacing(egui::vec2(8.0, 8.0)).show(ui, |ui| {
                 for (i, c) in list.iter().enumerate() {

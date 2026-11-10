@@ -1,0 +1,3 @@
+## Plug-ins
+
+- **Where a plug-in comes from:** manifests may carry `homepage`, `repository`, `changelog` (`https://` links) and `license`, for plug-ins (host feature `about`) and pixel filters. The About tab and a filter's page show them as links named by their host, with *Report a Problem* for a GitHub repository; `plugins.openLink {id, link}` opens one. A value the host can't use is dropped and named in the plug-in's log and the install dialog, never an install error. The SDK's `export_plugin!(package: …)` fills `version`, `description`, `author`, `homepage`, `repository` and `license` from the plug-in crate's `Cargo.toml`. Host feature `pictures` names a plug-in's `icon` and `header`.

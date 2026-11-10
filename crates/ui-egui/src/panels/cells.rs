@@ -88,7 +88,7 @@ pub fn extras(app: &mut LccApp, ui: &egui::Ui, id: PhotoId, r: Rect, square: boo
         }
     }
     if app.session.source == lcc_engine::LibrarySource::Folder && p.in_library() {
-        badges.push(("inLibrary", Icon::Check, crate::i18n::tr("In library").to_string(), Color32::WHITE));
+        badges.push(("inLibrary", Icon::Check, crate::i18n::tr("In catalog").to_string(), Color32::WHITE));
     }
     if let Some(n) = albums.and_then(|a| a.get(&id).copied()).filter(|n| *n > 0) {
         badges.push(("collections", Icon::Album, format!("{} {n}", crate::i18n::tr("Collections:")), Color32::WHITE));

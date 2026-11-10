@@ -1107,7 +1107,7 @@ impl crate::Session {
         }
         let dir = self.genfill_dir(id);
         if !dir.join(format!("{which}-0.lcpatch")).is_file() {
-            return Err("this generated fill is not in the library any more".into());
+            return Err("this generated fill is not in the catalog any more".into());
         }
         let mut d = (*self.develop_of(id).ok_or("no such photo")?).clone();
         let kept = d.spots.iter().position(|s| s.generated.as_ref().is_some_and(|g| g.generations().iter().any(|x| x.id == which)));

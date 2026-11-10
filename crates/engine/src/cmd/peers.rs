@@ -44,12 +44,12 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             |s, _p| peers::tick(s)
         ),
-        cmd!(query "sync.share", "Share Library", [], None, "{device, on: bool}: share the open library with a paired device (it is offered there) → sync.status", always, |s, p| {
+        cmd!(query "sync.share", "Share Catalog", [], None, "{device, on: bool}: share the open library with a paired device (it is offered there) → sync.status", always, |s, p| {
             let d = device(p, "sync.share")?;
             let on = bool_req(p, "on", "sync.share")?;
             peers::share(s, &d, on)
         }),
-        cmd!(query "sync.answerOffer", "Answer Library Offer", [], None, "{device, accept: bool}: take up a library a paired device offered (the open library becomes the same catalog) or turn it down → sync.status", always, |s, p| {
+        cmd!(query "sync.answerOffer", "Answer Catalog Offer", [], None, "{device, accept: bool}: take up a library a paired device offered (the open library becomes the same catalog) or turn it down → sync.status", always, |s, p| {
             let d = device(p, "sync.answerOffer")?;
             let accept = bool_req(p, "accept", "sync.answerOffer")?;
             peers::answer_offer(s, &d, accept)

@@ -37,7 +37,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             ui.horizontal_centered(|ui| {
                 ui.label(egui::RichText::new(crate::i18n::tr_format!("Alternatives to {name}", name = name)).font(t.semibold(14.0)).color(t.text));
                 ui.label(
-                    egui::RichText::new(crate::i18n::tr("Frames around it in its folder: select the ones to bring into the library"))
+                    egui::RichText::new(crate::i18n::tr("Frames around it in its folder: select the ones to bring into the catalog"))
                         .font(t.font(12.0))
                         .color(t.text_dim),
                 );
@@ -56,7 +56,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                         match app.run("photo.importAlternatives", json!({"sameEdit": same})) {
                             Ok(v) => {
                                 let n = v["chosen"].as_array().map_or(0, Vec::len);
-                                app.toast(ui.ctx(), crate::i18n::tr_format!("{n} alternatives in the library", n = n));
+                                app.toast(ui.ctx(), crate::i18n::tr_format!("{n} alternatives in the catalog", n = n));
                             }
                             Err(e) => app.toast(ui.ctx(), e),
                         }

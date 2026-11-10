@@ -52,7 +52,7 @@ fn add_folder_items(app: &mut LccApp, ui: &mut egui::Ui, can_create: bool) {
         let enabled = crate::menus::ui_enabled(app, "file.addFolder");
         let add = ui
             .add_enabled(enabled, egui::Button::new(crate::i18n::tr("Add Folder…")))
-            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"));
+            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the catalog where they are"));
         register(ui.ctx(), "button:folderAddFolder", add.rect);
         if add.clicked() {
             // File ▸ Import from Folder…: the dialog and the scan run off the UI thread (#734)

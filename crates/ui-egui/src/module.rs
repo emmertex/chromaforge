@@ -747,7 +747,7 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
             if app.session.active().is_none() {
                 // Develop needs a photo: take the first one shown
                 let first = app.session.visible().first().copied();
-                let Some(first) = first else { return Err("Develop needs a photo: the library is empty".into()) };
+                let Some(first) = first else { return Err("Develop needs a photo: the catalog is empty".into()) };
                 app.run("library.select", json!({"ids": [first.0]}))?;
             }
             swap(app, to, true);

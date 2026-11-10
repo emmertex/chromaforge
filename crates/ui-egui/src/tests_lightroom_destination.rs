@@ -219,7 +219,7 @@ fn an_empty_library_opens_the_window_on_merge() {
     }
 }
 
-/// "Always merge into the open library" imports without the window.
+/// "Always merge into the open catalog" imports without the window.
 #[test]
 fn always_merge_skips_the_window() {
     let f = Fixture::new("always");

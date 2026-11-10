@@ -178,7 +178,7 @@ impl eframe::App for App {
             catalog_hooks::backup_if_due(&mut self.0.session);
         }
         if let Err(e) = self.0.session.close_library() {
-            log::error!("saving the library failed: {e}");
+            log::error!("saving the catalog failed: {e}");
         }
         // last, with everything saved: no render may be inside the GPU driver when the process ends
         if !self.0.shutdown(EXIT_WAIT) {
@@ -448,7 +448,7 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
                 Err(r) => format!("it couldn't be set aside ({r})"),
             };
             let msg = format!(
-                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your library with Settings → Open Library… if it isn't shown.",
+                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
                 path.display()
             );
             (None, Some(msg), kept.is_err())
@@ -728,7 +728,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .map(|p| p.to_string_lossy().to_string())
         }),
         pick_folder: picker!(|| {
-            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Library")).pick_folder().map(|p| p.to_string_lossy().to_string())
+            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Catalog")).pick_folder().map(|p| p.to_string_lossy().to_string())
         }),
         #[cfg(target_os = "linux")]
         open_model_folder: Some(std::sync::Arc::new(|path: &str| {
@@ -1081,7 +1081,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
     };
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
-        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
+        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the catalog in. Choose a folder for it.")));
     };
     // a library the settings remember (or the default location) is opened, never created: on a drive that isn't
     // connected its folder is missing, and opening it would make an empty library there, with demo photos, that
@@ -1090,7 +1090,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
         log::warn!("the remembered library {} isn't there; not creating one", dir.display());
         let mut problem = LibraryProblem::new(
             dir.to_string_lossy(),
-            format!("{}: no library found here (is its drive connected, or was it moved or renamed?)", dir.display()),
+            format!("{}: no catalog found here (is its drive connected, or was it moved or renamed?)", dir.display()),
         );
         problem.never_create = true;
         return (unopened(), Some(problem));
@@ -1110,7 +1110,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             (s, None)
         }
         Err(e) => {
-            log::error!("can't open library {}: {e}", dir.display());
+            log::error!("can't open catalog {}: {e}", dir.display());
             (unopened(), Some(LibraryProblem::new(dir.to_string_lossy(), e.to_string())))
         }
     }
@@ -1190,7 +1190,7 @@ fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Optio
             Some(LaunchPath::Library(dir)) => {
                 log::warn!("one library at a time: not opening {dir} given at launch");
                 notices
-                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one library at a time. Open it with File ▸ Open Library…")));
+                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one catalog at a time. Open it with File ▸ Open Catalog…")));
             }
             Some(LaunchPath::Import(p)) => files.push(p),
             Some(LaunchPath::Refused { path, why }) => {
@@ -1830,7 +1830,7 @@ mod tests {
         let lib = dir.join("unmounted").join("Library");
         let (_, problem) = open_library_session(false, Some(lib.clone()), true, false);
         let problem = problem.expect("a problem is reported");
-        assert!(problem.never_create && problem.error.contains("no library found"), "{}", problem.error);
+        assert!(problem.never_create && problem.error.contains("no catalog found"), "{}", problem.error);
         assert!(!lib.exists() && !dir.exists(), "nothing was created where the library should be");
         // named on the command line: created
         let (s, problem) = open_library_session(false, Some(lib.clone()), false, true);

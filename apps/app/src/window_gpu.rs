@@ -205,7 +205,7 @@ fn pick_probed(
 
 /// Create a device on `backends` and build egui's pipeline on it; any wgpu error is returned.
 fn probe(backends: Backends, compose_window: bool) -> Result<WgpuSetupExisting, String> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    let instance = lcc_engine::gpu::new_instance(wgpu::InstanceDescriptor {
         backends,
         flags: backend::instance_flags_from_env(wgpu::InstanceFlags::from_build_config().with_env()),
         backend_options: presentation_options(backends, compose_window),
@@ -359,7 +359,7 @@ mod tests {
     /// wgpu's default panic. Needs an adapter; skipped where there is none (CI without a GPU).
     #[test]
     fn pipeline_errors_are_captured_not_panics() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = lcc_engine::gpu::new_instance(wgpu::InstanceDescriptor {
             backends: backend::window_backends(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });

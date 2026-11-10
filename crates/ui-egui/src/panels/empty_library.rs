@@ -78,7 +78,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, rect: Rect) {
     let clicked = super::empty_state_sized(
         ui,
         rect,
-        "Your library is empty",
+        "Your catalog is empty",
         "Photos you import show up here. Nothing is copied or moved unless you choose to.",
         &actions,
         hint.as_deref(),

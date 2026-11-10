@@ -185,7 +185,7 @@ fn files_added_to_the_folder_or_a_folder_inside_it_are_new() {
 }
 
 /// A library organized by folder can hold the same picture in two of them (a set filed under two
-/// topics). "Don't import files already in the library" is on until the person turns it off:
+/// topics). "Don't import files already in the catalog" is on until the person turns it off:
 ///
 /// * Given a file with the bytes of a photo in another folder of the library, when the folder is
 ///   synchronized, the copy is left out and said to be already in the library.

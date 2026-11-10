@@ -197,7 +197,7 @@ fn failed_background_snapshot_loses_nothing_and_retries_later() {
     assert_eq!((r.snapshot_seq, r.replayed), (j.seq(), 0));
 }
 
-/// A synchronous snapshot (close, "Optimize Library") waits for the background one, so the older
+/// A synchronous snapshot (close, "Optimize Catalog Store") waits for the background one, so the older
 /// snapshot can't land after (and replace) the newer one.
 #[test]
 fn sync_snapshot_waits_for_the_background_one() {

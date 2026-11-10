@@ -13,7 +13,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.catalog-tools",
   "name": "Catalog Tools (example)",
-  "version": "0.1.0",
   "description": "Example plug-in for the SDK",
   "author": "the app's authors",
   "permissions": {"catalog": true},
@@ -79,7 +78,7 @@ fn keywords(photo: &Value) -> Vec<String> {
     out
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {

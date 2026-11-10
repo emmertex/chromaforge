@@ -346,7 +346,7 @@ fn photos_dropped_with_no_library_open_wait_for_one() {
     h.app.library_problem = Some(crate::panels::library_problem::LibraryProblem::new(dir.path("Gone"), "not found"));
     std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("warm.lcpreset")], true);
-    assert!(said(&h, "once a library is open"), "{:?}", h.painted_text());
+    assert!(said(&h, "once a catalog is open"), "{:?}", h.painted_text());
     assert!(said(&h, "drop the presets again") && !said(&h, "1 preset"), "{:?}", h.painted_text());
     drop_files(&mut h, &[], true);
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], false);

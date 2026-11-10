@@ -1,6 +1,6 @@
 ---
 title: Is Chromaforge free, and does it need an account?
-description: Chromaforge is free and open source, needs no account or subscription, and keeps your library on your computer.
+description: Chromaforge is free and open source, needs no account or subscription, and keeps your catalog on your computer.
 order: 10
 verified: 0.7.1
 ---
@@ -9,7 +9,7 @@ Yes, it is free. Chromaforge is open source under the MIT licence. It needs no a
 
 ## Where are my photos and edits kept?
 
-On your computer. Your library lives in a folder you choose, by default `~/Pictures/Chromaforge Library`. Edits are non-destructive, so your original files are never touched. The catalog is a log of human-readable operations that you can back up. Use **File** > **Back Up Library…** to make a backup.
+On your computer. Your catalog lives in a folder you choose, by default `~/Pictures/Chromaforge Library`. Edits are non-destructive, so your original files are never touched. The catalog keeps them as a log of human-readable operations that you can back up. Use **File** > **Back Up Catalog…** to make a backup.
 
 ## Which systems does it run on?
 

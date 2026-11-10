@@ -40,3 +40,22 @@ To upgrade egui: copy the new egui-wgpu release over `vendor/egui-wgpu` (drop `.
 `.cargo_vcs_info.json`, `Cargo.lock`, `Cargo.toml.orig` and the `include` list), re-apply the
 marked changes, and run the app's HDR tests (`hdr_display`, `crates/hdrmeta`). Drop the patch once egui exposes the
 surface format, colour space and display HDR info itself.
+
+## candle-core 0.9.2 (MIT OR Apache-2.0, `vendor/candle-core`)
+
+Source: crates.io `candle-core` 0.9.2 (<https://github.com/huggingface/candle>), copyright the
+candle authors; licence text in `LICENSE` (Apache-2.0; the crate declares MIT OR Apache-2.0).
+
+Patch (zip 9): upstream pins zip 7.x, whose extract-to-disk advisories (RUSTSEC-2026-0367/68/69,
+all fixed in zip >= 9.0) have no fixed 7.x release; candle 0.10+ would drag in `tokenizers`
+(C++ via esaxx-rs), so the dependency stays at 0.9.2 and only the zip version moves. Changes,
+each marked `Patch (zip 9)`:
+
+- `Cargo.toml`: `[dependencies.zip]` version 7.2.0 -> 9.2.0 (`default-features = false`, as before).
+- `src/npy.rs`: `ZipFile::name()` now validates the entry's encoding and returns `Result<Cow<str>>` — two call sites use `?` and borrow the name.
+- `src/pickle.rs`: `ZipArchive::file_names()` items are now `Result<Cow<str>>` — `read_pth_tensor_info` maps each item into the crate's error type before collecting.
+
+Everything else is upstream 0.9.2 unchanged; lcc-ml only touches safetensors loading, so the
+patched paths (npz/pth) are not on the app's critical path. To upgrade candle: re-copy the new
+release, re-apply the marked changes (or drop the patch once upstream bumps zip to 9 and stays
+free of C dependencies).

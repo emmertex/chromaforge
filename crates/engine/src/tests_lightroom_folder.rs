@@ -78,7 +78,7 @@ fn each_part_of_a_lightroom_catalog_is_refused() {
         refused(&root, &p, &catalog);
     }
     let e = Session::new().open_library(&dir, false).unwrap_err().to_string();
-    assert!(e.contains("Lightroom Classic catalog, not a library of the app") && e.contains("Import Lightroom Catalog"), "{e}");
+    assert!(e.contains("Lightroom Classic catalog, not a catalog of the app") && e.contains("Import Lightroom Catalog"), "{e}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -101,7 +101,7 @@ fn an_lrdata_folder_whose_catalog_was_renamed_finds_the_one_next_to_it() {
 #[test]
 fn an_empty_folder_still_becomes_a_library() {
     let root = temp_dir("empty");
-    let lib = root.join("New Library");
+    let lib = root.join("New Catalog");
     assert_eq!(lightroom_catalog_at(&lib), None, "not there yet");
     let mut s = Session::new();
     s.open_library(&lib, false).unwrap();

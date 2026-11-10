@@ -329,7 +329,7 @@ pub fn remove_section(app: &mut LccApp, ui: &mut egui::Ui, spot: Option<(usize, 
         } else if app.session.genfill_missing(photo, index) {
             ui.label(
                 RichText::new(crate::i18n::tr(
-                    "The generated pixels are missing from this library (moved or deleted): the photo shows through. Generate it again to restore it.",
+                    "The generated pixels are missing from this catalog (moved or deleted): the photo shows through. Generate it again to restore it.",
                 ))
                 .size(11.0)
                 .color(t.caution),
