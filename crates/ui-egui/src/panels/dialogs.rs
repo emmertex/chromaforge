@@ -274,6 +274,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
         Dialog::SyncSettings { .. } => "Synchronize Settings",
+        Dialog::SyncCopies { .. } => "Synchronize Copies",
+        Dialog::SyncSnapshots { .. } => "Synchronize Snapshots",
         Dialog::Export { .. } => "Export",
         Dialog::ContactSheet { .. } => "Contact Sheet PDF",
         Dialog::Timelapse { .. } => "Timelapse Video",
@@ -1003,6 +1005,22 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     controls.clear();
                     let _ = group_checklist(ui, "syncGroup", groups, None);
                 }
+                Dialog::SyncCopies { groups } => {
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("The checked settings of the active photo are copied to its master photo and virtual copies"))
+                            .color(t.text_dim),
+                    );
+                    let _ = group_checklist(ui, "syncCopiesGroup", groups, None);
+                }
+                Dialog::SyncSnapshots { groups } => {
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("The checked settings of the current edit are applied to each snapshot of the photo"))
+                            .color(t.text_dim),
+                    );
+                    let _ = group_checklist(ui, "syncSnapshotsGroup", groups, None);
+                }
                 Dialog::PasteSettings { groups } => {
                     let n = app.session.selected().len();
                     crate::dialog_frame::note(ui,
@@ -1561,7 +1579,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
-                    Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } => "Synchronize",
+                    Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } | Dialog::SyncCopies { .. } | Dialog::SyncSnapshots { .. } => {
+                        "Synchronize"
+                    }
                     Dialog::ChartProfile { opts } if crate::chart_profile::is_built(app, opts) => "Profile created ✓",
                     Dialog::ChartProfile { .. } => "Create Profile",
                     Dialog::SamModel { then: Some(_), .. } if sam_installed => "Continue",
@@ -2293,6 +2313,14 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::CopySettings { groups } => app.run("develop.copy", pick_params(groups)),
         Dialog::PasteSettings { groups } => app.run("develop.paste", pick_params(groups)),
         Dialog::SyncSettings { groups, .. } => app.run("develop.sync", pick_params(groups)),
+        Dialog::SyncCopies { groups } => {
+            let mut params = pick_params(groups);
+            if let Some(o) = params.as_object_mut() {
+                o.insert("copies".into(), json!(true));
+            }
+            app.run("develop.sync", params)
+        }
+        Dialog::SyncSnapshots { groups } => app.run("version.sync", pick_params(groups)),
         Dialog::Export { opts, full_size, resize, limit_kb, dir, preset_name } => {
             start_export(app, opts, *full_size, resize, *limit_kb, dir, preset_name)
         }
@@ -2378,8 +2406,22 @@ fn sheet_w(screen: egui::Rect, insets: crate::modern::Insets) -> f32 {
 /// listed (one opened by automation) has no verb to name and keeps "OK".
 fn prompt_verb(command: &str) -> &'static str {
     match command {
-        "album.rename" | "folder.rename" | "version.rename" | "preset.rename" | "mask.renameEffect" => "Rename",
-        "folder.create" | "mask.setEffectGroup" | "app.newLibrary" | "preset.createGroup" => "Create",
+        "album.rename"
+        | "folder.rename"
+        | "version.rename"
+        | "preset.rename"
+        | "mask.renameEffect"
+        | "printui.renameTemplateFolder"
+        | "slideshow.renameTemplateFolder"
+        | "app.renameLibrary"
+        | "print.template.folder.rename" => "Rename",
+        "folder.create"
+        | "mask.setEffectGroup"
+        | "app.newLibrary"
+        | "preset.createGroup"
+        | "printui.createTemplateFolder"
+        | "slideshow.createTemplateFolder"
+        | "print.template.folder.create" => "Create",
         "preset.move" => "Move",
         "keyword.saveSet"
         | "printui.saveCreation"
@@ -3832,7 +3874,15 @@ fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, label: &str, id: &str, option
 /// Dialogs that Return confirms with nothing focused (those with text fields confirm from the
 /// field: `dialog_field`).
 fn return_confirms(dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::CopySettings { .. } | Dialog::PasteSettings { .. } | Dialog::SyncSettings { .. } | Dialog::UpdatePreset { .. })
+    matches!(
+        dlg,
+        Dialog::CopySettings { .. }
+            | Dialog::PasteSettings { .. }
+            | Dialog::SyncSettings { .. }
+            | Dialog::SyncCopies { .. }
+            | Dialog::SyncSnapshots { .. }
+            | Dialog::UpdatePreset { .. }
+    )
 }
 
 struct PersonRenamePlan {

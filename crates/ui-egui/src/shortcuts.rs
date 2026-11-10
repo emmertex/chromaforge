@@ -161,8 +161,14 @@ pub fn shortcut_of<'a>(keymap: &'a Keymap, id: &str) -> Option<&'a str> {
 
 /// Engine commands that intentionally share a key and are disambiguated by context in [`handle`]:
 /// the X pair by the Crop panel, A by whether it is open (Visualize Spots everywhere, the aspect
-/// lock under the Crop panel).
-pub const CONTEXTUAL: &[(&str, &str)] = &[("photo.reject", "crop.rotateAspect"), ("view.visualizeSpots", "crop.lockAspect")];
+/// lock under the Crop panel), Shift+O by whether a face is chosen (Edit Name, else the crop overlay), ⌥⌘R by the
+/// module (Refine Photos in the Library, Reset Crop elsewhere).
+pub const CONTEXTUAL: &[(&str, &str)] = &[
+    ("photo.reject", "crop.rotateAspect"),
+    ("view.visualizeSpots", "crop.lockAspect"),
+    ("view.cropOverlay", "face.editName"),
+    ("library.refine", "crop.reset"),
+];
 
 /// Commands other than `id` whose shortcut is the key `sc` (contextual partners excepted).
 pub fn conflicts(keymap: &Keymap, id: &str, sc: &str) -> Vec<&'static str> {
@@ -904,6 +910,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 }
                 continue;
             }
+            // ⌥⌘R is Refine Photos in the Library and Reset Crop in the other modules
+            if (f == "library.refine") != (app.ui.module == crate::module::ModuleId::Library) && matches!(f.as_str(), "library.refine" | "crop.reset")
+            {
+                continue;
+            }
             // X is both reject (library) and swap crop aspect (crop tool). When both bindings fire,
             // swap once: twice would put the crop straight back (issue #1866).
             if f == "photo.reject" && app.ui.right == crate::state::RightPanel::Crop {
@@ -932,6 +943,13 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             // / refreshes the selected spot's source in the Remove tool (the filmstrip elsewhere)
             if f == "view.filmstrip" && app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
                 let _ = app.run("spot.refreshSource", json!({}));
+                continue;
+            }
+            // Shift+O is Edit Name while a face is chosen (Photo > People), the overlay cycle otherwise
+            if f == "face.editName" && !crate::menus::ui_enabled(app, "face.editName") {
+                continue;
+            }
+            if f == "view.cropOverlay" && crate::menus::ui_enabled(app, "face.editName") {
                 continue;
             }
             // Shift+O cycles the mask overlay colour while masking (the crop overlay elsewhere)

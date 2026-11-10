@@ -355,6 +355,12 @@ fn set_aspect(d: &mut DevelopSettings, w: f64, h: f64, aspect: Option<(u32, u32)
     d.crop.geometry = crop_fit_angle(w, h, angle, a);
 }
 
+/// Another photo is selected besides the active one (Crop to Same Aspect Ratio has someone to act on).
+fn has_other_selected(s: &Session) -> std::result::Result<(), String> {
+    let id = s.active().ok_or("no photo selected")?;
+    if s.selection.ids.iter().any(|o| *o != id && s.catalog.photo(*o).is_some()) { Ok(()) } else { Err("select more than one photo".into()) }
+}
+
 /// Photo `id` is on an older rendering process than [`ProcessVersion::LATEST`].
 fn outdated(s: &Session, id: PhotoId) -> bool {
     s.catalog.photo(id).is_some_and(|p| p.develop.process.is_outdated())
@@ -1146,6 +1152,101 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(())
             })
         }),
+        cmd!(
+            "crop.asShot",
+            "Crop As Shot",
+            [],
+            Some("Cmd+Alt+Shift+R"),
+            "{}: the crop goes back to the decoded camera frame (the sensor's own crop, which decoding already applies): full frame, no angle, no ratio lock; flips stay",
+            has_active,
+            |s, _| {
+                edit(s, "crop.asShot", "Crop As Shot", |d| {
+                    d.crop.geometry = CropGeometry::default();
+                    d.crop.aspect = None;
+                    Ok(())
+                })
+            }
+        ),
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "crop.sameAspect",
+                "Crop to Same Aspect Ratio",
+                [],
+                Some("Shift+A"),
+                "{ids?}: gives every other selected photo (or `ids`) the active photo's crop ratio: the largest centred crop of that ratio, as one undo step → {changed}. Needs an active photo and at least one other target",
+                has_other_selected,
+                |s, p| {
+                    const C: &str = "crop.sameAspect";
+                    let id = active(s, C)?;
+                    let (w, h) = crop_dims(s, id);
+                    let r = s.develop_of(id).unwrap_or_default().crop.geometry.rect_px(w, h);
+                    // a crop of no size has no ratio to hand on
+                    let (qa, qb) =
+                        aspect_tuple(C, r.width(), r.height()).map_err(|_| bad(C, "the active photo's crop has no usable aspect ratio"))?;
+                    let targets: Vec<PhotoId> = match named_photos(s, p, C)? {
+                        Some(ids) => ids,
+                        None => s.targets(p)?,
+                    }
+                    .into_iter()
+                    .filter(|t| *t != id)
+                    .collect();
+                    let mut ops = Vec::new();
+                    for t in targets {
+                        let Some(mut d) = s.develop_of(t).map(|d| (*d).clone()) else { continue };
+                        let (tw, th) = crop_dims(s, t);
+                        d.crop.aspect = Some((qa, qb));
+                        let angle = d.crop.geometry.angle;
+                        d.crop.geometry = crop_fit_angle(tw, th, angle, Some(f64::from(qa) / f64::from(qb)));
+                        ops.extend(s.develop_op(t, d, "Crop to Same Aspect Ratio"));
+                    }
+                    let n = ops.len();
+                    if n > 0 {
+                        s.commit("Crop to Same Aspect Ratio", Op::Batch { ops })?;
+                    }
+                    Ok(json!({"changed": n}))
+                }
+            )
+        },
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "develop.setProcess",
+                "Set Process Version",
+                [],
+                None,
+                "{version: number, ids?}: puts the target photos (`ids`, else the selection) on rendering process `version` (1..=latest; unknown versions are refused), as one undo step. Their look can change; the sliders keep their values (docs/process-versions.md) → {changed, process}",
+                has_selection,
+                |s, p| {
+                    const C: &str = "develop.setProcess";
+                    let label = "Process Version";
+                    let v = p
+                        .get("version")
+                        .and_then(|v| {
+                            v.as_u64().or_else(|| v.as_f64().filter(|x| x.fract() == 0.0 && *x >= 0.0 && *x < f64::from(u32::MAX)).map(|x| x as u64))
+                        })
+                        .and_then(|v| u32::try_from(v).ok())
+                        .map(ProcessVersion)
+                        .filter(|v| v.is_known())
+                        .ok_or_else(|| bad(C, format!("`version` must be a process version from 1 to {}", ProcessVersion::LATEST.0)))?;
+                    let targets = match named_photos(s, p, C)? {
+                        Some(ids) => ids,
+                        None => s.targets(p)?,
+                    };
+                    let ops: Vec<Op> = targets
+                        .into_iter()
+                        .filter_map(|id| s.develop_of(id).map(|d| (id, d)))
+                        .filter(|(_, d)| d.process != v)
+                        .filter_map(|(id, d)| s.develop_op(id, DevelopSettings { process: v, ..(*d).clone() }, label))
+                        .collect();
+                    let n = ops.len();
+                    if n > 0 {
+                        s.commit(label, Op::Batch { ops })?;
+                    }
+                    Ok(json!({"changed": n, "process": v}))
+                }
+            )
+        },
         // ---- HDR editing
         cmd!(
             "develop.hdr",
@@ -1403,7 +1504,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sync Settings",
             [],
             None,
-            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId]}: copy the active photo's settings to the other selected photos: whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
+            "{groups?: [settingsGroup], settings?: [settingItem], controls?: [controlId], copies?: bool}: copy the active photo's settings to the other selected photos (with `copies`: to the master and every virtual copy of the active photo instead; Sync Copies): whole groups, single settings of a group (develop.settingItems) and single controls (e.g. [\"light.exposure\"]); with only `controls`, nothing else is copied (default: what Sync ticked last, at first all but crop, masks, remove; the choice is remembered) → {changed}",
             has_selection,
             |s, p| {
                 let c = "develop.sync";
@@ -1436,13 +1537,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut partial = pick.extract(&d);
                 lcc_develop::presets::to_recipes(&mut partial);
                 let values: Vec<(&str, f64)> = controls.iter().filter_map(|k| lcc_develop::controls::get(&d, k).map(|v| (*k, v))).collect();
-                let targets: Vec<PhotoId> = s.selection.ids.iter().copied().filter(|x| *x != id).collect();
+                let targets: Vec<PhotoId> = if p.get("copies").and_then(Value::as_bool).unwrap_or(false) {
+                    let master = s.catalog.photo(id).map(|ph| ph.copy_of.unwrap_or(ph.id)).unwrap_or(id);
+                    s.catalog
+                        .photos()
+                        .filter(|ph| !ph.deleted && ph.id != id && (ph.id == master || ph.copy_of == Some(master)))
+                        .map(|ph| ph.id)
+                        .collect()
+                } else {
+                    s.selection.ids.iter().copied().filter(|x| *x != id).collect()
+                };
                 let link_source = link_copied_masks(s, &mut partial, Some(id), &targets, "Sync Settings");
                 let mut ops = Vec::new();
                 // a crop goes on as what it means on each photo's own frame (upstream #3572; as Auto Sync does)
                 let with_crop = partial.get("crop").is_some();
                 let adims = crop_dims(s, id);
-                for x in s.selection.ids.clone().into_iter().filter(|x| *x != id) {
+                for x in targets.iter().copied() {
                     let Some(dd) = s.develop_of(x) else { continue };
                     let mut nd = lcc_develop::apply_partial(&dd, &partial, 1.0);
                     if with_crop {
@@ -2013,6 +2123,32 @@ pub fn specs() -> Vec<CommandSpec> {
             let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(c, "missing name"))?.to_string();
             edit_version(s, p, c, "Rename Version", |v, _| v.name = name)
         }),
+        cmd!(
+            "version.sync",
+            "Sync Snapshots",
+            ["Photo", "Develop Settings"],
+            None,
+            "{groups?: [settingsGroup], settings?: [settingItem]}: apply those settings of the active photo's current edit to each of its snapshots (versions), in one undo step (default: what Sync ticked last) → {changed}",
+            has_active,
+            |s, p| {
+                let c = "version.sync";
+                let id = active(s, c)?;
+                let pick = pick_param(p, c)?.unwrap_or_else(|| s.dialogs.sync.clone());
+                let ph = s.catalog.photo(id).ok_or_else(|| bad(c, "no photo"))?;
+                if ph.versions.is_empty() {
+                    return Err(bad(c, "the photo has no snapshots"));
+                }
+                let mut partial = pick.extract(&s.develop_of(id).unwrap_or_default());
+                lcc_develop::presets::to_recipes(&mut partial);
+                let mut versions = ph.versions.clone();
+                for v in &mut versions {
+                    v.settings = std::sync::Arc::new(lcc_develop::apply_partial(&v.settings, &partial, 1.0));
+                }
+                let n = versions.len();
+                s.commit("Sync Snapshots", Op::SetVersions { id, versions })?;
+                Ok(json!({"changed": n}))
+            }
+        ),
         cmd!("version.update", "Update Version with Current Settings", [], None, "{index}", has_active, |s, p| {
             edit_version(s, p, "version.update", "Update Version", |v, current| v.settings = current)
         }),

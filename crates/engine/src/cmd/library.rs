@@ -610,6 +610,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("all");
+                let left = (s.source_key(), s.filter.clone());
                 s.source = match kind {
                     "all" => LibrarySource::All,
                     "recentlyAdded" => LibrarySource::RecentlyAdded,
@@ -650,8 +651,86 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     other => return Err(bad("library.source", format!("unknown source `{other}`"))),
                 };
+                s.switch_source_filter(left.0, left.1);
                 s.keep_active_in_view();
                 Ok(json!({"count": s.visible().len()}))
+            }
+        ),
+        cmd!(
+            "library.findPreviousProcess",
+            "Find Previous Process Photos",
+            ["Library"],
+            None,
+            "{}: filters the view to the photos that render with an older process version than this build's newest (the rule `processVersion < latest`; Clear Filters to go back) → {count, latest}",
+            always,
+            |s, _| {
+                let latest = lcc_develop::ProcessVersion::LATEST.0;
+                s.execute(
+                    "library.filter",
+                    &json!({"ruleSet": {"match": "all", "rules": [{"field": "processVersion", "op": "lt", "value": latest}]}}),
+                )?;
+                Ok(json!({"count": s.visible().len(), "latest": latest}))
+            }
+        ),
+        cmd!(
+            "library.refine",
+            "Refine Photos…",
+            ["Library"],
+            Some("Cmd+Alt+R"),
+            "{}: a culling pass over the photos in view: picks become unflagged, unflagged photos become rejected, rejected ones stay; one undo step → {changed, rejected, unflagged}",
+            always,
+            |s, _| {
+                let ids = s.visible_cloned();
+                let mut ops = Vec::new();
+                let (mut rejected, mut unflagged) = (0, 0);
+                for id in ids {
+                    match s.catalog.photo(id).map(|p| p.flag) {
+                        Some(Flag::Pick) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::None });
+                            unflagged += 1;
+                        }
+                        Some(Flag::None) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::Reject });
+                            rejected += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let changed = ops.len();
+                if changed > 0 {
+                    s.commit("Refine Photos", Op::Batch { ops })?;
+                    s.keep_active_in_view();
+                }
+                Ok(json!({"changed": changed, "rejected": rejected, "unflagged": unflagged}))
+            }
+        ),
+        cmd!(
+            "library.lockFilters",
+            "Lock Filters",
+            [],
+            None,
+            "{on?: bool (default: toggle)}: on (the default), the filter bar's filter stays when another folder or collection is chosen; off, choosing a source drops the filter (or restores that source's own, see library.rememberFilters) → {on}",
+            always,
+            |s, p| {
+                s.lock_filters = bool_or(p, "on", !s.lock_filters);
+                s.save_view();
+                Ok(json!({"on": s.lock_filters}))
+            }
+        ),
+        cmd!(
+            "library.rememberFilters",
+            "Remember Each Source's Filters Separately",
+            [],
+            None,
+            "{on?: bool (default: toggle)}: with Lock Filters off, each source gets back the filter it had when it was left → {on}",
+            always,
+            |s, p| {
+                s.remember_filters = bool_or(p, "on", !s.remember_filters);
+                if !s.remember_filters {
+                    s.source_filters.clear();
+                }
+                s.save_view();
+                Ok(json!({"on": s.remember_filters}))
             }
         ),
         cmd!(
