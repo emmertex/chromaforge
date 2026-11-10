@@ -1894,6 +1894,11 @@ pub enum Dialog {
         prores: bool,
         quality: u8,
     },
+    /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
+    EmailPhoto {
+        long_edge: u32,
+        quality: u8,
+    },
     /// A Lightroom import result stays readable after its activity row disappears.
     LightroomResult {
         summary: String,

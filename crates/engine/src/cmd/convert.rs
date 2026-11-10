@@ -481,6 +481,19 @@ fn render_to_dng(s: &mut Session, p: &Value) -> Result<Value> {
     crate::render_dng::finish(s, done, cancelled)
 }
 
+/// Enabled when a selected photo is a DNG file (asked every frame: only the selection is looked at).
+fn has_dng_selection(s: &Session) -> std::result::Result<(), String> {
+    let ids = if s.selection.ids.is_empty() { s.selection.active.iter().copied().collect::<Vec<_>>() } else { s.selection.ids.clone() };
+    let any = ids.iter().filter_map(|id| s.catalog.photo(*id)).any(|p| matches!(&p.source, Source::File { path } if crate::dng_update::is_dng(path)));
+    if any { Ok(()) } else { Err("no DNG selected".into()) }
+}
+
+/// Metadata ▸ Update DNG Preview & Metadata: see [`crate::dng_update`]. Here all in one go; the
+/// desktop app runs the rewrites on a worker instead.
+fn update_dng_preview(s: &mut Session, p: &Value) -> Result<Value> {
+    crate::dng_update::run_command(s, p)
+}
+
 pub fn edit_specs() -> Vec<CommandSpec> {
     vec![
         cmd!(
@@ -520,6 +533,18 @@ pub fn edit_specs() -> Vec<CommandSpec> {
                 "{ids?, colorSpace?: proPhoto (default) | rec2020 | adobeRgb | displayP3 | srgb, dir?}: render each selected photo (or `ids`, at most 500) with its edits as a linear 16-bit float DNG `<name>-Rendered.dng` next to it (a demo photo into `dir`), add each stacked on its original and select them; a batch shows in the activity stack and can be cancelled between photos → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
                 has_selection,
                 render_to_dng
+            )
+        },
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "photo.updateDngPreview",
+                "Update DNG Preview & Metadata",
+                ["Metadata"],
+                None,
+                "{ids?, longEdge?: 256..4096 (1024), quality?: 1..100 (85)}: for each selected DNG (or `ids`, at most 500) rewrite the file atomically with a JPEG preview of the current edit (an sRGB preview IFD in SubIFDs; a preview of this app's from before is replaced) and the photo's current XMP embedded (merged into the packet already there); the raw data stays byte for byte. Refused with the reason, file untouched: DNGs written by Adobe software, BigTIFF, unreadable or unfamiliar structures, an embedded XMP that cannot be read; non-DNG photos are skipped. Shows in the activity stack (cancel between photos) → {updated: [{id, path, bytes, preview: [w, h], replacedPreviews}], skipped: [{id, name, reason}], failed: [{id, name, error}], cancelled}",
+                has_dng_selection,
+                update_dng_preview
             )
         },
     ]
