@@ -184,8 +184,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Map Info | The map's info overlay. | S | feature | `soon.mapInfo` |
-| Show Map Key | The map's legend of pin types. | S | feature | `soon.mapKey` |
 | Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
 | Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
 | Map Style | The map's tile styles as a submenu (map.style exists). | S | wire-up | `soon.mapStyle` |
@@ -203,9 +201,7 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Show Header Bar | The book's header bar. | S | feature | `soon.bookHeaderBar` |
 | Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-| Show Info Overlay | Page and book info over the view. | S | feature | `soon.bookInfoOverlay` |
 
 ## Slideshow module ▸ Slideshow
 
@@ -242,7 +238,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
 | Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
-| Show Info Overlay | Page and printer info over the view. | S | feature | `soon.printInfoOverlay` |
 
 ## Web module ▸ Web
 

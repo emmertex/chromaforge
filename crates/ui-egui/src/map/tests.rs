@@ -501,3 +501,39 @@ fn location_filter_filters_the_filmstrip() {
     h.settle(SETTLE);
     assert!(film(&h, ids[0]) && film(&h, ids[1]), "None shows every photo again");
 }
+
+#[test]
+fn info_and_key_boxes_follow_their_menu_toggles() {
+    let mut h = map_on_fake_tiles();
+    // the offline place list names Paris for a view centred there
+    let cities = "1\tParis\tParis\t\t48.85\t2.35\tP\tPPLC\tFR\t\t11\n";
+    let names = lcc_geo::geocode::GeoNames::parse(cities, Some("FR.11\tIle-de-France\n"), Some("FR\tFRA\t250\tFR\tFrance\n"));
+    h.app.map.names = Some(Some(std::sync::Arc::new(names)));
+    h.app.map.centre_name = None;
+    assert!(widget(&h, "map:info").is_none() && widget(&h, "map:key").is_none(), "both start hidden");
+    assert_eq!(crate::menubar::checked(&h.app, "map.showInfo"), Some(false));
+
+    run(&mut h, "map.showInfo", json!({}));
+    run(&mut h, "map.showKey", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(crate::menubar::checked(&h.app, "map.showInfo"), Some(true));
+    assert_eq!(crate::menubar::checked(&h.app, "map.showKey"), Some(true));
+    let canvas = widget(&h, "map:canvas").expect("canvas");
+    for id in ["map:info", "map:key"] {
+        let r = widget(&h, id).unwrap_or_else(|| panic!("{id} is drawn"));
+        assert!(canvas.contains_rect(r), "{id} {r:?} inside {canvas:?}");
+    }
+    let rows: Vec<String> = h.app.map.info_rows().into_iter().map(|r| r.text).collect();
+    assert!(rows.iter().any(|t| t.contains("Paris") && t.contains("France")), "{rows:?}");
+    assert!(rows.iter().any(|t| t.contains("12.0")), "the zoom: {rows:?}");
+
+    // the choice is part of the saved map preferences
+    let saved = serde_json::to_string(&h.app.map.prefs).unwrap();
+    let back: super::MapPrefs = serde_json::from_str(&saved).unwrap();
+    assert!(back.show_info && back.show_key);
+    assert!(!serde_json::from_str::<super::MapPrefs>("{}").unwrap().show_info, "off unless asked for");
+
+    run(&mut h, "map.showInfo", json!({"on": false}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:info").is_none() && widget(&h, "map:key").is_some());
+}

@@ -412,6 +412,11 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.keywords" => panel(RightPanel::Keywords),
         "panel.presets" => Some(u.presets),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
+        "map.showInfo" => Some(app.map.prefs.show_info),
+        "map.showKey" => Some(app.map.prefs.show_key),
+        "book.headerBar" => Some(u.book.header_bar),
+        "book.infoOverlay" => Some(u.book.info_overlay),
+        "printui.infoOverlay" => Some(app.print.info_overlay),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
         _ => None,
     }

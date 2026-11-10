@@ -53,6 +53,8 @@ pub struct PrintUi {
     pub cells: bool,
     pub bleed: bool,
     pub dimensions: bool,
+    /// View ▸ Show Info Overlay: paper, printer, page and resolution in a corner box (saved in print.json).
+    pub info_overlay: bool,
     pub printer_uri: String,
     pub cups_server: String,
     pub printers: Vec<lcc_print::ipp::PrinterEntry>,
@@ -100,6 +102,7 @@ impl Default for PrintUi {
             cells: true,
             bleed: true,
             dimensions: false,
+            info_overlay: false,
             printer_uri: String::new(),
             cups_server: "localhost:631".into(),
             printers: Vec::new(),
@@ -130,6 +133,7 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.pageSetup", "Page Setup", None, ""),
     ("printui.page", "Print Preview Page", None, ""),
     ("printui.guides", "Print Guides", None, ""),
+    ("printui.infoOverlay", "Show Info Overlay", None, ""),
     ("printui.print", "Print", None, ""),
     ("printui.printOne", "Print One", None, ""),
     ("printui.printers", "Find Printers", None, ""),
@@ -253,6 +257,7 @@ fn stored_json(pu: &PrintUi) -> Value {
         "trustedCertificates": pu.trusted_certs.iter().map(|(h, f)| json!({"printer": h, "fingerprint": f})).collect::<Vec<_>>(),
         "trustOnFirstUse": pu.trust_on_first_use,
         "units": pu.units,
+        "infoOverlay": pu.info_overlay,
     })
 }
 
@@ -292,6 +297,9 @@ fn apply_stored(pu: &mut PrintUi, v: &Value) {
     }
     if let Some(u) = v.get("units").and_then(|u| serde_json::from_value::<Unit>(u.clone()).ok()) {
         pu.units = u;
+    }
+    if let Some(on) = v.get("infoOverlay").and_then(Value::as_bool) {
+        pu.info_overlay = on;
     }
 }
 
@@ -375,6 +383,7 @@ fn state_json(app: &mut LccApp) -> Value {
         "pages": pages,
         "photos": photos,
         "error": err,
+        "infoOverlay": pu.info_overlay,
         "guides": {"rulers": pu.rulers, "margins": pu.margins, "cells": pu.cells, "bleed": pu.bleed, "dimensions": pu.dimensions, "units": pu.units},
         "selectedCell": pu.selected,
         "printer": pu.printer_uri,
@@ -651,6 +660,10 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 _ => app.print.page,
             };
             app.print.page = want.min(n - 1);
+        }
+        "printui.infoOverlay" => {
+            let pu = &mut app.print;
+            pu.info_overlay = p.get("on").and_then(Value::as_bool).unwrap_or(!pu.info_overlay);
         }
         "printui.guides" => {
             let pu = &mut app.print;
@@ -1909,6 +1922,38 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
         t.font(11.0),
         t.text_dim,
     );
+    if app.print.info_overlay {
+        let rows = info_rows(&app.print, page.size, pi, n);
+        if let Some(r) = crate::overlay::paint(&ui.painter_at(area), &t, area, crate::overlay::Corner::BottomLeft, vec2(0.0, 0.0), &rows) {
+            register(ui.ctx(), "print:info", r);
+        }
+    }
+}
+
+/// The paper's name when it is one of Page Setup's, else its size in the ruler unit.
+fn paper_text(size: lcc_layout::Size, unit: Unit) -> String {
+    let near = |a: f32, b: f32| (a - b).abs() < 0.6;
+    if let Some(p) = PAPERS.iter().find(|p| (near(p.size.w, size.w) && near(p.size.h, size.h)) || (near(p.size.w, size.h) && near(p.size.h, size.w))) {
+        return crate::i18n::tr(p.label).to_string();
+    }
+    let per = unit.per_inch() as f32 / 72.0;
+    format!("{:.2} × {:.2} {}", size.w * per, size.h * per, unit.label())
+}
+
+/// The info overlay's rows: paper, printer, page `page` (0-based) of `pages`, and the resolution.
+pub fn info_rows(pu: &PrintUi, size: lcc_layout::Size, page: usize, pages: usize) -> Vec<crate::overlay::Row> {
+    use crate::overlay::Row;
+    let printer = if pu.printer_uri.trim().is_empty() {
+        crate::i18n::tr("Print to PDF").to_string()
+    } else {
+        pu.printers.iter().find(|p| p.uri == pu.printer_uri).map_or_else(|| pu.printer_uri.clone(), |p| p.name.clone())
+    };
+    vec![
+        Row::text(format!("{}: {}", crate::i18n::tr("Paper"), paper_text(size, pu.units))),
+        Row::text(format!("{}: {printer}", crate::i18n::tr("Printer"))),
+        Row::text(crate::i18n::tr_format!("Page {page} of {pages}", page = page + 1, pages = pages)),
+        Row::text(format!("{:.0} ppi", pu.settings.job.dpi)),
+    ]
 }
 
 /// The photo's thumbnail placed in its cell as the print will place it.
@@ -2145,6 +2190,33 @@ mod tests {
         std::fs::write(dir.join("print.json"), b"{not json").unwrap();
         let mut broken = open();
         assert!(broken.run("printui.state", json!({})).unwrap()["userTemplates"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn info_overlay_toggles_persists_and_describes_the_page() {
+        let dir = std::env::temp_dir().join(format!("lcc-print-info-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = || {
+            let mut s = lcc_engine::Session::with_demo();
+            s.remote.connections_path = Some(dir.join("connections.json"));
+            LccApp::new(s, crate::Services::default())
+        };
+        let mut app = open();
+        assert_eq!(crate::menubar::checked(&app, "printui.infoOverlay"), Some(false));
+        app.run("printui.infoOverlay", json!({})).unwrap();
+        assert_eq!(crate::menubar::checked(&app, "printui.infoOverlay"), Some(true));
+        assert_eq!(app.run("printui.state", json!({})).unwrap()["infoOverlay"], true);
+        app.run("printui.set", json!({"settings": {"job": {"dpi": 200}}})).unwrap();
+        let mut again = open();
+        assert_eq!(again.run("printui.state", json!({})).unwrap()["infoOverlay"], true, "kept in print.json for the next session");
+        let rows: Vec<String> = info_rows(&app.print, lcc_layout::Size::new(612.0, 792.0), 1, 3).into_iter().map(|r| r.text).collect();
+        assert!(rows.iter().any(|t| t.contains('2') && t.contains('3')), "page 2 of 3: {rows:?}");
+        assert!(rows.iter().any(|t| t.contains("US Letter")), "{rows:?}");
+        assert!(rows.iter().any(|t| t.ends_with("ppi")), "{rows:?}");
+        app.run("printui.infoOverlay", json!({"on": false})).unwrap();
+        assert!(!app.print.info_overlay);
         let _ = std::fs::remove_dir_all(dir);
     }
 
