@@ -375,6 +375,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // Android: the photos in DCIM/Camera, through the media store (Settings ▸ Folders)
     ("file.addCameraRoll", "Import Camera Roll…", None, ""),
     ("file.findMissing", "Find Missing Photos…", None, "Library"),
+    ("library.validateDng", "Validate DNG Files", None, ""),
     ("file.backupLibrary", "Back Up Catalog…", None, "File>Libraries"),
     ("file.restoreLibrary", "Restore Catalog from Backup…", None, "File>Libraries"),
     ("photo.locate", "Locate Missing File…", None, ""),
@@ -2773,6 +2774,58 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 };
             }
             Ok(json!({"background": true}))
+        }
+        "library.validateDng" => {
+            // Library ▸ Validate DNG Files: the selection's DNGs have their raw-image digest recomputed on a worker
+            // thread (cancel from the activity row); the answer is a dialog listing the damaged and unverifiable files
+            const LABEL: &str = "Validate DNG Files";
+            let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+            if app.tasks.is_running(LABEL) {
+                return Some(Err("Validate DNG Files is already running".into()));
+            }
+            let ids = match app.session.targets(p) {
+                Ok(ids) => ids,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let targets = lcc_engine::dng_validate::dng_targets(&app.session, &ids);
+            if targets.is_empty() {
+                return Some(Err("Validate DNG Files: no DNG files in the selection".into()));
+            }
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            let total = targets.len() as u64;
+            let work = move |task: lcc_engine::activity::TaskHandle| {
+                task.progress(0, total);
+                lcc_engine::dng_validate::validate(&targets, &worker_cancel, &|done| task.progress(done as u64, total))
+            };
+            let done = |app: &mut LccApp, _ctx: &egui::Context, r: lcc_engine::dng_validate::DngReport| {
+                let summary = crate::i18n::tr_format!(
+                    "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified",
+                    checked = r.checked,
+                    total = r.total,
+                    intact = r.intact,
+                    damaged = r.damaged.len(),
+                    unverifiable = r.unverifiable.len()
+                );
+                let lines = |v: &[(String, String)]| v.iter().map(|(name, why)| format!("{name}: {why}")).collect::<Vec<_>>();
+                app.ui.last_dng_validation = Some(r.to_json());
+                app.ui.dialog = Some(Dialog::DngValidation { summary, damaged: lines(&r.damaged), unverifiable: lines(&r.unverifiable) });
+            };
+            app.ui.last_dng_validation = None;
+            if let Err(e) = crate::tasks::spawn_tracked(app, LABEL, "validateDng", cancel, work, done) {
+                return Some(Err(e));
+            }
+            if wait {
+                let ctx = app.tasks.repaint.clone().unwrap_or_default();
+                if !crate::tasks::wait_for(app, &ctx, LABEL, std::time::Duration::from_secs(600)) {
+                    return Some(Err("Validate DNG Files: still running (it continues in the background)".into()));
+                }
+                return match app.ui.last_dng_validation.clone() {
+                    Some(v) => Some(Ok(v)),
+                    None => Some(Err("Validate DNG Files: worker terminated unexpectedly".into())),
+                };
+            }
+            Ok(json!({"background": true, "total": total}))
         }
         "photo.tagFromTracklog" => {
             // a GPX file → GPS for the selected photos by capture time (one undo step)

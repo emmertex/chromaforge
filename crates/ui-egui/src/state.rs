@@ -1820,6 +1820,9 @@ pub struct UiState {
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
+    /// The report of the last Validate DNG Files (`dng.validate`'s answer; it runs in the background).
+    #[serde(skip)]
+    pub last_dng_validation: Option<serde_json::Value>,
     /// The outcome (success or error) of the last Find Missing Photos task.
     #[serde(skip)]
     pub last_find_missing_result: Option<Result<serde_json::Value, String>>,
@@ -2092,6 +2095,13 @@ pub enum Dialog {
     },
     SystemInfo {
         rows: Vec<(String, String)>,
+    },
+    /// Library ▸ Validate DNG Files: what the check found (it runs in the background). `damaged` and `unverifiable`
+    /// hold `name: why` lines.
+    DngValidation {
+        summary: String,
+        damaged: Vec<String>,
+        unverifiable: Vec<String>,
     },
     /// Help ▸ Check for Updates…: the release feed's answer, the download and the install
     /// (the panel state lives in the session's updater; see [`crate::panels::update`]).
@@ -2650,6 +2660,7 @@ impl Default for UiState {
             reference: None,
             toasts: Vec::new(),
             toast_action: None,
+            last_dng_validation: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]

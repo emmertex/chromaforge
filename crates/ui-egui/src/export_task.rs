@@ -283,6 +283,9 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             #[cfg(not(target_arch = "wasm32"))]
             let destination = task.plugin_destination.clone();
             app.export = None;
+            if let Ok((files, _, _)) = &r {
+                lcc_engine::export::mark_exported(&mut app.session, files);
+            }
             // Photos refused (permission, not installed…): leave the way out on screen longer
             let photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
             let msg = match r {

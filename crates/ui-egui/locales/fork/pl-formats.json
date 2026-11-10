@@ -27,6 +27,7 @@
   "Capture One import failed: {e}{warning}": "Import z Capture One nieudany: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Sprawdzanie katalogu Capture One nieudane: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Wzornik · szarości ok. {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Sprawdzono {checked} z {total} plików DNG: {intact} w porządku, {damaged} uszkodzonych, {unverifiable} niemożliwych do zweryfikowania",
   "Collection imported: {n} photos found, {m} not in this catalog": "Zaimportowano kolekcję: znaleziono zdjęć: {n}, poza tym katalogiem: {m}",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Koszt: około ${usd} za żądania ({}), naliczany przez {name} na Twoje konto.",
   "Create Folder in “{name}”": "Utwórz folder w „{name}”",

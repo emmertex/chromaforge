@@ -24,6 +24,7 @@
   "Capture One import failed: {e}{warning}": "Ошибка импорта из Capture One: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Ошибка проверки Capture One: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Мишень · серые около {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Проверено файлов DNG: {checked} из {total}. Целых: {intact}, повреждённых: {damaged}, непроверяемых: {unverifiable}",
   "Collection imported: {n} photos found, {m} not in this catalog": "Коллекция импортирована: найдено фото: {n}, нет в каталоге: {m}",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Цветовое пространство: Rec. 2020 {curve} (HDR AVIF)",
   "Create Folder in “{name}”": "Создать папку в «{name}»",

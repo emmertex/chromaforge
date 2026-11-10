@@ -122,10 +122,11 @@ fn the_job_file_is_the_catalog_at_the_top_of_file() {
 fn a_coming_soon_item_is_greyed_and_does_nothing() {
     let mut a = app();
     let all = items(&menu_bar(&a));
-    let (_, n) = find(&all, "soon.autoImportEnable").expect("Enable Auto Import in File");
+    let first = COMING_SOON.first().expect("at least one Coming soon item left");
+    let (_, n) = find(&all, first.id).expect("a Coming soon item is placed in a menu");
     assert!(matches!(n, MenuNode::Item { enabled: false, .. }), "{n:?}");
-    assert_eq!(label_of(n), "Enable Auto Import");
-    assert!(!crate::menus::ui_enabled(&a, "soon.autoImportEnable"));
+    assert_eq!(label_of(n), first.label);
+    assert!(!crate::menus::ui_enabled(&a, first.id));
     // every greyed item of every module, run from the menu or by id, changes nothing
     let before = (a.session.undo.len(), a.ui.module, a.session.selection.ids.clone(), a.ui.dialog.is_some());
     for c in COMING_SOON {
