@@ -986,6 +986,32 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"path": path, "label": label}))
             }
         ),
+        // the Advanced Search panel's structured query (issue #846): lowered into a Filter here, so the
+        // grid shows its results as any other filtered view
+        cmd!(
+            "library.advancedSearch",
+            "Advanced Search",
+            ["Library"],
+            None,
+            "{query?: AdvancedSearch | null}: run the Advanced Search panel's structured query (global words; file/album/tags; item properties: dimensions, rating, color label, aspect; caption/title; photograph info: camera, lens, focal length, ISO, shutter speed, aperture; location; audio/video duration; face count and people) and show its results in the grid; null or an absent query clears it → {count}",
+            always,
+            |s, p| {
+                match p.get("query") {
+                    None | Some(Value::Null) => s.filter = Default::default(),
+                    Some(q) => {
+                        let query: lcc_catalog::advanced_search::AdvancedSearch =
+                            serde_json::from_value(q.clone()).map_err(|e| bad("library.advancedSearch", e.to_string()))?;
+                        let f = query.to_filter().map_err(|e| bad("library.advancedSearch", e))?;
+                        if f.album.is_some_and(|a| s.catalog.album(a).is_none()) {
+                            return Err(bad("library.advancedSearch", "no such collection"));
+                        }
+                        s.filter = f;
+                    }
+                }
+                s.shelved_filter = None;
+                Ok(json!({"count": s.visible().len()}))
+            }
+        ),
         cmd!("library.clearFilter", "Clear Filters", ["Library", "Filters"], None, "{}", always, |s, _| {
             s.filter = Default::default();
             s.shelved_filter = None;
@@ -3243,3 +3269,7 @@ mod hide_rejected_tests;
 #[cfg(test)]
 #[path = "library/tests_source_history.rs"]
 mod source_history_tests;
+
+#[cfg(test)]
+#[path = "library/tests_advanced_search.rs"]
+mod advanced_search_tests;

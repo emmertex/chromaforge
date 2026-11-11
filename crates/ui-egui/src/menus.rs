@@ -187,7 +187,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("local.hide", "Remove from Favorites", None, ""),
     ("local.restoreHidden", "Show Hidden Favorites", None, ""),
     ("view.fullScreenPreview", "Full Screen Preview", Some("F"), "Window>Screen Mode"),
-    ("view.enterFullScreen", "Enter Full Screen", Some("Cmd+Shift+F"), "Window>Screen Mode"),
+    // Cmd+Shift+F is the Advanced Search (issue #846); full screen is F11, or Cmd+Ctrl+F as the
+    // macOS system key (the aliases below)
+    ("view.enterFullScreen", "Enter Full Screen", None, "Window>Screen Mode"),
     ("view.infoOverlay", "Cycle Info Overlay", Some("Cmd+I"), "View>Loupe Info"),
     ("view.shotInfo", "Shot Info", Some("Shift+I"), "View>Loupe Info"),
     ("view.lockZoomPosition", "Lock Zoom Position", Some("Cmd+Shift+="), "View>Zoom"),
@@ -336,6 +338,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("dialog.syncCopies", "Sync Copies…", None, ""),
     ("dialog.syncSnapshots", "Sync Snapshots…", None, ""),
     ("view.focusSearch", "Find…", Some("Cmd+F"), "Library"),
+    ("dialog.advancedSearch", "Advanced Search…", Some("Cmd+Shift+F"), "Library"),
     ("dialog.import", "Import…", Some("Cmd+Shift+I"), "File"),
     ("file.export", "Export…", None, "File"),
     ("dialog.export", "Export Dialog…", None, ""),
@@ -2334,6 +2337,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.focusSearch" => {
             // the search field lives in the top bar of the library and detail views alike
             app.ui.focus_search = true;
+            Ok(Value::Null)
+        }
+        "dialog.advancedSearch" => {
+            app.ui.dialog = Some(Dialog::AdvancedSearch { search: Default::default() });
             Ok(Value::Null)
         }
         "dialog.syncSettings" => {
