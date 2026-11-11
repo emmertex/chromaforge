@@ -214,3 +214,60 @@ fn the_settings_section_is_drawn() {
     assert!(h.app.widgets.iter().any(|(w, _)| w == "button:settingsPrepScope-develop-0"));
     assert_eq!(h.app.session.prep_settings().culling.ahead, 10);
 }
+
+/// A background build that didn't run to its end (the library's `prefs.json` says so) is taken up
+/// again in the grid, with no photo opened in the loupe: it could only start there, after three
+/// photos stepped through, so a library left mid-build was never finished (upstream #3947).
+#[test]
+fn an_unfinished_background_build_is_taken_up_again_in_the_grid() {
+    let root = std::env::temp_dir().join(format!("lcc-prep-resume-grid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let paths: Vec<String> = (0..3usize)
+        .map(|n| {
+            let img = lcc_raster::Rgba8::from_fn(600, 400, |x, y| [((x + n) % 251) as u8, (y % 241) as u8, (n * 40) as u8, 255]);
+            let options = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
+            let bytes = lcc_engine::export::encode_image(&img, &options).unwrap();
+            let path = root.join("shoot").join(format!("p{n}.png"));
+            std::fs::create_dir_all(root.join("shoot")).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    let mut session = lcc_engine::Session::new().with_fs();
+    session.open_library(root.join("lib"), false).unwrap();
+    session.execute("library.import", &json!({"paths": paths})).unwrap();
+    let mut h = Headless::new(LccApp::new(session, Services { png: None, ..Default::default() }), [1000.0, 700.0], 1.0);
+    h.settle(SETTLE);
+    // the grid, with no edit tool open (the Library mode)
+    ask(&mut h, "ui.set", json!({"view": "photoGrid", "right": "none"}));
+    for _ in 0..5 {
+        h.step();
+    }
+    assert!(h.app.session.preview_build.is_none(), "nothing unfinished: the grid starts nothing");
+    // (as read from prefs.json when the library opened; no wait for the view to be still)
+    h.app.session.prep.unfinished = true;
+    h.app.session.prep.settle = Some(Duration::ZERO);
+    h.app.session.prep.not_before = None;
+    for _ in 0..10 {
+        h.step();
+    }
+    let state = format!(
+        "mode={:?} wake={:?} prep={:?} fg={}",
+        crate::panels::detail::prep_mode(&h.app),
+        h.app.session.prep_wake_in(),
+        h.app.session.prep,
+        lcc_engine::prep::foreground_busy()
+    );
+    let build = h.app.session.preview_build.clone().unwrap_or_else(|| panic!("the unfinished build is taken up again: {state}"));
+    assert!(build.background);
+    assert_eq!(build.total, 3, "the photos in view");
+    // its workers stop before their library is removed under them
+    build.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let until = std::time::Instant::now() + T;
+    while build.running() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!build.running(), "a cancelled build stops");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -1116,6 +1116,11 @@ impl LccApp {
         } else if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
+        // an unfinished build is taken up again once the view has been still, also when nothing
+        // else draws a frame
+        if let Some(wait) = self.session.prep_wake_in() {
+            ctx.request_repaint_after(wait);
+        }
     }
 
     /// Whether a picture was missing in frame `pass` or the one before.

@@ -59,6 +59,36 @@ fn number(r: &Row, k: &str) -> i64 {
 pub(crate) fn number_for_job(r: &Row, k: &str) -> i64 {
     number(r, k)
 }
+/// The photo a side-table row (develop settings, XMP, keywords, history, snapshots, collection members) belongs to:
+/// its `image` as a whole number, or `None` when that is missing, NULL, text or a fraction. [`number`] would read
+/// those as 0, giving the row to a photo whose `id_local` is 0, and 2.5 as 2, giving it to photo 2.
+fn image_of(r: &Row) -> Option<i64> {
+    let n = r.get("image")?.as_number()?;
+    let f = n.as_f64()?;
+    // An integer goes through f64 as [`number`] takes a photo's `id_local`, so a row and its photo get the same key
+    // past 2^53 too (read exactly, the row would miss its rounded photo and be lost without a warning).
+    if n.is_i64() {
+        return Some(f as i64);
+    }
+    // (2^63 is the first value past i64::MAX; a cast would saturate onto a real id)
+    (f.fract() == 0.0 && f >= i64::MIN as f64 && f < 9_223_372_036_854_775_808.0).then_some(f as i64)
+}
+/// `rows` of `table` with the photo each belongs to ([`image_of`]). Rows that name no photo are left out, with one
+/// warning for the table.
+fn by_image(table: &str, rows: Vec<Row>, warnings: &mut Vec<String>) -> Vec<(i64, Row)> {
+    let total = rows.len();
+    let keyed: Vec<_> = rows.into_iter().filter_map(|r| Some((image_of(&r)?, r))).collect();
+    warn_unkeyed(table, total - keyed.len(), "skipped", warnings);
+    keyed
+}
+/// One warning for the `count` rows of `table` whose `image` names no photo; `outcome` says what became of them.
+fn warn_unkeyed(table: &str, count: usize, outcome: &str, warnings: &mut Vec<String>) {
+    match count {
+        0 => {}
+        1 => warnings.push(format!("{table}: 1 record {outcome}; its image is not a photo id")),
+        n => warnings.push(format!("{table}: {n} records {outcome}; their image is not a photo id")),
+    }
+}
 fn key(path: &str) -> String {
     let p = path.replace('\\', "/");
     if cfg!(windows) { p.to_lowercase() } else { p }
@@ -187,7 +217,13 @@ impl Reader {
         let mut decoding = Vec::new();
         let mut left = budget;
         let mut over_budget = 0usize;
+        let mut unkeyed = 0usize;
         let read = self.each_row(name, false, false, cancel, |mut r, blobs| {
+            // a row that names no photo is left out (one warning for the table), not given to photo 0
+            let Some(image) = image_of(&r) else {
+                unkeyed += 1;
+                return Ok(());
+            };
             if let Some((settings, what, _)) = compressed {
                 for (column, bytes) in blobs.into_iter().filter(|(column, _)| *column == settings) {
                     // charged at its declared length before it is inflated (which never goes past that length), so
@@ -203,11 +239,11 @@ impl Reader {
                         Ok(text) => {
                             r.insert(column.to_string(), Value::String(text));
                         }
-                        Err(why) => decoding.push(format!("image {}: {what} {}: {why}", number(&r, "image"), number(&r, "id_local"))),
+                        Err(why) => decoding.push(format!("image {image}: {what} {}: {why}", number(&r, "id_local"))),
                     }
                 }
             }
-            out.entry(number(&r, "image")).or_default().push(r);
+            out.entry(image).or_default().push(r);
             Ok(())
         });
         if let Err(error) = read {
@@ -215,6 +251,7 @@ impl Reader {
             out.clear();
             return Ok(out);
         }
+        warn_unkeyed(name, unkeyed, "skipped", warnings);
         warnings.extend(decoding);
         if let (Some((_, one, many)), 1..) = (compressed, over_budget) {
             let what = if over_budget == 1 { one } else { many };
@@ -227,7 +264,7 @@ impl Reader {
     /// Streamed, a row at a time and none kept: only a wanted image's step is decoded, and each is bounded on its own.
     fn as_shot_whites(&self, wanted: &HashSet<i64>, cancel: &AtomicBool, out: &mut HashMap<i64, (f64, f64)>) -> Result<(), String> {
         self.each_row("Adobe_libraryImageDevelopHistoryStep", false, false, cancel, |r, blobs| {
-            let image = number(&r, "image");
+            let Some(image) = image_of(&r) else { return Ok(()) };
             if !wanted.contains(&image) {
                 return Ok(());
             }
@@ -244,16 +281,22 @@ impl Reader {
 
     /// `Adobe_imageDevelopSettings`, streamed into image id -> settings text. The photos' edits come from here, so a
     /// failure to read it fails the import rather than quietly bringing every photo in unedited.
-    fn develop_settings(&self, cancel: &AtomicBool) -> Result<HashMap<i64, String>, String> {
+    fn develop_settings(&self, cancel: &AtomicBool, warnings: &mut Vec<String>) -> Result<HashMap<i64, String>, String> {
         let mut out = HashMap::new();
-        self.each_row("Adobe_imageDevelopSettings", false, false, cancel, |r, _| {
+        let mut unkeyed = 0usize;
+        let read = self.each_row("Adobe_imageDevelopSettings", false, false, cancel, |r, _| {
+            let Some(image) = image_of(&r) else {
+                unkeyed += 1;
+                return Ok(());
+            };
             let settings = text(&r, "text");
             if !settings.is_empty() {
-                out.insert(number(&r, "image"), settings.to_string());
+                out.insert(image, settings.to_string());
             }
             Ok(())
-        })
-        .map_err(|e| {
+        });
+        warn_unkeyed("Adobe_imageDevelopSettings", unkeyed, "skipped", warnings);
+        read.map_err(|e| {
             if cancel.load(Ordering::Relaxed) {
                 e
             } else {
@@ -275,8 +318,12 @@ impl Reader {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
         let mut xmp_total = 0usize;
-        self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
-            let image = number(&r, "image");
+        let mut unkeyed = 0usize;
+        let read = self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
+            let Some(image) = image_of(&r) else {
+                unkeyed += 1;
+                return Ok(());
+            };
             let blobs_had_xmp = blobs.iter().any(|(column, _)| *column == "xmp");
             for (column, bytes) in blobs {
                 if column != "xmp" {
@@ -308,7 +355,9 @@ impl Reader {
             }
             out.insert(image, r);
             Ok(())
-        })?;
+        });
+        warn_unkeyed("Adobe_AdditionalMetadata", unkeyed, "skipped", &mut warnings);
+        read?;
         Ok((out, warnings))
     }
 }
@@ -776,7 +825,7 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     let folders: HashMap<_, _> = table("AgLibraryFolder", true)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     let files: HashMap<_, _> = table("AgLibraryFile", true)?.into_iter().map(|r| (number(&r, "id_local"), r)).collect();
     ensure_read_active(cancel)?;
-    let develops = reader.develop_settings(cancel)?;
+    let develops = reader.develop_settings(cancel, &mut warnings)?;
     done.fetch_add(1, Ordering::Relaxed);
     ensure_read_active(cancel)?;
     let (metadata, metadata_warnings) = match reader.xmp_table(cancel) {
@@ -797,7 +846,8 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     // each keyword's path is resolved once, however many photos carry it
     let mut paths: HashMap<i64, Option<String>> = HashMap::new();
     let mut keyword_bytes = 0usize;
-    for r in optional_table("AgLibraryKeywordImage", &mut warnings)? {
+    let keyword_images = optional_table("AgLibraryKeywordImage", &mut warnings)?;
+    for (image, r) in by_image("AgLibraryKeywordImage", keyword_images, &mut warnings) {
         ensure_read_active(cancel)?;
         let tag = number(&r, "tag");
         let path = match paths.get(&tag) {
@@ -829,7 +879,7 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
             if keyword_bytes > MAX_KEYWORD_BYTES {
                 return Err("the catalog's keyword assignments together exceed 256 MB".into());
             }
-            keywords.entry(number(&r, "image")).or_default().push(p);
+            keywords.entry(image).or_default().push(p);
         }
     }
     let mut root_paths = HashMap::new();
@@ -862,11 +912,16 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     done.fetch_add(1, Ordering::Relaxed);
     let as_shot_whites = custom_as_shot(&reader, &develops, cancel, &mut warnings);
     ensure_read_active(cancel)?;
+    let collections = optional_table("AgLibraryCollection", &mut warnings)?;
+    // members stay as read (the archive keeps them); the ones that name no photo join no album
+    let members = optional_table("AgLibraryCollectionImage", &mut warnings)?;
+    let unkeyed = members.iter().filter(|m| image_of(m).is_none()).count();
+    warn_unkeyed("AgLibraryCollectionImage", unkeyed, "added to no album", &mut warnings);
     let mut out = CatalogImport {
         source: path.to_string_lossy().into(),
         photos: Vec::new(),
-        collections: optional_table("AgLibraryCollection", &mut warnings)?,
-        members: optional_table("AgLibraryCollectionImage", &mut warnings)?,
+        collections,
+        members,
         collection_content: optional_table("AgLibraryCollectionContent", &mut warnings)?,
         stacks: optional_table("AgLibraryFolderStackImage", &mut warnings)?,
         warnings,
@@ -1388,8 +1443,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
             missing.push(src.path.clone());
         }
         // A refused path must not become a library record the app would look at later; its
-        // virtual copies go with it.
-        if refused.contains(&src.source_id) || refused.contains(&master) {
+        // virtual copies go with it. (`masterImage` is 0 for a master, so a refused id of 0, from
+        // a malformed catalog, must not refuse every master.)
+        if refused.contains(&src.source_id) || (master != 0 && refused.contains(&master)) {
             continue;
         }
         let indexed = index
@@ -1725,12 +1781,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         } else {
             None
         };
-        let members: Vec<PhotoId> = grouped_members
-            .get(&number(collection, "id_local"))
-            .into_iter()
-            .flatten()
-            .filter_map(|r| ids.get(&number(r, "image")).copied())
-            .collect();
+        let members: Vec<PhotoId> =
+            grouped_members.get(&number(collection, "id_local")).into_iter().flatten().filter_map(|r| ids.get(&image_of(r)?).copied()).collect();
         // Reimport branches on the existing album's kind: its name/hierarchy and (for a smart album)
         // its possibly user-edited rules are kept; a regular album only gains new members.
         let existing = s.catalog.album(id).map(|a| (a.folder, a.is_smart(), a.photos.clone()));
@@ -1895,7 +1947,7 @@ fn leads_to(
 fn stack_ops(s: &mut crate::Session, data: &CatalogImport, ids: &HashMap<i64, PhotoId>, ops: &mut Vec<Op>, warnings: &mut Vec<String>) -> usize {
     let mut groups: BTreeMap<i64, Vec<(f64, PhotoId, bool)>> = BTreeMap::new();
     for r in &data.stacks {
-        let Some(photo) = ids.get(&number(r, "image")).copied() else { continue };
+        let Some(photo) = image_of(r).and_then(|image| ids.get(&image).copied()) else { continue };
         let position = r.get("position").and_then(Value::as_f64).filter(|p| p.is_finite()).unwrap_or(f64::MAX);
         groups.entry(number(r, "stack")).or_default().push((position, photo, number(r, "collapsed") != 0));
     }
@@ -2320,6 +2372,89 @@ pub(crate) mod tests {
         let warnings = r["warnings"].to_string();
         assert!(warnings.contains("payload.exe") && warnings.contains("file types the app reads"), "{warnings}");
         assert!(warnings.contains("image 4: not imported"), "the virtual copy of the refused original goes with it: {warnings}");
+    }
+
+    /// `sample()` (or its master alone) plus a photo `id` whose original is refused, and the
+    /// import's report.
+    fn import_with_refused(with_copy: bool, id: i64) -> (crate::Session, Value) {
+        let mut data = sample();
+        if !with_copy {
+            data.photos.retain(|p| number(&p.image, "masterImage") == 0);
+            data.members.retain(|m| number(m, "image") != 2);
+        }
+        let mut far = data.photos[data.photos.len() - 1].clone();
+        far.source_id = id;
+        far.uuid = format!("image-{id}");
+        far.path = "//server/share/far.ARW".into();
+        far.image = row(json!({"id_local": id, "fileFormat": "ARW"}));
+        far.original = Original::Refused("it is on another computer".into());
+        data.photos.push(far);
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, data, false).unwrap_or_else(|e| panic!("with_copy {with_copy}, refused id {id}: {e:?}"));
+        (s, r)
+    }
+
+    /// The sample's master (rating 5) has its catalog record, its virtual copy (rating 2) has one when
+    /// `with_copy`, and no record is the refused photo's.
+    fn assert_only_the_sample_imported(s: &crate::Session, r: &Value, with_copy: bool) {
+        let mut mapped: Vec<_> = r["mapping"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+        mapped.sort();
+        let kept: &[&str] = if with_copy { &["1", "2"] } else { &["1"] };
+        assert_eq!(mapped, kept, "the sample's master (and its copy) are imported: {r}");
+        assert_eq!(s.catalog.len(), kept.len(), "{r}");
+        let master = s.catalog.photos().find(|p| p.copy_of.is_none()).unwrap_or_else(|| panic!("no master record: {r}"));
+        assert!(matches!(&master.source, Source::File { path } if path == "/missing/test.ARW"), "{:?}", master.source);
+        assert_eq!(master.rating, 5, "the master's catalog data arrived");
+        let copies: Vec<_> = s.catalog.photos().filter(|p| p.copy_of == Some(master.id)).map(|p| (p.copy_name.clone(), p.rating)).collect();
+        let expected = if with_copy { vec![(Some("Mono".to_string()), 2)] } else { Vec::new() };
+        assert_eq!(copies, expected, "{r}");
+        assert!(
+            s.catalog.photos().all(|p| !matches!(&p.source, Source::File { path } if path.ends_with("far.ARW"))),
+            "the refused photo became a record"
+        );
+    }
+
+    /// A refused photo whose id reads as 0 (a malformed catalog) refuses only itself: `masterImage`
+    /// is 0 for every master, so every master was skipped with it and got no catalog record.
+    #[test]
+    fn a_refused_photo_with_id_zero_refuses_only_itself() {
+        let (s, r) = import_with_refused(false, 0);
+        assert_only_the_sample_imported(&s, &r, false);
+        assert!(r["missing"].as_array().is_some_and(|m| m.contains(&json!("//server/share/far.ARW"))), "the refused photo is listed as missing: {r}");
+    }
+
+    /// The same with a virtual copy: its master was skipped, so the copy failed the import with
+    /// "virtual copy 2: missing master".
+    #[test]
+    fn a_refused_photo_with_id_zero_leaves_other_virtual_copies_their_master() {
+        let (s, r) = import_with_refused(true, 0);
+        assert_only_the_sample_imported(&s, &r, true);
+    }
+
+    /// A virtual copy of a refused original has no original of its own, so it is refused with it,
+    /// even when the catalog gives the copy a path of its own that isn't refused.
+    #[test]
+    fn a_virtual_copy_of_a_refused_original_is_refused_with_it() {
+        let mut data = sample();
+        let mut far = data.photos[1].clone();
+        far.source_id = 3;
+        far.uuid = "image-3".into();
+        far.path = "//server/share/far.ARW".into();
+        far.image = row(json!({"id_local": 3, "fileFormat": "ARW"}));
+        far.original = Original::Refused("it is on another computer".into());
+        let mut far_copy = far.clone();
+        far_copy.source_id = 4;
+        far_copy.uuid = "image-4".into();
+        far_copy.image = row(json!({"id_local": 4, "masterImage": 3, "copyName": "Far copy"}));
+        far_copy.path = "/missing/far-copy.ARW".into();
+        far_copy.original = Original::Local;
+        // the copy comes before its master, as a catalog's table order may have it
+        data.photos.insert(0, far_copy);
+        data.photos.push(far);
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, data, false).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_only_the_sample_imported(&s, &r, true);
+        assert!(s.catalog.photos().all(|p| p.copy_name.as_deref() != Some("Far copy")), "the refused original's copy became a record: {r}");
     }
 
     #[test]
@@ -3313,7 +3448,10 @@ pub(crate) mod tests {
                     body.extend(n.to_be_bytes());
                     7
                 }
-                _ => panic!("unexpected SqlValue in a test record: {value:?}"),
+                SqlValue::Blob(b) => {
+                    body.extend(b);
+                    12 + 2 * b.len() as u64
+                }
             };
             header.extend(varint(serial));
         }
@@ -5146,5 +5284,169 @@ pub(crate) mod tests {
         assert_eq!(s.catalog.photo(plain).unwrap().develop.light.exposure, 1.5, "Lightroom's settings apply");
         // (this test's imports keep no index, so the virtual copy comes in again as a new photo)
         assert_eq!(r["preservedExistingEdits"], 1, "only the master, imported with settings, keeps them: {r}");
+    }
+
+    /// A side-table row whose `image` is missing, NULL, text or not a whole number names no photo. It used to read as
+    /// photo 0 (or 2.5 as photo 2), so a catalog with a photo whose `id_local` is 0 gave that photo other rows' keywords,
+    /// develop settings, XMP, history, snapshots and album membership. Such rows are left out with a warning per table;
+    /// the rows that name photo 0 still go to it. Every table is checked before the test fails, so each one shows.
+    #[test]
+    fn side_table_rows_without_a_photo_id_go_to_no_photo() {
+        use SqlValue::{Integer as I, Null as N, Real as R, Text as T};
+        let dir = std::env::temp_dir().join(format!("lrcat-side-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("side.lrcat");
+        let mut tables = one_row(photo_tables(("/catalog/", "")));
+        tables[2].2.push(vec![I(2), I(1), T("two.ARW".into())]);
+        tables[3].2 = vec![
+            vec![I(0), T("zero".into()), I(1), T("ARW".into()), I(20), I(10), I(1), I(0)],
+            vec![I(2), T("two".into()), I(2), T("ARW".into()), I(20), I(10), I(2), I(0)],
+        ];
+        let xmp = |title: &str| {
+            T(format!(
+                "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+                 <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title><rdf:Alt>\
+                 <rdf:li xml:lang=\"x-default\">{title}</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>"
+            ))
+        };
+        // each table: photo 0's own row first, then rows that name no photo (a later row for the same key used to win)
+        tables.extend([
+            (
+                "Adobe_imageDevelopSettings",
+                "id_local INTEGER PRIMARY KEY, image, text",
+                vec![vec![N, I(0), T("s = { Exposure2012 = 0.5 }".into())], vec![N, N, T("s = { Exposure2012 = 1.75 }".into())]],
+            ),
+            (
+                "Adobe_AdditionalMetadata",
+                "id_local INTEGER PRIMARY KEY, image, xmp",
+                vec![vec![N, I(0), xmp("Own title")], vec![N, T("x".into()), xmp("Stray title")]],
+            ),
+            (
+                "AgLibraryKeyword",
+                "id_local INTEGER PRIMARY KEY, name",
+                ["Own", "Two", "StrayNull", "StrayText", "StrayReal"].iter().map(|k| vec![N, T((*k).into())]).collect(),
+            ),
+            (
+                "AgLibraryKeywordImage",
+                "id_local INTEGER PRIMARY KEY, image, tag",
+                vec![vec![N, I(0), I(1)], vec![N, I(2), I(2)], vec![N, N, I(3)], vec![N, T("abc".into()), I(4)], vec![N, R(2.5), I(5)]],
+            ),
+            (
+                "Adobe_libraryImageDevelopHistoryStep",
+                "id_local INTEGER PRIMARY KEY, image, name",
+                vec![vec![N, I(0), T("Own step".into())], vec![N, N, T("Stray step".into())]],
+            ),
+            (
+                "Adobe_libraryImageDevelopSnapshot",
+                "id_local INTEGER PRIMARY KEY, image, name",
+                vec![vec![N, I(0), T("Own snapshot".into())], vec![N, N, T("Stray snapshot".into())]],
+            ),
+            ("AgLibraryCollection", "id_local INTEGER PRIMARY KEY, name", vec![vec![N, T("Own album".into())], vec![N, T("Stray album".into())]]),
+            ("AgLibraryCollectionImage", "id_local INTEGER PRIMARY KEY, collection, image", vec![vec![N, I(1), I(0)], vec![N, I(2), N]]),
+        ]);
+        std::fs::write(&path, native_catalog_rows(&tables, None)).unwrap();
+        let catalog = read(&path).unwrap();
+        let photo = |id: i64| catalog.photos.iter().find(|p| p.source_id == id).unwrap();
+        let names = |rows: &[Row]| rows.iter().map(|r| text(r, "name").to_string()).collect::<Vec<_>>();
+        let mut wrong = Vec::new();
+        let mut check = |what: &str, ok: bool, got: String| {
+            if !ok {
+                wrong.push(format!("{what}: {got}"));
+            }
+        };
+        check("photo 0 keywords", photo(0).keywords == ["Own"], format!("{:?}", photo(0).keywords));
+        check("photo 0 develop", photo(0).settings == "s = { Exposure2012 = 0.5 }", photo(0).settings.clone());
+        check("photo 0 XMP", photo(0).xmp.contains("Own title") && !photo(0).xmp.contains("Stray"), photo(0).xmp.clone());
+        check("photo 0 history", names(&photo(0).history) == ["Own step"], format!("{:?}", names(&photo(0).history)));
+        check("photo 0 snapshots", names(&photo(0).snapshots) == ["Own snapshot"], format!("{:?}", names(&photo(0).snapshots)));
+        check("photo 2 keywords", photo(2).keywords == ["Two"], format!("{:?}", photo(2).keywords));
+        let expected = [
+            "Adobe_imageDevelopSettings: 1 record skipped; its image is not a photo id",
+            "Adobe_AdditionalMetadata: 1 record skipped; its image is not a photo id",
+            "AgLibraryKeywordImage: 3 records skipped; their image is not a photo id",
+            "Adobe_libraryImageDevelopHistoryStep: 1 record skipped; its image is not a photo id",
+            "Adobe_libraryImageDevelopSnapshot: 1 record skipped; its image is not a photo id",
+            "AgLibraryCollectionImage: 1 record added to no album; its image is not a photo id",
+        ];
+        check("warnings", catalog.warnings == expected, format!("{:?}", catalog.warnings));
+        let mut s = crate::Session::new();
+        let report = s.execute("library.importLightroom", &json!({"path": path})).unwrap();
+        let zero = PhotoId(report["mapping"]["0"].as_u64().unwrap());
+        check("Own album", album_named(&s, "Own album").photos == [zero], format!("{:?}", album_named(&s, "Own album").photos));
+        check("Stray album", album_named(&s, "Stray album").photos.is_empty(), format!("{:?}", album_named(&s, "Stray album").photos));
+        let keywords = &s.catalog.photo(zero).unwrap().meta.keywords;
+        check("imported photo 0 keywords", *keywords == ["Own"], format!("{keywords:?}"));
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A photo's `id_local` is read through f64 ([`number`]), so past 2^53 it is rounded. Its side-table rows are rounded
+    /// the same way and still find it, with no warning, as before this check existed.
+    #[test]
+    fn side_table_rows_find_a_photo_whose_id_is_past_f64_precision() {
+        use SqlValue::{Integer as I, Null as N, Text as T};
+        let dir = std::env::temp_dir().join(format!("lrcat-large-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("large.lrcat");
+        for id in [9_007_199_254_740_993_i64, 1_152_921_504_606_846_977, i64::MAX] {
+            let mut tables = one_row(photo_tables(("/catalog/", "")));
+            tables[3].2 = vec![vec![I(id), T("big".into()), I(1), T("ARW".into()), I(20), I(10), I(1), I(0)]];
+            tables.extend([
+                (
+                    "Adobe_imageDevelopSettings",
+                    "id_local INTEGER PRIMARY KEY, image, text",
+                    vec![vec![N, I(id), T("s = { Exposure2012 = 0.5 }".into())]],
+                ),
+                ("AgLibraryKeyword", "id_local INTEGER PRIMARY KEY, name", vec![vec![N, T("Own".into())]]),
+                ("AgLibraryKeywordImage", "id_local INTEGER PRIMARY KEY, image, tag", vec![vec![N, I(id), I(1)]]),
+                ("Adobe_libraryImageDevelopSnapshot", "id_local INTEGER PRIMARY KEY, image, name", vec![vec![N, I(id), T("Own snapshot".into())]]),
+                ("AgLibraryCollection", "id_local INTEGER PRIMARY KEY, name", vec![vec![N, T("Own album".into())]]),
+                ("AgLibraryCollectionImage", "id_local INTEGER PRIMARY KEY, collection, image", vec![vec![N, I(1), I(id)]]),
+            ]);
+            std::fs::write(&path, native_catalog_rows(&tables, None)).unwrap();
+            let catalog = read(&path).unwrap();
+            let photo = &catalog.photos[0];
+            assert_eq!(
+                (photo.keywords.as_slice(), photo.settings.as_str(), photo.snapshots.len()),
+                (&["Own".to_string()][..], "s = { Exposure2012 = 0.5 }", 1),
+                "{id}"
+            );
+            assert!(catalog.warnings.is_empty(), "{id}: {:?}", catalog.warnings);
+            let mut s = crate::Session::new();
+            s.execute("library.importLightroom", &json!({"path": path})).unwrap();
+            assert_eq!(album_named(&s, "Own album").photos.len(), 1, "{id}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An XMP packet that can't be decoded is reported under its photo's id; a row that names no photo is left out with the
+    /// table's warning, not reported as photo 0's.
+    #[test]
+    fn an_undecodable_xmp_packet_is_reported_under_its_own_image() {
+        use SqlValue::{Blob as B, Integer as I, Null as N};
+        let mut tables = one_row(photo_tables(("/catalog/", "")));
+        tables.push((
+            "Adobe_AdditionalMetadata",
+            "id_local INTEGER PRIMARY KEY, image, xmp",
+            vec![vec![N, I(1), B(b"bad".to_vec())], vec![N, N, B(b"bad".to_vec())]],
+        ));
+        let catalog = read_tables(&tables, "xmp-label");
+        assert_eq!(catalog.warnings, ["image 1: truncated XMP header", "Adobe_AdditionalMetadata: 1 record skipped; its image is not a photo id"]);
+    }
+
+    #[test]
+    fn a_side_table_row_names_a_photo_only_by_a_whole_number() {
+        let image = |v: Value| image_of(&row(json!({"image": v})));
+        assert_eq!(image(json!(2)), Some(2));
+        assert_eq!(image(json!(0)), Some(0));
+        assert_eq!(image(json!(2.0)), Some(2));
+        assert_eq!(image(json!(-3)), Some(-3));
+        // as `number` reads a photo's `id_local`: rounded through f64, saturating at i64::MAX
+        assert_eq!(image(json!(9_007_199_254_740_993_i64)), Some(9_007_199_254_740_992));
+        assert_eq!(image(json!(i64::MAX)), Some(i64::MAX));
+        for bad in [json!(null), json!(2.5), json!("2"), json!(1e19), json!(-1e19), json!(u64::MAX)] {
+            assert_eq!(image(bad.clone()), None, "{bad}");
+        }
+        assert_eq!(image_of(&row(json!({"tag": 1}))), None);
     }
 }

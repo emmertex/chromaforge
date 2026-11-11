@@ -591,6 +591,353 @@ fn the_background_build_leaves_the_photo_on_screen_to_the_loupe() {
     assert_eq!(queue[i].take(), Some(19));
 }
 
+fn same_build(s: &Session, b: &std::sync::Arc<crate::cmd::previews::PreviewBuild>) -> bool {
+    s.preview_build.as_ref().is_some_and(|p| std::sync::Arc::ptr_eq(p, b))
+}
+
+type Build = std::sync::Arc<crate::cmd::previews::PreviewBuild>;
+
+/// Whether the library's `prefs.json` says a background build is unfinished (`prepUnfinished`).
+fn marked_unfinished(root: &Path) -> bool {
+    let prefs = std::fs::read(root.join("lib").join("prefs.json")).unwrap_or_default();
+    let prefs: serde_json::Value = serde_json::from_slice(&prefs).unwrap_or_default();
+    prefs["prepUnfinished"].as_bool().unwrap_or(false)
+}
+
+/// Ticks from the grid (no photo in the loupe) until a preview build other than `old` is the
+/// session's, for up to 12 s.
+fn build_after(s: &mut Session, old: &Build) -> Option<Build> {
+    for _ in 0..600 {
+        s.prep_tick(Mode::Library, None, false);
+        if let Some(b) = s.preview_build.clone().filter(|b| !std::sync::Arc::ptr_eq(b, old)) {
+            return Some(b);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    None
+}
+
+/// #3947: a background build stopped because the view changed is taken up again for the view now
+/// shown from the grid, with no photo in the loupe (it started only in the loupe, after three more
+/// photos stepped through, so a sort or an import in the grid ended the preparation for good).
+#[test]
+fn a_build_stopped_by_a_view_change_is_taken_up_again_from_the_grid() {
+    let (mut s, root, ids) = library("prep-resume", 6);
+    let mode = Mode::Library;
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the view is prepared");
+    assert!(b.running() && s.prep.unfinished, "a build that started is unfinished until it has run to its end");
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: ids[5] }).unwrap();
+    s.prep_tick(mode, None, false);
+    assert!(b.cancel.load(Ordering::Relaxed), "the old view's build is stopped, from the grid too");
+    drop(hold);
+    assert!(wait_done(&b), "a cancelled build stops");
+    // the grid only: no photo is opened
+    let next = build_after(&mut s, &b).expect("a build for the view now shown, started from the grid");
+    assert!(next.background);
+    assert_eq!(next.total, 5);
+    next.cancel.store(true, Ordering::Relaxed);
+    // its workers stop before their library is removed under them
+    assert!(wait_done(&next), "a cancelled build stops");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #3947: the app quit while the background build ran: the library says so in its `prefs.json`, and
+/// the next session takes the build up again from the grid. Once it has run to its end nothing is
+/// unfinished, and a third session starts nothing.
+#[test]
+fn an_unfinished_build_is_taken_up_again_after_a_restart() {
+    let (mut s, root, ids) = library("prep-restart", 4);
+    let mode = Mode::Library;
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the view is prepared");
+    assert!(marked_unfinished(&root), "saved when the build starts");
+    // the app quits: the session never sees its build end (the workers are stopped here only
+    // because the test's process lives on)
+    b.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&b));
+    drop(s);
+    drop(hold);
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("lib"), false).unwrap();
+    assert!(s.prep.unfinished, "read with the library");
+    s.prep_tick(mode, None, false);
+    let next = s.preview_build.clone().expect("taken up again from the grid");
+    assert!(next.background);
+    assert_eq!(next.total, 4);
+    assert!(wait_done(&next), "built");
+    assert!(!next.cancel.load(Ordering::Relaxed));
+    assert_eq!(next.done.load(Ordering::Relaxed), 4);
+    s.prep_tick(mode, None, false);
+    assert!(!s.prep.unfinished && !marked_unfinished(&root), "run to its end: nothing is unfinished, and the library says so");
+    s.prep_tick(mode, None, false);
+    assert!(same_build(&s, &next), "not started again");
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("lib"), false).unwrap();
+    for _ in 0..3 {
+        s.prep_tick(mode, None, false);
+    }
+    assert!(s.preview_build.is_none(), "a library with nothing unfinished starts nothing from the grid");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #3947: what an unfinished build still has to do is not stored: the build taken up again asks
+/// photo by photo whether the previews are on disk, skips those, and leaves every photo with its
+/// view render.
+#[test]
+fn a_build_taken_up_again_builds_only_what_is_missing() {
+    let (mut s, root, ids) = library("prep-missing", 6);
+    let r = s.execute("library.buildPreviews", &json!({"ids": ids_json(&ids[..2]), "wait": true})).unwrap();
+    assert_eq!((r["done"].as_u64(), r["skipped"].as_u64()), (Some(2), Some(0)), "{r}");
+    let asked = s.preview_build.clone().expect("the build asked for");
+    // (as left by a build that didn't run to its end)
+    s.prep.unfinished = true;
+    let b = build_after(&mut s, &asked).expect("taken up again from the grid");
+    assert!(b.background);
+    assert!(wait_done(&b), "built");
+    let counts = (b.total, b.done.load(Ordering::Relaxed), b.skipped.load(Ordering::Relaxed), b.failed.load(Ordering::Relaxed));
+    assert_eq!(counts, (6, 6, 2, 0), "the two built before are skipped, the others built");
+    let edge = crate::cmd::previews::standard_edge(&s);
+    for id in &ids {
+        assert!(has_view(&mut s, *id, edge), "{id:?}: its preview is on disk");
+    }
+    s.prep_tick(Mode::Library, None, false);
+    assert!(!s.prep.unfinished, "run to its end");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Note 36 stands with #3947: a library in which no background build was left unfinished starts
+/// nothing from the grid, nor after fewer than three photos in the loupe.
+#[test]
+fn a_library_with_nothing_unfinished_starts_nothing_from_the_grid() {
+    let (mut s, root, ids) = library("prep-fresh", 4);
+    let mode = Mode::Library;
+    for _ in 0..3 {
+        s.prep_tick(mode, None, false);
+    }
+    s.prep_tick(mode, Some(ids[0]), false);
+    s.prep_tick(mode, Some(ids[1]), false);
+    for _ in 0..3 {
+        s.prep_tick(mode, None, false);
+    }
+    assert!(s.preview_build.is_none(), "nothing starts");
+    assert!(!s.prep.unfinished && !marked_unfinished(&root), "and nothing is noted as unfinished");
+    assert_eq!(s.prep_wake_in(), None, "no frame is asked for");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// #3947: previews switched off and on again while the build ran is not the user stopping the
+/// build: the view is prepared again (it was taken as stopped from the row, and not prepared
+/// again in that session).
+#[test]
+fn switching_previews_off_and_on_is_not_a_stop_by_the_user() {
+    let (mut s, root, ids) = library("prep-toggle", 4);
+    let mode = Mode::Library;
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the view is prepared");
+    assert!(b.running());
+    s.execute("prefs.setBackgroundPrep", &json!({"settings": {"library": {"previews": false}}})).unwrap();
+    s.prep_tick(mode, Some(ids[2]), false);
+    assert!(b.cancel.load(Ordering::Relaxed), "switched off: stopped");
+    s.execute("prefs.setBackgroundPrep", &json!({"settings": {"library": {"previews": true}}})).unwrap();
+    // (on again while the lanes may still be stopping)
+    s.prep_tick(mode, Some(ids[2]), false);
+    drop(hold);
+    assert!(wait_done(&b), "a cancelled build stops");
+    // the same photo in the same view: no further steps
+    let mut next = None;
+    for _ in 0..10 {
+        s.prep_tick(mode, Some(ids[2]), false);
+        next = s.preview_build.clone().filter(|p| !std::sync::Arc::ptr_eq(p, &b));
+        if next.is_some() {
+            break;
+        }
+    }
+    let next = next.expect("the same view is prepared again");
+    assert!(next.background);
+    assert_eq!(next.total, 4);
+    next.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&next), "a cancelled build stops");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #3947 keeps note 48's stop: a build stopped from its row is not started again for that view,
+/// from the grid or the loupe, and is not unfinished: a later session doesn't take it up either.
+#[test]
+fn a_build_stopped_from_its_row_is_not_taken_up_again() {
+    let (mut s, root, ids) = library("prep-stopped", 4);
+    let mode = Mode::Library;
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the view is prepared");
+    assert!(marked_unfinished(&root));
+    // (what the row's ✕ does)
+    s.execute("library.cancelPreviews", &json!({})).unwrap();
+    drop(hold);
+    assert!(wait_done(&b), "a cancelled build stops");
+    for _ in 0..3 {
+        s.prep_tick(mode, None, false);
+    }
+    for id in &ids {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    s.prep_tick(mode, None, false);
+    assert!(same_build(&s, &b), "not started again for this view, from the grid or the loupe");
+    assert!(!s.prep.unfinished && !marked_unfinished(&root), "the user said no: nothing is unfinished");
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(root.join("lib"), false).unwrap();
+    for _ in 0..3 {
+        s.prep_tick(mode, None, false);
+    }
+    assert!(s.preview_build.is_none(), "nor in a later session");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// #3947: an unfinished build is taken up again only once the view has stayed the same for a while
+/// ([`crate::prep::SETTLE_AFTER`]): two changes one after the other (an import's batches, two sorts
+/// tried) start one build, not two, and the app is told when to look again.
+#[test]
+fn a_view_that_keeps_changing_starts_one_build_once_it_is_still() {
+    let (mut s, root, ids) = library("prep-settle", 7);
+    let mode = Mode::Library;
+    // (a wait that ends only when the test says so)
+    let long = std::time::Duration::from_secs(3600);
+    s.prep.settle = Some(long);
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("a view's first build doesn't wait: the steps are its guard");
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: ids[6] }).unwrap();
+    s.prep_tick(mode, None, false);
+    drop(hold);
+    assert!(wait_done(&b), "the old view's build stops");
+    s.prep_tick(mode, None, false);
+    assert!(same_build(&s, &b), "the view just changed: not yet");
+    assert!(s.prep_wake_in().is_some_and(|d| d <= long && d > long / 2), "a frame is asked for when the wait ends");
+    // the wait is over, but the view has changed again: it starts anew
+    s.prep.not_before = Some(web_time::Instant::now());
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: ids[5] }).unwrap();
+    s.prep_tick(mode, None, false);
+    s.prep_tick(mode, None, false);
+    assert!(same_build(&s, &b), "changed again: still no build");
+    assert!(s.prep_wake_in().is_some_and(|d| d > long / 2), "the wait started anew");
+    // the view has been still for long enough
+    s.prep.not_before = Some(web_time::Instant::now());
+    assert_eq!(s.prep_wake_in(), None, "a wait that is over asks for no frame");
+    s.prep_tick(mode, None, false);
+    let next = s.preview_build.clone().filter(|p| !std::sync::Arc::ptr_eq(p, &b)).expect("one build, for the view as it is now");
+    assert!(next.background);
+    assert_eq!(next.total, 5);
+    next.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&next), "a cancelled build stops");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// CodeRabbit on #4093: a view signature is only its photos' ids and their count, so two
+/// libraries can carry the same one. The view guards, waits, and step count the first library
+/// earned must not follow the session into the second: a build that ran to its end there
+/// leaves `started_for` set, and the second library's owed build would never start.
+#[test]
+fn an_unfinished_build_is_taken_up_when_its_library_opens_after_another() {
+    let mode = Mode::Library;
+    // the second library, left by a session whose build did not run to its end
+    let (mut s2, root2, ids2) = library("prep-switch-second", 4);
+    let hold = crate::prep::TestHold::new();
+    for id in &ids2[..3] {
+        s2.prep_tick(mode, Some(*id), false);
+    }
+    let b2 = s2.preview_build.clone().expect("the second library's build started");
+    assert!(marked_unfinished(&root2), "its build is owed");
+    b2.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&b2), "a cancelled build stops");
+    drop(s2);
+    drop(hold);
+    // the first library, in the session that switches: its build runs to its end
+    let (mut s, root, ids) = library("prep-switch-first", 4);
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the first library's view is prepared");
+    assert!(wait_done(&b), "built");
+    s.prep_tick(mode, None, false);
+    assert!(!s.prep.unfinished, "run to its end: nothing is owed here");
+    // the switch: the second library is owed a build for the same view signature
+    s.open_library(root2.join("lib"), false).unwrap();
+    assert!(s.prep.unfinished, "read with the second library");
+    let next = build_after(&mut s, &b).expect("the second library's owed build is taken up, not blocked by the first library's guards");
+    assert!(next.background);
+    assert_eq!(next.total, 4);
+    next.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&next), "a cancelled build stops");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_dir_all(&root2).unwrap();
+}
+
+/// CodeRabbit on #4093 (round 2): the round-1 reset forgets `started_for` when a library
+/// opens, so the view-change stop can no longer tell a build that is still running apart:
+/// a build left running by the library before would keep building that library's photos
+/// and hold up this one's preparation until it ran to its end. A build is stopped when the
+/// library it was started in is left, and the library now open is prepared in its place.
+#[test]
+fn a_running_build_is_stopped_when_its_library_is_left() {
+    let mode = Mode::Library;
+    // the second library, left by a session whose build did not run to its end
+    let (mut s2, root2, ids2) = library("prep-switch-running-second", 4);
+    let hold = crate::prep::TestHold::new();
+    for id in &ids2[..3] {
+        s2.prep_tick(mode, Some(*id), false);
+    }
+    let b2 = s2.preview_build.clone().expect("the second library's build started");
+    assert!(marked_unfinished(&root2), "its build is owed");
+    b2.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&b2), "a cancelled build stops");
+    drop(s2);
+    drop(hold);
+    // the first library, in the session that switches: its build is still running
+    let (mut s, root, ids) = library("prep-switch-running-first", 4);
+    let hold = crate::prep::TestHold::new();
+    for id in &ids[..3] {
+        s.prep_tick(mode, Some(*id), false);
+    }
+    let b = s.preview_build.clone().expect("the first library's view is prepared");
+    assert!(b.running(), "still running when its library is left");
+    // the switch, with the first library's build still running
+    s.open_library(root2.join("lib"), false).unwrap();
+    s.prep_tick(mode, None, false);
+    let stopped = b.cancel.load(Ordering::Relaxed);
+    drop(hold);
+    assert!(stopped, "the build of the library that was left is stopped");
+    assert!(wait_done(&b), "a cancelled build stops");
+    let next = build_after(&mut s, &b).expect("the second library's owed build is taken up once the old build stops");
+    assert!(next.background);
+    assert_eq!(next.total, 4);
+    next.cancel.store(true, Ordering::Relaxed);
+    assert!(wait_done(&next), "a cancelled build stops");
+    drop(s);
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_dir_all(&root2).unwrap();
+}
+
 /// The background build of a folder makes its photos' render jobs a few a tick, nearest the user
 /// first, not all of them when it starts: that froze the UI for 1.3 s at every build of a
 /// 2,597-photo folder (2026-11-10). It still builds every photo.

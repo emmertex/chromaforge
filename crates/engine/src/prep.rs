@@ -28,6 +28,12 @@
 //! moment after the last call, so a frontend that stops saying it (the pictures arrived, or it
 //! closed) never holds anything back for long.
 //!
+//! A build that was started and did not run to its end (the view changed under it, another build
+//! took its place, previews were switched off, the app quit) is owed to the library: it is taken
+//! up again for the view then shown, from the grid as well and after a restart, once that view has
+//! stayed the same for a moment ([`PrepState::unfinished`], [`SETTLE_AFTER`]). What is left to
+//! build is never stored: each build asks, photo by photo, whether its previews are on disk.
+//!
 //! Sources: own design (OneSlips: PERF-CULL-TIERS, "lowest and fastest resolution first, then the
 //! next cheap one, then anything bigger"; PERF-PREVIEW-PREP, A1-PREP-RESYNC, PREP-NEIGHBOURS).
 
@@ -212,6 +218,11 @@ impl Mode {
 /// to look at one photo starts nothing.
 pub const STEPS_BEFORE_BUILD: usize = 3;
 
+/// How long the view must have stayed the same before an unfinished build is taken up again for
+/// it ([`PrepState::unfinished`]): photos arriving in batches (an import) or a few sorts tried one
+/// after the other start one build, not one each.
+pub const SETTLE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// In a library (not a folder being culled) the background build prepares the photos this far
 /// before and after the one on screen, not the whole view (note 30 of 2026-10-24: "for a gallery
 /// that's already been edited, I don't know why it's preparing"); stepping out of that stretch
@@ -230,8 +241,37 @@ pub struct PrepState {
     pub app: PrepSettings,
     /// This library's own (`None`: it uses the app-wide ones).
     pub library: Option<PrepSettings>,
-    /// The background build this preparation started.
+    /// A build of this library's previews was started and has not run to its end: it is owed, and
+    /// [`Session::prep_tick`] takes it up again for the view shown, without the user stepping
+    /// through photos first ([`STEPS_BEFORE_BUILD`] guards only a library with nothing owed) and
+    /// with no photo in the loupe. Kept in the library's `prefs.json` (`prepUnfinished`), so it
+    /// holds across a restart.
+    ///
+    /// - Set, and saved, when a build for the view starts.
+    /// - Cleared, and saved, when such a build ran to its end (its queue ran empty; a photo that
+    ///   failed counts as built), and when the user stopped it from its row: they said no.
+    /// - Left set by everything else that ends a build: the view changing, a build that was asked
+    ///   for taking its place, previews switched off, the app quitting.
+    ///
+    /// It says "ask again", not what is left: the build that follows skips every photo whose
+    /// previews are on disk. A view with nothing to build (no marked photo) leaves it as it is.
+    pub unfinished: bool,
+    /// Before when an unfinished build is not taken up again: [`SETTLE_AFTER`] after the view shown
+    /// last changed (`None`: no change seen yet). The first build of a library with nothing owed
+    /// doesn't wait for it (the steps in the loupe are its guard).
+    pub not_before: Option<web_time::Instant>,
+    /// Another wait than [`SETTLE_AFTER`] (tests: none, or one that never ends by itself).
+    pub settle: Option<std::time::Duration>,
+    /// The view (its signature) last seen while a build could start: a different one starts the wait.
+    view_seen: Option<u64>,
+    /// The background build this preparation started, and the library it was started in
+    /// ([`Session::library_generation`]): a build left over from another library says nothing
+    /// about this one's [`PrepState::unfinished`].
     build: Option<Arc<PreviewBuild>>,
+    build_library: u64,
+    /// The view (its signature, [`signature`]) the build was started for: in the grid, where no
+    /// photo says which view the user is in, another view stops the build.
+    build_view: u64,
     /// The running build still has photos whose render jobs aren't made ([`crate::cmd::previews::feed`]):
     /// the frontend ticks again soon ([`Session::prep_feeding`]).
     feeding: bool,
@@ -263,6 +303,28 @@ impl std::fmt::Debug for PrepState {
 }
 
 impl PrepState {
+    /// Forget the view state a library that was open before left behind, when a library opens: the
+    /// view guards (`started_for`, `declined_for`, the view last seen), the settle wait and the
+    /// step count were earned in that library's views, and a view signature is only its photos'
+    /// ids and their count, so another library's view can carry the same one. What a library opens
+    /// with is kept: the settings, what it is owed (`unfinished`, which the caller has just read),
+    /// the settle wait a test asks for, and the build being followed (told apart by the library it
+    /// was started in, `build_library`).
+    pub(crate) fn opened_library(&mut self) {
+        self.view_seen = None;
+        self.started_for = None;
+        self.declined_for = None;
+        self.not_before = None;
+        self.steps_in = None;
+        self.last_at = None;
+        self.steps = 0;
+    }
+
+    /// The wait after a view change ([`SETTLE_AFTER`]; this crate's tests: none unless they set one).
+    fn settle(&self) -> std::time::Duration {
+        self.settle.unwrap_or(if cfg!(test) { std::time::Duration::ZERO } else { SETTLE_AFTER })
+    }
+
     /// The settings in use.
     pub fn settings(&self) -> PrepSettings {
         self.library.unwrap_or(self.app)
@@ -327,8 +389,36 @@ pub fn wait_for_pictures(stop: &dyn Fn() -> bool, max: std::time::Duration) -> b
     stop()
 }
 
+/// How many tests hold background builds back ([`TestHold`]): a count, so tests running side by
+/// side each hold until their own release, and one test's release doesn't free another's build.
+#[cfg(test)]
+static TEST_HOLD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Holds background builds while it lives (also when the test fails), whatever other holds do.
+#[cfg(test)]
+pub(crate) struct TestHold;
+
+#[cfg(test)]
+impl TestHold {
+    pub(crate) fn new() -> Self {
+        TEST_HOLD.fetch_add(1, Ordering::Relaxed);
+        TestHold
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestHold {
+    fn drop(&mut self) {
+        TEST_HOLD.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Whether the photo on screen is being made now, or something on screen lacks its first picture.
 pub fn foreground_busy() -> bool {
+    #[cfg(test)]
+    if TEST_HOLD.load(Ordering::Relaxed) > 0 {
+        return true;
+    }
     let now = clock_ms();
     now < FOREGROUND_UNTIL.load(Ordering::Relaxed) || now < PICTURES_UNTIL.load(Ordering::Relaxed)
 }
@@ -493,56 +583,7 @@ impl Session {
         let wanted = want.previews && settings.scope(mode) != Scope::OnScreen;
         // a folder being culled is prepared from the photo the user is on, in the grid too
         let at = if mode == Mode::Culling { at.or_else(|| self.active()) } else { at };
-        // the running build: re-aimed at the user, stopped when switched off
-        if let Some(b) = self.prep.build.clone() {
-            if b.running() {
-                if !wanted {
-                    b.cancel.store(true, Ordering::Relaxed);
-                } else if let Some(id) = at {
-                    b.focus_on(id, backward);
-                }
-                // the user moved on to a photo the build doesn't hold (another folder, or another
-                // stretch of the library): the build of the photos left behind makes way for the
-                // ones in view (a wedding browsed after another folder kept building the other
-                // folder's previews, 2026-11-09). A folder still being read keeps its build: the
-                // photos read since join the next one, which skips what this one built.
-                if wanted
-                    && !self.prep.resync
-                    && !b.cancel.load(Ordering::Relaxed)
-                    && let Some(id) = at
-                    && self.prep.started_for.is_some()
-                    && !b.order.contains(&id.0)
-                {
-                    b.cancel.store(true, Ordering::Relaxed);
-                    self.prep.superseded = true;
-                }
-                // photos changed off screen go before the rest of the view: its build makes way
-                if wanted && !self.prep.resync && self.resync_due() && !b.cancel.load(Ordering::Relaxed) {
-                    b.cancel.store(true, Ordering::Relaxed);
-                    self.prep.superseded = true;
-                }
-                return;
-            }
-            self.prep.build = None;
-            let mine = self.preview_build.as_ref().is_some_and(|p| Arc::ptr_eq(p, &b));
-            let resync = std::mem::take(&mut self.prep.resync);
-            if std::mem::take(&mut self.prep.superseded) {
-                // made way for the changed photos: may start again afterwards (built photos are skipped)
-                self.prep.started_for = None;
-            } else if b.cancel.load(Ordering::Relaxed) {
-                if resync {
-                    // stopped from its row: these photos are left as they are
-                    self.prep.changed.clear();
-                } else if mine && wanted {
-                    // stopped from its row: not again for this view
-                    self.prep.declined_for = self.prep.started_for;
-                } else {
-                    // replaced by a build that was asked for, or switched off: may start again later
-                    self.prep.started_for = None;
-                }
-            }
-        }
-        if !wanted {
+        if self.prep_follow_build(wanted, at, backward) || !wanted {
             return;
         }
         let busy = self.preview_build.as_ref().is_some_and(|b| b.running());
@@ -550,23 +591,33 @@ impl Session {
             self.start_resync(at, backward);
             return;
         }
-        let Some(at) = at else { return };
-        let view_sig = signature(&self.visible_cloned(), self);
-        if self.prep.steps_in != Some(view_sig) {
-            self.prep.steps_in = Some(view_sig);
-            self.prep.steps = 0;
-            self.prep.last_at = None;
+        // an owed build needs no steps and no photo in the loupe; with nothing owed the grid starts
+        // nothing (opening a library is not a reason to build, note 36)
+        let owed = self.prep.unfinished;
+        if at.is_none() && !owed {
+            return;
         }
-        if self.prep.last_at != Some(at) {
-            self.prep.last_at = Some(at);
-            self.prep.steps = self.prep.steps.saturating_add(1);
+        let view = self.visible_cloned();
+        let view_sig = signature(&view, self);
+        let now = web_time::Instant::now();
+        if self.prep.view_seen != Some(view_sig) {
+            // another view than the one last seen: an owed build waits until it has been still
+            self.prep.view_seen = Some(view_sig);
+            self.prep.not_before = now.checked_add(self.prep.settle());
         }
-        let (sig, ids) = self.prep_view(mode, at);
+        if let Some(at) = at {
+            self.prep_count_step(view_sig, at);
+        }
+        // the photo the build goes from: the one in the loupe; in the grid the active photo, else
+        // the view's first
+        let Some(anchor) = at.or_else(|| self.active()).or_else(|| view.first().copied()) else { return };
+        let (sig, ids) = self.prep_view(mode, anchor);
         // a folder browsed to be culled is prepared as soon as a photo of it is looked at (the
         // user waited on photo 1 for minutes and nothing was prepared); a library after a few steps
         let steps_needed = if mode == Mode::Culling { 1 } else { STEPS_BEFORE_BUILD };
+        let ready = if owed { self.prep.not_before.is_none_or(|at| now >= at) } else { self.prep.steps >= steps_needed };
         if busy
-            || self.prep.steps < steps_needed
+            || !ready
             || self.prep.started_for == Some(sig)
             || self.prep.declined_for == Some(sig)
             || self.library.as_ref().is_none_or(|l| !l.on_disk)
@@ -578,15 +629,146 @@ impl Session {
             _ => ids.into_iter().map(|id| id.0).collect(),
         };
         self.prep.started_for = Some(sig);
+        // (nothing to build in this view: nothing starts, and what is owed stays owed)
         if ids.is_empty() {
             return;
         }
         // (`feed`: its jobs are made a few photos a frame, `feed` in the frontend's tick)
-        let p = json!({"ids": ids, "background": true, "from": at.0, "backward": backward, "feed": true});
+        let p = json!({"ids": ids, "background": true, "from": anchor.0, "backward": backward, "feed": true});
         match self.execute("library.buildPreviews", &p) {
-            Ok(_) => self.prep.build = self.preview_build.clone(),
+            Ok(_) => {
+                self.prep.build = self.preview_build.clone();
+                self.prep.build_library = self.library_generation;
+                self.prep.build_view = view_sig;
+                // owed to the library until it has run to its end
+                self.set_prep_unfinished(true);
+            }
             Err(e) => log::info!("background preparation: {e}"),
         }
+    }
+
+    /// The build this preparation started, followed: re-aimed at the user while it runs, stopped
+    /// when it is no longer wanted, when the user moved on, or when its library is no longer the
+    /// one open, and, once it is over, what its end means for the view and for
+    /// [`PrepState::unfinished`]. `true`: it is still running (nothing else starts).
+    fn prep_follow_build(&mut self, wanted: bool, at: Option<PhotoId>, backward: bool) -> bool {
+        let Some(b) = self.prep.build.clone() else { return false };
+        if b.running() {
+            if self.prep.build_library != self.library_generation {
+                // a build left over from the library before: its photos are another library's,
+                // and `opened_library` forgot `started_for`; stopped, and the library now open is
+                // prepared in its place (not counted as stopped by the user)
+                b.cancel.store(true, Ordering::Relaxed);
+                self.prep.superseded = true;
+                return true;
+            }
+            if !wanted {
+                // switched off: stopped by the preparation itself, so `started_for` goes too. Left
+                // set, the stop would read as the user's once the build is over and previews are on
+                // again, and this view would not be prepared again in this session (#3947)
+                b.cancel.store(true, Ordering::Relaxed);
+                self.prep.started_for = None;
+            } else if let Some(id) = at {
+                b.focus_on(id, backward);
+            }
+            // the user moved on to a photo the build doesn't hold (another folder, or another
+            // stretch of the library): the build of the photos left behind makes way for the
+            // ones in view (a wedding browsed after another folder kept building the other
+            // folder's previews, 2026-11-09). A folder still being read keeps its build: the
+            // photos read since join the next one, which skips what this one built.
+            if wanted
+                && !self.prep.resync
+                && !b.cancel.load(Ordering::Relaxed)
+                && let Some(id) = at
+                && self.prep.started_for.is_some()
+                && !b.order.contains(&id.0)
+            {
+                b.cancel.store(true, Ordering::Relaxed);
+                self.prep.superseded = true;
+            }
+            // in the grid: another view than the one the build was started for (a folder, a filter,
+            // a sort, photos imported) is not prepared by it; stopped, and the view now shown is
+            // prepared in its place (not counted as stopped by the user)
+            if wanted
+                && at.is_none()
+                && !self.prep.resync
+                && !b.cancel.load(Ordering::Relaxed)
+                && self.prep.started_for.is_some()
+                && self.prep.build_view != signature(&self.visible_cloned(), self)
+            {
+                b.cancel.store(true, Ordering::Relaxed);
+                self.prep.superseded = true;
+            }
+            // photos changed off screen go before the rest of the view: its build makes way
+            if wanted && !self.prep.resync && self.resync_due() && !b.cancel.load(Ordering::Relaxed) {
+                b.cancel.store(true, Ordering::Relaxed);
+                self.prep.superseded = true;
+            }
+            return true;
+        }
+        self.prep.build = None;
+        let mine = self.preview_build.as_ref().is_some_and(|p| Arc::ptr_eq(p, &b));
+        // (a build left over from a library closed since says nothing about the one open now)
+        let here = self.prep.build_library == self.library_generation;
+        let resync = std::mem::take(&mut self.prep.resync);
+        if std::mem::take(&mut self.prep.superseded) {
+            // made way for the changed photos, or the library left: may start again afterwards
+            // (built photos are skipped), and what is owed stays owed
+            self.prep.started_for = None;
+        } else if b.cancel.load(Ordering::Relaxed) {
+            if resync {
+                // stopped from its row: these photos are left as they are
+                self.prep.changed.clear();
+            } else if mine && wanted {
+                // stopped from its row: not again for this view, and nothing is owed any more (a
+                // stop the preparation made itself cleared `started_for`, and leaves the build owed)
+                if here && self.prep.started_for.is_some() {
+                    self.set_prep_unfinished(false);
+                }
+                self.prep.declined_for = self.prep.started_for;
+            } else {
+                // replaced by a build that was asked for, or switched off: may start again later
+                self.prep.started_for = None;
+            }
+        } else if here && !resync {
+            // ran to its end: nothing is owed
+            self.set_prep_unfinished(false);
+        }
+        false
+    }
+
+    /// One more photo seen in the loupe in the view `sig` (the count starts again in another view).
+    fn prep_count_step(&mut self, sig: u64, at: PhotoId) {
+        if self.prep.steps_in != Some(sig) {
+            self.prep.steps_in = Some(sig);
+            self.prep.steps = 0;
+            self.prep.last_at = None;
+        }
+        if self.prep.last_at != Some(at) {
+            self.prep.last_at = Some(at);
+            self.prep.steps = self.prep.steps.saturating_add(1);
+        }
+    }
+
+    /// Note that a build is owed to this library, or no longer ([`PrepState::unfinished`]), and
+    /// save it with the library's preferences when it changed. A save that fails is not an error
+    /// here: the session goes on by what it noted, and the file is at worst one build behind (a
+    /// restart takes up a build that finds everything built, or takes none up).
+    fn set_prep_unfinished(&mut self, unfinished: bool) {
+        if self.prep.unfinished != unfinished {
+            self.prep.unfinished = unfinished;
+            let _ = self.save_prefs();
+        }
+    }
+
+    /// How long until the background preparation has something to do with nothing else happening:
+    /// an unfinished build taken up again once the view has been still ([`SETTLE_AFTER`]). The app
+    /// asks for a frame then, so it doesn't wait for the next input. `None` when nothing waits or
+    /// the time has come.
+    pub fn prep_wake_in(&self) -> Option<std::time::Duration> {
+        let at = self.prep.not_before.filter(|_| self.prep.unfinished)?;
+        let wait = at.saturating_duration_since(web_time::Instant::now());
+        (!wait.is_zero()).then_some(wait)
     }
 
     /// What the background build prepares with the user on photo `at` in `mode`, and its identity:
@@ -673,6 +855,7 @@ impl Session {
         match self.execute("library.buildPreviews", &p) {
             Ok(_) => {
                 self.prep.build = self.preview_build.clone();
+                self.prep.build_library = self.library_generation;
                 self.prep.resync = true;
             }
             Err(e) => log::info!("background preparation: {e}"),

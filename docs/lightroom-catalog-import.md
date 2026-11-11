@@ -85,7 +85,10 @@ catalog's settings, history and snapshots, and a setting the catalog leaves out 
 some at zero) starts from the camera's defaults. Any change after browsing, a rating or keyword
 included, makes a Local photo's settings count as existing. Persistent import
 identity prevents reimport from duplicating virtual copies and collections. One undo step reverses
-catalog changes; any saved recovery archives remain available.
+catalog changes; any saved recovery archives remain available. When the catalog's data can't be
+applied, the import stops with that error and adds no photos: the records it had already made for the
+catalog's originals are removed, and photos browsed in Local are Local again. The redo history is
+cleared, as by any change.
 
 Records marked `VIDEO` in the source catalog appear in the **Videos** type filter, including
 offline originals. Reimport also repairs the classification of videos imported as images by
@@ -124,7 +127,11 @@ importing: metadata checks detect ordinary concurrent changes, but are not SQLit
 Develop settings that can't be read fail the import with a clear error (otherwise every photo
 would arrive unedited). Optional history, snapshot, metadata, keyword and collection tables that
 can't be read are skipped with warnings, unless the read failed because the catalog file itself
-failed or changed, which fails the import; required photo tables still report errors. Unrelated
+failed or changed, which fails the import; required photo tables still report errors. A develop
+settings, metadata, keyword, history, snapshot or collection member record whose `image` is not a whole
+number (missing, NULL, text or a fraction) belongs to no photo: it is left out, with one warning per
+table; a collection member stays in the recovery archive but joins no album. A record whose `image` is
+a whole number naming no photo in the catalog is still dropped without a warning. Unrelated
 unsupported schemas are ignored. A needed
 WITHOUT ROWID or virtual table produces an explicit error, handled as a warning when optional.
 
