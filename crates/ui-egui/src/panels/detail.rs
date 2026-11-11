@@ -6247,6 +6247,23 @@ pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
     (px.round() as usize).clamp(128, 512)
 }
 
+/// The filmstrip's scroll offset after its cells change from `old_w` to `new_w` points wide: the
+/// photo at index `at` (the active one) stays where it was on screen; with none, the first photo
+/// in view does.
+pub(crate) fn film_rescroll(old_off: f32, old_w: f32, new_w: f32, at: Option<usize>) -> f32 {
+    if !(old_off.is_finite() && old_w.is_finite() && new_w.is_finite()) || old_w <= 0.0 {
+        return 0.0;
+    }
+    let off = match at {
+        Some(i) => {
+            let centre = (i as f32 + 0.5) * old_w;
+            (i as f32 + 0.5) * new_w - (centre - old_off)
+        }
+        None => old_off * new_w / old_w,
+    };
+    off.max(0.0)
+}
+
 /// The filmstrip's top edge: dragged up or down, it resizes the strip (and its thumbnails) within
 /// [`crate::state::FILM_HEIGHT`]; a double click puts it back. The height is kept with the UI
 /// settings (widget `filmstrip:resize`; `film:` ids are the photos).
@@ -6326,11 +6343,24 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     );
     // a bar that can be seen and grabbed, as in the grid, its handle always there
     super::grid::visible_scroll_bar(&mut child);
-    egui::ScrollArea::horizontal()
-        .id_salt("filmstrip")
-        .auto_shrink([false, false])
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-        .show_viewport(&mut child, |ui, vp| {
+    // a resized strip keeps the active photo where it was on screen (#1082)
+    let width_id = egui::Id::new("film-cell-width");
+    let last_w = child.data(|d| d.get_temp::<f32>(width_id));
+    child.data_mut(|d| d.insert_temp(width_id, cell_w));
+    let rescroll = match (last_w, app.film_scroll) {
+        (Some(old_w), Some(old_off)) if (old_w - cell_w).abs() > 0.01 && old_w > 0.0 => {
+            let at = active.and_then(|a| ids.iter().position(|id| *id == a));
+            Some(film_rescroll(old_off, old_w, cell_w, at))
+        }
+        _ => None,
+    };
+    let mut area = egui::ScrollArea::horizontal();
+    if let Some(off) = rescroll {
+        area = area.horizontal_scroll_offset(off);
+    }
+    area.id_salt("filmstrip").auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_viewport(
+        &mut child,
+        |ui, vp| {
             if wheel != egui::Vec2::ZERO {
                 ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
             }
@@ -6497,7 +6527,8 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                 super::compare::activate_on_right_click(app, &resp, *id);
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
-        });
+        },
+    );
 }
 
 /// What a screen reader says for a filmstrip thumbnail: the file, and why there is no picture
