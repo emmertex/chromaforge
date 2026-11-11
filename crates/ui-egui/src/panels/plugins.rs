@@ -154,16 +154,34 @@ fn key() -> egui::Id {
 }
 
 /// Window state: one Plug-in Manager per process (the manager itself is process-wide).
+#[cfg(not(test))]
 static STATE: std::sync::Mutex<Option<State>> = std::sync::Mutex::new(None);
+
+// Tests run many apps in one process, each test on its own thread: there every test has a
+// Plug-in Manager of its own. Shared, one test's open manager covered the other tests' windows
+// (tests_i18n_sweep leaves it open; tests_import_tab's clicks in a 900 x 700 window landed on it).
+#[cfg(test)]
+thread_local! {
+    static STATE: std::cell::RefCell<Option<State>> = const { std::cell::RefCell::new(None) };
+}
 
 fn state(ctx: &egui::Context) -> State {
     let _ = ctx;
-    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
+    #[cfg(not(test))]
+    let s = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    #[cfg(test)]
+    let s = STATE.with_borrow(Clone::clone);
+    s.unwrap_or_default()
 }
 
 fn set_state(ctx: &egui::Context, s: State) {
     let _ = ctx;
-    *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    #[cfg(not(test))]
+    {
+        *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    }
+    #[cfg(test)]
+    STATE.set(Some(s));
 }
 
 fn app_ctx(app: &LccApp) -> egui::Context {
@@ -2049,6 +2067,20 @@ fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Under test every test has a Plug-in Manager of its own: one opened on another test's thread
+    /// doesn't cover this test's window.
+    #[test]
+    fn a_manager_opened_on_another_test_thread_stays_there() {
+        let ctx = egui::Context::default();
+        let other = std::thread::spawn(|| {
+            let ctx = egui::Context::default();
+            set_state(&ctx, State { open: true, ..State::default() });
+            state(&ctx).open
+        });
+        assert!(other.join().unwrap(), "open on its own thread");
+        assert!(!state(&ctx).open, "and closed on this one");
+    }
 
     #[test]
     fn rows_name_the_request_each_one_is() {
