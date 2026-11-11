@@ -28,6 +28,7 @@
   "Capture One import failed: {e}{warning}": "Impor Capture One gagal: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Pemeriksaan Capture One gagal: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Bagan · abu-abu sekitar {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "{checked} dari {total} file DNG diperiksa: {intact} utuh, {damaged} rusak, {unverifiable} tidak dapat diverifikasi",
   "Collection imported: {n} photos found, {m} not in this catalog": "Koleksi diimpor: {n} foto ditemukan, {m} tidak ada di katalog ini",
   "Cost: about ${usd} for {} request(s), billed by {name} to your account.": "Biaya: sekitar ${usd} untuk {} permintaan, ditagih oleh {name} ke akun Anda.",
   "Create Folder in “{name}”": "Buat folder di “{name}”",

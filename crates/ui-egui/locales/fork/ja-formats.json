@@ -24,6 +24,7 @@
   "Capture One import failed: {e}{warning}": "Capture One の読み込みに失敗しました：{e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Capture One の確認に失敗しました：{e}{warning}",
   "Chart · greys about {cct:.0} K": "チャート · グレーは約 {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "{total} 個の DNG ファイルのうち {checked} 個を確認: 正常 {intact}、破損 {damaged}、検証不可 {unverifiable}",
   "Collection imported: {n} photos found, {m} not in this catalog": "コレクションを読み込みました: {n} 枚が見つかり、{m} 枚はこのカタログにありません",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "カラースペース：Rec. 2020 {curve}（HDR AVIF）",
   "Create Folder in “{name}”": "「{name}」にフォルダーを作成",

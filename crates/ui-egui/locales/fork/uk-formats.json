@@ -23,6 +23,7 @@
   "Capture One import failed: {e}{warning}": "Помилка імпорту Capture One: {e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Помилка перевірки Capture One: {e}{warning}",
   "Chart · greys about {cct:.0} K": "Мішень · сірі близько {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "Перевірено файлів DNG: {checked} з {total}. Цілих: {intact}, пошкоджених: {damaged}, неперевірюваних: {unverifiable}",
   "Collection imported: {n} photos found, {m} not in this catalog": "Колекцію імпортовано: знайдено фото: {n}, немає в цьому каталозі: {m}",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "Колірний простір: Rec. 2020 {curve} (HDR AVIF)",
   "Create Folder in “{name}”": "Створити папку в «{name}»",
