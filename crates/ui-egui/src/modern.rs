@@ -906,7 +906,9 @@ fn gestures(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     let was_holding = app.ui.modern.holding;
-    if !down && was_holding {
+    // only a lifted finger ends the hold (#1035): the Before button's hold is down off the photo,
+    // and ending it here whenever the photo itself wasn't pressed flipped the original back at once
+    if !down && was_holding && !ui.input(|i| i.pointer.any_down()) {
         stop_holding(app);
     }
     if resp.clicked() && !was_holding {
