@@ -69,6 +69,8 @@ mod slot;
 #[cfg(not(target_arch = "wasm32"))]
 mod strokes;
 #[cfg(not(target_arch = "wasm32"))]
+mod upload;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
