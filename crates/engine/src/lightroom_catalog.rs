@@ -1394,7 +1394,7 @@ fn first_of_each_collection<'a>(data: &'a CatalogImport, warnings: &mut Vec<Stri
             continue;
         };
         if *kept != collection {
-            let photos = if data.members.iter().any(|m| number(m, "collection") == id) {
+            let photos = if data.members.iter().any(|m| id_of(m, "collection") == Some(id)) {
                 format!("; the photos listed under that id go to “{}”", text(kept, "name"))
             } else {
                 String::new()
@@ -1743,8 +1743,16 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .collect();
     let mut added_folders = HashSet::new();
     let mut grouped_members: HashMap<i64, Vec<&Row>> = HashMap::new();
+    // read strictly: a NULL, text or fractional `collection` names no collection, not collection 0 (or 1 for 1.5)
     for member in &data.members {
-        grouped_members.entry(number(member, "collection")).or_default().push(member);
+        if let Some(collection) = id_of(member, "collection") {
+            grouped_members.entry(collection).or_default().push(member);
+        }
+    }
+    match data.members.iter().filter(|m| id_of(m, "collection").is_none()).count() {
+        0 => {}
+        1 => warnings.push("AgLibraryCollectionImage: 1 record added to no album; its collection is not a collection id".into()),
+        n => warnings.push(format!("AgLibraryCollectionImage: {n} records added to no album; their collection is not a collection id")),
     }
     for members in grouped_members.values_mut() {
         members.sort_by(|a, b| text(a, "positionInCollection").cmp(text(b, "positionInCollection")));
@@ -2602,6 +2610,23 @@ pub(crate) mod tests {
         assert_eq!(r["stacks"], 0);
         assert_eq!(s.catalog.stacks().count(), 1);
         assert!(!r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("stack"))), "{}", r["warnings"]);
+    }
+    /// A member whose `collection` is missing, NULL, text or a fraction names no collection: it joins no album, with one
+    /// warning, and does not join collection 0 or the truncated id.
+    #[test]
+    fn a_collection_member_whose_collection_is_not_an_id_joins_no_album() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":0,"name":"Zero","creationId":"com.adobe.ag.library.collection"})));
+        data.members.push(row(json!({"image":1,"positionInCollection":"a"})));
+        data.members.push(row(json!({"collection":null,"image":1,"positionInCollection":"b"})));
+        data.members.push(row(json!({"collection":"10","image":1,"positionInCollection":"c"})));
+        data.members.push(row(json!({"collection":10.5,"image":1,"positionInCollection":"d"})));
+        let r = apply(&mut s, data, false).unwrap();
+        assert!(album_named(&s, "Zero").photos.is_empty());
+        assert_eq!(album_named(&s, "Keepers").photos.len(), 2);
+        let w: Vec<_> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.starts_with("AgLibraryCollectionImage")).collect();
+        assert_eq!(w.len(), 1, "{w:?}");
     }
     #[test]
     fn creation_saved_inside_a_collection_joins_the_nearest_set() {

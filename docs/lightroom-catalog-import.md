@@ -174,7 +174,8 @@ the top level, and the result names it under warnings; saved prints, books, slid
 galleries import as regular albums with the photos they hold. On reimport an album keeps the place
 the user gave it. A collection the catalog lists twice imports once; a different collection with
 the id of an earlier one is left out with a warning naming both, and the photos listed under that
-id go to the first.
+id go to the first. A collection member whose `collection` is not a whole
+number (missing, NULL, text or a fraction) joins no album, with one warning; it does not join collection 0.
 
 Lightroom's develop history (`Adobe_libraryImageDevelopHistoryStep`) becomes the photo's History,
 oldest first, each step named as in Lightroom and mapped like the current settings (so a step shows
