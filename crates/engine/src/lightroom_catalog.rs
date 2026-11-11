@@ -42,6 +42,10 @@ fn is_smart_collection(r: &Row) -> bool {
 fn is_collection_set(r: &Row) -> bool {
     text(r, "creationId").contains("group")
 }
+/// Whether a collection row is a saved print (`com.adobe.ag.print`; an unsaved one is `….print.unsaved`).
+fn is_saved_print(r: &Row) -> bool {
+    text(r, "creationId") == "com.adobe.ag.print"
+}
 /// Seconds from the Unix epoch to 2001-01-01T00:00:00Z, where Lightroom's times start.
 const LIGHTROOM_EPOCH: i64 = 978_307_200;
 /// When Lightroom last changed the image (`Adobe_images.touchTime`: seconds since 2001-01-01T00:00:00Z, also for
@@ -1747,6 +1751,28 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .filter(|r| text(r, "owningModule") == "ag.library.smart_collection")
         .map(|r| (number(r, "collection"), text(r, "content")))
         .collect();
+    let print_content: HashMap<i64, &str> = data
+        .collection_content
+        .iter()
+        .filter(|r| text(r, "owningModule") == "com.adobe.ag.print")
+        .map(|r| (number(r, "collection"), text(r, "content")))
+        .collect();
+    let mut saved_prints = 0usize;
+    // a saved print's layout as a Saved Print, or why it stays a plain collection (the original is in the archive)
+    let mut print_layout = |collection: &Row, name: &str, members: &[PhotoId], warnings: &mut Vec<String>| {
+        let found = print_content.get(&number(collection, "id_local")).ok_or_else(|| "the catalog has no layout for it".to_string());
+        match found.and_then(|c| crate::lightroom_print::saved_print(c, &|image| ids.get(&image).copied(), members)) {
+            Ok(print) => {
+                saved_prints += 1;
+                warnings.extend(print.notes.into_iter().map(|n| format!("{name}: saved print: {n}")));
+                Some(lcc_catalog::Creation { kind: "print".into(), document: print.document })
+            }
+            Err(why) => {
+                warnings.push(format!("{name}: its print layout isn't imported: {why}; imported as a plain collection (layout kept in archive)"));
+                None
+            }
+        }
+    };
     // Lightroom's Collection rule matches ordinary collections only: never a set, nor a smart collection (so a smart
     // collection never matches itself, nor one whose rules match it back).
     let named_collections: Vec<(&str, lcc_catalog::AlbumId)> = data
@@ -1786,6 +1812,8 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         // Reimport branches on the existing album's kind: its name/hierarchy and (for a smart album)
         // its possibly user-edited rules are kept; a regular album only gains new members.
         let existing = s.catalog.album(id).map(|a| (a.folder, a.is_smart(), a.photos.clone()));
+        // an earlier import's plain album of a saved print gains its layout; one that has a layout keeps it
+        let gains_layout = is_saved_print(collection) && s.catalog.album(id).is_some_and(|a| !a.folder && !a.is_smart() && a.creation.is_none());
         match existing {
             Some((true, _, _)) => {}
             Some((false, true, _)) => {
@@ -1811,6 +1839,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                     if seen.insert(photo) {
                         photos.push(photo);
                     }
+                }
+                if gains_layout && let Some(creation) = print_layout(collection, &album.name, &photos, &mut warnings) {
+                    ops.push(Op::SetAlbumCreation { id, creation: Some(creation) });
                 }
                 ops.push(Op::SetAlbumPhotos { id, photos });
             }
@@ -1842,6 +1873,9 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
                 }
                 if !album.folder && !album.is_smart() {
                     album.photos = members;
+                    if is_saved_print(collection) {
+                        album.creation = print_layout(collection, &album.name, &album.photos, &mut warnings);
+                    }
                 }
                 let (set, moved) = collection_parent(collection, &collections, &sets);
                 album.parent = set.and_then(|set| albums.get(&set).copied());
@@ -1895,7 +1929,7 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
     }
     s.merge_undo(s.undo.len().saturating_sub(undo0), step);
     Ok(AppliedImport {
-        report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
+        report: json!({"source":data.source,"photos":ids.len(),"imported":imported,"library":s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy()),"collections":albums.len(),"smartAlbums":smart_albums,"smartAsStatic":static_smart,"smartKept":smart_kept,"savedPrints":saved_prints,"stacks":stacks,"historySteps":history_imported,"snapshots":snapshots_imported,"preservedExistingEdits":preserved,"missing":missing,"failed":files.failed,"warnings":warnings,"skipped":data.skipped,"unmapped":unmapped,"archive":archive_path,"mapping":ids}),
         index: index.clone(),
     })
 }
@@ -2584,9 +2618,115 @@ pub(crate) mod tests {
         assert_eq!(print.photos.len(), 1);
         assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("Print"))));
     }
+    /// A saved print's layout as the catalog stores it: a Custom Package with two cells holding images 1 and 2,
+    /// and a third naming an image the catalog doesn't import.
+    const SAVED_PRINT: &str = r#"s = {
+	_engineIdentifier = "com.adobe.lightroom.print.engine.package.custom",
+	_engineSettings = {
+		["com.adobe.lightroom.print.engine.package.custom"] = {
+			autorotate = true,
+			innerStrokeBorder = true,
+			innerStrokeColor = AgColor( 0, 0, 0, 1 ),
+			innerStrokeWidth = 0.2,
+			numLayoutPages = 1,
+			pages = {
+				{
+					cells = {
+						{ bounds = AgMutableRect( 0, 0, 300, 200 ), imageID = 2, page = 1, },
+						{ bounds = AgMutableRect( 250, 150, 612, 792 ), imageID = 1, page = 1, },
+						{ bounds = AgMutableRect( 0, 500, 200, 792 ), imageID = 77, page = 1, },
+					},
+				},
+			},
+			zoomToFillFrame = true,
+		},
+	},
+	_globalSettings = { printDestination = "jpeg", printingFileResolution = 300, mediaType = "matte" },
+	_pageDimensions_x = 612,
+	_pageDimensions_y = 792,
+}"#;
+    fn saved_print_sample(content: Option<&str>) -> CatalogImport {
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":11,"name":"Collage","creationId":"com.adobe.ag.print"})));
+        data.members.push(row(json!({"collection":11,"image":1,"positionInCollection":"---0"})));
+        data.members.push(row(json!({"collection":11,"image":2,"positionInCollection":"---1"})));
+        if let Some(content) = content {
+            data.collection_content.push(row(json!({"collection":11,"owningModule":"com.adobe.ag.print","content":content})));
+            data.collection_content
+                .push(row(json!({"collection":11,"owningModule":"com.adobe.ag.library.sortType","content":"positionInCollection"})));
+        }
+        data
+    }
+    #[test]
+    fn a_saved_print_imports_as_a_saved_print_with_its_layout() {
+        let mut s = crate::Session::new();
+        let r = apply(&mut s, saved_print_sample(Some(SAVED_PRINT)), false).unwrap();
+        assert_eq!(r["savedPrints"], 1);
+        let collage = album_named(&s, "Collage");
+        assert_eq!(collage.photos.len(), 2);
+        let creation = collage.creation.as_ref().expect("a Saved Print");
+        assert_eq!(creation.kind, "print");
+        // what Print ▸ Saved Prints opens: the cells where Lightroom put them, each with its photo
+        let doc = lcc_layout::Document::from_json(&creation.document).unwrap();
+        let cells: Vec<_> = doc.pages[0].cells.iter().filter_map(|c| Some((c.rect, c.as_photo()?.photo.clone()))).collect();
+        let photo_of = |source: i64| r["mapping"][source.to_string()].as_u64().map(|id| id.to_string());
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[0].1, photo_of(2));
+        assert_eq!(cells[1].1, photo_of(1));
+        assert!((cells[1].0.x - 250.0).abs() < 1e-3 && (cells[1].0.h - 642.0).abs() < 1e-3);
+        assert_eq!(cells[2].1, None, "a cell whose image isn't imported stays empty");
+        let settings = lcc_print::PrintSettings::from_json(&doc.settings.unwrap().to_string()).unwrap();
+        assert!(matches!(settings.layout, lcc_print::LayoutStyle::CustomPackage { .. }));
+        assert_eq!(settings.destination, lcc_print::Destination::Jpeg);
+        let w = warnings_naming(&r, "Collage");
+        assert!(w.len() == 1 && w[0].contains("wasn't imported"), "{w:?}");
+        // listed with the other Saved Prints
+        assert!(crate::creations::creations_of(&s, None).iter().any(|c| c.name == "Collage"));
+    }
+    #[test]
+    fn a_saved_print_whose_layout_cant_be_read_imports_as_a_plain_collection() {
+        for content in [None, Some("s = { _engineIdentifier = \"com.adobe.lightroom.print.engine.unknown\" }"), Some("s = {")] {
+            let mut s = crate::Session::new();
+            let r = apply(&mut s, saved_print_sample(content), false).unwrap();
+            assert_eq!(r["savedPrints"], 0);
+            let collage = album_named(&s, "Collage");
+            assert!(collage.creation.is_none() && collage.photos.len() == 2);
+            let w = warnings_naming(&r, "Collage");
+            assert!(w.len() == 1 && w[0].contains("imported as a plain collection"), "{content:?}: {w:?}");
+        }
+    }
+    /// A catalog imported before saved prints carried their layout: importing it again turns the plain album into the
+    /// Saved Print, and a later import keeps the layout the user may have changed since.
+    #[test]
+    fn reimport_gives_an_earlier_plain_album_its_print_layout_once() {
+        let dir = std::env::temp_dir().join(format!("app-lrcat-saved-print-reimport-{}", std::process::id()));
+        let mut s = crate::Session::new();
+        s.open_library(&dir, false).unwrap();
+        apply(&mut s, saved_print_sample(None), false).unwrap();
+        assert!(album_named(&s, "Collage").creation.is_none());
+        let albums = s.catalog.albums().count();
+        let r = apply(&mut s, saved_print_sample(Some(SAVED_PRINT)), false).unwrap();
+        assert_eq!(r["savedPrints"], 1);
+        assert_eq!(s.catalog.albums().count(), albums, "no second album");
+        let collage = album_named(&s, "Collage");
+        let id = collage.id;
+        assert!(collage.creation.as_ref().is_some_and(|c| c.kind == "print"));
+        let edited = lcc_catalog::Creation { kind: "print".into(), document: collage.creation.as_ref().unwrap().document.replace("612", "613") };
+        s.commit("edit", Op::SetAlbumCreation { id, creation: Some(edited.clone()) }).unwrap();
+        let r = apply(&mut s, saved_print_sample(Some(SAVED_PRINT)), false).unwrap();
+        assert_eq!(r["savedPrints"], 0);
+        assert_eq!(album_named(&s, "Collage").creation.as_ref(), Some(&edited));
+        s.close_library().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     /// The import report's warnings about `album`.
     fn warnings_naming(r: &Value, album: &str) -> Vec<String> {
         r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.starts_with(&format!("{album}:"))).map(String::from).collect()
+    }
+    /// [`warnings_naming`] without the one a saved print gets when (as in these fixtures) the catalog has no layout
+    /// for it.
+    fn placement_warnings(r: &Value, album: &str) -> Vec<String> {
+        warnings_naming(r, album).into_iter().filter(|w| !w.contains("print layout isn't imported")).collect()
     }
     fn album_named<'a>(s: &'a crate::Session, name: &str) -> &'a lcc_catalog::Album {
         s.catalog.albums().find(|a| a.name == name).unwrap_or_else(|| panic!("no album {name}"))
@@ -2627,7 +2767,7 @@ pub(crate) mod tests {
         let poster = album_named(&s, "Poster");
         assert_eq!((poster.parent, poster.folder, poster.photos.len()), (None, false, 1));
         assert_eq!(album_named(&s, "Album Book").parent, Some(album_named(&s, "Travel").id));
-        let w = warnings_naming(&r, "Poster");
+        let w = placement_warnings(&r, "Poster");
         assert!(w.len() == 1 && w[0].contains("Loose") && w[0].contains("at the top level"), "{w:?}");
         assert_eq!(warnings_naming(&r, "Album Book").len(), 1);
         assert_eq!(album_named(&s, "Keepers").photos.len(), 2);
@@ -2648,7 +2788,7 @@ pub(crate) mod tests {
         assert!(s.catalog.albums().all(|a| a.name != "quick collection"));
         let w = warnings_naming(&r, "Orphan");
         assert!(w.len() == 1 && w[0].contains("isn't in the catalog"), "{w:?}");
-        let w = warnings_naming(&r, "Stray");
+        let w = placement_warnings(&r, "Stray");
         assert!(w.len() == 1 && w[0].contains("quick collection") && w[0].contains("at the top level"), "{w:?}");
         assert_eq!(album_named(&s, "Keepers").parent, Some(album_named(&s, "Travel").id));
     }
@@ -2753,7 +2893,7 @@ pub(crate) mod tests {
         assert_eq!(album_named(&s, "Poster").photos.len(), 1);
         let w = warnings_naming(&r, "Outer");
         assert!(w.len() == 1 && w[0].contains("inside “Loose”") && w[0].ends_with("at the top level (Lightroom collection 13)"), "{w:?}");
-        assert!(warnings_naming(&r, "Inner").is_empty() && warnings_naming(&r, "Poster").is_empty(), "{r}");
+        assert!(warnings_naming(&r, "Inner").is_empty() && placement_warnings(&r, "Poster").is_empty(), "{r}");
     }
     /// The album counter saturates: one at its end hands every collection the same id. The second collection used to be
     /// dropped without a word while the report counted it; the import now stops and names it.
