@@ -2697,6 +2697,8 @@ mod tests_crop_aspects;
 #[cfg(test)]
 mod tests_crop_same;
 #[cfg(test)]
+mod tests_cull_suggest;
+#[cfg(test)]
 mod tests_denoise;
 #[cfg(test)]
 #[cfg(feature = "denoise")]

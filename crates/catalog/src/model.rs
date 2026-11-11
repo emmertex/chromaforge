@@ -524,6 +524,10 @@ pub struct Analysis {
     /// Combined 0..1 cull score from classical measures.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cull_score: Option<f32>,
+    /// Suggested star rating 1..=5 from the cull score (bulk culling's starting point; the engine
+    /// never applies it over a rating the user set). Absent until a run suggested one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<u8>,
 }
 
 /// Raw formats whose files carry vendor white-balance multipliers but no colour matrices: their starting
