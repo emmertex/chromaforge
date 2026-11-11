@@ -14,6 +14,13 @@ Patch: present mode (issue #633). `WgpuConfiguration::choose_present_mode` (copi
 colour space and the offered modes at every configure; `configure_surface` falls back to
 `AutoVsync` (FIFO) when the chosen mode isn't offered. Marked `Patch (present mode)`.
 
+Patch: no panic on a lost device (issue #1029). `Renderer::update_buffers` panicked when
+`Queue::write_buffer_with` gave no staging buffer (the device out of memory or lost, seen on a
+Qualcomm Adreno under Vulkan), and `Renderer::render` panicked on missing buffer slices. Now the
+failed upload is logged (1st, 2nd, 4th… time) and leaves its slices empty, and `render` stops drawing
+when slices are missing: the frame is skipped instead of the app crashing. Marked
+`Patch (no panic on a lost device)`.
+
 Patch: HDR display output (LR-VIEW-HDR-DISPLAY). Upstream egui-wgpu always picks an
 8-bit surface in the default colour space and never hands the surface to the app. The changes,
 each marked `Patch (HDR display output)` in the source:

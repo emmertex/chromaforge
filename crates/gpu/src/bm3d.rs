@@ -15,7 +15,6 @@ use lcc_denoise::bm3d::{self, Params};
 use lcc_denoise::builtin::Builtin;
 use lcc_denoise::nlm::hadamard;
 use lcc_denoise::run::{Error, TileRunner};
-use wgpu::util::DeviceExt;
 
 use crate::nn::{CLOSING, Card, Dev, TIMEOUT, dev, dev_on, entry, mark_broken, pipeline, storage};
 
@@ -164,11 +163,7 @@ impl Bm3dGpu {
         ];
         // the driver compiles the kernels here: a crash in it is reported at the next launch (issue #250)
         let pipes = crate::backend::with_marker("denoise kernel compilation", || build_pipes(d));
-        let consts = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("bm3d consts"),
-            contents: bytemuck::cast_slice(&consts),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let consts = crate::upload::buffer_init(&d.device, &d.queue, Some("bm3d consts"), bytemuck::cast_slice(&consts), wgpu::BufferUsages::STORAGE);
         let mut me =
             Bm3dGpu { dev: d, pipes, requested: *params, t, nr, nb, consts, free: Mutex::new(Vec::new()), made: Mutex::new(1), wake: Condvar::new() };
         let first = me.workspace();
