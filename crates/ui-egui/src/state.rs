@@ -1326,6 +1326,9 @@ pub struct UiState {
     /// Animate the loupe rect toward its target (set by a click-zoom).
     #[serde(skip)]
     pub zoom_anim: bool,
+    /// A momentary before/after layout (`\`, the Original Photo box): a view mode, not a
+    /// workspace, so it never comes back after a restart looking like edits not showing (#1110).
+    #[serde(skip)]
     pub before_after: BeforeAfter,
     pub thumb_size: f32,
     /// Open Edit sections by id.
