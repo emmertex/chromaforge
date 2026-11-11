@@ -860,7 +860,14 @@ pub(crate) fn merge_content(
         mine.mask_tool_effects.entry(k).or_insert(v);
     }
     // import develop defaults: the library's when the store has none yet (auto import stays)
-    let plain = |d: &ImportDefaults| ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, auto_paused: false, ..d.clone() };
+    let plain = |d: &ImportDefaults| ImportDefaults {
+        auto_folder: None,
+        auto_copy: false,
+        auto_album: None,
+        auto_paused: false,
+        auto_options: Default::default(),
+        ..d.clone()
+    };
     if plain(&mine.import) == ImportDefaults::default() {
         mine.import = plain(&theirs.import);
     }
@@ -1019,7 +1026,14 @@ impl Session {
 
     /// The import defaults the store keeps (auto import stays with each library).
     fn store_import_defaults(&self) -> ImportDefaults {
-        ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, auto_paused: false, ..self.import_defaults.clone() }
+        ImportDefaults {
+            auto_folder: None,
+            auto_copy: false,
+            auto_album: None,
+            auto_paused: false,
+            auto_options: Default::default(),
+            ..self.import_defaults.clone()
+        }
     }
 
     pub(crate) fn habits(&self) -> Habits {
@@ -1080,7 +1094,8 @@ impl Session {
             self.import_defaults.auto_album.take(),
             self.import_defaults.auto_paused,
         );
-        self.import_defaults = ImportDefaults { auto_folder, auto_copy, auto_album, auto_paused, ..c.import };
+        let auto_options = std::mem::take(&mut self.import_defaults.auto_options);
+        self.import_defaults = ImportDefaults { auto_folder, auto_copy, auto_album, auto_paused, auto_options, ..c.import };
         let mut list = crate::presets::builtin();
         for p in &mut list {
             p.favorite = c.favorites.contains(&p.id);

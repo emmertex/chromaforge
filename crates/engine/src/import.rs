@@ -397,6 +397,9 @@ pub struct ImportDefaults {
     /// keep watching.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub auto_paused: bool,
+    /// What Auto Import does beyond adding the files (subfolders, naming, presets, keywords).
+    #[serde(skip_serializing_if = "AutoImportOptions::is_default")]
+    pub auto_options: AutoImportOptions,
     /// Open the import review when a camera or memory card is connected.
     pub show_on_card: bool,
     /// New photos start with Constrain Crop off (Settings ▸ Import ▸ "Constrain crop by default"
@@ -416,6 +419,36 @@ pub struct ImportDefaults {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub remove_dust: bool,
 }
+
+/// Auto Import's settings besides the folder (Lightroom Classic's Auto Import Settings): where it
+/// looks, how copies are named, and what every arriving photo gets. All off / empty by default;
+/// settings written before these existed load as that.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AutoImportOptions {
+    /// Photos in subfolders of the watched folder arrive too (hidden folders, folder links and the
+    /// library's own folder are never entered; at most [`AUTO_IMPORT_DEPTH`] levels).
+    pub subfolders: bool,
+    /// File-name template for copies ([`crate::rename::expand`] tokens; empty = keep the names).
+    pub rename: String,
+    /// Develop preset applied to arriving photos, by id (`None` = the import defaults only).
+    pub preset: Option<String>,
+    /// Metadata preset applied to arriving photos, by name.
+    pub metadata_preset: Option<String>,
+    /// Keywords added to arriving photos.
+    pub keywords: Vec<String>,
+}
+
+impl AutoImportOptions {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Folder levels Auto Import looks into with Include Subfolders.
+pub const AUTO_IMPORT_DEPTH: usize = 16;
+/// Directory entries Auto Import looks at in one listing with Include Subfolders.
+pub const AUTO_IMPORT_ENTRIES: usize = 200_000;
 
 impl ImportDefaults {
     /// The folder Auto Import watches right now: set and not switched off.

@@ -41,6 +41,11 @@ struct Fake {
     sidecars: std::collections::HashMap<String, Vec<u8>>,
     /// The version `/server/version` answers (`None`: v3.3.1).
     version: Option<Value>,
+    /// The account's unlock PIN and password (`None`: no such secret), and whether the session is
+    /// elevated (locked-folder assets are listed, `GET /auth/status` says so).
+    pin: Option<String>,
+    password: Option<String>,
+    elevated: bool,
 }
 
 fn read_req(s: impl Read) -> Option<(String, String, Option<String>, Vec<u8>)> {
@@ -104,10 +109,30 @@ fn serve(fake: Fake) -> (String, Arc<Mutex<Vec<String>>>) {
                 json(json!({"id": "user-1", "email": "me@example.invalid", "name": "Me", "isAdmin": false}))
             } else if path == "/api/api-keys/me" {
                 json(json!({"id": "k", "name": "app", "permissions": ["asset.read", "asset.view", "asset.download"]}))
+            } else if path == "/api/auth/status" {
+                json(json!({"isElevated": fake.elevated, "password": fake.password.is_some(), "pinCode": fake.pin.is_some()}))
+            } else if path == "/api/auth/session/unlock" {
+                let b: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let pin = b["pinCode"].as_str().is_some_and(|p| fake.pin.as_deref() == Some(p));
+                let pass = b["password"].as_str().is_some_and(|p| fake.password.as_deref() == Some(p));
+                if pin || pass {
+                    fake.elevated = true;
+                    resp("204 No Content", "application/json", b"")
+                } else {
+                    resp(
+                        "401 Unauthorized",
+                        "application/json",
+                        br#"{"message":"Wrong password or PIN code","statusCode":401,"error":"Unauthorized"}"#,
+                    )
+                }
             } else if path == "/api/search/metadata" {
                 let q: Value = serde_json::from_slice(&body).unwrap_or_default();
-                let items: Vec<Value> =
-                    if q["page"].as_u64().unwrap_or(1) == 1 { fake.assets.iter().map(|(a, _)| a.clone()).collect() } else { vec![] };
+                // a locked session leaves locked-folder assets out of the listing
+                let items: Vec<Value> = if q["page"].as_u64().unwrap_or(1) == 1 {
+                    fake.assets.iter().filter(|(a, _)| fake.elevated || a["visibility"].as_str() != Some("locked")).map(|(a, _)| a.clone()).collect()
+                } else {
+                    vec![]
+                };
                 json(json!({"assets": {"total": items.len(), "count": items.len(), "items": items, "nextPage": null}}))
             } else if path == "/api/asset-files" {
                 let asset = param("assetId").unwrap_or_default();
@@ -297,6 +322,66 @@ fn connect_link_and_open_in_immich() {
 
     assert_eq!(s.execute("immich.disconnect", &json!({"forgetLinks": true})).unwrap()["forgotLinks"], 2);
     assert!(s.immich_accounts().unwrap().immich.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn locked_folders_stay_hidden_until_the_session_is_unlocked() {
+    let dir = temp_dir("locked");
+    let (normal, hidden_shot) = (png(31), png(32));
+    let fake = Fake {
+        assets: vec![
+            (asset("cccc-3", "beach.png", &normal, json!({})), normal.clone()),
+            (asset("dddd-4", "secret.png", &hidden_shot, json!({"visibility": "locked"})), hidden_shot.clone()),
+        ],
+        pin: Some("2468".into()),
+        ..Fake::default()
+    };
+    let (url, seen) = serve(fake);
+    let mut s = session();
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+
+    // the session starts locked; authStatus says so
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["ok"], true, "{st}");
+    assert_eq!(st["isElevated"], false, "{st}");
+    assert_eq!(st["pinCode"], true, "{st}");
+
+    // while locked, the server leaves the locked asset out of its listings
+    let br = s.execute("immich.browse", &json!({"source": "timeline"})).unwrap();
+    let names: Vec<&str> = br["assets"].as_array().unwrap().iter().filter_map(|a| a["fileName"].as_str()).collect();
+    assert_eq!(names, vec!["beach.png"], "{br}");
+
+    // a wrong secret is a clear failure and leaves the session locked
+    let r = s.execute("immich.unlockSession", &json!({"secret": "1111"})).unwrap();
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["error"]["kind"], "status", "{r}");
+    assert!(r["error"]["message"].as_str().is_some_and(|m| m.contains("refused")), "{r}");
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["isElevated"], false, "{st}");
+
+    // the right PIN unlocks (4–6 digits go as pinCode)
+    let r = s.execute("immich.unlockSession", &json!({"secret": "2468"})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["isElevated"], true, "{st}");
+
+    // unlocked, the locked asset is listed like any other and can be imported
+    let br = s.execute("immich.browse", &json!({"source": "timeline"})).unwrap();
+    assert_eq!(br["assets"].as_array().unwrap().len(), 2, "{br}");
+    let dest = dir.join("out");
+    let r = s.execute("immich.import", &json!({"assets": ["dddd-4"], "destination": dest.to_string_lossy()})).unwrap();
+    assert_eq!(r["started"], true, "{r}");
+    let v = pump_until(&mut s, |_, v| v["import"]["active"] == false);
+    assert_eq!(v["import"]["imported"], 1, "{v}");
+    assert!(s.catalog.photos().any(|p| p.file_name == "secret.png"), "{:?}", v["import"]);
+
+    // the secret is nowhere but in the request body: not in the journal, a result or a URL
+    assert!(!format!("{:?}", s.journal).contains("2468"), "the PIN must not be journaled");
+    assert!(!s.execute("immich.status", &json!({})).unwrap().to_string().contains("2468"));
+    assert!(!s.execute("immich.authStatus", &json!({})).unwrap().to_string().contains("2468"));
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().all(|r| !r.contains("2468")), "the PIN never goes into a URL: {seen:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

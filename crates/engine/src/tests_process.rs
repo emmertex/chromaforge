@@ -279,3 +279,42 @@ fn update_to_current_process_checks_named_photos_not_the_selection() {
     // `ids: null` names nothing: the selection decides (and there is none)
     assert!(matches!(s.execute("develop.updateProcess", &json!({"ids": null})), Err(EngineError::Disabled(..))));
 }
+
+/// Find Previous Process Photos filters the view to the photos on an older process, and shows
+/// them all again when none is left.
+#[test]
+fn find_previous_process_shows_only_older_photos() {
+    let mut s = Session::with_demo();
+    let all = s.visible_cloned();
+    assert!(all.len() > 2);
+    let old = all[1];
+    s.selection = crate::Selection { ids: vec![old], active: Some(old) };
+    s.execute("develop.merge", &json!({"settings": {"process": OLDER.0}})).unwrap();
+    let r = s.execute("library.findPreviousProcess", &json!({})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    assert_eq!(s.visible_cloned(), vec![old]);
+    s.execute("library.filter", &json!({"ruleSet": null})).unwrap();
+    s.execute("develop.merge", &json!({"settings": {"process": ProcessVersion::LATEST.0}})).unwrap();
+    let r = s.execute("library.findPreviousProcess", &json!({})).unwrap();
+    assert_eq!(r["count"], 0, "{r}");
+}
+
+/// Refine Photos: picks become unflagged, unflagged photos rejected, rejects stay; one undo step.
+#[test]
+fn refine_photos_is_one_undoable_culling_pass() {
+    use lcc_catalog::Flag;
+    let mut s = Session::with_demo();
+    let ids: Vec<PhotoId> = s.visible_cloned().into_iter().take(3).collect();
+    for (id, flag) in ids.iter().zip(["pick", "none", "reject"]) {
+        s.execute("photo.flag", &json!({"ids": [id.0], "flag": flag})).unwrap();
+    }
+    let flag = |s: &Session, id: PhotoId| s.catalog.photo(id).unwrap().flag;
+    let count = |s: &mut Session, f: Flag| s.visible_cloned().into_iter().filter(|id| flag(s, *id) == f).count();
+    let (picks, none) = (count(&mut s, Flag::Pick), count(&mut s, Flag::None));
+    let r = s.execute("library.refine", &json!({})).unwrap();
+    assert_eq!((r["unflagged"].as_u64(), r["rejected"].as_u64()), (Some(picks as u64), Some(none as u64)), "{r}");
+    assert_eq!((count(&mut s, Flag::Pick), count(&mut s, Flag::None)), (0, picks));
+    assert_eq!((flag(&s, ids[0]), flag(&s, ids[1]), flag(&s, ids[2])), (Flag::None, Flag::Reject, Flag::Reject));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((flag(&s, ids[0]), flag(&s, ids[1]), flag(&s, ids[2])), (Flag::Pick, Flag::None, Flag::Reject));
+}

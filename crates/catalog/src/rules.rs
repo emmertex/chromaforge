@@ -132,6 +132,7 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("edited", "Has Edits", Kind::Bool),
     ("cropped", "Cropped", Kind::Bool),
     ("treatment", "Treatment", Kind::Choice(&[("color", "In Color"), ("monochrome", "Black & White")])),
+    ("processVersion", "Process Version", Kind::Number),
     // Assisted Culling
     ("sharpness", "Focus (assisted culling)", Kind::Number),
     ("bestOfGroup", "Best of Similar Shots", Kind::Bool),
@@ -155,7 +156,7 @@ pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso", "flash", "exposureBias", "cameraSerial"]),
     ("Location", &["location", "sublocation", "city", "state", "country", "countryCode", "hasGps"]),
     ("Size", &["longEdge", "shortEdge", "width", "height", "aspect", "megapixels"]),
-    ("Develop", &["edited", "cropped", "treatment"]),
+    ("Develop", &["edited", "cropped", "treatment", "processVersion"]),
     ("Assisted Culling", &["sharpness", "bestOfGroup", "clipped", "eyesOpen", "aesthetic", "cullScore"]),
 ];
 
@@ -1120,6 +1121,7 @@ impl Rule {
                 let (w, h) = p.shown_size();
                 num_op(op, Some(w * h / 1e6), value)
             }
+            "processVersion" => num_op(op, Some(f64::from(p.develop.process.0)), value),
             "sharpness" => num_op(op, p.analysis.map(|a| a.sharpness as f64), value),
             "bestOfGroup" => yes(p.analysis.is_some_and(|a| a.best || a.group.is_none())),
             "clipped" => num_op(op, p.analysis.map(|a| a.clipped as f64), value),
