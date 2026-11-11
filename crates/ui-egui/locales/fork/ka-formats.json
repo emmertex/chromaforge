@@ -152,6 +152,7 @@
   "Saved template {name}": "შაბლონი {name} შენახულია",
   "Saved {path}": "შენახულია: {path}",
   "Second graphics card not used: {why}": "მეორე გრაფიკული ბარათი არ გამოიყენება: {why}",
+  "Select {n} look-alikes": "{n} მსგავსი სახის არჩევა",
   "Selected cell {n}": "მონიშნული უჯრა {n}",
   "Sends this area to {name}, in {} pieces.": "ეს არე გაეგზავნება {name}-ს {} ნაწილად.",
   "Sends this {} × {} px area to {name}.": "ეს {} × {} px არე გაეგზავნება {name}-ს.",

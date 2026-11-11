@@ -1287,6 +1287,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Nếu nó nằm trên ổ chưa kết nối, hãy kết nối rồi thử lại. Nếu không, hãy mở hoặc tạo catalog khác.",
   "Ignore": "Bỏ qua",
   "Ignore Faces": "Bỏ qua khuôn mặt",
+  "Ignore this face": "Bỏ qua khuôn mặt này",
   "Ignored Faces": "Khuôn mặt đã bỏ qua",
   "Image Info": "Thông tin ảnh",
   "Image Settings": "Cài đặt hình ảnh",

@@ -1112,6 +1112,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Pokud je na disku, který není připojený, připojte ho a zkuste to znovu. Jinak otevřete nebo vytvořte jiný katalog.",
   "Ignore": "Ignorovat",
   "Ignore Faces": "Ignorovat obličeje",
+  "Ignore this face": "Ignorovat tento obličej",
   "Ignored Faces": "Ignorované obličeje",
   "Image Info": "Informace o obrázku",
   "Image Settings": "Nastavení obrázku",

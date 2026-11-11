@@ -1166,6 +1166,7 @@
   "If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,": "起動時にライブラリを開けない場合(別のプログラムで開いている、読めない、接続されていないドライブ上、",
   "Ignore": "無視",
   "Ignore Faces": "顔を無視",
+  "Ignore this face": "この顔を無視",
   "Ignored Faces": "無視した顔",
   "Image Info": "画像情報",
   "Image Settings": "画像設定",

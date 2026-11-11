@@ -1091,6 +1091,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Якщо він на непідключеному диску, підключіть диск і спробуйте ще раз. Інакше відкрийте або створіть інший каталог.",
   "Ignore": "Ігнорувати",
   "Ignore Faces": "Ігнорувати обличчя",
+  "Ignore this face": "Ігнорувати це обличчя",
   "Ignored Faces": "Ігноровані обличчя",
   "Image Info": "Відомості про зображення",
   "Image Settings": "Параметри зображення",

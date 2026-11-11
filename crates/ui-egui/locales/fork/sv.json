@@ -1212,6 +1212,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Om den finns på en enhet som inte är ansluten, anslut den och försök igen. Annars kan du öppna eller skapa en annan katalog.",
   "Ignore": "Ignorera",
   "Ignore Faces": "Ignorera ansikten",
+  "Ignore this face": "Ignorera det här ansiktet",
   "Ignored Faces": "Ignorerade ansikten",
   "Image Info": "Bildinformation",
   "Image Settings": "Bildinställningar",
