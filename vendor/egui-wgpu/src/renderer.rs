@@ -564,12 +564,12 @@ impl Renderer {
                     // Skip rendering zero-sized clip areas.
                     if let Primitive::Mesh(_) = primitive {
                         // If this is a mesh, we need to advance the index and vertex buffer iterators:
-                        index_buffer_slices
-                            .next()
-                            .expect("You must call .update_buffers() before .render()");
-                        vertex_buffer_slices
-                            .next()
-                            .expect("You must call .update_buffers() before .render()");
+                        // Patch (no panic on a lost device): no slices when the upload failed
+                        if index_buffer_slices.next().is_none()
+                            || vertex_buffer_slices.next().is_none()
+                        {
+                            return;
+                        }
                     }
                     continue;
                 }
@@ -579,12 +579,12 @@ impl Renderer {
 
             match primitive {
                 Primitive::Mesh(mesh) => {
-                    let index_buffer_slice = index_buffer_slices
-                        .next()
-                        .expect("You must call .update_buffers() before .render()");
-                    let vertex_buffer_slice = vertex_buffer_slices
-                        .next()
-                        .expect("You must call .update_buffers() before .render()");
+                    // Patch (no panic on a lost device): no slices when the upload failed
+                    let (Some(index_buffer_slice), Some(vertex_buffer_slice)) =
+                        (index_buffer_slices.next(), vertex_buffer_slices.next())
+                    else {
+                        return;
+                    };
 
                     if let Some(Texture { bind_group, .. }) = self.textures.get(&mesh.texture_id) {
                         render_pass.set_bind_group(1, bind_group, &[]);
@@ -1026,28 +1026,30 @@ impl Renderer {
                 NonZeroU64::new(required_index_buffer_size).unwrap(),
             );
 
-            let Some(mut index_buffer_staging) = index_buffer_staging else {
-                panic!(
-                    "Failed to create staging buffer for index data. Index count: {index_count}. Required index buffer size: {required_index_buffer_size}. Actual size {} and capacity: {} (bytes)",
-                    self.index_buffer.buffer.size(),
-                    self.index_buffer.capacity
-                );
-            };
-
-            let mut index_offset = 0;
-            for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
-                match primitive {
-                    Primitive::Mesh(mesh) => {
-                        let size = mesh.indices.len() * core::mem::size_of::<u32>();
-                        let slice = index_offset..(size + index_offset);
-                        index_buffer_staging
-                            .slice(slice.clone())
-                            .copy_from_slice(bytemuck::cast_slice(&mesh.indices));
-                        self.index_buffer.slices.push(slice);
-                        index_offset += size;
+            // Patch (no panic on a lost device), issue #1029: no staging buffer means the device is
+            // out of memory or lost — log and draw nothing this frame (`render` stops at the
+            // missing slices) instead of panicking.
+            if let Some(mut index_buffer_staging) = index_buffer_staging {
+                let mut index_offset = 0;
+                for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
+                    match primitive {
+                        Primitive::Mesh(mesh) => {
+                            let size = mesh.indices.len() * core::mem::size_of::<u32>();
+                            let slice = index_offset..(size + index_offset);
+                            index_buffer_staging
+                                .slice(slice.clone())
+                                .copy_from_slice(bytemuck::cast_slice(&mesh.indices));
+                            self.index_buffer.slices.push(slice);
+                            index_offset += size;
+                        }
+                        Primitive::Callback(_) => {}
                     }
-                    Primitive::Callback(_) => {}
                 }
+            } else if skipped_frame_worth_logging() {
+                log::warn!(
+                    "egui-wgpu: no staging buffer for index data ({required_index_buffer_size} bytes, buffer {} bytes): the GPU device is out of memory or lost; frame skipped",
+                    self.index_buffer.buffer.size()
+                );
             }
         }
         if vertex_count > 0 {
@@ -1072,28 +1074,30 @@ impl Renderer {
                 NonZeroU64::new(required_vertex_buffer_size).unwrap(),
             );
 
-            let Some(mut vertex_buffer_staging) = vertex_buffer_staging else {
-                panic!(
-                    "Failed to create staging buffer for vertex data. Vertex count: {vertex_count}. Required vertex buffer size: {required_vertex_buffer_size}. Actual size {} and capacity: {} (bytes)",
-                    self.vertex_buffer.buffer.size(),
-                    self.vertex_buffer.capacity
-                );
-            };
-
-            let mut vertex_offset = 0;
-            for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
-                match primitive {
-                    Primitive::Mesh(mesh) => {
-                        let size = mesh.vertices.len() * core::mem::size_of::<Vertex>();
-                        let slice = vertex_offset..(size + vertex_offset);
-                        vertex_buffer_staging
-                            .slice(slice.clone())
-                            .copy_from_slice(bytemuck::cast_slice(&mesh.vertices));
-                        self.vertex_buffer.slices.push(slice);
-                        vertex_offset += size;
+            // Patch (no panic on a lost device), issue #1029: no staging buffer means the device is
+            // out of memory or lost — log and draw nothing this frame (`render` stops at the
+            // missing slices) instead of panicking.
+            if let Some(mut vertex_buffer_staging) = vertex_buffer_staging {
+                let mut vertex_offset = 0;
+                for epaint::ClippedPrimitive { primitive, .. } in paint_jobs {
+                    match primitive {
+                        Primitive::Mesh(mesh) => {
+                            let size = mesh.vertices.len() * core::mem::size_of::<Vertex>();
+                            let slice = vertex_offset..(size + vertex_offset);
+                            vertex_buffer_staging
+                                .slice(slice.clone())
+                                .copy_from_slice(bytemuck::cast_slice(&mesh.vertices));
+                            self.vertex_buffer.slices.push(slice);
+                            vertex_offset += size;
+                        }
+                        Primitive::Callback(_) => {}
                     }
-                    Primitive::Callback(_) => {}
                 }
+            } else if skipped_frame_worth_logging() {
+                log::warn!(
+                    "egui-wgpu: no staging buffer for vertex data ({required_vertex_buffer_size} bytes, buffer {} bytes): the GPU device is out of memory or lost; frame skipped",
+                    self.vertex_buffer.buffer.size()
+                );
             }
         }
 
@@ -1221,4 +1225,12 @@ impl ScissorRect {
 fn renderer_impl_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Renderer>();
+}
+
+/// Patch (no panic on a lost device), issue #1029: whether to log this skipped frame (the 1st,
+/// 2nd, 4th, 8th…), so a lost device doesn't log every frame.
+fn skipped_frame_worth_logging() -> bool {
+    static SKIPPED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let n = SKIPPED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    n.is_power_of_two()
 }
