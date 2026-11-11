@@ -1117,6 +1117,7 @@
   "If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,": "如果启动时无法打开图库（已在其他程序中打开、无法读取、位于未连接的驱动器上，",
   "Ignore": "忽略",
   "Ignore Faces": "忽略面部",
+  "Ignore this face": "忽略此面孔",
   "Ignored Faces": "已忽略的面部",
   "Image Info": "图像信息",
   "Image Settings": "图像设置",

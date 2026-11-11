@@ -1023,6 +1023,7 @@
   "If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,": "Si votre bibliothèque ne peut pas être ouverte au lancement (ouverte dans un autre programme, illisible, sur un disque non connecté,",
   "Ignore": "Ignorer",
   "Ignore Faces": "Ignorer les visages",
+  "Ignore this face": "Ignorer ce visage",
   "Ignored Faces": "Visages ignorés",
   "Image Info": "Informations sur l'image",
   "Image Settings": "Paramètres de l'image",

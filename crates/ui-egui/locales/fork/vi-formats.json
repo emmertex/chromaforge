@@ -142,6 +142,7 @@
   "Restore Built-in Looks ({n})": "Khôi phục giao diện tích hợp ({n})",
   "Saved template {name}": "Đã lưu mẫu {name}",
   "Second graphics card not used: {why}": "Không dùng card đồ họa thứ hai: {why}",
+  "Select {n} look-alikes": "Chọn {n} khuôn mặt giống nhau",
   "Selected cell {n}": "Ô đã chọn {n}",
   "Sends this area to {name}, in {} pieces.": "Gửi vùng này tới {name} thành {} phần.",
   "Sends this {} × {} px area to {name}.": "Gửi vùng {} × {} px này tới {name}.",

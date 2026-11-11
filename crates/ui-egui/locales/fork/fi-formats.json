@@ -118,6 +118,7 @@
   "Rendered {ok} of {total} to DNG": "DNG-muotoon muodostettu {ok} / {total}",
   "Restore Built-in Looks ({n})": "Palauta sisäiset tyylit ({n})",
   "Second graphics card not used: {why}": "Toista näytönohjainta ei käytetä: {why}",
+  "Select {n} look-alikes": "Valitse {n} samannäköistä",
   "Selected cell {n}": "Valittu solu {n}",
   "Sends this area to {name}, in {} pieces.": "Lähettää tämän alueen palveluun {name} {} osana.",
   "Sends this {} × {} px area to {name}.": "Lähettää tämän {} × {} px:n alueen palveluun {name}.",

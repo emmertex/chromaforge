@@ -100,6 +100,7 @@
   "Remove {what} from the catalog for good?": "Retirer définitivement {what} du catalogue ?",
   "Restore Built-in Looks ({n})": "Restaurer les looks intégrés ({n})",
   "Second graphics card not used: {why}": "Deuxième carte graphique non utilisée : {why}",
+  "Select {n} look-alikes": "Sélectionner {n} visages semblables",
   "Selected cell {n}": "Cellule sélectionnée {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} page(s) envoyée(s) à l'imprimante (tâche {j})",
   "Slideshow {n}": "Diaporama {n}",

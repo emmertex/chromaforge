@@ -1246,6 +1246,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "თუ ის მიუერთებელ დისკზეა, მიაერთეთ და სცადეთ ხელახლა. სხვა შემთხვევაში გახსენით ან შექმენით სხვა კატალოგი.",
   "Ignore": "იგნორირება",
   "Ignore Faces": "სახეების იგნორირება",
+  "Ignore this face": "ამ სახის იგნორირება",
   "Ignored Faces": "იგნორირებული სახეები",
   "Image Info": "გამოსახულების ინფორმაცია",
   "Image Settings": "გამოსახულების პარამეტრები",

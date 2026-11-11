@@ -117,6 +117,7 @@
   "Rendered {ok} of {total} to DNG": "{ok} dari {total} dirender ke DNG",
   "Restore Built-in Looks ({n})": "Pulihkan Tampilan Bawaan ({n})",
   "Second graphics card not used: {why}": "Kartu grafis kedua tidak dipakai: {why}",
+  "Select {n} look-alikes": "Pilih {n} wajah mirip",
   "Selected cell {n}": "Sel terpilih {n}",
   "Sends this area to {name}, in {} pieces.": "Mengirim area ini ke {name} dalam {} bagian.",
   "Sends this {} × {} px area to {name}.": "Mengirim area {} × {} px ini ke {name}.",

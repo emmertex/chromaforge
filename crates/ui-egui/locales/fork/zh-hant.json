@@ -1145,6 +1145,7 @@
   "If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,": "如果啟動時無法打開照片庫（已在其他程式中打開、無法讀取、位於未連接的磁碟機上，",
   "Ignore": "忽略",
   "Ignore Faces": "忽略臉孔",
+  "Ignore this face": "忽略此臉孔",
   "Ignored Faces": "已忽略的臉孔",
   "Image Info": "影像資訊",
   "Image Settings": "影像設定",

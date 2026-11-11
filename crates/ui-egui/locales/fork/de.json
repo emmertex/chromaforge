@@ -1037,6 +1037,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Liegt er auf einem nicht angeschlossenen Laufwerk, schließen Sie es an und versuchen Sie es erneut. Andernfalls öffnen oder erstellen Sie einen anderen Katalog.",
   "Ignore": "Ignorieren",
   "Ignore Faces": "Gesichter ignorieren",
+  "Ignore this face": "Dieses Gesicht ignorieren",
   "Ignored Faces": "Ignorierte Gesichter",
   "Image Info": "Bildinformationen",
   "Image Settings": "Bildeinstellungen",

@@ -1196,6 +1196,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Jeśli znajduje się na niepodłączonym dysku, podłącz go i spróbuj ponownie. W przeciwnym razie otwórz lub utwórz inny katalog.",
   "Ignore": "Ignoruj",
   "Ignore Faces": "Ignoruj twarze",
+  "Ignore this face": "Ignoruj tę twarz",
   "Ignored Faces": "Ignorowane twarze",
   "Image Info": "Informacje o obrazie",
   "Image Settings": "Ustawienia obrazu",

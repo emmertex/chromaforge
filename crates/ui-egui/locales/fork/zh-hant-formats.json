@@ -106,6 +106,7 @@
   "Running on the processor: {}.": "在處理器上執行：{}。",
   "Running on {}.": "在 {} 上執行。",
   "Second graphics card not used: {why}": "未使用第二張顯示卡：{why}",
+  "Select {n} look-alikes": "選取 {n} 張相似臉孔",
   "Selected cell {n}": "所選儲存格 {n}",
   "Sent {n} page(s) to the printer (job {j})": "已向印表機傳送 {n} 頁（工作 {j}）",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "先顯示模型的條款，再從 {host} 下載 {}、安裝並開始使用。不會傳送任何其他資料。",

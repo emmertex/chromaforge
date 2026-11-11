@@ -1151,6 +1151,7 @@
   "If your library can't be opened at launch (open in another program, unreadable, on a drive that isn't connected,": "Если библиотеку не удаётся открыть при запуске (открыта в другой программе, нечитаема, на неподключённом диске,",
   "Ignore": "Игнорировать",
   "Ignore Faces": "Игнорировать лица",
+  "Ignore this face": "Игнорировать это лицо",
   "Ignored Faces": "Игнорируемые лица",
   "Image Info": "Сведения об изображении",
   "Image Settings": "Параметры изображения",

@@ -1157,6 +1157,7 @@
   "If it is on a drive that isn't connected, connect it and try again. Otherwise open or create another catalog.": "Jos se on asemalla, joka ei ole kytkettynä, kytke asema ja yritä uudelleen. Muussa tapauksessa avaa tai luo toinen katalogi.",
   "Ignore": "Ohita",
   "Ignore Faces": "Ohita kasvot",
+  "Ignore this face": "Ohita nämä kasvot",
   "Ignored Faces": "Ohitetut kasvot",
   "Image Info": "Kuvan tiedot",
   "Image Settings": "Kuva-asetukset",
