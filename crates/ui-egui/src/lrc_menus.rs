@@ -115,12 +115,12 @@ const FILE: &[&str] = &[
     "library.showQuickCollection=Show Quick Collection",
     "album.saveQuick=Save Quick Collection…",
     "album.clearQuick=Clear Quick Collection",
-    "soon.quickCollectionTarget",
+    r#"album.setTarget{"id":null}=Set Quick Collection as Target"#,
     "---",
     "@Library Filters",
     "---",
     "dialog.print=Printer…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
     "---",
     "app.quit",
 ];
@@ -131,12 +131,12 @@ const EDIT: &[&str] = &[
     "---",
     "library.selectAll=Select All",
     "library.selectNone=Select None",
-    "soon.invertSelection",
+    "library.invertSelection",
     "---",
     "library.selectOnlyActive=Select Only Active Photo",
-    "soon.deselectActive",
+    "library.deselectActive",
     r#"library.selectBy{"flag":"pick"}=Select Flagged Photos"#,
-    "soon.deselectUnflagged",
+    "library.deselectUnflagged",
     "---",
     "@Select by Flag",
     "@Select by Rating",
@@ -155,7 +155,7 @@ const LIBRARY: &[&str] = &[
     "dialog.newAlbum",
     "dialog.smartAlbum",
     "dialog.newFolder=New Collection Set…",
-    "soon.newFolder",
+    "dialog.newDiskFolder=New Folder…",
     "dialog.newSmartAlbum",
     "---",
     "view.focusSearch",
@@ -186,7 +186,7 @@ const LIBRARY: &[&str] = &[
     "---",
     "file.findMissing=Find All Missing Photos",
     "library.validateDng",
-    "soon.synchronizeFolder",
+    "dialog.synchronizeFolder=Synchronize Folder…",
     "---",
     "faces.detect=Find Faces Again…",
     "faces.clearAndRescan",
@@ -241,7 +241,7 @@ const PHOTO: &[&str] = &[
     "album.removePhotos",
     "photo.restore",
     "photo.deletePermanently",
-    "soon.removeFromCatalog",
+    "photo.removeFromCatalog=Remove Photo from Catalog",
     "library.deleteRejected=Delete Rejected Photos…",
 ];
 
@@ -278,7 +278,7 @@ const VIEW: &[&str] = &[
     "panel.toolbar",
     "view.filterBar=Show Filter Bar",
     "---",
-    "soon.toggleLoupeView",
+    "view.loupeToggle=Toggle Loupe View",
     "view.zoomToggle=Toggle Zoom View",
     "---",
     "view.zoomIn",
@@ -597,7 +597,7 @@ const PRINT: &[&str] = &[
     r#"printui.page{"delta":1}=Next Page"#,
     "---",
     "dialog.print=Print…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
 ];
 
 const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.infoOverlay=Show Info Overlay"];
@@ -756,65 +756,14 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon(
-        "soon.quickCollectionTarget",
-        "Set Quick Collection as Target",
-        Some("Cmd+Alt+Shift+B"),
-        'S',
-        false,
-        "Make the Quick Collection the target collection again (B adds to the target).",
-    ),
-    soon(
-        "soon.pageSetup",
-        "Page Setup…",
-        Some("Cmd+Shift+P"),
-        'S',
-        true,
-        "The system page-setup dialog for the printer (Print module's paper choice exists).",
-    ),
     // Edit
-    soon("soon.invertSelection", "Invert Selection", None, 'S', false, "Select the photos in view that aren't selected, and deselect the others."),
-    soon(
-        "soon.deselectActive",
-        "Deselect Active Photo",
-        Some("/"),
-        'S',
-        false,
-        "Take the active photo out of the selection (/ is the filmstrip key here today).",
-    ),
-    soon(
-        "soon.deselectUnflagged",
-        "Deselect Unflagged Photos",
-        Some("Cmd+Alt+Shift+D"),
-        'S',
-        false,
-        "Keep only the flagged photos of the selection selected.",
-    ),
     // Library
-    soon(
-        "soon.newFolder",
-        "New Folder…",
-        Some("Cmd+Shift+N"),
-        'S',
-        true,
-        "Create a folder on disk inside the chosen folder (the engine's folder.create exists).",
-    ),
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon(
-        "soon.synchronizeFolder",
-        "Synchronize Folder…",
-        None,
-        'S',
-        true,
-        "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
-    ),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
-    soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
     // View
-    soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
     // Window
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
     soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),

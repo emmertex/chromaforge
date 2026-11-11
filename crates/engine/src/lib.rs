@@ -2780,6 +2780,8 @@ mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
 #[cfg(test)]
+mod tests_select_menu;
+#[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]
 mod tests_settings_files;

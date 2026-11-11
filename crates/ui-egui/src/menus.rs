@@ -83,6 +83,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.squareGrid", "Square Grid", None, "View>Grid View Style"),
     // G: Photo Grid ↔ Square Grid (from other views: the photo grid)
     ("view.gridToggle", "Grid", Some("G"), ""),
+    // View ▸ Toggle Loupe View: the large view of the active photo <-> the grid style chosen last
+    ("view.loupeToggle", "Toggle Loupe View", None, "View"),
+    // Library ▸ New Folder… / Synchronize Folder…: act on the folder chosen in the Folders panel
+    ("dialog.newDiskFolder", "New Folder…", None, "Library"),
+    ("dialog.synchronizeFolder", "Synchronize Folder…", None, "Library"),
+    // File ▸ Page Setup…: the Print module with its paper choice open
+    ("dialog.pageSetup", "Page Setup…", None, "File"),
     ("library.selectOnlyActive", "Select Only Active Photo", Some("Cmd+Shift+D"), "Edit"),
     ("tool.guidedUpright", "Guided Upright", Some("Shift+G"), "Window>Tools"),
     ("view.detail", "Detail View", Some("D"), "View"),
@@ -101,7 +108,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("compare.set", "Show in Compare", None, ""),
     ("compare.makeSelect", "Make Candidate the Select", None, "View"),
     ("view.autoAdvance", "Auto Advance", None, "Photo"),
-    ("view.filmstrip", "Filmstrip", Some("/"), "Window>Panels"),
+    // F6 (Classic's key, `shortcuts::ALIASES`); `/` is Deselect Active Photo
+    ("view.filmstrip", "Filmstrip", None, "Window>Panels"),
     ("view.leftPanel", "My Photos Panel", Some("Cmd+Shift+L"), "Window>Panels"),
     ("view.rightPanel", "Right Panel", None, "Window>Panels"),
     ("view.beforeAfter", "Compare Before and After", Some("Y"), "View>Before/After"),
@@ -908,6 +916,52 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "library.selectOnlyActive" => {
             let Some(active) = app.session.active() else { return Some(Err("no active photo".into())) };
             app.run("library.select", json!({"ids": [active.0], "active": active.0}))
+        }
+        "view.loupeToggle" => {
+            if app.ui.module == crate::module::ModuleId::Library && app.ui.view == ViewMode::Detail {
+                app.ui.view = if app.ui.grid_style.is_grid() { app.ui.grid_style } else { ViewMode::PhotoGrid };
+                Ok(Value::Null)
+            } else {
+                app.run("view.loupe", json!({}))
+            }
+        }
+        "dialog.newDiskFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            app.ui.dialog = Some(Dialog::TextPrompt {
+                title: crate::i18n::tr_format!("New Folder in “{name}”", name = lcc_catalog::folders::folder_label(&path)),
+                hint: "Folder name (created on disk)".into(),
+                value: String::new(),
+                command: "folder.create".into(),
+                params: json!({"parent": path}),
+                key: "name".into(),
+            });
+            Ok(Value::Null)
+        }
+        "dialog.synchronizeFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            let tree = app.caches.folder_tree(&app.session.catalog);
+            match crate::panels::left::library_node_for(&tree, &path) {
+                // a disk, or a folder holding disks, is synchronized as such
+                Some((n, name)) => crate::sync::open(app, &n.path, &name, n.volume || !n.selectable).map(|()| Value::Null),
+                None => Err("No photo in this folder is in the catalog yet".into()),
+            }
+        }
+        "dialog.pageSetup" => {
+            if app.ui.module != crate::module::ModuleId::Print
+                && let Err(e) = app.run("module.print", json!({}))
+            {
+                return Some(Err(e));
+            }
+            app.ui.right_collapsed = false;
+            // the paper choice opens on the next frame
+            app.print.open_paper = true;
+            Ok(Value::Null)
         }
         "view.gridToggle" => {
             // G between the two grids; from a photo view it comes back to the grid style the user
@@ -3417,6 +3471,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     Some(r)
 }
 
+/// The library folder the grid shows (chosen in the Folders panel), for the Library menu's folder items.
+fn chosen_library_folder(app: &LccApp) -> Result<String, String> {
+    match (&app.session.source, &app.session.library_folder) {
+        (lcc_engine::LibrarySource::LibraryFolder, Some(p)) if !p.trim().is_empty() => Ok(p.clone()),
+        _ => Err("Choose a folder in the Folders panel first".into()),
+    }
+}
+
 /// Views whose bottom bar has the thumbnail-size slider and that draw tiles of that size.
 fn thumb_size_view(app: &LccApp) -> bool {
     matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::People)
@@ -3431,6 +3493,8 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
     }
     match id {
         "library.selectOnlyActive" => app.session.active().is_some(),
+        "view.loupeToggle" => app.session.active().is_some() || app.ui.view == ViewMode::Detail,
+        "dialog.newDiskFolder" | "dialog.synchronizeFolder" => chosen_library_folder(app).is_ok(),
         "view.thumbSizeUp" | "view.thumbSizeDown" => thumb_size_view(app),
         "dialog.contactSheet" | "app.contactSheet" | "dialog.print" | "app.print" => {
             !cfg!(target_arch = "wasm32") && app.session.active().is_some() && app.export.is_none()
