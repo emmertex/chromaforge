@@ -545,8 +545,7 @@ fn metadata_maps_one_way_on_import() {
 /// the import wrote it in local time with a zone or, as older imports did, in UTC.
 #[test]
 fn a_file_date_is_not_a_capture_date() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-file-date-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-file-date");
     let path = dir.join("x.jpg");
     std::fs::write(&path, b"x").unwrap();
     let mtime = std::fs::metadata(&path).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -557,7 +556,6 @@ fn a_file_date_is_not_a_capture_date() {
     }
     p.captured = Some("2024-05-06T07:08:09".into());
     assert_eq!(mapping::captured(&p), Some("2024-05-06T07:08:09"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -581,7 +579,9 @@ fn external_library_paths_map_both_ways() {
 
 #[test]
 fn accounts_file_round_trips_without_secrets() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-accounts-{}", std::process::id()));
+    // a folder that doesn't exist yet: saving makes it
+    let tmp = lcc_testkit::TempDir::new("lcc-immich-accounts");
+    let dir = tmp.join("settings");
     let path = dir.join("connections.json");
     let mut a = crate::Accounts::default();
     a.upsert(crate::Account { id: "http://nas#u".into(), url: "http://nas".into(), user_id: "u".into(), ..Default::default() });
@@ -594,7 +594,6 @@ fn accounts_file_round_trips_without_secrets() {
     std::fs::write(&path, b"{not json").unwrap();
     assert!(crate::Accounts::load(&path).is_err());
     assert_eq!(crate::Accounts::load(&dir.join("missing.json")).unwrap(), crate::Accounts::default());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // Regression: Immich doesn't hash external-library files (checksum = SHA-1 of `path:` + path),
@@ -746,8 +745,7 @@ fn hostile_server_answers_through_the_client_never_panic() {
 
 #[test]
 fn damaged_connections_file_never_panics() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-robust-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-robust");
     let path = dir.join("connections.json");
     let mut a = crate::Accounts::default();
     a.upsert(crate::Account {
@@ -774,16 +772,13 @@ fn damaged_connections_file_never_panics() {
             }
         }
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// P6.2: a full disk while saving `connections.json` is an error that leaves the old file and
 /// no partial temp file behind.
 #[test]
 fn full_disk_connections_save_leaves_no_temp_file() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-full-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-full");
     let path = dir.join("connections.json");
     crate::Accounts::default().save(&path).unwrap();
     let before = std::fs::read(&path).unwrap();
@@ -795,7 +790,6 @@ fn full_disk_connections_save_leaves_no_temp_file() {
     }
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- IMM-PUBLISH: album rename, upload retries
@@ -869,8 +863,9 @@ fn publish_once(url: &str, name: &str, state: Option<std::path::PathBuf>) -> Res
 
 #[test]
 fn a_renamed_collection_renames_its_remembered_album() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-pubalbum-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // the state file's folder doesn't exist yet
+    let tmp = lcc_testkit::TempDir::new("lcc-immich-pubalbum");
+    let dir = tmp.join("state");
     let state = dir.join("svc-1-5.album");
     let (url, seen) = publish_server(0, false);
     // first run: found by name, remembered
@@ -888,7 +883,6 @@ fn a_renamed_collection_renames_its_remembered_album() {
     let (url, seen) = publish_server(0, false);
     publish_once(&url, "Other", None).unwrap();
     assert!(seen.lock().unwrap().iter().any(|r| r.method == "POST" && r.target == "/api/albums"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

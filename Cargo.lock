@@ -5052,6 +5052,7 @@ dependencies = [
  "lcc-net",
  "lcc-publish",
  "lcc-raster",
+ "lcc-testkit",
  "log",
  "serde",
  "serde_json",
@@ -5303,6 +5304,7 @@ dependencies = [
  "lcc-catalog",
  "lcc-fuzzkit",
  "lcc-hash",
+ "lcc-testkit",
  "serde",
  "serde_json",
 ]
@@ -5419,6 +5421,7 @@ name = "lcc-tether"
 version = "26.46.1"
 dependencies = [
  "lcc-fuzzkit",
+ "lcc-testkit",
  "nusb",
  "serde",
  "serde_json",
@@ -5573,6 +5576,7 @@ dependencies = [
  "filmcraft-prores",
  "lcc-brand",
  "lcc-raster",
+ "lcc-testkit",
  "lcc-video",
  "thiserror 2.0.21",
 ]
