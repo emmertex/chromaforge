@@ -505,7 +505,8 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["map.focusSearch=Search…", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] =
+    &["map.focusSearch=Search…", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",

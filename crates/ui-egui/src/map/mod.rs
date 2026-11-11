@@ -365,7 +365,8 @@ impl Module for MapModule {
 }
 
 /// Map: `=` / `-` zoom in / out one level (Classic's Map keys).
-const MAP_KEYS: &[ModuleKey] = &[("Cmd+F", "map.focusSearch", "{}"), ("=", "map.view", r#"{"zoomBy": 1}"#), ("-", "map.view", r#"{"zoomBy": -1}"#), crate::help_overlay::KEY];
+const MAP_KEYS: &[ModuleKey] =
+    &[("Cmd+F", "map.focusSearch", "{}"), ("=", "map.view", r#"{"zoomBy": 1}"#), ("-", "map.view", r#"{"zoomBy": -1}"#), crate::help_overlay::KEY];
 
 // ---------- UI commands
 
