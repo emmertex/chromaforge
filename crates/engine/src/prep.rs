@@ -583,7 +583,7 @@ impl Session {
         let wanted = want.previews && settings.scope(mode) != Scope::OnScreen;
         // a folder being culled is prepared from the photo the user is on, in the grid too
         let at = if mode == Mode::Culling { at.or_else(|| self.active()) } else { at };
-        if self.prep_follow_build(wanted, at, backward) || !wanted {
+        if self.prep_follow_build(mode, wanted, at, backward) || !wanted {
             return;
         }
         let busy = self.preview_build.as_ref().is_some_and(|b| b.running());
@@ -651,7 +651,7 @@ impl Session {
     /// when it is no longer wanted, when the user moved on, or when its library is no longer the
     /// one open, and, once it is over, what its end means for the view and for
     /// [`PrepState::unfinished`]. `true`: it is still running (nothing else starts).
-    fn prep_follow_build(&mut self, wanted: bool, at: Option<PhotoId>, backward: bool) -> bool {
+    fn prep_follow_build(&mut self, mode: Mode, wanted: bool, at: Option<PhotoId>, backward: bool) -> bool {
         let Some(b) = self.prep.build.clone() else { return false };
         if b.running() {
             if self.prep.build_library != self.library_generation {
@@ -675,13 +675,18 @@ impl Session {
             // stretch of the library): the build of the photos left behind makes way for the
             // ones in view (a wedding browsed after another folder kept building the other
             // folder's previews, 2026-11-09). A folder still being read keeps its build: the
-            // photos read since join the next one, which skips what this one built.
+            // photos read since join the next one, which skips what this one built. A photo the
+            // build leaves out of the view it was started for (an unmarked photo with "Picks, rated
+            // and labelled", a photo the filter hides) is no reason: the build that replaced it was
+            // the same one, stopped again a frame later, over and over ("Stopping…" for good and
+            // nothing rendered, 26.46.1)
             if wanted
                 && !self.prep.resync
                 && !b.cancel.load(Ordering::Relaxed)
                 && let Some(id) = at
                 && self.prep.started_for.is_some()
                 && !b.order.contains(&id.0)
+                && Some(self.prep_view(mode, id).0) != self.prep.started_for
             {
                 b.cancel.store(true, Ordering::Relaxed);
                 self.prep.superseded = true;

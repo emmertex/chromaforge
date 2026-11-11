@@ -239,6 +239,44 @@ fn picks_only_leaves_the_unflagged_photos_alone() {
     let _ = std::fs::remove_dir_all(root2);
 }
 
+/// With "Picks, rated and labelled" the build holds only the marked photos; the user on an
+/// unmarked one is still in the view it was started for, so the build keeps going. It was stopped
+/// as if the user had moved on, started again for the same photos and stopped again a frame later,
+/// for as long as the user stayed: "Preparing photos in the background ▸ Stopping…" for good, and
+/// the loupe and the filmstrip never rendered (26.46.1).
+#[test]
+fn a_photo_the_build_leaves_out_does_not_restart_it_every_frame() {
+    let _keys = crate::sensor_maps::keep_generation();
+    let (mut s, root, ids) = library("marked-loop", 6);
+    s.selection = crate::Selection { ids: ids.clone(), active: Some(ids[0]) };
+    s.execute("photo.flag", &json!({"ids": [ids[1].0, ids[4].0], "flag": "pick"})).unwrap();
+    s.execute("prefs.setBackgroundPrep", &json!({"settings": {"library": {"scope": "marked"}}})).unwrap();
+    // the photo on screen is being made all along, so the build is still running while the user stays
+    let hold = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let h = hold.clone();
+    let holder = std::thread::spawn(move || {
+        while h.load(Ordering::Relaxed) {
+            crate::prep::foreground();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+    for at in [ids[0], ids[1], ids[2]] {
+        s.prep_tick(Mode::Library, Some(at), false);
+    }
+    let b = s.preview_build.clone().expect("prepared");
+    assert!(!b.order.contains(&ids[2].0), "an unmarked photo is not built: {:?}", b.order);
+    for _ in 0..20 {
+        s.prep_tick(Mode::Library, Some(ids[2]), false);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!b.cancel.load(Ordering::Relaxed), "the build was stopped with the user still in its view");
+    assert!(s.preview_build.as_ref().is_some_and(|p| std::sync::Arc::ptr_eq(p, &b)), "no other build replaced it");
+    hold.store(false, Ordering::Relaxed);
+    holder.join().unwrap();
+    assert!(wait_done(&b));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// The settings round-trip: app-wide ones in the app's shared settings, and a library's own (a
 /// timelapse library prepares nothing while a wedding library prepares everything) saved with it;
 /// a reset takes the library back to the app-wide ones.
