@@ -16,7 +16,8 @@ fn analyze_suggests_and_applies_stars_and_flags() {
     s.execute("photo.rate", &json!({"ids": [vis[0].0], "rating": 3})).unwrap();
     s.execute("photo.flag", &json!({"ids": [vis[1].0], "flag": "pick"})).unwrap();
 
-    let r = s.execute("photo.analyze", &json!({"ids": vis.iter().map(|i| i.0).collect::<Vec<_>>(), "applyRatings": true, "applyFlags": true})).unwrap();
+    let r =
+        s.execute("photo.analyze", &json!({"ids": vis.iter().map(|i| i.0).collect::<Vec<_>>(), "applyRatings": true, "applyFlags": true})).unwrap();
 
     // every photo gets a suggestion in its answer and on the record
     let photos = r["photos"].as_array().cloned().unwrap_or_default();
@@ -45,10 +46,13 @@ fn analyze_suggests_and_applies_stars_and_flags() {
 fn suggestions_are_reported_without_being_applied() {
     let mut s = Session::with_demo();
     let vis = s.visible_cloned();
-    let before: Vec<(u8, Flag)> = vis.iter().map(|id| {
-        let p = s.catalog.photo(*id).unwrap();
-        (p.rating, p.flag)
-    }).collect();
+    let before: Vec<(u8, Flag)> = vis
+        .iter()
+        .map(|id| {
+            let p = s.catalog.photo(*id).unwrap();
+            (p.rating, p.flag)
+        })
+        .collect();
     let r = s.execute("photo.analyze", &json!({"ids": vis.iter().map(|i| i.0).collect::<Vec<_>>()})).unwrap();
     for row in r["photos"].as_array().cloned().unwrap_or_default() {
         assert!((1..=5).contains(&row["suggestedStars"].as_u64().unwrap_or(0)));

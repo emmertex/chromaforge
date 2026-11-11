@@ -1946,7 +1946,14 @@ pub fn clamp_cull_burst(gap: &mut f32, similarity: &mut f32) {
 }
 
 /// The `photo.analyze` parameters of the Assisted Culling dialog, its values as they are.
-pub fn cull_params(reject_below: f32, pick_best: bool, suggest_stars: bool, suggest_flags: bool, burst_gap: f32, similarity: f32) -> serde_json::Value {
+pub fn cull_params(
+    reject_below: f32,
+    pick_best: bool,
+    suggest_stars: bool,
+    suggest_flags: bool,
+    burst_gap: f32,
+    similarity: f32,
+) -> serde_json::Value {
     let mut p = json!({"pickBest": pick_best, "burstGap": burst_gap, "similarity": similarity});
     if reject_below > 0.0 {
         p["rejectBelow"] = json!(reject_below);
@@ -2314,7 +2321,18 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::DngValidation { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => {
             Ok(serde_json::Value::Null)
         }
-        Dialog::Cull { reject_below, pick_best, suggest_stars, suggest_flags, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
+        Dialog::Cull {
+            reject_below,
+            pick_best,
+            suggest_stars,
+            suggest_flags,
+            burst_gap,
+            similarity,
+            closed_eyes,
+            blurry_eyes,
+            soft_eyes,
+            everyone,
+        } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
             let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *suggest_stars, *suggest_flags, *burst_gap, *similarity));
             if r.is_ok() && (*closed_eyes || *blurry_eyes) {
@@ -4282,7 +4300,10 @@ mod cull_dialog_tests {
             clamp_cull_burst(&mut g, &mut s);
             assert_eq!((g, s), want);
         }
-        assert_eq!(cull_params(0.0, true, true, false, 1800.0, 1.0), json!({"pickBest": true, "applyRatings": true, "burstGap": 1800.0, "similarity": 1.0}));
+        assert_eq!(
+            cull_params(0.0, true, true, false, 1800.0, 1.0),
+            json!({"pickBest": true, "applyRatings": true, "burstGap": 1800.0, "similarity": 1.0})
+        );
         assert_eq!(cull_params(20.0, false, false, true, 0.0, 0.7)["rejectBelow"], 20.0);
         assert_eq!(cull_params(20.0, false, false, true, 0.0, 0.7)["applyFlags"], true);
     }
