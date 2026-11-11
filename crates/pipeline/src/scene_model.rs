@@ -9,7 +9,6 @@
 //!
 //! Sources: own design (the same hook as the Subject model's).
 
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use lcc_develop::DevelopSettings;
@@ -63,13 +62,7 @@ fn usable(p: &Plane) -> bool {
 pub(crate) fn selection(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<Arc<SceneSelection>> {
     let model = MODEL.read().unwrap_or_else(PoisonError::into_inner).clone()?;
     let frame = crate::frame_for(src, info, s, false);
-    let mut hs = std::collections::hash_map::DefaultHasher::new();
-    (src.width, src.height, format!("{frame:?}")).hash(&mut hs);
-    let step = (src.data.len() / 4096).max(1);
-    for c in src.data.iter().step_by(step) {
-        c.map(f32::to_bits).hash(&mut hs);
-    }
-    let key = hs.finish();
+    let key = crate::auto_mask::photo_key(src, info, s, true, "scene", ());
     let cached = || CACHE.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key).map(|(_, p)| p.clone());
     if let Some(p) = cached() {
         return Some(p);

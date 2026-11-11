@@ -341,9 +341,13 @@ impl DecodedSource {
     /// `header` too (the session knows them, the decoder doesn't).
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
         match &self.info {
-            Some(info) => {
-                SourceInfo { native_long: info.native_long.or(header.native_long), generated: header.generated, avoid: header.avoid, ..info.clone() }
-            }
+            Some(info) => SourceInfo {
+                native_long: info.native_long.or(header.native_long),
+                generated: header.generated,
+                avoid: header.avoid,
+                identity: header.identity.or(info.identity),
+                ..info.clone()
+            },
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
         }
     }
@@ -2262,7 +2266,17 @@ pub fn source_info(p: &Photo) -> SourceInfo {
         .filter(|b| b.iter().all(|v| v.is_finite()))
         .take(256)
         .collect();
-    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), ..info }
+    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), identity: source_identity(p), ..info }
+}
+
+/// [`SourceInfo::identity`] of `p`: its pixels' key ([`pixels_key`]), the same at every decoded
+/// size (`None` for the procedural demo scenes, drawn afresh at each size).
+fn source_identity(p: &Photo) -> Option<lcc_pipeline::SourceIdentity> {
+    if matches!(p.source, Source::Demo { .. }) {
+        return None;
+    }
+    let key = Hasher128::new().str("source-identity").str(&pixels_key(p)).finish().0 as u64;
+    Some(lcc_pipeline::SourceIdentity { key, size: [p.width as usize, p.height as usize] })
 }
 
 fn source_info_plain(p: &Photo) -> SourceInfo {
@@ -3681,7 +3695,8 @@ mod tests {
         let decoded = SourceInfo { raw: true, as_shot_temp: 4800.0, ..Default::default() };
         let thumb = DecodedSource::new(Arc::new(Rgb32f::new(8, 8)), Some(decoded.clone()));
         let info = thumb.info_or(source_info(&p));
-        assert_eq!(info, SourceInfo { native_long: Some(6000), ..decoded }, "the decoder's facts, the catalog's size");
+        assert_eq!(info, SourceInfo { native_long: Some(6000), identity: source_identity(&p), ..decoded }, "the decoder's facts, the catalog's size");
+        assert_eq!(info.identity.map(|i| i.size), Some([6000, 4000]), "which photo, at every size");
         let unknown = Photo::new(PhotoId(2), Source::File { path: "/photos/b.jpg".into() }, "b.jpg", "JPEG", 0, 0, "");
         assert_eq!(source_info(&unknown).native_long, None);
         assert_eq!(source_info(&Photo::new(PhotoId(3), Source::Demo { scene: 0 }, "d", "ARW", 600, 400, "")).native_long, None);

@@ -1315,17 +1315,23 @@ pub fn set_pool_limit(bytes: u64) {
     let _ = bytes;
 }
 
-/// Free recycled buffers until at most `keep` bytes stay pooled (e.g. when the app goes idle).
+/// Free recycled buffers until at most `keep` bytes stay pooled on each card (e.g. when the app
+/// goes idle): the editing card's and the second card's pools. (Only the editing card's was
+/// trimmed: after a two-card export or 1:1 build the second card kept its pool, up to the pool
+/// limit, for the rest of the session.)
 pub fn trim_pool(keep: u64) {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(g) = existing_device()
-        && let Some(_work) = exit::enter()
-    {
-        if keep == 0 {
-            render::release_shared_source();
-            strokes::clear();
+    if let Some(_work) = exit::enter() {
+        if let Some(g) = existing_device() {
+            if keep == 0 {
+                render::release_shared_source();
+                strokes::clear();
+            }
+            g.trim(keep);
         }
-        g.trim(keep);
+        if let Some(g) = helper::current() {
+            g.trim(keep);
+        }
     }
     #[cfg(target_arch = "wasm32")]
     let _ = keep;
