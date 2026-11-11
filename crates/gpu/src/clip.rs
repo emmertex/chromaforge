@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 pub use crate::ai::Card;
 use crate::cards::AdapterKey;
@@ -396,11 +395,7 @@ pub fn tower_for(card_key: Option<&str>, spec: TowerSpec, blocks: &[BlockRef<'_>
     }
     let Some(_work) = crate::exit::enter() else { return Err("the app is closing".into()) };
     let up = |label: &str, data: &[f32]| {
-        dev.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(data),
-            usage: wgpu::BufferUsages::STORAGE,
-        })
+        crate::upload::buffer_init(&dev.device, &dev.queue, Some(label), bytemuck::cast_slice(data), wgpu::BufferUsages::STORAGE)
     };
     let scope = dev.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let uploaded = blocks
@@ -473,11 +468,13 @@ impl ClipTower {
         let Some(_work) = crate::exit::enter() else { return Err("the app is closing".into()) };
         let scopes = [d.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory), d.device.push_error_scope(wgpu::ErrorFilter::Validation)];
         let width_bytes = (rows * s.hidden) as u64 * 4;
-        let state = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("clip state"),
-            contents: bytemuck::cast_slice(x),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
+        let state = crate::upload::buffer_init(
+            &d.device,
+            &d.queue,
+            Some("clip state"),
+            bytemuck::cast_slice(x),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         let scratch = |label: &str, bytes: u64| {
             d.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -548,11 +545,8 @@ impl ClipTower {
         let binds: Vec<(wgpu::BindGroup, &wgpu::ComputePipeline, [u32; 3])> = passes
             .iter()
             .map(|p| {
-                let u = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("clip params"),
-                    contents: bytemuck::bytes_of(&p.params),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+                let u =
+                    crate::upload::buffer_init(&d.device, &d.queue, Some("clip params"), bytemuck::bytes_of(&p.params), wgpu::BufferUsages::UNIFORM);
                 let bind = d.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: None,
                     layout: &d.layout,

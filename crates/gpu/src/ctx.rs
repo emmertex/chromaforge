@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use wgpu::util::DeviceExt;
-
 /// A kernel module: WGSL source, its storage bindings (name, writable, element type) after the
 /// parameter block `P` (binding 0), and its entry points.
 struct Module {
@@ -1020,11 +1018,13 @@ impl Gpu {
             fail(FailKind::Fatal, format!("{name}: binding count {} != {}", bufs.len(), k.nbuf));
             return;
         }
-        let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(if p.is_empty() { &[0u32] } else { p }),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let params = crate::upload::buffer_init(
+            &self.device,
+            &self.queue,
+            None,
+            bytemuck::cast_slice(if p.is_empty() { &[0u32] } else { p }),
+            wgpu::BufferUsages::STORAGE,
+        );
         let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }];
         for (i, b) in bufs.iter().enumerate() {
             let Some(buf) = b.map(|b| b.raw()).or_else(|| self.dummy.get(i)) else {

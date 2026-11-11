@@ -7,4 +7,5 @@ allow-indexing-slicing-in-tests = true
 # Vulkan loader loaded (the loader crashed when threads made and dropped instances at once).
 disallowed-methods = [
     { path = "wgpu::Instance::new", reason = "use lcc_gpu::new_instance (lcc_engine::gpu::new_instance): one at a time, with the Vulkan loader kept loaded" },
+    { path = "wgpu::util::DeviceExt::create_buffer_init", reason = "panics when the device is out of memory or lost (issue #1029): use lcc_gpu's upload::buffer_init" },
 ]
