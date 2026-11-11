@@ -36,6 +36,7 @@ mod dng;
 pub mod dngdigest;
 pub mod dngupdate;
 pub mod dngwrite;
+pub mod flatfield;
 pub mod gaintable;
 pub mod highlight;
 mod hotpixel;

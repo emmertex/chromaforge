@@ -182,7 +182,7 @@ const LIBRARY: &[&str] = &[
     "dialog.rename",
     "photo.convertToDng=Convert Photo to DNG…",
     "---",
-    "soon.flatField",
+    "photo.flatField=Flat-Field Correction…",
     "---",
     "file.findMissing=Find All Missing Photos",
     "library.validateDng",
@@ -801,7 +801,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     ),
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon("soon.flatField", "Flat-Field Correction…", None, 'L', false, "Correct lens cast and vignetting from a flat-field reference frame."),
     soon(
         "soon.synchronizeFolder",
         "Synchronize Folder…",
