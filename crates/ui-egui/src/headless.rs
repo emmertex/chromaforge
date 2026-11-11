@@ -3588,6 +3588,30 @@ mod tests {
         assert_eq!(crate::state::crop_mask_alpha(0), 0);
     }
 
+    /// Choose Overlays to Cycle…: O visits only the ticked guides, and one must stay ticked.
+    #[test]
+    fn crop_overlay_cycle_skips_unticked_guides() {
+        use crate::state::CropOverlay as O;
+        let mut h = demo([1200.0, 800.0]);
+        let t = Duration::from_secs(10);
+        let set = |h: &mut Headless, names: serde_json::Value| {
+            h.request("engine.execute", json!({"command": "view.cropOverlays", "params": {"overlays": names}}), t)
+        };
+        let r = set(&mut h, json!(["thirds", "diagonal", "spiral"]));
+        assert_eq!(r["ok"], true, "{r}");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.request("engine.execute", json!({"command": "view.cropOverlay"}), t);
+            seen.push(h.app.ui.crop_overlay);
+        }
+        assert_eq!(seen, [O::Diagonal, O::Spiral, O::Thirds, O::Diagonal]);
+        let r = set(&mut h, json!([]));
+        assert_eq!(r["ok"], false, "{r}");
+        let r = set(&mut h, json!(["bogus"]));
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(h.app.ui.crop_overlay_cycle, [O::Thirds, O::Diagonal, O::Spiral], "a refused list changes nothing");
+    }
+
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
     #[test]
     fn crop_keys() {

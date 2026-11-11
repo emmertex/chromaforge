@@ -126,6 +126,40 @@ pub struct BookUi {
     pub redo: Vec<Book>,
 }
 
+/// Book ▸ Book Preferences…: what `book.new` starts a book with (kept in `ui.json`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BookPrefs {
+    /// New photo cells zoom to fill the cell (true) or fit the whole photo (false).
+    pub zoom_to_fill: bool,
+    /// A new book is laid out at once with the selected photos (else it starts empty).
+    pub autofill: bool,
+    /// Empty text cells show placeholder text in the editor.
+    pub filler_text: bool,
+    /// The caption safe area (the text-safe margin from the trim) is drawn.
+    pub caption_safe_area: bool,
+}
+
+impl Default for BookPrefs {
+    fn default() -> Self {
+        BookPrefs { zoom_to_fill: true, autofill: false, filler_text: true, caption_safe_area: true }
+    }
+}
+
+impl BookPrefs {
+    /// Applies the preferences to a freshly started book (its photo cells and guides).
+    fn apply(self, book: &mut Book) {
+        book.guides.filler_text = self.filler_text;
+        book.guides.text_safe = self.caption_safe_area;
+        let pages = [&mut book.front, &mut book.back].into_iter().chain(book.pages.iter_mut());
+        for cell in pages.flat_map(|p| p.cells.iter_mut()) {
+            if let CellContent::Photo { fill, .. } = &mut cell.content {
+                *fill = self.zoom_to_fill;
+            }
+        }
+    }
+}
+
 /// Most book edits kept for undo.
 const UNDO_LIMIT: usize = 100;
 
@@ -303,6 +337,27 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "book.exportStatus" => Ok(serde_json::to_value(with_status(|s| s.clone())).unwrap_or(Value::Null)),
         "book.save" | "book.open" | "book.saved" | "book.deleteSaved" => saved(app, id, p),
+        // {zoomToFill?, autofill?, fillerText?, captionSafeArea?}: Book Preferences (what book.new starts with)
+        "book.preferences" => {
+            let prefs = &mut app.ui.book_prefs;
+            let flag = |k: &str, cur: bool| p.get(k).and_then(Value::as_bool).unwrap_or(cur);
+            prefs.zoom_to_fill = flag("zoomToFill", prefs.zoom_to_fill);
+            prefs.autofill = flag("autofill", prefs.autofill);
+            prefs.filler_text = flag("fillerText", prefs.filler_text);
+            prefs.caption_safe_area = flag("captionSafeArea", prefs.caption_safe_area);
+            Ok(serde_json::to_value(*prefs).unwrap_or(Value::Null))
+        }
+        // a new book starts as the preferences say
+        "book.new" => {
+            let prefs = app.ui.book_prefs;
+            let r = run_op(app, id, p)?;
+            // (nothing to lay out without photos: the book stays as it started)
+            if prefs.autofill && !app.session.visible_cloned().is_empty() {
+                run(app, "book.autoLayout", &json!({}))?;
+            }
+            prefs.apply(&mut app.ui.book.book);
+            Ok(r)
+        }
         "book.autoLayout" if p.get("photos").is_none() => {
             let mut ids = app.session.selected();
             if ids.len() < 2 {
@@ -1897,6 +1952,32 @@ mod tests {
         assert_eq!(r["ok"], true, "{id}: {r}");
         h.step();
         r["result"].clone()
+    }
+
+    /// Book Preferences are applied by `book.new`: fit instead of fill, guides off, and Auto-fill lays the
+    /// selected photos out at once.
+    #[test]
+    fn book_preferences_shape_a_new_book() {
+        let _turn = exports_one_at_a_time();
+        let mut h = demo();
+        run(&mut h, "module.book", json!({}));
+        run(&mut h, "book.preferences", json!({"zoomToFill": false, "fillerText": false, "captionSafeArea": false, "autofill": true}));
+        run(&mut h, "book.new", json!({}));
+        let b = &h.app.ui.book.book;
+        assert!(!b.pages.is_empty(), "auto-fill laid the photos out");
+        assert!(!b.guides.filler_text && !b.guides.text_safe);
+        let fills: Vec<bool> = b
+            .pages
+            .iter()
+            .flat_map(|p| p.cells.iter())
+            .filter_map(|c| if let CellContent::Photo { fill, .. } = &c.content { Some(*fill) } else { None })
+            .collect();
+        assert!(!fills.is_empty() && fills.iter().all(|f| !f));
+        // back to the defaults: an empty, filling book
+        run(&mut h, "book.preferences", json!({"zoomToFill": true, "fillerText": true, "captionSafeArea": true, "autofill": false}));
+        run(&mut h, "book.new", json!({}));
+        assert!(h.app.ui.book.book.pages.is_empty());
+        assert!(h.app.ui.book.book.guides.filler_text && h.app.ui.book.book.guides.text_safe);
     }
 
     #[test]

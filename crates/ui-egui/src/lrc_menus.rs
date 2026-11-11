@@ -427,7 +427,7 @@ const SETTINGS: &[&str] = &[
     "---",
     "masks.updateAi=Update AI Settings",
     "---",
-    "soon.deleteEmptyMasks",
+    "mask.deleteEmpty=Delete All Empty Masks",
     "---",
     "develop.autoSync=Enable Auto Sync",
     "---",
@@ -545,7 +545,7 @@ const BOOK: &[&str] = &[
     r#"book.go{"delta":1}=Next Page"#,
     "---",
     "book.refreshCaptions",
-    "soon.bookPreferences",
+    "dialog.bookPreferences",
     "---",
     "book.export",
 ];
@@ -665,7 +665,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "develop.pastePrevious",
             "dialog.syncSettings",
             "masks.updateAi=Update AI Settings",
-            "soon.deleteEmptyMasks",
+            "mask.deleteEmpty=Delete All Empty Masks",
             r#"develop.wb{"mode":"auto"}=Auto White Balance"#,
             "develop.auto",
             "develop.treatment=Convert to Black & White",
@@ -706,7 +706,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
     (
         "Tools",
         "Crop Guide Overlay",
-        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "soon.chooseCropOverlays"],
+        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "dialog.cropOverlays"],
     ),
     (
         "Tools",
@@ -765,14 +765,11 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // View
     // Window
     // Develop
-    soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
     // Book
-    soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
     // Slideshow
     // Print
     // Web
