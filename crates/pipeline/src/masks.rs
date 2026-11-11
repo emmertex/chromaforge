@@ -330,6 +330,14 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
     }
+    if let MaskShape::DepthRange { lo, hi, feather } = shape {
+        // the depth model's distance grid (none: nothing selected), sampled like the image
+        let Some(grid) = mattes.and_then(|m| m.auto.as_deref()).and_then(|a| a.depth.as_ref()) else { return Plane::new(w, h) };
+        let mut out = crate::auto_mask::sample(grid, frame, w, h);
+        let (lo, hi, f) = (*lo as f32, *hi as f32, *feather as f32);
+        out.map_in_place(|d| crate::depth_model::range_alpha(d, lo, hi, f));
+        return out;
+    }
     if let Some(auto) = mattes.and_then(|m| m.auto.as_deref()) {
         let grid = auto.for_shape(shape);
         if let Some(grid) = grid.filter(|_| crate::auto_mask::wants(shape)) {
@@ -1457,6 +1465,23 @@ mod tests {
             assert!((s + b - 1.0).abs() < 1e-4, "subject {s} + background {b}");
         }
         assert!(sub.get(1, 8) > 0.9 && bg.get(14, 8) > 0.9);
+    }
+
+    /// A Depth Range selects the band of the depth grid between its bounds, at any output size;
+    /// without a depth grid (no model) it selects nothing.
+    #[test]
+    fn depth_range_selects_its_band_of_the_depth_grid() {
+        let near = MaskShape::DepthRange { lo: 0.0, hi: 0.3, feather: 0.05 };
+        let mut auto = crate::auto_mask::analyze(&Rgb32f::new(0, 0));
+        // nearest at the left edge, farthest at the right
+        auto.depth = Some(Plane::from_fn(32, 8, |x, _| x as f32 / 31.0));
+        let m = Mattes { auto: Some(std::sync::Arc::new(auto)), ..Default::default() };
+        for (w, h) in [(40, 20), (400, 200)] {
+            let a = shape_alpha(&near, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, Some(&m));
+            assert!(a.get(1, h / 2) > 0.99 && a.get(w - 2, h / 2) < 0.01, "{w}×{h}");
+            let none = shape_alpha(&near, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);
+            assert!(none.data.iter().all(|v| *v == 0.0));
+        }
     }
 
     #[test]

@@ -1461,6 +1461,104 @@ mod tests {
         assert!(h.app.ui.name_edit.is_none());
     }
 
+    /// Photo > People acts on the chosen face (the box the pointer rested on in the loupe): disabled without one,
+    /// Edit Name opens its name box, Move to Unnamed takes the name off, Remove Face Region deletes the box.
+    #[test]
+    fn people_menu_items_act_on_the_chosen_face() {
+        use lcc_catalog::Op;
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let id = h.app.session.active().unwrap();
+        let mut meta = h.app.session.catalog.photo(id).unwrap().meta.clone();
+        meta.regions = vec![lcc_meta::Region {
+            rect: lcc_geom::Rect { x0: 0.3, y0: 0.2, x1: 0.55, y1: 0.6 },
+            kind: lcc_meta::RegionKind::Face,
+            name: Some("Ann".into()),
+            description: None,
+        }];
+        h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
+        h.settle(SETTLE);
+        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName", "face.findSimilar"] {
+            assert!(!crate::menus::ui_enabled(&h.app, c), "{c} is off with no face chosen");
+            let r = h.request("engine.execute", json!({"command": c}), t);
+            assert_eq!(r["ok"], false, "{c}: {r}");
+        }
+        h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
+        h.step();
+        h.step();
+        h.step();
+        assert_eq!(crate::face_menu::chosen_face(&h.app), Some((id.0, 0)));
+        for c in ["face.moveToUnnamed", "face.removeRegion", "face.editName"] {
+            assert!(crate::menus::ui_enabled(&h.app, c), "{c}");
+        }
+        let r = h.request("engine.execute", json!({"command": "face.editName"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == 0 && e.text == "Ann"));
+        h.app.ui.name_edit = None;
+        // Find Similar Faces opens the named person's page
+        assert!(crate::menus::ui_enabled(&h.app, "face.findSimilar"));
+        let r = h.request("engine.execute", json!({"command": "face.findSimilar"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.ui.person_page.as_deref(), Some("Ann"));
+        h.app.ui.person_page = None;
+        h.app.ui.view = crate::state::ViewMode::Detail;
+        // Shift+O does the same while a face is chosen (it cycles the crop overlay otherwise)
+        h.request("ui.key", json!({"key": "O", "shift": true}), t);
+        h.step();
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == 0), "Shift+O opens the name box");
+        h.app.ui.name_edit = None;
+        let r = h.request("engine.execute", json!({"command": "face.moveToUnnamed"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(h.app.session.catalog.photo(id).unwrap().meta.regions[0].name, None);
+        assert!(!crate::menus::ui_enabled(&h.app, "face.moveToUnnamed"), "nothing left to take off");
+        let r = h.request("engine.execute", json!({"command": "face.removeRegion"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(h.app.session.catalog.photo(id).unwrap().meta.regions.is_empty());
+        assert!(!crate::menus::ui_enabled(&h.app, "face.removeRegion"));
+    }
+
+    /// Photo > People > Draw Face Regions: while the mode is on, a drag over the loupe adds an unnamed face region
+    /// (one undo step) and opens its name box; Escape leaves the mode.
+    #[test]
+    fn draw_face_regions_mode_adds_a_region_by_dragging() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let id = h.app.session.active().unwrap();
+        let before = h.app.session.catalog.photo(id).unwrap().meta.regions.len();
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(false));
+        let r = h.request("engine.execute", json!({"command": "face.drawRegions"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(true));
+        h.step();
+        let undo = h.app.session.undo.len();
+        let c = h.app.canvas_rect.expect("the loupe is on screen");
+        let at = |fx: f32, fy: f32| (c.left() + c.width() * fx, c.top() + c.height() * fy);
+        let ((x, y), (tx, ty)) = (at(0.45, 0.4), at(0.55, 0.6));
+        let r = h.request("ui.drag", json!({"x": x, "y": y, "toX": tx, "toY": ty, "steps": 8}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+        h.step();
+        let regions = h.app.session.catalog.photo(id).unwrap().meta.regions.clone();
+        assert_eq!(regions.len(), before + 1, "the drag drew a region");
+        let drawn = regions.last().unwrap();
+        assert_eq!(drawn.kind, lcc_meta::RegionKind::Face);
+        assert!(drawn.name.is_none() && drawn.rect.x1 > drawn.rect.x0 && drawn.rect.y1 > drawn.rect.y0);
+        assert_eq!(h.app.session.undo.len(), undo + 1, "one undo step");
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == before), "its name box opened: {:?}", h.app.ui.name_edit);
+        // Escape closes the name box first, then leaves the mode
+        h.request("ui.key", json!({"key": "escape"}), t);
+        h.step();
+        h.step();
+        h.request("ui.key", json!({"key": "escape"}), t);
+        h.step();
+        h.step();
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(false), "Escape leaves the mode");
+    }
+
     /// Adding a face model: the dialog shows the file's terms, the model is installed only once they are
     /// accepted, and a file the app cannot use only says why.
     #[test]
@@ -3488,6 +3586,30 @@ mod tests {
         assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
         assert_eq!(crate::state::crop_mask_alpha(100), 255);
         assert_eq!(crate::state::crop_mask_alpha(0), 0);
+    }
+
+    /// Choose Overlays to Cycle…: O visits only the ticked guides, and one must stay ticked.
+    #[test]
+    fn crop_overlay_cycle_skips_unticked_guides() {
+        use crate::state::CropOverlay as O;
+        let mut h = demo([1200.0, 800.0]);
+        let t = Duration::from_secs(10);
+        let set = |h: &mut Headless, names: serde_json::Value| {
+            h.request("engine.execute", json!({"command": "view.cropOverlays", "params": {"overlays": names}}), t)
+        };
+        let r = set(&mut h, json!(["thirds", "diagonal", "spiral"]));
+        assert_eq!(r["ok"], true, "{r}");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.request("engine.execute", json!({"command": "view.cropOverlay"}), t);
+            seen.push(h.app.ui.crop_overlay);
+        }
+        assert_eq!(seen, [O::Diagonal, O::Spiral, O::Thirds, O::Diagonal]);
+        let r = set(&mut h, json!([]));
+        assert_eq!(r["ok"], false, "{r}");
+        let r = set(&mut h, json!(["bogus"]));
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(h.app.ui.crop_overlay_cycle, [O::Thirds, O::Diagonal, O::Spiral], "a refused list changes nothing");
     }
 
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.

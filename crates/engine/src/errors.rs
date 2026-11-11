@@ -22,6 +22,11 @@ pub enum AiModel {
     /// The open models behind Describe masks without SAM 3: the OWLv2 object finder and SAM 2.1
     /// (`ai.models.download {"id": "describe"}`, then `"sam2"`).
     Describe,
+    /// The EoMT scene model, behind Landscape masks beyond sky, water and vegetation (mountains, architecture, ground)
+    /// (`ai.models.download {"id": "scene"}`, then `ai.models.setSceneModel {"model": "eomt"}`).
+    Scene,
+    /// Depth Anything V2 Small, behind Depth Range masks (`ai.models.download {"id": "depth"}`).
+    Depth,
 }
 
 /// The kind of an [`EngineError`] (or of an error a frontend raised itself: [`ErrorKind::Other`]).

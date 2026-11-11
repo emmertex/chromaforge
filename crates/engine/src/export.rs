@@ -2739,6 +2739,27 @@ pub fn export_batch(
     run_batch(items, o, to, write, exists, true, &mut |_, _| true)
 }
 
+/// Record that the photos `files` (the per-photo results of an export batch) wrote a file were exported now
+/// ([`lcc_catalog::Photo::exported`]; saved with the library, not an undo step). Failures, skipped files and results that
+/// name no photo (a contact sheet, a timelapse) leave their photos alone. Returns how many photos were marked.
+pub fn mark_exported(session: &mut crate::Session, files: &[serde_json::Value]) -> usize {
+    let now = (session.clock)();
+    let mut marked = 0;
+    for f in files {
+        if f.get("path").is_none() || f.get("error").is_some() {
+            continue;
+        }
+        let Some(id) = f.get("photo").and_then(serde_json::Value::as_u64).map(lcc_catalog::PhotoId) else { continue };
+        if session.catalog.photo(id).is_none() {
+            continue;
+        }
+        if session.apply_system(lcc_catalog::Op::SetExported { id, exported: Some(now.clone()) }).is_ok() {
+            marked += 1;
+        }
+    }
+    marked
+}
+
 /// [`export_batch`] with `lanes` photos side by side, on the GPU or not, the files thrown away
 /// (a benchmark: [`crate::machine_test`]). Changes nothing process-wide.
 pub(crate) fn export_batch_tuned(
@@ -3449,7 +3470,7 @@ impl<'a> Placer<'a> {
         match written {
             Ok((path, files, sidecars)) => {
                 self.taken.extend(files);
-                let mut entry = json!({"path": path, "width": e.width, "height": e.height, "bytes": e.len(), "sidecars": sidecars});
+                let mut entry = json!({"photo": photo.0, "path": path, "width": e.width, "height": e.height, "bytes": e.len(), "sidecars": sidecars});
                 if e.video_file.is_some() {
                     entry["video"] = json!(true);
                 }

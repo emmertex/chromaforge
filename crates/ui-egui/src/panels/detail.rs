@@ -1780,6 +1780,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         // while the name box is open and recognition is not set up, the box offers the next step
         let setup = if app.ui.name_edit.is_some() { super::faces::setup(app, ui.ctx()) } else { super::faces::Setup::Running };
         match region_overlay(ui, &p, &map, &photo, d.orientation, hints.as_deref(), &people, &mut app.ui.name_edit, setup) {
+            Some(RegionEdit::Focus(index)) => app.ui.face_focus = Some((id.0, index)),
             Some(RegionEdit::SetUp) => {
                 app.ui.name_edit = None;
                 super::faces::take_step(app, ui.ctx(), setup);
@@ -1838,7 +1839,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     (true, Some(before), Some(q)) if before.contains(q) => (CanvasMap::new(&frame, before_img), before_img, *before),
                     _ => (map, img_rect, main_area),
                 };
-                if browsing {
+                if app.ui.draw_faces && !browsing {
+                    draw_face_overlay(app, ui, &p, &resp, &map, d.orientation, id);
+                } else if browsing {
                     // no Develop picker works on a browsed photo: a click only zooms, as in Library
                     click_zoom_and_pan(app, &resp, img, pane);
                 } else {
@@ -2079,6 +2082,64 @@ fn overlay_badges(p: &egui::Painter, t: &Tokens, at: Pos2, photo: &lcc_catalog::
     at.y + OVERLAY_BADGES_H
 }
 
+/// Photo > People > Draw Face Regions: a drag over the photo draws a box; on release it becomes an unnamed face
+/// region (`photo.addRegion`, one undo step) and its name box opens. Esc, or the menu item again, leaves the mode.
+fn draw_face_overlay(
+    app: &mut LccApp,
+    ui: &egui::Ui,
+    p: &egui::Painter,
+    resp: &egui::Response,
+    map: &CanvasMap,
+    orient: lcc_geom::Orientation,
+    id: lcc_catalog::PhotoId,
+) {
+    let key = egui::Id::new("face-draw");
+    if app.ui.name_edit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.ui.draw_faces = false;
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        return;
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        ui.data_mut(|d| d.insert_temp(key, (q, q)));
+    }
+    let Some((start, _)) = ui.data(|d| d.get_temp::<(Pos2, Pos2)>(key)) else { return };
+    let now = resp.interact_pointer_pos().or(resp.hover_pos()).unwrap_or(start);
+    let (a, b) = (map.norm(start), map.norm(now));
+    let shown = lcc_geom::Rect {
+        x0: a.x.min(b.x).clamp(0.0, 1.0),
+        y0: a.y.min(b.y).clamp(0.0, 1.0),
+        x1: a.x.max(b.x).clamp(0.0, 1.0),
+        y1: a.y.max(b.y).clamp(0.0, 1.0),
+    };
+    if resp.dragged() {
+        ui.data_mut(|d| d.insert_temp(key, (start, now)));
+        let rect = Rect::from_two_pos(map.screen(Point::new(shown.x0, shown.y0)), map.screen(Point::new(shown.x1, shown.y1)));
+        p.rect_stroke(rect.expand(1.0), 0.0, Stroke::new(1.0, Color32::from_black_alpha(190)), StrokeKind::Outside);
+        p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Outside);
+        ui.ctx().request_repaint();
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        // a click or a slip of the mouse is not a face
+        let moved = now - start;
+        if moved.x.abs().max(moved.y.abs()) < 8.0 {
+            return;
+        }
+        let upright = orient.inverse().map_norm_rect(shown);
+        if let Ok(v) =
+            app.run("photo.addRegion", json!({"id": id.0, "rect": {"x0": upright.x0, "y0": upright.y0, "x1": upright.x1, "y1": upright.y1}}))
+            && let Some(index) = v["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+        {
+            app.ui.name_edit = Some(crate::state::NameEdit { photo: id.0, index, text: String::new(), fresh: true });
+        }
+    }
+}
+
 /// What the user did to a face box this frame.
 enum RegionEdit {
     /// The × was clicked.
@@ -2089,6 +2150,8 @@ enum RegionEdit {
     Name(usize, String),
     /// The name box's offer to set up face recognition was pressed.
     SetUp,
+    /// The pointer rests on this box: the loupe's chosen face.
+    Focus(usize),
 }
 
 /// Handles of a box: (x, y) as fractions of its width and height, and the cursor they show.
@@ -2126,6 +2189,7 @@ fn region_overlay(
     let drag_key = egui::Id::new("region-drag");
     let live: Option<(usize, lcc_geom::Rect)> = ui.data(|d| d.get_temp(drag_key));
     let mut edit = None;
+    let mut focus = None;
     for (index, r) in photo.meta.regions.iter().enumerate() {
         let dragging = live.filter(|(i, _)| *i == index);
         let norm = orient.map_norm_rect(dragging.map_or(r.rect, |(_, n)| n));
@@ -2199,6 +2263,9 @@ fn region_overlay(
         let is_face = r.kind == lcc_meta::RegionKind::Face;
         let hint = hints.and_then(|h| h.by_index.get(&index));
         let hovered = pointer.is_some_and(|h| rect.expand(3.0).contains(h));
+        if hovered && is_face && live.is_none() {
+            focus = Some(index);
+        }
         let editing_this = editing.as_ref().is_some_and(|e| e.photo == photo.id.0 && e.index == index);
         let (text, text_color, fill_alpha, invitation) = match (&r.name, hint.and_then(|h| h.suggestion.as_ref())) {
             (Some(n), _) => (n.clone(), Color32::from_gray(225), 235, false),
@@ -2249,7 +2316,7 @@ fn region_overlay(
             }
         }
     }
-    edit
+    edit.or(focus.map(RegionEdit::Focus))
 }
 
 /// The filter pill's inset from the canvas' top-left corner and its height (the same inset from
@@ -3093,7 +3160,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" | "hslPick" => {
+        "wbPicker" | "fringe" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3158,6 +3225,23 @@ fn general_interaction(
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
             app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "fringe" {
+        // the Fringe Color Selector: a click points Defringe at the colour under it; a spot with no
+        // colour says so and the selector stays armed
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            match app.run("develop.fringePick", json!({"x": n.x, "y": n.y})) {
+                Ok(r) if r["applied"] == false => {
+                    let message = r["message"].as_str().unwrap_or("This spot can't be read").to_string();
+                    app.toast(ui.ctx(), crate::i18n::tr(&message));
+                }
+                _ => app.ui.tool.clear(),
+            }
         }
         return;
     }
@@ -5662,6 +5746,14 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             _ => "remove",
         };
         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
+        // Remove Options ▸ Detect Objects: the stroke picks the object under it instead of being the area
+        if app.ui.remove_detect_objects && matches!(mode, "remove" | "generate") {
+            let mode = if mode == "generate" { "generate" } else { "fill" };
+            if let Err(e) = app.run_typed("spot.detectObject", json!({"points": pts, "mode": mode})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            return;
+        }
         let _ = app.run(
             "spot.add",
             json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),
@@ -6094,6 +6186,10 @@ fn film_label(name: &str) -> String {
 }
 
 pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    crate::view_state::around(app, ui, r, |app, ui| filmstrip_strip(app, ui, r));
+}
+
+fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));

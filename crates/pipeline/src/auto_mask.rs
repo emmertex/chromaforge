@@ -53,6 +53,35 @@ pub struct AutoMasks {
     /// Every person, when a scene model ([`crate::scene_model`]) saw them; People masks use
     /// [`AutoMasks::subject`] otherwise.
     pub person: Option<Plane>,
+    /// The scene model's other Landscape classes ([`LANDSCAPE_TERRAIN`]: mountains, architecture,
+    /// natural and artificial ground), by class name; empty without a scene model (the photo
+    /// analysis can't tell them apart).
+    pub terrain: Vec<(&'static str, Plane)>,
+    /// Distance (0 = nearest, 1 = farthest) from the depth model ([`crate::depth_model`]), for
+    /// photos with a Depth Range mask; `None` without the model (a Depth Range selects nothing).
+    pub depth: Option<Plane>,
+}
+
+/// The Landscape classes only the scene model can select (the photo analysis has Sky, Water and
+/// Vegetation), as `MaskShape::Landscape { class }` names them.
+pub const LANDSCAPE_TERRAIN: [&str; 4] = ["mountains", "architecture", "natural ground", "artificial ground"];
+
+/// Which of [`LANDSCAPE_TERRAIN`] a Landscape `class` names, matching loosely (`Mountain`,
+/// `building`, `sand`, `road`…).
+pub fn terrain_class(class: &str) -> Option<&'static str> {
+    let c = class.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| c.contains(w));
+    if has(&["artificial", "road", "pavement", "asphalt", "street"]) {
+        Some("artificial ground")
+    } else if has(&["natural", "ground", "sand", "snow", "dirt", "gravel", "soil", "earth"]) {
+        Some("natural ground")
+    } else if has(&["mountain", "rock", "hill", "cliff"]) {
+        Some("mountains")
+    } else if has(&["architect", "building", "house", "structure", "wall", "bridge"]) {
+        Some("architecture")
+    } else {
+        None
+    }
 }
 
 impl AutoMasks {
@@ -62,6 +91,7 @@ impl AutoMasks {
             MaskShape::Sky => Some(&self.sky),
             MaskShape::People { .. } => Some(self.person.as_ref().unwrap_or(&self.subject)),
             MaskShape::Subject | MaskShape::Object { .. } => Some(&self.subject),
+            MaskShape::DepthRange { .. } => self.depth.as_ref(),
             MaskShape::Landscape { class } => {
                 let c = class.to_ascii_lowercase();
                 if c.contains("sky") {
@@ -70,6 +100,8 @@ impl AutoMasks {
                     Some(&self.water)
                 } else if c.contains("vegetation") || c.contains("plant") || c.contains("tree") {
                     Some(&self.vegetation)
+                } else if let Some(t) = terrain_class(&c) {
+                    self.terrain.iter().find(|(k, _)| *k == t).map(|(_, p)| p)
                 } else {
                     None
                 }
@@ -82,7 +114,12 @@ impl AutoMasks {
 /// Whether `shape` would use an automatic selection (no stored segmentation of its own).
 pub fn wants(shape: &MaskShape) -> bool {
     match shape {
-        MaskShape::Sky | MaskShape::Subject | MaskShape::Background | MaskShape::People { .. } | MaskShape::Landscape { .. } => true,
+        MaskShape::Sky
+        | MaskShape::Subject
+        | MaskShape::Background
+        | MaskShape::People { .. }
+        | MaskShape::Landscape { .. }
+        | MaskShape::DepthRange { .. } => true,
         MaskShape::Object { seg, detail, hint, .. } => seg.is_none() && detail.is_empty() && !hint.is_empty(),
         _ => false,
     }
@@ -200,7 +237,8 @@ pub(crate) fn photo_key(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, fl
 /// same photo reuses it ([`photo_key`]).
 pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<AutoMasks> {
     let (t, tint) = crate::local::effective_wb(info, s);
-    let key = photo_key(src, info, s, false, "auto", (t.to_bits(), tint.to_bits()));
+    let want_depth = crate::depth_model::wanted(s);
+    let key = photo_key(src, info, s, false, "auto", (t.to_bits(), tint.to_bits(), want_depth));
     if let Some((_, a)) = CACHE.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
         return a.clone();
     }
@@ -210,6 +248,9 @@ pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<A
     }
     if let Some(scene) = crate::scene_model::selection(src, info, s) {
         crate::scene_model::apply(&mut analysed, &scene);
+    }
+    if want_depth {
+        analysed.depth = crate::depth_model::depth(src, info, s);
     }
     let a = Arc::new(analysed);
     let mut c = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -364,7 +405,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let (w, h) = (img.width, img.height);
     let empty = || Plane::new(w, h);
     if w < 4 || h < 4 {
-        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None };
+        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None, terrain: Vec::new(), depth: None };
     }
     // exposure-normalize to the photo's median brightness, then a display-like curve
     let mut ys: Vec<f32> = img.data.iter().map(|c| 0.2627 * c[0] + 0.678 * c[1] + 0.0593 * c[2]).collect();
@@ -383,7 +424,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let sky = sky(&lab, &smoothness, w, h);
     let subject = subject(&lab, &tex, w, h);
     let (water, vegetation) = landscape(&lab, &smoothness, &sky, w, h);
-    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None }
+    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None, terrain: Vec::new(), depth: None }
 }
 
 struct Sky {

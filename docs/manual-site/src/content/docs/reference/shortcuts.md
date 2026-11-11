@@ -224,7 +224,8 @@ sidebar:
 | `Ctrl+Shift+U` | Library, Develop | Auto white balance |
 | `Ctrl+N` | Develop | New snapshot (version) |
 | `Ctrl+Shift+N` | Develop | New preset |
-| `Shift+Q` | Develop | Cycle the selected spot: Remove, Heal, Clone |
+| `Shift+Q` | Develop | Luminance Range mask |
+| `Alt+Shift+Q` | Develop | Cycle the selected spot: Remove, Heal, Clone |
 | `Ctrl+Shift+H` | Develop | Always show the tool overlay |
 | `O` | Library | People view |
 | `Enter` | Detail, Slideshow | Done with a tool; play slideshow |
