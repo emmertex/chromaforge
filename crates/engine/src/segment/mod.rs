@@ -17,6 +17,7 @@
 //! commands return at once and [`Session::segment_poll`] applies the results; without it (CLI,
 //! MCP, tests) they wait for the worker.
 
+pub mod depth;
 #[cfg(feature = "sam")]
 mod download;
 pub mod models;
@@ -169,6 +170,8 @@ pub struct Segmenter {
     scene_model: models::SceneModel,
     /// The scene model as installed in the pipeline.
     pub scene: scene::SceneMasks,
+    /// The depth model as installed in the pipeline (Depth Range masks).
+    pub depth: depth::DepthMasks,
     #[cfg(feature = "sam")]
     model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
@@ -209,6 +212,7 @@ impl Default for Segmenter {
             object_model: models::ObjectModel::default(),
             scene_model: models::SceneModel::default(),
             scene: scene::SceneMasks::default(),
+            depth: depth::DepthMasks::default(),
             #[cfg(feature = "sam")]
             model_downloads: std::collections::HashMap::new(),
             pending: None,

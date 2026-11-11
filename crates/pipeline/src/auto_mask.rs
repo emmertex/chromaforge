@@ -57,6 +57,9 @@ pub struct AutoMasks {
     /// natural and artificial ground), by class name; empty without a scene model (the photo
     /// analysis can't tell them apart).
     pub terrain: Vec<(&'static str, Plane)>,
+    /// Distance (0 = nearest, 1 = farthest) from the depth model ([`crate::depth_model`]), for
+    /// photos with a Depth Range mask; `None` without the model (a Depth Range selects nothing).
+    pub depth: Option<Plane>,
 }
 
 /// The Landscape classes only the scene model can select (the photo analysis has Sky, Water and
@@ -88,6 +91,7 @@ impl AutoMasks {
             MaskShape::Sky => Some(&self.sky),
             MaskShape::People { .. } => Some(self.person.as_ref().unwrap_or(&self.subject)),
             MaskShape::Subject | MaskShape::Object { .. } => Some(&self.subject),
+            MaskShape::DepthRange { .. } => self.depth.as_ref(),
             MaskShape::Landscape { class } => {
                 let c = class.to_ascii_lowercase();
                 if c.contains("sky") {
@@ -110,7 +114,12 @@ impl AutoMasks {
 /// Whether `shape` would use an automatic selection (no stored segmentation of its own).
 pub fn wants(shape: &MaskShape) -> bool {
     match shape {
-        MaskShape::Sky | MaskShape::Subject | MaskShape::Background | MaskShape::People { .. } | MaskShape::Landscape { .. } => true,
+        MaskShape::Sky
+        | MaskShape::Subject
+        | MaskShape::Background
+        | MaskShape::People { .. }
+        | MaskShape::Landscape { .. }
+        | MaskShape::DepthRange { .. } => true,
         MaskShape::Object { seg, detail, hint, .. } => seg.is_none() && detail.is_empty() && !hint.is_empty(),
         _ => false,
     }
@@ -176,8 +185,9 @@ const CACHE_LEN: usize = 8;
 pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<AutoMasks> {
     let frame = analysis_frame(src, info, s);
     let (t, tint) = crate::local::effective_wb(info, s);
+    let want_depth = crate::depth_model::wanted(s);
     let mut hs = std::collections::hash_map::DefaultHasher::new();
-    (src.width, src.height, format!("{frame:?}"), t.to_bits(), tint.to_bits()).hash(&mut hs);
+    (src.width, src.height, format!("{frame:?}"), t.to_bits(), tint.to_bits(), want_depth).hash(&mut hs);
     // the pixels themselves (strided: ~4096 samples)
     let step = (src.data.len() / 4096).max(1);
     for c in src.data.iter().step_by(step) {
@@ -193,6 +203,9 @@ pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<A
     }
     if let Some(scene) = crate::scene_model::selection(src, info, s) {
         crate::scene_model::apply(&mut analysed, &scene);
+    }
+    if want_depth {
+        analysed.depth = crate::depth_model::depth(src, info, s);
     }
     let a = Arc::new(analysed);
     let mut c = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -353,7 +366,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let (w, h) = (img.width, img.height);
     let empty = || Plane::new(w, h);
     if w < 4 || h < 4 {
-        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None, terrain: Vec::new() };
+        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None, terrain: Vec::new(), depth: None };
     }
     // exposure-normalize to the photo's median brightness, then a display-like curve
     let mut ys: Vec<f32> = img.data.iter().map(|c| 0.2627 * c[0] + 0.678 * c[1] + 0.0593 * c[2]).collect();
@@ -372,7 +385,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let sky = sky(&lab, &smoothness, w, h);
     let subject = subject(&lab, &tex, w, h);
     let (water, vegetation) = landscape(&lab, &smoothness, &sky, w, h);
-    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None, terrain: Vec::new() }
+    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None, terrain: Vec::new(), depth: None }
 }
 
 struct Sky {

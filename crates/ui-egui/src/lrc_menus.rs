@@ -696,7 +696,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "---",
             "tool.colorRange",
             "tool.luminanceRange",
-            "soon.depthRange",
+            "tool.depthRange",
         ],
     ),
     ("View", "Create New Mask", &["tool.brush=Brush", "tool.linear=Linear Gradient", "tool.radial=Radial Gradient"]),
@@ -751,6 +751,8 @@ pub struct ComingSoon {
     pub what: &'static str,
 }
 
+// (every item is built; kept for the next one a menu table adds)
+#[allow(dead_code)]
 const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>, size: char, wire: bool, what: &'static str) -> ComingSoon {
     ComingSoon { id, label, hint, size, wire, what }
 }
@@ -765,7 +767,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // View
     // Window
     // Develop
-    soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
     // Map
     // Book
     // Slideshow

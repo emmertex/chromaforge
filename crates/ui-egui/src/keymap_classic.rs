@@ -98,6 +98,7 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("tool.radial", Some("Shift+M")),
     ("tool.guidedUpright", Some("Shift+T")),
     ("tool.colorRange", Some("Shift+J")),
+    ("tool.depthRange", Some("Shift+D")),
     ("tool.pointColor", Some("Cmd+Alt+P")),
     ("panel.keywords", Some("Cmd+K")),
     // flags, collections

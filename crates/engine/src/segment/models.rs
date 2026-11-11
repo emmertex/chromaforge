@@ -222,10 +222,19 @@ impl Segmenter {
     }
 
     /// Install the chosen scene model for the pipeline when its files are in place, or go back
-    /// to the photo analysis (idempotent).
+    /// to the photo analysis (idempotent); the depth model too, when installed.
     pub fn scene_sync(&mut self, activity: &crate::activity::Activity) {
         let want = self.scene_dir_in_use();
         self.scene.sync(want, activity);
+        // (the depth model, behind Depth Range masks, is used whenever it is installed)
+        let depth = self.open_model_installed("depth").then(|| self.open_model_dir("depth")).flatten();
+        self.depth.sync(depth, activity);
+    }
+
+    /// Depth Range masks need the Depth Anything model installed; otherwise
+    /// [`crate::EngineError::ModelMissing`] ([`crate::AiModel::Depth`]) says how to get it.
+    pub fn require_depth_model(&self) -> crate::Result<PathBuf> {
+        self.require_open_model("depth", crate::AiModel::Depth)
     }
 
     fn save_prefs(&self) -> Result<(), String> {

@@ -1858,7 +1858,12 @@ impl LccApp {
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else if lcc_engine::segment::Segmenter::AVAILABLE
-            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector | AiModel::Scene))
+            && matches!(
+                e.kind,
+                ErrorKind::ModelMissing(
+                    AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector | AiModel::Scene | AiModel::Depth
+                )
+            )
         {
             // SAM 2.1 was chosen for Object masks, Describe needs the open models, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
