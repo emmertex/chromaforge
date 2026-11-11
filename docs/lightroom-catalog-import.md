@@ -66,7 +66,7 @@ readable in the same result window. If another dialog is open, the result waits 
 is also available through `library.importLightroom {"status":true}` during that session.
 
 Original files are referenced in place. Ratings, picks/rejects, color labels, XMP metadata,
-hierarchical keywords, regular collections/collection sets, smart collections, folder stacks,
+hierarchical keywords, regular collections/collection sets, smart collections, saved prints, folder stacks,
 virtual copies and mapped develop settings are imported. Missing originals remain catalogued for relinking, count as added records and are reported
 separately from failures reading files that are present. Known-missing originals are not probed
 again. Previously browsed Local records join All Photos even when their originals are offline;
@@ -170,9 +170,27 @@ A Chromaforge album nests only inside a folder (a Lightroom collection set), but
 keeps a saved print, book, slideshow or web gallery (and, in some catalogs, a collection) inside a
 plain or smart collection, and a parent can be system-only (Quick Collection, an unsaved creation:
 not imported) or gone from the catalog. Such an album joins the nearest collection set above it, or
-the top level, and the result names it under warnings; saved prints, books, slideshows and web
-galleries import as regular albums with the photos they hold. On reimport an album keeps the place
-the user gave it. A collection the catalog lists twice imports once; a different collection with
+the top level, and the result names it under warnings; books, slideshows and web galleries import as
+regular albums with the photos they hold. On reimport an album keeps the place the user gave it.
+
+A saved print (`creationId` `com.adobe.ag.print`) becomes a Saved Print: the album holds the
+collection's photos and the print layout, and Print ▸ Saved Prints (or a double-click in Collections)
+opens it. Its layout is the Lua table in `AgLibraryCollectionContent` (`owningModule`
+`com.adobe.ag.print`): the page size and margins (points), the layout style, and the Print Job.
+A Custom Package keeps every cell where Lightroom placed it (`bounds`, points from the page's top
+left, in catalog order, back to front) with the photo it names; a cell whose photo isn't imported
+stays empty. A Picture Package keeps its cells and repeats each photo in them; a Single Image /
+Contact Sheet keeps its rows, columns, gaps and margins (cells fill the margins, so a fixed cell
+size Lightroom kept smaller is reported). Zoom to Fill, Rotate to Fit, the stroke (a package's
+Inner Stroke, a grid's Stroke Border), page background, page numbers, page info, crop marks / cut
+guides, destination (printer or JPEG), resolution, print sharpening, media, rendering intent, Print
+Adjustment, 16-bit output and draft mode carry over. The identity plate, watermark, a package's
+photo border and a named printer profile have no equivalent here and are listed under warnings; the
+original layout stays in the recovery archive. A layout that can't be read (or a saved print the
+catalog keeps no layout for) imports as a plain album with the reason. Reimport gives an earlier
+import's plain album of a saved print its layout once; a Saved Print keeps its layout, so changes
+made since stay. The report counts them as `savedPrints`. An unsaved print is system-only and not
+imported. A collection the catalog lists twice imports once; a different collection with
 the id of an earlier one is left out with a warning naming both, and the photos listed under that
 id go to the first. A collection member whose `collection` is not a whole
 number (missing, NULL, text or a fraction) joins no album, with one warning; it does not join collection 0.
