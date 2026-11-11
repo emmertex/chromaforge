@@ -1633,6 +1633,49 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"rect": {"x0": x0, "y0": y0, "x1": x1, "y1": y1}}))
             }
         ),
+        cmd!(
+            "photo.addRegion",
+            "Add Face Region",
+            [],
+            None,
+            "{id?, rect: {x0, y0, x1, y1}, name?, kind?: \"face\"|\"pet\"} → {index, rect}: add a hand-drawn face (or pet) region, the same kind the detector writes, to the photo in the catalog (box normalized in the photo's upright frame, inside 0..1, at least 0.5 % each way; `name` makes it a named face); undoable. Like photo.removeRegion it never rewrites the XMP sidecar",
+            always,
+            |s, p| {
+                const C: &str = "photo.addRegion";
+                let id = s.photo_or_active(p, C)?;
+                let r = p.get("rect").ok_or_else(|| bad(C, "missing `rect`"))?;
+                let num = |k: &str| {
+                    r.get(k)
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                        .ok_or_else(|| bad(C, format!("`rect.{k}` must be a number from 0 to 1")))
+                };
+                let (a, b, c, d) = (num("x0")?, num("y0")?, num("x1")?, num("y1")?);
+                let (x0, x1) = (a.min(c), a.max(c));
+                let (y0, y1) = (b.min(d), b.max(d));
+                if x1 - x0 < 0.005 || y1 - y0 < 0.005 {
+                    return Err(bad(C, "the box is too small"));
+                }
+                let kind = match p.get("kind").and_then(Value::as_str) {
+                    None | Some("face") => lcc_meta::RegionKind::Face,
+                    Some("pet") => lcc_meta::RegionKind::Pet,
+                    Some(_) => return Err(bad(C, "`kind` must be face or pet")),
+                };
+                let name = match p.get("name") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let t = v.as_str().ok_or_else(|| bad(C, "`name` must be text"))?.trim();
+                        (!t.is_empty()).then(|| t.to_string())
+                    }
+                };
+                let mut meta = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?.meta.clone();
+                let index = meta.regions.len();
+                meta.regions.push(lcc_meta::Region { rect: lcc_geom::Rect { x0, y0, x1, y1 }, kind, name, description: None });
+                s.commit("Add Face Region", Op::SetMeta { id, meta: Box::new(meta) })?;
+                s.skip_auto_write = true;
+                Ok(json!({"index": index, "rect": {"x0": x0, "y0": y0, "x1": x1, "y1": y1}}))
+            }
+        ),
         // ---- delete / restore
         cmd!(
             "photo.delete",

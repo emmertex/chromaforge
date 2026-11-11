@@ -12,12 +12,6 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Library module ▸ Photo ▸ People
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
-
 ## Library module ▸ Photo ▸ Develop Settings
 
 | Item | What it does | Size | Kind | Slot |

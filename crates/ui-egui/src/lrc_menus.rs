@@ -633,7 +633,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "face.drawRegions"]),
     (
         "Photo",
         "Stacking",
@@ -761,7 +761,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // Edit
     // Library
     // Photo
-    soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     // Metadata
     // View
     // Window

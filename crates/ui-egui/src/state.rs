@@ -1426,6 +1426,9 @@ pub struct UiState {
     /// without the user choosing it, so only a choice made since is kept.
     #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
+    /// Photo > People > Draw Face Regions is on: a drag over the loupe's photo draws a face box.
+    #[serde(skip)]
+    pub draw_faces: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
@@ -2511,6 +2514,7 @@ impl Default for UiState {
             grid_info: "filename".into(),
             show_counts: true,
             face_boxes: false,
+            draw_faces: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),

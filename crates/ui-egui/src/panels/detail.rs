@@ -1839,7 +1839,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     (true, Some(before), Some(q)) if before.contains(q) => (CanvasMap::new(&frame, before_img), before_img, *before),
                     _ => (map, img_rect, main_area),
                 };
-                if browsing {
+                if app.ui.draw_faces && !browsing {
+                    draw_face_overlay(app, ui, &p, &resp, &map, d.orientation, id);
+                } else if browsing {
                     // no Develop picker works on a browsed photo: a click only zooms, as in Library
                     click_zoom_and_pan(app, &resp, img, pane);
                 } else {
@@ -2078,6 +2080,64 @@ fn overlay_badges(p: &egui::Painter, t: &Tokens, at: Pos2, photo: &lcc_catalog::
     }
     register(p.ctx(), "canvas:infoOverlayBadges", Rect::from_min_max(at, pos2(x, at.y + side + 2.0)));
     at.y + OVERLAY_BADGES_H
+}
+
+/// Photo > People > Draw Face Regions: a drag over the photo draws a box; on release it becomes an unnamed face
+/// region (`photo.addRegion`, one undo step) and its name box opens. Esc, or the menu item again, leaves the mode.
+fn draw_face_overlay(
+    app: &mut LccApp,
+    ui: &egui::Ui,
+    p: &egui::Painter,
+    resp: &egui::Response,
+    map: &CanvasMap,
+    orient: lcc_geom::Orientation,
+    id: lcc_catalog::PhotoId,
+) {
+    let key = egui::Id::new("face-draw");
+    if app.ui.name_edit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.ui.draw_faces = false;
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        return;
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        ui.data_mut(|d| d.insert_temp(key, (q, q)));
+    }
+    let Some((start, _)) = ui.data(|d| d.get_temp::<(Pos2, Pos2)>(key)) else { return };
+    let now = resp.interact_pointer_pos().or(resp.hover_pos()).unwrap_or(start);
+    let (a, b) = (map.norm(start), map.norm(now));
+    let shown = lcc_geom::Rect {
+        x0: a.x.min(b.x).clamp(0.0, 1.0),
+        y0: a.y.min(b.y).clamp(0.0, 1.0),
+        x1: a.x.max(b.x).clamp(0.0, 1.0),
+        y1: a.y.max(b.y).clamp(0.0, 1.0),
+    };
+    if resp.dragged() {
+        ui.data_mut(|d| d.insert_temp(key, (start, now)));
+        let rect = Rect::from_two_pos(map.screen(Point::new(shown.x0, shown.y0)), map.screen(Point::new(shown.x1, shown.y1)));
+        p.rect_stroke(rect.expand(1.0), 0.0, Stroke::new(1.0, Color32::from_black_alpha(190)), StrokeKind::Outside);
+        p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Outside);
+        ui.ctx().request_repaint();
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        // a click or a slip of the mouse is not a face
+        let moved = now - start;
+        if moved.x.abs().max(moved.y.abs()) < 8.0 {
+            return;
+        }
+        let upright = orient.inverse().map_norm_rect(shown);
+        if let Ok(v) =
+            app.run("photo.addRegion", json!({"id": id.0, "rect": {"x0": upright.x0, "y0": upright.y0, "x1": upright.x1, "y1": upright.y1}}))
+            && let Some(index) = v["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+        {
+            app.ui.name_edit = Some(crate::state::NameEdit { photo: id.0, index, text: String::new(), fresh: true });
+        }
+    }
 }
 
 /// What the user did to a face box this frame.

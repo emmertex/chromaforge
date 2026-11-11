@@ -380,6 +380,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.reference" => Some(u.view == ViewMode::Reference),
         "view.leftPanel" => Some(u.left_panel),
         "view.faceBoxes" => Some(u.face_boxes),
+        crate::face_menu::DRAW_REGIONS => Some(u.draw_faces),
         "view.hdrPreview" => Some(u.hdr_preview),
         "view.focusPoint" => Some(u.settings.focus_point),
         "metadata.targetOnly" => Some(u.settings.metadata_target_only),
