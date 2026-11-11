@@ -315,6 +315,8 @@ pub struct Session {
     pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
+    /// The sources `library.source` showed, for Go Back / Go Forward (`library.sourceBack`); not saved.
+    pub(crate) source_history: view::SourceHistory,
     pub filter: Filter,
     /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
     pub(crate) shelved_filter: Option<Filter>,
@@ -765,6 +767,7 @@ impl Session {
             auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
+            source_history: Default::default(),
             filter: Filter::default(),
             shelved_filter: None,
             sort: Sort::default(),

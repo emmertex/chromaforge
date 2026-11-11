@@ -24,13 +24,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Delete All Empty Masks | Remove masks whose components select nothing. | S | feature | `soon.deleteEmptyMasks` |
 
-## Every module ▸ Window
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
-| Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
-
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |

@@ -322,8 +322,8 @@ const WINDOW: &[&str] = &[
     "@Lights Out",
     "@Secondary Display",
     "---",
-    "soon.goBack",
-    "soon.goForward",
+    "library.sourceBack",
+    "library.sourceForward",
     "---",
     "module.library",
     "module.develop",
@@ -765,8 +765,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // Metadata
     // View
     // Window
-    soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
-    soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
     soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
