@@ -1299,7 +1299,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Invert Selection",
             ["Edit"],
             None,
-            "{} — selects the photos in view that aren't selected and deselects the others → {selected}",
+            "{}: selects the photos in view that aren't selected and deselects the others → {selected}",
             always,
             |s, _| {
                 let chosen: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
@@ -1317,7 +1317,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Deselect Active Photo",
             ["Edit"],
             None,
-            "{} — takes the active photo out of the selection; the next selected photo (wrapping round) becomes active, and with none left nothing stays selected → {selected}",
+            "{}: takes the active photo out of the selection; the next selected photo (wrapping round) becomes active, and with none left nothing stays selected → {selected}",
             has_active,
             |s, _| {
                 let Some(active) = s.selection.active else { return Err(bad("library.deselectActive", "no active photo")) };
@@ -1341,7 +1341,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Deselect Unflagged Photos",
             ["Edit"],
             None,
-            "{} — keeps only the flagged (picked) photos of the selection selected; with none flagged it acts as Deselect All (the active photo stays) → {selected}",
+            "{}: keeps only the flagged (picked) photos of the selection selected; with none flagged it acts as Deselect All (the active photo stays) → {selected}",
             always,
             |s, _| {
                 let keep: Vec<PhotoId> =
@@ -1739,7 +1739,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Photo from Catalog",
             ["Photo"],
             None,
-            "{ids?} — removes the photos from the library without asking; the files stay on disk. One undo step (browsed photos not in the library are left alone) → {deleted}",
+            "{ids?}: removes the photos from the library without asking; the files stay on disk. One undo step (browsed photos not in the library are left alone) → {deleted}",
             has_selection,
             |s, p| {
                 let before = s.visible_cloned();
