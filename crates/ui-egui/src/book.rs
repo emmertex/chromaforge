@@ -280,12 +280,31 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             Ok(json!({"headerBar": st.header_bar, "infoOverlay": st.info_overlay}))
         }
         "book.go" => {
-            let v = p.get("page").ok_or("missing page")?;
-            let r = PageRef::parse(v).ok_or_else(|| format!("invalid page: {v}"))?;
+            // {page} or {delta}: that many pages on from the current one, stopping at the book's ends
+            let r = match (p.get("page"), p.get("delta").and_then(Value::as_i64)) {
+                (Some(v), _) => PageRef::parse(v).ok_or_else(|| format!("invalid page: {v}"))?,
+                (None, Some(d)) => {
+                    let all = st.book.all_pages();
+                    let at = all.iter().position(|r| *r == st.current).unwrap_or(0);
+                    let last = i64::try_from(all.len()).unwrap_or(1).saturating_sub(1);
+                    let to = i64::try_from(at).unwrap_or(0).saturating_add(d).clamp(0, last.max(0));
+                    usize::try_from(to).ok().and_then(|i| all.get(i).copied()).ok_or("the book has no pages")?
+                }
+                (None, None) => return Err("missing page (or delta)".into()),
+            };
             st.book.page(r).ok_or_else(|| format!("no {}", r.label()))?;
             st.current = r;
             st.cell = None;
             Ok(json!({"page": page_json(r)}))
+        }
+        "book.toggleGuides" => {
+            let show = !st.book.guides.show;
+            run_op(app, "book.guides", &json!({"show": show}))
+        }
+        "book.refreshCaptions" => {
+            // captions built from photo metadata are drawn from cached text textures: drop them so the next frame re-reads
+            let n = with_text(|c| std::mem::take(&mut c.tex).len());
+            Ok(json!({"cleared": n}))
         }
         "book.select" => {
             if let Some(v) = p.get("page") {

@@ -618,14 +618,15 @@ fn views(ui: &mut egui::Ui, app: &mut LccApp) {
     // the originals the view keeps decoded (the loupe's even over budget), as the docked centre does
     panels::compare::prepare(app);
     panels::alternatives::show(app, ui);
-    match app.ui.view {
+    let rect = ui.available_rect_before_wrap();
+    crate::view_state::around(app, ui, rect, |app, ui| match app.ui.view {
         ViewMode::PhotoGrid | ViewMode::SquareGrid => panels::grid::show(app, ui),
         ViewMode::Detail => panels::detail::show(app, ui),
         ViewMode::Compare => panels::compare::show_compare(app, ui),
         ViewMode::Survey => panels::compare::show_survey(app, ui),
         ViewMode::Reference => panels::compare::show_reference(app, ui),
         ViewMode::People => panels::people::show(app, ui),
-    }
+    })
 }
 
 /// The module the view, the right panel and the module in use imply (Library or Develop).
@@ -874,6 +875,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     // the Slideshow module (crate::slideshow_ui)
     ("slideshow.get", "Slideshow Settings", None, ""),
     ("slideshow.set", "Set Slideshow Settings", None, ""),
+    ("slideshow.toggleGuides", "Show Guides", None, ""),
     ("slideshow.reset", "Reset Slideshow Settings", None, ""),
     ("slideshow.applyTemplate", "Apply Slideshow Template", None, ""),
     ("slideshow.saveTemplate", "Save Slideshow Template", None, "Slideshow"),
@@ -928,6 +930,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.pageText", "Page Text", None, ""),
     ("book.textPreset", "Text Style Preset", None, ""),
     ("book.guides", "Guides", None, ""),
+    ("book.toggleGuides", "Show Guides", None, ""),
+    ("book.refreshCaptions", "Update Metadata Based Captions", None, ""),
     ("book.favorite", "Favorite Template", None, ""),
     ("book.templates", "Page Templates", None, ""),
     ("book.presets", "Auto Layout Presets", None, ""),

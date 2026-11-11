@@ -104,6 +104,7 @@ fn single_photo_commands_refuse_an_id_that_is_not_a_photo_id() {
             ("photo.relink", json!({"path": "/elsewhere/other.jpg"})),
             ("photo.removeRegion", json!({"index": 0})),
             ("photo.setRegion", json!({"index": 0, "rect": {"x0": 0.2, "y0": 0.2, "x1": 0.4, "y1": 0.4}})),
+            ("photo.addRegion", json!({"rect": {"x0": 0.2, "y0": 0.2, "x1": 0.4, "y1": 0.4}})),
             ("faces.setName", json!({"index": 0, "name": "Ann"})),
             ("library.findSimilar", json!({})),
             ("denoise.cancel", json!({})),

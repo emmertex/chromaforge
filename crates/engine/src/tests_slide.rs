@@ -139,6 +139,17 @@ fn a_background_image_and_the_slide_key() {
 }
 
 #[test]
+fn add_text_string_appends_a_default_overlay_with_that_text() {
+    let lib = temp_dir("overlay-string");
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let r = s.execute("slideshow.overlays", &json!({"addTextString": "{Caption} by me"})).unwrap();
+    assert_eq!(r["texts"][0]["text"], "{Caption} by me");
+    assert!(s.execute("slideshow.overlays", &json!({"addTextString": 5})).is_err());
+    assert_eq!(s.execute("slideshow.overlays", &json!({})).unwrap()["texts"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
 fn slide_overlays_are_validated_and_persist_with_the_library() {
     let lib = temp_dir("overlays");
     {

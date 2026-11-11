@@ -54,6 +54,9 @@ pub struct Filter {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<ColorLabel>,
     pub kind: Option<MediaKind>,
+    /// Virtual copies only (`Some(true)`) or master photos only (`Some(false)`); Classic's Filter by Kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy: Option<bool>,
     pub edited: Option<bool>,
     pub album: Option<AlbumId>,
     /// Show "Recently Deleted" instead of the library.
@@ -918,6 +921,9 @@ impl Filter {
         if let Some(k) = self.kind {
             v.push(format!("kind {}", format!("{k:?}").to_lowercase()));
         }
+        if let Some(c) = self.copy {
+            v.push(if c { "virtual copies".into() } else { "master photos".into() });
+        }
         if let Some(e) = self.edited {
             v.push(if e { "edited".into() } else { "unedited".into() });
         }
@@ -1038,6 +1044,9 @@ impl Filter {
             }
         }
         if self.flag.is_some_and(|f| f != p.flag) || self.label.is_some_and(|l| Some(l) != p.label) || self.kind.is_some_and(|k| k != p.kind) {
+            return false;
+        }
+        if self.copy.is_some_and(|c| c != p.copy_of.is_some()) {
             return false;
         }
         if self.edited.is_some_and(|e| e != p.is_edited()) {

@@ -2271,7 +2271,7 @@ fn locate_missing_item(app: &mut LccApp, ui: &mut egui::Ui, n: &FolderNode) {
 /// the Folders row for that very folder, else (a folder above rows) the folder itself, as a folder
 /// holding other folders. `None` when no library photo lies in `path` or inside it. Reads the
 /// cached Folders tree only; the disk is not touched.
-fn library_node_for(tree: &[FolderNode], path: &str) -> Option<(FolderNode, String)> {
+pub(crate) fn library_node_for(tree: &[FolderNode], path: &str) -> Option<(FolderNode, String)> {
     use lcc_catalog::query::folder_within;
     fn exact<'a>(tree: &'a [FolderNode], path: &str) -> Option<&'a FolderNode> {
         tree.iter().find_map(|n| if same_folder(&n.path, path) { Some(n) } else { exact(&n.children, path) })

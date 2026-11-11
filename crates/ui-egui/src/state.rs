@@ -594,6 +594,14 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// View ▸ Lock Zoom Position (`view.lockZoomPosition`): one zoom and pan for every photo (the
+    /// default); off, each photo keeps its own ([`crate::view_state`]).
+    pub lock_zoom: bool,
+    /// View ▸ Scroll By Row (`view.scrollByRow`): a wheel notch moves the grid a whole row.
+    pub scroll_by_row: bool,
+    /// View ▸ Enable Mirror Image Mode (`view.mirrorImage`): the views are shown flipped left to
+    /// right; photos, edits and exports are untouched.
+    pub mirror_image: bool,
     /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
     pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
@@ -792,6 +800,9 @@ impl Default for AppSettings {
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            lock_zoom: true,
+            scroll_by_row: false,
+            mirror_image: false,
             reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
@@ -1442,6 +1453,9 @@ pub struct UiState {
     /// without the user choosing it, so only a choice made since is kept.
     #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
+    /// Photo > People > Draw Face Regions is on: a drag over the loupe's photo draws a face box.
+    #[serde(skip)]
+    pub draw_faces: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
@@ -1836,6 +1850,9 @@ pub struct UiState {
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
+    /// The report of the last Validate DNG Files (`dng.validate`'s answer; it runs in the background).
+    #[serde(skip)]
+    pub last_dng_validation: Option<serde_json::Value>,
     /// The outcome (success or error) of the last Find Missing Photos task.
     #[serde(skip)]
     pub last_find_missing_result: Option<Result<serde_json::Value, String>>,
@@ -1931,6 +1948,11 @@ pub enum Dialog {
         hold: u32,
         crossfade: u32,
         prores: bool,
+        quality: u8,
+    },
+    /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
+    EmailPhoto {
+        long_edge: u32,
         quality: u8,
     },
     /// A Lightroom import result stays readable after its activity row disappears.
@@ -2116,6 +2138,13 @@ pub enum Dialog {
     },
     SystemInfo {
         rows: Vec<(String, String)>,
+    },
+    /// Library ▸ Validate DNG Files: what the check found (it runs in the background). `damaged` and `unverifiable`
+    /// hold `name: why` lines.
+    DngValidation {
+        summary: String,
+        damaged: Vec<String>,
+        unverifiable: Vec<String>,
     },
     /// Help ▸ Check for Updates…: the release feed's answer, the download and the install
     /// (the panel state lives in the session's updater; see [`crate::panels::update`]).
@@ -2522,6 +2551,7 @@ impl Default for UiState {
             grid_info: "filename".into(),
             show_counts: true,
             face_boxes: false,
+            draw_faces: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -2676,6 +2706,7 @@ impl Default for UiState {
             reference: None,
             toasts: Vec::new(),
             toast_action: None,
+            last_dng_validation: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]

@@ -83,7 +83,7 @@ const FILE: &[&str] = &[
     "app.openLibrary=Open Catalog…",
     "@Open Recent=Libraries",
     "library.compact=Optimize Catalog",
-    "soon.renameCatalog",
+    "app.renameLibrary=Rename Catalog…",
     // The app's own catalog care, beside Classic's
     "catalog.backup=Back Up Catalog",
     "file.backupLibrary=Back Up Catalog…",
@@ -107,7 +107,7 @@ const FILE: &[&str] = &[
     "dialog.exportCatalog=Export as Catalog…",
     "@More Exports",
     "---",
-    "soon.emailPhoto",
+    "dialog.emailPhoto",
     "---",
     "plugins.manager",
     "@Plug-in Extras=Plug-ins",
@@ -115,12 +115,12 @@ const FILE: &[&str] = &[
     "library.showQuickCollection=Show Quick Collection",
     "album.saveQuick=Save Quick Collection…",
     "album.clearQuick=Clear Quick Collection",
-    "soon.quickCollectionTarget",
+    r#"album.setTarget{"id":null}=Set Quick Collection as Target"#,
     "---",
     "@Library Filters",
     "---",
     "dialog.print=Printer…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
     "---",
     "app.quit",
 ];
@@ -131,12 +131,12 @@ const EDIT: &[&str] = &[
     "---",
     "library.selectAll=Select All",
     "library.selectNone=Select None",
-    "soon.invertSelection",
+    "library.invertSelection",
     "---",
     "library.selectOnlyActive=Select Only Active Photo",
-    "soon.deselectActive",
+    "library.deselectActive",
     r#"library.selectBy{"flag":"pick"}=Select Flagged Photos"#,
-    "soon.deselectUnflagged",
+    "library.deselectUnflagged",
     "---",
     "@Select by Flag",
     "@Select by Rating",
@@ -155,7 +155,7 @@ const LIBRARY: &[&str] = &[
     "dialog.newAlbum",
     "dialog.smartAlbum",
     "dialog.newFolder=New Collection Set…",
-    "soon.newFolder",
+    "dialog.newDiskFolder=New Folder…",
     "dialog.newSmartAlbum",
     "---",
     "view.focusSearch",
@@ -168,8 +168,8 @@ const LIBRARY: &[&str] = &[
     "@Filter by Flag",
     "@Filter by Rating",
     "@Filter by Color Label",
-    "soon.filterByKind",
-    "soon.filterByMetadata",
+    "@Filter by Kind",
+    "@Filter by Metadata",
     "@Filters",
     "---",
     "library.lockFilters",
@@ -177,16 +177,16 @@ const LIBRARY: &[&str] = &[
     "library.showSubfolderPhotos",
     "---",
     "library.refine",
-    "soon.reviewComments",
+    "dialog.reviewComments",
     "---",
     "dialog.rename",
     "photo.convertToDng=Convert Photo to DNG…",
     "---",
-    "soon.flatField",
+    "photo.flatField=Flat-Field Correction…",
     "---",
     "file.findMissing=Find All Missing Photos",
-    "soon.validateDng",
-    "soon.synchronizeFolder",
+    "library.validateDng",
+    "dialog.synchronizeFolder=Synchronize Folder…",
     "---",
     "faces.detect=Find Faces Again…",
     "faces.clearAndRescan",
@@ -219,7 +219,7 @@ const PHOTO: &[&str] = &[
     "@Stacking=Stack",
     "@People",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -229,7 +229,7 @@ const PHOTO: &[&str] = &[
     "@Set Flag",
     "@Set Rating",
     "@Set Color Label",
-    "soon.resetExportStatus",
+    "photo.resetExportStatus",
     "view.autoAdvance",
     "---",
     "@Set Keyword",
@@ -241,7 +241,7 @@ const PHOTO: &[&str] = &[
     "album.removePhotos",
     "photo.restore",
     "photo.deletePermanently",
-    "soon.removeFromCatalog",
+    "photo.removeFromCatalog=Remove Photo from Catalog",
     "library.deleteRejected=Delete Rejected Photos…",
 ];
 
@@ -267,7 +267,7 @@ const METADATA: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "file.importKeywords",
     "file.exportKeywords",
@@ -278,17 +278,17 @@ const VIEW: &[&str] = &[
     "panel.toolbar",
     "view.filterBar=Show Filter Bar",
     "---",
-    "soon.toggleLoupeView",
+    "view.loupeToggle=Toggle Loupe View",
     "view.zoomToggle=Toggle Zoom View",
     "---",
     "view.zoomIn",
     "view.zoomOut",
     "view.zoom100=Zoom To 100%",
-    "soon.lockZoomPosition",
+    "view.lockZoomPosition",
     "---",
     "view.thumbSizeUp=Increase Grid Size",
     "view.thumbSizeDown=Decrease Grid Size",
-    "soon.scrollByRow",
+    "view.scrollByRow",
     "---",
     "@Sort",
     "---",
@@ -311,7 +311,7 @@ const VIEW: &[&str] = &[
     "@Loupe Info",
     "@Loupe Overlay",
     "---",
-    "soon.mirrorImageMode",
+    "view.mirrorImage",
 ];
 
 const WINDOW: &[&str] = &[
@@ -322,8 +322,8 @@ const WINDOW: &[&str] = &[
     "@Lights Out",
     "@Secondary Display",
     "---",
-    "soon.goBack",
-    "soon.goForward",
+    "library.sourceBack",
+    "library.sourceForward",
     "---",
     "module.library",
     "module.develop",
@@ -389,7 +389,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "dialog.enhance",
     "---",
     "photo.virtualCopy",
-    "soon.setCopyAsOriginal",
+    "photo.setCopyAsOriginal",
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -403,7 +403,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "photo.delete=Remove Photo…",
     "library.deleteRejected=Delete Rejected Photos…",
@@ -464,7 +464,7 @@ const TOOLS: &[&str] = &[
     "---",
     "tool.guidedUpright",
     "tool.wbPicker",
-    "soon.fringeSelector",
+    "tool.fringe",
     "tool.pointColor",
     "---",
     "@Target Adjustment",
@@ -505,7 +505,8 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] =
+    &["map.focusSearch=Search…", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",
@@ -522,8 +523,8 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Rating=Photo>Set Rating",
     "@Set Color Label=Photo>Set Color Label",
     "---",
-    "soon.deleteGps",
-    "soon.deleteLocationMetadata",
+    r#"map.geotag{"clear":true}=Delete GPS Coordinates"#,
+    "map.clearLocationMetadata",
 ];
 
 const MAP_VIEW: &[&str] = &[
@@ -531,8 +532,8 @@ const MAP_VIEW: &[&str] = &[
     "view.filterBar=Show Filter Bar",
     "map.showInfo=Show Map Info",
     "map.showKey=Show Map Key",
-    "soon.savedLocationOverlay",
-    "soon.lockMarkers",
+    "map.toggleSavedLocations",
+    "map.toggleLockMarkers",
     "---",
     "@Map Style",
 ];
@@ -540,9 +541,10 @@ const MAP_VIEW: &[&str] = &[
 const BOOK: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Book","hint":"Name","command":"book.save","key":"name"}=Create Saved Book…"#,
     "---",
-    "soon.bookPageNavigation",
+    r#"book.go{"delta":-1}=Previous Page"#,
+    r#"book.go{"delta":1}=Next Page"#,
     "---",
-    "soon.updateMetadataCaptions",
+    "book.refreshCaptions",
     "dialog.bookPreferences",
     "---",
     "book.export",
@@ -550,7 +552,7 @@ const BOOK: &[&str] = &[
 
 const BOOK_VIEW: &[&str] = &[
     "book.headerBar=Show Header Bar",
-    "soon.bookGuides",
+    "book.toggleGuides",
     "book.infoOverlay=Show Info Overlay",
     "---",
     r#"book.view{"mode":"multi"}=Multi-Page View"#,
@@ -568,7 +570,7 @@ const SLIDESHOW: &[&str] = &[
     "slideshow.exportJpeg",
     "slideshow.exportVideo",
     "---",
-    "soon.addTextOverlay",
+    r#"ui.prompt{"title":"Add Text Overlay…","hint":"{Caption} · {Filename}","command":"slideshow.overlays","key":"addTextString"}=Add Text Overlay…"#,
     "---",
     "photo.rotateLeft=Rotate Left (CCW)",
     "photo.rotateRight=Rotate Right (CW)",
@@ -586,7 +588,7 @@ const PLAY: &[&str] = &[
     "@Content=Slideshow Content",
 ];
 
-const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
+const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "slideshow.toggleGuides"];
 
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
@@ -597,10 +599,10 @@ const PRINT: &[&str] = &[
     r#"printui.page{"delta":1}=Next Page"#,
     "---",
     "dialog.print=Print…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
 ];
 
-const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.infoOverlay=Show Info Overlay"];
+const PRINT_VIEW: &[&str] = &["printui.toggleGuides", "printui.toggleRulers", "printui.infoOverlay=Show Info Overlay"];
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
@@ -616,7 +618,7 @@ const WEB_VIEW: &[&str] = &["panel.toolbar", "webui.guides=Show Guides"];
 
 /// Classic's submenus: (menu, submenu label, slots).
 const SUB: &[(&str, &str, &[&str])] = &[
-    ("File", "Auto Import", &["soon.autoImportEnable", "soon.autoImportSettings"]),
+    ("File", "Auto Import", &["app.autoImportToggle", r#"app.settings{"section":"autoImport"}=Auto Import Settings…"#]),
     (
         "File",
         "Library Filters",
@@ -631,7 +633,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "face.drawRegions"]),
     (
         "Photo",
         "Stacking",
@@ -756,123 +758,20 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.renameCatalog", "Rename Catalog…", None, 'S', false, "Rename the open catalog's folder and file, then reopen it."),
-    soon("soon.autoImportEnable", "Enable Auto Import", None, 'M', false, "Watch a folder and import new files as they arrive."),
-    soon(
-        "soon.autoImportSettings",
-        "Auto Import Settings…",
-        None,
-        'M',
-        false,
-        "Choose the watched folder, destination, naming and develop settings for Auto Import.",
-    ),
-    soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
-    soon(
-        "soon.quickCollectionTarget",
-        "Set Quick Collection as Target",
-        Some("Cmd+Alt+Shift+B"),
-        'S',
-        false,
-        "Make the Quick Collection the target collection again (B adds to the target).",
-    ),
-    soon(
-        "soon.pageSetup",
-        "Page Setup…",
-        Some("Cmd+Shift+P"),
-        'S',
-        true,
-        "The system page-setup dialog for the printer (Print module's paper choice exists).",
-    ),
     // Edit
-    soon("soon.invertSelection", "Invert Selection", None, 'S', false, "Select the photos in view that aren't selected, and deselect the others."),
-    soon(
-        "soon.deselectActive",
-        "Deselect Active Photo",
-        Some("/"),
-        'S',
-        false,
-        "Take the active photo out of the selection (/ is the filmstrip key here today).",
-    ),
-    soon(
-        "soon.deselectUnflagged",
-        "Deselect Unflagged Photos",
-        Some("Cmd+Alt+Shift+D"),
-        'S',
-        false,
-        "Keep only the flagged photos of the selection selected.",
-    ),
     // Library
-    soon(
-        "soon.newFolder",
-        "New Folder…",
-        Some("Cmd+Shift+N"),
-        'S',
-        true,
-        "Create a folder on disk inside the chosen folder (the engine's folder.create exists).",
-    ),
-    soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
-    soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon("soon.reviewComments", "Review Comments", None, 'L', false, "Comments from shared web galleries."),
-    soon("soon.flatField", "Flat-Field Correction…", None, 'L', false, "Correct lens cast and vignetting from a flat-field reference frame."),
-    soon("soon.validateDng", "Validate DNG Files", None, 'S', false, "Check the DNGs' embedded checksums and list the damaged ones."),
-    soon(
-        "soon.synchronizeFolder",
-        "Synchronize Folder…",
-        None,
-        'S',
-        true,
-        "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
-    ),
     // Photo
-    soon("soon.setCopyAsOriginal", "Set Copy as Original", None, 'S', false, "Swap a virtual copy and its master."),
-    soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
-    soon("soon.resetExportStatus", "Reset Export Status", None, 'S', false, "Forget that photos were exported (the badge and Export with Previous)."),
-    soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon(
-        "soon.updateDngPreview",
-        "Update DNG Preview & Metadata",
-        None,
-        'M',
-        false,
-        "Rewrite a DNG's embedded preview and metadata from the current edit.",
-    ),
     // View
-    soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
-    soon(
-        "soon.lockZoomPosition",
-        "Lock Zoom Position",
-        Some("Cmd+Shift+="),
-        'S',
-        false,
-        "Zoom every photo to the same place while stepping through them.",
-    ),
-    soon("soon.scrollByRow", "Scroll By Row", None, 'S', false, "The grid scrolls a whole row at a time."),
-    soon("soon.mirrorImageMode", "Enable Mirror Image Mode", None, 'S', false, "Show every photo flipped left to right (view only)."),
     // Window
-    soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
-    soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
     soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
     soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.fringeSelector", "Fringe Color Selector", None, 'S', false, "Pick a fringe colour for Defringe on the photo."),
     // Map
-    soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
-    soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.deleteLocationMetadata", "Delete All Location Metadata", None, 'S', false, "Take GPS and place names off the selected photos."),
-    soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
-    soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
-    soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
-    soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
-    soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     // Slideshow
-    soon("soon.addTextOverlay", "Add Text Overlay…", None, 'M', false, "Text on the slides."),
-    soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
-    soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     // Web
 ];
 
