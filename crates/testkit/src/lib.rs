@@ -20,12 +20,115 @@
 //! `cargo xtask ci` lists the skips by need and reason in its summary and in
 //! `target/ci/report.json`. A test that runs part of its checks (e.g. only the CPU half) records
 //! the part it could not run the same way.
+//!
+//! **Temporary folders.** A test that writes files takes a [`TempDir`]: a folder of its own in the
+//! system temp directory that is removed with everything in it when the test ends, passed or failed,
+//! so test runs don't pile folders up in Temp.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
+
+/// A test's own folder in the system temp directory, `<temp>/<name>-<process id>`: made empty when
+/// it is made (an earlier run's is removed first) and removed with everything in it when dropped,
+/// which a failed assert's unwinding does too. Derefs to the folder's [`Path`].
+///
+/// ```no_run
+/// let dir = lcc_testkit::TempDir::new("lcc-example-out");
+/// std::fs::write(dir.join("a.txt"), "x").unwrap();
+/// // the folder is gone once `dir` goes out of scope
+/// ```
+#[derive(Debug)]
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// The folder `<temp>/<name>-<process id>`, empty. A folder that can't be made shows in the
+    /// test's first use of it.
+    pub fn new(name: &str) -> TempDir {
+        let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::create_dir_all(&path);
+        TempDir(path)
+    }
+
+    /// The folder.
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A file's path in a [`TempDir`] of its own, `<temp>/<folder>-<process id>/<file>`, for a test
+/// that needs one file: the folder goes when this is dropped. Derefs to the file's [`Path`].
+#[derive(Debug)]
+pub struct TempFile {
+    dir: TempDir,
+    path: std::path::PathBuf,
+}
+
+impl TempFile {
+    /// `file` in the empty folder `<temp>/<folder>-<process id>` (not created: the test writes it).
+    pub fn new(folder: &str, file: &str) -> TempFile {
+        let dir = TempDir::new(folder);
+        let path = dir.join(file);
+        TempFile { dir, path }
+    }
+
+    /// The file's path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The folder it is in.
+    pub fn dir(&self) -> &TempDir {
+        &self.dir
+    }
+}
+
+impl std::ops::Deref for TempFile {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempFile {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempFile {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
+}
 
 /// The environment variable naming the file skips are appended to (JSON lines).
 /// The skip-log variable's name: `<PREFIX>_SKIP_LOG` (`env_prefix` in `brand.toml`).

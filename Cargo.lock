@@ -5521,6 +5521,7 @@ dependencies = [
  "flate2",
  "lcc-brand",
  "lcc-net",
+ "lcc-testkit",
  "lcc-winmsi",
  "log",
  "serde_json",
