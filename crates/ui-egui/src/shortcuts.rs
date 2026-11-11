@@ -688,7 +688,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     // instead of opening Remove; a Remove key moved elsewhere still opens it. The full-screen
     // preview and a hidden tools panel show no panel, so H keeps its own binding there.
     if h_press
-        && app.ui.right == crate::state::RightPanel::Masking
+        && tool_panel(app) == crate::state::RightPanel::Masking
         && !app.ui.fullscreen
         && crate::docking::exposed(app, crate::docking::Panel::Tools)
     {
@@ -832,7 +832,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
             // `, ⌘↑, ⌘↓: step the flag; the toast is the command's own (`cull_toast`, shown by `run`)
             cull(app, &f, json!({}), false);
-        } else if matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && app.ui.right != crate::state::RightPanel::Crop) {
+        } else if matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && tool_panel(app) != crate::state::RightPanel::Crop) {
             // P and U flag with Crop open too; X there swaps the crop aspect (#1866)
             cull(app, &f, json!({}), false);
         } else {
@@ -845,7 +845,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             // spot or red-eye correction; never the photo while retouching.
             if f == "photo.delete" {
                 use crate::state::RightPanel as R;
-                match app.ui.right {
+                match tool_panel(app) {
                     R::Masking => {
                         if app.session.active_mask.is_some() {
                             let _ = app.run("mask.delete", json!({}));
@@ -919,13 +919,13 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             }
             // X is both reject (library) and swap crop aspect (crop tool). When both bindings fire,
             // swap once: twice would put the crop straight back (issue #1866).
-            if f == "photo.reject" && app.ui.right == crate::state::RightPanel::Crop {
+            if f == "photo.reject" && tool_panel(app) == crate::state::RightPanel::Crop {
                 if !rotate_fired {
                     let _ = app.run("crop.rotateAspect", json!({}));
                 }
                 continue;
             }
-            if f == "crop.rotateAspect" && app.ui.right != crate::state::RightPanel::Crop {
+            if f == "crop.rotateAspect" && tool_panel(app) != crate::state::RightPanel::Crop {
                 continue;
             }
             // Classic's F8 (`panel.right`) in Library and Develop folds their right panel away and
@@ -936,14 +936,15 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 continue;
             }
             // A is both Visualize Spots and the crop aspect lock: each key only in its own context
-            if f == "view.visualizeSpots" && app.ui.right == crate::state::RightPanel::Crop {
+            // (neither tool is on screen in the grids, Compare/Survey and the full-screen preview, so neither runs there)
+            if f == "view.visualizeSpots" && (tool_panel(app) == crate::state::RightPanel::Crop || !tool_in_view(app)) {
                 continue;
             }
-            if f == "crop.lockAspect" && app.ui.right != crate::state::RightPanel::Crop {
+            if f == "crop.lockAspect" && tool_panel(app) != crate::state::RightPanel::Crop {
                 continue;
             }
             // / refreshes the selected spot's source in the Remove tool (Deselect Active Photo elsewhere)
-            if f == "library.deselectActive" && app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
+            if f == "library.deselectActive" && tool_panel(app) == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
                 let _ = app.run("spot.refreshSource", json!({}));
                 continue;
             }
@@ -955,12 +956,12 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 continue;
             }
             // Shift+O cycles the mask overlay colour while masking (the crop overlay elsewhere)
-            if f == "view.cropOverlay" && app.ui.right == crate::state::RightPanel::Masking {
+            if f == "view.cropOverlay" && tool_panel(app) == crate::state::RightPanel::Masking {
                 let _ = app.run("view.maskOverlayColor", json!({}));
                 continue;
             }
             // while cropping: O cycles the guides, Shift+O their orientation
-            if app.ui.right == crate::state::RightPanel::Crop {
+            if tool_panel(app) == crate::state::RightPanel::Crop {
                 let crop_key = match f.as_str() {
                     "view.maskOverlay" => Some(("view.cropOverlay", json!({}))),
                     "view.cropOverlay" => Some(("view.cropOverlayOrientation", json!({}))),
@@ -1015,6 +1016,18 @@ fn change_toast(app: &mut LccApp, ctx: &egui::Context, text: impl Into<String>) 
 /// Whether the on-screen overlay (`panels::surface_osd`) reports the changes keys make.
 pub(crate) fn overlay_reports_changes(app: &LccApp) -> bool {
     app.surface.settings().osd.effective_mode() == lcc_surface::settings::OsdMode::Always
+}
+
+/// Whether a right-panel tool can be on screen: the single-photo view, not full screen.
+fn tool_in_view(app: &LccApp) -> bool {
+    app.ui.view == crate::state::ViewMode::Detail && !app.ui.fullscreen
+}
+
+/// The right panel whose tool is on screen and so owns the keys it shares with the library: `ui.right` itself
+/// outlives its view (it is saved, and stays while the grid, a comparison or the full-screen preview is shown, where
+/// no tool can act), so everywhere but the single-photo view there is none.
+fn tool_panel(app: &LccApp) -> crate::state::RightPanel {
+    if tool_in_view(app) { app.ui.right } else { crate::state::RightPanel::None }
 }
 
 /// Arrow keys reach the canvas tools from the keyboard (accessibility; the tools are otherwise
@@ -1615,6 +1628,30 @@ mod tests {
         h.app.ui.right = crate::state::RightPanel::Crop;
         key(&mut h, "X", false);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::None);
+    }
+
+    #[test]
+    fn delete_and_reject_belong_to_the_photo_when_no_tool_is_on_screen() {
+        use crate::state::{RightPanel, ViewMode};
+        use lcc_catalog::{Flag, PhotoId};
+        // `ui.right` is saved and outlives the view that showed it: in the grid, Delete and X still act on the photo
+        for right in [RightPanel::Masking, RightPanel::Remove, RightPanel::RedEye, RightPanel::Crop] {
+            let mut h = library();
+            h.app.ui.view = ViewMode::PhotoGrid;
+            h.app.ui.right = right;
+            h.app.ui.settings.confirm_delete = false;
+            key(&mut h, "X", false);
+            assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().flag, Flag::Reject, "X with {right:?}");
+            key(&mut h, "Delete", false);
+            assert!(h.app.session.catalog.photo(PhotoId(1)).unwrap().deleted, "Delete with {right:?}");
+        }
+        // with the tool on screen, Delete stays with the tool and deletes no photo
+        let mut h = library();
+        h.app.ui.view = ViewMode::Detail;
+        h.app.ui.right = RightPanel::Masking;
+        h.app.ui.settings.confirm_delete = false;
+        key(&mut h, "Delete", false);
+        assert!(!h.app.session.catalog.photo(PhotoId(1)).unwrap().deleted);
     }
 
     #[test]
