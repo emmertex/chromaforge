@@ -717,6 +717,7 @@ mod tests {
         list.push(lcc_raw::dcp::Calibrated {
             make: "PMHIDE".into(),
             names: vec!["PMHIDE ONE".into()],
+            lens: None,
             looks: vec![("cal:pmhide-me".into(), dcp)],
             default: None,
         });

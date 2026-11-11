@@ -62,6 +62,8 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Filter by Flag" => filter_by_flag(app),
         "Filter by Color Label" => filter_by_label(app),
         "Filter by Preset" => filter_by_preset(app),
+        "Filter by Kind" => filter_by_kind(app),
+        "Filter by Metadata" => filter_by_metadata(app),
         "Set Keyword" => set_keyword(app),
         "Keyword Set" => keyword_set(app),
         "Location Filter" => location_filter(app),
@@ -114,6 +116,35 @@ fn filter_by_label(app: &LccApp) -> Vec<MenuNode> {
     let any = app.session.filter.labels_shown().is_some();
     v.extend(choices("library.filter", [Choice::new("None", json!({"label": null, "labels": []}), false).enabled(any)]));
     v
+}
+
+/// Classic's Filter by Kind: master photos, virtual copies and videos, each on its own (the same row again clears it).
+fn filter_by_kind(app: &LccApp) -> Vec<MenuNode> {
+    use lcc_catalog::MediaKind;
+    let f = &app.session.filter;
+    let row = |label: &str, on: bool, set: Value, clear: Value| Choice::new(label, if on { clear } else { set }, on);
+    let mut v = choices(
+        "library.filter",
+        [
+            row("Master Photos", f.copy == Some(false), json!({"copy": false}), json!({"copy": null})),
+            row("Virtual Copies", f.copy == Some(true), json!({"copy": true}), json!({"copy": null})),
+            row("Videos", f.kind == Some(MediaKind::Video), json!({"kind": "video"}), json!({"kind": null})),
+        ],
+    );
+    v.push(MenuNode::Separator);
+    let any = f.copy.is_some() || f.kind == Some(MediaKind::Video);
+    v.extend(choices("library.filter", [Choice::new("None", json!({"copy": null, "kind": null}), false).enabled(any)]));
+    v
+}
+
+/// The Metadata filter's columns: one row per field, checked while the filter bar lists it.
+fn filter_by_metadata(app: &LccApp) -> Vec<MenuNode> {
+    use crate::panels::filterbar::COLUMN_FIELDS;
+    let shown = &app.ui.filter_columns;
+    choices(
+        "view.filterColumns",
+        COLUMN_FIELDS.iter().map(|(field, label)| Choice::new(*label, json!({"toggle": field}), shown.iter().any(|c| c == field))),
+    )
 }
 
 /// The saved filter presets; the one equal to the filter now is checked.
@@ -292,6 +323,39 @@ mod tests {
         pick(&mut a, "Filter by Flag", "Unflagged");
         pick(&mut a, "Filter by Flag", "None");
         assert!(a.session.filter.flags_shown().is_none());
+    }
+
+    #[test]
+    fn filter_by_kind_picks_masters_virtual_copies_and_videos() {
+        let mut a = app();
+        assert!(checked(&a, "Filter by Kind").is_empty());
+        pick(&mut a, "Filter by Kind", "Virtual Copies");
+        assert_eq!(a.session.filter.copy, Some(true));
+        assert_eq!(checked(&a, "Filter by Kind"), ["Virtual Copies"]);
+        pick(&mut a, "Filter by Kind", "Master Photos");
+        assert_eq!(checked(&a, "Filter by Kind"), ["Master Photos"]);
+        // every photo shown is a master
+        assert!(a.session.visible_cloned().iter().all(|id| a.session.catalog.photo(*id).is_some_and(|p| p.copy_of.is_none())));
+        pick(&mut a, "Filter by Kind", "Master Photos");
+        assert_eq!(a.session.filter.copy, None);
+        pick(&mut a, "Filter by Kind", "Videos");
+        assert_eq!(a.session.filter.kind, Some(lcc_catalog::MediaKind::Video));
+        pick(&mut a, "Filter by Kind", "None");
+        assert_eq!(a.session.filter.kind, None);
+    }
+
+    #[test]
+    fn filter_by_metadata_adds_and_removes_columns() {
+        let mut a = app();
+        assert!(checked(&a, "Filter by Metadata").is_empty());
+        pick(&mut a, "Filter by Metadata", "Camera");
+        pick(&mut a, "Filter by Metadata", "ISO");
+        assert_eq!(checked(&a, "Filter by Metadata"), ["Camera", "ISO"]);
+        assert!(a.ui.filter_bar);
+        pick(&mut a, "Filter by Metadata", "Camera");
+        assert_eq!(checked(&a, "Filter by Metadata"), ["ISO"]);
+        pick(&mut a, "Filter by Metadata", "ISO");
+        assert!(a.ui.filter_columns.is_empty());
     }
 
     #[test]

@@ -159,7 +159,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
 
     // ---- saved locations
     let mpp = lcc_geo::mercator::metres_per_px(app.map.prefs.lat, zf);
-    for l in app.session.catalog.saved_locations() {
+    for l in app.session.catalog.saved_locations().filter(|_| app.map.prefs.show_saved) {
         let c = geo_to_screen(&app.map, r, l.centre());
         let rad = (l.radius / mpp.max(1e-9)).clamp(3.0, 20_000.0) as f32;
         let col = if l.private { super::info::SAVED_PRIVATE } else { super::info::SAVED };
@@ -207,7 +207,7 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         if pr.double_clicked() {
             zoom_at(app, r, at, 2.0);
         }
-        if pr.drag_started() {
+        if pr.drag_started() && !app.map.prefs.lock_markers {
             app.map.dragging_pin = Some(c.items.clone());
         }
     }

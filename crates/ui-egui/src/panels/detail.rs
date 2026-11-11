@@ -6178,6 +6178,10 @@ fn film_label(name: &str) -> String {
 }
 
 pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    crate::view_state::around(app, ui, r, |app, ui| filmstrip_strip(app, ui, r));
+}
+
+fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));

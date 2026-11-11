@@ -171,7 +171,7 @@ fn pull_item(c: &lcc_immich::Client, work: SidecarPull, total: &mut u64) -> Side
     };
     item.updated_at = a.updated_at.clone();
     if merge::untouchable(&a) {
-        item.skipped = Some("locked");
+        item.skipped = Some("hidden");
         return item;
     }
     if a.is_trashed {
@@ -447,7 +447,7 @@ fn push_work(c: &lcc_immich::Client, work: Vec<SidecarPush>, mut done: SidecarsD
         };
         item.file_name = a.original_file_name.clone();
         if merge::untouchable(&a) {
-            item.skipped = Some("locked");
+            item.skipped = Some("hidden");
             done.items.push(item);
             continue;
         }

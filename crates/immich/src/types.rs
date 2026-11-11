@@ -211,6 +211,38 @@ impl AssetFile {
     }
 }
 
+/// `GET /auth/status` (`AuthStatusResponseDto`): whether the server session is elevated (locked
+/// folders are visible to its listings), what unlock secrets the account has, and when an
+/// elevation ends (the server locks the session again later).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStatus {
+    pub is_elevated: bool,
+    /// When the current elevation ends (ISO 8601), if the server says.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// The account has a password it can unlock with.
+    #[serde(default)]
+    pub password: bool,
+    /// The account has a PIN code it can unlock with.
+    #[serde(default)]
+    pub pin_code: bool,
+    /// When the PIN's current elevation ends (ISO 8601), if the server says.
+    #[serde(default)]
+    pub pin_expires_at: Option<String>,
+}
+
+/// `POST /auth/session/unlock` body (`SessionUnlockDto`): exactly one of the two, the account's
+/// password or its PIN code (4–6 digits).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnlock {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_code: Option<String>,
+}
+
 /// `POST /search/metadata` body (the filters the app uses).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -418,4 +450,36 @@ pub struct SmartSearch {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "type")]
     pub kind: Option<String>,
+}
+
+/// The most bytes read from one `GET /activities` answer.
+pub const MAX_ACTIVITY_BYTES: u64 = 4 * 1024 * 1024;
+/// The most activities kept from one answer.
+pub const MAX_ACTIVITIES: usize = 500;
+
+/// One entry of `GET /activities` (a comment or a like on an album's asset).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    #[serde(default)]
+    pub id: String,
+    /// `comment` or `like`.
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub user: Option<ActivityUser>,
+}
+
+/// Who left an [`Activity`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityUser {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
 }
