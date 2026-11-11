@@ -71,7 +71,8 @@ virtual copies and mapped develop settings are imported. Missing originals remai
 separately from failures reading files that are present. Known-missing originals are not probed
 again. Previously browsed Local records join All Photos even when their originals are offline;
 their promotion is counted once and undone together with the catalog import.
-An image whose file, folder or root folder record is gone from the catalog, or whose original path
+An image whose file, folder or root folder record is gone from the catalog, whose reference to one is not a whole
+number (missing, NULL, text or a fraction: it names no record, not record 0), or whose original path
 is empty (Lightroom leaves these behind and ignores them), is skipped together with its virtual
 copies instead of failing the whole import. The result lists them as data (`skipped`: each
 image id with its reason, `missingFile`, `missingFolder`, `missingRoot`, `incompletePath` or
@@ -173,7 +174,8 @@ the top level, and the result names it under warnings; saved prints, books, slid
 galleries import as regular albums with the photos they hold. On reimport an album keeps the place
 the user gave it. A collection the catalog lists twice imports once; a different collection with
 the id of an earlier one is left out with a warning naming both, and the photos listed under that
-id go to the first.
+id go to the first. A collection member whose `collection` is not a whole
+number (missing, NULL, text or a fraction) joins no album, with one warning; it does not join collection 0.
 
 Lightroom's develop history (`Adobe_libraryImageDevelopHistoryStep`) becomes the photo's History,
 oldest first, each step named as in Lightroom and mapped like the current settings (so a step shows

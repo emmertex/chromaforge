@@ -1305,10 +1305,7 @@ pub struct UiState {
     /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
     /// [`IMPORT_SOURCES_WIDTH`]).
     pub import_sources_width: f32,
-    /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
-    /// to go back to).
-    pub presets: bool,
-    /// Presets column: show a live thumbnail of the photo with each preset.
+    /// Presets panel: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
     /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
@@ -1326,6 +1323,9 @@ pub struct UiState {
     /// Animate the loupe rect toward its target (set by a click-zoom).
     #[serde(skip)]
     pub zoom_anim: bool,
+    /// A momentary before/after layout (`\`, the Original Photo box): a view mode, not a
+    /// workspace, so it never comes back after a restart looking like edits not showing (#1110).
+    #[serde(skip)]
     pub before_after: BeforeAfter,
     pub thumb_size: f32,
     /// Open Edit sections by id.
@@ -1393,6 +1393,11 @@ pub struct UiState {
     /// A mask slider is at work until then: no mask overlay covers the photo.
     #[serde(skip)]
     pub mask_adjusting_until: Option<std::time::Instant>,
+    /// A mask was picked (created, selected, an AI click) until then: its overlay shows for a
+    /// moment even when it has settings (issue #1109), so the user sees which mask is on; then
+    /// judging by its effect takes over again (the overlay auto rule, upstream PR 2920).
+    #[serde(skip)]
+    pub mask_peek_until: Option<std::time::Instant>,
     /// The mask whose row in the Masks list is under the pointer: its overlay shows while nothing is
     /// being adjusted.
     #[serde(skip)]
@@ -1899,6 +1904,10 @@ pub fn default_preset_groups() -> Vec<String> {
     lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Dialog {
     /// A fresh Create Preset dialog.
     /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
@@ -2098,6 +2107,12 @@ pub enum Dialog {
     AutoStack {
         gap: f32,
     },
+    /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
+    /// over the grid it filters.
+    AdvancedSearch {
+        #[serde(default)]
+        search: crate::advanced_search::Search,
+    },
     /// Save the current view (source + filter) as a smart album.
     NewSmartAlbum {
         name: String,
@@ -2125,6 +2140,14 @@ pub enum Dialog {
         /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
         #[serde(default)]
         everyone: bool,
+        /// Apply the suggested star ratings (`photo.analyze` `applyRatings`; photos the user
+        /// rated are left alone).
+        #[serde(default = "default_true")]
+        suggest_stars: bool,
+        /// Apply the suggested Pick / Reject flags (`photo.analyze` `applyFlags`; photos the user
+        /// flagged are left alone).
+        #[serde(default)]
+        suggest_flags: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -2476,6 +2499,7 @@ impl Default for UiState {
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_peek_until: None,
             mask_pin_hover: None,
             mask_menu_for: None,
             mask_hover: None,
@@ -2508,7 +2532,6 @@ impl Default for UiState {
             right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
-            presets: false,
             preset_thumbs: false,
             filmstrip: true,
             film_height: FILM_HEIGHT.default,

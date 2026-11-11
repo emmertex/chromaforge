@@ -235,6 +235,34 @@ fn unclaimed_results_are_capped() {
 }
 
 #[test]
+fn cancelling_many_waiting_jobs_keeps_the_newest_results() {
+    // a ✕ on a large batch: every waiting job ends cancelled, only the newest `max_finished` stay to be taken
+    let q: Queue<u32> = Queue::new(Config { max_finished: 5, ..Config::default() }, gpu_probe(Arc::new(AtomicUsize::new(0))), None);
+    let (open, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let (o2, s2) = (open.clone(), started.clone());
+    q.submit(Job::new("long", move |ctx: &Ctx| {
+        s2.store(true, Ordering::SeqCst);
+        while !o2.load(Ordering::SeqCst) && !ctx.cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(0)
+    }))
+    .unwrap();
+    wait_for(|| started.load(Ordering::SeqCst));
+    for i in 0..20_000u32 {
+        q.submit(Job::new(format!("embed:{i}"), move |_: &Ctx| Ok(i))).unwrap();
+    }
+    assert_eq!(q.cancel_all(), 20_001);
+    open.store(true, Ordering::SeqCst);
+    wait_for(|| q.status().running.is_none() && q.status().pending == 0);
+    let st = q.status();
+    assert_eq!(st.cancelled, 20_000);
+    let r = q.drain();
+    assert!(r.len() <= 5, "{} results kept", r.len());
+    assert!(r.iter().any(|f| f.key == "embed:19999" || f.key == "long"), "{:?}", r.iter().map(|f| &f.key).collect::<Vec<_>>());
+}
+
+#[test]
 fn dropping_the_queue_stops_the_running_job() {
     let q: Queue<u32> = queue();
     let (open, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));

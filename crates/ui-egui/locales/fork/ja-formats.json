@@ -106,6 +106,7 @@
   "Running on the processor: {}.": "プロセッサーで実行中：{}。",
   "Running on {}.": "{}で実行中。",
   "Second graphics card not used: {why}": "2枚目のグラフィックカードは使われていません: {why}",
+  "Select {n} look-alikes": "似た顔を{n}件選択",
   "Selected cell {n}": "選択中のセル {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} ページをプリンターに送信しました（ジョブ {j}）",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "モデルの利用条件を表示してから、{host}から{}をダウンロードし、インストールして使い始めます。それ以外の情報は送信しません。",

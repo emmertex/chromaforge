@@ -4185,7 +4185,7 @@ mod tests {
             r["result"].clone()
         };
         ask(&mut h, "engine.execute", json!({"command": "app.gpu", "params": {"enabled": false}}));
-        ask(&mut h, "ui.set", json!({"settings": {"gpu": false, "previewEdge": 1280}, "presets": false}));
+        ask(&mut h, "ui.set", json!({"settings": {"gpu": false, "previewEdge": 1280}}));
         ask(&mut h, "engine.execute", json!({"command": "library.select", "params": {"ids": [1], "active": 1}}));
         ask(
             &mut h,
@@ -6094,9 +6094,10 @@ mod tests {
         assert_eq!(h.app.ui.info_overlay, InfoOverlay::Exposure);
         h.request("ui.key", json!({"key": "i", "cmd": true}), t);
         assert_eq!(h.app.ui.info_overlay, InfoOverlay::Off);
-        h.request("ui.key", json!({"key": "f", "cmd": true, "shift": true}), t);
+        // F11, the full-screen key (Cmd+Shift+F is the Advanced Search since issue #846)
+        h.request("ui.key", json!({"key": "F11"}), t);
         assert!(h.app.window_is_fullscreen);
-        h.request("ui.key", json!({"key": "f", "cmd": true, "shift": true}), t);
+        h.request("ui.key", json!({"key": "F11"}), t);
         assert!(!h.app.window_is_fullscreen);
         h.settle(SETTLE);
     }

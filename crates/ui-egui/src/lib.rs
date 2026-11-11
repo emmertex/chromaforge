@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod access;
+pub mod advanced_search;
 pub mod album_picker;
 pub mod book;
 pub mod brush_live;
@@ -487,6 +488,9 @@ pub(crate) const TOAST_SECONDS: f64 = 1.4;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
+/// How long a picked mask peeks its overlay when it has settings (ms, issue #1109): the user sees
+/// which mask is on before judging by its effect takes over.
+const MASK_SELECT_PEEK_MS: u64 = 2000;
 /// The `path` of a display profile read from the screen rather than chosen as a file.
 pub const SCREEN_PROFILE: &str = "screen";
 
@@ -1137,6 +1141,18 @@ impl LccApp {
             .is_some_and(|d| d.masks.iter().any(|m| m.id == id && panels::detail::mask_has_settings(m)))
     }
 
+    /// A mask was just picked (created, duplicated, selected, an AI click): with the overlay on
+    /// automatic it shows by itself while the mask has nothing to judge yet; one with settings
+    /// arms a short peek of its overlay instead ([`MASK_SELECT_PEEK_MS`], issue #1109), so the
+    /// user still sees which mask the program has selected before judging by its effect takes
+    /// over again. Never latches the overlay on: `mask_overlay` keeps the rule it had.
+    fn mask_pick_overlay(&mut self) {
+        let has_settings = self.active_mask_has_settings();
+        self.ui.mask_peek_until = (self.ui.mask_overlay_auto && !self.ui.mask_overlay_pinned && has_settings)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_millis(MASK_SELECT_PEEK_MS));
+        self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !has_settings);
+    }
+
     /// How panel sliders are laid out: always pills in the Modern layout, else as Settings say.
     pub(crate) fn slider_layout(&self) -> theme::SliderLayout {
         if self.ui.modern.enabled {
@@ -1550,9 +1566,10 @@ impl LccApp {
             self.ui.mask_overlay = self.ui.mask_overlay_pinned;
         }
         if r.is_ok() && matches!(id, "mask.add" | "mask.addComponent" | "mask.duplicate" | "mask.select") {
-            // A new or picked mask shows its overlay by itself only while it has no settings: one with
-            // settings is judged by its effect (O, the eye or hovering its row shows the overlay).
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
+            // A new or picked mask shows its overlay by itself while it has no settings; one with
+            // settings is judged by its effect (O, the eye or hovering its row shows the overlay),
+            // but still peeks it for a moment so the user sees which mask is on (issue #1109).
+            self.mask_pick_overlay();
         }
         if r.is_ok() {
             // These commands finish synchronously, so their completion would otherwise
@@ -1837,7 +1854,7 @@ impl LccApp {
         }
         if let Some(mask) = polled.refine {
             // a new selection from a click or a description: shown by the same rule as a new mask
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
+            self.mask_pick_overlay();
             self.ui.detail_due = Some((now + 0.3, mask));
         }
         if let Some(e) = polled.messages.into_iter().last() {
@@ -3318,6 +3335,8 @@ pub struct Caches {
     folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// Folders given a row of their own by Show Parent Folder (folder keys), for this session.
+    shown_folders: std::collections::BTreeSet<String>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
     /// The ignored faces (`faces.ignore`) as `(photo, index)`, at a catalog revision.
     ignored_faces: Option<(u64, std::sync::Arc<Vec<(u64, usize)>>)>,
@@ -3469,10 +3488,18 @@ impl Caches {
         }
         // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
-        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
+        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree(), &self.shown_folders)));
         self.folder_base = Some((cat.revision, base.clone()));
         self.folder_tree = Some((key, base.clone()));
         base
+    }
+    /// Gives `path` a row of its own in the Folders list (Show Parent Folder).
+    pub(crate) fn show_folder(&mut self, path: &str) {
+        let key = lcc_catalog::query::folder_key(path);
+        if !key.is_empty() && self.shown_folders.insert(key) {
+            self.folder_base = None;
+            self.folder_tree = None;
+        }
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {

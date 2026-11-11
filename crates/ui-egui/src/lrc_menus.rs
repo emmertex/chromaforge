@@ -159,6 +159,7 @@ const LIBRARY: &[&str] = &[
     "dialog.newSmartAlbum",
     "---",
     "view.focusSearch",
+    "dialog.advancedSearch",
     "library.findSimilar",
     "---",
     "dialog.cull",

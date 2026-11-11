@@ -316,3 +316,22 @@ fn import_from_folder_with_subfolders_toggle_updates_candidates_and_imports() {
     assert_eq!(h.app.session.catalog.photos().count(), before + 2, "only 2 root photos imported");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// Scenario (issue #1083): with a macOS integrated title bar the ‹ Back button (and the title after
+// it) starts right of the traffic lights, as Settings' does; in full screen nothing moves
+#[test]
+fn back_clears_the_traffic_lights() {
+    let dir = std::env::temp_dir().join(format!("lcc-import-screen-traffic-{}", std::process::id()));
+    let mut h = review(&dir, 1);
+    let left = |h: &Headless| h.app.widgets.iter().find(|(w, _)| w == "import:back").map(|(_, r)| r.left()).unwrap();
+    assert!((left(&h) - 10.0).abs() < 0.5);
+    h.app.integrated_titlebar = true;
+    h.step();
+    h.step();
+    assert!((left(&h) - 78.0).abs() < 0.5);
+    h.app.window_is_fullscreen = true;
+    h.step();
+    h.step();
+    assert!((left(&h) - 10.0).abs() < 0.5);
+    let _ = std::fs::remove_dir_all(&dir);
+}

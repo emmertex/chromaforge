@@ -18,7 +18,8 @@ sidebar:
 | `Ctrl+Alt+4` | Book |
 | `F1` | Chromaforge Help |
 | `Ctrl+Alt+2` | Develop |
-| `Ctrl+Shift+F` | Enter Full Screen |
+| `Ctrl+Shift+F` | Advanced Search |
+| `F11` | Enter Full Screen |
 | `Ctrl+Alt+8` | Export |
 | `F` | Full Screen Preview |
 | `Ctrl+Alt+Up` | Go Back to Previous Module |

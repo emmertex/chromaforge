@@ -136,6 +136,9 @@ pub struct SourceInfo {
     /// spectral sensitivities, so the photo's Profile option can start from them instead of the
     /// look fitted to its JPEG (`lcc_develop::CameraColour`).
     pub colorimetric: bool,
+    /// A DNG whose "camera" is a linear RGB space (Photo Merge, Render to DNG; `lcc_raw::color::is_rendered_rgb`):
+    /// no camera profile applies to it.
+    pub rendered_rgb: bool,
     /// The source's straight alpha (0..1), EXIF-oriented and the size of the source buffer, when it
     /// has transparency. The pixels handed to the renderer are flattened onto white in linear light
     /// (`lcc_codecs::to_working`, issue #1212); an export that keeps transparency recovers
@@ -193,6 +196,7 @@ impl Default for SourceInfo {
             filters: None,
             native_long: None,
             colorimetric: false,
+            rendered_rgb: false,
             alpha: None,
             generated: None,
             avoid: None,

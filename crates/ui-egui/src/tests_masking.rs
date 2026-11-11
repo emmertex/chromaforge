@@ -148,8 +148,9 @@ fn new_brush_starts_a_separate_mask_in_paint_mode() {
 
 /// One rule for the mask overlay (upstream PR 2920, adapted): a mask shows its overlay by itself only
 /// while it has no settings; one with settings is judged by its effect when picked, added to or
-/// duplicated. O (or the eye) shows it to stay, hovering its row shows it, and while a slider is at
-/// work nothing covers the photo. Replaces issue #1800's re-show on every pick.
+/// duplicated — after a short peek (issue #1109) so the user still sees which mask is on. O (or the
+/// eye) shows it to stay, hovering its row shows it, and while a slider is at work nothing covers
+/// the photo. Replaces issue #1800's re-show on every pick.
 #[test]
 fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     use lcc_pipeline::Overlay;
@@ -168,16 +169,20 @@ fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     let r = h.request("ui.clickWidget", json!({"id": format!("mask:{first}")}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.active_mask, Some(first));
-    // (the pointer on the mask's own row shows no overlay: there its effect is judged)
+    // (picking a mask with settings peeks its overlay for a moment first, issue #1109)
     rest(&mut h);
-    assert!(!shown(&h), "picking a mask with settings shows its effect");
+    assert!(shown(&h), "picking a mask with settings peeks its overlay");
+    h.app.ui.mask_peek_until = Some(std::time::Instant::now());
+    assert!(!shown(&h), "the peek over, a mask with settings shows its effect");
     pointer(&mut h, json!([{"kind": "move", "x": 0.1, "y": 0.9}])); // the pointer leaves the list
     assert_eq!(h.app.ui.mask_hover, None);
     for (cmd, params) in
         [("mask.addComponent", json!({"kind": "radial", "op": "add", "center": [0.6, 0.5], "rx": 0.1, "ry": 0.1})), ("mask.duplicate", json!({}))]
     {
         exec(&mut h, cmd, params);
-        assert!(!shown(&h), "{cmd} on a mask with settings shows its effect");
+        assert!(shown(&h), "{cmd} on a mask with settings peeks its overlay");
+        h.app.ui.mask_peek_until = Some(std::time::Instant::now());
+        assert!(!shown(&h), "{cmd} on a mask with settings shows its effect after the peek");
     }
     // the pointer on one of its component rows (or its pin) shows it
     h.app.ui.mask_hover = Some(first);
@@ -212,6 +217,36 @@ fn a_brush_stroke_leaves_its_overlay_until_a_slider_moves() {
     exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
     h.app.ui.mask_adjusting_until = None;
     assert!(!shown(&h), "a slider hides it again");
+    h.settle(SETTLE);
+}
+
+/// Issue #1109: picking a mask that has settings peeks its overlay for a moment (the Show Overlay
+/// checkbox stays off), so the user immediately sees which mask the program has selected; the peek
+/// ends by itself, and with the overlay off automatic (or pinned) there is no peek.
+#[test]
+fn picking_a_mask_with_settings_peeks_its_overlay_briefly() {
+    use lcc_pipeline::{MaskView, Overlay};
+    let mut h = detail("panel.masking");
+    let overlay = |h: &Headless| crate::panels::detail::view_overlay(&h.app, &develop(h), false);
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.2], "end": [0.5, 0.7]}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.5}}));
+    h.app.ui.mask_adjusting_until = None;
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.4, 0.5], "rx": 0.2, "ry": 0.2}));
+    exec(&mut h, "mask.select", json!({"id": 1}));
+    assert!(!h.app.ui.mask_overlay, "not latched on");
+    assert!(h.app.ui.mask_peek_until.is_some(), "the peek is armed");
+    assert_eq!(overlay(&h), Overlay::Mask { id: 1, view: MaskView::Color, color: [230, 30, 40], opacity: 50 }, "the peek shows the mask");
+    h.app.ui.mask_peek_until = Some(std::time::Instant::now());
+    assert_eq!(overlay(&h), Overlay::None, "the peek ends by itself");
+    // a mask without settings still latches the overlay on as before
+    exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.6, 0.5], "rx": 0.2, "ry": 0.2}));
+    assert!(h.app.ui.mask_overlay);
+    assert!(h.app.ui.mask_peek_until.is_none());
+    // with the overlay off automatic there is no peek
+    exec(&mut h, "view.maskOverlay", json!({"auto": false}));
+    exec(&mut h, "mask.select", json!({"id": 1}));
+    assert!(h.app.ui.mask_peek_until.is_none());
+    assert_eq!(overlay(&h), Overlay::None, "auto off: the effect is judged at once");
     h.settle(SETTLE);
 }
 

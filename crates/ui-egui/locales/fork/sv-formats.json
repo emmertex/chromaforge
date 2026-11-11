@@ -123,6 +123,7 @@
   "Rendered {ok} of {total} to DNG": "Renderade {ok} av {total} till DNG",
   "Restore Built-in Looks ({n})": "Återställ inbyggda looks ({n})",
   "Second graphics card not used: {why}": "Andra grafikkortet används inte: {why}",
+  "Select {n} look-alikes": "Markera {n} liknande",
   "Selected cell {n}": "Markerad cell {n}",
   "Sends this area to {name}, in {} pieces.": "Skickar detta område till {name} i {} delar.",
   "Sends this {} × {} px area to {name}.": "Skickar detta område på {} × {} px till {name}.",

@@ -106,6 +106,7 @@
   "Running on the processor: {}.": "Executando no processador: {}.",
   "Running on {}.": "Executando em {}.",
   "Second graphics card not used: {why}": "Segunda placa de vídeo não usada: {why}",
+  "Select {n} look-alikes": "Selecionar {n} rostos parecidos",
   "Selected cell {n}": "Célula selecionada {n}",
   "Sent {n} page(s) to the printer (job {j})": "{n} página(s) enviada(s) à impressora (trabalho {j})",
   "Shows the model's terms, then downloads {} from {host}, installs it and starts using it. Nothing else is sent.": "Mostra os termos do modelo, depois baixa {} de {host}, instala e começa a usá-lo. Nada mais é enviado.",

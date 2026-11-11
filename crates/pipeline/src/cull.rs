@@ -132,6 +132,41 @@ pub fn aesthetic(img: &Rgb32f) -> f32 {
     (1.0 + 9.0 * s.clamp(0.0, 1.0)).clamp(1.0, 10.0)
 }
 
+/// Suggested star rating 1..=5 from the combined cull score: bulk-culling starting points, not
+/// verdicts — the engine only applies them to unrated photos. Thresholds on [`cull_score`]: a clear keeper (≥ 0.70) is 5,
+/// then quarters down to 1 star below 0.25.
+pub fn suggested_stars(score: f32) -> u8 {
+    let s = score.clamp(0.0, 1.0);
+    if s >= 0.70 {
+        5
+    } else if s >= 0.55 {
+        4
+    } else if s >= 0.40 {
+        3
+    } else if s >= 0.25 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Suggested Pick / Reject flag from the combined cull score: the worst shots (below 0.25) are
+/// rejected, the clear keepers (at least 0.70) picked, and everything between is left alone for
+/// the user. Same thresholds as [`suggested_stars`]: one star is a reject, five a pick.
+#[must_use]
+pub fn suggested_flag(score: f32) -> u8 {
+    // 0 = no flag, 1 = pick, 2 = reject (numbers, not `lcc_catalog::Flag`: this crate sits below
+    // the catalog and must not depend on it)
+    let s = score.clamp(0.0, 1.0);
+    if s >= 0.70 {
+        1
+    } else if s < 0.25 {
+        2
+    } else {
+        0
+    }
+}
+
 /// Combined 0..1 cull score from classical measures (no personal model).
 pub fn cull_score(sharp: f32, clip: f32, best: bool, grouped: bool, eyes: Option<f32>, aesthetic_10: f32) -> f32 {
     let focus = (sharp / 100.0).clamp(0.0, 1.0);
@@ -263,6 +298,35 @@ mod tests {
         let aest = aesthetic(&img);
         assert!((1.0..=10.0).contains(&aest), "{aest}");
         assert!(cull_score(80.0, 0.01, true, true, Some(0.9), aest) > cull_score(20.0, 0.4, false, true, Some(0.1), 2.0));
+    }
+
+    /// Stars and flags rise and fall with the score, stay inside their ranges and leave the
+    /// middle (the user's call) unflagged.
+    #[test]
+    fn suggestions_follow_the_score() {
+        let scores = [0.0, 0.1, 0.249, 0.25, 0.399, 0.40, 0.549, 0.55, 0.699, 0.70, 0.9, 1.0];
+        let stars: Vec<u8> = scores.iter().map(|s| suggested_stars(*s)).collect();
+        let flags: Vec<u8> = scores.iter().map(|s| suggested_flag(*s)).collect();
+        assert!(stars.windows(2).all(|w| w[0] <= w[1]), "{stars:?} not rising");
+        assert_eq!(stars.first(), Some(&1));
+        assert_eq!(stars.last(), Some(&5));
+        assert!(stars.iter().all(|s| (1..=5).contains(s)));
+        assert_eq!(flags.first(), Some(&2), "the worst is rejected");
+        assert_eq!(flags.last(), Some(&1), "the best is picked");
+        // the middle is the user's call: no suggested flag
+        assert_eq!(suggested_flag(0.40), 0);
+        assert_eq!(suggested_flag(0.5), 0);
+        // out-of-range scores are clamped, not panicked on
+        assert_eq!(suggested_stars(-1.0), 1);
+        assert_eq!(suggested_stars(2.0), 5);
+    }
+
+    /// A NaN score suggests nothing: no flag, the lowest stars (clamp keeps NaN, comparisons
+    /// fail, stars fall through to 1).
+    #[test]
+    fn nan_scores_suggest_nothing() {
+        assert_eq!(suggested_flag(f32::NAN), 0);
+        assert_eq!(suggested_stars(f32::NAN), 1);
     }
 
     #[test]

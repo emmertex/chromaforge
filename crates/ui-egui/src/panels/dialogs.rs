@@ -269,6 +269,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SmartRules { id: None, .. } => "Create Smart Collection",
         Dialog::SmartRules { .. } => "Edit Smart Collection",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
+        Dialog::AdvancedSearch { .. } => "Advanced Search",
         Dialog::CreatePreset { .. } => "Create Preset",
         Dialog::UpdatePreset { .. } => "Update Preset with Current Settings",
         Dialog::CreatePresetFolder { .. } => "Create Preset Folder",
@@ -458,6 +459,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::SlideshowExport { .. }
             );
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
+                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
                 Dialog::AutoStack { gap } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
@@ -477,7 +479,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         }).color(t.text_dim),
                     );
                 }
-                Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
+                Dialog::Cull { reject_below, pick_best, suggest_stars, suggest_flags, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
                     let n = app.session.selection.ids.len();
                     let scope = if n > 1 { crate::i18n::tr_format!("the {n} selected photos", n = n) } else { crate::i18n::tr_format!("the {} photos in view", app.session.visible_cloned().len()) };
                     ui.label(egui::RichText::new(crate::i18n::tr_format!("Scores {scope} for focus and exposure and finds similar shots taken within seconds of each other (bursts).", scope = scope)).color(t.text_label));
@@ -487,6 +489,15 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(if *reject_below > 0.0 { "Blurry photos below the score are flagged as rejects." } else { "0: nothing is rejected." })).color(t.text_dim));
                     let r = crate::dialog_frame::checkbox(ui, pick_best, crate::i18n::tr("Pick the sharpest photo of each burst"));
                     crate::widgets::register(ui.ctx(), "check:cullPick", r.rect);
+                    // the suggestions (issue #489): stars and flags from the scores, only where
+                    // the user has not decided
+                    let r = crate::dialog_frame::checkbox(ui, suggest_stars, crate::i18n::tr("Suggest star ratings"));
+                    crate::widgets::register(ui.ctx(), "check:cullSuggestStars", r.rect);
+                    let r = crate::dialog_frame::checkbox(ui, suggest_flags, crate::i18n::tr("Suggest Pick and Reject flags"));
+                    crate::widgets::register(ui.ctx(), "check:cullSuggestFlags", r.rect);
+                    if *suggest_stars || *suggest_flags {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Photos you have not rated or flagged get stars and flags from their scores; yours are never overwritten.")).color(t.text_dim));
+                    }
                     // the eyes, judged as the eye strip judges them
                     let r = crate::dialog_frame::checkbox(ui, closed_eyes, crate::i18n::tr("Reject photos with closed eyes"));
                     crate::widgets::register(ui.ctx(), "check:cullClosedEyes", r.rect);
@@ -1639,6 +1650,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::RenameAlbum { .. } | Dialog::Rename { .. } | Dialog::RenameKeyword { .. } | Dialog::RenamePerson { .. } => "Rename",
                     Dialog::MergeKeywords { .. } => "Merge Keywords",
                     Dialog::AutoStack { .. } => "Create Stacks",
+                    Dialog::AdvancedSearch { .. } => "Search",
                     Dialog::CaptureTime { .. } => "Change Time",
                     Dialog::Cull { .. } => "Cull",
                     Dialog::CopySettings { .. } => "Copy",
@@ -1763,6 +1775,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::SynchronizeFolder { .. }
                         | Dialog::SaveEffect { .. }
                         | Dialog::CaptureTime { .. }
+                        | Dialog::AdvancedSearch { .. }
                 ) =>
             {
                 app.toast(ctx, e)
@@ -1937,10 +1950,23 @@ pub fn clamp_cull_burst(gap: &mut f32, similarity: &mut f32) {
 }
 
 /// The `photo.analyze` parameters of the Assisted Culling dialog, its values as they are.
-pub fn cull_params(reject_below: f32, pick_best: bool, burst_gap: f32, similarity: f32) -> serde_json::Value {
+pub fn cull_params(
+    reject_below: f32,
+    pick_best: bool,
+    suggest_stars: bool,
+    suggest_flags: bool,
+    burst_gap: f32,
+    similarity: f32,
+) -> serde_json::Value {
     let mut p = json!({"pickBest": pick_best, "burstGap": burst_gap, "similarity": similarity});
     if reject_below > 0.0 {
         p["rejectBelow"] = json!(reject_below);
+    }
+    if suggest_stars {
+        p["applyRatings"] = json!(true);
+    }
+    if suggest_flags {
+        p["applyFlags"] = json!(true);
     }
     p
 }
@@ -2294,14 +2320,29 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AdvancedSearch { search } => {
+            // a half-typed number or an unsupported condition keeps the panel open on the problem
+            crate::advanced_search::draft_query(search).and_then(|query| app.run("library.advancedSearch", json!({"query": query})))
+        }
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
         Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::DngValidation { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => {
             Ok(serde_json::Value::Null)
         }
-        Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
+        Dialog::Cull {
+            reject_below,
+            pick_best,
+            suggest_stars,
+            suggest_flags,
+            burst_gap,
+            similarity,
+            closed_eyes,
+            blurry_eyes,
+            soft_eyes,
+            everyone,
+        } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
-            let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity));
+            let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *suggest_stars, *suggest_flags, *burst_gap, *similarity));
             if r.is_ok() && (*closed_eyes || *blurry_eyes) {
                 // the eyes take longer: judged in the background, the rejects come as one step
                 app.run("photo.rejectEyes", json!({"closed": closed_eyes, "blurry": blurry_eyes, "soft": soft_eyes, "mainOnly": !everyone}))?;
@@ -4267,8 +4308,12 @@ mod cull_dialog_tests {
             clamp_cull_burst(&mut g, &mut s);
             assert_eq!((g, s), want);
         }
-        assert_eq!(cull_params(0.0, true, 1800.0, 1.0), json!({"pickBest": true, "burstGap": 1800.0, "similarity": 1.0}));
-        assert_eq!(cull_params(20.0, false, 0.0, 0.7)["rejectBelow"], 20.0);
+        assert_eq!(
+            cull_params(0.0, true, true, false, 1800.0, 1.0),
+            json!({"pickBest": true, "applyRatings": true, "burstGap": 1800.0, "similarity": 1.0})
+        );
+        assert_eq!(cull_params(20.0, false, false, true, 0.0, 0.7)["rejectBelow"], 20.0);
+        assert_eq!(cull_params(20.0, false, false, true, 0.0, 0.7)["applyFlags"], true);
     }
 
     /// Click the value field right of a slider registered as `id`, type `text`, Enter.

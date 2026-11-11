@@ -108,7 +108,8 @@ Alternative keymap set. Keys that work without a menu item (ratings `0`–`5`, l
 | `A` | Visualize Spots |  | `view.visualizeSpots` |
 | `Shift+O` | Cycle Crop Overlay |  | `view.cropOverlay` |
 | `F` | Full Screen Preview |  | `view.fullScreenPreview` |
-| `Cmd+Shift+F` | Enter Full Screen |  | `view.enterFullScreen` |
+| `Cmd+Shift+F` | Advanced Search |  | `dialog.advancedSearch` |
+| `F11` / `Cmd+Ctrl+F` | Enter Full Screen |  | `view.enterFullScreen` |
 | `Cmd+I` | Cycle Info Overlay |  | `view.infoOverlay` |
 | `Cmd+Alt+Enter` | Slideshow |  | `view.slideshow` |
 | `Cmd+J` | View Options… |  | `dialog.viewOptions` |
