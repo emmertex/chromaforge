@@ -1634,18 +1634,17 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx);
         let mut app = crate::LccApp::new(lcc_engine::Session::with_demo(), Default::default());
-        app.ui.presets = true;
+        crate::panels::presets::reveal(&mut app).unwrap();
         let builtin = app.session.presets.iter().find(|p| p.name == "Warm Glow").unwrap().clone();
         app.session.presets.push(lcc_develop::Preset { id: "user.test".into(), builtin: false, ..builtin });
         let zh = Locale::ZhHant;
         let groups: Vec<String> = app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
         app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
-        // Presets is a right panel of its own (one at a time with History, Versions, …)
+        // the presets are a panel of Develop's left column
         let text = painted_text(&ctx, &mut app, zh);
         assert!(text.contains(zh.tr("Warm Glow")), "stock preset: {text}");
         assert!(text.contains("Warm Glow"), "user preset: {text}");
         assert!(text.contains(zh.tr("Color")), "stock group: {text}");
-        app.ui.presets = false;
         for (panel, title) in [(crate::state::RightPanel::Activity, "History"), (crate::state::RightPanel::Versions, "Versions")] {
             app.ui.right = panel;
             let text = painted_text(&ctx, &mut app, zh);

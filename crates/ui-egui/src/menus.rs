@@ -517,8 +517,7 @@ fn panel(app: &mut LccApp, ctx: &egui::Context, p: RightPanel, name: &str) {
         app.ui.toggle_return = Some((p, before));
         app.ui.right = p;
         app.ui.note_right();
-        // one panel at a time on the right: a tool takes Presets' place, and unfolds the side
-        app.ui.presets = false;
+        // opening a panel unfolds the side
         app.ui.right_collapsed = false;
         // opening a panel brings its edge back (F8 / Tab hid it)
         app.ui.right_edge = true;
@@ -967,6 +966,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 return Some(Err(e));
             }
             app.ui.right_collapsed = false;
+            app.ui.right_edge = true;
             // the paper choice opens on the next frame
             app.print.open_paper = true;
             Ok(Value::Null)
@@ -1386,14 +1386,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // (`right_collapsed`; the panel that was open comes back). Develop with no panel open
             // opens Edit. In Library, `right == None` is its Classic column, not a hidden panel.
             let develop = app.ui.module == crate::module::ModuleId::Develop;
-            if develop && app.ui.right == RightPanel::None && !app.ui.presets {
+            if develop && app.ui.right == RightPanel::None {
                 app.ui.right_collapsed = false;
+                app.ui.right_edge = true;
                 app.ui.right = RightPanel::Edit;
                 if !matches!(app.ui.view, ViewMode::Detail) {
                     app.ui.view = ViewMode::Detail;
                 }
             } else {
-                app.ui.right_collapsed = !app.ui.right_collapsed;
+                crate::module::toggle_right(app);
                 if app.ui.right_collapsed && app.ui.right.is_edit_tool() && !matches!(app.ui.tool.as_str(), "wbPicker" | "fringe") {
                     // hiding a tool ends it, as closing its panel does
                     app.ui.tool.clear();
@@ -1963,15 +1964,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "panel.presets" => {
-            app.ui.presets = !app.ui.presets || !crate::docking::exposed(app, crate::docking::Panel::Presets) || app.ui.right_collapsed;
-            if app.ui.presets {
-                app.ui.right_collapsed = false;
-                app.ui.right_edge = true;
+            // the presets are a panel of Develop's left column, never a column of their own beside
+            // (or in place of) the Edit panels: the command shows that panel, or folds it
+            if crate::panels::presets::shown(app) {
+                crate::panels::presets::set_shown(app, false);
+                Ok(Value::Null)
+            } else {
+                crate::panels::presets::reveal(app).map(|()| Value::Null)
             }
-            if app.ui.presets && app.ui.view != ViewMode::Detail {
-                app.ui.view = ViewMode::Detail;
-            }
-            Ok(Value::Null)
         }
         "mask.editComponent" => crate::panels::masking::edit_component(app, p),
         "tool.done" => {
@@ -1992,11 +1992,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.colorMixer" => color_mixer_layout(app, p),
         "panel.close" => {
             app.ui.right = RightPanel::None;
-            app.ui.presets = false;
             Ok(Value::Null)
         }
         "panel.collapseRight" => {
-            app.ui.right_collapsed = !app.ui.right_collapsed;
+            crate::module::toggle_right(app);
             Ok(Value::Null)
         }
         s if s.starts_with("section.") => bool_param(s, p, "solo").and_then(|solo| {
@@ -3146,13 +3145,11 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     parts.push(msg);
                 }
-                // Show the new presets: Develop's left column already lists them when it is shown,
-                // so they stay there, unfolded (issue #469); otherwise the presets column opens.
-                let in_left_column = app.ui.module == crate::module::ModuleId::Develop && crate::module::edge_visible(app, crate::module::Edge::Left);
-                if n > 0 && in_left_column {
-                    crate::panels::classic::set_open_with_key(app, crate::module::PanelId::Presets, crate::panels::presets::IN_COLUMN_KEY, true);
-                } else if n > 0 {
-                    app.ui.presets = true;
+                // Show the new presets where they live, in Develop's left column, unfolded (issue
+                // #469). Outside Develop the import leaves the screen as it is: the toast says
+                // what came in.
+                if n > 0 && app.ui.module == crate::module::ModuleId::Develop {
+                    let _ = crate::panels::presets::reveal(app);
                 }
             }
             let mut msg = parts.join(" · ");
