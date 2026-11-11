@@ -556,3 +556,63 @@ fn a_model_change_re_renders_ai_masks_at_once() {
     assert_ne!(key(&mut s, id), k_sky, "the Sky mask renders afresh");
     assert_eq!(key(&mut s, plain), k_plain, "a photo without AI masks keeps its render");
 }
+
+/// Select Landscape (`mask.add {kind: "landscape"}`): sky, water and vegetation come from the photo analysis and need no
+/// model; mountains, architecture and ground need the EoMT scene model, so without it they are `ModelMissing(Scene)`
+/// and add nothing. A class that is none of them is refused.
+#[test]
+fn select_landscape_adds_the_analysis_classes_and_asks_for_the_scene_model_for_the_rest() {
+    use crate::{AiModel, ErrorKind};
+    let mut s = Session::with_demo();
+    s.segmenter.models_root = Some(tmp("landscape-models"));
+    let masks = |s: &Session| s.active().and_then(|id| s.develop_of(id)).map_or(0, |d| d.masks.len());
+    s.execute("mask.add", &json!({"kind": "landscape", "class": "Sky"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "landscape", "class": "lake"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "landscape", "class": "vegetation"})).unwrap();
+    let d = s.develop_of(s.active().unwrap()).unwrap();
+    let classes: Vec<String> = d
+        .masks
+        .iter()
+        .filter_map(|m| match &m.components[0].shape {
+            lcc_develop::MaskShape::Landscape { class } => Some(class.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(classes, ["sky", "water", "vegetation"], "loose names are stored as the canonical class");
+    let before = masks(&s);
+    for class in ["mountains", "building", "sand", "road"] {
+        let e = s.execute("mask.add", &json!({"kind": "landscape", "class": class})).unwrap_err();
+        if Segmenter::AVAILABLE {
+            assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Scene), "{class}: {e}");
+        }
+    }
+    assert_eq!(masks(&s), before, "a refused class adds no mask");
+    for bad in
+        [json!({"kind": "landscape"}), json!({"kind": "landscape", "class": "dragons"}), json!({"kind": "landscape", "class": "x".repeat(500)})]
+    {
+        assert_eq!(s.execute("mask.add", &bad).unwrap_err().kind(), ErrorKind::BadParams, "{bad}");
+    }
+}
+
+/// Remove ▸ Detect Objects (`spot.detectObject`): without an Object model it is an error and changes nothing; hostile
+/// strokes (none, NaN, far outside the photo, huge) are errors or clamped, never a panic.
+#[test]
+fn detect_objects_without_a_model_changes_nothing() {
+    use crate::ErrorKind;
+    for background in [true, false] {
+        let mut s = Session::with_demo();
+        s.segmenter.background = background;
+        s.segmenter.dir = Some(tmp(&format!("detect-{background}")));
+        s.segmenter.models_root = Some(tmp(&format!("detect-open-{background}")));
+        let id = s.active().unwrap();
+        let counts = |s: &Session| s.develop_of(id).map_or((0, 0), |d| (d.masks.len(), d.spots.len()));
+        let before = counts(&s);
+        assert_eq!(s.execute("spot.detectObject", &json!({"points": []})).unwrap_err().kind(), ErrorKind::BadParams);
+        assert!(s.execute("spot.detectObject", &json!({"points": [[0.5, 0.5]], "mode": "heal"})).is_err());
+        let huge: Vec<_> = (0..20_000).map(|i| json!([f64::from(i) * 1e9, -1e12])).collect();
+        for p in [json!({"points": [[0.4, 0.4], [0.5, 0.5]]}), json!({"points": huge}), json!({"points": [["x", null]]})] {
+            assert!(s.execute("spot.detectObject", &p).is_err());
+        }
+        assert_eq!(counts(&s), before, "no mask or spot is left behind (background {background})");
+    }
+}

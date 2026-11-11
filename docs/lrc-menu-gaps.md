@@ -12,17 +12,10 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Develop module ▸ Tools ▸ Remove Options
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Detect Objects | Remove tool: pick objects to remove by detection. | M | feature | `soon.removeDetectObjects` |
-
 ## Develop module ▸ Tools ▸ Create New Mask
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
 
 ## Not in this list yet

@@ -5746,6 +5746,14 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             _ => "remove",
         };
         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
+        // Remove Options ▸ Detect Objects: the stroke picks the object under it instead of being the area
+        if app.ui.remove_detect_objects && matches!(mode, "remove" | "generate") {
+            let mode = if mode == "generate" { "generate" } else { "fill" };
+            if let Err(e) = app.run_typed("spot.detectObject", json!({"points": pts, "mode": mode})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            return;
+        }
         let _ = app.run(
             "spot.add",
             json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),

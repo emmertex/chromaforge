@@ -70,6 +70,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Map Style" => map_style(app),
         "Slideshow Content" => slideshow_content(app),
         "Target Adjustment" => target_adjustment(app),
+        "Select Landscape" => select_landscape(app),
         "Add to Mask with" => mask_with(app, "add"),
         "Subtract from Mask with" => mask_with(app, "subtract"),
         "Intersect Mask with" => mask_with(app, "intersect"),
@@ -253,6 +254,25 @@ fn target_adjustment(app: &LccApp) -> Vec<MenuNode> {
 
 /// Add / Subtract / Intersect Mask with: every kind Create New Mask offers, in its order (painting
 /// only adds or erases, so Intersect has no Brush). Greyed while no mask is selected.
+/// Create New Mask ▸ Select Landscape: one row per class `mask.add {kind: "landscape"}` takes. The first three work from the
+/// photo analysis; the rest need the EoMT scene model (their error offers its download).
+fn select_landscape(app: &LccApp) -> Vec<MenuNode> {
+    let on = app.session.active().is_some();
+    let row = |label: &str, class: &str| Choice::new(label, json!({"kind": "landscape", "class": class}), false).enabled(on).plain();
+    let mut v = choices("mask.add", [row("Sky", "sky"), row("Water", "water"), row("Vegetation", "vegetation")]);
+    v.push(MenuNode::Separator);
+    v.extend(choices(
+        "mask.add",
+        [
+            row("Mountains", "mountains"),
+            row("Architecture", "architecture"),
+            row("Natural Ground", "natural ground"),
+            row("Artificial Ground", "artificial ground"),
+        ],
+    ));
+    v
+}
+
 fn mask_with(app: &LccApp, op: &str) -> Vec<MenuNode> {
     let on = app.session.active_mask.is_some() && app.session.active().is_some();
     choices(
@@ -470,6 +490,19 @@ mod tests {
         // bad input is an error, not a panic
         assert!(run_item(&mut a, "tool.tat", json!({"target": "bogus"})).is_err());
         assert!(a.ui.tool.is_empty());
+    }
+
+    #[test]
+    fn select_landscape_lists_every_class_as_a_landscape_mask() {
+        let a = app();
+        let r = rows(&a, "Select Landscape");
+        assert!(r.len() >= 7 && r.iter().all(|r| r.1["kind"] == "landscape" && r.3), "{r:?}");
+        let mut a = a;
+        // a class from the analysis works at once
+        let sky = r.iter().find(|r| r.1["class"] == "sky").expect("sky row");
+        run_item(&mut a, "mask.add", sky.1.clone()).unwrap();
+        let d = a.session.active().and_then(|id| a.session.develop_of(id)).expect("develop");
+        assert!(d.masks.iter().any(|m| matches!(&m.components[0].shape, lcc_develop::MaskShape::Landscape { class } if class == "sky")));
     }
 
     #[test]

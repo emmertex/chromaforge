@@ -53,6 +53,32 @@ pub struct AutoMasks {
     /// Every person, when a scene model ([`crate::scene_model`]) saw them; People masks use
     /// [`AutoMasks::subject`] otherwise.
     pub person: Option<Plane>,
+    /// The scene model's other Landscape classes ([`LANDSCAPE_TERRAIN`]: mountains, architecture,
+    /// natural and artificial ground), by class name; empty without a scene model (the photo
+    /// analysis can't tell them apart).
+    pub terrain: Vec<(&'static str, Plane)>,
+}
+
+/// The Landscape classes only the scene model can select (the photo analysis has Sky, Water and
+/// Vegetation), as `MaskShape::Landscape { class }` names them.
+pub const LANDSCAPE_TERRAIN: [&str; 4] = ["mountains", "architecture", "natural ground", "artificial ground"];
+
+/// Which of [`LANDSCAPE_TERRAIN`] a Landscape `class` names, matching loosely (`Mountain`,
+/// `building`, `sand`, `road`…).
+pub fn terrain_class(class: &str) -> Option<&'static str> {
+    let c = class.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| c.contains(w));
+    if has(&["artificial", "road", "pavement", "asphalt", "street"]) {
+        Some("artificial ground")
+    } else if has(&["natural", "ground", "sand", "snow", "dirt", "gravel", "soil", "earth"]) {
+        Some("natural ground")
+    } else if has(&["mountain", "rock", "hill", "cliff"]) {
+        Some("mountains")
+    } else if has(&["architect", "building", "house", "structure", "wall", "bridge"]) {
+        Some("architecture")
+    } else {
+        None
+    }
 }
 
 impl AutoMasks {
@@ -70,6 +96,8 @@ impl AutoMasks {
                     Some(&self.water)
                 } else if c.contains("vegetation") || c.contains("plant") || c.contains("tree") {
                     Some(&self.vegetation)
+                } else if let Some(t) = terrain_class(&c) {
+                    self.terrain.iter().find(|(k, _)| *k == t).map(|(_, p)| p)
                 } else {
                     None
                 }
@@ -325,7 +353,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let (w, h) = (img.width, img.height);
     let empty = || Plane::new(w, h);
     if w < 4 || h < 4 {
-        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None };
+        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None, terrain: Vec::new() };
     }
     // exposure-normalize to the photo's median brightness, then a display-like curve
     let mut ys: Vec<f32> = img.data.iter().map(|c| 0.2627 * c[0] + 0.678 * c[1] + 0.0593 * c[2]).collect();
@@ -344,7 +372,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let sky = sky(&lab, &smoothness, w, h);
     let subject = subject(&lab, &tex, w, h);
     let (water, vegetation) = landscape(&lab, &smoothness, &sky, w, h);
-    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None }
+    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None, terrain: Vec::new() }
 }
 
 struct Sky {

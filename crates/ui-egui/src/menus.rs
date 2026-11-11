@@ -247,6 +247,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // Remove Options ▸ Use Generative AI: the Remove tool's Generative mode on / off ({on?}; no params toggles); with no
     // service set up it opens Settings ▸ Generative Fill instead
     ("remove.useGenerative", "Use Generative AI", None, ""),
+    // Remove Options ▸ Detect Objects: a Remove stroke picks the object under it ({on?}; no params toggles)
+    ("remove.detectObjects", "Detect Objects", None, ""),
     ("tool.none", "No Tool", None, ""),
     ("tool.tat", "Targeted Adjustment", None, ""),
     ("mask.startComponent", "Combine Mask with", None, ""),
@@ -2157,6 +2159,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "remove.useGenerative" => crate::panels::genfill::use_generative(app, p),
+        "remove.detectObjects" => crate::panels::genfill::detect_objects(app, p),
         "dialog.cameraProfile" => crate::chart_profile::open(app),
         "cameraProfile.second" => crate::chart_profile::choose_second(app, p),
         "cameraProfile.removeSecond" => crate::chart_profile::remove_second(app),
@@ -3527,7 +3530,12 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "dialog.slideshowExport" | "app.slideshowExport" => {
             !cfg!(target_arch = "wasm32") && !app.session.slideshow_export.as_ref().is_some_and(|r| r.running())
         }
-        s if s.starts_with("panel.") || s.starts_with("tool.") || s == "remove.useGenerative" || s.starts_with("section.") => {
+        s if s.starts_with("panel.")
+            || s.starts_with("tool.")
+            || s == "remove.useGenerative"
+            || s == "remove.detectObjects"
+            || s.starts_with("section.") =>
+        {
             app.session.active().is_some() || s == "panel.close"
         }
         "app.export" | "dialog.export" | "file.export" | "dialog.createPreset" | "dialog.rename" | "dialog.captureTime" | "dialog.copySettings" => {

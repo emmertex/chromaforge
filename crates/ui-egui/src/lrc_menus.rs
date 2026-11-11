@@ -687,7 +687,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             r#"mask.add{"kind":"sky"}=Select Sky"#,
             r#"mask.add{"kind":"background"}=Select Background"#,
             "tool.people=Select People",
-            "soon.selectLandscape",
+            "@Select Landscape",
             "tool.object=Select Objects",
             "---",
             "tool.brush=Brush",
@@ -700,7 +700,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("View", "Create New Mask", &["tool.brush=Brush", "tool.linear=Linear Gradient", "tool.radial=Radial Gradient"]),
-    ("Tools", "Remove Options", &["remove.useGenerative", "soon.removeDetectObjects"]),
+    ("Tools", "Remove Options", &["remove.useGenerative", "remove.detectObjects"]),
     ("Tools", "Target Adjustment", &[]),
     ("Tools", "Tool Overlay", &[]),
     (
@@ -765,8 +765,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // View
     // Window
     // Develop
-    soon("soon.removeDetectObjects", "Detect Objects", None, 'M', false, "Remove tool: pick objects to remove by detection."),
-    soon("soon.selectLandscape", "Select Landscape", None, 'L', false, "AI mask of landscape regions (water, vegetation, mountains, buildings…)."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
     // Map
     // Book

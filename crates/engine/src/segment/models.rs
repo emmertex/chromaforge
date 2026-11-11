@@ -268,6 +268,20 @@ impl Segmenter {
         self.require_sam2()
     }
 
+    /// Landscape classes beyond sky, water and vegetation need the EoMT scene model chosen
+    /// (`ai.models.setSceneModel`) and installed; otherwise [`crate::EngineError::ModelMissing`]
+    /// ([`crate::AiModel::Scene`]) says how to get it.
+    pub fn require_scene_model(&self) -> crate::Result<()> {
+        self.require_open_model("scene", crate::AiModel::Scene)?;
+        if self.scene_model != SceneModel::Eomt {
+            return Err(crate::EngineError::ModelMissing {
+                model: crate::AiModel::Scene,
+                msg: "Mountains, architecture and ground need the EoMT scene model: choose it with `ai.models.setSceneModel {\"model\": \"eomt\"}` (Settings > AI Models).".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// SAM 2.1's folder, when it is installed (remembered objects always run on it); otherwise
     /// [`crate::EngineError::ModelMissing`] saying how to get it.
     pub fn require_sam2(&self) -> crate::Result<PathBuf> {

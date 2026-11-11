@@ -79,6 +79,12 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             };
             MaskShape::People { person, parts, who, seg: seg_param(p) }
         }
+        "landscape" => {
+            let raw = str_param(p, "class").map(str::trim).unwrap_or_default();
+            let class =
+                landscape_class(raw).ok_or_else(|| bad(c, format!("landscape: `class` is one of {} (not `{raw}`)", LANDSCAPE_CLASSES.join(", "))))?;
+            MaskShape::Landscape { class: class.to_string() }
+        }
         "concept" => {
             let name = str_param(p, "name").map(str::trim).unwrap_or_default();
             if name.is_empty() || name.chars().count() > 200 {
@@ -90,11 +96,34 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             return Err(bad(
                 c,
                 format!(
-                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people|concept)"
+                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people|landscape|concept)"
                 ),
             ));
         }
     })
+}
+
+/// The Landscape classes `mask.add {kind: "landscape"}` takes ("Select Landscape"): the first three the photo analysis
+/// finds, the rest need the EoMT scene model.
+pub const LANDSCAPE_CLASSES: &[&str] = &["sky", "water", "vegetation", "mountains", "architecture", "natural ground", "artificial ground"];
+
+/// The canonical Landscape class a name means (`Mountain`, `building`, `sand`, `road`…), `None` for anything else.
+fn landscape_class(raw: &str) -> Option<&'static str> {
+    let c = raw.to_ascii_lowercase();
+    if c.is_empty() || c.len() > 40 {
+        return None;
+    }
+    if c.contains("sky") {
+        Some("sky")
+    } else if c.contains("water") || c.contains("sea") || c.contains("river") || c.contains("lake") {
+        Some("water")
+    } else if let Some(t) = lcc_pipeline::auto_mask::terrain_class(&c) {
+        Some(t)
+    } else if c.contains("vegetation") || c.contains("plant") || c.contains("tree") || c.contains("grass") {
+        Some("vegetation")
+    } else {
+        None
+    }
 }
 
 /// The People parts `mask.add {kind: "people"}` takes (Lightroom's names; none: Entire Person).
@@ -488,11 +517,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?}: AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|landscape|luminanceRange|colorRange|object|prompt, ...shape params (landscape: class sky|water|vegetation|mountains|architecture|natural ground|artificial ground, loose names like building, sand or road work; the last four need the EoMT scene model, else ModelMissing) (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?}: AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
                 let mut shape = shape_from(&kind, p, "mask.add")?;
+                // Landscape beyond sky, water and vegetation is the scene model's alone (the photo analysis can't tell it apart)
+                if let MaskShape::Landscape { class } = &shape
+                    && !matches!(class.as_str(), "sky" | "water" | "vegetation")
+                {
+                    s.segmenter.require_scene_model()?;
+                }
                 let later = resolve_ai(s, &mut shape, "mask.add")?;
                 let name = str_param(p, "name").map(str::to_string);
                 if let Later::Text(text) = &later {

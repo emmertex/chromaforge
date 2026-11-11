@@ -172,6 +172,9 @@ pub struct Segmenter {
     #[cfg(feature = "sam")]
     model_downloads: std::collections::HashMap<&'static str, download::Downloader>,
     pending: Option<PendingClicks>,
+    /// Remove ▸ Detect Objects, background mode: the Object mask `(photo, mask, spot mode)` whose
+    /// clicks are queued becomes a Remove spot when its selection arrives (`spot.detectObject`).
+    pub(crate) then_remove: Option<(PhotoId, u32, String)>,
     messages: Vec<String>,
     /// Smooth Skin and Find Blemishes requests ([`skin`]).
     pub(crate) skin: skin::SkinJobs,
@@ -209,6 +212,7 @@ impl Default for Segmenter {
             #[cfg(feature = "sam")]
             model_downloads: std::collections::HashMap::new(),
             pending: None,
+            then_remove: None,
             messages: Vec::new(),
             skin: skin::SkinJobs::default(),
             parts: parts::RetouchJobs::default(),
@@ -876,6 +880,16 @@ impl Session {
         }
     }
 
+    /// Remove the Object mask a Detect Objects stroke made when nothing came of it.
+    #[cfg(feature = "sam")]
+    fn drop_detect_mask(&mut self, photo: PhotoId, mask: u32) {
+        if let Some(d) = self.develop_of(photo) {
+            let mut d = (*d).clone();
+            d.masks.retain(|m| m.id != mask);
+            let _ = self.set_develop(photo, d, "Remove");
+        }
+    }
+
     /// Background mode: queue a Describe selection; the mask (or component, combined by `op`
     /// into mask `mask`) is created by [`Session::segment_poll`] when something matches.
     pub(crate) fn segment_text_later(&mut self, id: PhotoId, mask: Option<u32>, op: &str, name: Option<String>, text: &str) -> Result<(), String> {
@@ -1106,8 +1120,19 @@ impl Session {
                     return; // newer clicks are on their way
                 }
                 self.segmenter.pending = None;
+                // Remove ▸ Detect Objects: this selection is for a spot, not a mask of its own
+                let removal = match &self.segmenter.then_remove {
+                    Some((p, m, _)) if (*p, *m) == (photo, mask) => self.segmenter.then_remove.take().map(|(_, _, mode)| mode),
+                    _ => None,
+                };
                 let seg = match o.result {
                     Ok(Some(seg)) => seg,
+                    Ok(None) | Err(_) if removal.is_some() => {
+                        self.drop_detect_mask(photo, mask);
+                        let why = o.result.err().unwrap_or_else(|| "No object was found where you painted.".to_string());
+                        polled.changed = true;
+                        return polled.messages.push(why);
+                    }
                     Ok(None) => return,
                     Err(e) => return polled.messages.push(e),
                 };
@@ -1117,6 +1142,14 @@ impl Session {
                 let MaskShape::Object { edge, .. } = c.shape else { return };
                 c.shape = MaskShape::Object { hint: latest.hint, exclude: latest.exclude, seg: Some(seg), detail: vec![], edge };
                 match self.set_develop(photo, d, "Object Mask") {
+                    Ok(()) if removal.is_some() => {
+                        polled.changed = true;
+                        let mode = removal.unwrap_or_default();
+                        if let Err(e) = self.execute("spot.fromMask", &serde_json::json!({"mask": mask, "mode": mode, "deleteMask": true})) {
+                            self.drop_detect_mask(photo, mask);
+                            polled.messages.push(e.to_string());
+                        }
+                    }
                     Ok(()) => {
                         polled.changed = true;
                         polled.refine = Some(mask);

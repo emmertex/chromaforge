@@ -1647,6 +1647,8 @@ pub struct UiState {
     /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
     /// opens on it again (this session).
     pub remove_tool: String,
+    /// Tools ▸ Remove Options ▸ Detect Objects: a Remove stroke picks the object under it (`spot.detectObject`).
+    pub remove_detect_objects: bool,
     /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
     /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
@@ -2615,6 +2617,7 @@ impl Default for UiState {
             selected_guide: None,
             wb_sample: 5,
             remove_tool: "remove".into(),
+            remove_detect_objects: false,
             brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
