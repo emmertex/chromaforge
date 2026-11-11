@@ -2625,7 +2625,8 @@ pub(crate) mod tests {
         let r = apply(&mut s, data, false).unwrap();
         assert!(album_named(&s, "Zero").photos.is_empty());
         assert_eq!(album_named(&s, "Keepers").photos.len(), 2);
-        let w: Vec<_> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.starts_with("AgLibraryCollectionImage")).collect();
+        let w: Vec<_> =
+            r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.starts_with("AgLibraryCollectionImage")).collect();
         assert_eq!(w.len(), 1, "{w:?}");
     }
     #[test]
