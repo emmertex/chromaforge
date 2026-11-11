@@ -27,6 +27,55 @@ fn select_after_deletion(s: &mut Session, before: &[PhotoId]) {
 /// The auto-import folder's visible files with their sizes (the file-system half of
 /// `library.autoImportScan`; the app lists on a worker thread and passes `listing`).
 pub fn list_auto_import_folder(folder: &str) -> std::result::Result<Vec<(String, u64)>, String> {
+    AutoImportScope { folder: folder.to_string(), subfolders: false, skip: None }.list()
+}
+
+/// What one Auto Import listing looks at: the watched folder, whether its subfolders count, and
+/// a folder never entered (the library's own, so copies that arrive there aren't imported twice).
+/// `Send`: the app lists on a worker thread.
+#[derive(Clone, Debug)]
+pub struct AutoImportScope {
+    pub folder: String,
+    pub subfolders: bool,
+    pub skip: Option<std::path::PathBuf>,
+}
+
+impl AutoImportScope {
+    /// The visible files with their sizes. Without subfolders: the folder's own files, whatever
+    /// their type. With: also those of its subfolders that are a supported photo type, found by a
+    /// bounded walk (depth and entry limits, hidden entries and the library folder skipped, a
+    /// folder link followed at most once so loops end, an unreadable subfolder skipped).
+    pub fn list(&self) -> std::result::Result<Vec<(String, u64)>, String> {
+        if !self.subfolders {
+            return list_top_level(&self.folder);
+        }
+        let root = std::path::Path::new(&self.folder);
+        // the watched folder itself must be readable, as without subfolders
+        std::fs::read_dir(root).map_err(|e| format!("{}: {e}", self.folder))?;
+        let limits = crate::walk::Limits { max_depth: crate::import::AUTO_IMPORT_DEPTH, max_entries: crate::import::AUTO_IMPORT_ENTRIES };
+        let keep = |f: &std::path::Path| f.parent() == Some(root) || crate::import::is_supported(f);
+        let w = crate::walk::files_in(root, self.skip.as_deref(), limits, keep);
+        if w.truncated {
+            log::warn!(
+                "auto import: stopped looking in {} after {} entries (limits: {} entries, {} folder levels)",
+                self.folder,
+                w.entries,
+                limits.max_entries,
+                limits.max_depth
+            );
+        }
+        Ok(w.files
+            .into_iter()
+            .filter_map(|p| {
+                // through a link: its target's type and size
+                let m = std::fs::metadata(&p).ok()?;
+                m.is_file().then(|| (p.to_string_lossy().to_string(), m.len()))
+            })
+            .collect())
+    }
+}
+
+fn list_top_level(folder: &str) -> std::result::Result<Vec<(String, u64)>, String> {
     let rd = std::fs::read_dir(folder).map_err(|e| format!("{folder}: {e}"))?;
     Ok(rd
         .flatten()
@@ -657,6 +706,54 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "library.findPreviousProcess",
+            "Find Previous Process Photos",
+            ["Library"],
+            None,
+            "{}: filters the view to the photos that render with an older process version than this build's newest (the rule `processVersion < latest`; Clear Filters to go back) → {count, latest}",
+            always,
+            |s, _| {
+                let latest = lcc_develop::ProcessVersion::LATEST.0;
+                s.execute(
+                    "library.filter",
+                    &json!({"ruleSet": {"match": "all", "rules": [{"field": "processVersion", "op": "lt", "value": latest}]}}),
+                )?;
+                Ok(json!({"count": s.visible().len(), "latest": latest}))
+            }
+        ),
+        cmd!(
+            "library.refine",
+            "Refine Photos…",
+            ["Library"],
+            Some("Cmd+Alt+R"),
+            "{}: a culling pass over the photos in view: picks become unflagged, unflagged photos become rejected, rejected ones stay; one undo step → {changed, rejected, unflagged}",
+            always,
+            |s, _| {
+                let ids = s.visible_cloned();
+                let mut ops = Vec::new();
+                let (mut rejected, mut unflagged) = (0, 0);
+                for id in ids {
+                    match s.catalog.photo(id).map(|p| p.flag) {
+                        Some(Flag::Pick) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::None });
+                            unflagged += 1;
+                        }
+                        Some(Flag::None) => {
+                            ops.push(Op::SetFlag { id, flag: Flag::Reject });
+                            rejected += 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let changed = ops.len();
+                if changed > 0 {
+                    s.commit("Refine Photos", Op::Batch { ops })?;
+                    s.keep_active_in_view();
+                }
+                Ok(json!({"changed": changed, "rejected": rejected, "unflagged": unflagged}))
+            }
+        ),
+        cmd!(
             "library.lockFilters",
             "Lock Filters",
             [],
@@ -1151,6 +1248,71 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(
+            "library.invertSelection",
+            "Invert Selection",
+            ["Edit"],
+            None,
+            "{} — selects the photos in view that aren't selected and deselects the others → {selected}",
+            always,
+            |s, _| {
+                let chosen: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
+                let ids: Vec<PhotoId> = s.visible_cloned().into_iter().filter(|id| !chosen.contains(id)).collect();
+                // the active photo stays active if it is still selected; else the first of the new selection
+                let active = s.selection.active.filter(|a| ids.contains(a)).or(ids.first().copied());
+                let n = ids.len();
+                s.selection = Selection { ids, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectActive",
+            "Deselect Active Photo",
+            ["Edit"],
+            None,
+            "{} — takes the active photo out of the selection; the next selected photo (wrapping round) becomes active, and with none left nothing stays selected → {selected}",
+            has_active,
+            |s, _| {
+                let Some(active) = s.selection.active else { return Err(bad("library.deselectActive", "no active photo")) };
+                let ids = s.selection.ids.clone();
+                let Some(at) = ids.iter().position(|i| *i == active) else {
+                    // the active photo isn't in the selection: nothing to take out
+                    return Ok(json!({"selected": ids.len()}));
+                };
+                let mut rest = ids;
+                rest.remove(at);
+                // "next" is the next selected photo after the old one, wrapping round
+                let next = rest.get(at).or_else(|| rest.first()).copied();
+                let n = rest.len();
+                s.selection = Selection { ids: rest, active: next };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectUnflagged",
+            "Deselect Unflagged Photos",
+            ["Edit"],
+            None,
+            "{} — keeps only the flagged (picked) photos of the selection selected; with none flagged it acts as Deselect All (the active photo stays) → {selected}",
+            always,
+            |s, _| {
+                let keep: Vec<PhotoId> =
+                    s.selection.ids.iter().copied().filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Pick)).collect();
+                if keep.is_empty() {
+                    let a = s.selection.active;
+                    s.selection = Selection { ids: a.into_iter().collect(), active: a };
+                    s.all_selected = None;
+                    return Ok(json!({"selected": s.selection.ids.len()}));
+                }
+                let active = s.selection.active.filter(|a| keep.contains(a)).or(keep.first().copied());
+                let n = keep.len();
+                s.selection = Selection { ids: keep, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
             "library.next",
             "Next Photo",
             [],
@@ -1478,6 +1640,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.end_interaction()?;
                 let op = s.catalog.delete_photos_permanently_ops(&t);
                 s.commit("Delete Permanently", op)?;
+                select_after_deletion(s, &before);
+                Ok(json!({"deleted": t.len()}))
+            }
+        ),
+        cmd!(
+            "photo.removeFromCatalog",
+            "Remove Photo from Catalog",
+            ["Photo"],
+            None,
+            "{ids?} — removes the photos from the library without asking; the files stay on disk. One undo step (browsed photos not in the library are left alone) → {deleted}",
+            has_selection,
+            |s, p| {
+                let before = s.visible_cloned();
+                let t = not_browsed(s, s.targets(p)?, "photo.removeFromCatalog")?;
+                s.end_interaction()?;
+                let op = s.catalog.delete_photos_permanently_ops(&t);
+                s.commit("Remove from Catalog", op)?;
                 select_after_deletion(s, &before);
                 Ok(json!({"deleted": t.len()}))
             }
@@ -2190,7 +2369,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto Import Settings",
             [],
             None,
-            "{folder?: path | null (off), copy?: bool (copy into the library's Originals, else add in place), album?: name | null}: a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
+            "{folder?: path | null (clear), enabled?: bool (switch watching on or off, keeping the folder; choosing a folder switches it on), copy?: bool (copy into the library's Originals, else add in place), album?: name | null, subfolders?: bool (also watch the folder's subfolders), rename?: file-name template for copies (empty keeps names), preset?: develop preset id | null, metadataPreset?: name | null, keywords?: [name] or comma-separated text}: a watched folder whose new photos are added as they arrive (library.autoImportScan; the app scans every few seconds) → the settings",
             always,
             |s, p| {
                 if let Some(f) = p.get("folder") {
@@ -2199,6 +2378,12 @@ pub fn specs() -> Vec<CommandSpec> {
                         Some(f) => return Err(bad("library.autoImport", format!("`{f}` is not a folder"))),
                         None => None,
                     };
+                    if s.import_defaults.auto_folder.is_some() {
+                        s.import_defaults.auto_paused = false;
+                    }
+                }
+                if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
+                    s.import_defaults.auto_paused = !on;
                 }
                 if let Some(c) = p.get("copy").and_then(Value::as_bool) {
                     s.import_defaults.auto_copy = c;
@@ -2206,9 +2391,49 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Some(a) = p.get("album") {
                     s.import_defaults.auto_album = a.as_str().map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
                 }
+                if let Some(b) = p.get("subfolders").and_then(Value::as_bool) {
+                    s.import_defaults.auto_options.subfolders = b;
+                }
+                if let Some(r) = p.get("rename").and_then(Value::as_str) {
+                    s.import_defaults.auto_options.rename = r.trim().to_string();
+                }
+                if let Some(v) = p.get("preset") {
+                    let id = v.as_str().map(str::trim).filter(|x| !x.is_empty());
+                    if let Some(id) = id
+                        && !s.presets.iter().any(|x| x.id == id)
+                    {
+                        return Err(bad("library.autoImport", format!("unknown preset `{id}`")));
+                    }
+                    s.import_defaults.auto_options.preset = id.map(str::to_string);
+                }
+                if let Some(v) = p.get("metadataPreset") {
+                    let n = v.as_str().map(str::trim).filter(|x| !x.is_empty());
+                    if let Some(n) = n
+                        && !s.metadata_presets.iter().any(|m| m.name.eq_ignore_ascii_case(n))
+                    {
+                        return Err(bad("library.autoImport", format!("unknown metadata preset `{n}`")));
+                    }
+                    s.import_defaults.auto_options.metadata_preset = n.map(str::to_string);
+                }
+                if let Some(k) = p.get("keywords") {
+                    let list: Vec<String> = match k {
+                        Value::Array(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                        Value::String(t) => t.split(',').map(str::to_string).collect(),
+                        _ => Vec::new(),
+                    };
+                    let mut kept: Vec<String> = Vec::new();
+                    for k in list.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+                        if !kept.iter().any(|x| x.eq_ignore_ascii_case(k)) {
+                            kept.push(k.to_string());
+                        }
+                    }
+                    s.import_defaults.auto_options.keywords = kept;
+                }
                 s.save_prefs()?;
                 let d = &s.import_defaults;
-                Ok(json!({"folder": d.auto_folder, "copy": d.auto_copy, "album": d.auto_album}))
+                Ok(json!({"folder": d.auto_folder, "enabled": d.auto_folder.is_some() && !d.auto_paused, "copy": d.auto_copy, "album": d.auto_album,
+                    "subfolders": d.auto_options.subfolders, "rename": d.auto_options.rename, "preset": d.auto_options.preset,
+                    "metadataPreset": d.auto_options.metadata_preset, "keywords": d.auto_options.keywords}))
             }
         ),
         cmd!(
@@ -2219,7 +2444,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "{listing?: [[path, size]] (the folder as listed by the caller, e.g. on a worker thread), start?: bool (false: return the `library.import` params as `import` instead of importing)}: add the watched folder's new photos (files the library doesn't have yet; partial / still-copying files wait for the next scan) → {imported, folder, warnings?: [{path, code, profile?, mode?, fields?}], import?}",
             always,
             |s, p| {
-                let Some(folder) = s.import_defaults.auto_folder.clone() else { return Ok(json!({"imported": [], "folder": null})) };
+                let Some(folder) = s.import_defaults.auto_active_folder().cloned() else { return Ok(json!({"imported": [], "folder": null})) };
+                let scope = s.auto_import_scope();
                 // only files that stopped growing: a file still being written is left for later
                 let known: std::collections::HashSet<String> = s
                     .catalog
@@ -2232,7 +2458,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 // the folder's files and sizes: listed here, or already listed on a worker thread (the app)
                 let listing: Vec<(String, u64)> = match p.get("listing").and_then(Value::as_array) {
                     Some(l) => l.iter().filter_map(|e| Some((e.get(0)?.as_str()?.to_string(), e.get(1)?.as_u64()?))).collect(),
-                    None => list_auto_import_folder(&folder).map_err(|e| bad("library.autoImportScan", e))?,
+                    None => match &scope {
+                        Some(sc) => sc.list(),
+                        None => list_auto_import_folder(&folder),
+                    }
+                    .map_err(|e| bad("library.autoImportScan", e))?,
                 };
                 let mut fresh = Vec::new();
                 for (ps, size) in listing {
@@ -2255,6 +2485,21 @@ pub fn specs() -> Vec<CommandSpec> {
                 // a photo deleted from the library doesn't come back on its own because its file
                 // is still in the watched folder (a copy's source is not a known path)
                 let mut params = json!({"paths": fresh, "mode": mode, "onDeleted": "skip"});
+                let o = s.import_defaults.auto_options.clone();
+                // (a copy's names; an add keeps the files where and as they are)
+                if !o.rename.trim().is_empty() && s.import_defaults.auto_copy {
+                    params["rename"] = json!(o.rename.trim());
+                }
+                // a preset that was deleted meanwhile is left out, not a failed import every scan
+                if let Some(id) = o.preset.as_ref().filter(|id| s.presets.iter().any(|p| p.id == **id)) {
+                    params["preset"] = json!(id);
+                }
+                if let Some(n) = o.metadata_preset.as_ref().filter(|n| s.metadata_presets.iter().any(|m| m.name.eq_ignore_ascii_case(n))) {
+                    params["metadataPreset"] = json!(n);
+                }
+                if !o.keywords.is_empty() {
+                    params["keywords"] = json!(o.keywords);
+                }
                 if let Some(a) = s.import_defaults.auto_album.clone() {
                     match s.catalog.albums().find(|al| al.name.eq_ignore_ascii_case(&a) && !al.folder && !al.is_smart()) {
                         Some(al) => params["album"] = json!(al.id.0),

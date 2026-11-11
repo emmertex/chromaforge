@@ -155,6 +155,34 @@ fn geotag(s: &mut crate::Session, p: &Value) -> Result<Value> {
     Ok(json!({"photos": ids.len(), "changed": changed, "gps": gps.map(|g| [g.0, g.1])}))
 }
 
+/// Delete All Location Metadata: the position and every place field, in one undo step.
+fn clear_location_metadata(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const C: &str = "map.clearLocationMetadata";
+    let ids = s.targets(p)?;
+    if ids.is_empty() {
+        return Err(bad(C, "no photos selected"));
+    }
+    let mut ops = Vec::new();
+    for id in &ids {
+        let Some(ph) = s.catalog.photo(*id) else { continue };
+        let m = &ph.meta;
+        if m.gps.is_none() && [&m.location, &m.city, &m.state, &m.country, &m.country_code].iter().all(|f| f.is_empty()) {
+            continue;
+        }
+        let mut meta = m.clone();
+        meta.gps = None;
+        for f in [&mut meta.location, &mut meta.city, &mut meta.state, &mut meta.country, &mut meta.country_code] {
+            f.clear();
+        }
+        ops.push(Op::SetMeta { id: *id, meta: Box::new(meta) });
+    }
+    let changed = ops.len();
+    if changed > 0 {
+        s.commit("Delete All Location Metadata", Op::Batch { ops })?;
+    }
+    Ok(json!({"photos": ids.len(), "changed": changed}))
+}
+
 fn save_location(s: &mut crate::Session, p: &Value) -> Result<Value> {
     const C: &str = "map.saveLocation";
     let name = str_param(p, "name").ok_or_else(|| bad(C, "missing `name`"))?;
@@ -425,6 +453,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_selection,
             geotag
         ),
+        cmd!(
+            "map.clearLocationMetadata",
+            "Delete All Location Metadata",
+            [],
+            None,
+            "{ids?} → {photos, changed}: clear the GPS position and the place fields (sublocation, city, state, country, country code) of the photos; one undo step",
+            has_selection,
+            clear_location_metadata
+        ),
         cmd!(query "map.locations", "Saved Locations", [], None, "{} → {locations: [{name, lat, lon, radius (m), private, photos}]}", always, |s, _| Ok(locations_json(s))),
         cmd!(
             "map.saveLocation",
@@ -458,6 +495,33 @@ mod tests {
         let ids = s.visible_cloned();
         assert!(ids.len() >= n);
         (s, ids)
+    }
+
+    #[test]
+    fn clear_location_metadata_one_undo_and_hostile_input() {
+        let (mut s, ids) = session_with(3);
+        s.execute("map.geotag", &json!({"ids": [ids[0].0, ids[1].0], "lat": 48.8, "lon": 2.3})).unwrap();
+        let mut m = s.catalog.photo(ids[0]).unwrap().meta.clone();
+        m.city = "Paris".into();
+        m.country = "France".into();
+        m.country_code = "FR".into();
+        m.location = "Louvre".into();
+        m.state = "IDF".into();
+        s.commit("t", Op::SetMeta { id: ids[0], meta: Box::new(m) }).unwrap();
+        let r = s.execute("map.clearLocationMetadata", &json!({"ids": [ids[0].0, ids[1].0, ids[2].0]})).unwrap();
+        assert!(r["changed"].as_u64() >= Some(2), "{r}");
+        let m = &s.catalog.photo(ids[0]).unwrap().meta;
+        assert!(
+            m.gps.is_none() && m.city.is_empty() && m.country.is_empty() && m.country_code.is_empty() && m.location.is_empty() && m.state.is_empty()
+        );
+        s.undo_step().unwrap();
+        let m = &s.catalog.photo(ids[0]).unwrap().meta;
+        assert!(m.gps.is_some() && m.city == "Paris" && m.country_code == "FR");
+        assert!(s.catalog.photo(ids[1]).unwrap().meta.gps.is_some(), "one undo restores both photos");
+        // hostile input: errors, never panics
+        assert!(s.execute("map.clearLocationMetadata", &json!({"ids": []})).is_err());
+        let _ = s.execute("map.clearLocationMetadata", &json!({"ids": [999_999, "x", null, -1]}));
+        let _ = s.execute("map.clearLocationMetadata", &json!({"ids": 5}));
     }
 
     #[test]

@@ -122,10 +122,11 @@ fn the_job_file_is_the_catalog_at_the_top_of_file() {
 fn a_coming_soon_item_is_greyed_and_does_nothing() {
     let mut a = app();
     let all = items(&menu_bar(&a));
-    let (_, n) = find(&all, "soon.renameCatalog").expect("Rename Catalog… in File");
+    let first = COMING_SOON.first().expect("at least one Coming soon item left");
+    let (_, n) = find(&all, first.id).expect("a Coming soon item is placed in a menu");
     assert!(matches!(n, MenuNode::Item { enabled: false, .. }), "{n:?}");
-    assert_eq!(label_of(n), "Rename Catalog…");
-    assert!(!crate::menus::ui_enabled(&a, "soon.renameCatalog"));
+    assert_eq!(label_of(n), first.label);
+    assert!(!crate::menus::ui_enabled(&a, first.id));
     // every greyed item of every module, run from the menu or by id, changes nothing
     let before = (a.session.undo.len(), a.ui.module, a.session.selection.ids.clone(), a.ui.dialog.is_some());
     for c in COMING_SOON {
@@ -255,4 +256,116 @@ fn classic_keys_reach_classic_commands() {
     assert_eq!(h.app.session.selection.ids.len(), 3);
     key(&mut h, "D", json!({"cmd": true}));
     assert_eq!(h.app.session.selection.ids.len(), 1, "⌘D selects none but the active photo");
+}
+
+// ---- Library / Edit / View / File items that used to be "Coming soon"
+
+#[test]
+fn the_selection_and_folder_items_are_real_commands() {
+    let a = app();
+    let all = items(&menu_bar(&a));
+    for id in [
+        "library.invertSelection",
+        "library.deselectActive",
+        "library.deselectUnflagged",
+        "dialog.newDiskFolder",
+        "dialog.synchronizeFolder",
+        "photo.removeFromCatalog",
+        "view.loupeToggle",
+        "dialog.pageSetup",
+        "album.setTarget",
+    ] {
+        assert!(find(&all, id).is_some(), "{id} is in the menus");
+    }
+    for soon in [
+        "soon.invertSelection",
+        "soon.deselectActive",
+        "soon.deselectUnflagged",
+        "soon.newFolder",
+        "soon.synchronizeFolder",
+        "soon.removeFromCatalog",
+        "soon.toggleLoupeView",
+        "soon.pageSetup",
+        "soon.quickCollectionTarget",
+    ] {
+        assert!(find(&all, soon).is_none() && !COMING_SOON.iter().any(|s| s.id == soon), "{soon} is gone");
+    }
+}
+
+#[test]
+fn slash_deselects_the_active_photo_and_f6_still_toggles_the_filmstrip() {
+    let mut h = headless();
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    h.app.run("library.select", json!({"ids": ids, "active": ids[1]})).unwrap();
+    key(&mut h, "/", json!({}));
+    assert_eq!(h.app.session.selection.ids.len(), 2, "/ takes the active photo out of the selection");
+    assert!(!h.app.session.selection.ids.iter().any(|i| i.0 == ids[1]));
+    assert_eq!(h.app.session.active().map(|i| i.0), Some(ids[2]), "the next selected photo is active");
+    let strip = h.app.ui.filmstrip;
+    key(&mut h, "F6", json!({}));
+    assert_eq!(h.app.ui.filmstrip, !strip);
+}
+
+#[test]
+fn toggle_loupe_view_goes_to_the_loupe_and_back_to_the_grid_style() {
+    let mut a = app();
+    a.ui.view = crate::state::ViewMode::SquareGrid;
+    a.ui.grid_style = crate::state::ViewMode::SquareGrid;
+    run_item(&mut a, "view.loupeToggle", Value::Null).unwrap();
+    assert_eq!(a.ui.view, crate::state::ViewMode::Detail);
+    run_item(&mut a, "view.loupeToggle", Value::Null).unwrap();
+    assert_eq!(a.ui.view, crate::state::ViewMode::SquareGrid, "back to the grid style chosen last");
+}
+
+#[test]
+fn remove_from_catalog_asks_nothing_and_leaves_the_files() {
+    let mut a = app();
+    assert!(a.ui.settings.confirm_delete, "the setting that makes Delete ask is on");
+    let id = a.session.active().unwrap();
+    run_item(&mut a, "photo.removeFromCatalog", Value::Null).unwrap();
+    assert!(a.ui.dialog.is_none(), "no confirmation");
+    assert!(a.session.catalog.photo(id).is_none(), "gone from the catalog, not in Recently Deleted");
+}
+
+#[test]
+fn set_quick_collection_as_target_clears_the_target() {
+    let mut a = app();
+    let album = a.run("album.create", json!({"name": "Mine"})).unwrap()["id"].as_u64().unwrap();
+    a.run("album.setTarget", json!({"id": album})).unwrap();
+    assert!(a.session.target_album.is_some());
+    run_item(&mut a, "album.setTarget", json!({"id": null})).unwrap();
+    assert_eq!(a.session.target_album, None);
+}
+
+#[test]
+fn folder_items_need_a_chosen_folder_and_open_the_existing_dialogs() {
+    let mut a = app();
+    for id in ["dialog.newDiskFolder", "dialog.synchronizeFolder"] {
+        assert!(!crate::menus::ui_enabled(&a, id), "{id} needs a chosen folder");
+        assert!(a.run(id, json!({})).is_err(), "{id} says why, without a panic");
+    }
+    a.session.source = lcc_engine::LibrarySource::LibraryFolder;
+    a.session.library_folder = Some("/no/such/folder".into());
+    assert!(crate::menus::ui_enabled(&a, "dialog.newDiskFolder"));
+    a.run("dialog.newDiskFolder", json!({})).unwrap();
+    assert!(
+        matches!(&a.ui.dialog, Some(crate::state::Dialog::TextPrompt { command, params, .. }) if command == "folder.create" && params["parent"] == "/no/such/folder"),
+        "the create-folder prompt for the chosen folder"
+    );
+    a.ui.dialog = None;
+    // no library photo in it: an error, not a dialog
+    assert!(a.run("dialog.synchronizeFolder", json!({})).is_err());
+    assert!(a.ui.dialog.is_none());
+    // a blank path is no folder
+    a.session.library_folder = Some("  ".into());
+    assert!(!crate::menus::ui_enabled(&a, "dialog.newDiskFolder"));
+}
+
+#[test]
+fn page_setup_switches_to_print_and_opens_the_paper_choice() {
+    let mut h = headless();
+    h.app.run("dialog.pageSetup", json!({})).unwrap();
+    assert_eq!(h.app.ui.module, ModuleId::Print);
+    h.settle(SETTLE);
+    assert!(!h.app.print.open_paper, "the paper choice was opened by the page setup bar");
 }

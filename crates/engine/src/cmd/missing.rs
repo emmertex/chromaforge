@@ -486,6 +486,19 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            query "dng.validate",
+            "Validate DNG Files",
+            [],
+            None,
+            "{ids?}: recompute the raw-image digest (NewRawImageDigest, else RawImageDigest) of the selected photos' DNG files and compare it with the stored one; runs here on the calling thread (the app's Library ▸ Validate DNG Files does it in the background with a cancel) → {total, checked, intact, damaged: [{file, why}] (digest mismatch, unreadable raw data or file), unverifiable: [{file, why}] (no digest in the file, or a layout the check does not cover), cancelled}",
+            super::has_selection,
+            |s, p| {
+                let ids = s.targets(p)?;
+                let targets = crate::dng_validate::dng_targets(s, &ids);
+                Ok(crate::dng_validate::validate(&targets, &std::sync::atomic::AtomicBool::new(false), &|_| {}).to_json())
+            }
+        ),
         cmd!(query "library.missing", "Missing Photos", [], None, "{} → [{id, path}]: photos whose original file isn't where the library expects it", always, |s, _| {
             Ok(Value::Array(missing(s).into_iter().map(|(id, path)| json!({"id": id.0, "path": path})).collect()))
         }),

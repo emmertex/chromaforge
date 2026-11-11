@@ -36,6 +36,7 @@ lcc-webgallery = { workspace = true }
 lcc-surface = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
+chrono = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 

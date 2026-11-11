@@ -19,8 +19,10 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::creations_ui::COMMANDS)
         .chain(PLUGIN_COMMANDS)
         .chain(crate::timelapse_ui::COMMANDS)
+        .chain(crate::email_photo::COMMANDS)
         .chain(crate::panels::filterbar::COMMANDS)
         .chain(crate::import_report::COMMANDS)
+        .chain(crate::comments_ui::COMMANDS)
         .chain(crate::face_menu::COMMANDS)
         .chain(crate::modern::COMMANDS)
         .chain(crate::modern_library::COMMANDS)
@@ -93,6 +95,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
     if let Some(r) = crate::timelapse_ui::run(app, id, p) {
         return Some(r);
     }
+    if let Some(r) = crate::email_photo::run(app, id, p) {
+        return Some(r);
+    }
     if let Some(r) = crate::panels::filterbar::run(app, id, p) {
         return Some(r);
     }
@@ -100,6 +105,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
         return Some(r);
     }
     if let Some(r) = crate::import_report::run(app, id, p) {
+        return Some(r);
+    }
+    if let Some(r) = crate::comments_ui::run(app, id, p) {
         return Some(r);
     }
     if let Some(r) = crate::libtools::run(app, id, p) {
@@ -268,6 +276,8 @@ pub(super) fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     crate::module::enabled(app, id)
         .or_else(|| crate::catalog_ui::enabled(app, id))
         .or_else(|| crate::timelapse_ui::enabled(app, id))
+        .or_else(|| crate::email_photo::enabled(app, id))
         .or_else(|| crate::import_report::enabled(app, id))
+        .or_else(|| crate::comments_ui::enabled(app, id))
         .or_else(|| crate::face_menu::enabled(app, id))
 }

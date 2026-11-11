@@ -379,14 +379,15 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
         crate::panels::compare::prepare(app);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
             crate::panels::alternatives::show(app, ui);
-            match app.ui.view {
+            let rect = ui.available_rect_before_wrap();
+            crate::view_state::around(app, ui, rect, |app, ui| match app.ui.view {
                 crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid => crate::panels::grid::show(app, ui),
                 crate::state::ViewMode::Detail => crate::panels::detail::show(app, ui),
                 crate::state::ViewMode::Compare => crate::panels::compare::show_compare(app, ui),
                 crate::state::ViewMode::Survey => crate::panels::compare::show_survey(app, ui),
                 crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
                 crate::state::ViewMode::People => crate::panels::people::show(app, ui),
-            }
+            });
         });
         app.lap(&mut lap, "panel.view");
     }

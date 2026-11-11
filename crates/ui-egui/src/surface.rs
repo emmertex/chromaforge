@@ -533,6 +533,7 @@ impl Host for AppHost<'_> {
             "tool.linear" => app.ui.tool == "linear",
             "tool.radial" => app.ui.tool == "radial",
             "tool.wbPicker" => app.ui.tool == "wbPicker",
+            "tool.fringe" => app.ui.tool == "fringe",
             "photo.rate" => photo.is_some_and(|p| params.get("rating").and_then(Value::as_u64) == Some(u64::from(p.rating))),
             "photo.label" => {
                 let want = params.get("label").and_then(Value::as_str).and_then(lcc_catalog::ColorLabel::parse);
