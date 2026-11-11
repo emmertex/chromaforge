@@ -2098,6 +2098,12 @@ pub enum Dialog {
     AutoStack {
         gap: f32,
     },
+    /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
+    /// over the grid it filters.
+    AdvancedSearch {
+        #[serde(default)]
+        search: crate::advanced_search::Search,
+    },
     /// Save the current view (source + filter) as a smart album.
     NewSmartAlbum {
         name: String,

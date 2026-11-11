@@ -269,6 +269,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::SmartRules { id: None, .. } => "Create Smart Collection",
         Dialog::SmartRules { .. } => "Edit Smart Collection",
         Dialog::AutoStack { .. } => "Auto-Stack by Capture Time",
+        Dialog::AdvancedSearch { .. } => "Advanced Search",
         Dialog::CreatePreset { .. } => "Create Preset",
         Dialog::UpdatePreset { .. } => "Update Preset with Current Settings",
         Dialog::CreatePresetFolder { .. } => "Create Preset Folder",
@@ -458,6 +459,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::SlideshowExport { .. }
             );
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
+                Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
                 Dialog::AutoStack { gap } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
@@ -1639,6 +1641,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::RenameAlbum { .. } | Dialog::Rename { .. } | Dialog::RenameKeyword { .. } | Dialog::RenamePerson { .. } => "Rename",
                     Dialog::MergeKeywords { .. } => "Merge Keywords",
                     Dialog::AutoStack { .. } => "Create Stacks",
+                    Dialog::AdvancedSearch { .. } => "Search",
                     Dialog::CaptureTime { .. } => "Change Time",
                     Dialog::Cull { .. } => "Cull",
                     Dialog::CopySettings { .. } => "Copy",
@@ -1763,6 +1766,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::SynchronizeFolder { .. }
                         | Dialog::SaveEffect { .. }
                         | Dialog::CaptureTime { .. }
+                        | Dialog::AdvancedSearch { .. }
                 ) =>
             {
                 app.toast(ctx, e)
@@ -2294,6 +2298,10 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AdvancedSearch { search } => {
+            // a half-typed number or an unsupported condition keeps the panel open on the problem
+            crate::advanced_search::draft_query(search).and_then(|query| app.run("library.advancedSearch", json!({"query": query})))
+        }
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
         Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::DngValidation { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => {
