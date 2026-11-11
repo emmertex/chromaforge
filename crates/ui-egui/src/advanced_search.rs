@@ -88,8 +88,7 @@ pub fn draft_query(search: &Search) -> Result<lcc_catalog::advanced_search::Adva
     photo.iso = num_range("ISO speed", &num.iso)?;
     photo.aperture = num_range("Aperture (f-number)", &num.aperture)?;
     let trim = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_string());
-    photo.shutter =
-        lcc_catalog::advanced_search::ShutterRange { min: trim(&num.shutter[0]), max: trim(&num.shutter[1]) };
+    photo.shutter = lcc_catalog::advanced_search::ShutterRange { min: trim(&num.shutter[0]), max: trim(&num.shutter[1]) };
     let media = q.media.get_or_insert_with(Default::default);
     media.duration_s = num_range("Duration (seconds)", &num.duration)?;
     if let Some(faces) = q.faces.as_mut() {
@@ -103,13 +102,10 @@ pub fn draft_query(search: &Search) -> Result<lcc_catalog::advanced_search::Adva
 /// A collapsible rule category: a `CollapsingHeader` whose content creates the category on first
 /// open (an empty category constrains nothing, so leaving one expanded is harmless).
 fn section<T: Default>(ui: &mut egui::Ui, id: &'static str, title: &str, value: &mut Option<T>, add: impl FnOnce(&mut egui::Ui, &mut T)) {
-    egui::CollapsingHeader::new(RichText::new(tr(title)).strong())
-        .id_salt(id)
-        .default_open(value.is_some())
-        .show(ui, |ui| {
-            ui.add_space(2.0);
-            add(ui, value.get_or_insert_with(T::default));
-        });
+    egui::CollapsingHeader::new(RichText::new(tr(title)).strong()).id_salt(id).default_open(value.is_some()).show(ui, |ui| {
+        ui.add_space(2.0);
+        add(ui, value.get_or_insert_with(T::default));
+    });
 }
 
 /// The dialog's body: the global words field and one collapsible category per rule group.
@@ -123,12 +119,13 @@ pub fn body(ui: &mut egui::Ui, search: &mut Search, app: &LccApp) {
     ui.add_space(4.0);
 
     section(ui, "asFile", "File, Collection & Keywords", &mut q.file, |ui, f| {
-        choice(ui, "field:asKind", "File type", &mut f.kind, &[
-            (None, "Any type"),
-            (Some("image"), "Image"),
-            (Some("raw"), "Raw"),
-            (Some("video"), "Video"),
-        ]);
+        choice(
+            ui,
+            "field:asKind",
+            "File type",
+            &mut f.kind,
+            &[(None, "Any type"), (Some("image"), "Image"), (Some("raw"), "Raw"), (Some("video"), "Video")],
+        );
         text_row(ui, "field:asName", "File name contains", &mut f.name, "e.g. img_");
         text_row(ui, "field:asFolder", "Folder path contains", &mut f.folder, "e.g. /photos/2026");
         album_row(ui, album, app);
@@ -141,21 +138,28 @@ pub fn body(ui: &mut egui::Ui, search: &mut Search, app: &LccApp) {
         range_row(ui, "asHeight", "Height (pixels)", &mut num.height);
         range_row(ui, "asMegapixels", "Megapixels", &mut num.megapixels);
         rating_row(ui, p);
-        choice(ui, "field:asLabel", "Color label", &mut p.label, &[
-            (None, "Any label"),
-            (Some("red"), "Red"),
-            (Some("yellow"), "Yellow"),
-            (Some("green"), "Green"),
-            (Some("blue"), "Blue"),
-            (Some("purple"), "Purple"),
-            (Some("none"), "No Label"),
-        ]);
-        choice(ui, "field:asAspect", "Aspect", &mut p.aspect, &[
-            (None, "Any aspect"),
-            (Some("landscape"), "Landscape (wide)"),
-            (Some("portrait"), "Portrait (tall)"),
-            (Some("square"), "Square"),
-        ]);
+        choice(
+            ui,
+            "field:asLabel",
+            "Color label",
+            &mut p.label,
+            &[
+                (None, "Any label"),
+                (Some("red"), "Red"),
+                (Some("yellow"), "Yellow"),
+                (Some("green"), "Green"),
+                (Some("blue"), "Blue"),
+                (Some("purple"), "Purple"),
+                (Some("none"), "No Label"),
+            ],
+        );
+        choice(
+            ui,
+            "field:asAspect",
+            "Aspect",
+            &mut p.aspect,
+            &[(None, "Any aspect"), (Some("landscape"), "Landscape (wide)"), (Some("portrait"), "Portrait (tall)"), (Some("square"), "Square")],
+        );
     });
 
     section(ui, "asDesc", "Caption & Title", &mut q.description, |ui, d| {
@@ -263,9 +267,8 @@ fn album_row(ui: &mut egui::Ui, album: &mut Option<u64>, app: &LccApp) {
     let mut albums: Vec<(String, u64)> = app.session.catalog.albums().filter(|a| !a.folder).map(|a| (a.name.clone(), a.id.0)).collect();
     albums.sort_by_key(|a| a.0.to_lowercase());
     dialog_frame::form_row(ui, tr("Collection"), |ui| {
-        let shown = album
-            .and_then(|id| albums.iter().find(|(_, a)| *a == id).map(|(n, _)| n.clone()))
-            .unwrap_or_else(|| tr("Any collection").to_string());
+        let shown =
+            album.and_then(|id| albums.iter().find(|(_, a)| *a == id).map(|(n, _)| n.clone())).unwrap_or_else(|| tr("Any collection").to_string());
         egui::ComboBox::from_id_salt("field:asAlbum").width(220.0).selected_text(shown).show_ui(ui, |ui| {
             ui.selectable_value(album, None, tr("Any collection"));
             for (name, id) in &albums {

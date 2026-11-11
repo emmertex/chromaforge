@@ -24,12 +24,7 @@ fn visible(s: &mut Session) -> Vec<u64> {
 #[test]
 fn a_structured_query_filters_the_grid_and_a_null_one_clears_it() {
     let mut s = session().unwrap();
-    let r = s
-        .execute(
-            "library.advancedSearch",
-            &json!({"query": {"words": "img_", "properties": {"rating": 3, "ratingOp": "atLeast"}}}),
-        )
-        .unwrap();
+    let r = s.execute("library.advancedSearch", &json!({"query": {"words": "img_", "properties": {"rating": 3, "ratingOp": "atLeast"}}})).unwrap();
     assert_eq!(r["count"], 1);
     assert_eq!(visible(&mut s), vec![1]);
     // null and an absent query both clear it, as the panel's reset does

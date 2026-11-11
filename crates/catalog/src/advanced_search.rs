@@ -270,7 +270,7 @@ pub struct FacesCategory {
 
 impl FacesCategory {
     fn is_empty(&self) -> bool {
-        self.count.as_deref().map_or(true, |c| c.trim().is_empty()) && self.people.iter().all(|p| p.trim().is_empty())
+        self.count.as_deref().is_none_or(|c| c.trim().is_empty()) && self.people.iter().all(|p| p.trim().is_empty())
     }
 }
 
@@ -676,7 +676,8 @@ mod tests {
     fn a_query_round_trips_through_json() {
         let mut query = q();
         query.words = "harbour".into();
-        query.file = Some(FileCategory { kind: Some("image".into()), album: Some(AlbumId(3)), keywords: vec!["travel".into()], ..Default::default() });
+        query.file =
+            Some(FileCategory { kind: Some("image".into()), album: Some(AlbumId(3)), keywords: vec!["travel".into()], ..Default::default() });
         let json = serde_json::to_value(&query).unwrap();
         assert_eq!(json["file"]["album"], 3, "AlbumId serializes as a plain number");
         let back: AdvancedSearch = serde_json::from_value(json).unwrap();
