@@ -406,6 +406,11 @@ struct PrefsFile {
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     prep: Option<crate::prep::PrepSettings>,
+    /// A background build of this library's previews was started and has not run to its end: the
+    /// preparation takes it up again, also after a restart. Set and cleared by
+    /// [`Session::prep_tick`] only; the rules are at [`crate::prep::PrepState::unfinished`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    prep_unfinished: bool,
     /// Folder for smart previews (default: `Smart Previews` in the library).
     smart_previews_dir: Option<String>,
     /// Days after which untouched Local records of unbrowsed folders are forgotten (missing =
@@ -740,7 +745,9 @@ impl Session {
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         self.cache_mb = prefs.cache_mb;
+        self.prep.opened_library();
         self.prep.library = prefs.prep.map(crate::prep::PrepSettings::sanitized);
+        self.prep.unfinished = prefs.prep_unfinished;
         self.preview_prefs = prefs.previews;
         #[cfg(not(target_arch = "wasm32"))]
         if on_disk {
@@ -1228,6 +1235,7 @@ impl Session {
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
+            prep_unfinished: self.prep.unfinished,
             smart_previews_dir: self.smart_previews_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
             forget_local_days: Some(self.forget_local_days),
             // on disk they live in the catalog's settings (below)
