@@ -1587,6 +1587,7 @@
   "Not measured yet": "Ще не виміряно",
   "Not saved to Pictures": "Не збережено в «Зображення»",
   "Not synced yet.": "Ще не синхронізовано.",
+  "Not used: this DNG holds rendered RGB": "Не використовується: цей DNG містить відрендерений RGB",
   "Nothing (keep this catalog's version)": "Нічого (залишити версію цього каталогу)",
   "Nothing is fetched until you accept. The model is kept on this computer only; {app} never uploads or shares it.": "Нічого не завантажується до вашої згоди. Модель зберігається лише на цьому комп’ютері; {app} ніколи не вивантажує й не поширює її.",
   "Nothing logged yet.": "У журналі поки порожньо.",
