@@ -616,3 +616,21 @@ fn detect_objects_without_a_model_changes_nothing() {
         assert_eq!(counts(&s), before, "no mask or spot is left behind (background {background})");
     }
 }
+
+/// Depth Range (`mask.add {kind: "depthRange"}`) needs the Depth Anything model: without it the
+/// error offers its download and no mask is added; hostile bounds are clamped, never a panic.
+#[test]
+fn depth_range_needs_the_depth_model() {
+    use crate::{AiModel, ErrorKind};
+    let mut s = Session::with_demo();
+    s.segmenter.models_root = Some(tmp("depth-models"));
+    let masks = |s: &Session| s.active().and_then(|id| s.develop_of(id)).map_or(0, |d| d.masks.len());
+    let before = masks(&s);
+    for p in [json!({"kind": "depthRange"}), json!({"kind": "depthRange", "lo": -5.0, "hi": 1e300, "feather": "x"})] {
+        let e = s.execute("mask.add", &p).unwrap_err();
+        if Segmenter::AVAILABLE {
+            assert_eq!(e.kind(), ErrorKind::ModelMissing(AiModel::Depth), "{e}");
+        }
+    }
+    assert_eq!(masks(&s), before, "a refused Depth Range adds no mask");
+}

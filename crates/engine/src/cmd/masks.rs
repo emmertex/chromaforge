@@ -46,6 +46,11 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             lo_feather: f64_or(p, "loFeather", 0.1),
             hi_feather: f64_or(p, "hiFeather", 0.1),
         },
+        "depthRange" => {
+            let lo = f64_or(p, "lo", 0.0).clamp(0.0, 1.0);
+            let hi = f64_or(p, "hi", 0.35).clamp(0.0, 1.0);
+            MaskShape::DepthRange { lo: lo.min(hi), hi: lo.max(hi), feather: f64_or(p, "feather", 0.1).clamp(0.0, 1.0) }
+        }
         "colorRange" => {
             let samples: Vec<[f64; 3]> = p
                 .get("samples")
@@ -96,7 +101,7 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             return Err(bad(
                 c,
                 format!(
-                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people|landscape|concept)"
+                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|depthRange|object|prompt|people|landscape|concept)"
                 ),
             ));
         }
@@ -193,6 +198,10 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
         MaskShape::Prompt { text, seg, .. } => {
             let found = segment(s, |s| s.segment_text(id, text))?;
             *seg = Some(found.ok_or_else(|| ai_err(format!("nothing matching “{text}” was found in this photo")))?);
+        }
+        // a depth range needs the depth model (its grid is computed when the photo renders)
+        MaskShape::DepthRange { .. } => {
+            s.segmenter.require_depth_model()?;
         }
         // the people models when installed, else the heuristic (no model needed)
         MaskShape::People { seg: None, .. } if background => return Ok(Later::Recompute),

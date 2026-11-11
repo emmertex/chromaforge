@@ -12,12 +12,6 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Develop module ▸ Tools ▸ Create New Mask
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
-
 ## Not in this list yet
 
 - The long Classic submenus whose top item is here but whose every choice isn't: View ▸ Sort's extra keys

@@ -149,3 +149,18 @@ fn detect_objects_toggles_and_a_stroke_without_a_model_adds_nothing() {
     exec(&mut h, "remove.detectObjects", json!({"on": false}));
     assert_eq!(crate::menubar::checked(&h.app, "remove.detectObjects"), Some(false));
 }
+
+/// Tools ▸ Create New Mask ▸ Depth Range: without the depth model no empty mask is left behind
+/// (the AI Models settings offer the download instead).
+#[test]
+fn depth_range_without_its_model_adds_no_mask() {
+    let mut h = masking();
+    let before = develop(&h).masks.len();
+    exec(&mut h, "tool.depthRange", json!({}));
+    h.step();
+    if h.app.session.segmenter.open_model_installed("depth") {
+        lcc_testkit::skip!(Model, "the depth model is installed here");
+        return;
+    }
+    assert_eq!(develop(&h).masks.len(), before);
+}

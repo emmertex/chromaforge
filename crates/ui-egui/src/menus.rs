@@ -242,6 +242,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.people", "Select People", None, ""),
     ("tool.colorRange", "Color Range", None, ""),
     ("tool.luminanceRange", "Luminance Range", None, ""),
+    // a Depth Range mask (needs the Depth Anything model: without it Settings ▸ AI Models opens)
+    ("tool.depthRange", "Depth Range", None, ""),
     // Color Mixer ▸ Point Color with its picker armed
     ("tool.pointColor", "Point Color Selector", None, ""),
     // Remove Options ▸ Use Generative AI: the Remove tool's Generative mode on / off ({on?}; no params toggles); with no
@@ -2122,7 +2124,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     app.ui.view = ViewMode::Detail;
                     app.ui.tool = "fringe".into();
                 }
-                "people" | "colorRange" | "luminanceRange" => {
+                "people" | "colorRange" | "luminanceRange" | "depthRange" => {
                     if app.session.active().is_none() {
                         return Some(Err(format!("tool.{tool}: no photo")));
                     }
