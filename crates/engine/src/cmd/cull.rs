@@ -58,6 +58,8 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     let ids: Vec<PhotoId> = ids.into_iter().filter(|id| seen.insert(*id)).collect();
     let reject_below = p.get("rejectBelow").and_then(Value::as_f64).map(|v| v as f32);
     let pick_best = p.get("pickBest").and_then(Value::as_bool).unwrap_or(false);
+    let apply_ratings = p.get("applyRatings").and_then(Value::as_bool).unwrap_or(false);
+    let apply_flags = p.get("applyFlags").and_then(Value::as_bool).unwrap_or(false);
     let (gap, same) = burst_params(p)?;
     // measure (thumbnail-level sources: fast, and enough for focus at 512 px)
     let detector = super::face_detect::detector(s).ok();
@@ -101,11 +103,16 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut ops = Vec::new();
     let (mut rejected, mut picked) = (0, 0);
+    let (mut rated, mut flagged) = (0, 0);
     let mut out = Vec::new();
     for (i, (id, _, sharp, clip, _, eyes, aesthetic)) in rows.iter().enumerate() {
         let g = group_of[i];
         let is_best = g.is_some_and(|g| best.get(&g).is_some_and(|b| b.0 == i));
         let score = lcc_pipeline::cull::cull_score(*sharp, *clip, is_best, g.is_some(), *eyes, *aesthetic);
+        // what the measures say the photo deserves: bulk culling's starting point, never written
+        // over a rating or flag the user set themselves
+        let stars = lcc_pipeline::cull::suggested_stars(score);
+        let suggest = lcc_pipeline::cull::suggested_flag(score);
         ops.push(Op::SetAnalysis {
             id: *id,
             analysis: Some(Analysis {
@@ -116,15 +123,25 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
                 eyes_open: *eyes,
                 aesthetic: Some(*aesthetic),
                 cull_score: Some(score),
+                suggested: Some(stars),
             }),
         });
-        let flag = s.catalog.photo(*id).map(|p| p.flag).unwrap_or_default();
+        let photo = s.catalog.photo(*id);
+        let flag = photo.map(|p| p.flag).unwrap_or_default();
         if reject_below.is_some_and(|t| *sharp < t) && flag != Flag::Reject {
             ops.push(Op::SetFlag { id: *id, flag: Flag::Reject });
             rejected += 1;
         } else if pick_best && is_best && flag == Flag::None {
             ops.push(Op::SetFlag { id: *id, flag: Flag::Pick });
             picked += 1;
+        }
+        if apply_ratings && photo.is_some_and(|p| p.rating == 0) {
+            ops.push(Op::SetRating { id: *id, rating: stars });
+            rated += 1;
+        }
+        if apply_flags && flag == Flag::None && suggest != 0 {
+            ops.push(Op::SetFlag { id: *id, flag: if suggest == 2 { Flag::Reject } else { Flag::Pick } });
+            flagged += 1;
         }
         out.push(json!({
             "id": id.0,
@@ -135,12 +152,18 @@ fn analyze(s: &mut Session, p: &Value) -> Result<Value> {
             "eyesOpen": eyes,
             "aesthetic": (aesthetic * 10.0).round() / 10.0,
             "cullScore": (score * 1000.0).round() / 1000.0,
+            "suggestedStars": stars,
+            "suggestedFlag": match suggest {
+                1 => "pick",
+                2 => "reject",
+                _ => "",
+            },
         }));
     }
     if !ops.is_empty() {
         s.commit("Assisted Culling", Op::Batch { ops })?;
     }
-    Ok(json!({"photos": out, "groups": best.len(), "rejected": rejected, "picked": picked, "failed": failed}))
+    Ok(json!({"photos": out, "groups": best.len(), "rejected": rejected, "picked": picked, "rated": rated, "flagged": flagged, "failed": failed}))
 }
 
 /// `burstGap` (seconds, 0..=a day) and `similarity` (0..=1) of `photo.analyze`, refused before
@@ -263,7 +286,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assisted Culling",
             [],
             None,
-            "{ids?, rejectBelow?: sharpness 0..100, pickBest?: bool, burstGap?: seconds 0..86400 (10), similarity?: 0..1 (0.93)}: score the selected photos (else all in view) for focus (0..100), clipping, classical aesthetic and eyes-open when faces are known; group look-alike shots (signature similarity at least `similarity`) taken at most `burstGap` seconds apart and mark the sharpest of each; optionally reject blurry photos and pick each group's best; one undo step → {photos: [{id, sharpness, clipped, group, best, eyesOpen?, aesthetic, cullScore}], groups, rejected, picked}",
+            "{ids?, rejectBelow?: sharpness 0..100, pickBest?: bool, applyRatings?: bool, applyFlags?: bool, burstGap?: seconds 0..86400 (10), similarity?: 0..1 (0.93)}: score the selected photos (else all in view) for focus (0..100), clipping, classical aesthetic and eyes-open when faces are known; group look-alike shots (signature similarity at least `similarity`) taken at most `burstGap` seconds apart and mark the sharpest of each; suggest 1–5 stars and a Pick / Reject flag from the scores (issue #489: focus, exposure and quality together), and with `applyRatings` / `applyFlags` write them onto photos the user has not rated or flagged themselves; optionally reject blurry photos and pick each group's best; one undo step → {photos: [{id, sharpness, clipped, group, best, eyesOpen?, aesthetic, cullScore, suggestedStars, suggestedFlag}], groups, rejected, picked, rated, flagged}",
             always,
             analyze
         ),

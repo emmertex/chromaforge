@@ -2679,6 +2679,8 @@ mod tests_capture_sort;
 #[cfg(test)]
 mod tests_catalog_cmds;
 #[cfg(test)]
+mod tests_cull_suggest;
+#[cfg(test)]
 mod tests_chart_profile;
 #[cfg(test)]
 mod tests_classic;
