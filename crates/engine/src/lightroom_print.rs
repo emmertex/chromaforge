@@ -211,11 +211,11 @@ fn job(s: &mut PrintSettings, g: &Lua, notes: &mut Vec<String>) {
         s.job.jpeg_quality = q.clamp(1.0, 100.0).round() as u8;
     }
     s.job.draft = flag(g, "draftModePrinting");
-    // the strength is the index of Low / Standard / High
+    // the strength counts from 1: Low, Standard, High (a saved print showing Low stores 1)
     s.job.sharpening = match num(g, "imageSharpening").map(f64::round) {
         _ if !flag(g, "imageSharpeningOn") => PrintSharpening::Off,
-        Some(n) if n <= 0.0 => PrintSharpening::Low,
-        Some(n) if n >= 2.0 => PrintSharpening::High,
+        Some(n) if n <= 1.0 => PrintSharpening::Low,
+        Some(n) if n >= 3.0 => PrintSharpening::High,
         _ => PrintSharpening::Standard,
     };
     s.job.media = if g.get("mediaType").and_then(Lua::str) == Some("matte") { PrintMedia::Matte } else { PrintMedia::Glossy };
@@ -401,9 +401,26 @@ mod tests {
         assert!(!d.photos().contains(&"7"));
         let s = settings(&d);
         assert_eq!(s.destination, Destination::Jpeg);
-        assert_eq!((s.job.dpi, s.job.jpeg_quality, s.job.sharpening, s.job.media), (300.0, 100, PrintSharpening::Standard, PrintMedia::Matte));
+        assert_eq!((s.job.dpi, s.job.jpeg_quality, s.job.sharpening, s.job.media), (300.0, 100, PrintSharpening::Low, PrintMedia::Matte));
         assert_eq!(s.options.background, lcc_layout::WHITE, "an inactive background colour stays white");
         assert!(matches!(s.layout, LayoutStyle::CustomPackage { .. }));
+    }
+
+    /// Print sharpening counts from 1 (Low) to 3 (High); off wins over the strength.
+    #[test]
+    fn print_sharpening_strength_counts_from_one() {
+        let cells = cell(0.0, 0.0, 100.0, 100.0, Some(100), 1);
+        for (text, want) in [
+            ("imageSharpening = 1,\n\t\timageSharpeningOn = true", PrintSharpening::Low),
+            ("imageSharpening = 2,\n\t\timageSharpeningOn = true", PrintSharpening::Standard),
+            ("imageSharpening = 3,\n\t\timageSharpeningOn = true", PrintSharpening::High),
+            ("imageSharpening = 3,\n\t\timageSharpeningOn = false", PrintSharpening::Off),
+        ] {
+            let content = custom(&cells).replace("imageSharpening = 1,\n\t\timageSharpeningOn = true", text);
+            assert!(content.contains(text));
+            let p = saved_print(&content, &photos, &[]).unwrap();
+            assert_eq!(settings(&doc(&p)).job.sharpening, want, "{text}");
+        }
     }
 
     #[test]
