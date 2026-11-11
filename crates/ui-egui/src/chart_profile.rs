@@ -261,7 +261,7 @@ fn adjust_in(state: &mut ChartProfileState, opts: &mut ChartProfileDialog, comma
         "cameraProfile.turn" => opts.turns[slot] = (opts.turns[slot] + 1) % 4,
         "cameraProfile.find" => {
             let found =
-                camprof::find_chart(&prep.frame).ok_or_else(|| crate::i18n::tr("No ColorChecker found: drag the corners onto it").to_string())?;
+                camprof::find_chart(&prep.frame).ok_or_else(|| crate::i18n::tr("No color chart found: drag the corners onto it").to_string())?;
             opts.corners[slot] = Some(cp::normalized_corners(&prep.frame, &found.corners));
             opts.turns[slot] = found.turns;
             opts.charts[slot] = found.chart.key.to_string();
@@ -702,7 +702,7 @@ fn picture(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) {
         painter.text(
             area.center_bottom() - egui::vec2(0.0, 14.0),
             egui::Align2::CENTER_CENTER,
-            crate::i18n::tr("No ColorChecker found: use Find Chart, or place the corners"),
+            crate::i18n::tr("No color chart found: use Find Chart, or place the corners"),
             t.font(12.0),
             t.text,
         );

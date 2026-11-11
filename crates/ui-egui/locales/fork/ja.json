@@ -1610,6 +1610,8 @@
   "No clipping detected in this preview.": "このプレビューではクリッピングは検出されませんでした。",
   "No closed or blurry eyes to reject": "不採用にする閉じた目やぼけた目はありません",
   "No collections yet": "コレクションはまだありません",
+  "No color chart found: drag the corners onto it": "チャートが見つかりません。四隅をドラッグして合わせてください",
+  "No color chart found: use Find Chart, or place the corners": "チャートが見つかりません。「チャートを検出」を使うか四隅を配置してください",
   "No comments on the published photos.": "公開した写真にコメントはありません。",
   "No creative profile on top: the photo shows its camera profile alone": "上にクリエイティブプロファイルなし：写真はカメラプロファイルのみで表示されます",
   "No date in the active photo's file name": "アクティブな写真のファイル名に日付がありません",

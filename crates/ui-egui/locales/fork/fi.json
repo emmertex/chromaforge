@@ -1640,6 +1640,8 @@
   "No blemishes found": "Ihovirheitä ei löytynyt",
   "No chart found": "Värikarttaa ei löytynyt",
   "No closed or blurry eyes to reject": "Ei hylättäviä suljettuja tai epätarkkoja silmiä",
+  "No color chart found: drag the corners onto it": "Värikarttaa ei löytynyt: vedä kulmat sen päälle",
+  "No color chart found: use Find Chart, or place the corners": "Värikarttaa ei löytynyt: käytä Etsi värikartta -toimintoa tai sijoita kulmat",
   "No colour picked": "Väriä ei ole valittu",
   "No comments on the published photos.": "Julkaistuissa kuvissa ei ole kommentteja.",
   "No creative profile on top: the photo shows its camera profile alone": "Ei luovaa profiilia päällä: kuva näyttää pelkän kameraprofiilinsa",

@@ -118,6 +118,7 @@ fn hostile_chart_requests_are_errors() {
         ("profile.createFromChart", json!({"path": p, "second": {}})),
         ("profile.createFromChart", json!({"path": p, "second": {"path": p}})),
         ("profile.createFromChart", json!({"path": p, "name": "x".repeat(500)})),
+        ("profile.createFromChart", json!({"path": p, "chart": "x".repeat(500)})),
         ("profile.createFromChart", json!({"path": dir.join("missing.dng").to_string_lossy()})),
         ("profile.createFromChart", json!({"path": junk.to_string_lossy()})),
         ("profile.createFromChart", json!({})),
