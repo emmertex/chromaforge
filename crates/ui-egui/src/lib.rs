@@ -3313,6 +3313,8 @@ pub struct Caches {
     folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// Folders given a row of their own by Show Parent Folder (folder keys), for this session.
+    shown_folders: std::collections::BTreeSet<String>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
     /// The ignored faces (`faces.ignore`) as `(photo, index)`, at a catalog revision.
     ignored_faces: Option<(u64, std::sync::Arc<Vec<(u64, usize)>>)>,
@@ -3464,10 +3466,18 @@ impl Caches {
         }
         // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
-        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
+        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree(), &self.shown_folders)));
         self.folder_base = Some((cat.revision, base.clone()));
         self.folder_tree = Some((key, base.clone()));
         base
+    }
+    /// Gives `path` a row of its own in the Folders list (Show Parent Folder).
+    pub(crate) fn show_folder(&mut self, path: &str) {
+        let key = lcc_catalog::query::folder_key(path);
+        if !key.is_empty() && self.shown_folders.insert(key) {
+            self.folder_base = None;
+            self.folder_tree = None;
+        }
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {
