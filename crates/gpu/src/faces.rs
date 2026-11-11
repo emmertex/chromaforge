@@ -22,7 +22,6 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use lcc_faces::net::program::{Arg, Binary, INPUT, Op, Program, Unary};
 use lcc_faces::net::{Accelerator, ConvJob};
-use wgpu::util::DeviceExt;
 
 pub use crate::ai::Card;
 
@@ -433,11 +432,13 @@ impl FaceGpu {
 
     fn upload(&self, label: &str, data: &[f32]) -> wgpu::Buffer {
         let zero = [0f32; 4];
-        self.dev.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(if data.is_empty() { &zero } else { data }),
-            usage: wgpu::BufferUsages::STORAGE,
-        })
+        crate::upload::buffer_init(
+            &self.dev.device,
+            &self.dev.queue,
+            Some(label),
+            bytemuck::cast_slice(if data.is_empty() { &zero } else { data }),
+            wgpu::BufferUsages::STORAGE,
+        )
     }
 
     /// Whether `bytes` more may stay on the device; counts them if so.
@@ -564,11 +565,7 @@ impl FaceGpu {
         for (i, x) in list.iter().enumerate() {
             blob.get_mut(i * align..i * align + x.params.len()).ok_or("parameters too large")?.copy_from_slice(&x.params);
         }
-        let uniform = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("faces params"),
-            contents: &blob,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform = crate::upload::buffer_init(&d.device, &d.queue, Some("faces params"), &blob, wgpu::BufferUsages::UNIFORM);
         let binds = list
             .iter()
             .enumerate()
@@ -673,11 +670,8 @@ impl FaceGpu {
         let _turn = Turn::take(self.dev.card);
         let d = self.dev;
         let scopes = self.scopes();
-        let input = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("faces input"),
-            contents: bytemuck::cast_slice(job.input),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let input =
+            crate::upload::buffer_init(&d.device, &d.queue, Some("faces input"), bytemuck::cast_slice(job.input), wgpu::BufferUsages::STORAGE);
         let output = self.scratch(bytes);
         let Some(list) = self.conv_dispatches(job, &input, &output)? else {
             // leave the scopes balanced
@@ -790,11 +784,13 @@ impl FaceGpu {
         for input in inputs {
             let mut values: Vec<Option<(u64, wgpu::Buffer)>> = vec![None; prog.lens.len()];
             // a fresh buffer: queued writes land before any of the encoder's work, so a pooled one could still be in use
-            let first = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("faces input"),
-                contents: bytemuck::cast_slice(input),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            });
+            let first = crate::upload::buffer_init(
+                &d.device,
+                &d.queue,
+                Some("faces input"),
+                bytemuck::cast_slice(input),
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            );
             if let Some(v) = values.get_mut(INPUT) {
                 *v = Some((input.len() as u64 * 4, first));
             }
