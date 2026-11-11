@@ -1611,10 +1611,13 @@ fn try_render_inner(
         static BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         static HELPER_BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         let budget = if on_helper { &HELPER_BUDGET } else { &BUDGET }.get_or_init(|| budget::Budget::new(budget::initial(gpu.max_buffer)));
-        let need = budget::footprint(src.width, src.height);
+        // (a window of a zoomed view works at the window's size from the one shared copy of the
+        // original: counted at the whole source's size, a 1:1 view's tiles of a 45 MP raw ran one
+        // at a time under the budget)
+        let need = budget::need(src.width, src.height, req.window.map(|w| (w.w, w.h)));
         let mut alone = false;
         let reason = loop {
-            let _permit = budget.admit(need, alone, shutting_down).ok_or(Fallback::NotTried)?;
+            let _permit = budget.admit(need, alone, gate::is_batch(), shutting_down).ok_or(Fallback::NotTried)?;
             let _ = ctx::take_failure(); // nothing left over from an earlier render on this thread
             let (r, scoped) = {
                 let _scope = ctx::RenderScope::new(&gpu);

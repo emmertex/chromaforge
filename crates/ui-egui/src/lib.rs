@@ -735,6 +735,15 @@ pub struct Perf {
     /// the host reports it (eframe's `cpu_usage`); `None` without a host report (headless).
     pub host_frame_ms: Option<f64>,
     pub fps: f64,
+    /// Wall time from the previous frame to this one, measured only after a frame that had work to
+    /// show (renders in flight, input): a freeze in painting or presenting shows here.
+    pub gap_ms: f64,
+    /// The longest [`Self::gap_ms`] since start, and the host's time for the frame before it (its
+    /// painting included): a long gap with a short host frame waited outside this thread's work.
+    pub max_gap_ms: f64,
+    pub max_gap_host_ms: Option<f64>,
+    /// The last frame had work to show.
+    pub was_busy: bool,
 }
 
 /// Why quitting stopped to ask first (`panels::notices`).
@@ -882,6 +891,10 @@ pub struct LccApp {
     /// A histogram clipping indicator is hovered this frame: the clipping overlay is previewed on
     /// the photo without turning the persistent one on ([`Self::hover_preview`]'s pattern).
     pub clipping_preview: bool,
+    /// Since when (egui time) and up to which pass a clipping indicator has been hovered: the
+    /// preview waits for the pointer to rest there ([`panels::edit::CLIPPING_PREVIEW_REST_S`]), so a
+    /// pointer gliding across the histogram never re-renders the photo (every tile at 100 %).
+    pub clipping_hover: Option<(f64, u64)>,
     /// In-progress on-canvas gesture (brush stroke points, gradient drag…).
     pub gesture: Option<panels::detail::Gesture>,
     /// The crop tool's view held still while the crop is dragged, rotated or straightened (issue #60).
@@ -1283,6 +1296,7 @@ impl LccApp {
             slideshow_export_reported: true,
             hover_preview: None,
             clipping_preview: false,
+            clipping_hover: None,
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
@@ -2269,6 +2283,18 @@ impl LccApp {
             if dt > 0.0 {
                 self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
             }
+            // the time between this frame and the last one while the window had work to show (a
+            // render on its way, input to answer): what a freeze outside `update` (painting,
+            // presenting behind GPU work) adds shows here and not in `update_ms`
+            let busy = self.renderer.in_flight() > 0 || self.renderer.queued() > 0 || ctx.input(|i| !i.events.is_empty());
+            if self.last_time > 0.0 && self.perf.was_busy && dt.is_finite() && dt > 0.0 {
+                self.perf.gap_ms = dt * 1000.0;
+                if self.perf.gap_ms > self.perf.max_gap_ms {
+                    self.perf.max_gap_ms = self.perf.gap_ms;
+                    self.perf.max_gap_host_ms = self.perf.host_frame_ms;
+                }
+            }
+            self.perf.was_busy = busy;
             self.last_time = now;
             self.drain_control(ctx);
             self.drain_midi(ctx);

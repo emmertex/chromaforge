@@ -107,6 +107,12 @@ const HELPER_SHARE_PERCENT: u64 = 80;
 static TRACK: AtomicBool = AtomicBool::new(false);
 /// How long the interface must be untouched before batch work uses the editing card (ms).
 static IDLE_MS: AtomicU64 = AtomicU64::new(1000);
+/// With a second card ready, how long the interface must be untouched before batch work uses the
+/// editing card too (ms): the second card takes it meanwhile, and the card drawing the window is
+/// left to the photo being edited. (At [`IDLE_MS`] an export or a 1:1 preview build took the
+/// window's card back between two slider drags; its work then held the window's frames up for up
+/// to 5.7 s, CF-ZOOM-FREEZE 2026-11-10.)
+static HELPER_IDLE_MS: AtomicU64 = AtomicU64::new(8000);
 /// When the interface was last touched, ms after [`epoch`] (0: never).
 static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -141,6 +147,19 @@ pub(crate) fn idle() -> Duration {
     Duration::from_millis(IDLE_MS.load(Ordering::Relaxed))
 }
 
+/// How long the interface must be untouched before batch work uses the editing card: [`idle`],
+/// or longer while a second card takes batch work ([`HELPER_IDLE_MS`]).
+pub(crate) fn editing_idle(second_card: bool) -> Duration {
+    let idle = idle();
+    if second_card { idle.max(Duration::from_millis(HELPER_IDLE_MS.load(Ordering::Relaxed))) } else { idle }
+}
+
+/// Set [`HELPER_IDLE_MS`] (tests).
+#[cfg(test)]
+pub(crate) fn set_helper_idle(d: Duration) {
+    HELPER_IDLE_MS.store(u64::try_from(d.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
 /// Set [`idle`] (tests).
 pub(crate) fn set_idle(d: Duration) {
     IDLE_MS.store(u64::try_from(d.as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
@@ -155,7 +174,7 @@ fn interface_quiet(s: &State, now: Instant) -> bool {
     if !tracking() {
         return true;
     }
-    let idle = idle();
+    let idle = editing_idle(crate::helper::current().is_some());
     let last = LAST_INPUT_MS.load(Ordering::Relaxed);
     let since_input = Duration::from_millis(now_ms().saturating_sub(last));
     let input_quiet = last == 0 || since_input >= idle;
@@ -853,6 +872,21 @@ mod tests {
         assert!(!interface_busy(), "untracked: only running views count");
         assert!(as_batch(|| try_turn(1 << 20, 0, false)).is_some());
         set_idle(Duration::from_millis(1000));
+    }
+
+    /// With a second card taking batch work, the editing card (the window's) waits far longer
+    /// for the interface to be idle: between two slider drags an export or a 1:1 preview build
+    /// must not take it back (CF-ZOOM-FREEZE 2026-11-10, P2 / P3).
+    #[test]
+    fn with_a_second_card_the_window_card_waits_longer_for_batch_work() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_idle(Duration::from_millis(1000));
+        assert_eq!(editing_idle(false), Duration::from_millis(1000), "one card: the usual idle time");
+        assert!(editing_idle(true) >= Duration::from_secs(5), "{:?}", editing_idle(true));
+        set_helper_idle(Duration::from_millis(500));
+        assert_eq!(editing_idle(true), Duration::from_millis(1000), "never shorter than the usual idle time");
+        set_helper_idle(Duration::from_millis(8000));
+        assert_eq!(editing_idle(true), Duration::from_millis(8000));
     }
 
     #[test]
