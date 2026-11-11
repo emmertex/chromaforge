@@ -85,7 +85,10 @@ catalog's settings, history and snapshots, and a setting the catalog leaves out 
 some at zero) starts from the camera's defaults. Any change after browsing, a rating or keyword
 included, makes a Local photo's settings count as existing. Persistent import
 identity prevents reimport from duplicating virtual copies and collections. One undo step reverses
-catalog changes; any saved recovery archives remain available.
+catalog changes; any saved recovery archives remain available. When the catalog's data can't be
+applied, the import stops with that error and adds no photos: the records it had already made for the
+catalog's originals are removed, and photos browsed in Local are Local again. The redo history is
+cleared, as by any change.
 
 Records marked `VIDEO` in the source catalog appear in the **Videos** type filter, including
 offline originals. Reimport also repairs the classification of videos imported as images by
