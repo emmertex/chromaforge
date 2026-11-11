@@ -1351,7 +1351,7 @@ mod tests {
                 assert_eq!(h.app.session.catalog.photo(before).unwrap().flag, flag, "{view:?} Shift+{k}");
                 assert_eq!(h.app.session.active(), Some(PhotoId(next)), "{view:?} Shift+{k}");
             }
-            assert!(!h.app.ui.presets, "{view:?}: Shift+P must not open Presets");
+            assert!(!crate::panels::presets::shown(&h.app), "{view:?}: Shift+P must not open Presets");
             assert_eq!(h.app.ui.view, view);
         }
     }
@@ -1364,7 +1364,7 @@ mod tests {
         assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "panel.presets"), None);
         assign(&mut h.app.ui.settings.keymap, "panel.presets", Some("Shift+P")).unwrap();
         key(&mut h, "P", true);
-        assert!(h.app.ui.presets);
+        assert!(crate::panels::presets::shown(&h.app));
         assert_eq!(h.app.session.active(), Some(lcc_catalog::PhotoId(1)));
         assert_eq!(h.app.session.catalog.photo(lcc_catalog::PhotoId(1)).unwrap().flag, lcc_catalog::Flag::None);
     }

@@ -430,7 +430,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.info" if crate::modern::on(app) => Some(app.ui.modern.info),
         "panel.info" => panel(RightPanel::Info),
         "panel.keywords" => panel(RightPanel::Keywords),
-        "panel.presets" => Some(u.presets),
+        "panel.presets" => Some(crate::panels::presets::shown(app)),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
         "map.showInfo" => Some(app.map.prefs.show_info),
         "map.showKey" => Some(app.map.prefs.show_key),

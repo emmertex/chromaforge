@@ -1305,10 +1305,7 @@ pub struct UiState {
     /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
     /// [`IMPORT_SOURCES_WIDTH`]).
     pub import_sources_width: f32,
-    /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
-    /// to go back to).
-    pub presets: bool,
-    /// Presets column: show a live thumbnail of the photo with each preset.
+    /// Presets panel: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
     /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
@@ -2535,7 +2532,6 @@ impl Default for UiState {
             right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
-            presets: false,
             preset_thumbs: false,
             filmstrip: true,
             film_height: FILM_HEIGHT.default,
