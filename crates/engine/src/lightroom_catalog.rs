@@ -63,10 +63,16 @@ pub(crate) fn number_for_job(r: &Row, k: &str) -> i64 {
 /// its `image` as a whole number, or `None` when that is missing, NULL, text or a fraction. [`number`] would read
 /// those as 0, giving the row to a photo whose `id_local` is 0, and 2.5 as 2, giving it to photo 2.
 fn image_of(r: &Row) -> Option<i64> {
-    let n = r.get("image")?.as_number()?;
+    id_of(r, "image")
+}
+/// The record a row's `k` column names: its value as a whole number, or `None` when that is missing, NULL, text, a
+/// fraction or out of `i64` range. [`number`] reads a missing, NULL or text value as 0, naming the record whose
+/// `id_local` is 0, and truncates a fraction (1.5 names record 1).
+fn id_of(r: &Row, k: &str) -> Option<i64> {
+    let n = r.get(k)?.as_number()?;
     let f = n.as_f64()?;
-    // An integer goes through f64 as [`number`] takes a photo's `id_local`, so a row and its photo get the same key
-    // past 2^53 too (read exactly, the row would miss its rounded photo and be lost without a warning).
+    // An integer goes through f64 as [`number`] takes the `id_local` of the record it names, so both get the same key
+    // past 2^53 too (read exactly, the row would miss its rounded record and be lost without a warning).
     if n.is_i64() {
         return Some(f as i64);
     }
@@ -433,11 +439,11 @@ pub struct SkippedImage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SkipReason {
-    /// Its `AgLibraryFile` record is gone.
+    /// Its `AgLibraryFile` record is gone, or its `rootFile` is not a whole number.
     MissingFile,
-    /// Its file's `AgLibraryFolder` record is gone.
+    /// Its file's `AgLibraryFolder` record is gone, or the file's `folder` is not a whole number.
     MissingFolder,
-    /// Its folder's `AgLibraryRootFolder` record is gone.
+    /// Its folder's `AgLibraryRootFolder` record is gone, or the folder's `rootFolder` is not a whole number.
     MissingRoot,
     /// Its file name or root folder path is empty.
     IncompletePath,
@@ -944,9 +950,11 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     for image in table("Adobe_images", true)? {
         ensure_read_active(cancel)?;
         let id = number(&image, "id_local");
-        let record = files.get(&number(&image, "rootFile")).ok_or(SkipReason::MissingFile).and_then(|file| {
-            let folder = folders.get(&number(file, "folder")).ok_or(SkipReason::MissingFolder)?;
-            let root = roots.get(&number(folder, "rootFolder")).ok_or(SkipReason::MissingRoot)?;
+        // read strictly: a NULL, text or fractional reference names no record, not record 0 (or 1 for 1.5), whose
+        // path would merge this image into another photo
+        let record = id_of(&image, "rootFile").and_then(|f| files.get(&f)).ok_or(SkipReason::MissingFile).and_then(|file| {
+            let folder = id_of(file, "folder").and_then(|f| folders.get(&f)).ok_or(SkipReason::MissingFolder)?;
+            let root = id_of(folder, "rootFolder").and_then(|r| roots.get(&r)).ok_or(SkipReason::MissingRoot)?;
             Ok((file, folder, root))
         });
         let (file, folder, root) = match record {
@@ -1386,7 +1394,7 @@ fn first_of_each_collection<'a>(data: &'a CatalogImport, warnings: &mut Vec<Stri
             continue;
         };
         if *kept != collection {
-            let photos = if data.members.iter().any(|m| number(m, "collection") == id) {
+            let photos = if data.members.iter().any(|m| id_of(m, "collection") == Some(id)) {
                 format!("; the photos listed under that id go to “{}”", text(kept, "name"))
             } else {
                 String::new()
@@ -1735,8 +1743,16 @@ pub(crate) fn apply_prepared(s: &mut crate::Session, mut data: CatalogImport, co
         .collect();
     let mut added_folders = HashSet::new();
     let mut grouped_members: HashMap<i64, Vec<&Row>> = HashMap::new();
+    // read strictly: a NULL, text or fractional `collection` names no collection, not collection 0 (or 1 for 1.5)
     for member in &data.members {
-        grouped_members.entry(number(member, "collection")).or_default().push(member);
+        if let Some(collection) = id_of(member, "collection") {
+            grouped_members.entry(collection).or_default().push(member);
+        }
+    }
+    match data.members.iter().filter(|m| id_of(m, "collection").is_none()).count() {
+        0 => {}
+        1 => warnings.push("AgLibraryCollectionImage: 1 record added to no album; its collection is not a collection id".into()),
+        n => warnings.push(format!("AgLibraryCollectionImage: {n} records added to no album; their collection is not a collection id")),
     }
     for members in grouped_members.values_mut() {
         members.sort_by(|a, b| text(a, "positionInCollection").cmp(text(b, "positionInCollection")));
@@ -2036,6 +2052,32 @@ pub(crate) mod tests {
 
     fn row(v: Value) -> Row {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// A reference names a record only by a whole number: never record 0 for a missing, NULL or text value, nor
+    /// record 1 for 1.5, nor a saturated id for a value past the `i64` range.
+    #[test]
+    fn a_reference_names_a_record_only_by_a_whole_number() {
+        let r = row(json!({
+            "int": 7, "zero": 0, "negative": -3, "real": 7.0, "fraction": 7.5, "text": "7", "null": null,
+            "past_f64": 9_007_199_254_740_993_i64, "edge": 9_223_372_036_854_775_808.0, "too_big": 1e19, "too_small": -1e19
+        }));
+        for (key, want) in [
+            ("int", Some(7)),
+            ("zero", Some(0)),
+            ("negative", Some(-3)),
+            ("real", Some(7)),
+            ("fraction", None),
+            ("text", None),
+            ("null", None),
+            ("missing", None),
+            ("past_f64", Some(number(&r, "past_f64"))),
+            ("edge", None),
+            ("too_big", None),
+            ("too_small", None),
+        ] {
+            assert_eq!(id_of(&r, key), want, "{key}");
+        }
     }
     fn sample() -> CatalogImport {
         let mut photo = CatalogPhoto {
@@ -2568,6 +2610,24 @@ pub(crate) mod tests {
         assert_eq!(r["stacks"], 0);
         assert_eq!(s.catalog.stacks().count(), 1);
         assert!(!r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("stack"))), "{}", r["warnings"]);
+    }
+    /// A member whose `collection` is missing, NULL, text or a fraction names no collection: it joins no album, with one
+    /// warning, and does not join collection 0 or the truncated id.
+    #[test]
+    fn a_collection_member_whose_collection_is_not_an_id_joins_no_album() {
+        let mut s = crate::Session::new();
+        let mut data = sample();
+        data.collections.push(row(json!({"id_local":0,"name":"Zero","creationId":"com.adobe.ag.library.collection"})));
+        data.members.push(row(json!({"image":1,"positionInCollection":"a"})));
+        data.members.push(row(json!({"collection":null,"image":1,"positionInCollection":"b"})));
+        data.members.push(row(json!({"collection":"10","image":1,"positionInCollection":"c"})));
+        data.members.push(row(json!({"collection":10.5,"image":1,"positionInCollection":"d"})));
+        let r = apply(&mut s, data, false).unwrap();
+        assert!(album_named(&s, "Zero").photos.is_empty());
+        assert_eq!(album_named(&s, "Keepers").photos.len(), 2);
+        let w: Vec<_> =
+            r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).filter(|w| w.starts_with("AgLibraryCollectionImage")).collect();
+        assert_eq!(w.len(), 1, "{w:?}");
     }
     #[test]
     fn creation_saved_inside_a_collection_joins_the_nearest_set() {

@@ -165,8 +165,15 @@ impl crate::Session {
     /// without building the guard over the whole library.
     pub fn check_write_target(&self, path: &str) -> Result<(), String> {
         let path = Path::new(path);
-        if std::fs::symlink_metadata(path).is_err() && !is_xmp(path) {
-            return Ok(()); // nothing there to replace, and no sidecar to create
+        if std::fs::symlink_metadata(path).is_err() {
+            // `missing/../IMG_1.jpg` names an existing file once the writer creates `missing`, so a `..` that cannot
+            // be resolved now cannot be checked: refuse it.
+            if path.components().any(|c| c == std::path::Component::ParentDir) && std::fs::canonicalize(folder_of(path)).is_err() {
+                return Err(format!("{}: the folder part has `..` components that cannot be resolved; use a path without them", path.display()));
+            }
+            if !is_xmp(path) {
+                return Ok(()); // nothing there to replace, and no sidecar to create
+            }
         }
         self.original_guard().check(path)
     }
@@ -254,6 +261,25 @@ mod tests {
         assert!(g.check(&d.join("sub/IMG_1.xmp")).is_ok(), "the same name in another folder");
         assert!(g.check(&d.join("other.xmp")).is_ok(), "no photo of that name");
         assert!(g.check(&d.join("missing/IMG_1.xmp")).is_ok(), "a folder that isn't there");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `..` through a folder that does not exist yet could reach an original once the writer creates it.
+    #[test]
+    fn dot_dot_through_a_missing_folder_is_refused() {
+        let d = std::env::temp_dir().join(format!("lc-originals-dotdot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let orig = d.join("IMG_1.jpg");
+        std::fs::write(&orig, b"original").unwrap();
+        let mut s = crate::Session::new();
+        let p = Photo::new(PhotoId(1), Source::File { path: orig.to_string_lossy().to_string() }, "IMG_1.jpg", "JPEG", 10, 10, "2026-01-01");
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        let error = s.check_write_target(&d.join("missing/../IMG_1.jpg").to_string_lossy()).unwrap_err();
+        // Windows resolves `..` lexically and finds the original; Unix cannot resolve it and refuses
+        assert!(error.contains("cannot be resolved") || error.contains("never writes over an original"), "{error}");
+        assert!(s.check_write_target(&d.join("missing/new.jpg").to_string_lossy()).is_ok(), "a free name in a missing folder");
+        assert!(!d.join("missing").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }
