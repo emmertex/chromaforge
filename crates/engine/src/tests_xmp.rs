@@ -28,11 +28,9 @@ pub(crate) fn same_path_for_volume(a: &Path, b: &Path) -> bool {
     a == b || (a.parent().is_some_and(case_insensitive) && a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()))
 }
 
-pub(crate) fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-xmp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// A test's folder in Temp, removed when the test ends (other test modules use it too).
+pub(crate) fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-xmp-{tag}"))
 }
 
 /// The temp volume ignores letter case (Windows, default macOS): `a.xmp` and `a.XMP` are one file

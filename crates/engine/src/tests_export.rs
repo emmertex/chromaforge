@@ -305,7 +305,7 @@ fn export_falls_back_to_the_cpu_when_gpu_work_is_lost() {
 }
 
 /// A JPEG original `dir/IMG_1.jpg` imported into a library on disk.
-fn library_with_jpeg(tag: &str) -> (Session, lcc_catalog::PhotoId, std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+fn library_with_jpeg(tag: &str) -> (Session, lcc_catalog::PhotoId, lcc_testkit::TempDir, std::path::PathBuf, Vec<u8>) {
     let dir = temp_dir(tag);
     let src = dir.join("IMG_1.jpg");
     let img = lcc_raster::Rgba8::from_fn(48, 32, |x, y| [(x * 5) as u8, (y * 7) as u8, 120, 255]);
@@ -1318,7 +1318,8 @@ mod apple_photos {
         args[args.iter().position(|a| a == MARKER).unwrap() + 2..].to_vec()
     }
 
-    fn export_two(s: &mut Session, tag: &str) -> Vec<Value> {
+    /// Two photos exported to a Temp folder of their own, kept until the guard (first) is dropped.
+    fn export_two(s: &mut Session, tag: &str) -> (lcc_testkit::TempDir, Vec<Value>) {
         let dir = temp_dir(tag);
         let ids: Vec<_> = s.visible().iter().copied().take(2).collect();
         let o = ExportOptions::from_json(&json!({"longEdge": 48, "naming": "{name}-{seq}"}));
@@ -1327,13 +1328,13 @@ mod apple_photos {
         for id in ids {
             files.extend(disk_batch(s, id, &o, &to).unwrap());
         }
-        files
+        (dir, files)
     }
 
     #[test]
     fn exported_files_go_to_photos_in_order() {
         let mut s = Session::with_demo();
-        let files = export_two(&mut s, "photos-flow");
+        let (_out, files) = export_two(&mut s, "photos-flow");
         let written: Vec<String> = files.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
         assert_eq!(written.len(), 2);
         let (runner, calls) = fake(usize::MAX);
@@ -1398,7 +1399,7 @@ mod apple_photos {
         assert_eq!(after.is_ok(), cfg!(target_os = "macos"), "{:?}", after.as_ref().err());
         match after {
             Ok(after) => {
-                let files = export_two(&mut s, "photos-session");
+                let (_out, files) = export_two(&mut s, "photos-session");
                 assert_eq!(after.run(&files, false).unwrap()["imported"], 2);
                 assert_eq!(calls.lock().unwrap().len(), 1);
             }
@@ -1409,7 +1410,7 @@ mod apple_photos {
     #[test]
     fn the_add_to_photos_command_needs_a_runner_and_checks_its_input() {
         let mut s = Session::with_demo();
-        let files = export_two(&mut s, "photos-cmd");
+        let (_out, files) = export_two(&mut s, "photos-cmd");
         let paths: Vec<String> = files.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
         let info = |s: &Session| s.commands().into_iter().find(|c| c.id == "export.addToPhotos").unwrap();
         // no runner: listed, disabled, with the reason
@@ -1455,7 +1456,7 @@ mod apple_photos {
     #[test]
     fn a_slow_photos_import_runs_in_the_background() {
         let mut s = Session::with_demo();
-        let files = export_two(&mut s, "photos-slow");
+        let (_out, files) = export_two(&mut s, "photos-slow");
         let paths: Vec<String> = files.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
         let (go, wait) = std::sync::mpsc::channel::<()>();
         let wait = Mutex::new(wait);
@@ -1506,7 +1507,7 @@ mod apple_photos {
         let mut s = Session::with_demo();
         let (runner, calls) = fake(usize::MAX);
         s.apple_photos = Some(runner.clone());
-        let elsewhere = export_two(&mut s, "photos-hold-other");
+        let (_elsewhere_dir, elsewhere) = export_two(&mut s, "photos-hold-other");
         let other: Vec<String> = elsewhere.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
         // what Session::after_export does on macOS (it refuses other platforms first)
         let after = AfterExport::apple_photos(runner, "Held", &s.apple_photos_imports).unwrap();
@@ -1520,7 +1521,7 @@ mod apple_photos {
         }
         assert!(calls.lock().unwrap().is_empty());
         // the export writes its files and hands them over: imported under its own job
-        let files = export_two(&mut s, "photos-hold");
+        let (_out, files) = export_two(&mut s, "photos-hold");
         let out = after.run(&files, false).unwrap();
         assert_eq!((out["job"].as_u64(), out["imported"].as_u64(), out["album"].as_str()), (Some(1), Some(2), Some("Held")), "{out}");
         // then the slot is free
@@ -1537,7 +1538,7 @@ mod apple_photos {
     #[test]
     fn a_panicking_runner_never_holds_photos() {
         let mut s = Session::with_demo();
-        let files = export_two(&mut s, "photos-panic");
+        let (_out, files) = export_two(&mut s, "photos-panic");
         let paths: Vec<String> = files.iter().map(|f| f["path"].as_str().unwrap().to_string()).collect();
         s.apple_photos = Some(Arc::new(|_: &[String], _| panic!("runner exploded")));
         // the command (no window: it waits)
@@ -1745,7 +1746,7 @@ fn overwrite_never_clobbers_a_file_of_the_same_batch() {
 }
 
 /// A library with one 300 × 200 PNG: transparent, with an opaque red 150 × 100 rectangle in the middle.
-fn library_with_transparent_png(tag: &str) -> (Session, lcc_catalog::PhotoId, std::path::PathBuf) {
+fn library_with_transparent_png(tag: &str) -> (Session, lcc_catalog::PhotoId, lcc_testkit::TempDir) {
     let dir = temp_dir(tag);
     let src = dir.join("logo.png");
     let img =

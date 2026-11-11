@@ -1,7 +1,7 @@
 //! Library preferences: import defaults (raw / other / per camera) applied by import, and their
 //! persistence in prefs.json.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use lcc_catalog::MediaKind;
@@ -10,11 +10,9 @@ use serde_json::json;
 
 use crate::Session;
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-prefs-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-prefs-{tag}"))
 }
 
 fn user_preset(id: &str, settings: serde_json::Value) -> Preset {
@@ -440,7 +438,8 @@ fn slideshow_playback_settings_persist_with_the_library() {
 fn a_photo_makes_its_optics_the_default_for_new_photos() {
     let before = temp_dir("newdefault-before");
     let after = temp_dir("newdefault-after");
-    let lib = temp_dir("newdefault-lib").join("lib");
+    let lib_root = temp_dir("newdefault-lib");
+    let lib = lib_root.join("lib");
     dng(&before, "one.dng", "Nikon", "Z 9");
     dng(&after, "two.dng", "Nikon", "Z 9 II");
     let mut s = Session::new().with_fs();

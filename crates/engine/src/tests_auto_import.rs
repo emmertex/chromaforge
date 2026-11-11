@@ -8,18 +8,16 @@
 //!   presets and keywords; a preset that vanished is left out, not a failed scan.
 //! - Given prefs written before these settings existed, then they load with everything off.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::json;
 
 use crate::Session;
 use crate::cmd::library::AutoImportScope;
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lcc-autoimport-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn tmp(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-autoimport-{tag}"))
 }
 
 fn put(dir: &Path, name: &str) {

@@ -172,10 +172,9 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
 
-    fn folder(tag: &str, n: usize) -> (std::path::PathBuf, Vec<String>) {
-        let dir = std::env::temp_dir().join(format!("lc-engine-alternatives-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// `n` photos in a Temp folder of the test's own, removed when the test ends.
+    fn folder(tag: &str, n: usize) -> (lcc_testkit::TempDir, Vec<String>) {
+        let dir = lcc_testkit::TempDir::new(&format!("lc-engine-alternatives-{tag}"));
         let paths: Vec<String> = (0..n)
             .map(|i| {
                 let p = dir.join(format!("IMG_{i:02}.jpg"));

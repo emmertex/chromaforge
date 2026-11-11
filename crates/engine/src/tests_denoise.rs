@@ -147,9 +147,10 @@ fn ramp_dng(w: usize, h: usize, cfa: &str) -> Vec<u8> {
     synthetic_dng_of(w, h, cfa, data, None, Default::default())
 }
 
+/// (Fields drop in order: the session, with its library open in `dir`, before the folder goes.)
 struct Setup {
-    dir: PathBuf,
     s: Session,
+    dir: lcc_testkit::TempDir,
     runs: Arc<AtomicUsize>,
 }
 
