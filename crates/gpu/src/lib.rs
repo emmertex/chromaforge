@@ -1293,7 +1293,18 @@ pub fn memory() -> GpuMemory {
     }
 }
 
-/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now).
+/// Let each card's free pool hold up to `1/share` of the card's own memory while it works, when
+/// that is more than [`set_pool_limit`]'s bytes (`share` 0, the default: that limit alone). The
+/// idle trim ([`trim_pool`]) still empties it. See `ctx::pool_limit` for why.
+pub fn set_pool_vram_share(share: u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx::POOL_VRAM_SHARE.store(share, Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = share;
+}
+
+/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now), or
+/// more while a card works when [`set_pool_vram_share`] allows it.
 pub fn set_pool_limit(bytes: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
