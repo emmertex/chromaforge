@@ -481,8 +481,94 @@ fn render_to_dng(s: &mut Session, p: &Value) -> Result<Value> {
     crate::render_dng::finish(s, done, cancelled)
 }
 
+/// Read and decode the raw file of library photo `id`; returns its path, the raw and the file bytes.
+fn decode_photo(s: &Session, id: lcc_catalog::PhotoId) -> std::result::Result<(String, lcc_raw::RawImage, Vec<u8>), String> {
+    let ph = s.catalog.photo(id).ok_or_else(|| format!("no photo {}", id.0))?;
+    let Source::File { path } = &ph.source else { return Err(format!("photo {} is not a file", id.0)) };
+    if !matches!(ph.kind, MediaKind::Raw | MediaKind::Image) {
+        return Err(format!("{}: not a raw photo", ph.file_name));
+    }
+    let bytes = match s.media.file_bytes.as_ref() {
+        Some(r) => r(path)?,
+        None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
+    };
+    let raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    Ok((path.clone(), raw, bytes))
+}
+
+/// Flat-Field Correction: fit a gain map from the reference raw and write each target as `<name>-FlatField.dng`
+/// with it in `OpcodeList2`, imported and stacked on its original.
+fn flat_field(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "photo.flatField";
+    let reference = match p.get("reference") {
+        None | Some(Value::Null) => s.active().ok_or_else(|| bad(C, "no flat-field reference: make it the active photo or give `reference`"))?,
+        Some(v) => lcc_catalog::PhotoId(v.as_u64().ok_or_else(|| bad(C, "`reference` must be a photo id"))?),
+    };
+    let ids: Vec<_> = s.targets(p)?.into_iter().filter(|&i| i != reference).collect();
+    if ids.is_empty() {
+        return Err(bad(C, "select the photos to correct besides the flat-field reference"));
+    }
+    let (_, ref_raw, _) = decode_photo(s, reference).map_err(|e| bad(C, format!("flat-field reference: {e}")))?;
+    let ff = lcc_raw::flatfield::fit(&ref_raw).map_err(|e| bad(C, e.to_string()))?;
+    drop(ref_raw);
+    let n = ids.len();
+    let task = s.activity.start("flatField", "Flat-field correction", crate::activity::Cancel::Yes);
+    let mut copies = Vec::new();
+    let mut failed = Vec::new();
+    let mut cancelled = false;
+    for (i, id) in ids.into_iter().enumerate() {
+        task.progress(i as u64, n as u64);
+        if task.is_cancelled() {
+            cancelled = true;
+            break;
+        }
+        let made = (|| -> std::result::Result<String, String> {
+            let (path, mut raw, bytes) = decode_photo(s, id)?;
+            crate::camera_preview::with_starting_colour(&mut raw, &bytes);
+            drop(bytes);
+            lcc_raw::flatfield::apply(&ff, &mut raw).map_err(|e| format!("{path}: {e}"))?;
+            let dng = lcc_raw::write_dng(&raw, &Default::default()).map_err(|e| e.to_string())?;
+            lcc_raw::decode(&dng).map_err(|e| format!("{path}: the corrected DNG doesn't decode ({e})"))?;
+            let pp = Path::new(&path);
+            let dir = pp.parent().unwrap_or(Path::new("")).to_path_buf();
+            let stem = pp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
+            let mut names =
+                (1u64..).map(|k| if k == 1 { dir.join(format!("{stem}-FlatField.dng")) } else { dir.join(format!("{stem}-FlatField-{k}.dng")) });
+            let out = lcc_catalog::safe_file::write_new_unique(&mut names, &dng).map_err(|e| format!("{path}: could not write the DNG ({e})"))?;
+            Ok(out.to_string_lossy().to_string())
+        })();
+        match made {
+            Ok(out) => {
+                let r = s.execute("library.import", &json!({"paths": [out]}))?;
+                match r["imported"].get(0).and_then(Value::as_u64) {
+                    Some(new) => {
+                        stack_on_top(s, new, id.0);
+                        copies.push(json!({"path": out, "id": new, "original": id.0}));
+                    }
+                    None => failed.push(json!({"id": id.0, "error": format!("{out}: written but could not be imported")})),
+                }
+            }
+            Err(e) => failed.push(json!({"id": id.0, "error": e})),
+        }
+    }
+    drop(task);
+    Ok(json!({"copies": copies, "failed": failed, "cancelled": cancelled}))
+}
+
 pub fn edit_specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "photo.flatField",
+                "Flat-Field Correction…",
+                ["Library"],
+                None,
+                "{reference?: id (default: the active photo), ids?: the photos to correct (default: the selection without the reference)}: fit a smooth per-colour gain map from the reference (a raw shot through a diffuser with the same lens and aperture) and write each target as `<name>-FlatField.dng` next to it with that GainMap in OpcodeList2, imported and stacked on its original; refuses targets of another sensor size or CFA layout; shows a cancellable activity row → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
+                has_selection,
+                flat_field
+            )
+        },
         cmd!(
             "photo.duplicate",
             "Duplicate",
@@ -705,6 +791,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn flat_field_writes_stacked_corrected_dngs_and_refuses_other_sensors() {
+        let dir = scratch("flatfield");
+        let mosaic = |w: usize, h: usize, level: f64| -> Vec<u16> {
+            (0..w * h)
+                .map(|i| {
+                    let (dx, dy) = ((i % w) as f64 / w as f64 - 0.5, (i / w) as f64 / h as f64 - 0.5);
+                    (256.0 + level * (1.0 - (dx * dx + dy * dy)) * 15000.0) as u16
+                })
+                .collect()
+        };
+        let write = |name: &str, w: usize, h: usize, level: f64| {
+            let p = dir.join(name);
+            std::fs::write(&p, crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", mosaic(w, h, level), None, Default::default())).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let (flat, target, small) = (write("flat.dng", 128, 96, 0.7), write("t.dng", 128, 96, 0.3), write("small.dng", 64, 48, 0.3));
+        let mut s = Session::new();
+        let r = s.execute("library.import", &json!({"paths": [flat, target, small]})).unwrap();
+        let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!(ids.len(), 3, "{r}");
+        let r = s.execute("photo.flatField", &json!({"reference": ids[0], "ids": ids})).unwrap();
+        assert_eq!(r["cancelled"], false);
+        let copies = r["copies"].as_array().unwrap();
+        assert_eq!(copies.len(), 1, "{r}");
+        assert_eq!(r["failed"][0]["id"].as_u64(), Some(ids[2]), "the other sensor size is refused: {r}");
+        let path = copies[0]["path"].as_str().unwrap();
+        assert!(path.ends_with("t-FlatField.dng"), "{path}");
+        let n = lcc_raw::decode(&std::fs::read(path).unwrap()).unwrap().normalized().unwrap();
+        let (lo, hi) = n.data.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!((hi - lo) / hi < 0.08, "flattened: {lo}..{hi}");
+        let new = PhotoId(copies[0]["id"].as_u64().unwrap());
+        assert!(s.catalog.stack_of(new).unwrap().photos.contains(&PhotoId(ids[1])), "stacked on its original");
+        assert!(s.activity.list().is_empty());
+        assert!(s.execute("photo.flatField", &json!({"reference": ids[0], "ids": [ids[0]]})).is_err(), "no targets");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
