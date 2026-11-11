@@ -361,8 +361,8 @@ fn photos_dropped_with_no_library_open_wait_for_one() {
 }
 
 /// A fresh temporary folder `tag` with a photo in it and one in a subfolder.
-fn nested_folder(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("lc-drop-import-{tag}-{}", std::process::id()));
+fn nested_folder(tag: &str) -> lcc_testkit::TempDir {
+    let root = lcc_testkit::TempDir::new(&format!("lc-drop-import-{tag}"));
     let _ = std::fs::remove_dir_all(&root);
     let sub = root.join("day 2");
     std::fs::create_dir_all(&sub).unwrap();
@@ -399,7 +399,7 @@ fn wait_for(h: &mut Headless, mut done: impl FnMut(&Headless) -> bool) -> bool {
 fn a_dropped_folder_and_its_subfolders_are_scanned_into_the_review() {
     let dir = nested_folder("review");
     let mut h = fs_app();
-    h.dropped.push(dir.clone());
+    h.dropped.push(dir.to_path_buf());
     let opened = wait_for(&mut h, |h| matches!(h.app.ui.dialog, Some(crate::state::Dialog::Import { .. })));
     assert!(opened, "no import review after the drop: {:?}", h.app.ui.dialog);
     let Some(crate::state::Dialog::Import { opts }) = &h.app.ui.dialog else { panic!("no import review") };

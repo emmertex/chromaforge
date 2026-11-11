@@ -2136,7 +2136,7 @@ mod tests {
 
     #[test]
     fn find_missing_and_locate() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::create_dir_all(dir.join("b")).unwrap();
@@ -2204,7 +2204,7 @@ mod tests {
     /// failures as errors instead of returning `Ok(null)`.
     #[test]
     fn find_missing_waited_invalid_folder_returns_error_with_zero_mutations() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-err-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-err");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dummy = dir.join("dummy.png");
@@ -2253,7 +2253,7 @@ mod tests {
     /// and background mode (`wait: false` or omitted) continues returning `{"background": true}`.
     #[test]
     fn find_missing_waited_structured_results_and_background_mode() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-bg-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-bg");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("orig")).unwrap();
         std::fs::create_dir_all(dir.join("found")).unwrap();
@@ -2291,7 +2291,7 @@ mod tests {
     /// indicating timeout and that the search continues in the background, rather than returning `Ok(null)`.
     #[test]
     fn find_missing_waited_timeout_behavior() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-to-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-to");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2318,7 +2318,7 @@ mod tests {
     /// even if unrelated background tasks remain active in `app.tasks`.
     #[test]
     fn find_missing_waited_completes_while_unrelated_task_remains_active() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-multi-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-multi");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("orig")).unwrap();
         std::fs::create_dir_all(dir.join("found")).unwrap();
@@ -2363,7 +2363,7 @@ mod tests {
     #[test]
 
     fn auto_tag_from_tracklog() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-tracklog-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-tracklog");
         std::fs::create_dir_all(&dir).unwrap();
         let gpx = dir.join("walk.gpx");
         std::fs::write(

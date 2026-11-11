@@ -103,8 +103,8 @@ fn quick_develop_steps_every_selected_photo() {
 /// created through the command shows up on disk and undoes.
 #[test]
 fn folders_panel_lists_volumes_with_free_space() {
+    let dir = lcc_testkit::TempDir::new("classic-ui-vol");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("classic-ui-vol-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("a.jpg").to_string_lossy().to_string();
     let id = h.app.session.catalog.alloc_photo_id();
@@ -418,6 +418,7 @@ fn the_tool_strip_is_develops_alone() {
 /// written to the settings file and come back folded in an app started from it.
 #[test]
 fn folded_panels_and_solo_mode_survive_a_restart() {
+    let dir = lcc_testkit::TempDir::new("lc-fold");
     let mut h = develop_demo();
     click(&mut h, "classicPanel:versions");
     run(&mut h, "panel.solo", json!({"on": true}));
@@ -429,7 +430,6 @@ fn folded_panels_and_solo_mode_survive_a_restart() {
     click(&mut h, "classicPanel:catalog");
     assert!(!classic::is_open(&h.app, PanelId::Catalog));
     // the settings file, as the host writes and reads it
-    let dir = std::env::temp_dir().join(format!("lc-fold-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ui.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&h.app.ui).unwrap()).unwrap();

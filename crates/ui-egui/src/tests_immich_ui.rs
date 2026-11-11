@@ -41,7 +41,7 @@ fn immich_source(h: &Headless) -> Option<bool> {
 // of its own); the dialog switches between Files and Immich.
 #[test]
 fn import_from_immich_is_a_source_of_the_import_dialog() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-ui-src-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-immich-ui-src");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = app(&dir);
@@ -65,7 +65,7 @@ fn import_from_immich_is_a_source_of_the_import_dialog() {
 // Feature: keys kept in the encrypted file are unlocked with a passphrase prompt once per session.
 #[test]
 fn key_file_prompt_creates_and_unlocks_the_file() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-ui-key-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-immich-ui-key");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = app(&dir);
@@ -140,7 +140,7 @@ fn mini_server(perms: Vec<&'static str>) -> String {
 // rule row in the sync rules.
 #[test]
 fn immich_card_is_compact() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-ui-card-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-immich-ui-card");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = app(&dir);
@@ -214,7 +214,7 @@ fn immich_card_is_compact() {
 // that the connection is not encrypted; https and this machine's own address show none.
 #[test]
 fn plain_http_server_url_shows_an_unencrypted_warning() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-ui-http-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-immich-ui-http");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = app(&dir);
@@ -295,7 +295,7 @@ fn locked_folder_server(pin: &'static str) -> String {
 // with the server's refusal, and a unlock refreshes the status line.
 #[test]
 fn locked_folders_section_unlocks_with_a_pin() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-ui-locked-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-immich-ui-locked");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = app(&dir);

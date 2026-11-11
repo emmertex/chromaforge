@@ -24,7 +24,7 @@ fn names(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
 
 #[test]
 fn open_library_on_a_lightroom_catalog_offers_its_import() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-openlrcat-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-openlrcat");
     let _ = std::fs::remove_dir_all(&dir);
     let lib = dir.join(lcc_brand::LIBRARY_DEFAULT);
     let lr = dir.join("Lightroom");

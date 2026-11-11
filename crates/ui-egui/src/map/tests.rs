@@ -141,6 +141,7 @@ fn dragging_from_the_filmstrip_and_moving_pins_geotags() {
 
 #[test]
 fn saved_locations_filter_and_tracks() {
+    let dir = lcc_testkit::TempDir::new("lcc-map-ui");
     let mut h = map_on_fake_tiles();
     let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
     run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
@@ -163,7 +164,6 @@ fn saved_locations_filter_and_tracks() {
     let r = h.request("engine.execute", json!({"command": "map.search", "params": {"query": "Paris"}}), T);
     assert_eq!(r["ok"], false, "{r}");
     // a GPX track loads, frames the view and draws
-    let dir = std::env::temp_dir().join(format!("lcc-map-ui-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let gpx = dir.join("walk.gpx");
     std::fs::write(

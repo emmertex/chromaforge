@@ -16,8 +16,8 @@ use crate::{LccApp, Services};
 const T: Duration = Duration::from_secs(20);
 
 /// A fresh scratch folder for one test.
-fn temp(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lc-ui-launch-{tag}-{}", std::process::id()));
+fn temp(tag: &str) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-ui-launch-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

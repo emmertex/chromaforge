@@ -2995,7 +2995,7 @@ mod tests {
     /// The folder scan before an import's review counts too: it ends in an import into the open library.
     #[test]
     fn open_library_is_refused_while_an_import_scan_runs() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-switchscan-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-switchscan");
         let _ = std::fs::create_dir_all(&dir);
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());
         app.run("photo.setReference", json!({})).unwrap();

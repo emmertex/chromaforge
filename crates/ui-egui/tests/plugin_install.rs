@@ -5,7 +5,7 @@
 //! Its own test binary: the Plug-in Manager's window state is the process's, and other UI tests
 //! drawing frames at the same time would race it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -73,8 +73,8 @@ fn open_dialog(h: &mut Headless, path: &str) {
     h.step();
 }
 
-fn folder() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("plugin-install-ui-{}", std::process::id()));
+fn folder() -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new("plugin-install-ui");
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

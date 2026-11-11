@@ -39,8 +39,8 @@ fn try_exec(h: &mut Headless, command: &str, params: Value) -> Value {
 }
 
 /// A folder of `n` small PNGs (different bytes each) in the temporary folder.
-fn folder(name: &str, n: u8) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("lc-ui-importtab-{name}-{}", std::process::id()));
+fn folder(name: &str, n: u8) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-ui-importtab-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -246,7 +246,7 @@ fn the_tab_works_in_compact_and_modern_layouts() {
 /// (for the photos it would take), and the choice made there reaches the imported raws.
 #[test]
 fn the_tab_offers_a_camera_profile_per_body_and_imports_with_it() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-importtab-bodies-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-importtab-bodies");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let corners = lcc_engine::chart_profiling::camprof::ChartCorners::from_rect(10.0, 10.0, 40.0, 30.0);
@@ -653,7 +653,7 @@ fn the_import_bar_shows_the_folder_as_a_breadcrumb() {
     assert_eq!(h.request("ui.clickWidget", json!({"id": id}), T)["ok"], true);
     h.settle(SETTLE);
     let browsed = h.app.session.browse.as_ref().map(|b| std::path::PathBuf::from(&b.path));
-    assert_eq!(browsed.as_deref(), Some(deep_root.as_path()), "the hidden folder opens");
+    assert_eq!(browsed.as_deref(), Some(deep_root.path()), "the hidden folder opens");
     let _ = std::fs::remove_dir_all(&deep_root);
 }
 

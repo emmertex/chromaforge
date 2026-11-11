@@ -324,7 +324,7 @@ fn picker_values_survive_changes_to_other_things() {
 /// Semantic search model in Settings ▸ AI Models.
 #[test]
 fn semantic_search_toggle_filters_the_grid_and_shows_chip_and_ai_models_section() {
-    let d = std::env::temp_dir().join(format!("lcc-ui-semantic-{}", std::process::id()));
+    let d = lcc_testkit::TempDir::new("lcc-ui-semantic");
     let _ = std::fs::remove_dir_all(&d);
     let models_dir = d.join("ml-models");
     let src = d.join("synthetic-src");
@@ -374,7 +374,7 @@ fn semantic_search_toggle_filters_the_grid_and_shows_chip_and_ai_models_section(
 
 #[test]
 fn apply_settings_adopts_saved_ml_device_and_retries_on_error() {
-    let d = std::env::temp_dir().join(format!("lcc-ui-ml-dev-{}", std::process::id()));
+    let d = lcc_testkit::TempDir::new("lcc-ui-ml-dev");
     let _ = std::fs::remove_dir_all(&d);
     let models_dir = d.join("ml-models");
 

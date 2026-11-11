@@ -2960,7 +2960,7 @@ mod tests {
     /// hidden attribute, so Home's tree does not list AppData and open down into its temp folder.
     #[test]
     fn subfolders_leave_out_hidden_folders() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-hidden-subfolders-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-hidden-subfolders");
         let _ = std::fs::remove_dir_all(&dir);
         for name in ["Shown", ".dot", "Hidden"] {
             std::fs::create_dir_all(dir.join(name)).unwrap();

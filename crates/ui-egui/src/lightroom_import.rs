@@ -701,8 +701,8 @@ mod tests {
     /// One, not Lightroom: the activity row, the toast and the result window.
     #[test]
     fn a_capture_one_import_says_capture_one() {
+        let dir = lcc_testkit::TempDir::new("c1-import-words");
         let mut h = demo();
-        let dir = std::env::temp_dir().join(format!("c1-import-words-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let catalog = dir.join("Capture One.cocatalogdb");
         std::fs::write(&catalog, b"").unwrap();

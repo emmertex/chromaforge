@@ -1982,6 +1982,7 @@ mod tests {
 
     #[test]
     fn book_module_lays_out_edits_and_exports() {
+        let dir = lcc_testkit::TempDir::new("book-ui-test");
         let _turn = exports_one_at_a_time();
         let mut h = demo();
         run(&mut h, "module.book", json!({}));
@@ -2018,7 +2019,6 @@ mod tests {
         // swap by command, bad input is an error
         let bad = h.request("engine.execute", json!({"command": "book.cell", "params": {"page": 1, "cell": 0, "zoom": "x"}}), T);
         assert_eq!(bad["ok"], false);
-        let dir = std::env::temp_dir().join(format!("book-ui-test-{}", std::process::id()));
         let pdf = dir.join("b.pdf");
         let r = run(&mut h, "book.export", json!({"path": pdf.to_string_lossy(), "wait": true}));
         let f = r["files"][0].as_str().unwrap().to_string();
@@ -2046,11 +2046,11 @@ mod tests {
     /// from MCP or the control channel); the files are left as they were.
     #[test]
     fn book_export_refuses_to_overwrite_an_original() {
+        let dir = lcc_testkit::TempDir::new("book-guard");
         let _turn = exports_one_at_a_time();
         let mut h = demo();
         run(&mut h, "module.book", json!({}));
         run(&mut h, "book.autoLayout", json!({"preset": "Two Per Page"}));
-        let dir = std::env::temp_dir().join(format!("book-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let orig = dir.join("scan.pdf");
         std::fs::write(&orig, b"original").unwrap();

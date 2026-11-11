@@ -304,7 +304,7 @@ fn settings_tab_learn_and_edit_a_key() {
 
 #[test]
 fn tactilebridge_settings_import_and_damaged_files() {
-    let dir = std::env::temp_dir().join(format!("lc-surface-tb-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-surface-tb");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("settings.json");
     std::fs::write(
@@ -603,6 +603,7 @@ fn console_erase_works_while_held_and_delete_needs_a_hold() {
 
 #[test]
 fn a_loupedeck_plus_works_as_labelled_and_takes_a_loupedeck_profile() {
+    let dir = lcc_testkit::TempDir::new("lc-surface-ld");
     let mut h = demo();
     open_photo(&mut h);
     // no setup: the knob labelled Exposure moves Exposure
@@ -611,7 +612,6 @@ fn a_loupedeck_plus_works_as_labelled_and_takes_a_loupedeck_profile() {
     finish_gesture(&mut h);
     assert!(exposure(&h) > before, "the Exposure knob");
     // a Loupedeck profile: that knob now moves Temperature, Undo stays on its button
-    let dir = std::env::temp_dir().join(format!("lc-surface-ld-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("ProfileInfo.json");
     let mut rotate = vec![Value::Null; 127];
