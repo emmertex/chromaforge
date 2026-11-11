@@ -12,12 +12,6 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Library module ▸ Photo ▸ Develop Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Delete All Empty Masks | Remove masks whose components select nothing. | S | feature | `soon.deleteEmptyMasks` |
-
 ## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
@@ -30,18 +24,6 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
-
-## Develop module ▸ Tools ▸ Crop Guide Overlay
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Choose Overlays to Cycle… | Which crop guides O cycles through. | S | feature | `soon.chooseCropOverlays` |
-
-## Book module ▸ Book
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
 
 ## Not in this list yet
 
