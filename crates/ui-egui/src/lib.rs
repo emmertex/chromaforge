@@ -50,9 +50,11 @@ pub mod credits;
 pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
+pub mod dng_update_task;
 pub mod docking;
 mod drop_overlay;
 mod edit_in;
+pub mod email_photo;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_module;
@@ -971,6 +973,8 @@ pub struct LccApp {
     /// A background Photo ▸ Render to DNG in progress, and the last one's result.
     pub render_dng: Option<render_dng_task::RenderDngTask>,
     pub last_render_dng: Option<serde_json::Value>,
+    pub dng_update: Option<dng_update_task::DngUpdateTask>,
+    pub last_dng_update: Option<serde_json::Value>,
     /// Background file-system work of other commands (Find Missing Photos, auto import…).
     pub tasks: tasks::Tasks,
     /// Create Camera Profile from Color Chart: its photos and last report.
@@ -1268,6 +1272,8 @@ impl LccApp {
             export: None,
             render_dng: None,
             last_render_dng: None,
+            dng_update: None,
+            last_dng_update: None,
             tasks: Default::default(),
             chart_profile: Default::default(),
             last_export_result: None,
@@ -3013,6 +3019,7 @@ impl LccApp {
         #[cfg(not(target_arch = "wasm32"))]
         panels::plugins::poll(self, &ctx);
         render_dng_task::poll(self, &ctx);
+        dng_update_task::poll(self, &ctx);
         machine_test::poll(self, &ctx);
         slideshow_export::poll(self, &ctx);
         panels::activity::show(self, &ctx);

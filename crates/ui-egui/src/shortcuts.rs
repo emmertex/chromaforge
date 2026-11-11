@@ -941,7 +941,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                 continue;
             }
             // / refreshes the selected spot's source in the Remove tool (Deselect Active Photo elsewhere)
-            if f == "library.deselectActive" &&app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
+            if f == "library.deselectActive" && app.ui.right == crate::state::RightPanel::Remove && app.session.active_spot.is_some() {
                 let _ = app.run("spot.refreshSource", json!({}));
                 continue;
             }

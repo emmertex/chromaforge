@@ -3454,6 +3454,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "app.export" => crate::control::export_active(app, p),
         "photo.renderToDng" => return crate::render_dng_task::start(app, p),
+        "photo.updateDngPreview" => return crate::dng_update_task::start(app, p),
         "app.showInFinder" => show_in_finder(app),
         "app.showInFolders" => show_in_folders(app, p.get("id").and_then(Value::as_u64).map(lcc_catalog::PhotoId)),
         "app.openLogFolder" => open_log_folder(app),

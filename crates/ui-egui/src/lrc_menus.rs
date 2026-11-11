@@ -107,7 +107,7 @@ const FILE: &[&str] = &[
     "dialog.exportCatalog=Export as Catalog…",
     "@More Exports",
     "---",
-    "soon.emailPhoto",
+    "dialog.emailPhoto",
     "---",
     "plugins.manager",
     "@Plug-in Extras=Plug-ins",
@@ -182,7 +182,7 @@ const LIBRARY: &[&str] = &[
     "dialog.rename",
     "photo.convertToDng=Convert Photo to DNG…",
     "---",
-    "soon.flatField",
+    "photo.flatField=Flat-Field Correction…",
     "---",
     "file.findMissing=Find All Missing Photos",
     "library.validateDng",
@@ -267,7 +267,7 @@ const METADATA: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "file.importKeywords",
     "file.exportKeywords",
@@ -403,7 +403,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "photo.delete=Remove Photo…",
     "library.deleteRejected=Delete Rejected Photos…",
@@ -756,23 +756,13 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
     // Edit
     // Library
     soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
     soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon("soon.flatField", "Flat-Field Correction…", None, 'L', false, "Correct lens cast and vignetting from a flat-field reference frame."),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     // Metadata
-    soon(
-        "soon.updateDngPreview",
-        "Update DNG Preview & Metadata",
-        None,
-        'M',
-        false,
-        "Rewrite a DNG's embedded preview and metadata from the current edit.",
-    ),
     // View
     // Window
     soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
