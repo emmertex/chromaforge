@@ -1589,8 +1589,7 @@ pub(crate) mod tests {
         // an index in memory only: the catalog's saved form (format 7) doesn't carry it
         assert!(!s.catalog.to_snapshot().contains("J-77"), "not saved with the catalog");
         // a library opened again rebuilds it from the plug-in's data
-        let dir = std::env::temp_dir().join(format!("plugin-fields-lib-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("plugin-fields-lib");
         let mut lib = Session::new();
         lib.open_library(&dir, true).unwrap();
         let first = lib.visible_cloned()[0].0;
@@ -1724,8 +1723,9 @@ pub(crate) mod tests {
         assert!(s.execute("plugin.postExport", &json!({"files": []})).unwrap().is_array());
     }
 
-    /// A plug-in with `manifest` that answers every call with `{}`, written to a temp file.
-    pub(crate) fn module_file(name: &str, manifest: &Value) -> PathBuf {
+    /// A plug-in with `manifest` that answers every call with `{}`, written to `<name>.wasm` in a
+    /// Temp folder of its own, removed when the returned guard is dropped.
+    pub(crate) fn module_file(name: &str, manifest: &Value) -> lcc_testkit::TempFile {
         let manifest = manifest.to_string();
         let esc = |s: &str| s.replace('"', "\\\"");
         let src = format!(
@@ -1738,11 +1738,9 @@ pub(crate) mod tests {
             m = esc(&manifest),
             ml = manifest.len()
         );
-        let dir = std::env::temp_dir().join(format!("lcc-engine-plugin-compat-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.wasm"));
-        std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
-        path
+        let file = lcc_testkit::TempFile::new(&format!("lcc-engine-plugin-compat-{name}"), &format!("{name}.wasm"));
+        std::fs::write(&file, wat::parse_str(&src).unwrap()).unwrap();
+        file
     }
 
     /// A plug-in's own icon and header, as a pixel filter's: listed, and served by `plugin.picture`.
@@ -1753,7 +1751,8 @@ pub(crate) mod tests {
         let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><rect width='4' height='4'/></svg>";
         let light = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><rect width='1' height='1'/></svg>";
         let manifest = json!({"id": "test.pictures", "name": "Pictures", "version": "1.0.0", "icon": svg, "header": {"dark": svg, "light": light}});
-        let info = s.execute("plugin.install", &json!({"path": module_file("pictures", &manifest)})).unwrap();
+        let pictures = module_file("pictures", &manifest);
+        let info = s.execute("plugin.install", &json!({"path": pictures.path()})).unwrap();
         assert_eq!((info["icon"].as_bool(), info["header"].as_bool()), (Some(true), Some(true)));
         let listed = s.execute("plugin.list", &json!({})).unwrap();
         let row = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.pictures").unwrap().clone();
@@ -1762,9 +1761,8 @@ pub(crate) mod tests {
         assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures"})).unwrap()["svg"], svg, "the header, dark by default");
         assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "theme": "light"})).unwrap()["svg"], light);
         // without pictures: listed as absent, none served
-        let plain = s
-            .execute("plugin.install", &json!({"path": module_file("plain", &json!({"id": "test.plain", "name": "Plain", "version": "1.0.0"}))}))
-            .unwrap();
+        let plain_file = module_file("plain", &json!({"id": "test.plain", "name": "Plain", "version": "1.0.0"}));
+        let plain = s.execute("plugin.install", &json!({"path": plain_file.path()})).unwrap();
         assert_eq!((plain["icon"].as_bool(), plain["header"].as_bool()), (Some(false), Some(false)));
         assert_eq!(s.execute("plugin.picture", &json!({"id": "test.plain", "picture": "icon"})).unwrap()["svg"], Value::Null);
         assert!(s.execute("plugin.picture", &json!({"id": "test.nowhere"})).is_err());
@@ -1785,9 +1783,9 @@ pub(crate) mod tests {
 
         // a feature no host has: the dialog learns why, the install is refused
         let needs = module_file("needs", &json!({"id": "test.needs", "name": "N", "version": "1.0.0", "requires": ["test-unknown-feature"]}));
-        let info = s.execute("plugin.inspectFile", &json!({"path": needs})).unwrap();
+        let info = s.execute("plugin.inspectFile", &json!({"path": needs.path()})).unwrap();
         assert_eq!(info["missing"], json!(["test-unknown-feature"]));
-        let e = s.execute("plugin.install", &json!({"path": needs})).unwrap_err().to_string();
+        let e = s.execute("plugin.install", &json!({"path": needs.path()})).unwrap_err().to_string();
         assert!(e.contains("test-unknown-feature"), "{e}");
         let listed = |s: &mut Session, id: &str| {
             let l = s.execute("plugin.list", &json!({})).unwrap();
@@ -1798,7 +1796,7 @@ pub(crate) mod tests {
         // a feature this host has (set for the test): installs, and the list shows what it requires
         manager().get_or_insert_with(Manager::in_memory).set_features(&["test-known-feature"]);
         let known = module_file("known", &json!({"id": "test.known", "name": "K", "version": "1.0.0", "requires": ["test-known-feature"]}));
-        let r = s.execute("plugin.install", &json!({"path": known}));
+        let r = s.execute("plugin.install", &json!({"path": known.path()}));
         manager().get_or_insert_with(Manager::in_memory).set_features(lcc_plugins::HOST_FEATURES);
         r.unwrap();
         assert_eq!(listed(&mut s, "test.known").unwrap()["requires"], json!(["test-known-feature"]));
@@ -1806,23 +1804,22 @@ pub(crate) mod tests {
 
         // the version: semver, and a downgrade only when confirmed
         let bad = module_file("bad", &json!({"id": "test.ver", "name": "V", "version": "1.2"}));
-        assert!(s.execute("plugin.inspectFile", &json!({"path": bad})).unwrap()["versionError"].is_string());
-        assert!(s.execute("plugin.install", &json!({"path": bad})).unwrap_err().to_string().contains("MAJOR.MINOR.PATCH"));
+        assert!(s.execute("plugin.inspectFile", &json!({"path": bad.path()})).unwrap()["versionError"].is_string());
+        assert!(s.execute("plugin.install", &json!({"path": bad.path()})).unwrap_err().to_string().contains("MAJOR.MINOR.PATCH"));
         let v12 = module_file("v12", &json!({"id": "test.ver", "name": "V", "version": "1.2.0"}));
         let v11 = module_file("v11", &json!({"id": "test.ver", "name": "V", "version": "1.1.0"}));
-        s.execute("plugin.install", &json!({"path": v12})).unwrap();
-        let info = s.execute("plugin.inspectFile", &json!({"path": v11})).unwrap();
+        s.execute("plugin.install", &json!({"path": v12.path()})).unwrap();
+        let info = s.execute("plugin.inspectFile", &json!({"path": v11.path()})).unwrap();
         assert_eq!((info["downgrade"].clone(), info["installed"]["version"].clone()), (json!(true), json!("1.2.0")));
-        assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v12})).unwrap()["downgrade"], false, "the same version is a repair");
-        let e = s.execute("plugin.install", &json!({"path": v11})).unwrap_err().to_string();
+        assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v12.path()})).unwrap()["downgrade"], false, "the same version is a repair");
+        let e = s.execute("plugin.install", &json!({"path": v11.path()})).unwrap_err().to_string();
         assert!(e.contains("1.1.0") && e.contains("1.2.0"), "{e}");
         assert_eq!(listed(&mut s, "test.ver").unwrap()["version"], "1.2.0");
-        let r = s.execute("plugin.install", &json!({"path": v11, "allowDowngrade": true})).unwrap();
+        let r = s.execute("plugin.install", &json!({"path": v11.path(), "allowDowngrade": true})).unwrap();
         assert_eq!(r["version"], "1.1.0");
         let log = s.execute("plugin.log", &json!({"id": "test.ver"})).unwrap();
         assert!(log.as_array().unwrap().iter().any(|l| l == "downgraded from 1.2.0 to 1.1.0"), "{log}");
         s.execute("plugin.uninstall", &json!({"id": "test.ver"})).unwrap();
-        let _ = std::fs::remove_dir_all(needs.parent().unwrap());
     }
 
     /// The install dialog learns whether a file is exactly what is installed (`installed.same`):
@@ -1839,7 +1836,7 @@ pub(crate) mod tests {
         let same =
             |s: &mut Session, path: &std::path::Path| s.execute("plugin.inspectFile", &json!({"path": path})).unwrap()["installed"]["same"].clone();
         assert_eq!(same(&mut s, &v1), Value::Null, "nothing installed yet");
-        s.execute("plugin.install", &json!({"path": v1})).unwrap();
+        s.execute("plugin.install", &json!({"path": v1.path()})).unwrap();
         assert_eq!(same(&mut s, &v1), true, "the installed module again");
         assert_eq!(same(&mut s, &repair), false, "the same version with other code is a repair");
         assert_eq!(same(&mut s, &v2), false, "a newer version is an update");
@@ -1853,10 +1850,9 @@ pub(crate) mod tests {
         s.execute("plugin.setSettings", &json!({"id": "test.same", "values": {"level": 5}})).unwrap();
         let after = listed(&mut s);
         assert_ne!(before["settingsRevision"], after["settingsRevision"], "a saved setting changes the revision");
-        s.execute("plugin.install", &json!({"path": v2})).unwrap();
+        s.execute("plugin.install", &json!({"path": v2.path()})).unwrap();
         assert_ne!(after["moduleHash"], listed(&mut s)["moduleHash"], "an update changes the module hash");
         s.execute("plugin.uninstall", &json!({"id": "test.same"})).unwrap();
-        let _ = std::fs::remove_dir_all(v1.parent().unwrap());
     }
 
     /// A module that didn't load is listed with its kind: a pixel filter's module as a filter, anything
@@ -1865,8 +1861,7 @@ pub(crate) mod tests {
     fn modules_that_did_not_load_are_listed_with_their_kind() {
         let _turn = turn();
         let mut s = Session::with_demo();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-failed-kind-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcc_testkit::TempDir::new("lcc-engine-failed-kind");
         let filter = dir.join("test.failedkind.filter.wasm");
         std::fs::write(&filter, crate::tests_plugin_filters::invert_module("test.failedkind.filter")).unwrap();
         // a filter module the registry refuses (its manifest isn't JSON)
@@ -1926,8 +1921,9 @@ pub(crate) mod tests {
         assert!(kept, "the filter's row is untouched");
     }
 
-    /// A plug-in with `manifest` that answers every call with `reply`, written to a file.
-    fn replying_module_file(name: &str, manifest: &Value, reply: &str) -> PathBuf {
+    /// A plug-in with `manifest` that answers every call with `reply`, written to `<name>.wasm` in a
+    /// Temp folder of its own, removed when the returned guard is dropped.
+    fn replying_module_file(name: &str, manifest: &Value, reply: &str) -> lcc_testkit::TempFile {
         let manifest = manifest.to_string();
         let esc = |s: &str| s.replace('"', "\\\"");
         let src = format!(
@@ -1942,11 +1938,9 @@ pub(crate) mod tests {
             ml = manifest.len(),
             rl = reply.len()
         );
-        let dir = std::env::temp_dir().join(format!("lcc-engine-plugin-settings-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.wasm"));
-        std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
-        path
+        let file = lcc_testkit::TempFile::new(&format!("lcc-engine-plugin-settings-{name}"), &format!("{name}.wasm"));
+        std::fs::write(&file, wat::parse_str(&src).unwrap()).unwrap();
+        file
     }
 
     /// Agents read and change a plug-in's settings with `plugin.settings` / `plugin.setSettings`,
@@ -1962,7 +1956,7 @@ pub(crate) mod tests {
             "commands": [{"id": "go", "label": "Go", "dialog": [{"key": "who", "label": "Who", "type": "text", "default": "me"}]},
                 {"id": "ask", "label": "Ask", "prepare": true, "dialog": [{"key": "v", "label": "V", "type": "choice", "options": []}]}]});
         let path = replying_module_file("engset", &manifest, r#"{"ok":{"message":"Nothing to do here."}}"#);
-        s.execute("plugin.install", &json!({"path": path})).unwrap();
+        s.execute("plugin.install", &json!({"path": path.path()})).unwrap();
 
         let got = s.execute("plugin.settings", &json!({"id": "test.engset"})).unwrap();
         assert_eq!(got["values"], json!({"n": 3.0, "mode": "fast"}));
@@ -2190,15 +2184,14 @@ pub(crate) mod tests {
     #[test]
     fn a_program_that_fails_as_it_starts_leaves_nothing_behind() {
         let _turn = turn();
-        let root = std::env::temp_dir().join(format!("lcc-engine-runs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = lcc_testkit::TempDir::new("lcc-engine-runs");
         let mut s = Session::with_demo();
         s.desktop = std::sync::Arc::new(FailsAtOnce);
         let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
         {
             let mut g = manager();
             let m = g.get_or_insert_with(Manager::in_memory);
-            m.set_runs_root(Some(root.clone()));
+            m.set_runs_root(Some(root.to_path_buf()));
             m.install_bytes_by_user(&program_module(), Some(serde_json::from_value(decl).unwrap()), false).unwrap();
         }
         for _ in 0..2 {
@@ -2230,7 +2223,7 @@ pub(crate) mod tests {
             json!({"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}),
         )
         .unwrap();
-        let root = std::env::temp_dir().join(format!("lcc-engine-hook-runs-{}", std::process::id()));
+        let root = lcc_testkit::TempDir::new("lcc-engine-hook-runs");
         let check = |host: &mut dyn HostApi, what: &str| {
             assert_eq!(host.find_program(&decl).len(), 1, "{what}: found through the desktop");
             let dir = lcc_plugins::RunDir::create(&root).unwrap();
@@ -2400,8 +2393,7 @@ pub(crate) mod tests {
     fn commands_never_grant_and_a_run_the_user_started_leaves_an_ask() {
         let id = "test.asks";
         let mut s = Session::with_demo();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-asks-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcc_testkit::TempDir::new("lcc-engine-asks");
         let file = dir.join("asks.wasm");
         std::fs::write(&file, catalog_module(id)).unwrap();
         // a command can't install with a grant, nor grant afterwards
@@ -2457,8 +2449,7 @@ pub(crate) mod tests {
     fn a_prepare_step_the_user_started_leaves_an_ask() {
         let id = "test.asks.prepare";
         let mut s = Session::with_demo();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-asks-prepare-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcc_testkit::TempDir::new("lcc-engine-asks-prepare");
         let file = dir.join("asks.wasm");
         std::fs::write(&file, catalog_module_with(id, r#"{"id":"go","label":"Go","prepare":true}"#)).unwrap();
         s.execute("plugin.install", &json!({"path": file})).unwrap();

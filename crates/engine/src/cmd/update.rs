@@ -308,8 +308,7 @@ mod tests {
     #[test]
     fn the_install_plan_is_available_before_confirming() {
         let mut s = session();
-        let dir = std::env::temp_dir().join(format!("lcc-cmd-update-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("lcc-cmd-update");
         let file = dir.join("app-1.2.0-windows-x64.msi");
         std::fs::write(&file, b"installer").expect("write");
         s.updater.set_progress(Progress::Ready(Box::new(Staged {

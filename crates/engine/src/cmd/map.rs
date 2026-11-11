@@ -603,8 +603,7 @@ mod tests {
     fn reverse_geocode_offline_and_consent() {
         let (mut s, ids) = session_with(2);
         s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-geonames-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = lcc_testkit::TempDir::new("lcc-engine-geonames");
         std::fs::write(dir.join("cities15000.txt"), "1\tParis\tParis\t\t48.85341\t2.3488\tP\tPPLC\tFR\t\t11\n").unwrap();
         std::fs::write(dir.join("countryInfo.txt"), "FR\tFRA\t250\tFR\tFrance\n").unwrap();
         let d = dir.to_string_lossy().to_string();
