@@ -105,6 +105,29 @@ pub enum CropOverlay {
     None,
 }
 
+impl CropOverlay {
+    /// Every guide, in the order the cycle visits them (`None` hides the guides).
+    pub const ALL: [CropOverlay; 7] = [
+        CropOverlay::Thirds,
+        CropOverlay::Grid,
+        CropOverlay::Golden,
+        CropOverlay::Diagonal,
+        CropOverlay::Triangle,
+        CropOverlay::Spiral,
+        CropOverlay::None,
+    ];
+
+    /// The next guide after `self` among those in `cycle` (Tools ▸ Crop Guide Overlay ▸ Choose
+    /// Overlays to Cycle). An empty cycle falls back to all of them; a current guide outside the
+    /// cycle steps to the first one in cycle order after it.
+    pub fn next_in(self, cycle: &[CropOverlay]) -> CropOverlay {
+        let all = CropOverlay::ALL;
+        let at = all.iter().position(|o| *o == self).unwrap_or(0);
+        let allowed = |o: &CropOverlay| cycle.is_empty() || cycle.contains(o);
+        (1..=all.len()).filter_map(|d| all.get((at + d) % all.len())).copied().find(allowed).unwrap_or(self)
+    }
+}
+
 /// Tool Overlay: when the retouching tools' pins (Remove / Heal / Clone spots, mask pins) show on
 /// the photo. Shift+H steps through the modes in this order (`view.toolOverlay`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +594,14 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// View ▸ Lock Zoom Position (`view.lockZoomPosition`): one zoom and pan for every photo (the
+    /// default); off, each photo keeps its own ([`crate::view_state`]).
+    pub lock_zoom: bool,
+    /// View ▸ Scroll By Row (`view.scrollByRow`): a wheel notch moves the grid a whole row.
+    pub scroll_by_row: bool,
+    /// View ▸ Enable Mirror Image Mode (`view.mirrorImage`): the views are shown flipped left to
+    /// right; photos, edits and exports are untouched.
+    pub mirror_image: bool,
     /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
     pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
@@ -633,6 +664,9 @@ pub struct AppSettings {
     pub double_click_develop: bool,
     /// Hide active filter text / indicator in Develop mode (Settings ▸ Interface ▸ Detail).
     pub hide_filter_in_develop: bool,
+    /// Metadata > Show Metadata for Target Photo Only: the Metadata panel shows and edits the active photo,
+    /// not the whole selection's mixed values (`metadata.targetOnly`).
+    pub metadata_target_only: bool,
     /// Presets panel: list the "User Presets" group first, after Favorites (issue #476; off by
     /// default, as Lightroom Classic keeps groups in name order).
     pub user_presets_first: bool,
@@ -766,6 +800,9 @@ impl Default for AppSettings {
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            lock_zoom: true,
+            scroll_by_row: false,
+            mirror_image: false,
             reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
@@ -790,6 +827,7 @@ impl Default for AppSettings {
             space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
+            metadata_target_only: false,
             user_presets_first: false,
             loupe_info: LoupeInfo::default(),
             lightroom_import: LightroomImport::Ask,
@@ -1393,6 +1431,10 @@ pub struct UiState {
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// The guides Cycle Crop Overlay visits (Choose Overlays to Cycle…); never empty.
+    pub crop_overlay_cycle: Vec<CropOverlay>,
+    /// Book ▸ Book Preferences…: what a new book starts with.
+    pub book_prefs: crate::book::BookPrefs,
     /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
     pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
@@ -1411,6 +1453,9 @@ pub struct UiState {
     /// without the user choosing it, so only a choice made since is kept.
     #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
+    /// Photo > People > Draw Face Regions is on: a drag over the loupe's photo draws a face box.
+    #[serde(skip)]
+    pub draw_faces: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
@@ -1602,6 +1647,8 @@ pub struct UiState {
     /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
     /// opens on it again (this session).
     pub remove_tool: String,
+    /// Tools ▸ Remove Options ▸ Detect Objects: a Remove stroke picks the object under it (`spot.detectObject`).
+    pub remove_detect_objects: bool,
     /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
     /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
@@ -1774,6 +1821,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -1803,6 +1852,9 @@ pub struct UiState {
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
+    /// The report of the last Validate DNG Files (`dng.validate`'s answer; it runs in the background).
+    #[serde(skip)]
+    pub last_dng_validation: Option<serde_json::Value>,
     /// The outcome (success or error) of the last Find Missing Photos task.
     #[serde(skip)]
     pub last_find_missing_result: Option<Result<serde_json::Value, String>>,
@@ -1882,6 +1934,14 @@ pub struct NameEdit {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Dialog {
+    /// Tools ▸ Crop Guide Overlay ▸ Choose Overlays to Cycle…: the guides `view.cropOverlay` visits.
+    CropOverlays {
+        picked: Vec<CropOverlay>,
+    },
+    /// Book ▸ Book Preferences…: what `book.new` starts a book with.
+    BookPrefs {
+        prefs: crate::book::BookPrefs,
+    },
     /// File ▸ Export ▸ Timelapse Video… (`crate::timelapse_ui`); `size` is "WxH".
     Timelapse {
         fps: u32,
@@ -1890,6 +1950,11 @@ pub enum Dialog {
         hold: u32,
         crossfade: u32,
         prores: bool,
+        quality: u8,
+    },
+    /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
+    EmailPhoto {
+        long_edge: u32,
         quality: u8,
     },
     /// A Lightroom import result stays readable after its activity row disappears.
@@ -2076,6 +2141,13 @@ pub enum Dialog {
     SystemInfo {
         rows: Vec<(String, String)>,
     },
+    /// Library ▸ Validate DNG Files: what the check found (it runs in the background). `damaged` and `unverifiable`
+    /// hold `name: why` lines.
+    DngValidation {
+        summary: String,
+        damaged: Vec<String>,
+        unverifiable: Vec<String>,
+    },
     /// Help ▸ Check for Updates…: the release feed's answer, the download and the install
     /// (the panel state lives in the session's updater; see [`crate::panels::update`]).
     Update,
@@ -2114,6 +2186,14 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
     },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
@@ -2464,6 +2544,8 @@ impl Default for UiState {
             tool_overlay: ToolOverlay::Auto,
             mask_overlay_all: false,
             crop_overlay: CropOverlay::Thirds,
+            crop_overlay_cycle: CropOverlay::ALL.to_vec(),
+            book_prefs: Default::default(),
             crop_default_aspect: None,
             crop_overlay_orient: 0,
             crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,
@@ -2471,6 +2553,7 @@ impl Default for UiState {
             grid_info: "filename".into(),
             show_counts: true,
             face_boxes: false,
+            draw_faces: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -2534,6 +2617,7 @@ impl Default for UiState {
             selected_guide: None,
             wb_sample: 5,
             remove_tool: "remove".into(),
+            remove_detect_objects: false,
             brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
@@ -2571,6 +2655,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,
@@ -2624,6 +2709,7 @@ impl Default for UiState {
             reference: None,
             toasts: Vec::new(),
             toast_action: None,
+            last_dng_validation: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]

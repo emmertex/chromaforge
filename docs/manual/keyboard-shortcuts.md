@@ -89,7 +89,6 @@ Alternative keymap set. Keys that work without a menu item (ratings `0`–`5`, l
 | `C` | Compare |  | `view.compare` |
 | `N` | Survey |  | `view.survey` |
 | `Shift+R` | Reference View |  | `view.reference` |
-| `/` | Filmstrip |  | `view.filmstrip` |
 | `Cmd+Shift+L` | My Photos Panel |  | `view.leftPanel` |
 | `Y` | Compare Before and After |  | `view.beforeAfter` |
 | `Shift+Y` | Before/After Split |  | `view.beforeAfterSplit` |

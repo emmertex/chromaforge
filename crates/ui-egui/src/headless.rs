@@ -1519,6 +1519,46 @@ mod tests {
         assert!(!crate::menus::ui_enabled(&h.app, "face.removeRegion"));
     }
 
+    /// Photo > People > Draw Face Regions: while the mode is on, a drag over the loupe adds an unnamed face region
+    /// (one undo step) and opens its name box; Escape leaves the mode.
+    #[test]
+    fn draw_face_regions_mode_adds_a_region_by_dragging() {
+        let mut h = demo([1400.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let id = h.app.session.active().unwrap();
+        let before = h.app.session.catalog.photo(id).unwrap().meta.regions.len();
+        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
+        h.settle(SETTLE);
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(false));
+        let r = h.request("engine.execute", json!({"command": "face.drawRegions"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(true));
+        h.step();
+        let undo = h.app.session.undo.len();
+        let c = h.app.canvas_rect.expect("the loupe is on screen");
+        let at = |fx: f32, fy: f32| (c.left() + c.width() * fx, c.top() + c.height() * fy);
+        let ((x, y), (tx, ty)) = (at(0.45, 0.4), at(0.55, 0.6));
+        let r = h.request("ui.drag", json!({"x": x, "y": y, "toX": tx, "toY": ty, "steps": 8}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+        h.step();
+        let regions = h.app.session.catalog.photo(id).unwrap().meta.regions.clone();
+        assert_eq!(regions.len(), before + 1, "the drag drew a region");
+        let drawn = regions.last().unwrap();
+        assert_eq!(drawn.kind, lcc_meta::RegionKind::Face);
+        assert!(drawn.name.is_none() && drawn.rect.x1 > drawn.rect.x0 && drawn.rect.y1 > drawn.rect.y0);
+        assert_eq!(h.app.session.undo.len(), undo + 1, "one undo step");
+        assert!(matches!(&h.app.ui.name_edit, Some(e) if e.index == before), "its name box opened: {:?}", h.app.ui.name_edit);
+        // Escape closes the name box first, then leaves the mode
+        h.request("ui.key", json!({"key": "escape"}), t);
+        h.step();
+        h.step();
+        h.request("ui.key", json!({"key": "escape"}), t);
+        h.step();
+        h.step();
+        assert_eq!(crate::menubar::checked(&h.app, "face.drawRegions"), Some(false), "Escape leaves the mode");
+    }
+
     /// Adding a face model: the dialog shows the file's terms, the model is installed only once they are
     /// accepted, and a file the app cannot use only says why.
     #[test]
@@ -3546,6 +3586,30 @@ mod tests {
         assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
         assert_eq!(crate::state::crop_mask_alpha(100), 255);
         assert_eq!(crate::state::crop_mask_alpha(0), 0);
+    }
+
+    /// Choose Overlays to Cycle…: O visits only the ticked guides, and one must stay ticked.
+    #[test]
+    fn crop_overlay_cycle_skips_unticked_guides() {
+        use crate::state::CropOverlay as O;
+        let mut h = demo([1200.0, 800.0]);
+        let t = Duration::from_secs(10);
+        let set = |h: &mut Headless, names: serde_json::Value| {
+            h.request("engine.execute", json!({"command": "view.cropOverlays", "params": {"overlays": names}}), t)
+        };
+        let r = set(&mut h, json!(["thirds", "diagonal", "spiral"]));
+        assert_eq!(r["ok"], true, "{r}");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.request("engine.execute", json!({"command": "view.cropOverlay"}), t);
+            seen.push(h.app.ui.crop_overlay);
+        }
+        assert_eq!(seen, [O::Diagonal, O::Spiral, O::Thirds, O::Diagonal]);
+        let r = set(&mut h, json!([]));
+        assert_eq!(r["ok"], false, "{r}");
+        let r = set(&mut h, json!(["bogus"]));
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(h.app.ui.crop_overlay_cycle, [O::Thirds, O::Diagonal, O::Spiral], "a refused list changes nothing");
     }
 
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.

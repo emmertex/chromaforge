@@ -129,3 +129,38 @@ fn use_generative_ai_toggles_the_remove_tool_or_opens_the_setup() {
     assert_eq!(h.app.ui.tool, "remove");
     assert_eq!(crate::menubar::checked(&h.app, "remove.useGenerative"), Some(false));
 }
+
+/// Remove Options ▸ Detect Objects is a checked toggle that opens the Remove tool; without an Object model a stroke
+/// painted while it is on is an error, never a spot or a mask.
+#[test]
+fn detect_objects_toggles_and_a_stroke_without_a_model_adds_nothing() {
+    let mut h = masking();
+    assert_eq!(crate::menubar::checked(&h.app, "remove.detectObjects"), Some(false));
+    exec(&mut h, "remove.detectObjects", json!({}));
+    assert_eq!(crate::menubar::checked(&h.app, "remove.detectObjects"), Some(true));
+    assert_eq!((h.app.ui.right, h.app.ui.tool.as_str()), (crate::state::RightPanel::Remove, "remove"));
+    let id = h.app.session.active().expect("photo");
+    let counts = |h: &Headless| h.app.session.develop_of(id).map_or((0, 0), |d| (d.masks.len(), d.spots.len()));
+    let before = counts(&h);
+    if lcc_engine::segment::Segmenter::AVAILABLE {
+        assert!(h.app.run("spot.detectObject", json!({"points": [[0.4, 0.4], [0.5, 0.5]]})).is_err());
+    }
+    assert_eq!(counts(&h).1, before.1, "no spot without the model");
+    exec(&mut h, "remove.detectObjects", json!({"on": false}));
+    assert_eq!(crate::menubar::checked(&h.app, "remove.detectObjects"), Some(false));
+}
+
+/// Tools ▸ Create New Mask ▸ Depth Range: without the depth model no empty mask is left behind
+/// (the AI Models settings offer the download instead).
+#[test]
+fn depth_range_without_its_model_adds_no_mask() {
+    let mut h = masking();
+    let before = develop(&h).masks.len();
+    exec(&mut h, "tool.depthRange", json!({}));
+    h.step();
+    if h.app.session.segmenter.open_model_installed("depth") {
+        lcc_testkit::skip!(Model, "the depth model is installed here");
+        return;
+    }
+    assert_eq!(develop(&h).masks.len(), before);
+}

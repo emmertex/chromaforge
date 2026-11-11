@@ -1752,6 +1752,75 @@ fn range_controls(app: &mut LccApp, ui: &mut egui::Ui, comp: usize, shape: &Mask
                 }
             }
         }
+        MaskShape::DepthRange { lo, hi, feather } => {
+            // near (white, left) to far (black, right), as Lightroom's depth track
+            ui.add_space(4.0);
+            let (lo, hi, feather) = (*lo, *hi, *feather);
+            let total_w = ui.available_width();
+            let (rect, resp) = ui.allocate_exact_size(vec2(total_w, 24.0), Sense::click_and_drag());
+            crate::widgets::announce(&resp, crate::i18n::tr("Depth Range"));
+            let track_rect = Rect::from_min_size(rect.min, vec2(total_w, 18.0));
+            register(ui.ctx(), format!("depthRange:{comp}"), track_rect);
+            let p = ui.painter();
+            let mut mesh = egui::Mesh::default();
+            for (pos, c) in [
+                (track_rect.left_top(), egui::Color32::WHITE),
+                (track_rect.left_bottom(), egui::Color32::WHITE),
+                (track_rect.right_top(), egui::Color32::BLACK),
+                (track_rect.right_bottom(), egui::Color32::BLACK),
+            ] {
+                mesh.vertices.push(egui::epaint::Vertex { pos, uv: egui::epaint::WHITE_UV, color: c });
+            }
+            mesh.indices.extend_from_slice(&[0, 1, 2, 2, 1, 3]);
+            p.add(egui::Shape::mesh(mesh));
+            p.rect_stroke(track_rect, 0.0, Stroke::new(1.0, egui::Color32::from_gray(60)), egui::StrokeKind::Inside);
+            let x = |v: f64| track_rect.left() + v.clamp(0.0, 1.0) as f32 * total_w;
+            for v in [lo, hi] {
+                let px = x(v);
+                p.line_segment([pos2(px, track_rect.top()), pos2(px, track_rect.bottom())], Stroke::new(1.5, t.accent));
+                p.circle_filled(pos2(px, track_rect.bottom()), 4.5, egui::Color32::WHITE);
+                p.circle_stroke(pos2(px, track_rect.bottom()), 4.5, Stroke::new(1.5, t.accent));
+            }
+            let handle_id = resp.id.with("depth-handle");
+            let nearer_low = |px: f32| (px - x(lo)).abs() <= (px - x(hi)).abs();
+            if resp.drag_started() {
+                if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+                    ui.data_mut(|d| d.insert_temp(handle_id, nearer_low(origin.x)));
+                }
+                let _ = app.run("develop.beginInteraction", json!({"label": "Depth Range"}));
+            }
+            if (resp.dragged() || resp.clicked())
+                && let Some(pos) = resp.interact_pointer_pos()
+                && total_w > 0.0
+            {
+                let v = (((pos.x - track_rect.left()) / total_w) as f64).clamp(0.0, 1.0);
+                let low =
+                    if resp.dragged() { ui.data(|d| d.get_temp::<bool>(handle_id)).unwrap_or_else(|| nearer_low(pos.x)) } else { nearer_low(pos.x) };
+                let (nlo, nhi) = if low { (v.min((hi - 0.01).max(0.0)), hi) } else { (lo, v.max((lo + 0.01).min(1.0))) };
+                update(app, MaskShape::DepthRange { lo: nlo, hi: nhi, feather });
+            }
+            if resp.drag_stopped() {
+                ui.data_mut(|d| d.remove::<bool>(handle_id));
+                let _ = app.run("develop.endInteraction", json!({}));
+            }
+            ui.add_space(4.0);
+            let smooth = ControlSpec {
+                id: "smoothness",
+                label: "Smoothness",
+                section: Section::Light,
+                min: 0.0,
+                max: 100.0,
+                default: 20.0,
+                step: 1.0,
+                decimals: 0,
+                track: Track::Plain,
+                shade: lcc_develop::Shade::Plain,
+            };
+            let out = slider(ui, &smooth, (feather / 0.5 * 100.0).clamp(0.0, 100.0), true, None);
+            apply_slider_out(app, &smooth, out, |app, v| {
+                app.run("mask.update", json!({"component": comp, "shape": MaskShape::DepthRange { lo, hi, feather: v / 100.0 * 0.5 }}))
+            });
+        }
         MaskShape::Radial { feather, .. } => {
             // the softness of the edge, as the inner ring on the photo shows it (both stay in step)
             let spec = ControlSpec {
@@ -2076,8 +2145,8 @@ pub(crate) fn start_component(app: &mut LccApp, ctx: &egui::Context, kind: &str,
             let _ = app.run("tool.brush", json!({"op": op}));
         }
         _ => {
-            if let Err(e) = app.run("mask.addComponent", json!({"op": op, "kind": kind})) {
-                return app.toast(ctx, e);
+            if let Err(e) = app.run_typed("mask.addComponent", json!({"op": op, "kind": kind})) {
+                return app.ai_error(ctx, e, None);
             }
             if matches!(kind, "linear" | "radial" | "colorRange" | "luminanceRange" | "depthRange") {
                 app.ui.tool = kind.to_string();
@@ -2257,6 +2326,12 @@ pub(crate) fn start_new(app: &mut LccApp, ctx: &egui::Context, kind: &str) {
         }
         "brush" | "linear" | "radial" => {
             let _ = app.run(&format!("tool.{kind}"), json!({"new": true}));
+        }
+        // no depth model: the AI Models settings offer its download
+        "depthRange" => {
+            if let Err(e) = app.run_typed("mask.add", json!({"kind": "depthRange"})) {
+                app.ai_error(ctx, e, None);
+            }
         }
         k => {
             let _ = app.run("mask.add", json!({"kind": k}));

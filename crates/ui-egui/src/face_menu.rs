@@ -16,12 +16,14 @@ pub const MOVE_TO_UNNAMED: &str = "face.moveToUnnamed";
 pub const REMOVE_REGION: &str = "face.removeRegion";
 pub const EDIT_NAME: &str = "face.editName";
 pub const FIND_SIMILAR: &str = "face.findSimilar";
+pub const DRAW_REGIONS: &str = "face.drawRegions";
 
 pub const COMMANDS: &[UiCommand] = &[
     (MOVE_TO_UNNAMED, "Move to Unnamed People", None, ""),
     (REMOVE_REGION, "Remove Face Region", None, ""),
     (EDIT_NAME, "Edit Name", Some("Shift+O"), ""),
     (FIND_SIMILAR, "Find Similar Faces", None, ""),
+    (DRAW_REGIONS, "Draw Face Regions", None, ""),
 ];
 
 /// The face the People items act on: (photo, region index), when it is a face region that exists.
@@ -77,6 +79,10 @@ fn find_similar(app: &mut LccApp, (photo, index): (u64, usize)) -> Result<Value,
 }
 
 pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
+    if id == DRAW_REGIONS {
+        // the mode can always be left; it starts on a photo open in the Library's loupe
+        return Some(app.ui.draw_faces || (app.ui.view == ViewMode::Detail && app.ui.module == ModuleId::Library && app.session.active().is_some()));
+    }
     let face = chosen_face(app);
     match id {
         MOVE_TO_UNNAMED => Some(face.and_then(|f| region_name(app, f)).is_some()),
@@ -85,7 +91,19 @@ pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
     }
 }
 
-pub fn run(app: &mut LccApp, id: &str, _p: &Value) -> Option<Result<Value, String>> {
+pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
+    if id == DRAW_REGIONS {
+        // {on?}: no params toggles
+        app.ui.draw_faces = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.draw_faces);
+        if !app.ui.draw_faces {
+            return Some(Ok(json!({"on": false})));
+        }
+        if app.ui.view != ViewMode::Detail || app.ui.module != ModuleId::Library || app.session.active().is_none() {
+            app.ui.draw_faces = false;
+            return Some(Err("open a photo in the Library's loupe to draw a face region".to_string()));
+        }
+        return Some(Ok(json!({"on": true})));
+    }
     if !matches!(id, MOVE_TO_UNNAMED | REMOVE_REGION | EDIT_NAME | FIND_SIMILAR) {
         return None;
     }

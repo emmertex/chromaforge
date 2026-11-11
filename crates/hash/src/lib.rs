@@ -177,9 +177,73 @@ pub fn sha1_file(path: &Path) -> std::io::Result<Sha1Digest> {
     sha1_reader(std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(path)?))
 }
 
+/// An MD5 digest. MD5 is used here as the content identifier the DNG format fixes for its raw-image digests
+/// (`NewRawImageDigest`, `RawImageDigest`), not for security.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Md5Digest(pub [u8; 16]);
+
+impl Md5Digest {
+    /// Lower-case hex (32 characters).
+    pub fn to_hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+impl std::fmt::Display for Md5Digest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl std::fmt::Debug for Md5Digest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Md5Digest({})", self.to_hex())
+    }
+}
+
+/// An incremental MD5.
+#[derive(Clone, Default)]
+pub struct Md5(md5::Md5);
+
+impl Md5 {
+    pub fn new() -> Md5 {
+        Md5::default()
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        md5::Digest::update(&mut self.0, bytes);
+    }
+
+    pub fn finish(self) -> Md5Digest {
+        let out = md5::Digest::finalize(self.0);
+        let mut d = [0u8; 16];
+        for (dst, src) in d.iter_mut().zip(out.iter()) {
+            *dst = *src;
+        }
+        Md5Digest(d)
+    }
+}
+
+/// MD5 of a byte slice.
+pub fn md5_bytes(bytes: &[u8]) -> Md5Digest {
+    let mut h = Md5::new();
+    h.update(bytes);
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn md5_known_vectors() {
+        assert_eq!(md5_bytes(b"").to_hex(), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5_bytes(b"abc").to_hex(), "900150983cd24fb0d6963f7d28e17f72");
+        let mut h = Md5::new();
+        h.update(b"a");
+        h.update(b"bc");
+        assert_eq!(h.finish(), md5_bytes(b"abc"));
+    }
 
     #[test]
     fn parse_base64_and_hex() {
