@@ -29,6 +29,7 @@ pub mod blemish;
 pub mod colorops;
 pub mod cull;
 pub mod curve;
+pub mod depth_model;
 pub mod dust;
 pub mod finish;
 pub mod genpatch;

@@ -287,9 +287,11 @@ pub fn remote(a: &Asset) -> Snapshot {
     }
 }
 
-/// Assets the sync never touches: locked-folder and hidden (live-photo video) assets.
+/// Assets the sync never touches: hidden ones (a live photo's video part). Locked-folder assets
+/// take part once the session is unlocked (`immich.unlockSession`); while it is locked the
+/// server simply leaves them out of its listings, so there is nothing to skip.
 pub fn untouchable(a: &Asset) -> bool {
-    matches!(a.visibility.as_deref(), Some("locked") | Some("hidden"))
+    a.visibility.as_deref() == Some("hidden")
 }
 
 /// A user's decision for a conflict.

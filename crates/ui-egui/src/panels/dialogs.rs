@@ -260,6 +260,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::NewSmartAlbum { .. } => "Create Smart Collection",
         Dialog::AllMetadata { .. } => "All Metadata",
         Dialog::SystemInfo { .. } => "System Info",
+        Dialog::DngValidation { .. } => "Validate DNG Files",
         Dialog::DenoiseModel { .. } => "AI Denoise Model",
         Dialog::FaceModel { info, .. } if info["download"].is_string() => "Download Face Model",
         Dialog::FaceModel { .. } => "Add Face Model",
@@ -274,9 +275,14 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::CopySettings { .. } => "Choose Edit Settings to Copy",
         Dialog::PasteSettings { .. } => "Paste Selected Settings",
         Dialog::SyncSettings { .. } => "Synchronize Settings",
+        Dialog::SyncCopies { .. } => "Synchronize Copies",
+        Dialog::SyncSnapshots { .. } => "Synchronize Snapshots",
         Dialog::Export { .. } => "Export",
         Dialog::ContactSheet { .. } => "Contact Sheet PDF",
         Dialog::Timelapse { .. } => "Timelapse Video",
+        Dialog::CropOverlays { .. } => "Choose Overlays to Cycle",
+        Dialog::BookPrefs { .. } => "Book Preferences",
+        Dialog::EmailPhoto { .. } => "Email Photo",
         Dialog::SlideshowExport { .. } => "Export Slideshow",
         Dialog::Print => "Print",
         Dialog::Merge { opts } => opts.title(),
@@ -412,7 +418,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::PresetsManager { .. } | Dialog::ProfileManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
-            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
+            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } | Dialog::EmailPhoto { .. } => 480.0,
             Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } | Dialog::CreatePresetFolder { .. } => 440.0,
             _ => 380.0,
         } })
@@ -445,6 +451,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::Rename { .. }
                     | Dialog::ContactSheet { .. }
                     | Dialog::Timelapse { .. }
+                    | Dialog::EmailPhoto { .. }
                     | Dialog::CaptureTime { .. }
                     | Dialog::LabelNames { .. }
                     | Dialog::Watermark { .. }
@@ -575,6 +582,21 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     for detail in details.iter() {
                         ui.add(egui::Label::new(detail).wrap().selectable(true));
+                    }
+                }
+                Dialog::DngValidation { summary, damaged, unverifiable } => {
+                    ui.label(summary.as_str());
+                    for (heading, lines) in [(crate::i18n::tr("Damaged files"), damaged), (crate::i18n::tr("Could not be verified"), unverifiable)] {
+                        if lines.is_empty() {
+                            continue;
+                        }
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(heading).color(t.text_dim));
+                        egui::ScrollArea::vertical().id_salt(heading).max_height(160.0).show(ui, |ui| {
+                            for line in lines.iter() {
+                                ui.add(egui::Label::new(line.as_str()).wrap().selectable(true));
+                            }
+                        });
                     }
                 }
                 Dialog::SystemInfo { rows } => {
@@ -1003,6 +1025,22 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     controls.clear();
                     let _ = group_checklist(ui, "syncGroup", groups, None);
                 }
+                Dialog::SyncCopies { groups } => {
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("The checked settings of the active photo are copied to its master photo and virtual copies"))
+                            .color(t.text_dim),
+                    );
+                    let _ = group_checklist(ui, "syncCopiesGroup", groups, None);
+                }
+                Dialog::SyncSnapshots { groups } => {
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("The checked settings of the current edit are applied to each snapshot of the photo"))
+                            .color(t.text_dim),
+                    );
+                    let _ = group_checklist(ui, "syncSnapshotsGroup", groups, None);
+                }
                 Dialog::PasteSettings { groups } => {
                     let n = app.session.selected().len();
                     crate::dialog_frame::note(ui,
@@ -1013,6 +1051,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     let _ = group_checklist(ui, "pasteGroup", groups, Some(&copied));
                 }
                 Dialog::SlideshowExport { settings } => slideshow_export_body(app, ui, settings),
+                Dialog::CropOverlays { picked } => crop_overlays_body(ui, picked),
+                Dialog::BookPrefs { prefs } => book_prefs_body(ui, prefs),
                 Dialog::ContactSheet { options } => {
                     options.columns = options.columns.clamp(1, 8);
                     options.rows = options.rows.clamp(1, 10);
@@ -1060,6 +1100,19 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     choices(ui, "Format", "timelapseFormat", &[(false, "H.264 (MP4)"), (true, "ProRes 422 (MOV)")], prores);
                     field(ui, "Quality", |ui| { ui.add(egui::Slider::new(quality, 1..=100)); });
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Each photo with its own edits, in the order shown. No audio.")).color(t.text_dim));
+                }
+                Dialog::EmailPhoto { long_edge, quality } => {
+                    let n = app.session.selected().len();
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} photos", n = n)).color(t.text_dim));
+                    let edges: Vec<(u32, String)> = crate::email_photo::EDGES.iter().map(|e| (*e, e.to_string())).collect();
+                    let options: Vec<(u32, &str)> = edges.iter().map(|(v, l)| (*v, l.as_str())).collect();
+                    choices(ui, "Long Edge (pixels)", "emailEdge", &options, long_edge);
+                    field(ui, "Quality", |ui| { ui.add(egui::Slider::new(quality, 10..=100)); });
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program."))
+                            .color(t.text_dim),
+                    );
                 }
                 Dialog::Export { opts, full_size, resize, preset_name, limit_kb, dir } => {
                     export_body(app, ui, ExportForm { opts, full_size, resize, preset_name, limit_kb, dir }, window_id, settings_height)
@@ -1534,6 +1587,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::LightroomResult { first: Some(_), .. } => "Show in Library",
                     Dialog::ContactSheet { .. } => "Choose PDF…",
                     Dialog::Timelapse { .. } => "Choose File…",
+                    Dialog::EmailPhoto { .. } => "Export",
                     Dialog::SlideshowExport { .. } => "Export…",
                     Dialog::Print => "Print to PDF…",
                     Dialog::Merge { .. } => "Merge",
@@ -1561,7 +1615,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
-                    Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } => "Synchronize",
+                    Dialog::SynchronizeFolder { .. } | Dialog::SyncSettings { .. } | Dialog::SyncCopies { .. } | Dialog::SyncSnapshots { .. } => {
+                        "Synchronize"
+                    }
                     Dialog::ChartProfile { opts } if crate::chart_profile::is_built(app, opts) => "Profile created ✓",
                     Dialog::ChartProfile { .. } => "Create Profile",
                     Dialog::SamModel { then: Some(_), .. } if sam_installed => "Continue",
@@ -1696,6 +1752,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::Export { .. }
                         | Dialog::ContactSheet { .. }
                         | Dialog::Timelapse { .. }
+                        | Dialog::EmailPhoto { .. }
                         | Dialog::SlideshowExport { .. }
                         | Dialog::Print
                         | Dialog::NewAlbum { .. }
@@ -2239,7 +2296,9 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
         Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::install(app, info, *accepted),
         Dialog::FaceModel { path, info, accepted } => crate::panels::faces::install(app, path, info, *accepted),
-        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => Ok(serde_json::Value::Null),
+        Dialog::AllMetadata { .. } | Dialog::SystemInfo { .. } | Dialog::DngValidation { .. } | Dialog::WhatsNew | Dialog::AiModels { .. } => {
+            Ok(serde_json::Value::Null)
+        }
         Dialog::Cull { reject_below, pick_best, burst_gap, similarity, closed_eyes, blurry_eyes, soft_eyes, everyone } => {
             app.ui.cull_burst = Some((*burst_gap, *similarity));
             let r = app.run("photo.analyze", cull_params(*reject_below, *pick_best, *burst_gap, *similarity));
@@ -2288,11 +2347,22 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::ContactSheet { options } => app.run("app.contactSheet", json!(options)),
         Dialog::Timelapse { .. } => app.run("app.timelapse", crate::timelapse_ui::dialog_params(dlg).unwrap_or_default()),
+        Dialog::EmailPhoto { .. } => app.run("app.emailPhoto", crate::email_photo::dialog_params(dlg).unwrap_or_default()),
         Dialog::SlideshowExport { settings } => app.run("app.slideshowExport", json!(settings)),
         Dialog::Print => app.run("app.print", json!({})),
+        Dialog::CropOverlays { picked } => app.run("view.cropOverlays", json!({"overlays": picked})),
+        Dialog::BookPrefs { prefs } => app.run("book.preferences", json!(prefs)),
         Dialog::CopySettings { groups } => app.run("develop.copy", pick_params(groups)),
         Dialog::PasteSettings { groups } => app.run("develop.paste", pick_params(groups)),
         Dialog::SyncSettings { groups, .. } => app.run("develop.sync", pick_params(groups)),
+        Dialog::SyncCopies { groups } => {
+            let mut params = pick_params(groups);
+            if let Some(o) = params.as_object_mut() {
+                o.insert("copies".into(), json!(true));
+            }
+            app.run("develop.sync", params)
+        }
+        Dialog::SyncSnapshots { groups } => app.run("version.sync", pick_params(groups)),
         Dialog::Export { opts, full_size, resize, limit_kb, dir, preset_name } => {
             start_export(app, opts, *full_size, resize, *limit_kb, dir, preset_name)
         }
@@ -2385,6 +2455,7 @@ fn prompt_verb(command: &str) -> &'static str {
         | "mask.renameEffect"
         | "printui.renameTemplateFolder"
         | "slideshow.renameTemplateFolder"
+        | "app.renameLibrary"
         | "print.template.folder.rename" => "Rename",
         "folder.create"
         | "mask.setEffectGroup"
@@ -3745,6 +3816,47 @@ fn num(ui: &mut egui::Ui, spec: &ControlSpec, v: &mut f64) -> bool {
 /// A labelled row (fixed label column).
 /// View ▸ Export Slideshow…: what to write (PDF, JPEG sequence, video) and how big; where comes
 /// after (a save dialog).
+/// Choose Overlays to Cycle…: one checkbox per crop guide; the last ticked one can't be cleared.
+fn crop_overlays_body(ui: &mut egui::Ui, picked: &mut Vec<crate::state::CropOverlay>) {
+    use crate::state::CropOverlay as O;
+    let t = Tokens::get(ui.ctx());
+    crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("The crop guides that Cycle Crop Overlay steps through.")).color(t.text_dim));
+    let names = [
+        (O::Thirds, "Rule of Thirds"),
+        (O::Grid, "Grid"),
+        (O::Golden, "Golden Ratio"),
+        (O::Diagonal, "Diagonal"),
+        (O::Triangle, "Triangle"),
+        (O::Spiral, "Golden Spiral"),
+        (O::None, "None (hide the guides)"),
+    ];
+    for (o, name) in names {
+        let mut on = picked.contains(&o);
+        let only = on && picked.len() == 1;
+        let r = ui.add_enabled_ui(!only, |ui| crate::dialog_frame::checkbox(ui, &mut on, crate::i18n::tr(name))).inner;
+        crate::widgets::register(ui.ctx(), format!("check:cropOverlay-{o:?}"), r.rect);
+        if on && !picked.contains(&o) {
+            picked.push(o);
+        } else if !on && picked.len() > 1 {
+            picked.retain(|x| *x != o);
+        }
+    }
+}
+
+/// Book Preferences…: what a new book starts with.
+fn book_prefs_body(ui: &mut egui::Ui, prefs: &mut crate::book::BookPrefs) {
+    choices(ui, "Photo zoom", "bookPrefsZoom", &[(true, "Fill cell"), (false, "Fit photo")], &mut prefs.zoom_to_fill);
+    let rows: [(&mut bool, &str, &str); 3] = [
+        (&mut prefs.autofill, "Auto-fill new books with the selected photos", "bookPrefsAutofill"),
+        (&mut prefs.filler_text, "Show filler text in empty text cells", "bookPrefsFiller"),
+        (&mut prefs.caption_safe_area, "Show the caption safe area", "bookPrefsSafe"),
+    ];
+    for (value, label, id) in rows {
+        let r = crate::dialog_frame::checkbox(ui, value, crate::i18n::tr(label));
+        crate::widgets::register(ui.ctx(), format!("check:{id}"), r.rect);
+    }
+}
+
 fn slideshow_export_body(app: &mut LccApp, ui: &mut egui::Ui, settings: &mut lcc_engine::slideshow_export::ExportSettings) {
     use lcc_engine::slideshow_export::{ExportSettings, Format};
     let t = Tokens::get(ui.ctx());
@@ -3845,7 +3957,15 @@ fn choices<V: PartialEq + Copy>(ui: &mut egui::Ui, label: &str, id: &str, option
 /// Dialogs that Return confirms with nothing focused (those with text fields confirm from the
 /// field: `dialog_field`).
 fn return_confirms(dlg: &Dialog) -> bool {
-    matches!(dlg, Dialog::CopySettings { .. } | Dialog::PasteSettings { .. } | Dialog::SyncSettings { .. } | Dialog::UpdatePreset { .. })
+    matches!(
+        dlg,
+        Dialog::CopySettings { .. }
+            | Dialog::PasteSettings { .. }
+            | Dialog::SyncSettings { .. }
+            | Dialog::SyncCopies { .. }
+            | Dialog::SyncSnapshots { .. }
+            | Dialog::UpdatePreset { .. }
+    )
 }
 
 struct PersonRenamePlan {
@@ -4073,6 +4193,7 @@ fn only_shows(dlg: &Dialog) -> bool {
             | Dialog::ViewOptions
             | Dialog::Settings { .. }
             | Dialog::SystemInfo { .. }
+            | Dialog::DngValidation { .. }
             | Dialog::AllMetadata { .. }
             | Dialog::WhatsNew
             | Dialog::ManageEffects { .. }

@@ -45,8 +45,11 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_update;
+pub mod dng_validate;
 pub mod doc_path;
 pub mod dust_map;
+pub mod email;
 pub mod enhance;
 mod errors;
 pub mod export;
@@ -312,6 +315,8 @@ pub struct Session {
     pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
+    /// The sources `library.source` showed, for Go Back / Go Forward (`library.sourceBack`); not saved.
+    pub(crate) source_history: view::SourceHistory,
     pub filter: Filter,
     /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
     pub(crate) shelved_filter: Option<Filter>,
@@ -726,6 +731,16 @@ impl Default for Session {
 }
 
 impl Session {
+    /// What the next Auto Import listing looks at (`None`: no active watched folder).
+    pub fn auto_import_scope(&self) -> Option<cmd::library::AutoImportScope> {
+        let folder = self.import_defaults.auto_active_folder()?.clone();
+        Some(cmd::library::AutoImportScope {
+            folder,
+            subfolders: self.import_defaults.auto_options.subfolders,
+            skip: self.library.as_ref().map(|l| l.dir.clone()),
+        })
+    }
+
     pub fn library_generation(&self) -> u64 {
         self.library_generation
     }
@@ -752,6 +767,7 @@ impl Session {
             auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
+            source_history: Default::default(),
             filter: Filter::default(),
             shelved_filter: None,
             sort: Sort::default(),
@@ -2576,6 +2592,8 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
+mod tests_auto_import;
+#[cfg(test)]
 mod tests_auto_mask_range;
 #[cfg(test)]
 mod tests_autosync;
@@ -2622,6 +2640,11 @@ mod tests_denoise;
 #[cfg(test)]
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_dng_update;
+#[cfg(test)]
+mod tests_dng_validate;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
@@ -2760,6 +2783,8 @@ mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
 #[cfg(test)]
+mod tests_select_menu;
+#[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]
 mod tests_settings_files;
@@ -2773,6 +2798,8 @@ mod tests_source_report;
 mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_sync_copies;
 #[cfg(test)]
 mod tests_target_params;
 #[cfg(test)]

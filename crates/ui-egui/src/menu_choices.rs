@@ -62,12 +62,15 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Filter by Flag" => filter_by_flag(app),
         "Filter by Color Label" => filter_by_label(app),
         "Filter by Preset" => filter_by_preset(app),
+        "Filter by Kind" => filter_by_kind(app),
+        "Filter by Metadata" => filter_by_metadata(app),
         "Set Keyword" => set_keyword(app),
         "Keyword Set" => keyword_set(app),
         "Location Filter" => location_filter(app),
         "Map Style" => map_style(app),
         "Slideshow Content" => slideshow_content(app),
         "Target Adjustment" => target_adjustment(app),
+        "Select Landscape" => select_landscape(app),
         "Add to Mask with" => mask_with(app, "add"),
         "Subtract from Mask with" => mask_with(app, "subtract"),
         "Intersect Mask with" => mask_with(app, "intersect"),
@@ -114,6 +117,35 @@ fn filter_by_label(app: &LccApp) -> Vec<MenuNode> {
     let any = app.session.filter.labels_shown().is_some();
     v.extend(choices("library.filter", [Choice::new("None", json!({"label": null, "labels": []}), false).enabled(any)]));
     v
+}
+
+/// Classic's Filter by Kind: master photos, virtual copies and videos, each on its own (the same row again clears it).
+fn filter_by_kind(app: &LccApp) -> Vec<MenuNode> {
+    use lcc_catalog::MediaKind;
+    let f = &app.session.filter;
+    let row = |label: &str, on: bool, set: Value, clear: Value| Choice::new(label, if on { clear } else { set }, on);
+    let mut v = choices(
+        "library.filter",
+        [
+            row("Master Photos", f.copy == Some(false), json!({"copy": false}), json!({"copy": null})),
+            row("Virtual Copies", f.copy == Some(true), json!({"copy": true}), json!({"copy": null})),
+            row("Videos", f.kind == Some(MediaKind::Video), json!({"kind": "video"}), json!({"kind": null})),
+        ],
+    );
+    v.push(MenuNode::Separator);
+    let any = f.copy.is_some() || f.kind == Some(MediaKind::Video);
+    v.extend(choices("library.filter", [Choice::new("None", json!({"copy": null, "kind": null}), false).enabled(any)]));
+    v
+}
+
+/// The Metadata filter's columns: one row per field, checked while the filter bar lists it.
+fn filter_by_metadata(app: &LccApp) -> Vec<MenuNode> {
+    use crate::panels::filterbar::COLUMN_FIELDS;
+    let shown = &app.ui.filter_columns;
+    choices(
+        "view.filterColumns",
+        COLUMN_FIELDS.iter().map(|(field, label)| Choice::new(*label, json!({"toggle": field}), shown.iter().any(|c| c == field))),
+    )
 }
 
 /// The saved filter presets; the one equal to the filter now is checked.
@@ -222,6 +254,25 @@ fn target_adjustment(app: &LccApp) -> Vec<MenuNode> {
 
 /// Add / Subtract / Intersect Mask with: every kind Create New Mask offers, in its order (painting
 /// only adds or erases, so Intersect has no Brush). Greyed while no mask is selected.
+/// Create New Mask ▸ Select Landscape: one row per class `mask.add {kind: "landscape"}` takes. The first three work from the
+/// photo analysis; the rest need the EoMT scene model (their error offers its download).
+fn select_landscape(app: &LccApp) -> Vec<MenuNode> {
+    let on = app.session.active().is_some();
+    let row = |label: &str, class: &str| Choice::new(label, json!({"kind": "landscape", "class": class}), false).enabled(on).plain();
+    let mut v = choices("mask.add", [row("Sky", "sky"), row("Water", "water"), row("Vegetation", "vegetation")]);
+    v.push(MenuNode::Separator);
+    v.extend(choices(
+        "mask.add",
+        [
+            row("Mountains", "mountains"),
+            row("Architecture", "architecture"),
+            row("Natural Ground", "natural ground"),
+            row("Artificial Ground", "artificial ground"),
+        ],
+    ));
+    v
+}
+
 fn mask_with(app: &LccApp, op: &str) -> Vec<MenuNode> {
     let on = app.session.active_mask.is_some() && app.session.active().is_some();
     choices(
@@ -292,6 +343,39 @@ mod tests {
         pick(&mut a, "Filter by Flag", "Unflagged");
         pick(&mut a, "Filter by Flag", "None");
         assert!(a.session.filter.flags_shown().is_none());
+    }
+
+    #[test]
+    fn filter_by_kind_picks_masters_virtual_copies_and_videos() {
+        let mut a = app();
+        assert!(checked(&a, "Filter by Kind").is_empty());
+        pick(&mut a, "Filter by Kind", "Virtual Copies");
+        assert_eq!(a.session.filter.copy, Some(true));
+        assert_eq!(checked(&a, "Filter by Kind"), ["Virtual Copies"]);
+        pick(&mut a, "Filter by Kind", "Master Photos");
+        assert_eq!(checked(&a, "Filter by Kind"), ["Master Photos"]);
+        // every photo shown is a master
+        assert!(a.session.visible_cloned().iter().all(|id| a.session.catalog.photo(*id).is_some_and(|p| p.copy_of.is_none())));
+        pick(&mut a, "Filter by Kind", "Master Photos");
+        assert_eq!(a.session.filter.copy, None);
+        pick(&mut a, "Filter by Kind", "Videos");
+        assert_eq!(a.session.filter.kind, Some(lcc_catalog::MediaKind::Video));
+        pick(&mut a, "Filter by Kind", "None");
+        assert_eq!(a.session.filter.kind, None);
+    }
+
+    #[test]
+    fn filter_by_metadata_adds_and_removes_columns() {
+        let mut a = app();
+        assert!(checked(&a, "Filter by Metadata").is_empty());
+        pick(&mut a, "Filter by Metadata", "Camera");
+        pick(&mut a, "Filter by Metadata", "ISO");
+        assert_eq!(checked(&a, "Filter by Metadata"), ["Camera", "ISO"]);
+        assert!(a.ui.filter_bar);
+        pick(&mut a, "Filter by Metadata", "Camera");
+        assert_eq!(checked(&a, "Filter by Metadata"), ["ISO"]);
+        pick(&mut a, "Filter by Metadata", "ISO");
+        assert!(a.ui.filter_columns.is_empty());
     }
 
     #[test]
@@ -406,6 +490,19 @@ mod tests {
         // bad input is an error, not a panic
         assert!(run_item(&mut a, "tool.tat", json!({"target": "bogus"})).is_err());
         assert!(a.ui.tool.is_empty());
+    }
+
+    #[test]
+    fn select_landscape_lists_every_class_as_a_landscape_mask() {
+        let a = app();
+        let r = rows(&a, "Select Landscape");
+        assert!(r.len() >= 7 && r.iter().all(|r| r.1["kind"] == "landscape" && r.3), "{r:?}");
+        let mut a = a;
+        // a class from the analysis works at once
+        let sky = r.iter().find(|r| r.1["class"] == "sky").expect("sky row");
+        run_item(&mut a, "mask.add", sky.1.clone()).unwrap();
+        let d = a.session.active().and_then(|id| a.session.develop_of(id)).expect("develop");
+        assert!(d.masks.iter().any(|m| matches!(&m.components[0].shape, lcc_develop::MaskShape::Landscape { class } if class == "sky")));
     }
 
     #[test]

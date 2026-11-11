@@ -60,6 +60,7 @@ fn hidden_calibration() -> Calibration {
         make: MAKE.into(),
         model: MODEL.into(),
         aliases: vec![],
+        lens: None,
         editor: Default::default(),
         method: calibration::METHOD.into(),
         tool_version: "0".into(),

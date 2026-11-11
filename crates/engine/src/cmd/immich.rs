@@ -255,6 +255,57 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"accounts": out, "secretStore": st, "connecting": s.remote.connecting, "connected": s.remote.connected}))
 }
 
+/// The server session's auth state for one account: elevated (locked folders visible), the
+/// unlock secrets the account has, and when the elevation ends.
+fn auth_status(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "immich.authStatus";
+    let id = account_param(s, p, C)?;
+    let (_, client) = match s.immich_client(&id) {
+        Ok(x) => x,
+        Err(e) => return Ok(failure(&e)),
+    };
+    match client.auth_status() {
+        Ok(st) => Ok(json!({
+            "ok": true,
+            "account": id,
+            "isElevated": st.is_elevated,
+            "password": st.password,
+            "pinCode": st.pin_code,
+            "expiresAt": st.expires_at,
+            "pinExpiresAt": st.pin_expires_at,
+        })),
+        Err(e) => Ok(failure(&e)),
+    }
+}
+
+/// Unlock the server session of `account` (locked-folder assets become visible to its listings,
+/// so link, import and sync see them too). The secret is the Immich account's PIN code (4–6
+/// digits, sent as `pinCode`) or its password (anything else, sent as `password`). Like
+/// `immich.connect`/`immich.test`, this command is never journaled: the secret exists only for
+/// this call and is kept neither in the journal, the log nor any result.
+fn unlock_session(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "immich.unlockSession";
+    let id = account_param(s, p, C)?;
+    let secret = str_param(p, "secret")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad(C, "missing `secret` (the Immich account's PIN or password)"))?;
+    let digits = secret.chars().count();
+    let unlock = if (4..=6).contains(&digits) && secret.bytes().all(|b| b.is_ascii_digit()) {
+        lcc_immich::types::SessionUnlock { pin_code: Some(secret.to_string()), password: None }
+    } else {
+        lcc_immich::types::SessionUnlock { pin_code: None, password: Some(secret.to_string()) }
+    };
+    let (_, client) = match s.immich_client(&id) {
+        Ok(x) => x,
+        Err(e) => return Ok(failure(&e)),
+    };
+    match client.unlock_session(&unlock) {
+        Ok(()) => Ok(json!({"ok": true, "account": id})),
+        Err(e) => Ok(failure(&e)),
+    }
+}
+
 /// Start a link pass for `account` (incremental from its last complete pass unless `full`).
 fn start_link(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "immich.link";
@@ -975,6 +1026,8 @@ fn base_specs() -> Vec<CommandSpec> {
             disconnect
         ),
         cmd!(query "immich.status", "Immich Status", [], None, "{check?: bool (also contact each server), background?: bool (do that on workers; results in later calls' `server`)} → {accounts: [{id, url, userName, version, permissions, linked, probable, link, server?, checking}], secretStore, connecting, connected?}", always, status),
+        cmd!(query "immich.authStatus", "Immich Auth Status", [], None, "{account?}: whether this app's server session is elevated (locked folders visible to its listings), and the unlock secrets the account has → {ok, account, isElevated, password, pinCode, expiresAt?, pinExpiresAt?} or {ok: false, error}", always, auth_status),
+        cmd!(query "immich.unlockSession", "Unlock Immich Locked Folders", [], None, "{account?, secret}: elevate the server session with the account's PIN (4–6 digits, sent as pinCode) or password (anything else), so link, import and sync see locked-folder assets too (never journaled; the session locks again later) → {ok, account} or {ok: false, error}", always, unlock_session),
         cmd!(
             "immich.link",
             "Link Photos with Immich",
