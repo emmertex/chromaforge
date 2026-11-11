@@ -23,6 +23,9 @@ pub const FAST_STEP_SECS: f64 = 0.25;
 /// starting a full raw develop that the next step throws away.
 pub const SETTLE_SECS: f64 = 0.12;
 
+/// A step shorter than this (s) is a held key's repeat ([`LoupeTiming::holding`]).
+pub const HOLD_STEP_SECS: f64 = 0.15;
+
 /// One photo's way onto the screen (times in ms since the frame it was stepped to).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StepTiming {
@@ -108,6 +111,20 @@ impl LoupeTiming {
             None => return false,
         };
         prev_dwell.is_finite() && prev_dwell < FAST_STEP_SECS * 1000.0 && now - since < SETTLE_SECS
+    }
+
+    /// Whether the user is holding a step key down (or tapping as fast): the last step lasted less
+    /// than [`HOLD_STEP_SECS`].
+    pub fn holding(&self) -> bool {
+        self.done.back().is_some_and(|t| t.dwell_ms < HOLD_STEP_SECS * 1000.0)
+    }
+
+    /// How long `photo` has been on screen at `now` (s): 0 when it is not the photo of the current step.
+    pub fn on_screen_secs(&self, photo: PhotoId, now: f64) -> f64 {
+        match &self.current {
+            Some((since, t)) if t.photo == photo => (now - since).max(0.0),
+            _ => 0.0,
+        }
     }
 
     /// The loupe is not showing a photo any more (the grid is up).

@@ -120,6 +120,77 @@ fn background_work_waits_while_the_loupe_photo_renders() {
     h.settle(SETTLE);
 }
 
+/// A step onto the photo the background preparation is making waits for that preview: the loupe asks
+/// for no render of its own meanwhile (that decoded the same raw twice, and held the build back while it
+/// ran), and renders the photo once the build lets go of it.
+#[test]
+fn the_loupe_waits_for_the_photo_the_preparation_is_making() {
+    let mut h = demo([1000.0, 700.0]);
+    let ids = h.app.session.visible_cloned();
+    loupe_on(&mut h, ids[1]);
+    let held = lcc_engine::cmd::previews::hold_as_building(&h.app.session, ids[2]).expect("no build holds it");
+    ask(&mut h, "engine.execute", json!({"command": "library.select", "params": {"ids": [ids[2].0], "active": ids[2].0}}));
+    for _ in 0..40 {
+        h.step();
+        assert!(!h.app.renderer.is_pending(crate::render::Slot::Main), "no render of its own while the build makes it");
+        assert!(h.app.renderer.textures.get(&crate::render::Slot::Main).is_none_or(|t| t.photo != ids[2]));
+    }
+    drop(held);
+    h.settle(SETTLE);
+    assert!(h.app.renderer.textures.get(&crate::render::Slot::Main).is_some_and(|t| t.photo == ids[2]), "rendered once the build let go");
+}
+
+/// The loupe waits for the preparation's render of the photo on screen only briefly
+/// ([`crate::panels::detail::PREP_WAIT_MAX_S`]): a build held up (lowest priority on a busy
+/// machine) doesn't keep the photo unrendered.
+#[test]
+fn the_loupe_renders_itself_when_the_preparation_takes_too_long() {
+    let mut h = demo([1000.0, 700.0]);
+    let ids = h.app.session.visible_cloned();
+    loupe_on(&mut h, ids[1]);
+    let _held = lcc_engine::cmd::previews::hold_as_building(&h.app.session, ids[2]).expect("no build holds it");
+    ask(&mut h, "engine.execute", json!({"command": "library.select", "params": {"ids": [ids[2].0], "active": ids[2].0}}));
+    let t0 = h.time;
+    assert!(
+        h.step_until(T, |h| h.app.renderer.textures.get(&crate::render::Slot::Main).is_some_and(|t| t.photo == ids[2])),
+        "rendered by the loupe while the build still holds it"
+    );
+    let waited = h.time - t0;
+    assert!(waited >= crate::panels::detail::PREP_WAIT_MAX_S * 0.9, "it waited first ({waited:.2} s)");
+    assert!(waited < 3.5, "not much longer than the wait ({waited:.2} s)");
+}
+
+/// A held step key outruns the photos made ahead: their thumbnails go a second's worth of steps
+/// ahead instead of five photos, so every step shows something.
+#[test]
+fn holding_a_step_key_makes_thumbnails_further_ahead() {
+    let mut h = demo([1000.0, 700.0]);
+    let ids = h.app.session.visible_cloned();
+    assert!(ids.len() > 12, "the demo has enough photos ({})", ids.len());
+    loupe_on(&mut h, ids[0]);
+    // (full screen: no filmstrip asks for thumbnails; and none made yet)
+    ask(&mut h, "ui.set", json!({"fullscreen": true}));
+    h.app.renderer.forget_all();
+    for _ in 0..30 {
+        h.step();
+    }
+    let wanted = |h: &Headless, id: PhotoId| h.app.renderer.thumb(id).is_some() || h.app.renderer.is_pending(crate::render::Slot::Thumb(id));
+    ask(&mut h, "ui.key", json!({"key": "ArrowRight"}));
+    for _ in 0..30 {
+        h.step();
+    }
+    assert!(!wanted(&h, ids[1 + 9]), "not asked for after a slow step");
+    for _ in 0..3 {
+        ask(&mut h, "ui.key", json!({"key": "ArrowRight"}));
+        h.step();
+    }
+    let at = ids.iter().position(|id| Some(*id) == h.app.session.active()).unwrap();
+    assert!(h.app.loupe_timing.holding(), "steps two frames apart are a held key");
+    let far = (at + 9).min(ids.len() - 1);
+    assert!(far > at + 5, "a photo further than five ahead");
+    assert!(wanted(&h, ids[far]), "the thumbnail {} ahead is asked for while the key is held", far - at);
+}
+
 /// Settings ▸ Performance draws the section: for culling and the library, Previews, Photos ahead,
 /// Eye focus ahead and Which photos; for editing, Photos ahead and Which photos; each choice shows
 /// the setting in use.

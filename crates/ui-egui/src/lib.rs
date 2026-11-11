@@ -1110,7 +1110,10 @@ impl LccApp {
         let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
         let at = if loupe { self.session.active() } else { None };
         self.session.prep_tick(mode, at, self.prep_backward);
-        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+        // (the build's render jobs are made a few photos a tick)
+        if self.session.prep_feeding() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        } else if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
@@ -2296,7 +2299,9 @@ impl LccApp {
             }
             self.perf.was_busy = busy;
             self.last_time = now;
+            let mut lap = now_ms();
             self.drain_control(ctx);
+            self.lap(&mut lap, "logic.control");
             self.drain_midi(ctx);
             surface::tick(self, ctx);
             view_state::track(self);
@@ -2310,21 +2315,28 @@ impl LccApp {
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
+        // (lapped: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.renderer.poll(ctx, &mut self.session);
+        self.lap(&mut lap, "logic.renders");
         merge::poll(self, ctx);
         import::poll_scan(self, ctx);
+        self.lap(&mut lap, "logic.folderRead");
         sync::poll(self, ctx);
         sync::poll_run(self, ctx);
         import::tick(self, ctx);
         lightroom_import::tick(self, ctx);
         recheck::tick(self);
         tasks::poll(self, ctx);
+        self.lap(&mut lap, "logic.tasks");
         #[cfg(not(target_arch = "wasm32"))]
         panels::update::poll(self, ctx);
         self.preview_build_status(ctx);
         self.save_status(ctx);
         self.slideshow_tick(ctx);
+        self.lap(&mut lap, "logic.status");
         panels::faces::pump(self, ctx);
+        self.lap(&mut lap, "logic.faces");
         #[cfg(not(target_arch = "wasm32"))]
         panels::connections::pump(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2980,7 +2992,10 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        // (lapped like the panels: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.background_prep(&ctx);
+        self.lap(&mut lap, "prep.tick");
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
@@ -3008,6 +3023,7 @@ impl LccApp {
         // the Import tab (Settings ▸ Import ▸ Import as a tab) takes the window under the top bar
         import_tab::keep_in_step(self);
         let importing = import_tab::showing(self);
+        let mut lap = now_ms();
         let m = if importing && !touch {
             panels::topbar::show(self, ui);
             if module::edge_visible(self, module::Edge::Top) {
@@ -3026,15 +3042,19 @@ impl LccApp {
         } else {
             t.grid_bg
         };
+        self.lap(&mut lap, "panel.edges");
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
             if importing {
-                import_tab::show(self, ui)
+                let mut lap = now_ms();
+                import_tab::show(self, ui);
+                self.lap(&mut lap, "panel.import");
             } else if touch {
                 modern::center(self, ui, m)
             } else {
                 m.center(ui, self)
             }
         });
+        let mut lap = now_ms();
         module::lights_out(self, &ctx);
         help_overlay::show(self, &ctx);
         panels::second::show(self, &ctx);
@@ -3067,6 +3087,7 @@ impl LccApp {
         panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
+        self.lap(&mut lap, "panel.overlays");
         self.widgets = widgets::take_registry(&ctx);
         self.text_focus = ctx.egui_wants_keyboard_input();
         self.end_frame(&ctx, t0);

@@ -732,6 +732,7 @@ fn load_bytes_now(
         let reduced =
             (allow_reduced && denoise.is_none() && max_edge < usize::MAX).then(|| lcc_raw::decode_reduced(&bytes, max_edge).ok().flatten()).flatten();
         let used_reduced = reduced.is_some();
+        let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
             None => lcc_raw::decode(&bytes),
@@ -746,6 +747,7 @@ fn load_bytes_now(
             }
             Err(Err(e)) => return Err(e),
         };
+        let decode_ms = t_decode.elapsed().as_secs_f64() * 1e3;
         // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
         let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
@@ -784,6 +786,7 @@ fn load_bytes_now(
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
+        let t_colour = web_time::Instant::now();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
         let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
             || {
@@ -803,6 +806,13 @@ fn load_bytes_now(
             || dng_mattes(&bytes, &info),
         );
         drop(bytes);
+        if lcc_pipeline::profiling() {
+            eprintln!(
+                "[profile] raw load: decode {decode_ms:.1} ms, repair + outliers + profile {:.1} ms, starting colour {:.1} ms",
+                (t_colour - t_decode).as_secs_f64() * 1e3 - decode_ms,
+                t_colour.elapsed().as_secs_f64() * 1e3
+            );
+        }
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
         let t0 = web_time::Instant::now();

@@ -590,3 +590,30 @@ fn the_background_build_leaves_the_photo_on_screen_to_the_loupe() {
     let i = b.next_index(&queue).unwrap();
     assert_eq!(queue[i].take(), Some(19));
 }
+
+/// The background build of a folder makes its photos' render jobs a few a tick, nearest the user
+/// first, not all of them when it starts: that froze the UI for 1.3 s at every build of a
+/// 2,597-photo folder (2026-11-10). It still builds every photo.
+#[test]
+fn the_background_build_makes_its_jobs_a_few_at_a_time() {
+    let (mut s, root, ids) = library("feed", 24);
+    let p = json!({"ids": ids_json(&ids), "background": true, "from": ids[12].0, "feed": true});
+    s.execute("library.buildPreviews", &p).unwrap();
+    let b = s.preview_build.clone().unwrap();
+    let unmade = |b: &crate::cmd::previews::PreviewBuild| b.queue_unmade();
+    assert!(unmade(&b) >= 24 - 8, "only the first photos' jobs are made when it starts ({} unmade)", unmade(&b));
+    assert!(!b.queue_unmade_at(13), "the first made is the one after the user's");
+    for _ in 0..1500 {
+        crate::cmd::previews::feed(&mut s);
+        if !b.running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!b.running(), "built");
+    assert_eq!(b.done.load(Ordering::Relaxed), 24);
+    assert_eq!(b.failed.load(Ordering::Relaxed), 0);
+    let edge = crate::cmd::previews::standard_edge(&s);
+    assert!(ids.iter().all(|id| has_view(&mut s, *id, edge)), "every photo built");
+    let _ = std::fs::remove_dir_all(root);
+}
