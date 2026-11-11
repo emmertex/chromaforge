@@ -315,6 +315,11 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             app.ui.slides.settings = app.ui.slides.settings.patched(&patch)?;
             Ok(state_json(app))
         }
+        "slideshow.toggleGuides" => {
+            let on = !app.ui.slides.settings.layout.show_guides;
+            app.ui.slides.settings = app.ui.slides.settings.patched(&json!({"layout": {"showGuides": on}}))?;
+            Ok(state_json(app))
+        }
         "slideshow.reset" => {
             app.ui.slides.settings = Settings::default();
             app.ui.slides.template = "Default".into();

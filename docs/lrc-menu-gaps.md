@@ -57,51 +57,11 @@ Generated from the menu tables; don't edit by hand.
 |---|---|---|---|---|
 | Choose Overlays to Cycle… | Which crop guides O cycles through. | S | feature | `soon.chooseCropOverlays` |
 
-## Map module ▸ Map
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Search… (Ctrl+F) | Focus the map's search box. | S | wire-up | `soon.mapSearch` |
-
-## Map module ▸ Photo
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-
-## Map module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
-| Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
-
 ## Book module ▸ Book
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
-| Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
 | Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
-
-## Book module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-
-## Slideshow module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
-
-## Print module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
-| Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
 
 ## Not in this list yet
 

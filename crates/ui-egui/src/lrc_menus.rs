@@ -505,7 +505,8 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] =
+    &["map.focusSearch=Search…", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",
@@ -522,7 +523,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Rating=Photo>Set Rating",
     "@Set Color Label=Photo>Set Color Label",
     "---",
-    "soon.deleteGps",
+    r#"map.geotag{"clear":true}=Delete GPS Coordinates"#,
     "map.clearLocationMetadata",
 ];
 
@@ -531,8 +532,8 @@ const MAP_VIEW: &[&str] = &[
     "view.filterBar=Show Filter Bar",
     "map.showInfo=Show Map Info",
     "map.showKey=Show Map Key",
-    "soon.savedLocationOverlay",
-    "soon.lockMarkers",
+    "map.toggleSavedLocations",
+    "map.toggleLockMarkers",
     "---",
     "@Map Style",
 ];
@@ -540,9 +541,10 @@ const MAP_VIEW: &[&str] = &[
 const BOOK: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Book","hint":"Name","command":"book.save","key":"name"}=Create Saved Book…"#,
     "---",
-    "soon.bookPageNavigation",
+    r#"book.go{"delta":-1}=Previous Page"#,
+    r#"book.go{"delta":1}=Next Page"#,
     "---",
-    "soon.updateMetadataCaptions",
+    "book.refreshCaptions",
     "soon.bookPreferences",
     "---",
     "book.export",
@@ -550,7 +552,7 @@ const BOOK: &[&str] = &[
 
 const BOOK_VIEW: &[&str] = &[
     "book.headerBar=Show Header Bar",
-    "soon.bookGuides",
+    "book.toggleGuides",
     "book.infoOverlay=Show Info Overlay",
     "---",
     r#"book.view{"mode":"multi"}=Multi-Page View"#,
@@ -586,7 +588,7 @@ const PLAY: &[&str] = &[
     "@Content=Slideshow Content",
 ];
 
-const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
+const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "slideshow.toggleGuides"];
 
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
@@ -600,7 +602,7 @@ const PRINT: &[&str] = &[
     "dialog.pageSetup=Page Setup…",
 ];
 
-const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.infoOverlay=Show Info Overlay"];
+const PRINT_VIEW: &[&str] = &["printui.toggleGuides", "printui.toggleRulers", "printui.infoOverlay=Show Info Overlay"];
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
@@ -774,20 +776,10 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
     soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
-    soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
-    soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
-    soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
-    soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
-    soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
     soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
-    soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     // Slideshow
-    soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
-    soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     // Web
 ];
 

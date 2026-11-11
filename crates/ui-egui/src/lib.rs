@@ -343,6 +343,8 @@ mod tests_masking;
 #[cfg(test)]
 mod tests_masking_layout;
 #[cfg(test)]
+mod tests_menu_toggles;
+#[cfg(test)]
 mod tests_menubar;
 #[cfg(test)]
 mod tests_merge_preview;
