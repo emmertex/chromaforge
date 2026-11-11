@@ -1899,6 +1899,10 @@ pub fn default_preset_groups() -> Vec<String> {
     lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Dialog {
     /// A fresh Create Preset dialog.
     /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
@@ -2125,6 +2129,14 @@ pub enum Dialog {
         /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
         #[serde(default)]
         everyone: bool,
+        /// Apply the suggested star ratings (`photo.analyze` `applyRatings`; photos the user
+        /// rated are left alone).
+        #[serde(default = "default_true")]
+        suggest_stars: bool,
+        /// Apply the suggested Pick / Reject flags (`photo.analyze` `applyFlags`; photos the user
+        /// flagged are left alone).
+        #[serde(default)]
+        suggest_flags: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {

@@ -2531,6 +2531,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             app.ui.dialog = Some(Dialog::Cull {
                 reject_below: 0.0,
                 pick_best: true,
+                suggest_stars: true,
+                suggest_flags: false,
                 burst_gap,
                 similarity,
                 closed_eyes: false,
