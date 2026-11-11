@@ -1675,6 +1675,7 @@
   "Not measured yet": "尚未测量",
   "Not saved to Pictures": "未保存到图片",
   "Not synced yet.": "尚未同步。",
+  "Not used: this DNG holds rendered RGB": "未使用：此 DNG 包含已渲染的 RGB",
   "Nothing (keep this catalog's version)": "不替换（保留此目录的版本）",
   "Nothing is fetched until you accept. The model is kept on this computer only; {app} never uploads or shares it.": "在你接受之前不会下载任何内容。模型只保存在本机上；{app} 绝不会上传或分享它。",
   "Nothing logged yet.": "尚无日志。",

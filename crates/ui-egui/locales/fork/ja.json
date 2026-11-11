@@ -1712,6 +1712,7 @@
   "Not measured yet": "未測定",
   "Not saved to Pictures": "ピクチャに保存されていません",
   "Not synced yet.": "まだ同期していません。",
+  "Not used: this DNG holds rendered RGB": "使用しません：この DNG はレンダリング済み RGB です",
   "Nothing (keep this catalog's version)": "何もしない（このカタログの内容を保持）",
   "Nothing is fetched until you accept. The model is kept on this computer only; {app} never uploads or shares it.": "同意するまで何もダウンロードしません。モデルはこのコンピューターにのみ保存され、{app}がアップロードや共有をすることはありません。",
   "Nothing logged yet.": "まだログはありません。",

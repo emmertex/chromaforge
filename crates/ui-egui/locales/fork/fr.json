@@ -1526,6 +1526,7 @@
   "Not measured yet": "Pas encore mesuré",
   "Not saved to Pictures": "Non enregistré dans Images",
   "Not synced yet.": "Pas encore synchronisé.",
+  "Not used: this DNG holds rendered RGB": "Non utilisé : ce DNG contient du RVB rendu",
   "Nothing (keep this catalog's version)": "Rien (conserver la version de ce catalogue)",
   "Nothing is fetched until you accept. The model is kept on this computer only; {app} never uploads or shares it.": "Rien n'est récupéré tant que vous n'avez pas accepté. Le modèle est conservé uniquement sur cet ordinateur ; {app} ne le téléverse ni ne le partage jamais.",
   "Nothing logged yet.": "Rien dans le journal pour l’instant.",
