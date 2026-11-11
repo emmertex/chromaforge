@@ -1118,6 +1118,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if let Some(left) = app.ui.mask_adjusting_until.map(|t| t.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero()) {
         ui.ctx().request_repaint_after(left);
     }
+    // a picked mask's peek overlay goes again when its moment is up (issue #1109)
+    if let Some(left) = app.ui.mask_peek_until.map(|t| t.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero()) {
+        ui.ctx().request_repaint_after(left);
+    }
     // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
     // `ready` first: `available` would wait for a device still being created)
     let gpu = draft_drag
@@ -3192,9 +3196,12 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
+    // a picked mask with settings peeks its overlay for a moment (issue #1109), so the user sees
+    // which mask is on; the Show Overlay checkbox stays as the auto rule left it (not latched on)
+    let peeking = app.ui.mask_peek_until.is_some_and(|t| std::time::Instant::now() < t);
     if shown
         && app.ui.right == RightPanel::Masking
-        && app.ui.mask_overlay
+        && (app.ui.mask_overlay || peeking)
         && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
         && ai_computing(app, m).is_none()

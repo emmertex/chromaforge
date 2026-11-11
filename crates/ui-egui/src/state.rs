@@ -1396,6 +1396,11 @@ pub struct UiState {
     /// A mask slider is at work until then: no mask overlay covers the photo.
     #[serde(skip)]
     pub mask_adjusting_until: Option<std::time::Instant>,
+    /// A mask was picked (created, selected, an AI click) until then: its overlay shows for a
+    /// moment even when it has settings (issue #1109), so the user sees which mask is on; then
+    /// judging by its effect takes over again (the overlay auto rule, upstream PR 2920).
+    #[serde(skip)]
+    pub mask_peek_until: Option<std::time::Instant>,
     /// The mask whose row in the Masks list is under the pointer: its overlay shows while nothing is
     /// being adjusted.
     #[serde(skip)]
@@ -2497,6 +2502,7 @@ impl Default for UiState {
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_peek_until: None,
             mask_pin_hover: None,
             mask_menu_for: None,
             mask_hover: None,
