@@ -21,7 +21,7 @@ What Lightroom does with the machine's hardware, per platform, and what the app 
 | Printers | ✅ Print module, printer colour management | ⬜ (PDF contact sheets only) | ⬜ | ⬜ | — | ⬜ |
 | Control surfaces (MIDI / Loupedeck via plug-ins) | via SDK plug-ins | built-in surface engine ([control-surfaces.md](control-surfaces.md)): profiles and pages, pages that follow the tool, dial feel and acceleration, one undo step per turn, apply to every selected photo, on-screen readout, Settings ▸ Controls built around a drawing of each device as it is laid out (action picker by category, drag and drop, Touch to find), the Actions Ring's slots, pairing; Logitech MX Creative Console through the Chromaforge Logi plugin, installed from Settings ▸ Controls, with Chromaforge's actions listed in Logi Options+; the Loupedeck+ through the same plugin (works as labelled, imports a Loupedeck profile's layout); TactileBridge setups import | same (plugin verified on Windows) | engine and protocol, no Logi Options+ there | — | 🟡 MX Creative Console ✅; Loupedeck+ (untested on the hardware); MIDI and Tangent panels not yet |
 | Multi-core CPU | ✅ | ✅ worker pools, parallel JPEG decode, parallel import copy | ✅ | ✅ | single thread | ✅ |
-| Memory pressure | managed | ✅ memory budget, `crates/sysmem` returns allocator pages on macOS | ✅ budget | ✅ budget | — | ✅ |
+| Memory pressure | managed | ✅ memory budget, `crates/sysmem` returns allocator pages on macOS and glibc Linux | ✅ budget | ✅ budget | — | ✅ |
 
 ## Score
 

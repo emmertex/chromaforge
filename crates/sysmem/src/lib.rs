@@ -4,7 +4,12 @@
 //! process's memory footprint but stay in its resident size until the system runs short. After a
 //! raw decode (hundreds of MB of temporaries) that made the resident size climb towards the sum of
 //! everything ever decoded. `malloc_zone_pressure_relief` (libSystem) returns those pages now.
-//! Elsewhere (glibc, Windows) blocks this large are unmapped when freed: nothing to do.
+//!
+//! glibc keeps them too: its mmap threshold rises with every large block freed (up to 32 MiB on
+//! 64-bit), so decode buffers end up on the heap, and each worker thread's arena only shrinks from
+//! its top. After a background preview build the resident size stayed near its peak.
+//! `malloc_trim(0)` returns the free pages of every arena. Elsewhere (musl, Windows, FreeBSD)
+//! nothing is called.
 //!
 //! [`fsync`] is the plain POSIX `fsync`, which std doesn't offer on macOS: there `File::sync_all`
 //! and `sync_data` are `F_FULLFSYNC`, which SMB shares refuse with ENOTSUP while `fsync` works
@@ -16,8 +21,8 @@
 //! [`free_disk_space`] says how much room a drive has (Windows' `GetDiskFreeSpaceExW`; elsewhere
 //! POSIX `df`, no system call of our own), for the preview cache's automatic size.
 //!
-//! This is one of the workspace's few crates allowed `unsafe` (two FFI calls in `macos`, three in
-//! `windows`). Its API is safe; on failure or on other platforms each call simply does nothing.
+//! This is one of the workspace's few crates allowed `unsafe` (two FFI calls in `macos`, one in
+//! `glibc`, three in `windows`). Its API is safe; on failure or on other platforms each call simply does nothing.
 //!
 //! It also says how much memory the process may use ([`limits`], safe std-only code): physical RAM
 //! held to the process's cgroup limit on Linux, for the engine's memory budget and `cargo xtask ci`.
@@ -27,15 +32,19 @@ pub mod limits;
 
 pub use limits::{available, effective_total};
 
-/// Return free allocator pages to the system. Returns the number of bytes released (always 0 on
-/// platforms where freed large blocks are already unmapped). Safe to call at any time, from any
-/// thread.
+/// Return free allocator pages to the system. Returns the number of bytes released on macOS; on
+/// glibc, 1 when anything was released (glibc doesn't say how much); 0 elsewhere. Safe to call at
+/// any time, from any thread.
 pub fn release_free_memory() -> usize {
     #[cfg(target_os = "macos")]
     {
         macos::release()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        glibc::release()
+    }
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
     {
         0
     }
@@ -113,6 +122,26 @@ fn parse_df(text: &str) -> Option<u64> {
     // (a mount point may hold spaces; the numbers come before it)
     let kib: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
     kib.checked_mul(1024)
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)]
+mod glibc {
+    unsafe extern "C" {
+        /// glibc malloc: return free memory at the top of the heap, and the free whole pages inside
+        /// every arena, to the system, leaving `pad` bytes untrimmed. Returns 1 when memory was
+        /// released, 0 otherwise.
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+
+    pub fn release() -> usize {
+        // SAFETY: `malloc_trim` is a documented, thread-safe glibc function (malloc.h, glibc 2.0+;
+        // trimming every arena since 2.8). It only returns already-free pages to the system: it
+        // takes no pointers, reads and writes no memory we own, and has no failure mode beyond
+        // releasing nothing.
+        let released = unsafe { malloc_trim(0) };
+        usize::from(released != 0)
+    }
 }
 
 #[cfg(windows)]
@@ -231,12 +260,40 @@ mod tests {
         assert_eq!(sum, (0..8u64).sum());
         drop(blocks);
         let released = release_free_memory();
-        if cfg!(not(target_os = "macos")) {
+        if cfg!(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))) {
             assert_eq!(released, 0);
         }
         // The allocator must still work normally afterwards.
         let again = vec![7u8; 16 << 20];
         assert_eq!(again[again.len() - 1], 7);
+    }
+
+    /// What a background preview build leaves behind: decode-sized buffers allocated and freed on
+    /// worker threads (their own arenas), below the raised mmap threshold. glibc keeps those pages
+    /// until `malloc_trim` runs; before it was called, nothing was released here.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn glibc_releases_what_worker_threads_freed() {
+        // free one mmapped block first: glibc then raises its mmap threshold past this size, so
+        // the blocks below come from the arenas, as decode buffers do after the first few
+        drop(vec![1u8; 20 << 20]);
+        // each worker leaves a small block above its large ones (a cached thumbnail, say), so the
+        // free pages below it can't go back by trimming the heap's top: only `malloc_trim` frees them
+        let workers: Vec<_> = (0..4)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    let blocks: Vec<Vec<u8>> = (0..6).map(|i| vec![(t * 6 + i) as u8; 12 << 20]).collect();
+                    let kept = vec![t as u8; 4096];
+                    (blocks.iter().map(|b| u64::from(b[b.len() - 1])).sum::<u64>(), kept)
+                })
+            })
+            .collect();
+        let done: Vec<(u64, Vec<u8>)> = workers.into_iter().filter_map(|h| h.join().ok()).collect();
+        assert_eq!(done.iter().map(|d| d.0).sum::<u64>(), (0..24u64).sum());
+        assert_eq!(release_free_memory(), 1, "freed arena pages were returned");
+        drop(done);
+        let again = vec![9u8; 12 << 20];
+        assert_eq!(again[again.len() - 1], 9);
     }
 
     #[test]

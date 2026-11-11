@@ -426,6 +426,8 @@ fn run_all(jobs: Vec<PhotoJobs>, state: &PreviewBuild, task: &TaskGuard, lanes: 
         work(true);
     }
     state.finished.store(true, Ordering::Relaxed);
+    // the build's decode temporaries are gone: hand their pages back now, not at the next idle trim
+    crate::memory::release();
 }
 
 /// Wait while the user's own work runs ([`crate::activity::Activity::user_work`]), saying so in the
