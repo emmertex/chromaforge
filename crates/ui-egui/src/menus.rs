@@ -1655,12 +1655,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "view.maskOverlay" => {
             if let Some(auto) = p.get("auto").and_then(Value::as_bool) {
                 app.ui.mask_overlay_auto = auto;
+                if !auto {
+                    app.ui.mask_peek_until = None;
+                }
             }
             // O always turns off whatever overlay shows, All Mask Overlays included: one key to know
             let toggle = p.get("auto").is_none().then_some(!(app.ui.mask_overlay || app.ui.mask_overlay_all));
             if let Some(show) = p.get("show").and_then(Value::as_bool).or(toggle) {
                 app.ui.mask_overlay = show;
                 app.ui.mask_overlay_pinned = show;
+                // an explicit O / checkbox overrides a picked mask's peek (issue #1109)
+                app.ui.mask_peek_until = None;
                 if !show {
                     app.ui.mask_overlay_all = false;
                 }
