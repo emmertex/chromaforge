@@ -237,8 +237,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("tool.object", "Object Selection", None, "Window>Tools"),
     // Tools > Fringe Color Selector: arms the eyedropper; a click points Defringe at the colour under it
     ("tool.fringe", "Fringe Color Selector", None, ""),
-    // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q stays
-    // `spot.cycleMode`'s module key). People opens its picker, Color Range waits for a click on the photo.
+    // Tools ▸ Create New Mask in Develop: what the Masking panel's tiles do (Classic keys: Shift+J; Shift+Q is Luminance Range;
+    // `spot.cycleMode` is Alt+Shift+Q). People opens its picker, Color Range waits for a click on the photo.
     ("tool.people", "Select People", None, ""),
     ("tool.colorRange", "Color Range", None, ""),
     ("tool.luminanceRange", "Luminance Range", None, ""),

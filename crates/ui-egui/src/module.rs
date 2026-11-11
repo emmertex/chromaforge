@@ -500,12 +500,12 @@ pub const LIBRARY_KEYS: &[ModuleKey] = &[
     crate::help_overlay::KEY,
 ];
 
-/// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⇧Q cycles the selected spot's mode
+/// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⌥⇧Q cycles the selected spot's mode
 /// (Remove → Heal → Clone), Home / End the first and last photo.
 pub const DEVELOP_KEYS: &[ModuleKey] = &[
     ("Cmd+U", "develop.auto", "{}"),
     ("Cmd+Shift+U", "develop.wb", r#"{"mode": "auto"}"#),
-    ("Shift+Q", "spot.cycleMode", "{}"),
+    ("Alt+Shift+Q", "spot.cycleMode", "{}"),
     ("Home", "library.first", "{}"),
     ("End", "library.last", "{}"),
     // Lightroom Classic's Develop menu: ⌘N New Snapshot, ⇧⌘N New Preset, ⌘← / ⌘→ the previous /
