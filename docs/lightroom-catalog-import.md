@@ -71,7 +71,8 @@ virtual copies and mapped develop settings are imported. Missing originals remai
 separately from failures reading files that are present. Known-missing originals are not probed
 again. Previously browsed Local records join All Photos even when their originals are offline;
 their promotion is counted once and undone together with the catalog import.
-An image whose file, folder or root folder record is gone from the catalog, or whose original path
+An image whose file, folder or root folder record is gone from the catalog, whose reference to one is not a whole
+number (missing, NULL, text or a fraction: it names no record, not record 0), or whose original path
 is empty (Lightroom leaves these behind and ignores them), is skipped together with its virtual
 copies instead of failing the whole import. The result lists them as data (`skipped`: each
 image id with its reason, `missingFile`, `missingFolder`, `missingRoot`, `incompletePath` or

@@ -63,10 +63,16 @@ pub(crate) fn number_for_job(r: &Row, k: &str) -> i64 {
 /// its `image` as a whole number, or `None` when that is missing, NULL, text or a fraction. [`number`] would read
 /// those as 0, giving the row to a photo whose `id_local` is 0, and 2.5 as 2, giving it to photo 2.
 fn image_of(r: &Row) -> Option<i64> {
-    let n = r.get("image")?.as_number()?;
+    id_of(r, "image")
+}
+/// The record a row's `k` column names: its value as a whole number, or `None` when that is missing, NULL, text, a
+/// fraction or out of `i64` range. [`number`] reads a missing, NULL or text value as 0, naming the record whose
+/// `id_local` is 0, and truncates a fraction (1.5 names record 1).
+fn id_of(r: &Row, k: &str) -> Option<i64> {
+    let n = r.get(k)?.as_number()?;
     let f = n.as_f64()?;
-    // An integer goes through f64 as [`number`] takes a photo's `id_local`, so a row and its photo get the same key
-    // past 2^53 too (read exactly, the row would miss its rounded photo and be lost without a warning).
+    // An integer goes through f64 as [`number`] takes the `id_local` of the record it names, so both get the same key
+    // past 2^53 too (read exactly, the row would miss its rounded record and be lost without a warning).
     if n.is_i64() {
         return Some(f as i64);
     }
@@ -433,11 +439,11 @@ pub struct SkippedImage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SkipReason {
-    /// Its `AgLibraryFile` record is gone.
+    /// Its `AgLibraryFile` record is gone, or its `rootFile` is not a whole number.
     MissingFile,
-    /// Its file's `AgLibraryFolder` record is gone.
+    /// Its file's `AgLibraryFolder` record is gone, or the file's `folder` is not a whole number.
     MissingFolder,
-    /// Its folder's `AgLibraryRootFolder` record is gone.
+    /// Its folder's `AgLibraryRootFolder` record is gone, or the folder's `rootFolder` is not a whole number.
     MissingRoot,
     /// Its file name or root folder path is empty.
     IncompletePath,
@@ -944,9 +950,11 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
     for image in table("Adobe_images", true)? {
         ensure_read_active(cancel)?;
         let id = number(&image, "id_local");
-        let record = files.get(&number(&image, "rootFile")).ok_or(SkipReason::MissingFile).and_then(|file| {
-            let folder = folders.get(&number(file, "folder")).ok_or(SkipReason::MissingFolder)?;
-            let root = roots.get(&number(folder, "rootFolder")).ok_or(SkipReason::MissingRoot)?;
+        // read strictly: a NULL, text or fractional reference names no record, not record 0 (or 1 for 1.5), whose
+        // path would merge this image into another photo
+        let record = id_of(&image, "rootFile").and_then(|f| files.get(&f)).ok_or(SkipReason::MissingFile).and_then(|file| {
+            let folder = id_of(file, "folder").and_then(|f| folders.get(&f)).ok_or(SkipReason::MissingFolder)?;
+            let root = id_of(folder, "rootFolder").and_then(|r| roots.get(&r)).ok_or(SkipReason::MissingRoot)?;
             Ok((file, folder, root))
         });
         let (file, folder, root) = match record {
@@ -2036,6 +2044,32 @@ pub(crate) mod tests {
 
     fn row(v: Value) -> Row {
         serde_json::from_value(v).unwrap()
+    }
+
+    /// A reference names a record only by a whole number: never record 0 for a missing, NULL or text value, nor
+    /// record 1 for 1.5, nor a saturated id for a value past the `i64` range.
+    #[test]
+    fn a_reference_names_a_record_only_by_a_whole_number() {
+        let r = row(json!({
+            "int": 7, "zero": 0, "negative": -3, "real": 7.0, "fraction": 7.5, "text": "7", "null": null,
+            "past_f64": 9_007_199_254_740_993_i64, "edge": 9_223_372_036_854_775_808.0, "too_big": 1e19, "too_small": -1e19
+        }));
+        for (key, want) in [
+            ("int", Some(7)),
+            ("zero", Some(0)),
+            ("negative", Some(-3)),
+            ("real", Some(7)),
+            ("fraction", None),
+            ("text", None),
+            ("null", None),
+            ("missing", None),
+            ("past_f64", Some(number(&r, "past_f64"))),
+            ("edge", None),
+            ("too_big", None),
+            ("too_small", None),
+        ] {
+            assert_eq!(id_of(&r, key), want, "{key}");
+        }
     }
     fn sample() -> CatalogImport {
         let mut photo = CatalogPhoto {
