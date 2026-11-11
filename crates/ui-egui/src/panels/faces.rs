@@ -20,7 +20,7 @@ use crate::widgets::register;
 /// only while they are needed: a face being named, a photo opened from the People view. A hook for the
 /// People mask picker joins here when named people land.
 pub(crate) fn face_boxes_shown(app: &LccApp) -> bool {
-    app.ui.face_boxes || app.ui.name_edit.is_some() || app.ui.person_from.is_some()
+    app.ui.face_boxes || app.ui.draw_faces || app.ui.name_edit.is_some() || app.ui.person_from.is_some()
 }
 
 /// How hard the background scan may work (the engine's `faces.pump` pace), from what the user is doing: nothing new

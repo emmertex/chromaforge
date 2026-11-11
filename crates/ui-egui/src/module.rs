@@ -875,6 +875,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     // the Slideshow module (crate::slideshow_ui)
     ("slideshow.get", "Slideshow Settings", None, ""),
     ("slideshow.set", "Set Slideshow Settings", None, ""),
+    ("slideshow.toggleGuides", "Show Guides", None, ""),
     ("slideshow.reset", "Reset Slideshow Settings", None, ""),
     ("slideshow.applyTemplate", "Apply Slideshow Template", None, ""),
     ("slideshow.saveTemplate", "Save Slideshow Template", None, "Slideshow"),
@@ -916,6 +917,7 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     // the Book module (crate::book)
     ("book.new", "New Book", None, ""),
     ("book.get", "Book Document", None, ""),
+    ("book.preferences", "Book Preferences", None, ""),
     ("book.autoLayout", "Auto Layout", None, ""),
     ("book.clearLayout", "Clear Layout", None, ""),
     ("book.addPage", "Add Page", None, ""),
@@ -928,6 +930,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.pageText", "Page Text", None, ""),
     ("book.textPreset", "Text Style Preset", None, ""),
     ("book.guides", "Guides", None, ""),
+    ("book.toggleGuides", "Show Guides", None, ""),
+    ("book.refreshCaptions", "Update Metadata Based Captions", None, ""),
     ("book.favorite", "Favorite Template", None, ""),
     ("book.templates", "Page Templates", None, ""),
     ("book.presets", "Auto Layout Presets", None, ""),

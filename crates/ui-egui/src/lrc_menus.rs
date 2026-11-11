@@ -107,7 +107,7 @@ const FILE: &[&str] = &[
     "dialog.exportCatalog=Export as Catalog…",
     "@More Exports",
     "---",
-    "soon.emailPhoto",
+    "dialog.emailPhoto",
     "---",
     "plugins.manager",
     "@Plug-in Extras=Plug-ins",
@@ -115,12 +115,12 @@ const FILE: &[&str] = &[
     "library.showQuickCollection=Show Quick Collection",
     "album.saveQuick=Save Quick Collection…",
     "album.clearQuick=Clear Quick Collection",
-    "soon.quickCollectionTarget",
+    r#"album.setTarget{"id":null}=Set Quick Collection as Target"#,
     "---",
     "@Library Filters",
     "---",
     "dialog.print=Printer…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
     "---",
     "app.quit",
 ];
@@ -131,12 +131,12 @@ const EDIT: &[&str] = &[
     "---",
     "library.selectAll=Select All",
     "library.selectNone=Select None",
-    "soon.invertSelection",
+    "library.invertSelection",
     "---",
     "library.selectOnlyActive=Select Only Active Photo",
-    "soon.deselectActive",
+    "library.deselectActive",
     r#"library.selectBy{"flag":"pick"}=Select Flagged Photos"#,
-    "soon.deselectUnflagged",
+    "library.deselectUnflagged",
     "---",
     "@Select by Flag",
     "@Select by Rating",
@@ -155,7 +155,7 @@ const LIBRARY: &[&str] = &[
     "dialog.newAlbum",
     "dialog.smartAlbum",
     "dialog.newFolder=New Collection Set…",
-    "soon.newFolder",
+    "dialog.newDiskFolder=New Folder…",
     "dialog.newSmartAlbum",
     "---",
     "view.focusSearch",
@@ -168,8 +168,8 @@ const LIBRARY: &[&str] = &[
     "@Filter by Flag",
     "@Filter by Rating",
     "@Filter by Color Label",
-    "soon.filterByKind",
-    "soon.filterByMetadata",
+    "@Filter by Kind",
+    "@Filter by Metadata",
     "@Filters",
     "---",
     "library.lockFilters",
@@ -186,7 +186,7 @@ const LIBRARY: &[&str] = &[
     "---",
     "file.findMissing=Find All Missing Photos",
     "library.validateDng",
-    "soon.synchronizeFolder",
+    "dialog.synchronizeFolder=Synchronize Folder…",
     "---",
     "faces.detect=Find Faces Again…",
     "faces.clearAndRescan",
@@ -241,7 +241,7 @@ const PHOTO: &[&str] = &[
     "album.removePhotos",
     "photo.restore",
     "photo.deletePermanently",
-    "soon.removeFromCatalog",
+    "photo.removeFromCatalog=Remove Photo from Catalog",
     "library.deleteRejected=Delete Rejected Photos…",
 ];
 
@@ -267,7 +267,7 @@ const METADATA: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "file.importKeywords",
     "file.exportKeywords",
@@ -278,7 +278,7 @@ const VIEW: &[&str] = &[
     "panel.toolbar",
     "view.filterBar=Show Filter Bar",
     "---",
-    "soon.toggleLoupeView",
+    "view.loupeToggle=Toggle Loupe View",
     "view.zoomToggle=Toggle Zoom View",
     "---",
     "view.zoomIn",
@@ -322,8 +322,8 @@ const WINDOW: &[&str] = &[
     "@Lights Out",
     "@Secondary Display",
     "---",
-    "soon.goBack",
-    "soon.goForward",
+    "library.sourceBack",
+    "library.sourceForward",
     "---",
     "module.library",
     "module.develop",
@@ -403,7 +403,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "photo.delete=Remove Photo…",
     "library.deleteRejected=Delete Rejected Photos…",
@@ -427,7 +427,7 @@ const SETTINGS: &[&str] = &[
     "---",
     "masks.updateAi=Update AI Settings",
     "---",
-    "soon.deleteEmptyMasks",
+    "mask.deleteEmpty=Delete All Empty Masks",
     "---",
     "develop.autoSync=Enable Auto Sync",
     "---",
@@ -505,7 +505,8 @@ const DEVELOP_VIEW: &[&str] = &[
     "@Zoom=View>Zoom",
 ];
 
-const MAP: &[&str] = &["soon.mapSearch", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
+const MAP: &[&str] =
+    &["map.focusSearch=Search…", "@Tracklog", "---", "@Location Filter", "---", "map.fit=Show All Pins", "map.reveal=Show Selected Pins"];
 
 const MAP_PHOTO: &[&str] = &[
     "album.toggleTarget=Add to Quick Collection",
@@ -522,7 +523,7 @@ const MAP_PHOTO: &[&str] = &[
     "@Set Rating=Photo>Set Rating",
     "@Set Color Label=Photo>Set Color Label",
     "---",
-    "soon.deleteGps",
+    r#"map.geotag{"clear":true}=Delete GPS Coordinates"#,
     "map.clearLocationMetadata",
 ];
 
@@ -531,8 +532,8 @@ const MAP_VIEW: &[&str] = &[
     "view.filterBar=Show Filter Bar",
     "map.showInfo=Show Map Info",
     "map.showKey=Show Map Key",
-    "soon.savedLocationOverlay",
-    "soon.lockMarkers",
+    "map.toggleSavedLocations",
+    "map.toggleLockMarkers",
     "---",
     "@Map Style",
 ];
@@ -540,17 +541,18 @@ const MAP_VIEW: &[&str] = &[
 const BOOK: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Book","hint":"Name","command":"book.save","key":"name"}=Create Saved Book…"#,
     "---",
-    "soon.bookPageNavigation",
+    r#"book.go{"delta":-1}=Previous Page"#,
+    r#"book.go{"delta":1}=Next Page"#,
     "---",
-    "soon.updateMetadataCaptions",
-    "soon.bookPreferences",
+    "book.refreshCaptions",
+    "dialog.bookPreferences",
     "---",
     "book.export",
 ];
 
 const BOOK_VIEW: &[&str] = &[
     "book.headerBar=Show Header Bar",
-    "soon.bookGuides",
+    "book.toggleGuides",
     "book.infoOverlay=Show Info Overlay",
     "---",
     r#"book.view{"mode":"multi"}=Multi-Page View"#,
@@ -586,7 +588,7 @@ const PLAY: &[&str] = &[
     "@Content=Slideshow Content",
 ];
 
-const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "soon.slideshowGuides"];
+const SLIDESHOW_VIEW: &[&str] = &["panel.toolbar", "slideshow.toggleGuides"];
 
 const PRINT: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Print","hint":"Name","command":"printui.saveCreation","key":"name"}=Create Saved Print…"#,
@@ -597,10 +599,10 @@ const PRINT: &[&str] = &[
     r#"printui.page{"delta":1}=Next Page"#,
     "---",
     "dialog.print=Print…",
-    "soon.pageSetup",
+    "dialog.pageSetup=Page Setup…",
 ];
 
-const PRINT_VIEW: &[&str] = &["soon.printGuides", "soon.printRulers", "printui.infoOverlay=Show Info Overlay"];
+const PRINT_VIEW: &[&str] = &["printui.toggleGuides", "printui.toggleRulers", "printui.infoOverlay=Show Info Overlay"];
 
 const WEB: &[&str] = &[
     r#"ui.prompt{"title":"Create Saved Web Gallery","hint":"Name","command":"web.saveGallery","key":"name"}=Create Saved Web Gallery…"#,
@@ -631,7 +633,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "library.holdView",
         ],
     ),
-    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "soon.drawFaceRegions"]),
+    ("Photo", "People", &["face.findSimilar", "face.moveToUnnamed", "face.removeRegion", "face.editName", "face.drawRegions"]),
     (
         "Photo",
         "Stacking",
@@ -663,7 +665,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
             "develop.pastePrevious",
             "dialog.syncSettings",
             "masks.updateAi=Update AI Settings",
-            "soon.deleteEmptyMasks",
+            "mask.deleteEmpty=Delete All Empty Masks",
             r#"develop.wb{"mode":"auto"}=Auto White Balance"#,
             "develop.auto",
             "develop.treatment=Convert to Black & White",
@@ -704,7 +706,7 @@ const SUB: &[(&str, &str, &[&str])] = &[
     (
         "Tools",
         "Crop Guide Overlay",
-        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "soon.chooseCropOverlays"],
+        &["view.cropOverlay=Cycle Grid Overlay", "view.cropOverlayOrientation=Cycle Grid Overlay Orientation", "dialog.cropOverlays"],
     ),
     (
         "Tools",
@@ -756,96 +758,18 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
-    soon(
-        "soon.quickCollectionTarget",
-        "Set Quick Collection as Target",
-        Some("Cmd+Alt+Shift+B"),
-        'S',
-        false,
-        "Make the Quick Collection the target collection again (B adds to the target).",
-    ),
-    soon(
-        "soon.pageSetup",
-        "Page Setup…",
-        Some("Cmd+Shift+P"),
-        'S',
-        true,
-        "The system page-setup dialog for the printer (Print module's paper choice exists).",
-    ),
     // Edit
-    soon("soon.invertSelection", "Invert Selection", None, 'S', false, "Select the photos in view that aren't selected, and deselect the others."),
-    soon(
-        "soon.deselectActive",
-        "Deselect Active Photo",
-        Some("/"),
-        'S',
-        false,
-        "Take the active photo out of the selection (/ is the filmstrip key here today).",
-    ),
-    soon(
-        "soon.deselectUnflagged",
-        "Deselect Unflagged Photos",
-        Some("Cmd+Alt+Shift+D"),
-        'S',
-        false,
-        "Keep only the flagged photos of the selection selected.",
-    ),
     // Library
-    soon(
-        "soon.newFolder",
-        "New Folder…",
-        Some("Cmd+Shift+N"),
-        'S',
-        true,
-        "Create a folder on disk inside the chosen folder (the engine's folder.create exists).",
-    ),
-    soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
-    soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
-    soon(
-        "soon.synchronizeFolder",
-        "Synchronize Folder…",
-        None,
-        'S',
-        true,
-        "The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists).",
-    ),
     // Photo
-    soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
-    soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon(
-        "soon.updateDngPreview",
-        "Update DNG Preview & Metadata",
-        None,
-        'M',
-        false,
-        "Rewrite a DNG's embedded preview and metadata from the current edit.",
-    ),
     // View
-    soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
     // Window
-    soon("soon.goBack", "Go Back", Some("Cmd+Alt+Left"), 'S', false, "Back to the previous source (folder, collection) shown."),
-    soon("soon.goForward", "Go Forward", Some("Cmd+Alt+Right"), 'S', false, "Forward again after Go Back."),
     // Develop
-    soon("soon.deleteEmptyMasks", "Delete All Empty Masks", None, 'S', false, "Remove masks whose components select nothing."),
     soon("soon.depthRange", "Depth Range", Some("Shift+D"), 'L', false, "Depth-range mask from depth data or an estimated depth map."),
-    soon("soon.chooseCropOverlays", "Choose Overlays to Cycle…", None, 'S', false, "Which crop guides O cycles through."),
     // Map
-    soon("soon.mapSearch", "Search…", Some("Cmd+F"), 'S', true, "Focus the map's search box."),
-    soon("soon.deleteGps", "Delete GPS Coordinates", None, 'S', false, "Take the GPS position off the selected photos."),
-    soon("soon.savedLocationOverlay", "Show Saved Location Overlay", None, 'M', false, "Saved locations drawn on the map."),
-    soon("soon.lockMarkers", "Lock Markers", None, 'S', false, "Pins can't be dragged."),
     // Book
-    soon("soon.bookPageNavigation", "Previous / Next Page", None, 'S', true, "Page navigation from the menu (book.go exists)."),
-    soon("soon.updateMetadataCaptions", "Update Metadata Based Captions", None, 'S', false, "Re-read captions built from photo metadata."),
-    soon("soon.bookPreferences", "Book Preferences…", None, 'S', false, "Default zoom, autofill and text settings for new books."),
-    soon("soon.bookGuides", "Show Guides", None, 'S', true, "Page guides (book.guides exists)."),
     // Slideshow
-    soon("soon.slideshowGuides", "Show Guides", None, 'S', false, "Layout guides on the slide."),
     // Print
-    soon("soon.printGuides", "Show Guides", None, 'S', true, "Print guides from the menu (printui.guides exists)."),
-    soon("soon.printRulers", "Show Rulers", None, 'S', false, "Rulers around the page."),
     // Web
 ];
 

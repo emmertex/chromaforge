@@ -647,6 +647,75 @@ fn next_seed(prev: u64, now: &str) -> u64 {
     (lcc_catalog::mix64(prev.wrapping_add(1)) ^ t) & (MAX_SEED - 1)
 }
 
+/// `library.source`: show the source `p` names (the part of it that is not Go Back's bookkeeping).
+fn show_source(s: &mut Session, p: &Value) -> Result<Value> {
+    let kind = str_param(p, "kind").unwrap_or("all");
+    let left = (s.source_key(), s.filter.clone());
+    s.source = match kind {
+        "all" => LibrarySource::All,
+        "recentlyAdded" => LibrarySource::RecentlyAdded,
+        "recentlyDeleted" => LibrarySource::RecentlyDeleted,
+        "picks" => LibrarySource::Picks,
+        "missing" => LibrarySource::Missing,
+        "previousImport" => LibrarySource::PreviousImport,
+        "quickCollection" => LibrarySource::QuickCollection,
+        "previousExport" => LibrarySource::PreviousExport,
+        "album" => {
+            let a = album_param(p, "id", "library.source")?;
+            if s.catalog.album(a).is_none_or(|a| a.folder) {
+                return Err(bad("library.source", "no such collection"));
+            }
+            // one album at a time: `to_filter` makes the album shown replace the filter's, and the
+            // filter bar has no album chip, so a left-over one would narrow the next source unseen
+            s.filter.album = None;
+            LibrarySource::Album(a)
+        }
+        "libraryFolder" => {
+            let path = str_param(p, "path").filter(|d| !d.trim().is_empty() && !lcc_catalog::query::folder_key(d).is_empty());
+            let path = path.ok_or_else(|| bad("library.source", "libraryFolder needs the `path` of a folder from library.folders"))?;
+            if lcc_catalog::folders::is_startup_disk(path) {
+                return Err(bad("library.source", "the startup disk's path covers every disk: choose a folder in it"));
+            }
+            let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
+            let ids = s.catalog.query(&f, &Sort::default());
+            if ids.is_empty() {
+                return Err(bad("library.source", format!("{path}: no photo in the catalog was imported from it")));
+            }
+            if covers_other_disks(s, path, &ids) {
+                return Err(bad("library.source", format!("{path} holds other disks as well: choose a disk or a folder on one")));
+            }
+            s.library_folder = Some(path.to_string());
+            // one folder at a time: a folder filter left over would be ignored
+            s.filter.library_folder = None;
+            LibrarySource::LibraryFolder
+        }
+        other => return Err(bad("library.source", format!("unknown source `{other}`"))),
+    };
+    s.switch_source_filter(left.0, left.1);
+    s.keep_active_in_view();
+    Ok(json!({"count": s.visible().len()}))
+}
+
+fn can_source_back(s: &Session) -> std::result::Result<(), String> {
+    if s.source_history.can_back() { Ok(()) } else { Err("no earlier source".into()) }
+}
+
+fn can_source_forward(s: &Session) -> std::result::Result<(), String> {
+    if s.source_history.can_forward() { Ok(()) } else { Err("no later source".into()) }
+}
+
+/// Go Back (`dir` -1) / Go Forward (1): the nearest source in that direction that can still be shown.
+fn walk_sources(s: &mut Session, dir: i32) -> Result<Value> {
+    let c = if dir < 0 { "library.sourceBack" } else { "library.sourceForward" };
+    for (i, params) in s.source_history.candidates(dir) {
+        if let Ok(r) = show_source(s, &params) {
+            s.source_history.arrived(i);
+            return Ok(r);
+        }
+    }
+    Err(bad(c, if dir < 0 { "no earlier source can be shown" } else { "no later source can be shown" }))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         // ---- view source / filter / sort
@@ -658,52 +727,30 @@ pub fn specs() -> Vec<CommandSpec> {
             "{kind: all|recentlyAdded|previousImport|previousExport|quickCollection|album|recentlyDeleted|picks|missing|libraryFolder, id?: albumId, path?: a path from library.folders (for libraryFolder)}",
             always,
             |s, p| {
-                let kind = str_param(p, "kind").unwrap_or("all");
-                let left = (s.source_key(), s.filter.clone());
-                s.source = match kind {
-                    "all" => LibrarySource::All,
-                    "recentlyAdded" => LibrarySource::RecentlyAdded,
-                    "recentlyDeleted" => LibrarySource::RecentlyDeleted,
-                    "picks" => LibrarySource::Picks,
-                    "missing" => LibrarySource::Missing,
-                    "previousImport" => LibrarySource::PreviousImport,
-                    "quickCollection" => LibrarySource::QuickCollection,
-                    "previousExport" => LibrarySource::PreviousExport,
-                    "album" => {
-                        let a = album_param(p, "id", "library.source")?;
-                        if s.catalog.album(a).is_none_or(|a| a.folder) {
-                            return Err(bad("library.source", "no such collection"));
-                        }
-                        // one album at a time: `to_filter` makes the album shown replace the filter's, and the
-                        // filter bar has no album chip, so a left-over one would narrow the next source unseen
-                        s.filter.album = None;
-                        LibrarySource::Album(a)
-                    }
-                    "libraryFolder" => {
-                        let path = str_param(p, "path").filter(|d| !d.trim().is_empty() && !lcc_catalog::query::folder_key(d).is_empty());
-                        let path = path.ok_or_else(|| bad("library.source", "libraryFolder needs the `path` of a folder from library.folders"))?;
-                        if lcc_catalog::folders::is_startup_disk(path) {
-                            return Err(bad("library.source", "the startup disk's path covers every disk: choose a folder in it"));
-                        }
-                        let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
-                        let ids = s.catalog.query(&f, &Sort::default());
-                        if ids.is_empty() {
-                            return Err(bad("library.source", format!("{path}: no photo in the catalog was imported from it")));
-                        }
-                        if covers_other_disks(s, path, &ids) {
-                            return Err(bad("library.source", format!("{path} holds other disks as well: choose a disk or a folder on one")));
-                        }
-                        s.library_folder = Some(path.to_string());
-                        // one folder at a time: a folder filter left over would be ignored
-                        s.filter.library_folder = None;
-                        LibrarySource::LibraryFolder
-                    }
-                    other => return Err(bad("library.source", format!("unknown source `{other}`"))),
-                };
-                s.switch_source_filter(left.0, left.1);
-                s.keep_active_in_view();
-                Ok(json!({"count": s.visible().len()}))
+                let before = crate::view::SourceHistory::params_of(s);
+                let r = show_source(s, p)?;
+                let after = crate::view::SourceHistory::params_of(s);
+                s.source_history.chose(before, after);
+                Ok(r)
             }
+        ),
+        cmd!(
+            "library.sourceBack",
+            "Go Back",
+            [],
+            Some("Cmd+Alt+Left"),
+            "{}: show the source shown before this one (library.source history, 50 deep); sources that are gone are skipped → {count}",
+            can_source_back,
+            |s, _| walk_sources(s, -1)
+        ),
+        cmd!(
+            "library.sourceForward",
+            "Go Forward",
+            [],
+            Some("Cmd+Alt+Right"),
+            "{}: show the source Go Back left; choosing another source clears these; sources that are gone are skipped → {count}",
+            can_source_forward,
+            |s, _| walk_sources(s, 1)
         ),
         cmd!(
             "library.findPreviousProcess",
@@ -802,7 +849,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Filter",
             [],
             None,
-            "partial Filter: {text?, semantic?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
+            "partial Filter: {text?, semantic?, rating?, ratingOp?: atLeast|exactly|atMost, flag?: pick|reject|none|null, label?, kind?, copy?: true (virtual copies only) | false (master photos only) | null, merged?: hdr|panorama|hdrPanorama|focusStack|any, immich?: linked|notLinked|probable, edited?, date?, libraryFolder?: a path from library.folders, keyword?, person?, camera?, lens?, keywords?/people?/cameras?/lenses?: [any of these values], keywordOp?/personOp?/lensOp?: any|all (how each list combines: any = OR, all = AND), labels?: [any of these labels], faces?: count|min+|range}",
             always,
             |s, p| {
                 let mut v = serde_json::to_value(&s.filter).unwrap_or_default();
@@ -1248,6 +1295,71 @@ pub fn specs() -> Vec<CommandSpec> {
             ok()
         }),
         cmd!(
+            "library.invertSelection",
+            "Invert Selection",
+            ["Edit"],
+            None,
+            "{} — selects the photos in view that aren't selected and deselects the others → {selected}",
+            always,
+            |s, _| {
+                let chosen: std::collections::HashSet<PhotoId> = s.selection.ids.iter().copied().collect();
+                let ids: Vec<PhotoId> = s.visible_cloned().into_iter().filter(|id| !chosen.contains(id)).collect();
+                // the active photo stays active if it is still selected; else the first of the new selection
+                let active = s.selection.active.filter(|a| ids.contains(a)).or(ids.first().copied());
+                let n = ids.len();
+                s.selection = Selection { ids, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectActive",
+            "Deselect Active Photo",
+            ["Edit"],
+            None,
+            "{} — takes the active photo out of the selection; the next selected photo (wrapping round) becomes active, and with none left nothing stays selected → {selected}",
+            has_active,
+            |s, _| {
+                let Some(active) = s.selection.active else { return Err(bad("library.deselectActive", "no active photo")) };
+                let ids = s.selection.ids.clone();
+                let Some(at) = ids.iter().position(|i| *i == active) else {
+                    // the active photo isn't in the selection: nothing to take out
+                    return Ok(json!({"selected": ids.len()}));
+                };
+                let mut rest = ids;
+                rest.remove(at);
+                // "next" is the next selected photo after the old one, wrapping round
+                let next = rest.get(at).or_else(|| rest.first()).copied();
+                let n = rest.len();
+                s.selection = Selection { ids: rest, active: next };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
+            "library.deselectUnflagged",
+            "Deselect Unflagged Photos",
+            ["Edit"],
+            None,
+            "{} — keeps only the flagged (picked) photos of the selection selected; with none flagged it acts as Deselect All (the active photo stays) → {selected}",
+            always,
+            |s, _| {
+                let keep: Vec<PhotoId> =
+                    s.selection.ids.iter().copied().filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.flag == Flag::Pick)).collect();
+                if keep.is_empty() {
+                    let a = s.selection.active;
+                    s.selection = Selection { ids: a.into_iter().collect(), active: a };
+                    s.all_selected = None;
+                    return Ok(json!({"selected": s.selection.ids.len()}));
+                }
+                let active = s.selection.active.filter(|a| keep.contains(a)).or(keep.first().copied());
+                let n = keep.len();
+                s.selection = Selection { ids: keep, active };
+                s.all_selected = None;
+                Ok(json!({"selected": n}))
+            }
+        ),
+        cmd!(
             "library.next",
             "Next Photo",
             [],
@@ -1269,7 +1381,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "library.nextUnrated",
             "Next Unrated Photo",
             [],
-            Some("Cmd+Alt+Right"),
+            None,
             "{}: the next photo of the view with no rating, wrapping round; {allRated: true} when there is none",
             always,
             |s, _| step_unrated(s, 1)
@@ -1278,7 +1390,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "library.prevUnrated",
             "Previous Unrated Photo",
             [],
-            Some("Cmd+Alt+Left"),
+            None,
             "{}: the previous photo of the view with no rating, wrapping round; {allRated: true} when there is none",
             always,
             |s, _| step_unrated(s, -1)
@@ -1521,6 +1633,49 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"rect": {"x0": x0, "y0": y0, "x1": x1, "y1": y1}}))
             }
         ),
+        cmd!(
+            "photo.addRegion",
+            "Add Face Region",
+            [],
+            None,
+            "{id?, rect: {x0, y0, x1, y1}, name?, kind?: \"face\"|\"pet\"} → {index, rect}: add a hand-drawn face (or pet) region, the same kind the detector writes, to the photo in the catalog (box normalized in the photo's upright frame, inside 0..1, at least 0.5 % each way; `name` makes it a named face); undoable. Like photo.removeRegion it never rewrites the XMP sidecar",
+            always,
+            |s, p| {
+                const C: &str = "photo.addRegion";
+                let id = s.photo_or_active(p, C)?;
+                let r = p.get("rect").ok_or_else(|| bad(C, "missing `rect`"))?;
+                let num = |k: &str| {
+                    r.get(k)
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                        .ok_or_else(|| bad(C, format!("`rect.{k}` must be a number from 0 to 1")))
+                };
+                let (a, b, c, d) = (num("x0")?, num("y0")?, num("x1")?, num("y1")?);
+                let (x0, x1) = (a.min(c), a.max(c));
+                let (y0, y1) = (b.min(d), b.max(d));
+                if x1 - x0 < 0.005 || y1 - y0 < 0.005 {
+                    return Err(bad(C, "the box is too small"));
+                }
+                let kind = match p.get("kind").and_then(Value::as_str) {
+                    None | Some("face") => lcc_meta::RegionKind::Face,
+                    Some("pet") => lcc_meta::RegionKind::Pet,
+                    Some(_) => return Err(bad(C, "`kind` must be face or pet")),
+                };
+                let name = match p.get("name") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => {
+                        let t = v.as_str().ok_or_else(|| bad(C, "`name` must be text"))?.trim();
+                        (!t.is_empty()).then(|| t.to_string())
+                    }
+                };
+                let mut meta = s.catalog.photo(id).ok_or_else(|| bad(C, "no such photo"))?.meta.clone();
+                let index = meta.regions.len();
+                meta.regions.push(lcc_meta::Region { rect: lcc_geom::Rect { x0, y0, x1, y1 }, kind, name, description: None });
+                s.commit("Add Face Region", Op::SetMeta { id, meta: Box::new(meta) })?;
+                s.skip_auto_write = true;
+                Ok(json!({"index": index, "rect": {"x0": x0, "y0": y0, "x1": x1, "y1": y1}}))
+            }
+        ),
         // ---- delete / restore
         cmd!(
             "photo.delete",
@@ -1575,6 +1730,23 @@ pub fn specs() -> Vec<CommandSpec> {
                 s.end_interaction()?;
                 let op = s.catalog.delete_photos_permanently_ops(&t);
                 s.commit("Delete Permanently", op)?;
+                select_after_deletion(s, &before);
+                Ok(json!({"deleted": t.len()}))
+            }
+        ),
+        cmd!(
+            "photo.removeFromCatalog",
+            "Remove Photo from Catalog",
+            ["Photo"],
+            None,
+            "{ids?} — removes the photos from the library without asking; the files stay on disk. One undo step (browsed photos not in the library are left alone) → {deleted}",
+            has_selection,
+            |s, p| {
+                let before = s.visible_cloned();
+                let t = not_browsed(s, s.targets(p)?, "photo.removeFromCatalog")?;
+                s.end_interaction()?;
+                let op = s.catalog.delete_photos_permanently_ops(&t);
+                s.commit("Remove from Catalog", op)?;
                 select_after_deletion(s, &before);
                 Ok(json!({"deleted": t.len()}))
             }
@@ -3067,3 +3239,7 @@ mod tests_select;
 #[cfg(test)]
 #[path = "library/tests_hide_rejected.rs"]
 mod hide_rejected_tests;
+
+#[cfg(test)]
+#[path = "library/tests_source_history.rs"]
+mod source_history_tests;

@@ -83,6 +83,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.squareGrid", "Square Grid", None, "View>Grid View Style"),
     // G: Photo Grid ↔ Square Grid (from other views: the photo grid)
     ("view.gridToggle", "Grid", Some("G"), ""),
+    // View ▸ Toggle Loupe View: the large view of the active photo <-> the grid style chosen last
+    ("view.loupeToggle", "Toggle Loupe View", None, "View"),
+    // Library ▸ New Folder… / Synchronize Folder…: act on the folder chosen in the Folders panel
+    ("dialog.newDiskFolder", "New Folder…", None, "Library"),
+    ("dialog.synchronizeFolder", "Synchronize Folder…", None, "Library"),
+    // File ▸ Page Setup…: the Print module with its paper choice open
+    ("dialog.pageSetup", "Page Setup…", None, "File"),
     ("library.selectOnlyActive", "Select Only Active Photo", Some("Cmd+Shift+D"), "Edit"),
     ("tool.guidedUpright", "Guided Upright", Some("Shift+G"), "Window>Tools"),
     ("view.detail", "Detail View", Some("D"), "View"),
@@ -101,7 +108,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("compare.set", "Show in Compare", None, ""),
     ("compare.makeSelect", "Make Candidate the Select", None, "View"),
     ("view.autoAdvance", "Auto Advance", None, "Photo"),
-    ("view.filmstrip", "Filmstrip", Some("/"), "Window>Panels"),
+    // F6 (Classic's key, `shortcuts::ALIASES`); `/` is Deselect Active Photo
+    ("view.filmstrip", "Filmstrip", None, "Window>Panels"),
     ("view.leftPanel", "My Photos Panel", Some("Cmd+Shift+L"), "Window>Panels"),
     ("view.rightPanel", "Right Panel", None, "Window>Panels"),
     ("view.beforeAfter", "Compare Before and After", Some("Y"), "View>Before/After"),
@@ -157,6 +165,10 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("crop.lockAspect", "Lock Aspect Ratio", Some("A"), ""),
     ("view.cropOverlay", "Cycle Crop Overlay", Some("Shift+O"), "View>Tool Overlay"),
     ("view.cropOverlayOrientation", "Cycle Crop Overlay Orientation", None, "View>Tool Overlay"),
+    ("dialog.cropOverlays", "Choose Overlays to Cycle…", None, ""),
+    ("dialog.bookPreferences", "Book Preferences…", None, ""),
+    // {overlays: [guide names]}: which crop guides Cycle Crop Overlay visits (at least one)
+    ("view.cropOverlays", "Set Crop Overlays to Cycle", None, ""),
     ("view.cropMaskOpacity", "Crop Mask Opacity", None, ""),
     ("photo.rate0", "Clear Rating", Some("0"), ""),
     ("photo.rate1", "Rate ★", Some("1"), ""),
@@ -910,6 +922,52 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "library.selectOnlyActive" => {
             let Some(active) = app.session.active() else { return Some(Err("no active photo".into())) };
             app.run("library.select", json!({"ids": [active.0], "active": active.0}))
+        }
+        "view.loupeToggle" => {
+            if app.ui.module == crate::module::ModuleId::Library && app.ui.view == ViewMode::Detail {
+                app.ui.view = if app.ui.grid_style.is_grid() { app.ui.grid_style } else { ViewMode::PhotoGrid };
+                Ok(Value::Null)
+            } else {
+                app.run("view.loupe", json!({}))
+            }
+        }
+        "dialog.newDiskFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            app.ui.dialog = Some(Dialog::TextPrompt {
+                title: crate::i18n::tr_format!("New Folder in “{name}”", name = lcc_catalog::folders::folder_label(&path)),
+                hint: "Folder name (created on disk)".into(),
+                value: String::new(),
+                command: "folder.create".into(),
+                params: json!({"parent": path}),
+                key: "name".into(),
+            });
+            Ok(Value::Null)
+        }
+        "dialog.synchronizeFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            let tree = app.caches.folder_tree(&app.session.catalog);
+            match crate::panels::left::library_node_for(&tree, &path) {
+                // a disk, or a folder holding disks, is synchronized as such
+                Some((n, name)) => crate::sync::open(app, &n.path, &name, n.volume || !n.selectable).map(|()| Value::Null),
+                None => Err("No photo in this folder is in the catalog yet".into()),
+            }
+        }
+        "dialog.pageSetup" => {
+            if app.ui.module != crate::module::ModuleId::Print
+                && let Err(e) = app.run("module.print", json!({}))
+            {
+                return Some(Err(e));
+            }
+            app.ui.right_collapsed = false;
+            // the paper choice opens on the next frame
+            app.print.open_paper = true;
+            Ok(Value::Null)
         }
         "view.gridToggle" => {
             // G between the two grids; from a photo view it comes back to the grid style the user
@@ -1724,17 +1782,38 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         // A under the Crop panel: the aspect lock (the panel's button runs the same toggle)
         "crop.lockAspect" => app.run("crop.aspect", json!({"aspect": "toggle"})),
         "view.cropOverlay" => {
-            use crate::state::CropOverlay::*;
-            app.ui.crop_overlay = match app.ui.crop_overlay {
-                Thirds => Grid,
-                Grid => Golden,
-                Golden => Diagonal,
-                Diagonal => Triangle,
-                Triangle => Spiral,
-                Spiral => None,
-                None => Thirds,
-            };
+            app.ui.crop_overlay = app.ui.crop_overlay.next_in(&app.ui.crop_overlay_cycle);
             Ok(json!({"overlay": app.ui.crop_overlay}))
+        }
+        "dialog.bookPreferences" => {
+            app.ui.dialog = Some(Dialog::BookPrefs { prefs: app.ui.book_prefs });
+            Ok(Value::Null)
+        }
+        "dialog.cropOverlays" => {
+            app.ui.dialog = Some(Dialog::CropOverlays { picked: app.ui.crop_overlay_cycle.clone() });
+            Ok(Value::Null)
+        }
+        // {overlays: ["thirds", "grid", "golden", "diagonal", "triangle", "spiral", "none"]}: the guides
+        // Cycle Crop Overlay visits; at least one must stay
+        "view.cropOverlays" => {
+            use crate::state::CropOverlay;
+            let Some(names) = p.get("overlays").and_then(Value::as_array) else {
+                return Some(Err("view.cropOverlays: missing overlays (a list of guide names)".into()));
+            };
+            let mut picked: Vec<CropOverlay> = Vec::new();
+            for n in names {
+                let Ok(o) = serde_json::from_value::<CropOverlay>(n.clone()) else {
+                    return Some(Err(format!("view.cropOverlays: unknown overlay {n}")));
+                };
+                if !picked.contains(&o) {
+                    picked.push(o);
+                }
+            }
+            if picked.is_empty() {
+                return Some(Err("view.cropOverlays: at least one overlay must stay ticked".into()));
+            }
+            app.ui.crop_overlay_cycle = CropOverlay::ALL.into_iter().filter(|o| picked.contains(o)).collect();
+            Ok(json!({"overlays": app.ui.crop_overlay_cycle}))
         }
         "view.cropMaskOpacity" => {
             let level = p
@@ -3403,6 +3482,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "app.export" => crate::control::export_active(app, p),
         "photo.renderToDng" => return crate::render_dng_task::start(app, p),
+        "photo.updateDngPreview" => return crate::dng_update_task::start(app, p),
         "app.showInFinder" => show_in_finder(app),
         "app.showInFolders" => show_in_folders(app, p.get("id").and_then(Value::as_u64).map(lcc_catalog::PhotoId)),
         "app.openLogFolder" => open_log_folder(app),
@@ -3419,6 +3499,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     Some(r)
 }
 
+/// The library folder the grid shows (chosen in the Folders panel), for the Library menu's folder items.
+fn chosen_library_folder(app: &LccApp) -> Result<String, String> {
+    match (&app.session.source, &app.session.library_folder) {
+        (lcc_engine::LibrarySource::LibraryFolder, Some(p)) if !p.trim().is_empty() => Ok(p.clone()),
+        _ => Err("Choose a folder in the Folders panel first".into()),
+    }
+}
+
 /// Views whose bottom bar has the thumbnail-size slider and that draw tiles of that size.
 fn thumb_size_view(app: &LccApp) -> bool {
     matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::People)
@@ -3433,6 +3521,8 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
     }
     match id {
         "library.selectOnlyActive" => app.session.active().is_some(),
+        "view.loupeToggle" => app.session.active().is_some() || app.ui.view == ViewMode::Detail,
+        "dialog.newDiskFolder" | "dialog.synchronizeFolder" => chosen_library_folder(app).is_ok(),
         "view.thumbSizeUp" | "view.thumbSizeDown" => thumb_size_view(app),
         "dialog.contactSheet" | "app.contactSheet" | "dialog.print" | "app.print" => {
             !cfg!(target_arch = "wasm32") && app.session.active().is_some() && app.export.is_none()

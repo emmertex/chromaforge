@@ -30,6 +30,80 @@ pub enum LibrarySource {
     PreviousExport,
 }
 
+/// The sources `library.source` showed, oldest first, with the one shown now: Go Back / Go Forward walk it.
+/// Each entry is the `library.source` parameters that show the source again, so a source that is gone by then
+/// (a deleted collection, a folder no photo came from any more) fails to show and is skipped.
+#[derive(Clone, Debug, Default)]
+pub struct SourceHistory {
+    entries: Vec<serde_json::Value>,
+    at: usize,
+}
+
+impl SourceHistory {
+    /// How many sources are kept; the oldest go first.
+    pub const MAX: usize = 50;
+
+    /// `library.source` parameters for the source `s` shows now; `None` for one it can't be asked for again
+    /// (a browsed folder).
+    pub fn params_of(s: &crate::Session) -> Option<serde_json::Value> {
+        use serde_json::json;
+        match s.source {
+            LibrarySource::All => Some(json!({"kind": "all"})),
+            LibrarySource::RecentlyAdded => Some(json!({"kind": "recentlyAdded"})),
+            LibrarySource::RecentlyDeleted => Some(json!({"kind": "recentlyDeleted"})),
+            LibrarySource::Picks => Some(json!({"kind": "picks"})),
+            LibrarySource::Missing => Some(json!({"kind": "missing"})),
+            LibrarySource::PreviousImport => Some(json!({"kind": "previousImport"})),
+            LibrarySource::QuickCollection => Some(json!({"kind": "quickCollection"})),
+            LibrarySource::PreviousExport => Some(json!({"kind": "previousExport"})),
+            LibrarySource::Album(a) => Some(json!({"kind": "album", "id": a.0})),
+            LibrarySource::LibraryFolder => s.library_folder.as_ref().map(|p| json!({"kind": "libraryFolder", "path": p})),
+            LibrarySource::Folder => None,
+        }
+    }
+
+    /// A source was chosen: `before` is what was shown until then, `after` what is shown now. The forward half goes.
+    pub fn chose(&mut self, before: Option<serde_json::Value>, after: Option<serde_json::Value>) {
+        if self.entries.is_empty() {
+            self.entries.extend(before);
+            self.at = 0;
+        }
+        let Some(after) = after else { return };
+        if self.entries.get(self.at) == Some(&after) {
+            return;
+        }
+        self.entries.truncate(self.at.saturating_add(1));
+        self.entries.push(after);
+        if self.entries.len() > Self::MAX {
+            let extra = self.entries.len() - Self::MAX;
+            self.entries.drain(..extra);
+        }
+        self.at = self.entries.len().saturating_sub(1);
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.at > 0
+    }
+
+    pub fn can_forward(&self) -> bool {
+        self.at.saturating_add(1) < self.entries.len()
+    }
+
+    /// The entries to try, nearest first, as `(index, params)`, in direction `dir` (-1 back, 1 forward).
+    pub fn candidates(&self, dir: i32) -> Vec<(usize, serde_json::Value)> {
+        if dir < 0 {
+            (0..self.at).rev().filter_map(|i| self.entries.get(i).map(|e| (i, e.clone()))).collect()
+        } else {
+            (self.at.saturating_add(1)..self.entries.len()).filter_map(|i| self.entries.get(i).map(|e| (i, e.clone()))).collect()
+        }
+    }
+
+    /// The entry at `i` is shown now.
+    pub fn arrived(&mut self, i: usize) {
+        self.at = i.min(self.entries.len().saturating_sub(1));
+    }
+}
+
 /// The folder a [`LibrarySource::Folder`] view shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

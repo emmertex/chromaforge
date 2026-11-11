@@ -33,16 +33,15 @@ fn add_refuses_hostile_files_without_panicking() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
-#[test]
-fn add_accepts_model_with_slash() {
-    let repo = scratch("slash");
+fn xiaomi() -> lcc_camdb::calibration::Calibration {
     let fm = lcc_raw::Mat3([[0.70, 0.18, 0.08], [0.28, 0.80, -0.08], [0.02, -0.15, 0.95]]);
     let cm = lcc_raw::Mat3([[0.9, -0.3, -0.05], [-0.5, 1.4, 0.1], [-0.1, 0.3, 0.6]]);
-    let cal = lcc_camdb::calibration::Calibration {
+    lcc_camdb::calibration::Calibration {
         version: lcc_camdb::calibration::VERSION,
         make: "Xiaomi".into(),
         model: "Xiaomi 17 Ultra/2512BPNDAG".into(),
         aliases: vec![],
+        lens: None,
         editor: Default::default(),
         method: lcc_camdb::calibration::METHOD.into(),
         tool_version: "26.43.7".into(),
@@ -69,7 +68,13 @@ fn add_accepts_model_with_slash() {
                 after: Default::default(),
             }],
         },
-    };
+    }
+}
+
+#[test]
+fn add_accepts_model_with_slash() {
+    let repo = scratch("slash");
+    let cal = xiaomi();
     let json = cal.to_json().unwrap();
     let file = repo.join("xiaomi.json");
     std::fs::write(&file, json).unwrap();
@@ -79,5 +84,51 @@ fn add_accepts_model_with_slash() {
     assert!(dest.exists(), "calibration file was written");
     let attr = std::fs::read_to_string(repo.join("assets/ATTRIBUTION.md")).unwrap();
     assert!(attr.contains("XIAOMI_Xiaomi_17_Ultra_2512BPNDAG.json"));
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// Issue #1015: a second fit for the same camera, lens and editor is refused without `--replace` (the first stays as
+/// it was); a fit for another lens (`--lens`) gets its own file beside it.
+#[test]
+fn add_keeps_one_file_per_camera_lens_and_editor() {
+    let repo = scratch("lens");
+    let add = |file: &std::path::Path, extra: &[&str]| {
+        let mut args = vec!["calibrate-lightroom", "add", file.to_str().unwrap(), "--repo", repo.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        Command::new(BIN).args(args).output().unwrap()
+    };
+    let dir = repo.join("crates/camdb/data/calibrations");
+    let first = xiaomi();
+    let mut second = xiaomi();
+    second.evidence.photos = 99;
+    let (f1, f2) = (repo.join("first.json"), repo.join("second.json"));
+    std::fs::write(&f1, first.to_json().unwrap()).unwrap();
+    std::fs::write(&f2, second.to_json().unwrap()).unwrap();
+    assert!(add(&f1, &[]).status.success());
+    let plain = dir.join("XIAOMI_Xiaomi_17_Ultra_2512BPNDAG.json");
+    let before = std::fs::read_to_string(&plain).unwrap();
+    let o = add(&f2, &[]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("--replace") && !err.contains("panicked"), "{err}");
+    assert_eq!(std::fs::read_to_string(&plain).unwrap(), before, "the first fit is not overwritten");
+    // another lens: its own file, the lens-less one untouched
+    let o = add(&f2, &["--lens", "Ultrawide 14mm"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let lensed = dir.join("XIAOMI_Xiaomi_17_Ultra_2512BPNDAG_Ultrawide_14mm.json");
+    let back = lcc_camdb::calibration::Calibration::parse(&std::fs::read_to_string(&lensed).unwrap()).unwrap();
+    assert_eq!(back.lens.as_deref(), Some("Ultrawide 14mm"));
+    assert_eq!(std::fs::read_to_string(&plain).unwrap(), before);
+    // the same lens again (case aside): refused; with --replace it replaces
+    assert!(!add(&f1, &["--lens", "ULTRAWIDE 14mm"]).status.success());
+    assert!(add(&f2, &["--replace"]).status.success());
+    let replaced = lcc_camdb::calibration::Calibration::parse(&std::fs::read_to_string(&plain).unwrap()).unwrap();
+    assert_eq!(replaced.evidence.photos, 99);
+    // hostile lens names are errors, nothing written
+    for lens in ["", "../x", "/abs", "a\\b", "a\u{7}b"] {
+        let o = add(&f1, &["--lens", lens, "--replace"]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && !err.contains("panicked"), "lens {lens:?}: {err}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
     let _ = std::fs::remove_dir_all(&repo);
 }

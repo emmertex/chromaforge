@@ -45,9 +45,11 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_update;
 pub mod dng_validate;
 pub mod doc_path;
 pub mod dust_map;
+pub mod email;
 pub mod enhance;
 mod errors;
 pub mod export;
@@ -313,6 +315,8 @@ pub struct Session {
     pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
+    /// The sources `library.source` showed, for Go Back / Go Forward (`library.sourceBack`); not saved.
+    pub(crate) source_history: view::SourceHistory,
     pub filter: Filter,
     /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
     pub(crate) shelved_filter: Option<Filter>,
@@ -763,6 +767,7 @@ impl Session {
             auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
+            source_history: Default::default(),
             filter: Filter::default(),
             shelved_filter: None,
             sort: Sort::default(),
@@ -2636,6 +2641,9 @@ mod tests_denoise;
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_dng_update;
+#[cfg(test)]
 mod tests_dng_validate;
 #[cfg(test)]
 mod tests_edit_in;
@@ -2774,6 +2782,8 @@ mod tests_recheck;
 mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
+#[cfg(test)]
+mod tests_select_menu;
 #[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]

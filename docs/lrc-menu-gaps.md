@@ -12,125 +12,18 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Every module ▸ File
+## Develop module ▸ Tools ▸ Remove Options
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
-| Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
-| Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
-
-## Every module ▸ Edit
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Invert Selection | Select the photos in view that aren't selected, and deselect the others. | S | feature | `soon.invertSelection` |
-| Deselect Active Photo (/) | Take the active photo out of the selection (/ is the filmstrip key here today). | S | feature | `soon.deselectActive` |
-| Deselect Unflagged Photos (Ctrl+Alt+Shift+D) | Keep only the flagged photos of the selection selected. | S | feature | `soon.deselectUnflagged` |
-
-## Library module ▸ Library
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| New Folder… (Ctrl+Shift+N) | Create a folder on disk inside the chosen folder (the engine's folder.create exists). | S | wire-up | `soon.newFolder` |
-| Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
-| Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
-| Synchronize Folder… | The Folders panel's sync, from the menu, for the chosen folder (folder.sync exists). | S | wire-up | `soon.synchronizeFolder` |
-
-## Library module ▸ Photo
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Remove Photo from Catalog (Alt+Backspace) | Remove without asking, leaving the files on disk. | S | feature | `soon.removeFromCatalog` |
-
-## Library module ▸ Photo ▸ People
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Draw Face Regions | Draw a face box by hand in the loupe. | M | feature | `soon.drawFaceRegions` |
-
-## Library module ▸ Photo ▸ Develop Settings
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Delete All Empty Masks | Remove masks whose components select nothing. | S | feature | `soon.deleteEmptyMasks` |
-
-## Library module ▸ Metadata
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
-
-## Library module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Toggle Loupe View | Switch between the grid and the large view of the selected photo. | S | wire-up | `soon.toggleLoupeView` |
-
-## Every module ▸ Window
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Go Back (Ctrl+Alt+Left) | Back to the previous source (folder, collection) shown. | S | feature | `soon.goBack` |
-| Go Forward (Ctrl+Alt+Right) | Forward again after Go Back. | S | feature | `soon.goForward` |
+| Detect Objects | Remove tool: pick objects to remove by detection. | M | feature | `soon.removeDetectObjects` |
 
 ## Develop module ▸ Tools ▸ Create New Mask
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
+| Select Landscape | AI mask of landscape regions (water, vegetation, mountains, buildings…). | L | feature | `soon.selectLandscape` |
 | Depth Range (Shift+D) | Depth-range mask from depth data or an estimated depth map. | L | feature | `soon.depthRange` |
-
-## Develop module ▸ Tools ▸ Crop Guide Overlay
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Choose Overlays to Cycle… | Which crop guides O cycles through. | S | feature | `soon.chooseCropOverlays` |
-
-## Map module ▸ Map
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Search… (Ctrl+F) | Focus the map's search box. | S | wire-up | `soon.mapSearch` |
-
-## Map module ▸ Photo
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Delete GPS Coordinates | Take the GPS position off the selected photos. | S | feature | `soon.deleteGps` |
-
-## Map module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Saved Location Overlay | Saved locations drawn on the map. | M | feature | `soon.savedLocationOverlay` |
-| Lock Markers | Pins can't be dragged. | S | feature | `soon.lockMarkers` |
-
-## Book module ▸ Book
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Previous / Next Page | Page navigation from the menu (book.go exists). | S | wire-up | `soon.bookPageNavigation` |
-| Update Metadata Based Captions | Re-read captions built from photo metadata. | S | feature | `soon.updateMetadataCaptions` |
-| Book Preferences… | Default zoom, autofill and text settings for new books. | S | feature | `soon.bookPreferences` |
-
-## Book module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Page guides (book.guides exists). | S | wire-up | `soon.bookGuides` |
-
-## Slideshow module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Layout guides on the slide. | S | feature | `soon.slideshowGuides` |
-
-## Print module ▸ View
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Show Guides | Print guides from the menu (printui.guides exists). | S | wire-up | `soon.printGuides` |
-| Show Rulers | Rulers around the page. | S | feature | `soon.printRulers` |
 
 ## Not in this list yet
 

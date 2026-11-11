@@ -255,6 +255,11 @@ pub(crate) fn clicks_of(include: &[Point], exclude: &[Point]) -> Vec<Click> {
     include.iter().map(|p| Click { at: *p, include: true }).chain(exclude.iter().map(|p| Click { at: *p, include: false })).collect()
 }
 
+/// A mask selects nothing when it has no components, or every component is a brush without a stroke.
+pub(crate) fn mask_is_empty(m: &Mask) -> bool {
+    m.components.iter().all(|c| matches!(&c.shape, MaskShape::Brush { strokes, .. } if strokes.is_empty()))
+}
+
 fn masks_edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut Vec<Mask>, &mut Option<u32>) -> Result<()>) -> Result<Value> {
     let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
     let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
@@ -1427,6 +1432,15 @@ pub fn specs() -> Vec<CommandSpec> {
             masks_edit(s, "mask.deleteAll", "Delete All Masks", |masks, active| {
                 masks.clear();
                 *active = None;
+                Ok(())
+            })
+        }),
+        cmd!("mask.deleteEmpty", "Delete All Empty Masks", [], None, "{}: drops the masks whose components select nothing", has_active, |s, _| {
+            masks_edit(s, "mask.deleteEmpty", "Delete All Empty Masks", |masks, active| {
+                masks.retain(|m| !mask_is_empty(m));
+                if active.is_some_and(|a| !masks.iter().any(|m| m.id == a)) {
+                    *active = masks.last().map(|m| m.id);
+                }
                 Ok(())
             })
         }),
