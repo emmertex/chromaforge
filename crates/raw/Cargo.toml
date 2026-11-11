@@ -12,6 +12,7 @@ workspace = true
 chrono = { workspace = true }
 lcc-brand = { workspace = true }
 lcc-tiff = { workspace = true }
+lcc-hash = { workspace = true }
 lcc-meta = { workspace = true }
 lcc-raster = { workspace = true }
 lcc-color = { workspace = true }

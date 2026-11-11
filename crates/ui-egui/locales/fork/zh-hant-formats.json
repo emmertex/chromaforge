@@ -24,6 +24,7 @@
   "Capture One import failed: {e}{warning}": "Capture One 匯入失敗：{e}{warning}",
   "Capture One inspection failed: {e}{warning}": "Capture One 檢查失敗：{e}{warning}",
   "Chart · greys about {cct:.0} K": "色卡 · 灰色約 {cct:.0} K",
+  "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified": "已檢查 {total} 個 DNG 檔案中的 {checked} 個：{intact} 個完好，{damaged} 個已損毀，{unverifiable} 個無法驗證",
   "Collection imported: {n} photos found, {m} not in this catalog": "已匯入收藏集：找到 {n} 張相片，{m} 張不在此目錄中",
   "Color space: Rec. 2020 {curve} (HDR AVIF)": "色彩空間：Rec. 2020 {curve}（HDR AVIF）",
   "Create Folder in “{name}”": "在「{name}」中建立檔案夾",
