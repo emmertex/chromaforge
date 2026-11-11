@@ -16,7 +16,6 @@ Generated from the menu tables; don't edit by hand.
 
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
-| Email Photo… | Export the selection at a small size and open a new mail with the files attached. | M | feature | `soon.emailPhoto` |
 | Set Quick Collection as Target (Ctrl+Alt+Shift+B) | Make the Quick Collection the target collection again (B adds to the target). | S | feature | `soon.quickCollectionTarget` |
 | Page Setup… (Ctrl+Shift+P) | The system page-setup dialog for the printer (Print module's paper choice exists). | S | wire-up | `soon.pageSetup` |
 
@@ -54,12 +53,6 @@ Generated from the menu tables; don't edit by hand.
 | Item | What it does | Size | Kind | Slot |
 |---|---|---|---|---|
 | Delete All Empty Masks | Remove masks whose components select nothing. | S | feature | `soon.deleteEmptyMasks` |
-
-## Library module ▸ Metadata
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Update DNG Preview & Metadata | Rewrite a DNG's embedded preview and metadata from the current edit. | M | feature | `soon.updateDngPreview` |
 
 ## Library module ▸ View
 

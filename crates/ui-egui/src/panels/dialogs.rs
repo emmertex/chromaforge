@@ -280,6 +280,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::Export { .. } => "Export",
         Dialog::ContactSheet { .. } => "Contact Sheet PDF",
         Dialog::Timelapse { .. } => "Timelapse Video",
+        Dialog::EmailPhoto { .. } => "Email Photo",
         Dialog::SlideshowExport { .. } => "Export Slideshow",
         Dialog::Print => "Print",
         Dialog::Merge { opts } => opts.title(),
@@ -415,7 +416,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::PresetsManager { .. } | Dialog::ProfileManager { .. } => presets_size.x,
             // (the preset column beside a form: its label column, then the controls)
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
-            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } => 480.0,
+            Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } | Dialog::EmailPhoto { .. } => 480.0,
             Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } | Dialog::CreatePresetFolder { .. } => 440.0,
             _ => 380.0,
         } })
@@ -448,6 +449,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     | Dialog::Rename { .. }
                     | Dialog::ContactSheet { .. }
                     | Dialog::Timelapse { .. }
+                    | Dialog::EmailPhoto { .. }
                     | Dialog::CaptureTime { .. }
                     | Dialog::LabelNames { .. }
                     | Dialog::Watermark { .. }
@@ -1095,6 +1097,19 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     field(ui, "Quality", |ui| { ui.add(egui::Slider::new(quality, 1..=100)); });
                     crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Each photo with its own edits, in the order shown. No audio.")).color(t.text_dim));
                 }
+                Dialog::EmailPhoto { long_edge, quality } => {
+                    let n = app.session.selected().len();
+                    ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} photos", n = n)).color(t.text_dim));
+                    let edges: Vec<(u32, String)> = crate::email_photo::EDGES.iter().map(|e| (*e, e.to_string())).collect();
+                    let options: Vec<(u32, &str)> = edges.iter().map(|(v, l)| (*v, l.as_str())).collect();
+                    choices(ui, "Long Edge (pixels)", "emailEdge", &options, long_edge);
+                    field(ui, "Quality", |ui| { ui.add(egui::Slider::new(quality, 10..=100)); });
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program."))
+                            .color(t.text_dim),
+                    );
+                }
                 Dialog::Export { opts, full_size, resize, preset_name, limit_kb, dir } => {
                     export_body(app, ui, ExportForm { opts, full_size, resize, preset_name, limit_kb, dir }, window_id, settings_height)
                 }
@@ -1568,6 +1583,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::LightroomResult { first: Some(_), .. } => "Show in Library",
                     Dialog::ContactSheet { .. } => "Choose PDF…",
                     Dialog::Timelapse { .. } => "Choose File…",
+                    Dialog::EmailPhoto { .. } => "Export",
                     Dialog::SlideshowExport { .. } => "Export…",
                     Dialog::Print => "Print to PDF…",
                     Dialog::Merge { .. } => "Merge",
@@ -1732,6 +1748,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::Export { .. }
                         | Dialog::ContactSheet { .. }
                         | Dialog::Timelapse { .. }
+                        | Dialog::EmailPhoto { .. }
                         | Dialog::SlideshowExport { .. }
                         | Dialog::Print
                         | Dialog::NewAlbum { .. }
@@ -2326,6 +2343,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
         }
         Dialog::ContactSheet { options } => app.run("app.contactSheet", json!(options)),
         Dialog::Timelapse { .. } => app.run("app.timelapse", crate::timelapse_ui::dialog_params(dlg).unwrap_or_default()),
+        Dialog::EmailPhoto { .. } => app.run("app.emailPhoto", crate::email_photo::dialog_params(dlg).unwrap_or_default()),
         Dialog::SlideshowExport { settings } => app.run("app.slideshowExport", json!(settings)),
         Dialog::Print => app.run("app.print", json!({})),
         Dialog::CopySettings { groups } => app.run("develop.copy", pick_params(groups)),

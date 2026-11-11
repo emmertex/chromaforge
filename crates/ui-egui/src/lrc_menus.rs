@@ -107,7 +107,7 @@ const FILE: &[&str] = &[
     "dialog.exportCatalog=Export as Catalog…",
     "@More Exports",
     "---",
-    "soon.emailPhoto",
+    "dialog.emailPhoto",
     "---",
     "plugins.manager",
     "@Plug-in Extras=Plug-ins",
@@ -267,7 +267,7 @@ const METADATA: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "file.importKeywords",
     "file.exportKeywords",
@@ -403,7 +403,7 @@ const DEVELOP_PHOTO: &[&str] = &[
     "---",
     "photo.saveMetadataToFile",
     "photo.readMetadataFromFile",
-    "soon.updateDngPreview",
+    "photo.updateDngPreview",
     "---",
     "photo.delete=Remove Photo…",
     "library.deleteRejected=Delete Rejected Photos…",
@@ -756,7 +756,6 @@ const fn soon(id: &'static str, label: &'static str, hint: Option<&'static str>,
 /// Every greyed "Coming soon" item.
 pub const COMING_SOON: &[ComingSoon] = &[
     // File
-    soon("soon.emailPhoto", "Email Photo…", None, 'M', false, "Export the selection at a small size and open a new mail with the files attached."),
     soon(
         "soon.quickCollectionTarget",
         "Set Quick Collection as Target",
@@ -814,14 +813,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     soon("soon.removeFromCatalog", "Remove Photo from Catalog", Some("Alt+Delete"), 'S', false, "Remove without asking, leaving the files on disk."),
     // Metadata
-    soon(
-        "soon.updateDngPreview",
-        "Update DNG Preview & Metadata",
-        None,
-        'M',
-        false,
-        "Rewrite a DNG's embedded preview and metadata from the current edit.",
-    ),
     // View
     soon("soon.toggleLoupeView", "Toggle Loupe View", None, 'S', true, "Switch between the grid and the large view of the selected photo."),
     // Window
