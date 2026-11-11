@@ -235,8 +235,12 @@ fn remote_snapshot_and_update_body() {
     assert_eq!(v["visibility"], "archive");
     assert_eq!(v["dateTimeOriginal"], "2024-01-08T12:00:00+02:00");
     assert_eq!(sync::keyword_to_tag("A/B | C"), "A-B/C");
+    // locked-folder assets sync once the session is unlocked (the server leaves them out of its
+    // listings while it is locked); only hidden (live-photo video) assets are skipped
     let locked = Asset { visibility: Some("locked".into()), ..Asset::default() };
-    assert!(sync::untouchable(&locked));
+    assert!(!sync::untouchable(&locked));
+    let hidden = Asset { visibility: Some("hidden".into()), ..Asset::default() };
+    assert!(sync::untouchable(&hidden));
 }
 
 #[test]

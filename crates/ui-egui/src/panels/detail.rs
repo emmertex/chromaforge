@@ -3100,7 +3100,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" | "hslPick" => {
+        "wbPicker" | "fringe" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3165,6 +3165,23 @@ fn general_interaction(
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
             app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "fringe" {
+        // the Fringe Color Selector: a click points Defringe at the colour under it; a spot with no
+        // colour says so and the selector stays armed
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            match app.run("develop.fringePick", json!({"x": n.x, "y": n.y})) {
+                Ok(r) if r["applied"] == false => {
+                    let message = r["message"].as_str().unwrap_or("This spot can't be read").to_string();
+                    app.toast(ui.ctx(), crate::i18n::tr(&message));
+                }
+                _ => app.ui.tool.clear(),
+            }
         }
         return;
     }
@@ -6101,6 +6118,10 @@ fn film_label(name: &str) -> String {
 }
 
 pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    crate::view_state::around(app, ui, r, |app, ui| filmstrip_strip(app, ui, r));
+}
+
+fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));
