@@ -1173,7 +1173,8 @@ pub fn specs() -> Vec<CommandSpec> {
                 "crop.sameAspect",
                 "Crop to Same Aspect Ratio",
                 [],
-                Some("Shift+A"),
+                // Shift+A in the Classic keymap set (keymap_classic); the Alternative set gives it to Auto Settings
+                None,
                 "{ids?}: gives every other selected photo (or `ids`) the active photo's crop ratio: the largest centred crop of that ratio, as one undo step → {changed}. Needs an active photo and at least one other target",
                 has_other_selected,
                 |s, p| {

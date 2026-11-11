@@ -135,6 +135,8 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("library.selectNone", Some("Cmd+D")),
     ("edit.redo", Some(if cfg!(target_os = "macos") { "Cmd+Shift+Z" } else { "Cmd+Y" })),
     ("develop.auto", Some("Cmd+U")),
+    // Develop ▸ Tools: Classic's Crop to Same Aspect Ratio (Auto Settings moved to Cmd+U above)
+    ("crop.sameAspect", Some("Shift+A")),
     ("develop.copy", None),
     ("develop.paste", Some("Cmd+Shift+V")),
     ("dialog.pasteSettings", None),
