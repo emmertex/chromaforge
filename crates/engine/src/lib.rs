@@ -45,8 +45,11 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_update;
+pub mod dng_validate;
 pub mod doc_path;
 pub mod dust_map;
+pub mod email;
 pub mod enhance;
 mod errors;
 pub mod export;
@@ -2635,6 +2638,11 @@ mod tests_denoise;
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_dng_update;
+#[cfg(test)]
+mod tests_dng_validate;
+#[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
 mod tests_edit_roundtrip;
@@ -2771,6 +2779,8 @@ mod tests_recheck;
 mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
+#[cfg(test)]
+mod tests_select_menu;
 #[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]

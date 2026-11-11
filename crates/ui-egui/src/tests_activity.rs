@@ -827,6 +827,45 @@ fn find_missing_shows_an_indeterminate_row() {
 }
 
 #[test]
+fn validate_dng_files_runs_in_the_background_and_lists_what_it_found() {
+    // nothing to check: a refusal, not an empty dialog
+    let mut h = demo();
+    let err = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap_err();
+    assert!(err.contains("no DNG files"), "{err}");
+
+    let (mut h, dir) = bracket("validate-dng");
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap();
+    assert_eq!((r["background"].as_bool(), r["total"].as_u64()), (Some(true), Some(3)), "{r}");
+    let rows = h.app.session.activity.list();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((rows[0].kind, rows[0].label.as_str(), rows[0].cancellable), ("validateDng", "Validate DNG Files", true));
+    assert!(h.step_until(T, |h| h.app.tasks.is_empty()));
+    assert!(h.app.session.activity.list().is_empty(), "the row goes with the task");
+    // the answer is a dialog with the counts, and a report for scripts
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { summary, .. }) if summary.contains('3')), "{:?}", h.app.ui.dialog);
+    let report = h.app.ui.last_dng_validation.clone().unwrap();
+    assert_eq!((report["total"].as_u64(), report["checked"].as_u64(), report["cancelled"].as_bool()), (Some(3), Some(3), Some(false)), "{report}");
+    let counted = report["intact"].as_u64().unwrap()
+        + report["damaged"].as_array().unwrap().len() as u64
+        + report["unverifiable"].as_array().unwrap().len() as u64;
+    assert_eq!(counted, 3, "every file gets a verdict: {report}");
+
+    // the same through `wait`, with one file now cut short: damaged, whatever the others are
+    h.app.ui.dialog = None;
+    let first = h.app.session.catalog.photos().next().unwrap().id;
+    let path = match &h.app.session.catalog.photo(first).unwrap().source {
+        lcc_catalog::Source::File { path } => path.clone(),
+        other => panic!("{other:?}"),
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 3]).unwrap();
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({"wait": true})).unwrap().unwrap();
+    assert!(r["damaged"].as_array().unwrap().iter().any(|d| d["file"].as_str().is_some_and(|f| path.ends_with(f))), "{r}");
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { damaged, .. }) if damaged.len() == 1));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn auto_import_listing_has_no_row() {
     let mut h = demo();
     let dir = std::env::temp_dir().join(format!("lc-activity-autoimport-{}", std::process::id()));

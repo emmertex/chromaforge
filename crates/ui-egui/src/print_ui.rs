@@ -111,6 +111,8 @@ pub struct PrintUi {
     pub selected: Option<usize>,
     /// Size of the next custom cell, points.
     pub new_cell: (f32, f32),
+    /// Page Setup… was chosen: open the paper choice on the next frame (`dialog.pageSetup`).
+    pub open_paper: bool,
 }
 
 impl Default for PrintUi {
@@ -148,6 +150,7 @@ impl Default for PrintUi {
             units: Unit::Inches,
             selected: None,
             new_cell: (360.0, 504.0),
+            open_paper: false,
         }
     }
 }
@@ -1854,6 +1857,11 @@ fn page_setup_bar(ui: &mut egui::Ui, app: &mut LccApp, r: Rect) {
         }
     });
     register(&ctx, "print:paper", resp.response.rect);
+    // File ▸ Page Setup…: the paper choice, open
+    if std::mem::take(&mut app.print.open_paper) {
+        egui::Popup::open_id(&ctx, resp.response.id.with("popup"));
+        ctx.request_repaint();
+    }
     for (label, land) in [("Portrait", false), ("Landscape", true)] {
         let r = child.selectable_label(landscape == land, crate::i18n::tr(label));
         register(&ctx, format!("print:{}", label.to_lowercase()), r.rect);

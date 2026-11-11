@@ -83,6 +83,13 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.squareGrid", "Square Grid", None, "View>Grid View Style"),
     // G: Photo Grid ↔ Square Grid (from other views: the photo grid)
     ("view.gridToggle", "Grid", Some("G"), ""),
+    // View ▸ Toggle Loupe View: the large view of the active photo <-> the grid style chosen last
+    ("view.loupeToggle", "Toggle Loupe View", None, "View"),
+    // Library ▸ New Folder… / Synchronize Folder…: act on the folder chosen in the Folders panel
+    ("dialog.newDiskFolder", "New Folder…", None, "Library"),
+    ("dialog.synchronizeFolder", "Synchronize Folder…", None, "Library"),
+    // File ▸ Page Setup…: the Print module with its paper choice open
+    ("dialog.pageSetup", "Page Setup…", None, "File"),
     ("library.selectOnlyActive", "Select Only Active Photo", Some("Cmd+Shift+D"), "Edit"),
     ("tool.guidedUpright", "Guided Upright", Some("Shift+G"), "Window>Tools"),
     ("view.detail", "Detail View", Some("D"), "View"),
@@ -101,7 +108,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("compare.set", "Show in Compare", None, ""),
     ("compare.makeSelect", "Make Candidate the Select", None, "View"),
     ("view.autoAdvance", "Auto Advance", None, "Photo"),
-    ("view.filmstrip", "Filmstrip", Some("/"), "Window>Panels"),
+    // F6 (Classic's key, `shortcuts::ALIASES`); `/` is Deselect Active Photo
+    ("view.filmstrip", "Filmstrip", None, "Window>Panels"),
     ("view.leftPanel", "My Photos Panel", Some("Cmd+Shift+L"), "Window>Panels"),
     ("view.rightPanel", "Right Panel", None, "Window>Panels"),
     ("view.beforeAfter", "Compare Before and After", Some("Y"), "View>Before/After"),
@@ -367,6 +375,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     // Android: the photos in DCIM/Camera, through the media store (Settings ▸ Folders)
     ("file.addCameraRoll", "Import Camera Roll…", None, ""),
     ("file.findMissing", "Find Missing Photos…", None, "Library"),
+    ("library.validateDng", "Validate DNG Files", None, ""),
     ("file.backupLibrary", "Back Up Catalog…", None, "File>Libraries"),
     ("file.restoreLibrary", "Restore Catalog from Backup…", None, "File>Libraries"),
     ("photo.locate", "Locate Missing File…", None, ""),
@@ -907,6 +916,52 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         "library.selectOnlyActive" => {
             let Some(active) = app.session.active() else { return Some(Err("no active photo".into())) };
             app.run("library.select", json!({"ids": [active.0], "active": active.0}))
+        }
+        "view.loupeToggle" => {
+            if app.ui.module == crate::module::ModuleId::Library && app.ui.view == ViewMode::Detail {
+                app.ui.view = if app.ui.grid_style.is_grid() { app.ui.grid_style } else { ViewMode::PhotoGrid };
+                Ok(Value::Null)
+            } else {
+                app.run("view.loupe", json!({}))
+            }
+        }
+        "dialog.newDiskFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            app.ui.dialog = Some(Dialog::TextPrompt {
+                title: crate::i18n::tr_format!("New Folder in “{name}”", name = lcc_catalog::folders::folder_label(&path)),
+                hint: "Folder name (created on disk)".into(),
+                value: String::new(),
+                command: "folder.create".into(),
+                params: json!({"parent": path}),
+                key: "name".into(),
+            });
+            Ok(Value::Null)
+        }
+        "dialog.synchronizeFolder" => {
+            let path = match chosen_library_folder(app) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            };
+            let tree = app.caches.folder_tree(&app.session.catalog);
+            match crate::panels::left::library_node_for(&tree, &path) {
+                // a disk, or a folder holding disks, is synchronized as such
+                Some((n, name)) => crate::sync::open(app, &n.path, &name, n.volume || !n.selectable).map(|()| Value::Null),
+                None => Err("No photo in this folder is in the catalog yet".into()),
+            }
+        }
+        "dialog.pageSetup" => {
+            if app.ui.module != crate::module::ModuleId::Print
+                && let Err(e) = app.run("module.print", json!({}))
+            {
+                return Some(Err(e));
+            }
+            app.ui.right_collapsed = false;
+            // the paper choice opens on the next frame
+            app.print.open_paper = true;
+            Ok(Value::Null)
         }
         "view.gridToggle" => {
             // G between the two grids; from a photo view it comes back to the grid style the user
@@ -2720,6 +2775,58 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(json!({"background": true}))
         }
+        "library.validateDng" => {
+            // Library ▸ Validate DNG Files: the selection's DNGs have their raw-image digest recomputed on a worker
+            // thread (cancel from the activity row); the answer is a dialog listing the damaged and unverifiable files
+            const LABEL: &str = "Validate DNG Files";
+            let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+            if app.tasks.is_running(LABEL) {
+                return Some(Err("Validate DNG Files is already running".into()));
+            }
+            let ids = match app.session.targets(p) {
+                Ok(ids) => ids,
+                Err(e) => return Some(Err(e.to_string())),
+            };
+            let targets = lcc_engine::dng_validate::dng_targets(&app.session, &ids);
+            if targets.is_empty() {
+                return Some(Err("Validate DNG Files: no DNG files in the selection".into()));
+            }
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_cancel = cancel.clone();
+            let total = targets.len() as u64;
+            let work = move |task: lcc_engine::activity::TaskHandle| {
+                task.progress(0, total);
+                lcc_engine::dng_validate::validate(&targets, &worker_cancel, &|done| task.progress(done as u64, total))
+            };
+            let done = |app: &mut LccApp, _ctx: &egui::Context, r: lcc_engine::dng_validate::DngReport| {
+                let summary = crate::i18n::tr_format!(
+                    "Checked {checked} of {total} DNG files: {intact} intact, {damaged} damaged, {unverifiable} could not be verified",
+                    checked = r.checked,
+                    total = r.total,
+                    intact = r.intact,
+                    damaged = r.damaged.len(),
+                    unverifiable = r.unverifiable.len()
+                );
+                let lines = |v: &[(String, String)]| v.iter().map(|(name, why)| format!("{name}: {why}")).collect::<Vec<_>>();
+                app.ui.last_dng_validation = Some(r.to_json());
+                app.ui.dialog = Some(Dialog::DngValidation { summary, damaged: lines(&r.damaged), unverifiable: lines(&r.unverifiable) });
+            };
+            app.ui.last_dng_validation = None;
+            if let Err(e) = crate::tasks::spawn_tracked(app, LABEL, "validateDng", cancel, work, done) {
+                return Some(Err(e));
+            }
+            if wait {
+                let ctx = app.tasks.repaint.clone().unwrap_or_default();
+                if !crate::tasks::wait_for(app, &ctx, LABEL, std::time::Duration::from_secs(600)) {
+                    return Some(Err("Validate DNG Files: still running (it continues in the background)".into()));
+                }
+                return match app.ui.last_dng_validation.clone() {
+                    Some(v) => Some(Ok(v)),
+                    None => Some(Err("Validate DNG Files: worker terminated unexpectedly".into())),
+                };
+            }
+            Ok(json!({"background": true, "total": total}))
+        }
         "photo.tagFromTracklog" => {
             // a GPX file → GPS for the selected photos by capture time (one undo step)
             let path = match p.get("path").and_then(Value::as_str) {
@@ -3347,6 +3454,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "app.export" => crate::control::export_active(app, p),
         "photo.renderToDng" => return crate::render_dng_task::start(app, p),
+        "photo.updateDngPreview" => return crate::dng_update_task::start(app, p),
         "app.showInFinder" => show_in_finder(app),
         "app.showInFolders" => show_in_folders(app, p.get("id").and_then(Value::as_u64).map(lcc_catalog::PhotoId)),
         "app.openLogFolder" => open_log_folder(app),
@@ -3363,6 +3471,14 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
     Some(r)
 }
 
+/// The library folder the grid shows (chosen in the Folders panel), for the Library menu's folder items.
+fn chosen_library_folder(app: &LccApp) -> Result<String, String> {
+    match (&app.session.source, &app.session.library_folder) {
+        (lcc_engine::LibrarySource::LibraryFolder, Some(p)) if !p.trim().is_empty() => Ok(p.clone()),
+        _ => Err("Choose a folder in the Folders panel first".into()),
+    }
+}
+
 /// Views whose bottom bar has the thumbnail-size slider and that draw tiles of that size.
 fn thumb_size_view(app: &LccApp) -> bool {
     matches!(app.ui.view, ViewMode::PhotoGrid | ViewMode::SquareGrid | ViewMode::People)
@@ -3377,6 +3493,8 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
     }
     match id {
         "library.selectOnlyActive" => app.session.active().is_some(),
+        "view.loupeToggle" => app.session.active().is_some() || app.ui.view == ViewMode::Detail,
+        "dialog.newDiskFolder" | "dialog.synchronizeFolder" => chosen_library_folder(app).is_ok(),
         "view.thumbSizeUp" | "view.thumbSizeDown" => thumb_size_view(app),
         "dialog.contactSheet" | "app.contactSheet" | "dialog.print" | "app.print" => {
             !cfg!(target_arch = "wasm32") && app.session.active().is_some() && app.export.is_none()
