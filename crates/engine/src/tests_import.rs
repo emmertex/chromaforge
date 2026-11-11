@@ -1532,6 +1532,7 @@ fn a_missing_photo_keeps_its_thumbnail_through_an_update() {
 /// missing photo: it is looked for under the renderer versions before this one.
 #[test]
 fn a_missing_photo_finds_a_thumbnail_an_earlier_version_cached() {
+    let _keys = crate::sensor_maps::keep_generation();
     let src = temp_dir("oldsrc");
     let lib = temp_dir("oldlib");
     write_png(&src.join("a.png"), 7);
@@ -1561,6 +1562,7 @@ fn a_missing_photo_finds_a_thumbnail_an_earlier_version_cached() {
 /// it through any number of later updates.
 #[test]
 fn a_thumbnail_cached_before_photos_kept_one_is_kept_once_shown() {
+    let _keys = crate::sensor_maps::keep_generation();
     let src = temp_dir("backsrc");
     let lib = temp_dir("backlib");
     write_png(&src.join("a.png"), 7);
@@ -1597,6 +1599,7 @@ fn a_thumbnail_cached_before_photos_kept_one_is_kept_once_shown() {
 /// cached already replaces the kept thumbnail of the edit undone.
 #[test]
 fn a_missing_photo_keeps_the_look_an_undo_went_back_to() {
+    let _keys = crate::sensor_maps::keep_generation();
     let src = temp_dir("undosrc");
     let lib = temp_dir("undolib");
     write_png(&src.join("a.png"), 7);
@@ -1642,6 +1645,7 @@ fn a_missing_photo_keeps_the_look_an_undo_went_back_to() {
 /// view-sized or full-size copy for every photo seen in the loupe).
 #[test]
 fn the_loupes_stand_in_keeps_no_thumbnail() {
+    let _keys = crate::sensor_maps::keep_generation();
     let src = temp_dir("loupesrc");
     let lib = temp_dir("loupelib");
     write_png(&src.join("a.png"), 7);
@@ -1664,6 +1668,7 @@ fn the_loupes_stand_in_keeps_no_thumbnail() {
 /// kept, as when the render job shows it from the cache.
 #[test]
 fn the_grids_stand_in_keeps_the_edited_thumbnail_it_shows() {
+    let _keys = crate::sensor_maps::keep_generation();
     let src = temp_dir("standinsrc");
     let lib = temp_dir("standinlib");
     write_png(&src.join("a.png"), 7);

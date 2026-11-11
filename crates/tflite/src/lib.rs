@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod device;
 mod fb;
 pub mod mediapipe;
 pub mod models;
@@ -224,6 +225,8 @@ pub struct Model {
     /// Tensors no longer needed after each step.
     free_after: Vec<Vec<usize>>,
     pool: Pool,
+    /// The accelerator the model may run on, and the model lowered for it ([`device`]).
+    device: device::Device,
 }
 
 /// Shape as 4-D (leading ones).
@@ -477,7 +480,7 @@ fn parse(buf: &[u8]) -> Result<Model> {
         return Err(bad("the graph's activations are too large"));
     }
     let consts = b.consts.into_iter().map(|c| if let Some(Const::F(v)) = c { Some(v) } else { None }).collect();
-    Ok(Model { tensors: b.tensors, consts, steps, inputs, outputs, free_after, pool: Pool::default() })
+    Ok(Model { tensors: b.tensors, consts, steps, inputs, outputs, free_after, pool: Pool::default(), device: device::Device::default() })
 }
 
 /// Fold RELU / RELU6 / RELU_N1_TO_1 / PRELU into `step` (whose output is the operator's only
@@ -869,8 +872,37 @@ impl Model {
 
     /// Run the graph: one row-major `f32` buffer per input (in model order, NHWC), the outputs in
     /// model order.
+    /// On an attached accelerator ([`Model::accelerate`]) when it takes the run, else on the CPU.
     pub fn run(&self, inputs: &[&[f32]]) -> Result<Vec<Vec<f32>>> {
-        let mut vals = self.execute(inputs, false, None)?;
+        if let [one] = inputs
+            && let Some(mut outs) = self.run_on_device(&[one])?
+            && let Some(outs) = outs.pop()
+        {
+            return Ok(outs);
+        }
+        self.run_cpu(inputs)
+    }
+
+    /// [`Model::run`] for each of several inputs of a one-input model, in one go on an accelerator (one submission
+    /// and one read-back for all of them), one after another on the CPU.
+    pub fn run_batch(&self, inputs: &[&[f32]]) -> Result<Vec<Vec<Vec<f32>>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(outs) = self.run_on_device(inputs)? {
+            return Ok(outs);
+        }
+        inputs.iter().map(|x| self.run_cpu(&[x])).collect()
+    }
+
+    /// [`Model::run`] on the CPU, whatever is attached.
+    pub fn run_cpu(&self, inputs: &[&[f32]]) -> Result<Vec<Vec<f32>>> {
+        let vals = self.execute(inputs, false, None)?;
+        self.collect_outputs(vals)
+    }
+
+    /// The graph outputs out of a run's values.
+    fn collect_outputs(&self, mut vals: Vec<Option<Vec<f32>>>) -> Result<Vec<Vec<f32>>> {
         let mut outs: Vec<Vec<f32>> = Vec::with_capacity(self.outputs.len());
         for (i, &o) in self.outputs.iter().enumerate() {
             let v = match vals.get_mut(o).and_then(Option::take) {
@@ -912,9 +944,16 @@ impl Model {
         Ok(total)
     }
 
-    fn execute(
+    fn execute(&self, inputs: &[&[f32]], keep: bool, prof: Option<&mut Vec<(&'static str, std::time::Duration)>>) -> Result<Vec<Option<Vec<f32>>>> {
+        self.execute_from(inputs, 0, Vec::new(), keep, prof)
+    }
+
+    /// Run the steps from `start` on, with `preset` (tensor, values) already computed (by an accelerator).
+    fn execute_from(
         &self,
         inputs: &[&[f32]],
+        start: usize,
+        preset: Vec<(usize, Vec<f32>)>,
         keep: bool,
         mut prof: Option<&mut Vec<(&'static str, std::time::Duration)>>,
     ) -> Result<Vec<Option<Vec<f32>>>> {
@@ -934,7 +973,16 @@ impl Model {
                 *slot = Some(v);
             }
         }
-        for (si, s) in self.steps.iter().enumerate() {
+        for (t, v) in preset {
+            let n = self.tensors.get(t).map(|d| numel(&d.shape)).transpose()?.ok_or_else(|| bad("preset tensor index"))?;
+            if v.len() != n {
+                return Err(bad("the accelerator gave a tensor of the wrong size"));
+            }
+            if let Some(slot) = vals.get_mut(t) {
+                *slot = Some(v);
+            }
+        }
+        for (si, s) in self.steps.iter().enumerate().skip(start) {
             let frees = self.free_after.get(si).map(|v| v.as_slice()).unwrap_or(&[]);
             // a reshape of a value read for the last time moves it
             if let (Kind::Copy, Some(&x)) = (&s.kind, s.ins.first())
@@ -999,7 +1047,7 @@ impl Model {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1153,7 +1201,7 @@ mod tests {
 
     /// input [1, 4, 4, 2] → CONV_2D (float16 weights through DEQUANTIZE, 3 × 3, SAME, stride 2)
     /// → RELU → RESHAPE [1, 12]; `conv_code` replaces CONV_2D's operator code.
-    fn tiny_model(conv_code: i32) -> Vec<u8> {
+    pub(crate) fn tiny_model(conv_code: i32) -> Vec<u8> {
         let w16: Vec<u8> = (0..54).flat_map(|i| half(WEIGHTS[i % 6]).to_le_bytes()).collect();
         let bias: Vec<u8> = [0.5f32, -1.0, 0.25].iter().flat_map(|v| v.to_le_bytes()).collect();
         let shape: Vec<u8> = [1i32, 12].iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -1189,12 +1237,12 @@ mod tests {
         ])
     }
 
-    fn tiny_input() -> Vec<f32> {
+    pub(crate) fn tiny_input() -> Vec<f32> {
         (0..32).map(|i| i as f32 * 0.1 - 1.0).collect()
     }
 
     /// The tiny model by hand: SAME 4 → 2 with k = 3, s = 2 pads 0 before, 1 after.
-    fn tiny_expected() -> Vec<f32> {
+    pub(crate) fn tiny_expected() -> Vec<f32> {
         let x = tiny_input();
         let bias = [0.5f32, -1.0, 0.25];
         let mut out = Vec::new();

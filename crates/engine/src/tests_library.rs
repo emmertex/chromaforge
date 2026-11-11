@@ -136,6 +136,7 @@ fn close_writes_snapshot_and_view_state() {
 /// loading the source; an edit changes the key.
 #[test]
 fn thumbnails_come_from_the_disk_cache_after_restart() {
+    let _keys = crate::sensor_maps::keep_generation();
     let dir = temp_dir("thumbs");
     let mut s = open(&dir, true);
     let ids: Vec<_> = s.visible_cloned().into_iter().take(3).collect();

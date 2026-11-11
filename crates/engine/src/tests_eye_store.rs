@@ -63,6 +63,7 @@ fn judge(s: &Session, models: &Path, id: PhotoId) -> (bool, bool) {
 /// the model; a changed file is looked at again; a corrupt record is dropped and looked at again.
 #[test]
 fn kept_eyes_survive_a_restart_and_follow_the_file() {
+    let _keys = crate::sensor_maps::keep_generation();
     let root = temp_dir("restart");
     // no model here: anything not kept fails to be looked at
     let models = root.join("models").join("mediapipe-face-landmarker");

@@ -551,6 +551,14 @@ pub struct Renderer {
     ready_views: HashMap<Slot, (RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
     /// Adopted prefetches, collected as finished loupe renders by the next [`Self::collect`].
     adopted: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// Finished stand-ins made ahead ([`Slot::QuickAhead`]) held for a later frame: at most one big
+    /// picture made ahead is uploaded per frame ([`BIG_UPLOAD_BYTES`]), so that a set of 1:1
+    /// previews landing together never stalls the frame of a drag or a zoom.
+    held: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// The frame a big picture made ahead was last uploaded in.
+    big_upload_frame: Option<u64>,
+    /// [`BIG_UPLOAD_BYTES`] (smaller in tests, whose context takes no texture over 2048 px).
+    big_upload_bytes: usize,
     /// Variant key → frame it was last asked for (LRU of [`Slot::Variant`] textures).
     variant_used: HashMap<u64, u64>,
     /// How many variants the last frame's views showed at once (see [`Self::want_variants`]).
@@ -578,6 +586,9 @@ pub struct Renderer {
     /// Since when nothing has been pending, and whether the GPU pool was trimmed since.
     #[cfg(not(target_arch = "wasm32"))]
     idle: Option<(std::time::Instant, bool)>,
+    /// Bytes still pooled after the last idle trim ([`Self::trim_when_idle`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pooled_after_trim: u64,
     /// Surface is extended linear sRGB (macOS EDR / Windows scRGB): skip monitor profile
     /// conversion, let the compositor do it (P2-3).
     surface_is_extended_linear: bool,
@@ -593,12 +604,25 @@ pub struct Renderer {
 /// How many [`Slot::QuickAhead`] stand-ins the loupe keeps ready.
 pub const AHEAD_SLOTS: u8 = 6;
 
+/// A picture made ahead bigger than this (a 1:1 preview of a 45 MP photo is 180 MB) waits for a
+/// frame without another such upload: each takes the UI thread some 50 ms to copy to the GPU.
+pub const BIG_UPLOAD_BYTES: usize = 32 << 20;
+
 /// The [`Slot::Prefetch`] of the open photo's full-resolution source, decoded ahead of a zoom to 1:1.
 pub const FULL_SOURCE_PREFETCH: u8 = 2;
 
 /// After this long without renders the GPU renderer's pool of recycled buffers is freed.
 #[cfg(not(target_arch = "wasm32"))]
 const IDLE_TRIM: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What [`Renderer::trim_when_idle`] reads and does on the GPU: batch renders running, bytes of
+/// recycled buffers pooled (both cards), and the trim itself.
+#[cfg(not(target_arch = "wasm32"))]
+struct IdleGpu<'a> {
+    batch_jobs: &'a dyn Fn() -> usize,
+    pooled: &'a dyn Fn() -> u64,
+    trim: &'a dyn Fn(),
+}
 
 impl Slot {
     /// An interactive view of the open photo: slider drags redo only the stages they feed, and a
@@ -620,6 +644,16 @@ impl Default for Renderer {
 /// others render raws for seconds ("Rendering…" in the loupe and empty grid cells while every
 /// worker decoded a 45 MP CR3).
 const STAND_IN_WORKERS: usize = 2;
+
+/// Renders that go to the second graphics card when there is one (`lcc_gpu::prefer_helper`): the
+/// full-quality tiles of a 1:1 view. They come back as pixels for the screen either way, and on the
+/// window's card their work held the window's frames up: presenting waited behind it, 100–1,100 ms
+/// between frames while sliders dragged at 100 % (CF-ZOOM-FREEZE 2026-11-10; with the tiles on the
+/// second card the slowest frames were 22–145 ms). The drag's drafts stay on the window's card.
+/// With one card this changes nothing.
+pub(crate) fn on_second_card(slot: Slot) -> bool {
+    matches!(slot, Slot::Tile { .. })
+}
 
 /// Jobs below this priority are background work (the real thumbnails rendered behind the
 /// stand-ins, [`crate::panels::grid::BACKGROUND_THUMB_PRIORITY`]): at most [`BACKGROUND_AT_ONCE`]
@@ -701,6 +735,9 @@ impl Renderer {
             prefetched: HashMap::new(),
             ready_views: HashMap::new(),
             adopted: Vec::new(),
+            held: Vec::new(),
+            big_upload_frame: None,
+            big_upload_bytes: BIG_UPLOAD_BYTES,
             variant_used: HashMap::new(),
             variant_want: 0,
             frame: 0,
@@ -711,6 +748,8 @@ impl Renderer {
             display: None,
             #[cfg(not(target_arch = "wasm32"))]
             idle: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pooled_after_trim: 0,
             surface_is_extended_linear: false,
             screen: None,
             natives: HashMap::new(),
@@ -1356,6 +1395,7 @@ impl Renderer {
             let run = || match (background, prefetch) {
                 (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
                 (true, false) => lcc_engine::memory::in_background(|| job.run()),
+                _ if on_second_card(slot) => lcc_engine::gpu::prefer_helper(|| job.run()),
                 _ => job.run(),
             };
             Self::run_for(slot, run, &display, headroom)
@@ -1423,6 +1463,12 @@ impl Renderer {
                 Self::run_for(slot, run, &display, None)
             }),
         );
+    }
+
+    /// Whether a [`Slot::QuickAhead`] stand-in of `photo` for `key` is made (or being made).
+    pub fn made_ahead(&self, photo: PhotoId, key: u64) -> bool {
+        self.textures.iter().any(|(s, t)| matches!(s, Slot::QuickAhead(_)) && t.photo == photo && t.key == key)
+            || self.quick_tried.iter().any(|(s, k)| matches!(s, Slot::QuickAhead(_)) && *k == key)
     }
 
     /// Move a [`Slot::QuickAhead`] texture of `photo` made for `key` into [`Slot::Preview`].
@@ -1596,6 +1642,7 @@ impl Renderer {
         self.prefetched.clear();
         self.ready_views.clear();
         self.adopted.clear();
+        self.held.clear();
         self.pending.clear();
         self.queue.clear();
         self.tiles.clear();
@@ -1978,6 +2025,7 @@ impl Renderer {
     /// Turn finished jobs into textures. Returns true if anything changed.
     fn collect(&mut self, ctx: &egui::Context, session: &mut Session, inline_ms: f64) -> bool {
         let mut finished: Vec<_> = std::mem::take(&mut self.adopted).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)).collect();
+        finished.extend(std::mem::take(&mut self.held).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)));
         while let Some(done) = self.pool.try_recv() {
             finished.push((done.slot, done.result.result, done.result.color, done.result.texels, if done.ms > 0.0 { done.ms } else { inline_ms }));
         }
@@ -1987,6 +2035,17 @@ impl Renderer {
         self.dispatch();
         let mut changed = false;
         for (mut slot, mut r, mut color, texels, ms) in finished {
+            // (not when the loupe waits for that very photo: it is shown at once)
+            if matches!(slot, Slot::QuickAhead(_))
+                && r.rendered.as_ref().is_ok_and(|x| x.image.width.saturating_mul(x.image.height).saturating_mul(4) > self.big_upload_bytes)
+                && !self.pending.get(&Slot::Preview).is_some_and(|p| p.0 == r.key)
+            {
+                if self.big_upload_frame == Some(self.frame) {
+                    self.held.push((slot, r, color, ms));
+                    continue;
+                }
+                self.big_upload_frame = Some(self.frame);
+            }
             self.completed += 1;
             let main_draft = slot == Slot::Main && self.main_drafts.remove(&r.request_id);
             // made for another display profile than the one in use: obsolete
@@ -2253,25 +2312,54 @@ impl Renderer {
     }
 
     /// Free the GPU renderer's recycled buffers once nothing has rendered for [`IDLE_TRIM`] (they
-    /// are reallocated by the next render; while working, renders reuse them).
+    /// are reallocated by the next render; while working, renders reuse them). Batch work (an
+    /// export, Build Previews) renders on other threads and fills the pools again after a trim:
+    /// once it has finished, the pools are trimmed again (they kept up to the pool limit per card,
+    /// 2 GB each with a 16 GB budget, for the rest of the session).
     #[cfg(not(target_arch = "wasm32"))]
     fn trim_when_idle(&mut self, ctx: &egui::Context) {
+        let gpu = IdleGpu {
+            batch_jobs: &|| lcc_engine::gpu::batch_usage().jobs + lcc_engine::gpu::helper_usage().0,
+            pooled: &|| lcc_engine::gpu::memory().pooled,
+            trim: &|| {
+                lcc_engine::gpu::trim_pool(0);
+                lcc_engine::memory::release();
+            },
+        };
+        if let Some(wait) = self.idle_trim_step(std::time::Instant::now(), &gpu) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// One frame of [`Self::trim_when_idle`] at `now`, against `gpu` (the GPU's counters, or a test's):
+    /// whether to look again after a while.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn idle_trim_step(&mut self, now: std::time::Instant, gpu: &IdleGpu<'_>) -> Option<std::time::Duration> {
         if !self.pending.is_empty() {
             self.idle = None;
-            return;
+            return None;
         }
-        let now = std::time::Instant::now();
         let (since, trimmed) = *self.idle.get_or_insert((now, false));
         if trimmed {
-            return;
+            if (gpu.batch_jobs)() > 0 {
+                // (looked at again once it has had time to finish)
+                return Some(IDLE_TRIM);
+            }
+            if (gpu.pooled)() > self.pooled_after_trim {
+                self.idle = Some((now, false));
+                return Some(IDLE_TRIM);
+            }
+            return None;
         }
-        let waited = now.duration_since(since);
+        let waited = now.saturating_duration_since(since);
         if waited >= IDLE_TRIM {
-            lcc_engine::gpu::trim_pool(0);
-            lcc_engine::memory::release();
+            (gpu.trim)();
+            // (what a trim cannot free does not start another one)
+            self.pooled_after_trim = (gpu.pooled)();
             self.idle = Some((since, true));
+            None
         } else {
-            ctx.request_repaint_after(IDLE_TRIM - waited);
+            Some(IDLE_TRIM - waited)
         }
     }
 
@@ -2375,6 +2463,19 @@ fn render_failure_message(slot: Slot, photo: PhotoId, source: Option<&lcc_catalo
         Some(lcc_catalog::Source::File { path }) => format!("render {slot:?}, {photo:?}, file {path:?}: {error}"),
         Some(lcc_catalog::Source::Demo { scene }) => format!("render {slot:?}, {photo:?}, demo scene {scene}: {error}"),
         None => format!("render {slot:?}, {photo:?}, source unavailable: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod second_card_tests {
+    use super::*;
+
+    #[test]
+    fn the_tiles_of_a_one_to_one_view_render_on_the_second_card_and_the_view_on_the_window_card() {
+        assert!(on_second_card(Slot::Tile { pane: PANE_AFTER, col: 2, row: 3 }));
+        for slot in [Slot::Main, Slot::Window(PANE_AFTER), Slot::Preview, Slot::Before, Slot::Compare(0), Slot::Hover] {
+            assert!(!on_second_card(slot), "{slot:?} draws on the window's card");
+        }
     }
 }
 
@@ -2705,6 +2806,47 @@ mod thumbnail_tests {
         assert_eq!(app.renderer.prefetches_pending(), 0, "not counted as a neighbour");
         app.renderer.prefetch(Slot::Prefetch(0), job, 10);
         assert_eq!(app.renderer.prefetches_pending(), 1, "the neighbour is");
+    }
+
+    /// 1:1 previews made ahead for the neighbours (180 MB each for a 45 MP photo) that finish
+    /// together are uploaded one per frame, never all in the frame of a drag or a zoom; the photo
+    /// the loupe waits for is never held back (2026-11-10: two landing in one frame made a 106 ms
+    /// paint).
+    #[test]
+    fn big_pictures_made_ahead_are_uploaded_one_per_frame() {
+        let (mut app, _work, ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        app.renderer.big_upload_bytes = 4 << 20;
+        let side = 1200; // 5.8 MB, over that
+        let big = |app: &mut crate::LccApp, slot: Slot, key: u64| {
+            let mut out = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().run();
+            let r = &mut app.renderer;
+            let id = lcc_preview::next_tick();
+            r.requests.insert(slot, Requested { id, source: None });
+            r.pending.insert(slot, (key, 1));
+            out.request_id = id;
+            out.key = key;
+            if let Ok(x) = out.rendered.as_mut() {
+                x.image = lcc_raster::Rgba8::new(side, side);
+            }
+            r.adopted.push((slot, out, None, 1.0));
+        };
+        big(&mut app, Slot::QuickAhead(0), 11);
+        big(&mut app, Slot::QuickAhead(1), 12);
+        app.renderer.poll(&ctx, &mut app.session);
+        let has = |r: &Renderer, s: Slot| r.textures.get(&s).is_some_and(|t| t.size[0] == side);
+        assert!(has(&app.renderer, Slot::QuickAhead(0)), "the first is uploaded at once");
+        assert!(!has(&app.renderer, Slot::QuickAhead(1)), "the second waits for the next frame");
+        assert!(app.renderer.is_pending(Slot::QuickAhead(1)), "still on its way, so the next frame is asked for");
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(1)), "uploaded in the next frame");
+        // the photo the loupe waits for: shown at once, even after a big upload in this frame
+        big(&mut app, Slot::QuickAhead(2), 13);
+        big(&mut app, Slot::QuickAhead(3), 14);
+        app.renderer.pending.insert(Slot::Preview, (14, 110));
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(2)));
+        assert!(has(&app.renderer, Slot::Preview), "the loupe's stand-in is never held back");
     }
 
     fn fixture() -> (crate::LccApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
@@ -4138,6 +4280,50 @@ mod stage_budget_tests {
     #[test]
     fn empty_caches_are_left_alone() {
         assert_eq!(stage_trim_order(&[(Slot::Hover, 0), (Slot::Second, 900 * MB)], 100 * MB), vec![Slot::Second]);
+    }
+
+    /// Batch work that pools GPU buffers after the idle trim (an export, Build Previews: renders on
+    /// other threads) gets them trimmed again once it is done: before, the trim ran once per idle
+    /// spell of the view and the pools kept up to their limit for the rest of the session. (A fake
+    /// GPU: the process-wide pool is shared with the tests running beside this one; the trim of
+    /// both cards' real pools is `lcc-gpu`'s `tests/helper_trim.rs`, a process of its own.)
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn buffers_pooled_by_batch_work_after_the_idle_trim_are_trimmed_again() {
+        use std::cell::Cell;
+        let (jobs, pooled, trims) = (Cell::new(0usize), Cell::new(0u64), Cell::new(0u32));
+        let gpu = IdleGpu {
+            batch_jobs: &|| jobs.get(),
+            pooled: &|| pooled.get(),
+            trim: &|| {
+                trims.set(trims.get() + 1);
+                pooled.set(0);
+            },
+        };
+        let mut r = Renderer::default();
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        // the view's idle trim
+        pooled.set(100);
+        assert_eq!(r.idle_trim_step(at(0), &gpu), Some(IDLE_TRIM));
+        assert_eq!(r.idle_trim_step(at(4), &gpu), None);
+        assert_eq!((trims.get(), pooled.get()), (1, 0));
+        // an export renders on other threads: looked at again, not trimmed under it
+        jobs.set(2);
+        pooled.set(500);
+        assert_eq!(r.idle_trim_step(at(5), &gpu), Some(IDLE_TRIM));
+        assert_eq!(trims.get(), 1);
+        // it ends: its buffers are trimmed after the idle delay
+        jobs.set(0);
+        assert_eq!(r.idle_trim_step(at(8), &gpu), Some(IDLE_TRIM), "a new idle spell starts");
+        assert_eq!(r.idle_trim_step(at(12), &gpu), None);
+        assert_eq!((trims.get(), pooled.get()), (2, 0), "trimmed again");
+        // what a trim could not free starts no further trims (no repaint every few seconds)
+        let stuck = IdleGpu { batch_jobs: &|| 0, pooled: &|| 7, trim: &|| {} };
+        r.idle = Some((at(12), false));
+        assert_eq!(r.idle_trim_step(at(16), &stuck), None);
+        assert_eq!(r.idle_trim_step(at(30), &stuck), None);
+        assert_eq!(r.idle.map(|(_, trimmed)| trimmed), Some(true));
     }
 
     // Given real stage caches over the budget, the renderer clears them (the open photo's last)

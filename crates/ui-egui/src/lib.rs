@@ -735,6 +735,15 @@ pub struct Perf {
     /// the host reports it (eframe's `cpu_usage`); `None` without a host report (headless).
     pub host_frame_ms: Option<f64>,
     pub fps: f64,
+    /// Wall time from the previous frame to this one, measured only after a frame that had work to
+    /// show (renders in flight, input): a freeze in painting or presenting shows here.
+    pub gap_ms: f64,
+    /// The longest [`Self::gap_ms`] since start, and the host's time for the frame before it (its
+    /// painting included): a long gap with a short host frame waited outside this thread's work.
+    pub max_gap_ms: f64,
+    pub max_gap_host_ms: Option<f64>,
+    /// The last frame had work to show.
+    pub was_busy: bool,
 }
 
 /// Why quitting stopped to ask first (`panels::notices`).
@@ -882,6 +891,10 @@ pub struct LccApp {
     /// A histogram clipping indicator is hovered this frame: the clipping overlay is previewed on
     /// the photo without turning the persistent one on ([`Self::hover_preview`]'s pattern).
     pub clipping_preview: bool,
+    /// Since when (egui time) and up to which pass a clipping indicator has been hovered: the
+    /// preview waits for the pointer to rest there ([`panels::edit::CLIPPING_PREVIEW_REST_S`]), so a
+    /// pointer gliding across the histogram never re-renders the photo (every tile at 100 %).
+    pub clipping_hover: Option<(f64, u64)>,
     /// In-progress on-canvas gesture (brush stroke points, gradient drag…).
     pub gesture: Option<panels::detail::Gesture>,
     /// The crop tool's view held still while the crop is dragged, rotated or straightened (issue #60).
@@ -1097,7 +1110,10 @@ impl LccApp {
         let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
         let at = if loupe { self.session.active() } else { None };
         self.session.prep_tick(mode, at, self.prep_backward);
-        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+        // (the build's render jobs are made a few photos a tick)
+        if self.session.prep_feeding() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        } else if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
         // an unfinished build is taken up again once the view has been still, also when nothing
@@ -1288,6 +1304,7 @@ impl LccApp {
             slideshow_export_reported: true,
             hover_preview: None,
             clipping_preview: false,
+            clipping_hover: None,
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
@@ -2274,8 +2291,22 @@ impl LccApp {
             if dt > 0.0 {
                 self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
             }
+            // the time between this frame and the last one while the window had work to show (a
+            // render on its way, input to answer): what a freeze outside `update` (painting,
+            // presenting behind GPU work) adds shows here and not in `update_ms`
+            let busy = self.renderer.in_flight() > 0 || self.renderer.queued() > 0 || ctx.input(|i| !i.events.is_empty());
+            if self.last_time > 0.0 && self.perf.was_busy && dt.is_finite() && dt > 0.0 {
+                self.perf.gap_ms = dt * 1000.0;
+                if self.perf.gap_ms > self.perf.max_gap_ms {
+                    self.perf.max_gap_ms = self.perf.gap_ms;
+                    self.perf.max_gap_host_ms = self.perf.host_frame_ms;
+                }
+            }
+            self.perf.was_busy = busy;
             self.last_time = now;
+            let mut lap = now_ms();
             self.drain_control(ctx);
+            self.lap(&mut lap, "logic.control");
             self.drain_midi(ctx);
             surface::tick(self, ctx);
             view_state::track(self);
@@ -2289,21 +2320,28 @@ impl LccApp {
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
+        // (lapped: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.renderer.poll(ctx, &mut self.session);
+        self.lap(&mut lap, "logic.renders");
         merge::poll(self, ctx);
         import::poll_scan(self, ctx);
+        self.lap(&mut lap, "logic.folderRead");
         sync::poll(self, ctx);
         sync::poll_run(self, ctx);
         import::tick(self, ctx);
         lightroom_import::tick(self, ctx);
         recheck::tick(self);
         tasks::poll(self, ctx);
+        self.lap(&mut lap, "logic.tasks");
         #[cfg(not(target_arch = "wasm32"))]
         panels::update::poll(self, ctx);
         self.preview_build_status(ctx);
         self.save_status(ctx);
         self.slideshow_tick(ctx);
+        self.lap(&mut lap, "logic.status");
         panels::faces::pump(self, ctx);
+        self.lap(&mut lap, "logic.faces");
         #[cfg(not(target_arch = "wasm32"))]
         panels::connections::pump(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2959,7 +2997,10 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        // (lapped like the panels: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.background_prep(&ctx);
+        self.lap(&mut lap, "prep.tick");
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
@@ -2987,6 +3028,7 @@ impl LccApp {
         // the Import tab (Settings ▸ Import ▸ Import as a tab) takes the window under the top bar
         import_tab::keep_in_step(self);
         let importing = import_tab::showing(self);
+        let mut lap = now_ms();
         let m = if importing && !touch {
             panels::topbar::show(self, ui);
             if module::edge_visible(self, module::Edge::Top) {
@@ -3005,15 +3047,19 @@ impl LccApp {
         } else {
             t.grid_bg
         };
+        self.lap(&mut lap, "panel.edges");
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
             if importing {
-                import_tab::show(self, ui)
+                let mut lap = now_ms();
+                import_tab::show(self, ui);
+                self.lap(&mut lap, "panel.import");
             } else if touch {
                 modern::center(self, ui, m)
             } else {
                 m.center(ui, self)
             }
         });
+        let mut lap = now_ms();
         module::lights_out(self, &ctx);
         help_overlay::show(self, &ctx);
         panels::second::show(self, &ctx);
@@ -3046,6 +3092,7 @@ impl LccApp {
         panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
+        self.lap(&mut lap, "panel.overlays");
         self.widgets = widgets::take_registry(&ctx);
         self.text_focus = ctx.egui_wants_keyboard_input();
         self.end_frame(&ctx, t0);

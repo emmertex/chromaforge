@@ -906,6 +906,11 @@ impl<T> TileCache<T> {
         self.map.iter().any(|(k, e)| k.photo == photo && !e.placeholder)
     }
 
+    /// Whether a rendered tile (not a placeholder) of `photo` with the look `look` is held.
+    pub fn has_render_of_look(&self, photo: lcc_catalog::PhotoId, look: u64) -> bool {
+        self.map.iter().any(|(k, e)| k.photo == photo && k.look == look && !e.placeholder)
+    }
+
     /// Whether anything (render or placeholder) is held for `k`.
     pub fn contains(&self, k: &TileKey) -> bool {
         self.map.contains_key(k)

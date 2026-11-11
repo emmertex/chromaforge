@@ -297,6 +297,9 @@ fn crop_input(rgb: &[u8], w: usize, h: usize, bx: [f32; 4], side: usize) -> Vec<
 }
 
 /// Face Landmarker: BlazeFace + FaceMesh-V2.
+/// How far a GPU's outputs may be from the CPU's (relative to each output's range) for the face models to use it.
+const GPU_TOLERANCE: f32 = 2e-3;
+
 pub struct FaceModel {
     detector: tflite::Model,
     mesh: tflite::Model,
@@ -342,6 +345,45 @@ impl FaceModel {
         Ok(Self { detector, mesh, far })
     }
 
+    /// Run BlazeFace and FaceMesh on `accelerator` (the GPU) from now on, each only once it gave the CPU's outputs
+    /// on a test picture and (with `require_faster`) was faster than the CPU; a model it was not for stays on the
+    /// CPU. `Ok` with what runs there when the detector does, else why nothing does.
+    pub fn accelerate(
+        &self,
+        accelerator: std::sync::Arc<dyn tflite::device::Accelerator>,
+        require_faster: bool,
+    ) -> std::result::Result<String, String> {
+        let probe = |m: &tflite::Model| -> Vec<f32> {
+            let n: usize = m.input_shapes().first().map(|s| s.iter().product()).unwrap_or(0);
+            (0..n).map(|i| (i as f32 * 0.0137).sin() * 0.8 + ((i / 3) % 5) as f32 * 0.04).collect()
+        };
+        self.detector.accelerate(accelerator.clone(), &probe(&self.detector), GPU_TOLERANCE, require_faster)?;
+        let mesh = self.mesh.accelerate(accelerator.clone(), &probe(&self.mesh), GPU_TOLERANCE, require_faster);
+        if let Some(far) = &self.far
+            && let Err(why) = far.accelerate(accelerator, &probe(far), GPU_TOLERANCE, require_faster)
+        {
+            log::info!("faces: the full-range detector stays on the CPU: {why}");
+        }
+        Ok(match mesh {
+            Ok(()) => "the detector and the landmarks".into(),
+            Err(why) => format!("the detector (the landmarks stay on the CPU: {why})"),
+        })
+    }
+
+    /// Stop using the GPU: everything runs on the CPU again.
+    pub fn detach(&self) {
+        self.detector.detach();
+        self.mesh.detach();
+        if let Some(far) = &self.far {
+            far.detach();
+        }
+    }
+
+    /// Whether the detector runs on an accelerator.
+    pub fn accelerated(&self) -> bool {
+        self.detector.accelerator().is_some()
+    }
+
     /// Whether the full-range detector is there.
     pub fn has_far(&self) -> bool {
         self.far.is_some()
@@ -383,9 +425,12 @@ impl FaceModel {
     pub fn detect(&self, rgb: &[u8], w: usize, h: usize) -> Result<Vec<Detection>> {
         let b = mediapipe::BLAZEFACE_INPUT;
         let mut all = Vec::new();
-        for win in mediapipe::face_windows(w, h) {
-            let input = mediapipe::window(rgb, w, h, win, b);
-            let out = self.detector.run(&[&input])?;
+        let windows = mediapipe::face_windows(w, h);
+        let inputs: Vec<Vec<f32>> = windows.iter().map(|win| mediapipe::window(rgb, w, h, *win, b)).collect();
+        let refs: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
+        // all the windows in one go: one submission on the GPU, one after another on the CPU
+        let outs = self.detector.run_batch(&refs)?;
+        for (win, out) in windows.iter().zip(&outs) {
             let (Some(reg), Some(cls)) = (out.first(), out.get(1)) else { return Err(Error::Model("BlazeFace gave no output".into())) };
             for d in mediapipe::decode_blazeface(reg, cls, FACE_THRESHOLD) {
                 all.push(d.from_window(win.0 as f32, win.1 as f32, win.2 as f32));

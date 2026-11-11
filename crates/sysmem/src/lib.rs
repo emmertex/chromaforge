@@ -16,7 +16,8 @@
 //! (upstream issue 1407).
 //!
 //! [`lower_thread_priority`] runs the calling thread below normal priority (Windows'
-//! `SetThreadPriority`), so renders leave the desktop responsive.
+//! `SetThreadPriority`), so renders leave the desktop responsive; [`lowest_thread_priority`] lower
+//! still, for work done ahead of time that must yield to the renders.
 //!
 //! [`free_disk_space`] says how much room a drive has (Windows' `GetDiskFreeSpaceExW`; elsewhere
 //! POSIX `df`, no system call of our own), for the preview cache's automatic size.
@@ -71,6 +72,21 @@ pub fn lower_thread_priority() -> bool {
     #[cfg(windows)]
     {
         windows::lower()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Run the calling thread at the lowest priority short of idle, below the render workers
+/// ([`lower_thread_priority`]): for work done ahead of time (preparing the photos a user will step to),
+/// which must take only the processor time the photo on screen leaves. Returns whether the priority
+/// changed; anywhere but Windows it is `false` and nothing happens (the fallback).
+pub fn lowest_thread_priority() -> bool {
+    #[cfg(windows)]
+    {
+        windows::lowest()
     }
     #[cfg(not(windows))]
     {
@@ -151,6 +167,8 @@ mod windows {
 
     /// `THREAD_PRIORITY_BELOW_NORMAL` (processthreadsapi.h).
     const BELOW_NORMAL: i32 = -1;
+    /// `THREAD_PRIORITY_LOWEST` (processthreadsapi.h).
+    const LOWEST: i32 = -2;
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -166,6 +184,12 @@ mod windows {
         // `SetThreadPriority` takes; the priority is a documented constant. Neither reads or writes
         // memory we own, and a failure only leaves the priority as it was.
         unsafe { SetThreadPriority(GetCurrentThread(), BELOW_NORMAL) != 0 }
+    }
+
+    pub fn lowest() -> bool {
+        // SAFETY: as in `lower`: documented, thread-safe kernel32 functions on the calling thread's
+        // pseudo handle with a documented priority constant; a failure leaves the priority as it was.
+        unsafe { SetThreadPriority(GetCurrentThread(), LOWEST) != 0 }
     }
 
     #[link(name = "kernel32")]
@@ -294,6 +318,13 @@ mod tests {
         drop(done);
         let again = vec![9u8; 12 << 20];
         assert_eq!(again[again.len() - 1], 9);
+    }
+
+    #[test]
+    fn a_thread_at_the_lowest_priority_keeps_working() {
+        let (changed, sum) = std::thread::spawn(|| (super::lowest_thread_priority(), (0..1000u64).sum::<u64>())).join().unwrap();
+        assert_eq!(sum, 499_500);
+        assert_eq!(changed, cfg!(windows));
     }
 
     #[test]

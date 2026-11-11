@@ -1,5 +1,6 @@
-//! Camera profiling from a ColorChecker photograph (ported from OneSlips, LR-PROF-CREATE / LR-PROF-DUAL):
-//! `profile.findChart` and `profile.createFromChart`. The work itself is in [`crate::chart_profiling`].
+//! Camera profiling from a color chart photograph (a ColorChecker 24 or a SpyderCHECKR 24; ported
+//! from OneSlips, LR-PROF-CREATE / LR-PROF-DUAL): `profile.findChart` and `profile.createFromChart`.
+//! The work itself is in [`crate::chart_profiling`].
 
 use std::path::Path;
 
@@ -43,6 +44,8 @@ fn find_chart(s: &mut Session, p: &Value) -> Result<Value> {
             "corners": cp::normalized_corners(&prep.frame, &l.corners),
             "turns": l.turns,
             "score": l.score,
+            "chartKey": l.chart.key,
+            "chartName": l.chart.name,
             "estimatedCct": light.map(|e| e.cct.round()),
             "estimatedIlluminant": light.map(|e| e.illuminant),
         })
@@ -58,17 +61,22 @@ fn find_chart(s: &mut Session, p: &Value) -> Result<Value> {
     }))
 }
 
-/// One chart photo's part of a request: `{corners?, turns?, refine?, illuminant?}`.
+/// One chart photo's part of a request: `{corners?, turns?, refine?, illuminant?, chart?}`.
 fn chart_request(p: &Value, c: &str) -> Result<cp::Request> {
     let illuminant = str_param(p, "illuminant").unwrap_or("");
     if illuminant.len() > 64 {
         return Err(bad(c, "`illuminant` is too long"));
+    }
+    let chart = str_param(p, "chart");
+    if chart.is_some_and(|chart| chart.len() > 64) {
+        return Err(bad(c, "`chart` is too long"));
     }
     Ok(cp::Request {
         corners: corners_param(p, c)?,
         turns: p.get("turns").and_then(Value::as_u64).map(|t| (t % 4) as u8),
         refine: p.get("refine").and_then(Value::as_bool).unwrap_or(false),
         illuminant: illuminant.to_string(),
+        chart: chart.map(str::to_string),
     })
 }
 
@@ -109,6 +117,7 @@ fn create_from_chart(s: &mut Session, p: &Value) -> Result<Value> {
         correction_table: p.get("correctionTable").and_then(Value::as_bool).unwrap_or(true),
         camera_model: camera_model.to_string(),
         name: name.to_string(),
+        even_light: p.get("evenLight").and_then(Value::as_bool).unwrap_or(true),
     };
     let first = chart_request(p, C)?;
     let on_exists = OnExists::parse(str_param(p, "onExists")).ok_or_else(|| bad(C, "`onExists` is ask, replace, keepBoth or fail"))?;
@@ -163,7 +172,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Color Chart",
             [],
             None,
-            "{ids? | path?: a raw photo of a ColorChecker 24 (default: the active photo)} → {photo, path, cameraModel, body, frame: [w, h], found, chart: {corners: [[x, y] ×4], turns, score, estimatedCct, estimatedIlluminant}}: estimatedCct is what the chart's greys measure through the file's colour matrix, for information; corners are 0–1 in the developed raw frame (default crop) as the sensor recorded it (not rotated), top left, top right, bottom right, bottom left; turns 0–3 = patch A01 at the top left, top right, bottom right, bottom left",
+            "{ids? | path?: a raw photo of a color chart (a ColorChecker 24 or a SpyderCHECKR 24; default: the active photo)} → {photo, path, cameraModel, body, frame: [w, h], found, chart: {corners: [[x, y] ×4], turns, score, chartKey, chartName, estimatedCct, estimatedIlluminant}}: estimatedCct is what the chart's greys measure through the file's colour matrix, for information; corners are 0–1 in the developed raw frame (default crop) as the sensor recorded it (not rotated), top left, top right, bottom right, bottom left; turns 0–3 = patch A01 at the top left, top right, bottom right, bottom left",
             always,
             find_chart
         ),
@@ -172,7 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Camera Profile from Color Chart",
             [],
             None,
-            "{ids? | path?, corners?: [[x, y] ×4] (0–1, as profile.findChart; found automatically when omitted), turns?: 0–3, refine?: bool, illuminant?: D55 (default; also daylight, flash) | A (also tungsten, StdA) | D50 | D65 | D75, second?: {id? | path?, corners?, turns?, refine?, illuminant?} (a second chart photo under another light: a dual-illuminant profile; the same light twice is refused), rendering?: photographic (default: hue and saturation match the chart, lightness as the camera recorded) | reproduction (lightness too; for artwork and copy work), correctionTable?: bool (default true), name? (default: '<camera> <body> · <light(s)> · <Photo|Repro> · <capture date>'), onExists?: fail (default) | replace (write over it, same id: the photos using it follow) | keepBoth (save as '… 2') | ask (save nothing, answer {exists: {id, name, usedBy}, keepBothName}), cameraModel? (default: the file's), apply?: bool (default true: the chart photos develop with the new profile), bodyDefault?: bool (default true: the chart photos' camera bodies start with it)}: fits a DNG camera profile (ColorMatrix, ForwardMatrix, HueSatMap per light) to a ColorChecker 24 and adds it to the imported camera profiles (dcp: id) → {id, name, cameraModel, file, bodies, applied, replaced, dual, meanDeltaE, maxDeltaE, matrixMeanDeltaE, illuminant, corners, turns, patches, calibrations} (ΔE = CIEDE2000)",
+            "{ids? | path?, corners?: [[x, y] ×4] (0–1, as profile.findChart; found automatically when omitted), turns?: 0–3, refine?: bool, illuminant?: D55 (default; also daylight, flash) | A (also tungsten, StdA) | D50 | D65 | D75, second?: {id? | path?, corners?, turns?, refine?, illuminant?} (a second chart photo under another light: a dual-illuminant profile; the same light twice is refused), rendering?: photographic (default: hue and saturation match the chart, lightness as the camera recorded) | reproduction (lightness too; for artwork and copy work), correctionTable?: bool (default true), evenLight?: bool (default true: divide out the light's falloff across the chart and the glare on its patches, kept only when the grey ramp ends more linear), name? (default: '<camera> <body> · <light(s)> · <Photo|Repro> · <capture date>'), onExists?: fail (default) | replace (write over it, same id: the photos using it follow) | keepBoth (save as '… 2') | ask (save nothing, answer {exists: {id, name, usedBy}, keepBothName}), cameraModel? (default: the file's), apply?: bool (default true: the chart photos develop with the new profile), bodyDefault?: bool (default true: the chart photos' camera bodies start with it)}: fits a DNG camera profile (ColorMatrix, ForwardMatrix, HueSatMap per light) to a color chart (a ColorChecker 24 or a SpyderCHECKR 24) and adds it to the imported camera profiles (dcp: id) → {id, name, cameraModel, file, bodies, applied, replaced, dual, meanDeltaE, maxDeltaE, matrixMeanDeltaE, illuminant, corners, turns, patches, calibrations} (ΔE = CIEDE2000)",
             always,
             create_from_chart
         ),

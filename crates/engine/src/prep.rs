@@ -272,6 +272,9 @@ pub struct PrepState {
     /// The view (its signature, [`signature`]) the build was started for: in the grid, where no
     /// photo says which view the user is in, another view stops the build.
     build_view: u64,
+    /// The running build still has photos whose render jobs aren't made ([`crate::cmd::previews::feed`]):
+    /// the frontend ticks again soon ([`Session::prep_feeding`]).
+    feeding: bool,
     /// The view (its signature) whose build was started, or that the user stopped.
     started_for: Option<u64>,
     declined_for: Option<u64>,
@@ -473,6 +476,56 @@ pub fn background_lanes() -> usize {
     if cores >= 8 { 2 } else { 1 }
 }
 
+/// How many photos the background preparation renders on pools of its own at once
+/// ([`on_background_pool`]); a build with more lanes renders the others on the lane's thread.
+pub const BACKGROUND_POOLS: usize = 4;
+
+/// The background preparation's thread pool `i` (< [`BACKGROUND_POOLS`]): its threads run at the
+/// lowest priority ([`lcc_sysmem::lowest_thread_priority`]), below the render workers that make
+/// the photo on screen, so the preparation takes only the processor time the photo on screen
+/// leaves. `None` when it couldn't be made.
+pub fn background_pool(i: usize) -> Option<&'static rayon::ThreadPool> {
+    static POOLS: [std::sync::OnceLock<Option<rayon::ThreadPool>>; BACKGROUND_POOLS] = [const { std::sync::OnceLock::new() }; BACKGROUND_POOLS];
+    POOLS
+        .get(i)?
+        .get_or_init(|| {
+            let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(cores.saturating_sub(2).max(1))
+                .thread_name(move |k| format!("lc-prep-{i}-{k}"))
+                .start_handler(|_| {
+                    lcc_sysmem::lowest_thread_priority();
+                })
+                .build()
+                .map_err(|e| log::warn!("background preparation: no thread pool of its own ({e})"))
+                .ok()
+        })
+        .as_ref()
+}
+
+/// Run `f` (one photo of the background preparation) on a [`background_pool`] no other photo is
+/// using, else here. One photo a pool: two photos installed on one pool let a worker waiting
+/// inside one photo's parallel work pick up the other photo's whole render on its own stack,
+/// which mixes their per-thread state (the GPU context's failure slot, the background flag) and
+/// can deadlock at the memory gate (the inner photo waits for memory the outer one holds).
+pub fn on_background_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    static IN_USE: [std::sync::Mutex<()>; BACKGROUND_POOLS] = [const { std::sync::Mutex::new(()) }; BACKGROUND_POOLS];
+    for (i, slot) in IN_USE.iter().enumerate() {
+        // (a poisoned slot only means a photo panicked there: the pool is still fine)
+        let held = match slot.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(_held) = held
+            && let Some(pool) = background_pool(i)
+        {
+            return pool.install(f);
+        }
+    }
+    f()
+}
+
 /// A cheap identity of the photos in view: a build is started once per view.
 fn signature(ids: &[PhotoId], s: &Session) -> u64 {
     let mut h = lcc_preview::Hasher128::new();
@@ -489,6 +542,14 @@ pub fn marked(s: &Session, id: PhotoId) -> bool {
 }
 
 impl Session {
+    /// Whether the background preparation (or another preview build) is making `id`'s preview right
+    /// now. A step onto the photo the build is halfway through started a second render of the same raw
+    /// beside it (two decodes of a 45 MP CR3 instead of one), and that render on screen held the build
+    /// back while it ran: the loupe waits for the build's preview instead (2026-11-10 culling sweep).
+    pub fn being_prepared(&self, id: PhotoId) -> bool {
+        crate::cmd::previews::being_built(self, id)
+    }
+
     /// The background preparation settings in use (this library's own, else the app-wide ones).
     pub fn prep_settings(&self) -> PrepSettings {
         self.prep.settings()
@@ -503,6 +564,19 @@ impl Session {
     /// updated look, even after 15 min"). In a library the rest is prepared around the photo on screen
     /// ([`AROUND`]), not the whole view; a folder being culled is prepared whole.
     pub fn prep_tick(&mut self, mode: Mode, at: Option<PhotoId>, backward: bool) {
+        self.prep_tick_inner(mode, at, backward);
+        // the build's render jobs, a few photos a tick, nearest the user first (making all of them
+        // when it started froze the UI for 1.3 s in a 2,597-photo folder, 2026-11-10)
+        self.prep.feeding = crate::cmd::previews::feed(self);
+    }
+
+    /// Whether the background build is still making its photos' render jobs: tick again within a
+    /// frame or so, not only every half second.
+    pub fn prep_feeding(&self) -> bool {
+        self.prep.feeding
+    }
+
+    fn prep_tick_inner(&mut self, mode: Mode, at: Option<PhotoId>, backward: bool) {
         self.note_changes(at);
         let settings = self.prep.settings();
         let want = settings.mode(mode);
@@ -559,7 +633,8 @@ impl Session {
         if ids.is_empty() {
             return;
         }
-        let p = json!({"ids": ids, "background": true, "from": anchor.0, "backward": backward});
+        // (`feed`: its jobs are made a few photos a frame, `feed` in the frontend's tick)
+        let p = json!({"ids": ids, "background": true, "from": anchor.0, "backward": backward, "feed": true});
         match self.execute("library.buildPreviews", &p) {
             Ok(_) => {
                 self.prep.build = self.preview_build.clone();

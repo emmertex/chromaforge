@@ -4992,6 +4992,7 @@ dependencies = [
  "lcc-raw",
  "lcc-scenes",
  "lcc-testkit",
+ "lcc-tflite",
  "log",
  "pollster 1.0.1",
  "wgpu",
@@ -5441,9 +5442,12 @@ version = "26.46.1"
 dependencies = [
  "candle-core",
  "lcc-brand",
+ "lcc-faces",
  "lcc-testkit",
+ "log",
  "rayon",
  "thiserror 2.0.21",
+ "web-time",
 ]
 
 [[package]]

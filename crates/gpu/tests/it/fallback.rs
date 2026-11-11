@@ -76,11 +76,23 @@ fn failed_gpu_renders_fall_back_with_a_reason() {
     assert!(why.contains("limit"), "{why}");
     assert!(lcc_gpu::available(), "a limit is no device failure");
 
-    // the output fits but the mask planes (4 masks: 4 planes in one buffer) don't: caught when the
-    // buffer is created, without a device error, and the GPU stays in use
-    lcc_gpu::inject_fault(Fault::Limit((w * h * 3 * 4 + 1024) as u64));
-    let why = failed("mask planes over the limit");
-    assert!(why.contains("exceeds"), "{why}");
+    // the output fits but the mask planes don't (4 masks and the blurred chromaticity local Moiré
+    // reads: 7 planes in one buffer, over a limit of 3): each mask gets its own buffer and the
+    // per-pixel stage reads them band by band, still on the GPU and to the bit as with one buffer.
+    // Before, this fell back to the CPU: a 45 MP export with 13 masks (2,220 MiB of planes, over
+    // the 2,047 MiB limit) took 10 s instead of under 2.
+    let mut moire = s.clone();
+    moire.masks[0].adjust.moire = 60.0;
+    let cpu_moire = render(&src, &info, &moire, &req).image;
+    let joined = lcc_gpu::render(&src, &info, &moire, &req, None).expect("masked GPU render");
+    for limit in [w * h * 3 * 4 + 1024, w * h * 4 * 4] {
+        lcc_gpu::inject_fault(Fault::Limit(limit as u64));
+        let split = lcc_gpu::try_render(&src, &info, &moire, &req, None)
+            .unwrap_or_else(|f| panic!("mask planes over a {limit} B limit render on the GPU: {f:?}"));
+        assert!(split.image.data == joined.image.data, "mask planes in their own buffers render as in one (limit {limit} B)");
+        let d = mean_abs_diff(&cpu_moire, &split.image);
+        assert!(d < 0.5, "split mask planes: GPU differs from the CPU by {d:.3} LSB");
+    }
     assert!(lcc_gpu::available(), "{:?}", lcc_gpu::unavailable_reason());
     ok("after the limit faults");
 

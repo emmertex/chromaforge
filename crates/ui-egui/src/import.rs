@@ -722,6 +722,7 @@ pub fn rescan_with_subfolders(app: &mut LccApp, d: &ImportDialog, subfolders: bo
 /// and the photos then join the view in small batches under a progress window. A browse already
 /// running is replaced; the import review's scan is not.
 pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Option<&str>) -> Result<Value, String> {
+    let mut lap = crate::now_ms();
     let dir = std::path::absolute(std::path::Path::new(path)).map_err(|e| e.to_string())?;
     if !dir.is_dir() {
         return Err(format!("{path}: not a folder"));
@@ -753,9 +754,12 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.import = None;
     app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders, not_imported });
     app.session.source = lcc_engine::LibrarySource::Folder;
+    app.lap(&mut lap, "browse.start");
     // the photos the library already knows from this folder show at once: keep or pick the active one
     app.session.keep_active_in_view();
+    app.lap(&mut lap, "browse.view");
     let (input, _) = ScanInput::new(&mut app.session, std::slice::from_ref(&dir_s));
+    app.lap(&mut lap, "browse.library");
     let progress = std::sync::Arc::new(ScanProgress::default());
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
@@ -804,6 +808,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.scan =
         Some(ScanTask { progress, rx, copy: false, destination: None, album: None, browse: true, sources: Vec::new(), guard, subfolders: false });
     app.renderer.forget_imports();
+    app.lap(&mut lap, "browse.rest");
     Ok(json!({"path": dir_s, "subfolders": subfolders, "scanning": true}))
 }
 
@@ -846,6 +851,7 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
             app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
             return;
         }
+        let mut lap = crate::now_ms();
         // the folder and the ones its photos are in count as browsed now, as `library.browse` records them, so
         // their untouched Local photos aren't forgotten while the folder is in use
         if let Some(root) = app.session.browse.as_ref().map(|b| b.path.clone()) {
@@ -856,7 +862,9 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         // as `library.browse` forgets them (issue #1392)
         if let Some(b) = app.session.browse.clone() {
             let listed: Vec<String> = out.candidates.iter().map(|c| c.path.clone()).collect();
+            app.lap(&mut lap, "browse.noted");
             app.session.forget_gone_from(&b.path, b.subfolders, &listed);
+            app.lap(&mut lap, "browse.forgetGone");
         }
         // what the library doesn't know yet joins the Local view
         let queue: Vec<String> =

@@ -1091,6 +1091,59 @@ mod tests {
         }
     }
 
+    /// The MediaPipe Face Landmarker models (`lcc-tflite`, lowered to device programs) on the GPU agree with the CPU
+    /// interpreter on a synthetic picture, alone and batched: `LC_MEDIAPIPE_FACE=<folder>` holding `face_landmarker.task`.
+    /// With `--nocapture`, prints the timings.
+    #[test]
+    fn mediapipe_face_models_on_the_gpu_agree_with_the_cpu() {
+        let Some(dir) = std::env::var_os("LC_MEDIAPIPE_FACE").map(std::path::PathBuf::from) else {
+            lcc_testkit::skip!(Model, "LC_MEDIAPIPE_FACE is not set");
+            return;
+        };
+        if gpu().is_none() {
+            return;
+        }
+        let bundle = std::fs::read(dir.join("face_landmarker.task")).unwrap();
+        for name in ["face_detector.tflite", "face_landmarks_detector.tflite"] {
+            let model = lcc_tflite::Model::from_bytes(lcc_tflite::zip::entry(&bundle, name).unwrap()).unwrap();
+            let n: usize = model.input_shapes()[0].iter().product();
+            let inputs: Vec<Vec<f32>> =
+                (0..8).map(|s| (0..n).map(|i| ((i + s * 977) as f32 * 0.0137).sin() * 0.9 + ((i / 3) % 7) as f32 * 0.02).collect()).collect();
+            let refs: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
+            let cpu: Vec<_> = refs.iter().map(|x| model.run(&[x]).unwrap()).collect();
+            let (on_device, steps) = model.device_steps();
+            model.accelerate(accelerator().unwrap(), refs[0], 1e-3, false).unwrap();
+            let one = model.run(&[refs[1]]).unwrap();
+            let batch = model.run_batch(&refs).unwrap();
+            assert!(model.accelerator().is_some(), "{name}: the GPU was dropped");
+            let close = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+                for (x, y) in a.iter().zip(b) {
+                    let scale = x.iter().fold(1e-6f32, |m, v| m.max(v.abs()));
+                    let worst = x.iter().zip(y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
+                    assert!(worst <= 1e-3 * scale, "{name}: off by {} of {scale}", worst);
+                }
+            };
+            close(&cpu[1], &one);
+            for (c, g) in cpu.iter().zip(&batch) {
+                close(c, g);
+            }
+            let time = |f: &mut dyn FnMut()| {
+                f();
+                let t = std::time::Instant::now();
+                for _ in 0..5 {
+                    f();
+                }
+                t.elapsed().as_secs_f64() * 1000.0 / 5.0
+            };
+            let cpu_ms = time(&mut || refs.iter().for_each(|x| drop(model.run_cpu(&[x]).unwrap())));
+            let one_ms = time(&mut || refs.iter().for_each(|x| drop(model.run(&[x]).unwrap())));
+            let batch_ms = time(&mut || drop(model.run_batch(&refs).unwrap()));
+            eprintln!(
+                "{name}: {on_device} of {steps} steps on the GPU; 8 runs: CPU {cpu_ms:.1} ms, GPU one by one {one_ms:.1} ms, GPU batched {batch_ms:.1} ms"
+            );
+        }
+    }
+
     /// Timings, CPU against the GPU one convolution at a time and as whole programs (one face, and a batch of 16):
     /// `LC_FACE_MODELS=<folder> cargo test --release -p lcc-gpu faces::tests::timings -- --ignored --nocapture`.
     #[test]

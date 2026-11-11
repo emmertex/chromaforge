@@ -127,6 +127,8 @@ pub(crate) fn detector(s: &Session) -> std::result::Result<Arc<Finder>, NoDetect
             Err(e) => return Err(NoDetector::Unusable(e.to_string())),
         };
         let model = crate::segment::face_model(&dir).map_err(NoDetector::Unusable)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        offer_detection_gpu(s, &model);
         Ok(Arc::new(Finder { model }))
     }
     #[cfg(not(feature = "sam"))]
@@ -134,6 +136,51 @@ pub(crate) fn detector(s: &Session) -> std::result::Result<Arc<Finder>, NoDetect
         let _ = s;
         Err(NoDetector::Unusable(NOT_AVAILABLE.into()))
     }
+}
+
+/// The face model last offered to the GPU (its address), so each loaded model is checked once.
+#[cfg(all(feature = "sam", not(target_arch = "wasm32")))]
+static DETECTION_OFFERED: Mutex<usize> = Mutex::new(0);
+
+/// Offer a newly loaded face model to the GPU ([`offer_gpu`]: in the background, checked against the CPU, kept only
+/// when faster), or move it off a card that stopped working ([`move_off_lost_card`]).
+#[cfg(all(feature = "sam", not(target_arch = "wasm32")))]
+fn offer_detection_gpu(s: &Session, model: &Arc<lcc_segment::people::FaceModel>) {
+    let attach = |m: Arc<lcc_segment::people::FaceModel>| {
+        move |gpu: Arc<dyn lcc_faces::net::Accelerator>| -> std::result::Result<(), String> {
+            let what = m.accelerate(gpu, true)?;
+            log::info!("faces: {what} run on the GPU");
+            Ok(())
+        }
+    };
+    let at = Arc::as_ptr(model) as usize;
+    let fresh = {
+        let mut offered = DETECTION_OFFERED.lock().unwrap_or_else(PoisonError::into_inner);
+        std::mem::replace(&mut *offered, at) != at
+    };
+    if fresh {
+        offer_gpu(s, "detection", attach(model.clone()));
+    } else {
+        move_off_lost_card(s, "detection", model.accelerated(), attach(model.clone()));
+    }
+}
+
+/// Keep face detection on the CPU (`cpu`), or let the next run offer it to the GPU again.
+fn set_detection_cpu_only(s: &Session, cpu: bool) {
+    #[cfg(all(feature = "sam", not(target_arch = "wasm32")))]
+    {
+        *DETECTION_OFFERED.lock().unwrap_or_else(PoisonError::into_inner) = 0;
+        if cpu
+            && s.segmenter.open_model_installed("face")
+            && let Ok(dir) = s.segmenter.require_open_model("face", AiModel::FaceDetector)
+            && let Ok(model) = crate::segment::face_model(&dir)
+        {
+            model.detach();
+        }
+    }
+    let _ = s;
+    let st = if cpu { GpuState { why: Some("the CPU is chosen in Settings".into()), ..GpuState::default() } } else { GpuState::default() };
+    set_gpu_state("detection", st);
 }
 
 /// Where a face model runs, for Settings ▸ Faces and `faces.gpu`.
@@ -253,6 +300,7 @@ fn gpu(s: &mut Session, p: &Value) -> Result<Value> {
         let embedder = s.faces.embedder.as_ref().map(|(_, e)| e.clone());
         #[cfg(target_arch = "wasm32")]
         let embedder: Option<Arc<lcc_faces::runtime::Embedder>> = None;
+        set_detection_cpu_only(s, cpu);
         if cpu {
             if let Some(e) = &embedder {
                 e.net().detach();
@@ -275,15 +323,20 @@ fn gpu(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Where face detection runs, for Settings ▸ Faces and `faces.gpu`.
 pub(crate) fn detection_gpu_state(s: &Session) -> GpuState {
+    if !s.segmenter.open_model_installed("face") {
+        return GpuState { why: Some("Face detector model not installed".into()), ..GpuState::default() };
+    }
+    if cpu_only(s) {
+        return GpuState { why: Some("the CPU is chosen in Settings".into()), ..GpuState::default() };
+    }
     if let Some(st) = gpu_state("detection")
-        && (st.device.is_some() || st.checking)
+        && (st.device.is_some() || st.checking || st.why.is_some())
     {
         return st;
     }
-    if !s.segmenter.open_model_installed("face") {
-        GpuState { why: Some("Face detector model not installed".into()), ..GpuState::default() }
-    } else {
-        GpuState { why: Some("Face Landmarker runs multithreaded on the CPU".into()), ..GpuState::default() }
+    GpuState {
+        why: Some("Face Landmarker runs multithreaded on the CPU until faces are first looked for and the GPU is checked".into()),
+        ..GpuState::default()
     }
 }
 
