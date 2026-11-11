@@ -171,6 +171,14 @@ impl Packed {
         }
         Self { k, n, panels }
     }
+
+    /// Element `(row, col)` back out of the panels (0 outside the matrix).
+    pub fn at(&self, row: usize, col: usize) -> f32 {
+        if row >= self.k || col >= self.n {
+            return 0.0;
+        }
+        self.panels.get((col / NR) * self.k * NR + row * NR + col % NR).copied().unwrap_or(0.0)
+    }
 }
 
 /// The `MR × NR` micro-kernel: `Σ_k a[k][i] · b[k][j]` for `a` `[k][MR]` and `b` `[k][NR]`.
