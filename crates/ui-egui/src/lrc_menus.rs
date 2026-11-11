@@ -168,8 +168,8 @@ const LIBRARY: &[&str] = &[
     "@Filter by Flag",
     "@Filter by Rating",
     "@Filter by Color Label",
-    "soon.filterByKind",
-    "soon.filterByMetadata",
+    "@Filter by Kind",
+    "@Filter by Metadata",
     "@Filters",
     "---",
     "library.lockFilters",
@@ -760,8 +760,6 @@ pub const COMING_SOON: &[ComingSoon] = &[
     // File
     // Edit
     // Library
-    soon("soon.filterByKind", "Filter by Kind", None, 'S', true, "Master photos / Virtual copies / Videos filters as a submenu."),
-    soon("soon.filterByMetadata", "Filter by Metadata", None, 'S', true, "The metadata browser's columns as a submenu."),
     // Photo
     soon("soon.drawFaceRegions", "Draw Face Regions", None, 'M', false, "Draw a face box by hand in the loupe."),
     // Metadata

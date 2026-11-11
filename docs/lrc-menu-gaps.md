@@ -12,13 +12,6 @@ or picker); *feature* = new behaviour.
 
 Generated from the menu tables; don't edit by hand.
 
-## Library module ▸ Library
-
-| Item | What it does | Size | Kind | Slot |
-|---|---|---|---|---|
-| Filter by Kind | Master photos / Virtual copies / Videos filters as a submenu. | S | wire-up | `soon.filterByKind` |
-| Filter by Metadata | The metadata browser's columns as a submenu. | S | wire-up | `soon.filterByMetadata` |
-
 ## Library module ▸ Photo ▸ People
 
 | Item | What it does | Size | Kind | Slot |
