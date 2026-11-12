@@ -786,6 +786,8 @@ fn load_bytes_now(
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
+        // (a DNG of rendered RGB: no camera profile describes it, so the Profiles panel offers none)
+        let rendered_rgb = lcc_raw::color::is_rendered_rgb(&raw.color);
         let t_colour = web_time::Instant::now();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
         let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
@@ -910,6 +912,7 @@ fn load_bytes_now(
                 // (the catalog knows the original's size: `media::source_info`)
                 native_long: None,
                 colorimetric,
+                rendered_rgb,
                 alpha: None,
                 generated: None,
                 avoid: None,

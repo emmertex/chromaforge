@@ -317,3 +317,39 @@ fn activity_cards_sit_below_the_top_buttons_inside_the_insets() {
     assert!(covered(&h, card).iter().all(|w| w == "modern:histogram"), "the card covers {:?}", covered(&h, card));
     drop(g);
 }
+
+/// Press `id` at `at`, keep the finger still for `frames` frames calling `during` after each, then
+/// let go.
+fn hold_at(h: &mut Headless, at: egui::Pos2, frames: usize, mut during: impl FnMut(&Headless, usize)) {
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.app.synthetic.push(egui::Event::PointerMoved(at));
+    h.app.synthetic.push(button(true));
+    for i in 0..frames {
+        h.step();
+        during(h, i);
+    }
+    h.app.synthetic.push(button(false));
+    h.settle(SETTLE);
+}
+
+/// #1035: a press and hold shows the original for as long as the finger stays down, on the photo
+/// (a phone) and on the Before button (a tablet), and the edit comes back on release.
+#[test]
+fn holding_shows_the_original_until_the_finger_lifts() {
+    use crate::state::BeforeAfter;
+    for (size, id) in [([400.0, 800.0], "modern:canvas"), ([1200.0, 900.0], "modern:before")] {
+        let mut h = develop(size);
+        let at = rect(&h, id).unwrap_or_else(|| panic!("{id} on screen")).center();
+        let mut shown_at = None;
+        hold_at(&mut h, at, 90, |h, i| {
+            let original = h.app.ui.before_after == BeforeAfter::Original;
+            match shown_at {
+                None if original => shown_at = Some(i),
+                Some(first) => assert!(original, "{id}: the original went away at frame {i} (shown at {first}) while still held"),
+                None => {}
+            }
+        });
+        assert!(shown_at.is_some(), "{id}: holding shows the original");
+        assert_eq!(h.app.ui.before_after, BeforeAfter::Off, "{id}: letting go shows the edit again");
+    }
+}

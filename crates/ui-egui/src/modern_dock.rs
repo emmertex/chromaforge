@@ -222,7 +222,6 @@ pub(crate) fn open(app: &mut LccApp, g: Group) -> Result<(), String> {
     if app.session.active().is_none() {
         return Err("no photo is open".into());
     }
-    app.ui.presets = false;
     match g {
         Group::Crop => app.ui.right = RightPanel::Crop,
         Group::Masks => app.ui.right = RightPanel::Masking,

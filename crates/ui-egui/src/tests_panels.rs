@@ -3145,18 +3145,42 @@ fn the_histogram_clipping_buttons_stay_clear_of_the_hovered_scroll_bar() {
 }
 
 /// An imported folder is listed under its own name, not under every folder from the disk down to
-/// it (the full path is on hover); two folders with the same name say which folder each is in.
+/// it (the full path is on hover); below the first listed folder every folder nests in its own
+/// parent, the ones holding only subfolders included (#1022).
 #[test]
 fn an_imported_folder_is_listed_by_its_own_name() {
     let h = folders_app(&["/Users/me/Desktop/shoot/c.jpg"]);
     assert!(has(&h, "source:libfolder:/Users/me/Desktop/shoot"), "the imported folder is a row straight under its disk");
     assert!(!has(&h, "source:libfolder:/Users") && !has(&h, "source:libfolder:/Users/me"), "no rows for the folders on the way");
-    let h = folders_app(&["/Users/me/Pictures/2024/trip/a.jpg", "/Users/me/Pictures/2025/trip/b.jpg"]);
-    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree());
+    let h =
+        folders_app(&["/Users/me/Pictures/2026/January/31st/a.jpg", "/Users/me/Pictures/2026/August/31st/b.jpg", "/Users/me/Pictures/2025/x/c.jpg"]);
+    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree(), &Default::default());
     let pictures = &tree[0].children[0];
     assert_eq!((pictures.name.as_str(), pictures.path.as_str()), ("Pictures", "/Users/me/Pictures"), "where the two branch");
-    let names: Vec<(&str, &str)> = pictures.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect();
-    assert_eq!(names, [("trip (2024)", "/Users/me/Pictures/2024/trip"), ("trip (2025)", "/Users/me/Pictures/2025/trip")]);
+    let y2026 = pictures.children.iter().find(|n| n.path == "/Users/me/Pictures/2026").expect("2026 is a row");
+    let months: Vec<&str> = y2026.children.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(months, ["August", "January"], "the months holding only subfolders keep their rows");
+    let jan = &y2026.children[1];
+    assert_eq!(
+        jan.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect::<Vec<_>>(),
+        [("31st", "/Users/me/Pictures/2026/January/31st")]
+    );
+    let y2025 = pictures.children.iter().find(|n| n.path == "/Users/me/Pictures/2025").expect("2025 is a row");
+    assert_eq!(y2025.children.len(), 1, "a single subfolder below a listed folder is not lifted");
+}
+
+/// Show Parent Folder gives a folder hidden on the way down from the disk a row of its own in the
+/// Folders list and chooses it (#1022).
+#[test]
+fn show_parent_folder_lists_the_parent_in_folders() {
+    let mut h = folders_app(&["/Users/me/Desktop/shoot/c.jpg"]);
+    assert!(!has(&h, "source:libfolder:/Users/me/Desktop"));
+    right_click(&mut h, "source:libfolder:/Users/me/Desktop/shoot");
+    click(&mut h, "folderShowParent");
+    assert_eq!(h.app.session.library_folder.as_deref(), Some("/Users/me/Desktop"));
+    h.step();
+    assert!(has(&h, "source:libfolder:/Users/me/Desktop"), "the parent is a row of the Folders list");
+    assert!(has(&h, "source:libfolder:/Users/me/Desktop/shoot"), "with the folder inside it");
 }
 
 #[test]

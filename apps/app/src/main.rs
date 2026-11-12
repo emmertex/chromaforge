@@ -1923,6 +1923,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Issue #1110: the before/after view mode (`\`, the Original Photo box) is momentary, so a
+    /// session quit in it must come back showing the edits, not frozen on the original.
+    #[test]
+    fn the_before_after_view_mode_does_not_outlive_a_restart() {
+        use lcc_ui_egui::state::BeforeAfter;
+        let ui = UiState { before_after: BeforeAfter::Original, ..Default::default() };
+        let saved = serde_json::to_value(&ui).unwrap();
+        assert!(saved.get("beforeAfter").is_none(), "the view mode is not saved: {saved}");
+        let back: UiState = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.before_after, BeforeAfter::Off);
+        // an older preferences file that still carries the mode reads, and starts without it
+        let legacy: UiState = serde_json::from_value(serde_json::json!({"beforeAfter": "original", "thumbSize": 210.0})).unwrap();
+        assert_eq!(legacy.thumb_size, 210.0);
+        assert_eq!(legacy.before_after, BeforeAfter::Off);
+    }
+
     /// Issue #103: a damaged ui.json (which holds the library location) is kept aside and
     /// reported, not silently replaced by the defaults.
     #[test]

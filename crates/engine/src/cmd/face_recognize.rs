@@ -289,6 +289,9 @@ struct Arranged {
     ready: bool,
     /// A name for some faces, when the faces already named say so with confidence: `(photo, index)` to `(name, score)`.
     suggestions: std::collections::HashMap<(u64, usize), (String, f32)>,
+    /// Look-alike groups (#259): faces next to each other in the order that are as alike as a match needs share a
+    /// group number, so a frontend can select (and name or ignore) a group at once. `(photo, index)` to the group.
+    groups: std::collections::HashMap<(u64, usize), usize>,
 }
 
 /// `faces.unnamed {limit?: 600}`: the faces nobody has named, to be named a group at a time. With a recognition model
@@ -313,7 +316,8 @@ fn unnamed(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|(photo, index, rect)| {
             let view = s.face_view(lcc_catalog::PhotoId(*photo), *rect);
             let suggestion = arranged.suggestions.get(&(*photo, *index)).map(|(name, score)| json!({"name": name, "score": score}));
-            json!({"photo": photo, "index": index, "rect": rect_json(rect), "view": rect_json(&view), "suggestion": suggestion})
+            let group = arranged.groups.get(&(*photo, *index));
+            json!({"photo": photo, "index": index, "rect": rect_json(rect), "view": rect_json(&view), "suggestion": suggestion, "group": group})
         })
         .collect();
     Ok(json!({"total": total, "faces": faces, "ordered": arranged.ordered, "ready": arranged.ready}))
@@ -938,7 +942,7 @@ mod imp {
     /// Put the unnamed faces `all` in order of likeness (the ones already embedded; the rest follow in photo order) and
     /// find a name for those the named faces recognise, for the first `limit` of them.
     pub fn arrange_unnamed(s: &mut Session, all: &mut Vec<(u64, usize, Rect)>, limit: usize) -> super::Arranged {
-        let none = super::Arranged { ordered: false, ready: false, suggestions: Default::default() };
+        let none = super::Arranged { ordered: false, ready: false, suggestions: Default::default(), groups: Default::default() };
         let Some(_) = s.face_models_dir.clone() else { return none };
         let Ok(manifest) = current_manifest(s, "faces.unnamed", false) else { return none };
         let (mut embedded, mut plain) = (Vec::new(), Vec::new());
@@ -976,11 +980,33 @@ mod imp {
                 }
             }
         }
+        let groups = look_alike_groups(ordered.iter().map(|((photo, index, _), e)| ((*photo, *index), &e[..])), threshold);
         let grouped = !ordered.is_empty();
         all.extend(ordered.into_iter().map(|(f, _)| f));
         all.extend(beyond.into_iter().map(|(f, _)| f));
         all.extend(plain);
-        super::Arranged { ordered: grouped, ready: true, suggestions }
+        super::Arranged { ordered: grouped, ready: true, suggestions, groups }
+    }
+
+    /// Number the runs of `chain` (faces in order of likeness) whose neighbours are at least `threshold` alike: each
+    /// run is one look-alike group. A pair that cannot be compared starts a new group.
+    pub(super) fn look_alike_groups<'a>(
+        chain: impl Iterator<Item = ((u64, usize), &'a [f32])>,
+        threshold: f32,
+    ) -> std::collections::HashMap<(u64, usize), usize> {
+        let mut groups = std::collections::HashMap::new();
+        let mut group = 0usize;
+        let mut prev: Option<&[f32]> = None;
+        for (key, e) in chain {
+            if let Some(p) = prev
+                && !matching::cosine(p, e).is_some_and(|c| c >= threshold)
+            {
+                group = group.saturating_add(1);
+            }
+            groups.insert(key, group);
+            prev = Some(e);
+        }
+        groups
     }
 
     /// How many of a person's best matching faces a match is based on (Settings ▸ Faces), looked up at most once a second.
@@ -1083,6 +1109,19 @@ mod imp {
     mod tests {
         use super::*;
         use crate::tests_face_recognize::{install_face_model, region, set_regions, setup, temp, two_photos};
+
+        /// #259: runs of look-alikes share a group; an unlike neighbour, or one that cannot be compared, starts a new one.
+        #[test]
+        fn look_alikes_next_to_each_other_form_groups() {
+            let (a, a2, b, bad) = (unit(&[(0, 1.0)]), unit(&[(0, 1.0), (1, 0.1)]), unit(&[(5, 1.0)]), vec![f32::NAN; 64]);
+            let chain = [((1, 0), &a), ((2, 0), &a2), ((3, 0), &b), ((4, 0), &bad), ((5, 0), &b)];
+            let g = look_alike_groups(chain.iter().map(|(k, e)| (*k, &e[..])), 0.5);
+            assert_eq!(g[&(1, 0)], g[&(2, 0)]);
+            assert_ne!(g[&(2, 0)], g[&(3, 0)]);
+            assert_ne!(g[&(3, 0)], g[&(4, 0)]);
+            assert_ne!(g[&(4, 0)], g[&(5, 0)]);
+            assert!(look_alike_groups(std::iter::empty(), 0.5).is_empty());
+        }
 
         fn unit(parts: &[(usize, f32)]) -> Vec<f32> {
             let mut v = vec![0.0; 64];
@@ -1278,7 +1317,7 @@ mod imp {
     }
 
     pub fn arrange_unnamed(_: &mut Session, _: &mut Vec<(u64, usize, lcc_geom::Rect)>, _: usize) -> super::Arranged {
-        super::Arranged { ordered: false, ready: false, suggestions: Default::default() }
+        super::Arranged { ordered: false, ready: false, suggestions: Default::default(), groups: Default::default() }
     }
 }
 
