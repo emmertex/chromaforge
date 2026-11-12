@@ -89,6 +89,15 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
   if the changelog should mention it, `docs/changelog/unreleased/<YYYY-MM-DD>-<slug>.md` (one `## Section` + bullets);
   READMEs there say how. Never touch `docs/whats-new.md` (frozen) or released `docs/changelog/<version>.md`;
   `cargo xtask notes --check` (in `ci`) fails if `docs/whats-new.md` changes outside an upstream merge.
+- **The manual moves with the product:** any change a user can notice (new/changed/removed feature, command, menu item,
+  panel, slider, setting, shortcut, default, file format, platform or install step, or a screenshot that no longer
+  matches) updates the manual **in the same commit**. The manual has two parts: the page-per-feature site in
+  `docs/manual-site/src/content/docs/` (picture-first; rules and screenshot runner in
+  [`docs/manual-site/AUTHORING.md`](docs/manual-site/AUTHORING.md)) and the markdown guide in `docs/manual/`. Edit the
+  page that names the feature, or add one; fix every sentence the change makes false; retake affected shots
+  (`scripts/shots.d/<area>.json`) or mark them `<NeedsImage>`; add a row to `reference/` when it adds a menu item or
+  shortcut. Removing a feature removes its manual text. Mention "Manual: <pages>" (or "Manual: none, no user-visible
+  change") in the commit/PR. A release is not cut with a changelog entry that has no manual page behind it.
 - **Quality gates (2026-11-10):** *before pushing*, every commit passes `cargo xtask ci --fast` (fmt, clippy
   -D warnings, build incl. wasm check, brand, layers, assets, parity, deny), targeted `cargo test -p <crate>`, and
   `cargo xtask sil`. The full suite runs only in cloud CI on the PR; releases get a manual full-CI dispatch.

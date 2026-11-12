@@ -16,8 +16,8 @@
 | `.deb`, `.rpm` | `packaging/linux/package.sh` + `nfpm.yaml.in` | release.yml | needs `nfpm`; runtime deps (Vulkan/EGL, X11/Wayland) as depends/recommends |
 | `.tar.gz` (FHS tree) | `packaging/linux/package.sh` | release.yml | input for the Flatpak bundle |
 | Flatpak bundle | `packaging/linux/flatpak-bundle.sh`, `flatpak/<app_id>.yml.in` (source build), `.bundle.yml.in` (from the tarball) | release.yml | installed and smoke-tested in CI; not on Flathub |
-| macOS `.dmg` + CLI `.zip` | `packaging/macos/package.sh` | release.yml (universal) | ad-hoc signed unless signing secrets are set; notarization optional |
-| Windows `.msi` | `packaging/windows/package.ps1`, `app.wxs.in` | release.yml (x64), windows-arm64.yml (installs and uninstalls) | Authenticode signing via `sign.ps1` when secrets are set |
+| macOS `.dmg` + CLI `.zip` | `packaging/macos/package.sh` | release.yml (universal) | released builds are ad-hoc signed only (no Apple developer certificate, not notarized); signing/notarization run only if the secrets are set |
+| Windows `.msi` | `packaging/windows/package.ps1`, `app.wxs.in` | release.yml (x64), windows-arm64.yml (installs and uninstalls) | released builds are unsigned; Authenticode signing via `sign.ps1` runs only if signing secrets are set |
 | FreeBSD `.tar.gz` | `packaging/freebsd/package.sh` | release.yml / freebsd.yml | `--dry-run` works on any OS (packaging-lint) |
 | Web (static) | `packaging/web/package.sh` | release.yml | hosting notes in `packaging/web/HOSTING.md` |
 
