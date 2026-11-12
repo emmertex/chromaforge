@@ -80,7 +80,55 @@ impl AsRef<std::ffi::OsStr> for TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        remove_dir_retrying(&self.0);
+    }
+}
+
+/// How many times [`remove_dir_retrying`] tries.
+pub const REMOVE_TRIES: u32 = 10;
+/// The pause between two of [`remove_dir_retrying`]'s tries.
+pub const REMOVE_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Remove `dir` and everything in it. When that fails while the folder is still there, try again
+/// up to [`REMOVE_TRIES`] times, [`REMOVE_PAUSE`] apart, then give up quietly. On Windows, a file
+/// that a background thread of the test's app still has open (a library a test opened, for
+/// example) can't be removed until that thread lets go, which is usually a moment after the app
+/// itself is dropped.
+pub fn remove_dir_retrying(dir: &Path) {
+    for attempt in 1..=REMOVE_TRIES {
+        if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
+            return;
+        }
+        if attempt < REMOVE_TRIES {
+            std::thread::sleep(REMOVE_PAUSE);
+        }
+    }
+}
+
+/// How long [`remove_dir_settled`] waits for a folder to stay gone.
+pub const SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(500);
+/// The longest [`remove_dir_settled`] keeps at it.
+pub const SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Remove `dir` (as [`remove_dir_retrying`]), then keep watching it: if something writes it again
+/// (a background job of an app the test has already dropped, such as a thumbnail render or a
+/// cache record for a library the test opened), remove it again. Returns once the folder has
+/// stayed away for [`SETTLE_QUIET`], or after [`SETTLE_MAX`] in all. For tests that open a library
+/// in a temporary folder; costs [`SETTLE_QUIET`], so plain folders use [`TempDir`]'s drop.
+pub fn remove_dir_settled(dir: &Path) {
+    let start = std::time::Instant::now();
+    let mut gone_since: Option<std::time::Instant> = None;
+    while start.elapsed() < SETTLE_MAX {
+        if dir.exists() {
+            gone_since = None;
+            let _ = std::fs::remove_dir_all(dir);
+        } else {
+            let since = *gone_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= SETTLE_QUIET {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
@@ -256,6 +304,53 @@ mod tests {
             "{\"need\":\"corpus\",\"reason\":\"skip: C:\\\\corpus\\\\raw \\\"absent\\\"\\n\\u0001\",\"test\":\"corpus::decodes\",\
              \"binary\":\"it\",\"location\":\"crates/raw/tests/it/corpus.rs:28\"}\n"
         );
+    }
+
+    #[test]
+    fn a_temp_dir_goes_with_its_contents_and_a_missing_one_is_no_error() {
+        let dir = TempDir::new("lcc-testkit-tempdir");
+        let path = dir.to_path_buf();
+        std::fs::create_dir_all(dir.join("a").join("b")).unwrap();
+        std::fs::write(dir.join("a").join("b").join("c.txt"), b"x").unwrap();
+        drop(dir);
+        assert!(!path.exists(), "removed with what is inside");
+        let t0 = std::time::Instant::now();
+        remove_dir_retrying(&path);
+        assert!(t0.elapsed() < REMOVE_PAUSE, "a folder that is already gone takes no retries");
+    }
+
+    /// A file still open when the folder is dropped (Windows can't remove it then): the removal
+    /// keeps trying, and the folder goes once the file is closed a moment later.
+    #[test]
+    fn removal_waits_for_a_file_closed_a_moment_later() {
+        let dir = TempDir::new("lcc-testkit-tempdir-open");
+        let path = dir.to_path_buf();
+        let file = std::fs::File::create(dir.join("held.bin")).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(REMOVE_PAUSE * 2);
+            drop(file);
+        });
+        drop(dir);
+        closer.join().unwrap();
+        // on systems that remove open files at once the folder is gone anyway
+        assert!(!path.exists());
+    }
+
+    /// A late writer (a background job of an app the test dropped) writes the folder again after
+    /// it was removed: the settled removal removes it again and returns with it gone.
+    #[test]
+    fn a_settled_removal_outlasts_a_late_writer() {
+        let dir = std::env::temp_dir().join(format!("lcc-testkit-settled-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("thumbs")).unwrap();
+        let late = dir.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = std::fs::create_dir_all(late.join("thumbs").join("36"));
+            let _ = std::fs::write(late.join("thumbs").join("36").join("x.lcthumb"), b"x");
+        });
+        remove_dir_settled(&dir);
+        writer.join().unwrap();
+        assert!(!dir.exists(), "written again after the first removal, and removed again");
     }
 
     #[test]
