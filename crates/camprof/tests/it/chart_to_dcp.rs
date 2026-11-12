@@ -24,8 +24,9 @@ fn the_chart_is_found_profiled_and_the_dcp_reads_back() {
     for turns in [0u8, 1] {
         let (frame, truth) = frame(turns);
         let found = find_chart(&frame).expect("the chart is found");
+        assert_eq!(found.chart.key, "cc24", "the ColorChecker is not taken for another chart");
         assert_eq!(found.turns, turns);
-        assert_eq!(orient(&frame, &truth), turns, "hand-placed corners are oriented by the fit");
+        assert_eq!(orient(&frame, lcc_camprof::chart(), &truth), turns, "hand-placed corners are oriented by the fit");
         assert!(close(&found.corners, &truth, 12.0), "{:?} vs {truth:?}", found.corners);
         let opts = BuildOptions { camera_model: "the app Test Camera".into(), name: "Chart D55".into(), ..Default::default() };
         let built = build(&frame, &found, &opts).unwrap();
@@ -56,7 +57,7 @@ fn corners_placed_by_hand_are_moved_onto_the_chart() {
         bottom_right: [p[2][0] + 8.0, p[2][1] + 6.0],
         bottom_left: [p[3][0] - 5.0, p[3][1] - 8.0],
     };
-    let refined = refine(&frame, &nudged, 0).expect("close enough to refine");
+    let refined = refine(&frame, lcc_camprof::chart(), &nudged, 0).expect("close enough to refine");
     // (a sampling square is 60 % of a cell and a patch 84 %: anywhere within ~8 px samples only the patch)
     assert!(close(&refined.corners, &truth, 10.0), "{:?} vs {truth:?}", refined.corners);
     let opts = BuildOptions { camera_model: "the app Test Camera".into(), ..Default::default() };
@@ -68,7 +69,7 @@ fn corners_placed_by_hand_are_moved_onto_the_chart() {
 #[test]
 fn bad_input_is_an_error_not_a_panic() {
     let (frame, truth) = frame(0);
-    let located = lcc_camprof::Located { corners: truth, turns: 0, score: None };
+    let located = lcc_camprof::Located { corners: truth, turns: 0, score: None, chart: lcc_camprof::chart() };
     let mut opts = BuildOptions { camera_model: "X".into(), illuminant: "Moonlight".into(), ..Default::default() };
     assert!(build(&frame, &located, &opts).is_err());
     opts.illuminant = "D65".into();
@@ -81,9 +82,9 @@ fn bad_input_is_an_error_not_a_panic() {
         ChartCorners::from_rect(10.0, 10.0, 0.0, 0.0),
         ChartCorners::from_rect(f64::NAN, 3.0, 100.0, 80.0),
     ] {
-        let l = lcc_camprof::Located { corners, turns: 7, score: None };
+        let l = lcc_camprof::Located { corners, turns: 7, score: None, chart: lcc_camprof::chart() };
         assert!(build(&frame, &l, &opts).is_err(), "{corners:?}");
-        let _ = refine(&frame, &corners, 3);
+        let _ = refine(&frame, lcc_camprof::chart(), &corners, 3);
     }
     // a frame with no chart: nothing is found
     let blank = RawFrame::from_rgb(300, 200, vec![[0.2, 0.2, 0.2]; 60_000]).unwrap();
@@ -110,8 +111,8 @@ fn two_lights_make_a_dual_illuminant_profile() {
     let opts = BuildOptions { camera_model: "the app Test Camera".into(), ..Default::default() };
     // given daylight first: calibration 1 is still the lower colour temperature (DNG order)
     let dual = build_dual(
-        &Shot { frame: &day, located: Located { corners: dc, turns: 0, score: None }, illuminant: "D65" },
-        &Shot { frame: &tung, located: Located { corners: tc, turns: 0, score: None }, illuminant: "A" },
+        &Shot { frame: &day, located: Located { corners: dc, turns: 0, score: None, chart: lcc_camprof::chart() }, illuminant: "D65" },
+        &Shot { frame: &tung, located: Located { corners: tc, turns: 0, score: None, chart: lcc_camprof::chart() }, illuminant: "A" },
         &opts,
     )
     .unwrap();
@@ -138,7 +139,7 @@ fn the_same_light_twice_is_refused() {
     let (a, ac) = frame_under("D65");
     let (b, bc) = frame_under("D65");
     let opts = BuildOptions { camera_model: "X".into(), ..Default::default() };
-    let shot = |f, c, l| Shot { frame: f, located: Located { corners: c, turns: 0, score: None }, illuminant: l };
+    let shot = |f, c, l| Shot { frame: f, located: Located { corners: c, turns: 0, score: None, chart: lcc_camprof::chart() }, illuminant: l };
     // declared alike
     let e = build_dual(&shot(&a, ac, "D65"), &shot(&b, bc, "D75"), &opts).unwrap_err();
     assert!(e.to_string().contains("same light"), "{e}");
@@ -148,4 +149,25 @@ fn the_same_light_twice_is_refused() {
     assert_eq!(lcc_camprof::nearest_illuminant(2900.0), "A");
     assert_eq!(lcc_camprof::nearest_illuminant(5600.0), "D55");
     assert_eq!(lcc_camprof::nearest_illuminant(f64::NAN), "D55");
+}
+
+#[test]
+fn a_spydercheckr_24_is_found_as_itself_and_profiled() {
+    let chart = &lcc_camprof::reference::SPYDERCHECKR_24;
+    let (w, h) = (900usize, 600usize);
+    let d55 = lcc_camprof::illuminants::white_point_by_name("1931_2", "D55").unwrap();
+    // upright (4 columns, 6 rows) and on its side, as it lies in a landscape photo
+    for (turns, truth) in [(0u8, ChartCorners::from_rect(330.0, 90.0, 260.0, 390.0)), (1, ChartCorners::from_rect(220.0, 150.0, 420.0, 280.0))] {
+        let data = synthetic::chart_frame_of(chart, w, h, &truth, turns, d55, 0.55);
+        let frame = RawFrame::from_rgb(w, h, data).unwrap();
+        let found = find_chart(&frame).expect("the SpyderCHECKR is found");
+        assert_eq!(found.chart.key, "spyder24");
+        assert_eq!(found.turns, turns);
+        assert!(close(&found.corners, &truth, 12.0), "{:?} vs {truth:?}", found.corners);
+        assert_eq!(orient(&frame, chart, &truth), turns, "hand-placed corners are oriented by the fit");
+        let opts = BuildOptions { camera_model: "the app Test Camera".into(), ..Default::default() };
+        let built = build(&frame, &found, &opts).unwrap();
+        assert!(built.mean_delta_e < 1.0, "mean ΔE {}", built.mean_delta_e);
+        assert!(built.patches.iter().all(|p| p.id.ends_with(['E', 'F', 'G', 'H'])), "the SpyderCHECKR's own patch ids");
+    }
 }

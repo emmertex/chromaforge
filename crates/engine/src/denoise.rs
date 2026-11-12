@@ -2924,7 +2924,7 @@ mod gpu_tests {
                 Ok(g) => {
                     let got = g.runner.run(&input).unwrap();
                     let off = worst(&want, &got);
-                    eprintln!("{} card: {} — check tile {:.1} ms (CPU {:.0} ms), off by {off:.1e}", card.id(), g.adapter, g.card_ms, g.cpu_ms);
+                    eprintln!("{} card: {}: check tile {:.1} ms (CPU {:.0} ms), off by {off:.1e}", card.id(), g.adapter, g.card_ms, g.cpu_ms);
                     assert!(off <= GPU_AGREE, "{}: {off:e}", g.adapter);
                     answers.push(got);
                 }

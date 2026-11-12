@@ -208,6 +208,15 @@ impl<T> State<T> {
     }
 
     fn push_finished(&mut self, f: Finished<T>, max: usize) {
+        let mut dropped = Dropped::default();
+        self.push_finished_quietly(f, max, &mut dropped);
+        dropped.log();
+    }
+
+    /// [`State::push_finished`] that counts the results it drops into `dropped` instead of logging each one: a ✕ on
+    /// tens of thousands of waiting jobs would otherwise write a line per job while holding the lock the UI drains
+    /// every frame (issue #979: 48,946 lines, a 532 ms frame).
+    fn push_finished_quietly(&mut self, f: Finished<T>, max: usize, dropped: &mut Dropped) {
         match &f.outcome {
             Outcome::Done(_) => self.done = self.done.saturating_add(1),
             Outcome::Failed(_) => self.failed = self.failed.saturating_add(1),
@@ -216,7 +225,7 @@ impl<T> State<T> {
         self.finished.push_back(f);
         while self.finished.len() > max.max(1) {
             if let Some(old) = self.finished.pop_front() {
-                log::warn!("ml queue: result of {} dropped (nobody took it)", old.key);
+                dropped.add(old);
             }
         }
     }
@@ -225,10 +234,48 @@ impl<T> State<T> {
     fn cancel_pending(&mut self, max: usize) -> usize {
         let jobs: Vec<Job<T>> = self.lanes.iter_mut().flat_map(|l| l.drain(..)).collect();
         let n = jobs.len();
+        let mut dropped = Dropped::default();
         for j in jobs {
-            self.push_finished(Finished { key: j.key, outcome: Outcome::Cancelled, device: None, millis: 0 }, max);
+            self.push_finished_quietly(Finished { key: j.key, outcome: Outcome::Cancelled, device: None, millis: 0 }, max, &mut dropped);
         }
+        dropped.log();
         n
+    }
+}
+
+/// Results dropped because nobody took them, logged as one line.
+#[derive(Default)]
+struct Dropped {
+    count: usize,
+    cancelled: usize,
+    first: Option<String>,
+    last: Option<String>,
+}
+
+impl Dropped {
+    fn add<T>(&mut self, f: Finished<T>) {
+        self.count = self.count.saturating_add(1);
+        if matches!(f.outcome, Outcome::Cancelled) {
+            self.cancelled = self.cancelled.saturating_add(1);
+        }
+        if self.first.is_none() {
+            self.first = Some(f.key);
+        } else {
+            self.last = Some(f.key);
+        }
+    }
+
+    fn log(self) {
+        match (self.count, self.first, self.last) {
+            (0, ..) => {}
+            (1, Some(key), _) => log::warn!("ml queue: result of {key} dropped (nobody took it)"),
+            (n, first, last) => log::warn!(
+                "ml queue: {n} results dropped ({} of them cancelled), {} … {} (nobody took them)",
+                self.cancelled,
+                first.unwrap_or_default(),
+                last.unwrap_or_default()
+            ),
+        }
     }
 }
 

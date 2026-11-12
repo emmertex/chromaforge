@@ -502,8 +502,9 @@ const MAX_COLUMNS: usize = 6;
 /// The filter bar's commands (`menus_fork`).
 pub const COMMANDS: &[crate::menus::UiCommand] = &[("view.filterColumns", "Metadata Filter Columns", None, "")];
 
-/// `view.filterColumns {show?: bool, column?: index, field?: name, count?: 1..6}` → `{columns}`: shows or hides the
-/// filter bar's Metadata columns (no argument toggles), sets the field one column lists, or the number of columns.
+/// `view.filterColumns {show?: bool, column?: index, field?: name, count?: 1..6, toggle?: name}` → `{columns}`: shows or
+/// hides the filter bar's Metadata columns (no argument toggles), sets the field one column lists, or the number of
+/// columns; `toggle` adds the field's column (the columns appear if hidden) or removes it (the last one hides them all).
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     if id != "view.filterColumns" {
         return None;
@@ -532,6 +533,36 @@ fn filter_columns(app: &mut LccApp, p: &Value) -> Result<Value, String> {
                 .ok_or_else(|| format!("{C}: field is one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", ")))?,
         ),
     };
+    let toggle = match p.get("toggle") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .filter(|f| COLUMN_FIELDS.iter().any(|(k, _)| k == f))
+                .ok_or_else(|| format!("{C}: toggle is one of {}", COLUMN_FIELDS.map(|(k, _)| k).join(", ")))?,
+        ),
+    };
+    if let Some(f) = toggle {
+        let columns = &mut app.ui.filter_columns;
+        if let Some(i) = columns.iter().position(|c| c == f) {
+            columns.remove(i);
+            if i < app.ui.filter_column_search.len() {
+                app.ui.filter_column_search.remove(i);
+            }
+            if columns.is_empty() {
+                app.ui.filter_column_search.clear();
+                return Ok(json!({"columns": []}));
+            }
+        } else if columns.len() >= MAX_COLUMNS {
+            return Err(format!("{C}: at most {MAX_COLUMNS} columns"));
+        } else {
+            columns.push(f.to_string());
+        }
+        app.ui.filter_bar = true;
+        if !matches!(app.ui.view, crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid) {
+            app.ui.view = crate::state::ViewMode::PhotoGrid;
+        }
+        return Ok(json!({"columns": app.ui.filter_columns}));
+    }
     let column = index("column", 0..=MAX_COLUMNS - 1)?;
     let count = index("count", 1..=MAX_COLUMNS)?;
     let show = match p.get("show") {

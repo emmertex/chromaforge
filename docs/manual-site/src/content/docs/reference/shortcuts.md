@@ -18,7 +18,8 @@ sidebar:
 | `Ctrl+Alt+4` | Book |
 | `F1` | Chromaforge Help |
 | `Ctrl+Alt+2` | Develop |
-| `Ctrl+Shift+F` | Enter Full Screen |
+| `Ctrl+Shift+F` | Advanced Search |
+| `F11` | Enter Full Screen |
 | `Ctrl+Alt+8` | Export |
 | `F` | Full Screen Preview |
 | `Ctrl+Alt+Up` | Go Back to Previous Module |
@@ -224,7 +225,8 @@ sidebar:
 | `Ctrl+Shift+U` | Library, Develop | Auto white balance |
 | `Ctrl+N` | Develop | New snapshot (version) |
 | `Ctrl+Shift+N` | Develop | New preset |
-| `Shift+Q` | Develop | Cycle the selected spot: Remove, Heal, Clone |
+| `Shift+Q` | Develop | Luminance Range mask |
+| `Alt+Shift+Q` | Develop | Cycle the selected spot: Remove, Heal, Clone |
 | `Ctrl+Shift+H` | Develop | Always show the tool overlay |
 | `O` | Library | People view |
 | `Enter` | Detail, Slideshow | Done with a tool; play slideshow |

@@ -200,7 +200,7 @@ fn the_filter_bar_shows_live_counts() {
 /// Show Alternatives: the bar over the frames around a photo appears, and Back leaves them.
 #[test]
 fn alternatives_bar_shows_and_goes_back() {
-    let dir = std::env::temp_dir().join(format!("lcc-ui-alternatives-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-ui-alternatives");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut paths = Vec::new();

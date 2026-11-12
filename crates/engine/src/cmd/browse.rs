@@ -279,7 +279,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Folder",
             [],
             None,
-            "{path, name} — rename a folder on disk (its files and sidecars go along) and relink the photos in it; one undo step (undo renames it back, refused if the old name is taken) → {path, relinked}",
+            "{path, name}: rename a folder on disk (its files and sidecars go along) and relink the photos in it; one undo step (undo renames it back, refused if the old name is taken) → {path, relinked}",
             always,
             |s, p| {
                 let from = str_param(p, "path").ok_or_else(|| bad("folder.rename", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
@@ -297,7 +297,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Folder",
             [],
             None,
-            "{path, into: destination folder} — move a folder on disk into another and relink the photos in it; one undo step (undo moves it back, refused if the old place is taken) → {path, relinked}",
+            "{path, into: destination folder}: move a folder on disk into another and relink the photos in it; one undo step (undo moves it back, refused if the old place is taken) → {path, relinked}",
             always,
             |s, p| {
                 let from = str_param(p, "path").ok_or_else(|| bad("folder.move", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
@@ -313,7 +313,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Folder on Disk",
             [],
             None,
-            "{parent, name} — create a folder on disk inside `parent` (refused if the name is taken); one undo step (undo removes it again while it is empty) → {path}",
+            "{parent, name}: create a folder on disk inside `parent` (refused if the name is taken); one undo step (undo removes it again while it is empty) → {path}",
             always,
             create_folder
         ),
@@ -322,7 +322,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move to Folder",
             [],
             None,
-            "{folder, ids?} — move the photos' files (default: the selection) with their XMP sidecars into `folder` on disk and relink them; virtual copies follow their master; across volumes the file is copied, verified and only then removed; never overwrites (a name taken in `folder` refuses the whole move); missing/offline and Local photos are refused; one undo step (undo moves them back) → {moved, folder}",
+            "{folder, ids?}: move the photos' files (default: the selection) with their XMP sidecars into `folder` on disk and relink them; virtual copies follow their master; across volumes the file is copied, verified and only then removed; never overwrites (a name taken in `folder` refuses the whole move); missing/offline and Local photos are refused; one undo step (undo moves them back) → {moved, folder}",
             always,
             move_to_folder
         ),
@@ -331,7 +331,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Browse Folder",
             [],
             None,
-            "{path, subfolders?: bool, show?: all|notImported} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk — the default — or just the files an import would take) → {path, photos, new, notImported}",
+            "{path, subfolders?: bool, show?: all|notImported}: show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk (the default) or just the files an import would take) → {path, photos, new, notImported}",
             always,
             browse
         ),
@@ -340,7 +340,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Forget Unchanged Local Photos",
             [],
             None,
-            "{dryRun?: bool, days?: n (default: the library preference, 0 = never)} — remove Local (browsed, not added) photos nobody changed, of folders not browsed for `days`, from the catalog; files and sidecars stay, browsing the folder again brings them back; not an undo step → {local, forgotten, keptRecent, keptTouched, keptInUse, foldersStamped, days, dryRun}",
+            "{dryRun?: bool, days?: n (default: the library preference, 0 = never)}: remove Local (browsed, not added) photos nobody changed, of folders not browsed for `days`, from the catalog; files and sidecars stay, browsing the folder again brings them back; not an undo step → {local, forgotten, keptRecent, keptTouched, keptInUse, foldersStamped, days, dryRun}",
             always,
             forget_local
         ),
@@ -349,7 +349,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to My Photos",
             ["Photo", "File"],
             None,
-            "{ids?} — browsed (Local) photos join the library",
+            "{ids?}: browsed (Local) photos join the library",
             always,
             add_to_library
         ),

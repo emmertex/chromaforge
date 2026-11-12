@@ -185,11 +185,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lcc-ns-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.join("p.json")
+    /// `p.json` in an empty Temp folder of the test's own, removed when the test ends.
+    fn tmp(name: &str) -> lcc_testkit::TempFile {
+        lcc_testkit::TempFile::new(&format!("lcc-ns-{name}"), "p.json")
     }
 
     /// Photo ids are per library: two libraries' photo 1 keep their own values, also after a reload.
@@ -197,7 +195,7 @@ mod tests {
     #[test]
     fn libraries_keep_their_own_values() {
         let path = tmp("libs");
-        let mut s = NamespaceStore::open(path.clone()).unwrap();
+        let mut s = NamespaceStore::open(path.to_path_buf()).unwrap();
         s.set_scope("A");
         s.set("1", "job", json!("A-job")).unwrap();
         s.set_scope("B");
@@ -205,7 +203,7 @@ mod tests {
         assert!(s.photos().is_empty());
         s.set("1", "job", json!("B-job")).unwrap();
         s.save().unwrap();
-        let mut s = NamespaceStore::open(path).unwrap();
+        let mut s = NamespaceStore::open(path.to_path_buf()).unwrap();
         s.set_scope("A");
         assert_eq!(s.get("1")["job"], "A-job");
         s.set_scope("B");
@@ -222,16 +220,16 @@ mod tests {
     fn old_files_are_claimed_by_the_first_library() {
         let path = tmp("legacy");
         std::fs::write(&path, br#"{"7":{"job":"old"}}"#).unwrap();
-        let mut s = NamespaceStore::open(path.clone()).unwrap();
+        let mut s = NamespaceStore::open(path.to_path_buf()).unwrap();
         assert!(!s.set_scope(""));
         assert_eq!(s.get("7"), json!({}));
         s.set("8", "job", json!("no library")).unwrap();
         s.save().unwrap();
-        let mut s = NamespaceStore::open(path.clone()).unwrap();
+        let mut s = NamespaceStore::open(path.to_path_buf()).unwrap();
         assert!(s.set_scope("A"), "claimed");
         assert_eq!(s.get("7")["job"], "old");
         s.save().unwrap();
-        let mut s = NamespaceStore::open(path).unwrap();
+        let mut s = NamespaceStore::open(path.to_path_buf()).unwrap();
         assert!(!s.set_scope("B"), "already claimed");
         assert_eq!(s.get("7"), json!({}));
         s.set_scope("A");
@@ -244,8 +242,8 @@ mod tests {
     fn newer_or_corrupt_files_are_refused() {
         let path = tmp("newer");
         std::fs::write(&path, br#"{"format":99,"libraries":{}}"#).unwrap();
-        assert!(NamespaceStore::open(path.clone()).is_err());
+        assert!(NamespaceStore::open(path.to_path_buf()).is_err());
         std::fs::write(&path, br#"{"format":2,"libraries":7}"#).unwrap();
-        assert!(NamespaceStore::open(path).is_err());
+        assert!(NamespaceStore::open(path.to_path_buf()).is_err());
     }
 }

@@ -69,6 +69,8 @@ mod slot;
 #[cfg(not(target_arch = "wasm32"))]
 mod strokes;
 #[cfg(not(target_arch = "wasm32"))]
+mod upload;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1293,7 +1295,18 @@ pub fn memory() -> GpuMemory {
     }
 }
 
-/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now).
+/// Let each card's free pool hold up to `1/share` of the card's own memory while it works, when
+/// that is more than [`set_pool_limit`]'s bytes (`share` 0, the default: that limit alone). The
+/// idle trim ([`trim_pool`]) still empties it. See `ctx::pool_limit` for why.
+pub fn set_pool_vram_share(share: u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx::POOL_VRAM_SHARE.store(share, Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = share;
+}
+
+/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now), or
+/// more while a card works when [`set_pool_vram_share`] allows it.
 pub fn set_pool_limit(bytes: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1304,17 +1317,23 @@ pub fn set_pool_limit(bytes: u64) {
     let _ = bytes;
 }
 
-/// Free recycled buffers until at most `keep` bytes stay pooled (e.g. when the app goes idle).
+/// Free recycled buffers until at most `keep` bytes stay pooled on each card (e.g. when the app
+/// goes idle): the editing card's and the second card's pools. (Only the editing card's was
+/// trimmed: after a two-card export or 1:1 build the second card kept its pool, up to the pool
+/// limit, for the rest of the session.)
 pub fn trim_pool(keep: u64) {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(g) = existing_device()
-        && let Some(_work) = exit::enter()
-    {
-        if keep == 0 {
-            render::release_shared_source();
-            strokes::clear();
+    if let Some(_work) = exit::enter() {
+        if let Some(g) = existing_device() {
+            if keep == 0 {
+                render::release_shared_source();
+                strokes::clear();
+            }
+            g.trim(keep);
         }
-        g.trim(keep);
+        if let Some(g) = helper::current() {
+            g.trim(keep);
+        }
     }
     #[cfg(target_arch = "wasm32")]
     let _ = keep;
@@ -1600,10 +1619,13 @@ fn try_render_inner(
         static BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         static HELPER_BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         let budget = if on_helper { &HELPER_BUDGET } else { &BUDGET }.get_or_init(|| budget::Budget::new(budget::initial(gpu.max_buffer)));
-        let need = budget::footprint(src.width, src.height);
+        // (a window of a zoomed view works at the window's size from the one shared copy of the
+        // original: counted at the whole source's size, a 1:1 view's tiles of a 45 MP raw ran one
+        // at a time under the budget)
+        let need = budget::need(src.width, src.height, req.window.map(|w| (w.w, w.h)));
         let mut alone = false;
         let reason = loop {
-            let _permit = budget.admit(need, alone, shutting_down).ok_or(Fallback::NotTried)?;
+            let _permit = budget.admit(need, alone, gate::is_batch(), shutting_down).ok_or(Fallback::NotTried)?;
             let _ = ctx::take_failure(); // nothing left over from an earlier render on this thread
             let (r, scoped) = {
                 let _scope = ctx::RenderScope::new(&gpu);

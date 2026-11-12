@@ -279,6 +279,11 @@ struct ViewFile {
     /// Show Photos in Subfolders turned off (`false` is the default, so it is written only when off).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     folder_direct: bool,
+    /// Lock Filters turned off (`true` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_filters: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    remember_filters: bool,
     // No filter: a library opens unfiltered. A date, keyword or person left over from the last session
     // would silently hide photos, with only a small badge to say so.
     sort: lcc_catalog::Sort,
@@ -363,6 +368,8 @@ struct PrefsFile {
     export_presets: Vec<crate::export::ExportPreset>,
     /// Print templates.
     print_templates: Vec<crate::print::template::PrintTemplate>,
+    /// Print Template Browser folders, empty ones included.
+    print_template_folders: Vec<String>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
     /// Import presets (the Import tab's settings, by name).
@@ -399,6 +406,11 @@ struct PrefsFile {
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     prep: Option<crate::prep::PrepSettings>,
+    /// A background build of this library's previews was started and has not run to its end: the
+    /// preparation takes it up again, also after a restart. Set and cleared by
+    /// [`Session::prep_tick`] only; the rules are at [`crate::prep::PrepState::unfinished`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    prep_unfinished: bool,
     /// Folder for smart previews (default: `Smart Previews` in the library).
     smart_previews_dir: Option<String>,
     /// Days after which untouched Local records of unbrowsed folders are forgotten (missing =
@@ -709,6 +721,8 @@ impl Session {
         self.last_merge = prefs.last_merge;
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
+        self.print_template_folders = prefs.print_template_folders;
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         self.metadata_presets = prefs.metadata_presets;
         self.import_presets = prefs.import_presets;
         self.filter_presets = prefs.filter_presets;
@@ -731,7 +745,9 @@ impl Session {
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         self.cache_mb = prefs.cache_mb;
+        self.prep.opened_library();
         self.prep.library = prefs.prep.map(crate::prep::PrepSettings::sanitized);
+        self.prep.unfinished = prefs.prep_unfinished;
         self.preview_prefs = prefs.previews;
         #[cfg(not(target_arch = "wasm32"))]
         if on_disk {
@@ -795,6 +811,8 @@ impl Session {
             self.browse = v.browse;
             self.library_folder = v.library_folder.filter(|f| !f.trim().is_empty());
             self.folder_subfolders = !v.folder_direct;
+            self.lock_filters = v.lock_filters.unwrap_or(true);
+            self.remember_filters = v.remember_filters;
             if self.source == LibrarySource::LibraryFolder {
                 // a folder that is gone (or none): everything, not an empty grid
                 let f = lcc_catalog::Filter { library_folder: self.library_folder.clone(), ..Default::default() };
@@ -1154,6 +1172,8 @@ impl Session {
             // only while it is shown: a leftover would be a stale choice nobody made
             library_folder: self.library_folder.clone().filter(|_| self.source == LibrarySource::LibraryFolder),
             folder_direct: !self.folder_subfolders,
+            lock_filters: (!self.lock_filters).then_some(false),
+            remember_filters: self.remember_filters,
             sort: self.sort,
             selection: self.selection.clone(),
             previous_export: self.previous_export.clone(),
@@ -1195,6 +1215,7 @@ impl Session {
             last_merge: self.last_merge.clone(),
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
+            print_template_folders: self.print_template_folders.clone(),
             metadata_presets: self.metadata_presets.clone(),
             import_presets: self.import_presets.clone(),
             filter_presets: self.filter_presets.clone(),
@@ -1214,6 +1235,7 @@ impl Session {
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
+            prep_unfinished: self.prep.unfinished,
             smart_previews_dir: self.smart_previews_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
             forget_local_days: Some(self.forget_local_days),
             // on disk they live in the catalog's settings (below)
@@ -1241,6 +1263,8 @@ impl Session {
                 if let serde_json::Value::Object(im) = &mut import {
                     im.insert("autoFolder".into(), serde_json::to_value(&self.import_defaults.auto_folder).unwrap_or_default());
                     im.insert("autoCopy".into(), serde_json::Value::Bool(self.import_defaults.auto_copy));
+                    im.insert("autoPaused".into(), serde_json::Value::Bool(self.import_defaults.auto_paused));
+                    im.insert("autoOptions".into(), serde_json::to_value(&self.import_defaults.auto_options).unwrap_or_default());
                     im.insert("autoAlbum".into(), serde_json::to_value(&self.import_defaults.auto_album).unwrap_or_default());
                 }
                 map.insert("import".into(), import);

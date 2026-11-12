@@ -580,6 +580,9 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
     register(ui.ctx(), "gridArea", scroll_rect);
     crate::widgets::register(ui.ctx(), "grid:scroll", scroll_rect);
     let wheel = wheel_step(ui, egui::Id::new("grid-wheel"), scroll_rect, scroll_rect.height(), false, app.ui.settings.wheel_scroll_speed);
+    // (one notch is `step` points of wheel, positive = up; Scroll By Row counts notches, not points)
+    let by_row = app.ui.settings.scroll_by_row;
+    let step = (scroll_rect.height() * crate::theme::WHEEL_STRIP_SHARE * app.ui.settings.wheel_scroll_speed.clamp(0.25, 3.0)).max(1.0);
     // keep a photo where it is on screen when the layout reflows (a side panel or the window
     // resized, the thumbnail size or the filter changed): the pixel offset alone would land elsewhere
     let anchor_id = egui::Id::new("grid-anchor");
@@ -609,6 +612,11 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
             }
         });
         if wheel != egui::Vec2::ZERO {
+            // Scroll By Row: the notches become whole rows, ending on a row's top
+            let wheel = match (by_row, crate::view_state::row_scroll(&lay.rows, viewport.top(), -wheel.y / step)) {
+                (true, Some(to)) => egui::vec2(0.0, viewport.top() - to),
+                _ => wheel,
+            };
             ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
         }
         let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), total_h), Sense::hover());
@@ -1268,7 +1276,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     } else if square && app.ui.show_filenames {
         let m = &photo.meta;
         let name = match app.ui.grid_info.as_str() {
-            "exposure" => exposure_line(m).unwrap_or_else(|| "—".to_string()),
+            "exposure" => exposure_line(m).unwrap_or_default(),
             "date" => photo.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into()),
             _ => photo.file_name.rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or(photo.file_name.clone()),
         };
@@ -1330,6 +1338,10 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             paint(p, Rect::from_min_size(pos2(right - 20.0, bar.center().y - 7.0), vec2(14.0, 14.0)), Icon::Sliders, t.text_label);
             right -= 20.0;
         }
+        if photo.exported.is_some() {
+            paint(p, Rect::from_min_size(pos2(right - 20.0, bar.center().y - 7.0), vec2(14.0, 14.0)), Icon::Share, t.text_label);
+            right -= 20.0;
+        }
         if let Some(l) = photo.label {
             p.circle(pos2(right - 12.0, bar.center().y), 5.0, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
         }
@@ -1362,7 +1374,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         p.galley(pos2(br.left() + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
         register(ui.ctx(), format!("badge:previewOnly:{}", id.0), br);
         ui.interact(br, egui::Id::new(("preview-only-badge", id.0)), Sense::hover())
-            .on_hover_text(crate::i18n::tr_format!("Preview only — {}", crate::widgets::preview_only_explanation(why)));
+            .on_hover_text(crate::i18n::tr_format!("Preview only: {}", crate::widgets::preview_only_explanation(why)));
     }
     #[cfg(not(target_arch = "wasm32"))]
     super::connections::grid_badge(app, ui, id, img_rect);
@@ -1535,6 +1547,12 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
         let s = (h * 0.5).round();
         let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
         paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Sliders, colour);
+        right -= s + 4.0;
+    }
+    if photo.exported.is_some() {
+        let s = (h * 0.5).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Share, colour);
     }
 }
 
@@ -1826,9 +1844,9 @@ pub fn stack_badge(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, sid: lcc_ca
     let origin = if square { r.min + vec2(10.0, 26.0) } else { r.min + vec2(5.0, 5.0) };
     let br = Rect::from_min_size(origin, vec2(g.size().x + 30.0, 20.0));
     let resp = ui.interact(br, egui::Id::new(("stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-        "Stack — click to expand (S)"
+        "Stack: click to expand (S)"
     } else {
-        "Stack — click to collapse (S)"
+        "Stack: click to collapse (S)"
     });
     crate::widgets::announce(&resp, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
     register(ui.ctx(), format!("stack:{}", id.0), br);

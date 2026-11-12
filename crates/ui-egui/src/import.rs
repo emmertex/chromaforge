@@ -429,6 +429,8 @@ pub struct ImportTask {
     pub cancelled: bool,
     /// Auto Import (the watched folder): the selection stays as it is, a short toast when done.
     auto: bool,
+    /// Android's watched camera roll: like `auto`, and the toast says where the photos came from.
+    camera_roll: bool,
     /// Auto Import: the selection to keep.
     keep_selection: Option<lcc_engine::Selection>,
     /// The selection and source as the import last left them: a change between frames is the
@@ -460,6 +462,12 @@ impl ImportTask {
     /// An Auto Import (see [`ImportTask::auto`]).
     pub fn auto(mut self) -> Self {
         self.auto = true;
+        self
+    }
+
+    /// The watched camera roll's import (see [`ImportTask::camera_roll`]).
+    pub fn camera_roll(mut self) -> Self {
+        self.camera_roll = true;
         self
     }
 
@@ -714,6 +722,7 @@ pub fn rescan_with_subfolders(app: &mut LccApp, d: &ImportDialog, subfolders: bo
 /// and the photos then join the view in small batches under a progress window. A browse already
 /// running is replaced; the import review's scan is not.
 pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Option<&str>) -> Result<Value, String> {
+    let mut lap = crate::now_ms();
     let dir = std::path::absolute(std::path::Path::new(path)).map_err(|e| e.to_string())?;
     if !dir.is_dir() {
         return Err(format!("{path}: not a folder"));
@@ -745,9 +754,12 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.import = None;
     app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders, not_imported });
     app.session.source = lcc_engine::LibrarySource::Folder;
+    app.lap(&mut lap, "browse.start");
     // the photos the library already knows from this folder show at once: keep or pick the active one
     app.session.keep_active_in_view();
+    app.lap(&mut lap, "browse.view");
     let (input, _) = ScanInput::new(&mut app.session, std::slice::from_ref(&dir_s));
+    app.lap(&mut lap, "browse.library");
     let progress = std::sync::Arc::new(ScanProgress::default());
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
@@ -796,6 +808,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.scan =
         Some(ScanTask { progress, rx, copy: false, destination: None, album: None, browse: true, sources: Vec::new(), guard, subfolders: false });
     app.renderer.forget_imports();
+    app.lap(&mut lap, "browse.rest");
     Ok(json!({"path": dir_s, "subfolders": subfolders, "scanning": true}))
 }
 
@@ -838,6 +851,7 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
             app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
             return;
         }
+        let mut lap = crate::now_ms();
         // the folder and the ones its photos are in count as browsed now, as `library.browse` records them, so
         // their untouched Local photos aren't forgotten while the folder is in use
         if let Some(root) = app.session.browse.as_ref().map(|b| b.path.clone()) {
@@ -848,7 +862,9 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         // as `library.browse` forgets them (issue #1392)
         if let Some(b) = app.session.browse.clone() {
             let listed: Vec<String> = out.candidates.iter().map(|c| c.path.clone()).collect();
+            app.lap(&mut lap, "browse.noted");
             app.session.forget_gone_from(&b.path, b.subfolders, &listed);
+            app.lap(&mut lap, "browse.forgetGone");
         }
         // what the library doesn't know yet joins the Local view
         let queue: Vec<String> =
@@ -1070,6 +1086,23 @@ fn start_paths_with(app: &mut LccApp, paths: Vec<String>, params: Value) -> Resu
     Ok(json!({"importing": total}))
 }
 
+/// Start importing `paths` in place, without review, the way the watched camera roll adds new
+/// photos (Android, `camera_roll::watch_tick`): as [`start_paths_with`] with the library's import
+/// settings ([`dropped_import_params`]), the selection stays as it is, and the toast when it is
+/// done says where the photos came from. Refused while another import runs or a folder
+/// synchronizes.
+pub(crate) fn start_camera_roll(app: &mut LccApp, paths: Vec<String>) -> Result<Value, String> {
+    let params = dropped_import_params(app);
+    busy_synchronizing(app)?;
+    if running(app) {
+        return Err(crate::i18n::tr("An import is running").to_string());
+    }
+    let undo0 = app.session.undo.len();
+    let total = paths.len();
+    app.import = Some(ImportTask::new(paths, params, undo0, false).auto().camera_roll());
+    Ok(json!({"importing": total}))
+}
+
 /// The `library.import` params of a drop imported without review: added in place, with the
 /// library's import settings (its presets, camera defaults, creator and copyright apply to every
 /// import; the metadata preset is the one the review would start with).
@@ -1254,7 +1287,12 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
                 8.0,
             );
         } else if task.imported > 0 {
-            app.toast(ctx, crate::i18n::tr_format!("Auto Import: added {} photo{}", task.imported, if task.imported == 1 { "" } else { "s" }));
+            let msg = if task.camera_roll {
+                crate::i18n::tr_format!("{n} new photo{} from the camera roll", plural(task.imported), n = task.imported)
+            } else {
+                crate::i18n::tr_format!("Auto Import: added {} photo{}", task.imported, plural(task.imported))
+            };
+            app.toast(ctx, msg);
         }
         return;
     }
@@ -1629,7 +1667,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.rename)
                     .id(rename_id)
-                    .hint_text(crate::i18n::tr("keep names — or e.g. {date}_{seq:3}"))
+                    .hint_text(crate::i18n::tr("keep names, or e.g. {date}_{seq:3}"))
                     .desired_width(w),
             );
             register(ui.ctx(), "field:importRename", r.rect);

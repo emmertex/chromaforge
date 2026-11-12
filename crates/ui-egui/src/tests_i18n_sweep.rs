@@ -67,7 +67,12 @@ fn screens() -> Vec<(String, Vec<(&'static str, serde_json::Value)>)> {
     ));
     out.push((
         "Preset group menu".into(),
-        vec![("module.develop", json!({})), ("panel.presets", json!({})), (RIGHT_CLICK, json!({"widget": "presetGroup:"}))],
+        vec![
+            ("module.develop", json!({})),
+            ("panel.presets", json!({})),
+            ("panel.presets", json!({})),
+            (RIGHT_CLICK, json!({"widget": "presetGroup:"})),
+        ],
     ));
     out
 }

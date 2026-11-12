@@ -28,11 +28,9 @@ pub(crate) fn same_path_for_volume(a: &Path, b: &Path) -> bool {
     a == b || (a.parent().is_some_and(case_insensitive) && a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()))
 }
 
-pub(crate) fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-xmp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// A test's folder in Temp, removed when the test ends (other test modules use it too).
+pub(crate) fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-xmp-{tag}"))
 }
 
 /// The temp volume ignores letter case (Windows, default macOS): `a.xmp` and `a.XMP` are one file
@@ -669,6 +667,44 @@ fn regions_drawn_on_the_photo_as_stored_land_on_the_upright_photo() {
         assert_eq!(read["read"].as_array().map(Vec::len), Some(1), "{what}: {read}");
         assert_on_the_upright_face(&s, id, &format!("{what}, read again"));
     }
+    let _ = std::fs::remove_dir_all(&src);
+}
+
+/// A hand-drawn face region is a normal face region: undoable, catalog-only (the sidecar is untouched), listed
+/// with the rest, and refused when it is not a real box.
+#[test]
+fn adding_a_region_draws_a_face_and_refuses_bad_boxes() {
+    let src = temp_dir("region-add");
+    write_png(&src.join("portrait.png"), 9);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [src.to_string_lossy()]})).unwrap();
+    let id = s.active().unwrap();
+    let n = s.catalog.photo(id).unwrap().meta.regions.len();
+    let commits = s.commits();
+    for bad in [
+        json!({}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": 0.1, "y1": 0.5}}),
+        json!({"rect": {"x0": -0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": 1.5, "y1": 0.5}}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": "a", "y1": 0.5}}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": 0.5}}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}, "kind": "tree"}),
+        json!({"rect": {"x0": 0.1, "y0": 0.1, "x1": 0.5, "y1": 0.5}, "name": 7}),
+    ] {
+        assert!(s.execute("photo.addRegion", &bad).is_err(), "{bad}");
+    }
+    assert_eq!(s.commits(), commits, "nothing changed");
+    // corners given in any order
+    let r = s.execute("photo.addRegion", &json!({"rect": {"x0": 0.5, "y0": 0.6, "x1": 0.2, "y1": 0.1}})).unwrap();
+    assert_eq!(r["index"], n);
+    let region = s.catalog.photo(id).unwrap().meta.regions.get(n).unwrap().clone();
+    assert_eq!(region.kind, lcc_meta::RegionKind::Face);
+    assert!(region.name.is_none() && region.rect.x0 < region.rect.x1 && region.rect.y0 < region.rect.y1);
+    s.execute("photo.addRegion", &json!({"rect": {"x0": 0.6, "y0": 0.1, "x1": 0.9, "y1": 0.4}, "name": " Ann "})).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().meta.regions.get(n + 1).unwrap().name.as_deref(), Some("Ann"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().meta.regions.len(), n);
     let _ = std::fs::remove_dir_all(&src);
 }
 

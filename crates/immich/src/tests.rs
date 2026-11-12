@@ -23,6 +23,7 @@ const KEY_ME: &str = include_str!("../tests/fixtures/api-keys-me.json");
 const PAGE1: &str = include_str!("../tests/fixtures/search-page1.json");
 const PAGE2: &str = include_str!("../tests/fixtures/search-page2.json");
 const ALBUMS: &str = include_str!("../tests/fixtures/albums.json");
+const AUTH_STATUS: &str = include_str!("../tests/fixtures/auth-status.json");
 
 const KEY: &str = "test-key-0123456789";
 
@@ -109,6 +110,16 @@ fn recorded(req: &Req) -> Vec<u8> {
                 _ => response("200 OK", br#"{"albums":{"total":0,"count":0,"items":[]},"assets":{"total":0,"count":0,"items":[],"nextPage":null}}"#),
             }
         }
+        ("GET", "/api/auth/status") => response("200 OK", AUTH_STATUS.as_bytes()),
+        ("POST", "/api/auth/session/unlock") => {
+            // a recorded 204 has an empty body; the right PIN or password unlocks, anything else is refused
+            let b: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
+            if b["pinCode"] == "2468" || b["password"] == "square lamp house" {
+                response("204 No Content", b"")
+            } else {
+                response("401 Unauthorized", br#"{"message":"Wrong password or PIN code","statusCode":401,"error":"Unauthorized"}"#)
+            }
+        }
         _ => response("404 Not Found", br#"{"message":"Not found"}"#),
     }
 }
@@ -141,6 +152,55 @@ fn connect_reads_version_user_and_permissions() {
     let seen = seen.lock().unwrap();
     assert!(seen.iter().all(|r| !r.target.contains(KEY)));
     assert!(seen.iter().any(|r| r.header("x-api-key") == Some(KEY)));
+}
+
+#[test]
+fn auth_status_reads_elevation_and_unlock_secrets() {
+    let (url, _) = serve(recorded);
+    let c = client(&url, KEY);
+    let st = c.auth_status().unwrap();
+    assert!(!st.is_elevated, "the recorded server's session is locked");
+    assert!(st.password && st.pin_code);
+    assert_eq!(st.pin_expires_at, None);
+    // an elevated session may carry an end of its elevation (parsed, not required)
+    let (url, _) = serve(|req| {
+        let path = req.target.split('?').next().unwrap_or_default();
+        match (req.method.as_str(), path) {
+            ("GET", "/api/auth/status") => {
+                response("200 OK", br#"{"isElevated": true, "expiresAt": "2026-11-10T18:00:00.000Z", "password": true, "pinCode": false}"#)
+            }
+            _ => response("404 Not Found", br#"{}"#),
+        }
+    });
+    let st = client(&url, KEY).auth_status().unwrap();
+    assert!(st.is_elevated);
+    assert_eq!(st.expires_at.as_deref(), Some("2026-11-10T18:00:00.000Z"));
+    assert!(!st.pin_code);
+}
+
+#[test]
+fn unlock_sends_the_secret_in_the_body_and_names_a_refusal() {
+    let (url, seen) = serve(recorded);
+    let c = client(&url, KEY);
+    // the right PIN: 204 with an empty body
+    c.unlock_session(&SessionUnlock { pin_code: Some("2468".into()), password: None }).unwrap();
+    // the right password, sent as such
+    c.unlock_session(&SessionUnlock { pin_code: None, password: Some("square lamp house".into()) }).unwrap();
+    // a wrong secret is refused and the error says so, without the secret
+    let e = c.unlock_session(&SessionUnlock { pin_code: Some("9999".into()), password: None }).unwrap_err();
+    assert!(!e.retryable());
+    assert!(e.to_string().contains("refused"), "{e}");
+    assert!(!e.to_string().contains("9999"), "{e}");
+    // the secret travels in the request body, never in the URL or a query
+    let seen = seen.lock().unwrap();
+    let unlocks: Vec<&Req> = seen.iter().filter(|r| r.target == "/api/auth/session/unlock").collect();
+    assert_eq!(unlocks.len(), 3);
+    assert!(unlocks.iter().all(|r| !r.target.contains("2468") && !r.target.contains("square")));
+    let first: serde_json::Value = serde_json::from_slice(&unlocks[0].body).unwrap();
+    assert_eq!(first, serde_json::json!({"pinCode": "2468"}), "only the chosen secret is sent");
+    let second: serde_json::Value = serde_json::from_slice(&unlocks[1].body).unwrap();
+    assert_eq!(second, serde_json::json!({"password": "square lamp house"}));
+    assert!(unlocks.iter().all(|r| r.header("x-api-key") == Some(KEY)), "unlocking needs the key's session");
 }
 
 #[test]
@@ -485,8 +545,7 @@ fn metadata_maps_one_way_on_import() {
 /// the import wrote it in local time with a zone or, as older imports did, in UTC.
 #[test]
 fn a_file_date_is_not_a_capture_date() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-file-date-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-file-date");
     let path = dir.join("x.jpg");
     std::fs::write(&path, b"x").unwrap();
     let mtime = std::fs::metadata(&path).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -497,7 +556,6 @@ fn a_file_date_is_not_a_capture_date() {
     }
     p.captured = Some("2024-05-06T07:08:09".into());
     assert_eq!(mapping::captured(&p), Some("2024-05-06T07:08:09"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -521,7 +579,9 @@ fn external_library_paths_map_both_ways() {
 
 #[test]
 fn accounts_file_round_trips_without_secrets() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-accounts-{}", std::process::id()));
+    // a folder that doesn't exist yet: saving makes it
+    let tmp = lcc_testkit::TempDir::new("lcc-immich-accounts");
+    let dir = tmp.join("settings");
     let path = dir.join("connections.json");
     let mut a = crate::Accounts::default();
     a.upsert(crate::Account { id: "http://nas#u".into(), url: "http://nas".into(), user_id: "u".into(), ..Default::default() });
@@ -534,7 +594,6 @@ fn accounts_file_round_trips_without_secrets() {
     std::fs::write(&path, b"{not json").unwrap();
     assert!(crate::Accounts::load(&path).is_err());
     assert_eq!(crate::Accounts::load(&dir.join("missing.json")).unwrap(), crate::Accounts::default());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // Regression: Immich doesn't hash external-library files (checksum = SHA-1 of `path:` + path),
@@ -686,8 +745,7 @@ fn hostile_server_answers_through_the_client_never_panic() {
 
 #[test]
 fn damaged_connections_file_never_panics() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-robust-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-robust");
     let path = dir.join("connections.json");
     let mut a = crate::Accounts::default();
     a.upsert(crate::Account {
@@ -714,16 +772,13 @@ fn damaged_connections_file_never_panics() {
             }
         }
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// P6.2: a full disk while saving `connections.json` is an error that leaves the old file and
 /// no partial temp file behind.
 #[test]
 fn full_disk_connections_save_leaves_no_temp_file() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-full-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-immich-full");
     let path = dir.join("connections.json");
     crate::Accounts::default().save(&path).unwrap();
     let before = std::fs::read(&path).unwrap();
@@ -735,7 +790,6 @@ fn full_disk_connections_save_leaves_no_temp_file() {
     }
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- IMM-PUBLISH: album rename, upload retries
@@ -809,8 +863,9 @@ fn publish_once(url: &str, name: &str, state: Option<std::path::PathBuf>) -> Res
 
 #[test]
 fn a_renamed_collection_renames_its_remembered_album() {
-    let dir = std::env::temp_dir().join(format!("lcc-immich-pubalbum-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // the state file's folder doesn't exist yet
+    let tmp = lcc_testkit::TempDir::new("lcc-immich-pubalbum");
+    let dir = tmp.join("state");
     let state = dir.join("svc-1-5.album");
     let (url, seen) = publish_server(0, false);
     // first run: found by name, remembered
@@ -828,7 +883,6 @@ fn a_renamed_collection_renames_its_remembered_album() {
     let (url, seen) = publish_server(0, false);
     publish_once(&url, "Other", None).unwrap();
     assert!(seen.lock().unwrap().iter().any(|r| r.method == "POST" && r.target == "/api/albums"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -854,4 +908,82 @@ fn a_trashed_checksum_match_is_restored_not_reused_as_is() {
     let restore = seen.iter().find(|r| r.method == "POST" && r.target == "/api/trash/restore/assets").expect("restored");
     assert!(String::from_utf8_lossy(&restore.body).contains("as-1"));
     assert!(!seen.iter().any(|r| r.method == "POST" && r.target == "/api/assets"), "no upload");
+}
+
+/// A server whose album `al-1` ("Old") has `activities` as the answer to `GET /activities`.
+fn comment_server(activities: &'static str) -> (String, Arc<Mutex<Vec<Req>>>) {
+    serve(move |req| {
+        let path = req.target.split('?').next().unwrap_or_default();
+        match (req.method.as_str(), path) {
+            ("GET", "/api/albums") => response("200 OK", br#"[{"id":"al-1","albumName":"Old","assetCount":1}]"#),
+            ("GET", "/api/activities") => response("200 OK", activities.as_bytes()),
+            _ => response("404 Not Found", br#"{"message":"Not found"}"#),
+        }
+    })
+}
+
+fn comments_of(url: &str, name: &str, remote: &str) -> Result<Vec<lcc_publish::Comment>, lcc_publish::PublishError> {
+    use lcc_publish::PublishService;
+    let mut svc = crate::publish::ImmichPublish::new(client(url, KEY), Default::default(), name, "dev", publish_photos());
+    assert!(svc.capabilities().comments);
+    svc.comments(remote)
+}
+
+#[test]
+fn comments_come_from_the_album_activity_oldest_first_without_likes() {
+    let (url, seen) = comment_server(
+        r#"[
+        {"id":"b","type":"comment","createdAt":"2026-11-02T10:00:00.000Z","comment":" Lovely light ","user":{"name":"Ann","email":"a@x"}},
+        {"id":"a","type":"comment","createdAt":"2026-11-01T09:00:00.000Z","comment":"First!","user":{"name":"","email":"bob@x"}},
+        {"id":"l","type":"like","createdAt":"2026-11-03T09:00:00.000Z","user":{"name":"Cy"}},
+        {"id":"e","type":"comment","createdAt":"2026-11-04T09:00:00.000Z","comment":"  "}
+    ]"#,
+    );
+    let list = comments_of(&url, "Old", "r:as-1").unwrap();
+    assert_eq!(list.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["First!", "Lovely light"]);
+    assert_eq!(list[0].author, "bob@x");
+    assert_eq!(list[1].author, "Ann");
+    assert_eq!(list[0].date.as_deref(), Some("2026-11-01T09:00:00.000Z"));
+    let seen = seen.lock().unwrap();
+    let req = seen.iter().find(|r| r.target.starts_with("/api/activities")).expect("asked");
+    assert!(req.target.contains("albumId=al-1") && req.target.contains("assetId=as-1") && req.target.contains("type=comment"), "{}", req.target);
+    assert!(!seen.iter().any(|r| r.method != "GET"), "read only: no album is created or renamed");
+}
+
+#[test]
+fn comments_of_an_album_that_is_gone_are_none_and_a_server_error_is_reported() {
+    let (url, seen) = comment_server("[]");
+    assert!(comments_of(&url, "Other", "r:as-1").unwrap().is_empty());
+    assert!(!seen.lock().unwrap().iter().any(|r| r.target.starts_with("/api/activities")));
+    let (url, _) = serve(|_| response("403 Forbidden", br#"{"message":"missing permission activity.read"}"#));
+    assert!(comments_of(&url, "Old", "r:as-1").is_err());
+}
+
+#[test]
+fn hostile_activity_answers_are_bounded_and_never_panic() {
+    // too many entries are cut, long text and names are clipped
+    let many: String = (0..600)
+        .map(|i| {
+            let (text, name) = if i < 3 { ("é".repeat(9000), "n".repeat(900)) } else { ("hi".to_string(), "n".to_string()) };
+            format!(r#"{{"id":"c{i}","type":"comment","createdAt":"2026-11-01T09:00:00Z","comment":"{text}","user":{{"name":"{name}"}}}}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let (url, _) = comment_server(Box::leak(format!("[{many}]").into_boxed_str()));
+    let list = comments_of(&url, "Old", "r:as-1").unwrap();
+    assert!(list.len() <= MAX_ACTIVITIES);
+    assert!(list.iter().all(|c| c.text.chars().count() <= 4000 && c.author.chars().count() <= 200));
+    // an answer over the byte cap is refused
+    let big = format!("[{}]", " ".repeat(MAX_ACTIVITY_BYTES as usize + 10));
+    let (url, _) = comment_server(Box::leak(big.into_boxed_str()));
+    assert!(comments_of(&url, "Old", "r:as-1").is_err());
+    // wrong shapes and hostile ids are errors, not panics
+    for body in ["{}", "null", "[1,2]", r#"[{"id":5}]"#, r#"[{"type":null,"comment":7}]"#, "[", ""] {
+        let (url, _) = comment_server(Box::leak(body.to_string().into_boxed_str()));
+        let _ = comments_of(&url, "Old", "r:as-1");
+    }
+    let (url, _) = comment_server("[]");
+    for id in ["", "r:", "r:../x", "o:a b+r:", "garbage"] {
+        let _ = comments_of(&url, "Old", id);
+    }
 }

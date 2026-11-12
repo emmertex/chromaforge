@@ -3,7 +3,7 @@
 //! matching set must come out close, the unedited set far and darker, and bad arguments must fail with a message.
 //! No Adobe data is involved.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use lcc_raw::{BlackLevel, Cfa, ColorData, DngWriteOptions, Mat3, OpcodeLists, Orientation, RawData, RawFormat, RawImage, Rect};
@@ -15,11 +15,9 @@ const SIDECAR: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf=
 /// The packet Lightroom embeds in an export: the same edit, flagged as already applied to the export's pixels.
 const EXPORT_XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:AlreadyApplied="True" crs:WhiteBalance="As Shot" crs:Exposure2012="+1.00"/></rdf:RDF></x:xmpmeta>"#;
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lcc-cli-verify-e2e-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn scratch(name: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-cli-verify-e2e-{name}"))
 }
 
 fn rng(state: &mut u64) -> f64 {

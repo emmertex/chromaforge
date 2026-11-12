@@ -26,6 +26,17 @@ can't use; **Connect** stores the key and starts a link pass. Several servers an
 Commands: `immich.test`, `immich.connect`, `immich.disconnect`, `immich.status` (`{check: true}` contacts the servers).
 `immich.test` and `immich.connect` take the key as a parameter and are never journaled.
 
+### Locked folders
+
+Immich can keep photos in locked folders, and the server lists them only to an *elevated* session. The app's API-key
+session starts locked, so link, import and sync simply never see those assets. Settings → Connections → an account
+card → *Locked Folders…* shows whether the session is elevated and, when the account has one, its PIN or password
+state; *Unlock…* asks for the secret and elevates the session (`immich.unlockSession`): 4–6 digits go as the PIN
+(`pinCode`), anything else as the password. Like the API key, the secret is only a command parameter: `immich.authStatus`
+and `immich.unlockSession` are never journaled, and no result or log carries it. The unlock holds for the server
+session: Immich locks it again later, so locked assets disappear from link, import, sync and sidecar runs until the
+session is unlocked again (`immich.authStatus {account}` reports `{isElevated, pinCode, password, pinExpiresAt?}`).
+
 ## Link (IMM-LINK)
 
 `immich.link` starts a background pass that lists the server's images page by page (incremental by `updatedAt` after

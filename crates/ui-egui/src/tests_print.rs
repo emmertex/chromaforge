@@ -33,6 +33,21 @@ fn click(h: &mut Headless, id: &str) {
     h.settle(T);
 }
 
+/// Clicks `id` in the dialog's settings column after scrolling that column so the widget sits mid-window:
+/// the column scrolls, and a widget below its visible edge is registered where it would be drawn, where a
+/// click hits nothing.
+fn click_in_view(h: &mut Headless, id: &str) {
+    let r = rect(h, id);
+    // (mid-height of the 1400x900 test window)
+    let middle = 450.0;
+    let r2 = h.request("ui.move", json!({"x": r.center().x, "y": middle}), T);
+    assert_eq!(r2["ok"], true, "{id}: {r2}");
+    let r2 = h.request("ui.scroll", json!({"dy": middle - r.center().y}), T);
+    assert_eq!(r2["ok"], true, "{id}: {r2}");
+    h.settle(T);
+    click(h, id);
+}
+
 fn drag(h: &mut Headless, id: &str, dx: f32, dy: f32) {
     let r = h.request("ui.dragWidget", json!({"id": id, "dx": dx, "dy": dy, "steps": 8}), T);
     assert_eq!(r["ok"], true, "{id}: {r}");
@@ -89,13 +104,13 @@ fn style_buttons_and_checkboxes_run_print_set() {
     click(&mut h, "check:printZoomFill");
     click(&mut h, "check:printStroke");
     assert!(h.app.session.print.image.zoom_to_fill && h.app.session.print.image.stroke_enabled);
-    click(&mut h, "button:printOrientation-1");
+    click_in_view(&mut h, "button:printOrientation-1");
     assert_eq!(h.app.session.print.layout.page.orientation, lcc_engine::print::layout::Orientation::Landscape);
     let p = rect(&h, "print:page");
     assert!(p.width() > p.height(), "the page is drawn landscape");
-    click(&mut h, "button:printUnits-2");
+    click_in_view(&mut h, "button:printUnits-2");
     assert_eq!(h.app.session.print.guides.units, lcc_engine::print::layout::Unit::Millimeters);
-    click(&mut h, "check:printShowGrid");
+    click_in_view(&mut h, "check:printShowGrid");
     assert!(h.app.session.print.guides.show_page_grid);
 }
 
@@ -216,7 +231,7 @@ fn templates_save_apply_and_delete_from_the_dialog() {
 
 #[test]
 fn templates_export_and_import_from_the_dialog() {
-    let dir = std::env::temp_dir().join(format!("lcc-ui-print-templates-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-ui-print-templates");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("Sheet 5x6.lcprint").to_string_lossy().to_string();
     let suggested = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -346,7 +361,7 @@ fn the_print_dialog_fits_the_window_with_its_buttons_on_screen() {
 #[test]
 fn print_job_colour_controls_reach_the_job_and_the_pdf() {
     use lcc_engine::print_color::{PrintIntent, PrintMedia, PrintProfile, PrintSharpen};
-    let dir = std::env::temp_dir().join(format!("app-print-ui-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("app-print-ui");
     std::fs::create_dir_all(&dir).unwrap();
     let icc = dir.join("Baryta Paper.icc");
     std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::AdobeRgb)).unwrap();

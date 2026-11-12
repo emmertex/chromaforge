@@ -222,10 +222,19 @@ impl Segmenter {
     }
 
     /// Install the chosen scene model for the pipeline when its files are in place, or go back
-    /// to the photo analysis (idempotent).
+    /// to the photo analysis (idempotent); the depth model too, when installed.
     pub fn scene_sync(&mut self, activity: &crate::activity::Activity) {
         let want = self.scene_dir_in_use();
         self.scene.sync(want, activity);
+        // (the depth model, behind Depth Range masks, is used whenever it is installed)
+        let depth = self.open_model_installed("depth").then(|| self.open_model_dir("depth")).flatten();
+        self.depth.sync(depth, activity);
+    }
+
+    /// Depth Range masks need the Depth Anything model installed; otherwise
+    /// [`crate::EngineError::ModelMissing`] ([`crate::AiModel::Depth`]) says how to get it.
+    pub fn require_depth_model(&self) -> crate::Result<PathBuf> {
+        self.require_open_model("depth", crate::AiModel::Depth)
     }
 
     fn save_prefs(&self) -> Result<(), String> {
@@ -266,6 +275,20 @@ impl Segmenter {
             return self.require_model();
         }
         self.require_sam2()
+    }
+
+    /// Landscape classes beyond sky, water and vegetation need the EoMT scene model chosen
+    /// (`ai.models.setSceneModel`) and installed; otherwise [`crate::EngineError::ModelMissing`]
+    /// ([`crate::AiModel::Scene`]) says how to get it.
+    pub fn require_scene_model(&self) -> crate::Result<()> {
+        self.require_open_model("scene", crate::AiModel::Scene)?;
+        if self.scene_model != SceneModel::Eomt {
+            return Err(crate::EngineError::ModelMissing {
+                model: crate::AiModel::Scene,
+                msg: "Mountains, architecture and ground need the EoMT scene model: choose it with `ai.models.setSceneModel {\"model\": \"eomt\"}` (Settings > AI Models).".into(),
+            });
+        }
+        Ok(())
     }
 
     /// SAM 2.1's folder, when it is installed (remembered objects always run on it); otherwise

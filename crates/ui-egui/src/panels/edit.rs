@@ -537,18 +537,13 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
     // header: Edit (Reset sits in the bar under the panels, issue #116), then Lightroom Classic's Basic button row:
     // Auto, B&W | HDR (issue #124). Compact: no title (the tool row says which panel this is), the
     // buttons on one row of the panel's row height
-    if !dense {
-        egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 14, bottom: 0 }, 3, 0)).show(
-            ui,
-            |ui| {
-                ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
-            },
-        );
-    }
-    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 10, bottom: 14 }, 3, 3)).show(ui, |ui| {
+    // (Classic: the title shares the buttons' row, as Camera Raw's does — issue #530)
+    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 12, bottom: 14 }, 3, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             if dense {
                 ui.set_height(crate::widgets::DENSE_ROW_H - 2.0);
+            } else {
+                ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
             }
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1239,7 +1234,21 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if clicked && !menu_clicked {
         let _ = app.run("view.clipping", json!({}));
     }
-    app.clipping_preview = preview;
+    // (only once the pointer rests on the indicator: gliding across the histogram passes over the
+    // triangles, and each preview toggled the overlay, so the photo rendered again, every tile at
+    // 100 %, twice per pass)
+    let (now, pass) = (ui.input(|i| i.time), ui.ctx().cumulative_pass_nr());
+    app.clipping_hover = if preview {
+        let since = app.clipping_hover.filter(|(_, seen)| seen.saturating_add(1) >= pass).map_or(now, |(since, _)| since);
+        Some((since, pass))
+    } else {
+        None
+    };
+    app.clipping_preview = app.clipping_hover.is_some_and(|(since, _)| clipping_preview_due(since, now));
+    if let Some((since, _)) = app.clipping_hover.filter(|_| !app.clipping_preview) {
+        let left = (since + CLIPPING_PREVIEW_REST_S - now).clamp(0.0, CLIPPING_PREVIEW_REST_S);
+        ui.ctx().request_repaint_after(std::time::Duration::try_from_secs_f64(left).unwrap_or_default());
+    }
     // the histogram's context menu: which distribution it draws and how tall its bins are, then the
     // format of the colour readout (Lightroom's "Show Lab Color Values")
     crate::widgets::context_menu(&resp, |ui| {
@@ -1816,7 +1825,7 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
                     "green" => "Green channel",
                     _ => "Blue channel",
                 };
-                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name} — double-click to reset it", name = name));
+                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name}: double-click to reset it", name = name));
                 if resp.double_clicked() {
                     target.set_channel(app, ch);
                     let _ = app.run("curve.reset", target.params(json!({"channel": ch})));
@@ -2246,6 +2255,40 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
         app.ui.tool = tool.to_string();
         app.toast(ctx, crate::i18n::tr("Targeted adjustment on: drag up or down on the photo · Esc to stop"));
     }
+}
+
+/// Targeted adjustment `target` (`curve|hue|sat|lum`) on, from Tools > Target Adjustment: the Edit panel
+/// opens on the section whose control the drag changes, and a Color Mixer group is chosen the way its
+/// button chooses it. Dragging on the photo then adjusts; Esc or None puts it away.
+pub(crate) fn start_tat(app: &mut LccApp, target: &str) -> Result<(), String> {
+    let Some(id) = app.session.active() else { return Err("tool.tat: no photo is open".into()) };
+    let bw = app.session.develop_of(id).is_some_and(|d| crate::is_bw(&d));
+    let section = match target {
+        "curve" => "curve",
+        "hue" | "sat" | "lum" => {
+            if bw && target != "lum" {
+                return Err(format!("tool.tat: a B&W photo has the B&W Mix (`lum`) only, not `{target}`"));
+            }
+            "mixer"
+        }
+        other => return Err(format!("tool.tat: unknown target `{other}` (curve|hue|sat|lum)")),
+    };
+    app.ui.right = RightPanel::Edit;
+    app.ui.view = crate::state::ViewMode::Detail;
+    if !app.ui.section_open(section) {
+        app.ui.toggle_section(section);
+    }
+    if section == "mixer" {
+        // the Mixer tab (not Point Color), on the group the drag changes unless All shows them all
+        if app.ui.flyout_open("pointColor") {
+            app.ui.toggle_flyout("pointColor");
+        }
+        if app.ui.mixer_adjust != "color" && app.ui.mixer_group != "all" {
+            app.ui.mixer_group = target.to_string();
+        }
+    }
+    app.ui.tool = format!("tat:{target}");
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------ colour mixer
@@ -3110,7 +3153,7 @@ fn lens_note(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, has_
     let Some(state) = app.session.catalog.photo(id).and_then(|p| app.session.lens_match(p)) else { return };
     let text = match state {
         Match::NoDatabase => {
-            let link = egui::RichText::new(tr("No lens database — set one up or download it…")).size(11.0).color(t.accent).underline();
+            let link = egui::RichText::new(tr("No lens database. Set one up or download it…")).size(11.0).color(t.accent).underline();
             let r = ui.add(egui::Label::new(link).sense(egui::Sense::click()));
             crate::widgets::register(ui.ctx(), "link:lensDbSetup", r.rect);
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -3230,6 +3273,17 @@ pub(crate) fn reset_tip(keymap: &crate::shortcuts::Keymap, mac: bool) -> String 
         Some(sc) => format!("{base} ({})", crate::menubar::shortcut_text(sc, mac)),
         None => base.to_string(),
     }
+}
+
+/// How long the pointer rests on a histogram clipping indicator before its overlay is previewed
+/// on the photo (see [`crate::LccApp::clipping_hover`]).
+pub(crate) const CLIPPING_PREVIEW_REST_S: f64 = 0.3;
+
+/// Whether a clipping indicator hovered since `since` has been rested on long enough at `now` (a
+/// clock that went back counts as no rest).
+pub(crate) fn clipping_preview_due(since: f64, now: f64) -> bool {
+    let rested = now - since;
+    rested.is_finite() && rested >= CLIPPING_PREVIEW_REST_S
 }
 
 #[cfg(test)]

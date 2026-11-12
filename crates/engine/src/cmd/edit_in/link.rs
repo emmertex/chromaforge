@@ -382,8 +382,7 @@ mod tests {
             let _ = read_link(x);
             let _ = add_link(x, "a", "b", "c");
         }
-        let d = std::env::temp_dir().join(format!("edit-link-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = lcc_testkit::TempDir::new("edit-link");
         for (name, bytes) in [
             ("a.tif", b"II*\0\xff\xff\xff\xff".to_vec()),
             ("b.tif", b"MM\0*\0\0\0\x08\xff\xff".to_vec()),
@@ -400,9 +399,8 @@ mod tests {
         use serde_json::json;
         // Scenario: parent file is renamed/moved, child's DerivedFrom names the parent's embedded
         // xmpMM:DocumentID (not the hash). stack_derived must find the parent via the embedded ID.
-        let dir = std::env::temp_dir().join(format!("edit-link-embedded-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // removed when the test ends, after the session (declared after it)
+        let dir = lcc_testkit::TempDir::new("edit-link-embedded");
         // Create parent TIFF with embedded document ID
         let parent = dir.join("parent.tif");
         let parent_bytes = lcc_codecs::encode_tiff(

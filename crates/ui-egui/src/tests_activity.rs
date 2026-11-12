@@ -594,7 +594,7 @@ fn dead_export_worker_leaves_no_row() {
 }
 
 /// A folder of `n` stand-in JPEGs and an app whose file probe takes 100 ms each (a slow drive).
-fn slow_import(tag: &str, n: usize) -> (Headless, std::path::PathBuf) {
+fn slow_import(tag: &str, n: usize) -> (lcc_testkit::TempDir, Headless) {
     gated_import(tag, n, None)
 }
 
@@ -602,8 +602,8 @@ fn slow_import(tag: &str, n: usize) -> (Headless, std::path::PathBuf) {
 /// (`batch_size()` files, which join the catalog together), so a test can act mid-import without
 /// racing the 100 ms-per-file clock. The hold gives up after 60 s, so a failed test never leaves
 /// the import thread spinning.
-fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-activity-{tag}-{}", std::process::id()));
+fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-activity-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..n {
@@ -625,13 +625,13 @@ fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atom
     }));
     let mut h = Headless::new(LccApp::new(s, Services { png: None, ..Default::default() }), [1200.0, 800.0], 1.0);
     h.settle(T);
-    (h, dir)
+    (dir, h)
 }
 
 #[test]
 fn import_cancelled_by_command_reports_cancelled() {
     let n = 40;
-    let (mut h, dir) = slow_import("cancel", n);
+    let (dir, mut h) = slow_import("cancel", n);
     let undo0 = h.app.session.undo.len();
     crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 2)));
@@ -651,7 +651,7 @@ fn import_cancelled_by_command_reports_cancelled() {
 #[test]
 fn a_photo_chosen_during_an_import_stays_selected() {
     let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (mut h, dir) = gated_import("chosen", 20, Some(gate.clone()));
+    let (dir, mut h) = gated_import("chosen", 20, Some(gate.clone()));
     crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 2)));
     // the newest photo so far, never the import's first
@@ -669,7 +669,7 @@ fn a_photo_chosen_during_an_import_stays_selected() {
 
 #[test]
 fn scan_shows_a_row_and_cancel_closes_it() {
-    let (mut h, dir) = slow_import("scan", 120);
+    let (dir, mut h) = slow_import("scan", 120);
     crate::import::open(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     h.step();
     let tasks = h.app.session.activity.list();
@@ -687,8 +687,8 @@ fn scan_shows_a_row_and_cancel_closes_it() {
 }
 
 /// A library of three bracketed DNGs (−2, 0, +2 EV) on disk, all selected.
-fn bracket(tag: &str) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-activity-{tag}-{}", std::process::id()));
+fn bracket(tag: &str) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-activity-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut paths = Vec::new();
@@ -704,13 +704,13 @@ fn bracket(tag: &str) -> (Headless, std::path::PathBuf) {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
-    (h, dir)
+    (dir, h)
 }
 
 #[test]
 fn final_merge_shows_a_row_and_cancels() {
     for (command, cancelled) in [("merge.hdr", "HDR merge cancelled"), ("merge.focusStack", "Focus stack merge cancelled")] {
-        let (mut h, dir) = bracket(command);
+        let (dir, mut h) = bracket(command);
         let before = h.app.session.catalog.len();
         crate::merge::start_last(&mut h.app, command).unwrap();
         h.step();
@@ -734,7 +734,7 @@ fn final_merge_shows_a_row_and_cancels() {
 /// Settings" uses them; a kind never merged opens with the defaults.
 #[test]
 fn merge_dialog_remembers_the_last_settings_per_kind() {
-    let (mut h, dir) = bracket("merge-last");
+    let (dir, mut h) = bracket("merge-last");
     let opts = crate::merge::MergeDialog {
         align: false,
         deghost: "high".into(),
@@ -767,7 +767,7 @@ fn merge_dialog_remembers_the_last_settings_per_kind() {
 /// rest.
 #[test]
 fn batch_merge_runs_each_set_in_turn() {
-    let dir = std::env::temp_dir().join(format!("lc-activity-batch-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-activity-batch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut paths = Vec::new();
@@ -810,8 +810,8 @@ fn batch_merge_runs_each_set_in_turn() {
 
 #[test]
 fn find_missing_shows_an_indeterminate_row() {
+    let dir = lcc_testkit::TempDir::new("lc-activity-findmissing");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("lc-activity-findmissing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // run directly, not through a request (which runs frames): the search of an empty folder is over at once, but its
     // result is applied between frames, and the row is there until then
@@ -827,9 +827,48 @@ fn find_missing_shows_an_indeterminate_row() {
 }
 
 #[test]
-fn auto_import_listing_has_no_row() {
+fn validate_dng_files_runs_in_the_background_and_lists_what_it_found() {
+    // nothing to check: a refusal, not an empty dialog
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("lc-activity-autoimport-{}", std::process::id()));
+    let err = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap_err();
+    assert!(err.contains("no DNG files"), "{err}");
+
+    let (dir, mut h) = bracket("validate-dng");
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap();
+    assert_eq!((r["background"].as_bool(), r["total"].as_u64()), (Some(true), Some(3)), "{r}");
+    let rows = h.app.session.activity.list();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((rows[0].kind, rows[0].label.as_str(), rows[0].cancellable), ("validateDng", "Validate DNG Files", true));
+    assert!(h.step_until(T, |h| h.app.tasks.is_empty()));
+    assert!(h.app.session.activity.list().is_empty(), "the row goes with the task");
+    // the answer is a dialog with the counts, and a report for scripts
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { summary, .. }) if summary.contains('3')), "{:?}", h.app.ui.dialog);
+    let report = h.app.ui.last_dng_validation.clone().unwrap();
+    assert_eq!((report["total"].as_u64(), report["checked"].as_u64(), report["cancelled"].as_bool()), (Some(3), Some(3), Some(false)), "{report}");
+    let counted = report["intact"].as_u64().unwrap()
+        + report["damaged"].as_array().unwrap().len() as u64
+        + report["unverifiable"].as_array().unwrap().len() as u64;
+    assert_eq!(counted, 3, "every file gets a verdict: {report}");
+
+    // the same through `wait`, with one file now cut short: damaged, whatever the others are
+    h.app.ui.dialog = None;
+    let first = h.app.session.catalog.photos().next().unwrap().id;
+    let path = match &h.app.session.catalog.photo(first).unwrap().source {
+        lcc_catalog::Source::File { path } => path.clone(),
+        other => panic!("{other:?}"),
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 3]).unwrap();
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({"wait": true})).unwrap().unwrap();
+    assert!(r["damaged"].as_array().unwrap().iter().any(|d| d["file"].as_str().is_some_and(|f| path.ends_with(f))), "{r}");
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { damaged, .. }) if damaged.len() == 1));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn auto_import_listing_has_no_row() {
+    let dir = lcc_testkit::TempDir::new("lc-activity-autoimport");
+    let mut h = demo();
     std::fs::create_dir_all(&dir).unwrap();
     h.app.session.import_defaults.auto_folder = Some(dir.to_string_lossy().to_string());
     // the watched folder is listed every few seconds, quietly
@@ -881,8 +920,8 @@ fn immediate_library_commands_and_auto_sync_show_completion() {
 }
 
 /// An app on a library (in a temp folder named after `name`) with a backup due on every exit.
-fn backup_due(name: &str) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lcc-{name}-{}", std::process::id()));
+fn backup_due(name: &str) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lcc-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -895,14 +934,14 @@ fn backup_due(name: &str) -> (Headless, std::path::PathBuf) {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
-    (h, dir)
+    (dir, h)
 }
 
 /// A catalog backup due at quit asks first, as Lightroom Classic does, and says where the schedule
 /// is set: Cancel keeps the app open, Skip This Time quits without one (ported from OneSlips' LR-BACKUP).
 #[test]
 fn quitting_with_a_backup_due_asks_and_skip_quits() {
-    let (mut h, dir) = backup_due("quit-backup");
+    let (dir, mut h) = backup_due("quit-backup");
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
     h.step();
@@ -923,7 +962,7 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
 /// The backup prompt's title and hint are translated, the menu path in the hint too.
 #[test]
 fn the_backup_prompt_is_translated_with_its_menu_path() {
-    let (mut h, dir) = backup_due("quit-backup-de");
+    let (dir, mut h) = backup_due("quit-backup-de");
     h.app.ui.language = crate::i18n::Locale::De;
     crate::i18n::set_language(crate::i18n::Locale::De);
     assert!(!crate::panels::notices::may_close(&mut h.app));
@@ -1036,7 +1075,7 @@ fn a_wait_is_translated_around_its_names() {
 /// with one due on every exit. A change since asks again (ported from OneSlips' LR-BACKUP).
 #[test]
 fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
-    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-same-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-quit-backup-same");
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -1069,7 +1108,7 @@ fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
 fn reading_a_browsed_folder_holds_no_preparation_back() {
     let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let n = lcc_engine::import::batch_size() + 4;
-    let (mut h, dir) = gated_import("browse-read", n, Some(gate.clone()));
+    let (dir, mut h) = gated_import("browse-read", n, Some(gate.clone()));
     let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), T);
     assert_eq!(r["ok"], true, "{r}");
     assert!(

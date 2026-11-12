@@ -227,6 +227,9 @@ pub fn bar(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
         let resp = ui.add(edit);
         crate::access::label(&resp, "Find Place");
         register(ui.ctx(), "map:search", resp.rect);
+        if std::mem::take(&mut app.map.focus_search) {
+            resp.request_focus();
+        }
         if resp.has_focus() {
             app.text_focus = true;
         }

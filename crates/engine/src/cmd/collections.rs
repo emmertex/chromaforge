@@ -207,7 +207,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Collection Definition",
             [],
             None,
-            "{id, path?} — a collection, smart collection or collection set (with everything inside) as JSON: written to `path`, else returned",
+            "{id, path?}: a collection, smart collection or collection set (with everything inside) as JSON: written to `path`, else returned",
             always,
             export
         ),
@@ -216,7 +216,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Collection Definition",
             [],
             None,
-            "{path | definition, parent?: set id} — recreate collections from a definition; photos are matched by path, else by file name and capture time; one undo step → {created, photos, unmatched, id}",
+            "{path | definition, parent?: set id}: recreate collections from a definition; photos are matched by path, else by file name and capture time; one undo step → {created, photos, unmatched, id}",
             always,
             import
         ),

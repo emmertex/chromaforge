@@ -35,7 +35,7 @@ fn export_hooks_run_off_the_ui_thread_with_an_activity_row() {
     // install into memory, never into the real user's settings folder (a failed run left the test
     // plug-in installed there)
     lcc_engine::cmd::plugins::use_in_memory_manager();
-    let dir = std::env::temp_dir().join(format!("plugin-worker-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("plugin-worker");
     std::fs::create_dir_all(&dir).unwrap();
     let wasm = dir.join("slow.wasm");
     std::fs::write(&wasm, slow_hook("test.slowhook", 60_000_000)).unwrap();

@@ -203,8 +203,9 @@ fn media_box(pdf: &[u8]) -> (f64, f64) {
     (nums[2], nums[3])
 }
 
-fn temp_pdf(name: &str) -> String {
-    std::env::temp_dir().join(format!("app-print-{name}-{}.pdf", std::process::id())).to_string_lossy().to_string()
+/// `<name>.pdf` in a Temp folder of its own, removed when the returned guard is dropped.
+fn temp_pdf(name: &str) -> lcc_testkit::TempFile {
+    lcc_testkit::TempFile::new(&format!("app-print-pdf-{name}"), &format!("{name}.pdf"))
 }
 
 #[test]
@@ -217,7 +218,7 @@ fn export_pdf_prints_the_current_settings() {
         json!({"layout": {"style": "contactSheet", "grid": {"columns": 1, "rows": 2}, "page": {"paper": "a5"}}, "job": {"ppi": 100.0}}),
     );
     let path = temp_pdf("export");
-    let r = run(&mut s, "print.exportPdf", json!({"path": path, "ids": ids}));
+    let r = run(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": ids}));
     assert_eq!((r["pages"].as_u64(), r["photos"].as_u64()), (Some(2), Some(3)));
     let bytes = std::fs::read(&path).unwrap();
     assert_eq!(bytes.len() as u64, r["bytes"].as_u64().unwrap());
@@ -229,12 +230,12 @@ fn export_pdf_prints_the_current_settings() {
     // the row in the activity stack is gone when the print is done
     assert!(s.activity.list().is_empty());
     fails(&mut s, "print.exportPdf", json!({}));
-    fails(&mut s, "print.exportPdf", json!({"path": path, "typo": 1}));
-    fails(&mut s, "print.exportPdf", json!({"path": path, "ids": ["x"]}));
-    fails(&mut s, "print.exportPdf", json!({"path": path, "ids": [999_999]}));
+    fails(&mut s, "print.exportPdf", json!({"path": path.path(), "typo": 1}));
+    fails(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": ["x"]}));
+    fails(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": [999_999]}));
     // a package with no cells has nothing to print
     run(&mut s, "print.set", json!({"layout": {"style": "picturePackage"}}));
-    fails(&mut s, "print.exportPdf", json!({"path": path, "ids": ids}));
+    fails(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": ids}));
 }
 
 /// The Japanese photo and postcard papers reach the PDF page at their metric sizes: はがき is
@@ -247,7 +248,7 @@ fn export_pdf_uses_the_japanese_paper_sizes() {
     for (paper, w_pt, h_pt) in [("postcard", 283.46, 419.53), ("はがき", 283.46, 419.53), ("l", 252.28, 359.99)] {
         run(&mut s, "print.set", json!({"layout": {"style": "singleImage", "page": {"paper": paper}}, "job": {"ppi": 254.0}}));
         let path = temp_pdf(paper);
-        run(&mut s, "print.exportPdf", json!({"path": path, "ids": [id]}));
+        run(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": [id]}));
         let bytes = std::fs::read(&path).unwrap();
         let (w, h) = media_box(&bytes);
         assert!((w - w_pt).abs() < 0.1 && (h - h_pt).abs() < 0.1, "{paper}: {w} x {h} pt, wanted {w_pt} x {h_pt}");
@@ -263,8 +264,7 @@ fn export_pdf_uses_the_japanese_paper_sizes() {
 fn export_pdf_with_a_printer_profile() {
     let mut s = Session::with_demo();
     let ids: Vec<u64> = s.catalog.photos().take(1).map(|p| p.id.0).collect();
-    let dir = std::env::temp_dir().join(format!("app-print-icc-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("app-print-icc");
     let icc = dir.join("Fine Art Matte.icc");
     std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::AdobeRgb)).unwrap();
     let color = json!({"profile": {"kind": "icc", "path": icc}, "intent": "relative", "sharpen": "high", "media": "matte", "brightness": 10});
@@ -275,13 +275,13 @@ fn export_pdf_with_a_printer_profile() {
     );
     assert_eq!(run(&mut s, "print.get", json!({}))["settings"]["job"]["color"]["media"], "matte");
     let path = temp_pdf("icc");
-    run(&mut s, "print.exportPdf", json!({"path": path, "ids": ids}));
+    run(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": ids}));
     let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
     assert!(text.contains("/OutputIntents") && text.contains("/ICCBased") && text.contains("/BitsPerComponent 16"));
     // out-of-range adjustments are refused when set; a missing profile fails before rendering
     fails(&mut s, "print.set", json!({"job": {"color": {"contrast": 150}}}));
     run(&mut s, "print.set", json!({"job": {"color": {"profile": {"kind": "icc", "path": dir.join("gone.icc")}}}}));
-    let err = fails(&mut s, "print.exportPdf", json!({"path": path, "ids": ids}));
+    let err = fails(&mut s, "print.exportPdf", json!({"path": path.path(), "ids": ids}));
     assert!(err.contains("gone.icc"), "{err}");
     assert!(s.activity.list().is_empty(), "nothing started");
 }
@@ -295,7 +295,8 @@ fn custom_package_prints_each_cells_photo() {
     let b = run(&mut s, "print.cell.add", json!({"width": 3.0, "height": 2.0}))["id"].as_u64().unwrap();
     run(&mut s, "print.cell.photo", json!({"id": a, "photo": ids[0]}));
     run(&mut s, "print.cell.photo", json!({"id": b, "photo": ids[1]}));
-    let r = run(&mut s, "print.exportPdf", json!({"path": temp_pdf("custom"), "ids": [ids[0]]}));
+    let pdf = temp_pdf("custom");
+    let r = run(&mut s, "print.exportPdf", json!({"path": pdf.path(), "ids": [ids[0]]}));
     assert_eq!(r["pages"], 1);
 }
 
@@ -416,6 +417,223 @@ fn templates_export_to_a_file_and_import_from_one() {
     assert!(fails(&mut s, "print.template.import", json!({"path": file.to_string_lossy()})).contains("at most"));
 }
 
+/// The names of the folders `print.template.list` gives, User Templates first.
+fn folder_names(r: &Value) -> Vec<String> {
+    r["folders"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap().to_string()).collect()
+}
+
+/// Each template's name and folder, in the order `print.template.list` gives them.
+fn template_folders(r: &Value) -> Vec<(String, String)> {
+    r["templates"].as_array().unwrap().iter().map(|t| (t["name"].as_str().unwrap().into(), t["folder"].as_str().unwrap().into())).collect()
+}
+
+fn pair(name: &str, folder: &str) -> (String, String) {
+    (name.into(), folder.into())
+}
+
+#[test]
+fn template_folders_hold_templates_and_survive_reopening() {
+    let files = MemStore::new();
+    let open = |files: &MemStore| {
+        let mut s = Session::with_demo();
+        let stores = LibraryStores { dir: "print".into(), catalog: Box::new(MemStore::new()), files: Box::new(files.clone()), on_disk: false };
+        s.open_library_in(stores, false).unwrap();
+        s
+    };
+    let mut s = open(&files);
+    let r = run(&mut s, "print.template.list", json!({}));
+    assert_eq!(r["folders"], json!([{"name": "User Templates", "default": true, "templates": 0}]));
+
+    // a folder is kept while it is empty, and the folders are listed by name after User Templates
+    let r = run(&mut s, "print.template.folder.create", json!({"name": " Weddings "}));
+    assert_eq!(r["name"], "Weddings");
+    run(&mut s, "print.template.folder.create", json!({"name": "Proofs"}));
+    let r = run(&mut open(&files), "print.template.list", json!({}));
+    assert_eq!(folder_names(&r), ["User Templates", "Proofs", "Weddings"], "{r}");
+
+    // a template is saved into a folder, or into User Templates when none is named
+    run(&mut s, "print.set", json!({"layout": {"style": "contactSheet", "grid": {"columns": 4, "rows": 5}}}));
+    run(&mut s, "print.template.save", json!({"name": "Sheet", "folder": "weddings"}));
+    let r = run(&mut s, "print.template.save", json!({"name": "Plain"}));
+    assert_eq!(template_folders(&r), [pair("Sheet", "Weddings"), pair("Plain", "User Templates")]);
+    assert_eq!(r["folders"][2], json!({"name": "Weddings", "default": false, "templates": 1}));
+    // saving over a name keeps its folder unless the call names another
+    run(&mut s, "print.set", json!({"layout": {"grid": {"columns": 6}}}));
+    let r = run(&mut s, "print.template.save", json!({"name": "sheet"}));
+    assert_eq!(template_folders(&r), [pair("sheet", "Weddings"), pair("Plain", "User Templates")]);
+    let r = run(&mut s, "print.template.save", json!({"name": "Plain", "folder": "Proofs"}));
+    assert_eq!(template_folders(&r)[1], pair("Plain", "Proofs"));
+
+    // a move changes only the folder; a move to where it is already does nothing
+    let settings = r["templates"][0]["settings"].clone();
+    let r = run(&mut s, "print.template.move", json!({"name": "SHEET", "folder": "Proofs"}));
+    assert_eq!((r["moved"].as_bool(), template_folders(&r)[0].clone()), (Some(true), pair("sheet", "Proofs")));
+    assert_eq!(r["templates"][0]["settings"], settings);
+    let r = run(&mut s, "print.template.move", json!({"name": "Sheet", "folder": "proofs"}));
+    assert_eq!(r["moved"], false);
+    let r = run(&mut s, "print.template.move", json!({"name": "Plain", "folder": "user templates"}));
+    assert_eq!(template_folders(&r)[1], pair("Plain", "User Templates"));
+    run(&mut s, "print.template.move", json!({"name": "Plain", "folder": "Weddings"}));
+
+    // a rename takes the folder's templates along; a change of case is a rename too
+    let r = run(&mut s, "print.template.folder.rename", json!({"name": "proofs", "to": "Contact Sheets"}));
+    assert_eq!(folder_names(&r), ["User Templates", "Contact Sheets", "Weddings"]);
+    assert_eq!(template_folders(&r)[0], pair("sheet", "Contact Sheets"));
+    let r = run(&mut s, "print.template.folder.rename", json!({"name": "contact sheets", "to": "contact sheets"}));
+    assert_eq!(template_folders(&r)[0], pair("sheet", "contact sheets"));
+
+    // the folders and where each template is survive reopening the library
+    let mut again = open(&files);
+    let r = run(&mut again, "print.template.list", json!({}));
+    assert_eq!(folder_names(&r), ["User Templates", "contact sheets", "Weddings"]);
+    assert_eq!(template_folders(&r), [pair("sheet", "contact sheets"), pair("Plain", "Weddings")]);
+    run(&mut again, "print.template.apply", json!({"name": "Sheet"}));
+    assert_eq!(again.print.layout.grid.columns, 6);
+
+    // deleting a folder keeps its templates: they go to User Templates
+    let r = run(&mut s, "print.template.folder.delete", json!({"name": "WEDDINGS"}));
+    assert_eq!((r["deleted"].as_str(), r["moved"].as_u64()), (Some("Weddings"), Some(1)));
+    assert_eq!(folder_names(&r), ["User Templates", "contact sheets"]);
+    assert_eq!(template_folders(&r), [pair("sheet", "contact sheets"), pair("Plain", "User Templates")]);
+    let r = run(&mut open(&files), "print.template.list", json!({}));
+    assert_eq!(template_folders(&r)[1], pair("Plain", "User Templates"));
+
+    // refusals change nothing
+    let before = run(&mut s, "print.template.list", json!({}));
+    for (id, p, why) in [
+        ("print.template.folder.create", json!({}), "missing `name`"),
+        ("print.template.folder.create", json!({"name": "  "}), "folder name"),
+        ("print.template.folder.create", json!({"name": "a\tb"}), "folder name"),
+        ("print.template.folder.create", json!({"name": "x".repeat(81)}), "folder name"),
+        ("print.template.folder.create", json!({"name": "user templates"}), "always there"),
+        ("print.template.folder.create", json!({"name": "Contact Sheets"}), "already a folder"),
+        ("print.template.folder.rename", json!({"name": "User Templates", "to": "Mine"}), "can't be renamed"),
+        ("print.template.folder.rename", json!({"name": "Nope", "to": "Mine"}), "no print template folder"),
+        ("print.template.folder.rename", json!({"name": "contact sheets"}), "missing `to`"),
+        ("print.template.folder.rename", json!({"name": "contact sheets", "to": "User Templates"}), "always there"),
+        ("print.template.folder.delete", json!({"name": "User Templates"}), "can't be renamed or deleted"),
+        ("print.template.folder.delete", json!({"name": "Nope"}), "no print template folder"),
+        ("print.template.move", json!({"name": "Sheet"}), "missing `folder`"),
+        ("print.template.move", json!({"name": "Sheet", "folder": "Nope"}), "no print template folder"),
+        ("print.template.move", json!({"name": "Sheet", "folder": 3}), "`folder` must be"),
+        ("print.template.save", json!({"name": "New", "folder": null}), "`folder` must be"),
+        ("print.template.import", json!({"path": "x.lcprint", "folder": null}), "`folder` must be"),
+        ("print.template.move", json!({"name": "Nope", "folder": "User Templates"}), "no print template `Nope`"),
+        ("print.template.save", json!({"name": "New", "folder": "Nope"}), "no print template folder"),
+        ("print.template.import", json!({"path": "x.lcprint", "folder": "Nope"}), "no print template folder"),
+    ] {
+        let e = fails(&mut s, id, p.clone());
+        assert!(e.contains(why), "{id} {p}: {e}");
+    }
+    run(&mut s, "print.template.folder.create", json!({"name": "Second"}));
+    assert!(fails(&mut s, "print.template.folder.rename", json!({"name": "second", "to": "CONTACT SHEETS"})).contains("already a folder"));
+    run(&mut s, "print.template.folder.delete", json!({"name": "Second"}));
+    assert_eq!(run(&mut s, "print.template.list", json!({})), before);
+
+    // a full list of folders takes no more
+    while s.print_template_folders.len() < crate::print::template::MAX_FOLDERS {
+        let n = s.print_template_folders.len();
+        run(&mut s, "print.template.folder.create", json!({"name": format!("F{n}")}));
+    }
+    assert!(fails(&mut s, "print.template.folder.create", json!({"name": "One more"})).contains("at most"));
+}
+
+#[test]
+fn templates_import_into_a_folder_and_export_without_it() {
+    let mut s = Session::with_demo();
+    let scratch = Scratch::new("folders");
+    let file = scratch.0.join("proofs.lcprint");
+    run(&mut s, "print.template.folder.create", json!({"name": "Proofs"}));
+    run(&mut s, "print.template.save", json!({"name": "Sheet", "folder": "Proofs"}));
+    run(&mut s, "print.template.export", json!({"name": "Sheet", "path": file.to_string_lossy()}));
+    let doc: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut keys: Vec<&String> = doc.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["format", "name", "settings", "version"], "a .lcprint file stays version 1, without the folder");
+    let r = run(&mut s, "print.template.import", json!({"path": file.to_string_lossy()}));
+    assert_eq!(template_folders(&r)[1], pair("Sheet (2)", "User Templates"));
+    let r = run(&mut s, "print.template.import", json!({"path": file.to_string_lossy(), "folder": "proofs"}));
+    assert_eq!(template_folders(&r)[2], pair("Sheet (3)", "Proofs"));
+}
+
+#[test]
+fn templates_from_before_folders_are_in_user_templates() {
+    let files = MemStore::new();
+    let old = json!({"printTemplates": [
+        {"name": "Old", "settings": {"layout": {"style": "contactSheet"}}},
+        {"name": "Kept", "folder": "Family", "settings": {}},
+        {"name": "Spelled", "folder": " family ", "settings": {}},
+        {"name": "Bad", "folder": "a\nb", "settings": {}},
+        {"name": "Reserved", "folder": "USER TEMPLATES", "settings": {}}
+    ], "printTemplateFolders": ["Empty", "", "empty", "User Templates", "Family"]});
+    files.set("prefs.json", serde_json::to_vec(&old).unwrap());
+    let mut s = Session::with_demo();
+    let stores = LibraryStores { dir: "print".into(), catalog: Box::new(MemStore::new()), files: Box::new(files.clone()), on_disk: false };
+    s.open_library_in(stores, false).unwrap();
+    assert!(s.take_library_warnings().is_empty());
+    let r = run(&mut s, "print.template.list", json!({}));
+    assert_eq!(folder_names(&r), ["User Templates", "Empty", "Family"]);
+    assert_eq!(
+        template_folders(&r),
+        [
+            pair("Old", "User Templates"),
+            pair("Kept", "Family"),
+            pair("Spelled", "Family"),
+            pair("Bad", "User Templates"),
+            pair("Reserved", "User Templates")
+        ]
+    );
+    run(&mut s, "print.template.apply", json!({"name": "Old"}));
+}
+
+#[test]
+fn template_folders_with_and_without_templates_and_with_path_characters() {
+    let files = MemStore::new();
+    let mut s = Session::with_demo();
+    let stores = LibraryStores { dir: "print".into(), catalog: Box::new(MemStore::new()), files: Box::new(files.clone()), on_disk: false };
+    s.open_library_in(stores, false).unwrap();
+    let kept: Vec<String> = files.files.lock().unwrap().keys().cloned().collect();
+    let no_new_files = |files: &MemStore| files.files.lock().unwrap().keys().all(|k| kept.contains(k) || k == "prefs.json");
+
+    // a folder name is a label in prefs.json, not a path: `/`, `\` and `..` are kept as typed
+    for name in ["Clients/2024", r"a\b", ".."] {
+        let r = run(&mut s, "print.template.folder.create", json!({"name": name}));
+        assert_eq!(r["name"], name);
+    }
+    let r = run(&mut s, "print.template.list", json!({}));
+    assert_eq!(folder_names(&r), ["User Templates", "..", r"a\b", "Clients/2024"]);
+    assert!(no_new_files(&files), "folders make no files of their own");
+    assert!(fails(&mut s, "print.template.folder.create", json!({"name": "clients/2024"})).contains("already a folder"));
+
+    // an empty folder is renamed and deleted like one with templates; nothing moves
+    let r = run(&mut s, "print.template.folder.rename", json!({"name": "..", "to": "Empty"}));
+    assert_eq!(folder_names(&r), ["User Templates", r"a\b", "Clients/2024", "Empty"]);
+    assert_eq!(r["folders"][3], json!({"name": "Empty", "default": false, "templates": 0}));
+    let r = run(&mut s, "print.template.folder.delete", json!({"name": "Empty"}));
+    assert_eq!((r["deleted"].as_str(), r["moved"].as_u64()), (Some("Empty"), Some(0)));
+    assert_eq!(folder_names(&r), ["User Templates", r"a\b", "Clients/2024"]);
+
+    // templates move into a folder and out of it again
+    run(&mut s, "print.template.save", json!({"name": "One", "folder": "Clients/2024"}));
+    run(&mut s, "print.template.save", json!({"name": "Two"}));
+    run(&mut s, "print.template.save", json!({"name": "Three", "folder": r"a\b"}));
+    let r = run(&mut s, "print.template.move", json!({"name": "Two", "folder": "Clients/2024"}));
+    assert_eq!(template_folders(&r), [pair("One", "Clients/2024"), pair("Two", "Clients/2024"), pair("Three", r"a\b")]);
+    let r = run(&mut s, "print.template.move", json!({"name": "Three", "folder": "User Templates"}));
+    assert_eq!(template_folders(&r)[2], pair("Three", "User Templates"));
+
+    // a folder with templates is renamed with them; deleting it moves every one to User Templates
+    let r = run(&mut s, "print.template.folder.rename", json!({"name": "clients/2024", "to": "Clients/2025"}));
+    assert_eq!(template_folders(&r)[..2], [pair("One", "Clients/2025"), pair("Two", "Clients/2025")]);
+    let r = run(&mut s, "print.template.folder.delete", json!({"name": "Clients/2025"}));
+    assert_eq!(r["moved"], 2);
+    assert_eq!(template_folders(&r), [pair("One", "User Templates"), pair("Two", "User Templates"), pair("Three", "User Templates")]);
+    // a new folder under a deleted folder's name starts empty
+    let r = run(&mut s, "print.template.folder.create", json!({"name": "Clients/2025"}));
+    assert_eq!(r["folders"][2], json!({"name": "Clients/2025", "default": false, "templates": 0}));
+    assert!(no_new_files(&files));
+}
+
 /// A library whose `prefs.json` can't be read, so saving the preferences fails.
 #[derive(Clone, Default)]
 struct PrefsUnreadable(MemStore);
@@ -448,7 +666,13 @@ fn template_changes_that_cant_be_saved_are_undone() {
         LibraryStores { dir: "print".into(), catalog: Box::new(MemStore::new()), files: Box::new(PrefsUnreadable::default()), on_disk: false };
     s.open_library_in(stores, false).unwrap();
     s.print_templates.push(crate::print::template::PrintTemplate::new("Proofs", &s.print).unwrap());
-    let names = |s: &Session| s.print_templates.iter().map(|t| (t.name.clone(), t.settings.clone())).collect::<Vec<_>>();
+    s.print_template_folders.push("Family".into());
+    let names = |s: &Session| {
+        (
+            s.print_templates.iter().map(|t| (t.name.clone(), t.folder.clone(), t.settings.clone())).collect::<Vec<_>>(),
+            s.print_template_folders.clone(),
+        )
+    };
     let kept = names(&s);
     let scratch = Scratch::new("unsaved");
     let file = scratch.0.join("proofs.lcprint");
@@ -460,10 +684,18 @@ fn template_changes_that_cant_be_saved_are_undone() {
         ("print.template.save", json!({"name": "proofs"})),
         ("print.template.delete", json!({"name": "Proofs"})),
         ("print.template.import", json!({"path": file.to_string_lossy()})),
+        ("print.template.move", json!({"name": "Proofs", "folder": "Family"})),
+        ("print.template.folder.create", json!({"name": "Work"})),
+        ("print.template.folder.rename", json!({"name": "Family", "to": "Home"})),
+        ("print.template.folder.delete", json!({"name": "Family"})),
     ] {
         assert!(fails(&mut s, id, p.clone()).contains("prefs.json"), "{id} {p}");
         assert_eq!(names(&s), kept, "{id} {p}");
     }
+    // a rename to the same spelling changes nothing, so it writes nothing and doesn't fail
+    let r = run(&mut s, "print.template.folder.rename", json!({"name": "family", "to": " Family "}));
+    assert_eq!(r["name"], "Family");
+    assert_eq!(names(&s), kept);
 }
 
 #[test]

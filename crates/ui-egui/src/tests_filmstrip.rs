@@ -98,3 +98,18 @@ fn the_filmstrip_marks_the_active_photo_heavier_than_the_other_selected_one() {
     assert_eq!(on_other, vec![(1.5, t.ring_selected)]);
     assert!(on_unselected.is_empty(), "{on_unselected:?}");
 }
+
+/// Resizing the strip keeps the active photo where it was on screen (#1082).
+#[test]
+fn resizing_the_filmstrip_keeps_the_active_photo_in_place() {
+    use crate::panels::detail::film_rescroll;
+    // photo 40 drawn with its centre 300 points into the strip
+    let (old_w, new_w, at) = (100.0, 150.0, 40usize);
+    let old_off = (at as f32 + 0.5) * old_w - 300.0;
+    let new_off = film_rescroll(old_off, old_w, new_w, Some(at));
+    assert!(((at as f32 + 0.5) * new_w - new_off - 300.0).abs() < 0.01);
+    // never before the start, and hostile numbers do not escape
+    assert_eq!(film_rescroll(0.0, 100.0, 50.0, Some(0)), 0.0);
+    assert_eq!(film_rescroll(f32::NAN, 100.0, 50.0, None), 0.0);
+    assert_eq!(film_rescroll(10.0, 0.0, 50.0, None), 0.0);
+}

@@ -9,6 +9,7 @@ mod cr3_corpus;
 mod cr3_variants;
 mod crx_properties;
 mod dng;
+mod dng_digest;
 mod gpr_corpus;
 mod lossy_dng;
 mod nrw_be16;

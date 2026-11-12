@@ -93,6 +93,14 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
         }
     }
 
+    /// Keep the entries `f` says yes to.
+    pub fn retain_entries(&mut self, mut f: impl FnMut(&K, &V) -> bool) {
+        let drop: Vec<K> = self.map.iter().filter(|(k, e)| !f(k, &e.0)).map(|(k, _)| k.clone()).collect();
+        for k in drop {
+            self.remove(&k);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.map.clear();
         self.order.clear();

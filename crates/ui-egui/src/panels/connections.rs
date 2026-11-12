@@ -97,6 +97,16 @@ pub struct ImmichUi {
     sidecars_open: BTreeSet<String>,
     /// Push the whole XMP for managed assets through a temporary asset (opt-in: `PUT /assets/copy`).
     full_sidecars: bool,
+    /// Accounts whose Locked folders section is open, and each one's last `immich.authStatus`
+    /// (fetched when the section opens and again after an unlock: the state only changes when a
+    /// session is unlocked here or elsewhere, or when the server's elevation ends).
+    locked_open: BTreeSet<String>,
+    locked_view: HashMap<String, Value>,
+    /// The unlock dialog: the account it is open for, the secret as typed (cleared once sent or
+    /// cancelled; never stored) and the refusal to show.
+    unlock_for: Option<String>,
+    unlock_secret: String,
+    unlock_error: Option<String>,
     /// The filter bar's Immich smart search: the query, a search in flight (account, results),
     /// and the last message.
     smart_query: String,
@@ -110,6 +120,21 @@ impl ImmichUi {
     pub(crate) fn type_passphrase(&mut self, p: &str) {
         self.passphrase = p.into();
         self.passphrase2 = p.into();
+    }
+
+    /// Type into the unlock dialog's secret field (tests).
+    pub(crate) fn type_unlock_secret(&mut self, s: &str) {
+        self.unlock_secret = s.into();
+    }
+
+    /// A cached locked-folder status (`immich.authStatus`'s result; tests use the one account).
+    pub(crate) fn locked_status(&self) -> Value {
+        self.locked_view.values().next().cloned().unwrap_or_default()
+    }
+
+    /// The unlock dialog's secret field is empty (tests).
+    pub(crate) fn unlock_secret_is_empty(&self) -> bool {
+        self.unlock_secret.is_empty()
     }
 }
 
@@ -791,6 +816,16 @@ fn account_card(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, a: &V
                     app.immich.sidecars_open.insert(id.clone());
                 }
             }
+            let locked_open = app.immich.locked_open.contains(&id);
+            if text_button(ui, &format!("immichLocked-{i}"), crate::i18n::tr("Locked Folders…"), locked_open).clicked() {
+                if locked_open {
+                    app.immich.locked_open.remove(&id);
+                } else {
+                    // (a fresh status every time the section opens)
+                    app.immich.locked_open.insert(id.clone());
+                    app.immich.locked_view.remove(&id);
+                }
+            }
             if text_button(ui, &format!("immichDisconnect-{i}"), crate::i18n::tr("Disconnect"), false).clicked() {
                 let _ = app.run("immich.disconnect", json!({"account": id}));
                 app.immich.libraries.remove(&id);
@@ -801,6 +836,9 @@ fn account_card(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, a: &V
         }
         if app.immich.sidecars_open.contains(&id) {
             sidecar_section(app, ui, t, i, &id);
+        }
+        if app.immich.locked_open.contains(&id) {
+            locked_section(app, ui, t, i, &id);
         }
         if app.immich.sync_open.contains(&id) {
             sync_section(app, ui, t, i, &id);
@@ -880,6 +918,126 @@ fn sidecar_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id
     }
 }
 
+/// Immich's locked folders: this session's elevation state and the *Unlock…* dialog. While the
+/// session is locked the server leaves locked-folder assets out of its listings, so link, import
+/// and sync never see them; unlocked, they are listed like any other asset until the server
+/// locks the session again.
+fn locked_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &str) {
+    ui.separator();
+    if !app.immich.locked_view.contains_key(id) {
+        let st = app.session.execute("immich.authStatus", &json!({"account": id})).unwrap_or_default();
+        app.immich.locked_view.insert(id.to_string(), st);
+    }
+    let st = app.immich.locked_view.get(id).cloned().unwrap_or_default();
+    ui.label(RichText::new(crate::i18n::tr("Locked folders")).font(t.semibold(12.0)).color(t.text));
+    if st["ok"] == false {
+        let l = ui.label(RichText::new(st["error"]["message"].as_str().unwrap_or("failed")).size(11.5).color(t.caution));
+        register(ui.ctx(), format!("label:immichLockedStatus-{i}"), l.rect);
+        return;
+    }
+    let line = if st["isElevated"] == true {
+        match st["pinExpiresAt"].as_str().or_else(|| st["expiresAt"].as_str()) {
+            Some(until) => trf!("Unlocked until {}", until.chars().take(16).collect::<String>().replace('T', " ")),
+            None => crate::i18n::tr("Unlocked: locked-folder photos are visible to link, import and sync.").to_string(),
+        }
+    } else if st["pinCode"] == true || st["password"] == true {
+        crate::i18n::tr("Locked: the server hides locked-folder photos from link, import and sync.").to_string()
+    } else {
+        crate::i18n::tr("The account has no PIN or password, so there is nothing to unlock.").to_string()
+    };
+    let l = ui.label(RichText::new(line).size(11.5).color(t.text_label));
+    register(ui.ctx(), format!("label:immichLockedStatus-{i}"), l.rect);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let open = app.immich.unlock_for.as_deref() == Some(id);
+        if text_button(ui, &format!("immichLockedUnlock-{i}"), crate::i18n::tr("Unlock…"), open).clicked() {
+            app.immich.unlock_for = if open { None } else { Some(id.to_string()) };
+            app.immich.unlock_secret.clear();
+            app.immich.unlock_error = None;
+        }
+    });
+    if app.immich.unlock_for.as_deref() == Some(id) {
+        locked_unlock_box(app, ui, t, i, id);
+    }
+}
+
+/// The unlock box: the Immich account's PIN or password, sent once (`immich.unlockSession`,
+/// never journaled) and forgotten. A PIN is 4–6 digits, everything else goes as the password.
+/// Inline in the section (the Settings screen is the modal layer while it is open).
+fn locked_unlock_box(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &str) {
+    let (mut go, mut submit, mut close) = (false, false, false);
+    let frame = egui::Frame::NONE.stroke(egui::Stroke::new(1.0, t.caution.gamma_multiply(0.5))).corner_radius(6.0).inner_margin(8);
+    let r = frame.show(ui, |ui| {
+        ui.label(RichText::new(crate::i18n::tr("Unlock Locked Folders")).font(t.semibold(12.5)).color(t.text));
+        ui.label(
+            RichText::new(crate::i18n::tr(
+                "Immich hides the photos of its locked folders until this session is unlocked with the account's PIN or password.",
+            ))
+            .size(11.5)
+            .color(t.text_label),
+        );
+        ui.label(
+            RichText::new(crate::i18n::tr(
+                "4–6 digits are sent as the PIN code, anything else as the password. The secret is used once and is not stored or journaled; the server locks the session again later.",
+            ))
+            .size(11.5)
+            .color(t.text_label),
+        );
+        let field = crate::text_field::TextField::singleline("field:immichUnlockSecret", &mut app.immich.unlock_secret)
+            .password(true)
+            .width(240.0)
+            .label(crate::i18n::tr("PIN or password"))
+            .hint(crate::i18n::tr("PIN or password"));
+        let fr = field.show(ui);
+        submit |= fr.ending == Some(crate::text_field::Ending::Return);
+        close |= fr.ending == Some(crate::text_field::Ending::Escape);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            go = crate::button::Button::new("Unlock")
+                .kind(crate::button::Kind::Primary)
+                .widget("button:immichUnlockGo")
+                .show(ui)
+                .clicked();
+            if text_button(ui, "immichUnlockCancel", crate::i18n::tr("Cancel"), false).clicked() {
+                close = true;
+            }
+        });
+        if let Some(e) = &app.immich.unlock_error {
+            let l = ui.label(RichText::new(e).size(11.5).color(t.caution));
+            register(ui.ctx(), format!("label:immichUnlockError-{i}"), l.rect);
+        }
+    });
+    register(ui.ctx(), format!("immichUnlockBox-{i}"), r.response.rect);
+    if go || submit {
+        let secret = std::mem::take(&mut app.immich.unlock_secret);
+        match app.session.execute("immich.unlockSession", &json!({"account": id, "secret": secret})) {
+            Ok(r) if r["ok"] == true => {
+                app.toast(
+                    ui.ctx(),
+                    crate::i18n::tr("Unlocked: locked-folder photos are now visible to link, import and sync until Immich locks the session again."),
+                );
+                // the section's status line is stale now
+                app.immich.locked_view.remove(id);
+                close = true;
+            }
+            Ok(r) => {
+                app.immich.unlock_error = Some(r["error"]["message"].as_str().unwrap_or("failed").to_string());
+                // the typed secret is gone; the field is empty and ready for the next try
+                app.immich.unlock_secret.clear();
+            }
+            Err(e) => {
+                app.immich.unlock_error = Some(e.to_string());
+                app.immich.unlock_secret.clear();
+            }
+        }
+    }
+    if close {
+        app.immich.unlock_for = None;
+        app.immich.unlock_secret.clear();
+        app.immich.unlock_error = None;
+    }
+}
+
 /// The external-library helper: libraries, the path mapping table, which catalog folders are
 /// covered, and Write XMP.
 fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
@@ -900,7 +1058,7 @@ fn extlib(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, id: &str) {
     }
     for l in &libs {
         let paths: Vec<&str> = l["importPaths"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        ui.label(RichText::new(format!("{} — {}", l["name"].as_str().unwrap_or_default(), paths.join(", "))).color(t.text_label));
+        ui.label(RichText::new(format!("{}: {}", l["name"].as_str().unwrap_or_default(), paths.join(", "))).color(t.text_label));
     }
     ui.label(RichText::new(crate::i18n::tr("Path mapping (Immich container path ↔ folder on this computer)")).size(11.5).color(t.text_dim));
     let mut rows = app.immich.maps.get(id).cloned().unwrap_or_default();
@@ -1636,7 +1794,7 @@ fn sync_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let what = if d["side"] == "immich" { crate::i18n::tr("in Immich's trash") } else { crate::i18n::tr("deleted in the catalog") };
-                ui.label(RichText::new(format!("{} — {what}", d["fileName"].as_str().unwrap_or_default())).color(t.text));
+                ui.label(RichText::new(format!("{}: {what}", d["fileName"].as_str().unwrap_or_default())).color(t.text));
                 let apply = if d["side"] == "immich" { "Delete Here Too" } else { "Trash in Immich" };
                 if text_button(ui, &format!("immichDeletion-{i}-{n}-apply"), crate::i18n::tr(apply), false).clicked() {
                     let _ = app.run("immich.resolveDeletion", json!({"account": id, "assets": [d["asset"]], "action": "apply"}));
@@ -1658,7 +1816,7 @@ fn sync_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, i: usize, id: &
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let in_catalog = d["deletedOn"] == "catalog";
                 let what = if in_catalog { crate::i18n::tr("deleted in the catalog") } else { crate::i18n::tr("deleted in Immich") };
-                ui.label(RichText::new(format!("{} — {what}", d["name"].as_str().unwrap_or_default())).color(t.text));
+                ui.label(RichText::new(format!("{}: {what}", d["name"].as_str().unwrap_or_default())).color(t.text));
                 let apply = if in_catalog { "Delete in Immich Too" } else { "Delete Here Too" };
                 if text_button(ui, &format!("immichAlbumDeletion-{i}-{n}-apply"), crate::i18n::tr(apply), false)
                     .on_hover_text(crate::i18n::tr("Deletes the album only; its photos stay."))

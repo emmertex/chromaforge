@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod advanced_search;
 pub mod dates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;
@@ -160,6 +161,13 @@ pub enum Op {
         id: PhotoId,
         #[serde(default)]
         before: Option<Arc<DevelopSettings>>,
+    },
+    /// When the photo was last exported (see [`Photo::exported`]; `None`: never, or reset). Format
+    /// version 17.
+    SetExported {
+        id: PhotoId,
+        #[serde(default)]
+        exported: Option<String>,
     },
     /// Move the History cursor (see [`Photo::history_cursor`]) without changing the steps.
     SetHistoryCursor {
@@ -919,7 +927,7 @@ impl Catalog {
             Op::SetLabel { .. } => self.changes.now = Aspects::LABEL,
             Op::SetMeta { .. } | Op::SetXmpStamp { .. } => self.changes.now = Aspects::META,
             Op::SetCaptured { .. } => self.changes.now = Aspects::CAPTURED,
-            Op::SetFile { .. } | Op::Relink { .. } | Op::SetSha1 { .. } => self.changes.now = Aspects::FILE,
+            Op::SetFile { .. } | Op::Relink { .. } | Op::SetSha1 { .. } | Op::SetExported { .. } => self.changes.now = Aspects::FILE,
             Op::SetAnalysis { .. } => self.changes.now = Aspects::ANALYSIS,
             Op::SetDevelop { .. }
             | Op::SetVersions { .. }
@@ -1073,6 +1081,10 @@ impl Catalog {
             Op::SetBefore { id, before } => {
                 let p = self.photo_mut(id)?;
                 Op::SetBefore { id, before: std::mem::replace(&mut p.before, before) }
+            }
+            Op::SetExported { id, exported } => {
+                let p = self.photo_mut(id)?;
+                Op::SetExported { id, exported: std::mem::replace(&mut p.exported, exported) }
             }
             Op::SetHistoryCursor { id, cursor } => {
                 let p = self.photo_mut(id)?;
@@ -1672,6 +1684,7 @@ fn changes_what_albums_test(op: &Op) -> bool {
         | Op::PushHistory { .. }
         | Op::SetHistoryCursor { .. }
         | Op::SetBefore { .. }
+        | Op::SetExported { .. }
         | Op::RenameAlbum { .. }
         | Op::MoveAlbum { .. }
         | Op::SetAlbumOrder { .. }

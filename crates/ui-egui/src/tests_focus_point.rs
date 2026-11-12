@@ -161,7 +161,7 @@ fn compare_and_survey_draw_each_photos_focus_point() {
 /// (`focus.pump`, started by itself once the library is open), and Photo ▸ Read Focus Points runs it on demand.
 #[test]
 fn the_frame_loop_reads_focus_points_for_photos_imported_earlier() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-focus-scan-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-focus-scan");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     let add = |app: &mut LccApp, id: u64, name: &str| {

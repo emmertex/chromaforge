@@ -94,7 +94,10 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
         ui.painter().rect_filled(bg, 0.0, t.chrome);
         // header
         let header = Rect::from_min_size(bg.min, vec2(bg.width(), HEADER_H));
-        let b = Rect::from_min_size(pos2(header.left() + 10.0, header.center().y - 18.0), Vec2::splat(36.0));
+        // macOS draws the traffic lights over the header's top-left corner: clear them like
+        // Settings does (issue #1083, as #793); full screen hides them and gives the room back.
+        let traffic = if app.integrated_titlebar && !app.window_is_fullscreen { 68.0 } else { 0.0 };
+        let b = Rect::from_min_size(pos2(header.left() + 10.0 + traffic, header.center().y - 18.0), Vec2::splat(36.0));
         let resp = ui.interact(b, ui.id().with("import-back"), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr("Back")));
         register(ui.ctx(), "import:back", b);

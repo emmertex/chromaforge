@@ -203,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Presets as XMP",
             [],
             None,
-            "{id | ids: [presetId], folder} — Lightroom-style .xmp presets: AI masks (Subject, Sky, Background, People parts), gradients, luminance ranges, the mask sliders, Curve and Point Color as Lightroom reads them; the full preset in lc:PresetSettings (read back on import) → {written: [{id, path, notes}]} (notes: what Lightroom can't hold)",
+            "{id | ids: [presetId], folder}: Lightroom-style .xmp presets: AI masks (Subject, Sky, Background, People parts), gradients, luminance ranges, the mask sliders, Curve and Point Color as Lightroom reads them; the full preset in lc:PresetSettings (read back on import) → {written: [{id, path, notes}]} (notes: what Lightroom can't hold)",
             always,
             export_xmp
         ),
@@ -212,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Presets",
             [],
             None,
-            "{paths: [file or folder], group?, dryRun?} — .lcpreset, XMP presets, .lrtemplate, photos carrying edits (DNG/JPEG/TIFF \"DNG presets\"), Luminar looks (.lmp, .mplumpack collections) and .zip bundles of these; folders give their name as group; crs: fields mapped per docs/xmp-interop.md; local adjustment presets (Lightroom .lrtemplate, Camera Raw local .xmp, .lceffect) become mask effects (`mask.effects`; divider presets become their groups); a profile the preset names applies when it was imported with profile.import (before or after) → {imported: [{id,name,group,file,unmapped,profile: {name, id}|null}], skipped, failed, effects: [{name,group,file,unmapped}], effectDividers: [{name,group,file}], metadataPresets: [as metadata.importPresets rows], exportPresets: [as export.importPresets rows]}; Lightroom Classic metadata and export presets, XMP metadata templates, .lcmeta and .lcexport files become metadata / export presets",
+            "{paths: [file or folder], group?, dryRun?}: .lcpreset, XMP presets, .lrtemplate, photos carrying edits (DNG/JPEG/TIFF \"DNG presets\"), Luminar looks (.lmp, .mplumpack collections) and .zip bundles of these; folders give their name as group; crs: fields mapped per docs/xmp-interop.md; local adjustment presets (Lightroom .lrtemplate, Camera Raw local .xmp, .lceffect) become mask effects (`mask.effects`; divider presets become their groups); a profile the preset names applies when it was imported with profile.import (before or after) → {imported: [{id,name,group,file,unmapped,profile: {name, id}|null}], skipped, failed, effects: [{name,group,file,unmapped}], effectDividers: [{name,group,file}], metadataPresets: [as metadata.importPresets rows], exportPresets: [as export.importPresets rows]}; Lightroom Classic metadata and export presets, XMP metadata templates, .lcmeta and .lcexport files become metadata / export presets",
             always,
             import
         ),

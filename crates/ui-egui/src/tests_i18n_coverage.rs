@@ -200,3 +200,130 @@ fn every_contextual_lookup_is_asked_for_in_the_code() {
         .collect();
     assert!(unlisted.is_empty(), "contextual keys in the source that `CONTEXTUAL` doesn't list (shown as written):\n{}", unlisted.join("\n"));
 }
+
+/// The string literals in Rust source, as written (escapes left as they are), outside comments.
+/// Char literals and lifetimes are stepped over; raw strings (`r"…"`, `r#"…"#`) are read whole.
+fn string_literals(code: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &code[i..];
+        if rest.starts_with("//") {
+            i += rest.find('\n').unwrap_or(rest.len());
+        } else if rest.starts_with("/*") {
+            let (mut depth, mut j) = (0usize, 0usize);
+            while j < rest.len() {
+                if rest[j..].starts_with("/*") {
+                    depth += 1;
+                    j += 2;
+                } else if rest[j..].starts_with("*/") {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += rest[j..].chars().next().map_or(1, char::len_utf8);
+                }
+            }
+            i += j;
+        } else if (rest.starts_with('r') || rest.starts_with("br"))
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+            && rest.trim_start_matches('b').trim_start_matches('r').trim_start_matches('#').starts_with('"')
+        {
+            let open = rest.find('"').unwrap();
+            let hashes = &rest[rest.find('r').unwrap() + 1..open];
+            let close = format!("\"{hashes}");
+            let end = rest[open + 1..].find(&close).map_or(rest.len(), |e| open + 1 + e);
+            out.push(&rest[open + 1..end]);
+            i += (end + close.len()).min(rest.len());
+        } else if rest.starts_with('"') {
+            let mut j = 1;
+            while j < rest.len() && bytes[i + j] != b'"' {
+                j += if bytes[i + j] == b'\\' { 2 } else { 1 };
+            }
+            out.push(&rest[1..j.min(rest.len())]);
+            i += j + 1;
+        } else if let Some(after) = rest.strip_prefix('\'') {
+            // a char literal ('x', '\n', '\u{2014}', '"') or a lifetime ('a)
+            i += match after.chars().next() {
+                Some('\\') => after.get(2..).and_then(|r| r.find('\'')).map_or(1, |e| e + 4),
+                Some(c) if after[c.len_utf8()..].starts_with('\'') => 2 + c.len_utf8(),
+                _ => 1,
+            };
+        } else {
+            i += rest.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
+/// The UI's copy has no em dashes (U+2014): a comma, colon, full stop or parentheses read better,
+/// in every language. Checked in every catalog (keys and translations, upstream's and the fork's),
+/// the commands' labels, menus and descriptions (shown in the command palette, the control
+/// surface, the CLI and to MCP agents), What's New, and every string literal outside comments and
+/// tests in the workspace's crates and apps.
+#[test]
+fn ui_text_has_no_em_dashes() {
+    const DASH: char = '\u{2014}';
+    let has = |s: &str| s.contains(DASH) || s.contains("\\u{2014}");
+    let mut found = Vec::new();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+    for sub in [dir.clone(), dir.join("fork")] {
+        for entry in std::fs::read_dir(&sub).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let messages: BTreeMap<String, String> = serde_json::from_str(&text).unwrap();
+                for (k, v) in &messages {
+                    if has(k) || has(v) {
+                        found.push(format!("{}: {k:?} = {v:?}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    for c in lcc_engine::command_specs() {
+        if has(c.label) || has(c.params) || c.menu.iter().any(|m| has(m)) {
+            found.push(format!("command {}: {:?} {:?}", c.id, c.label, c.params));
+        }
+    }
+    for line in crate::panels::dialogs::WHATS_NEW.lines().filter(|l| has(l)) {
+        found.push(format!("What's New: {line}"));
+    }
+    // every crate's and app's `src/`, test code left out (as `i18n_scan` reads the UI's)
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut dirs: Vec<std::path::PathBuf> = ["crates", "apps"]
+        .iter()
+        .flat_map(|top| std::fs::read_dir(root.join(top)).unwrap().map(|e| e.unwrap().path().join("src")))
+        .filter(|p| p.is_dir())
+        .collect();
+    while let Some(dir) = dirs.pop() {
+        for path in std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()) {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            if path.is_dir() {
+                if name != "tests" {
+                    dirs.push(path);
+                }
+                continue;
+            }
+            if !name.ends_with(".rs") || name.starts_with("tests_") || name == "tests.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+            let code = text.split("#[cfg(test)]\nmod tests {").next().unwrap_or_default();
+            for literal in string_literals(code).into_iter().filter(|l| has(l)) {
+                let short: String = literal.chars().take(120).collect();
+                found.push(format!("{}: {short:?}", path.display()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "{} em dash(es) in UI text; rewrite with a comma, colon, full stop or parentheses:\n{}", found.len(), found.join("\n"));
+}
+
+#[test]
+fn the_literal_reader_skips_comments_chars_and_lifetimes() {
+    let code = "// a \"comment\"\nlet x: &'a str = \"one\"; /* \"two\" /* \"nested\" */ */ let c = '\"'; let r = r#\"raw \"q\"\"#; b\"bytes\"";
+    assert_eq!(string_literals(code), vec!["one", "raw \"q\"", "bytes"]);
+}

@@ -257,8 +257,6 @@ pub struct ModuleLayout {
     pub toolbar: bool,
     /// The right panel open last in this module.
     pub right: RightPanel,
-    /// Develop's presets column.
-    pub presets: bool,
     /// Solo mode: opening one section closes the others.
     pub solo: bool,
     /// The right group's panel order (tab strip order); empty = the module's declared order.
@@ -277,7 +275,6 @@ impl Default for ModuleLayout {
             auto_hide: EdgeFlags::default(),
             toolbar: true,
             right: RightPanel::None,
-            presets: false,
             solo: false,
             order: Vec::new(),
             hidden: Vec::new(),
@@ -500,12 +497,12 @@ pub const LIBRARY_KEYS: &[ModuleKey] = &[
     crate::help_overlay::KEY,
 ];
 
-/// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⇧Q cycles the selected spot's mode
+/// Develop: ⌘U Auto (tone), ⇧⌘U Auto white balance, ⌥⇧Q cycles the selected spot's mode
 /// (Remove → Heal → Clone), Home / End the first and last photo.
 pub const DEVELOP_KEYS: &[ModuleKey] = &[
     ("Cmd+U", "develop.auto", "{}"),
     ("Cmd+Shift+U", "develop.wb", r#"{"mode": "auto"}"#),
-    ("Shift+Q", "spot.cycleMode", "{}"),
+    ("Alt+Shift+Q", "spot.cycleMode", "{}"),
     ("Home", "library.first", "{}"),
     ("End", "library.last", "{}"),
     // Lightroom Classic's Develop menu: ⌘N New Snapshot, ⇧⌘N New Preset, ⌘← / ⌘→ the previous /
@@ -618,14 +615,15 @@ fn views(ui: &mut egui::Ui, app: &mut LccApp) {
     // the originals the view keeps decoded (the loupe's even over budget), as the docked centre does
     panels::compare::prepare(app);
     panels::alternatives::show(app, ui);
-    match app.ui.view {
+    let rect = ui.available_rect_before_wrap();
+    crate::view_state::around(app, ui, rect, |app, ui| match app.ui.view {
         ViewMode::PhotoGrid | ViewMode::SquareGrid => panels::grid::show(app, ui),
         ViewMode::Detail => panels::detail::show(app, ui),
         ViewMode::Compare => panels::compare::show_compare(app, ui),
         ViewMode::Survey => panels::compare::show_survey(app, ui),
         ViewMode::Reference => panels::compare::show_reference(app, ui),
         ViewMode::People => panels::people::show(app, ui),
-    }
+    })
 }
 
 /// The module the view, the right panel and the module in use imply (Library or Develop).
@@ -650,7 +648,6 @@ fn capture(app: &LccApp) -> ModuleLayout {
         auto_hide: u.auto_hide,
         toolbar: u.toolbar,
         right,
-        presets: u.presets,
         solo: u.single_panel,
         order: u.panel_order.clone(),
         hidden: u.hidden_panels.clone(),
@@ -672,7 +669,6 @@ fn apply(app: &mut LccApp, l: &ModuleLayout, full: bool) {
     u.panel_order = l.order.clone();
     u.hidden_panels = l.hidden.clone();
     if full {
-        u.presets = l.presets;
         u.right = l.right;
     }
 }
@@ -802,8 +798,24 @@ fn edge_shown(app: &LccApp, e: Edge) -> bool {
         Edge::Top => app.ui.module_bar,
         Edge::Bottom => app.ui.filmstrip,
         Edge::Left => app.ui.left_panel,
-        Edge::Right => app.ui.right_edge,
+        // the right side has two switches — the edge (Tab, Window ▸ Panels) and the top bar's
+        // fold button (F8) — and is on screen only with both on, in every module
+        Edge::Right => app.ui.right_edge && !app.ui.right_collapsed,
     }
+}
+
+/// Fold the right side away or bring it back (the top bar's button, F8): bringing it back also
+/// undoes Tab / Window ▸ Panels having hidden the edge, so the button never ends up doing nothing.
+/// Returns whether the side is shown now.
+pub fn toggle_right(app: &mut LccApp) -> bool {
+    let on = !edge_shown(app, Edge::Right);
+    if on {
+        set_edge(app, Edge::Right, true);
+    } else {
+        app.ui.right_collapsed = true;
+        app.ui.peek.set(Edge::Right, false);
+    }
+    on
 }
 
 fn set_edge(app: &mut LccApp, e: Edge, on: bool) {
@@ -811,7 +823,13 @@ fn set_edge(app: &mut LccApp, e: Edge, on: bool) {
         Edge::Top => app.ui.module_bar = on,
         Edge::Bottom => app.ui.filmstrip = on,
         Edge::Left => app.ui.left_panel = on,
-        Edge::Right => app.ui.right_edge = on,
+        Edge::Right => {
+            app.ui.right_edge = on;
+            // showing the edge unfolds it: one of the two switches must not keep it hidden
+            if on {
+                app.ui.right_collapsed = false;
+            }
+        }
     }
     app.ui.peek.set(e, false);
 }
@@ -874,10 +892,15 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     // the Slideshow module (crate::slideshow_ui)
     ("slideshow.get", "Slideshow Settings", None, ""),
     ("slideshow.set", "Set Slideshow Settings", None, ""),
+    ("slideshow.toggleGuides", "Show Guides", None, ""),
     ("slideshow.reset", "Reset Slideshow Settings", None, ""),
     ("slideshow.applyTemplate", "Apply Slideshow Template", None, ""),
     ("slideshow.saveTemplate", "Save Slideshow Template", None, "Slideshow"),
     ("slideshow.deleteTemplate", "Delete Slideshow Template", None, ""),
+    ("slideshow.createTemplateFolder", "New Slideshow Template Folder", None, ""),
+    ("slideshow.renameTemplateFolder", "Rename Slideshow Template Folder", None, ""),
+    ("slideshow.deleteTemplateFolder", "Delete Slideshow Template Folder", None, ""),
+    ("slideshow.moveTemplate", "Move Slideshow Template to Folder", None, ""),
     ("slideshow.saveSlideshow", "Create Saved Slideshow", None, "Slideshow"),
     ("slideshow.openSaved", "Open Saved Slideshow", None, ""),
     ("slideshow.closeSaved", "Close Saved Slideshow", None, ""),
@@ -899,9 +922,19 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("webui.shareImmich", "Share Web Gallery via Immich", None, ""),
     ("webui.reload", "Reload Preview", None, "Web"),
     ("webui.previewInBrowser", "Preview in Browser…", None, "Web"),
+    ("webui.applyTemplate", "Apply Web Template", None, ""),
+    ("webui.saveTemplate", "Save Web Template", None, "Web"),
+    ("webui.deleteTemplate", "Delete Web Template", None, ""),
+    ("webui.createTemplateFolder", "New Web Template Folder", None, ""),
+    ("webui.renameTemplateFolder", "Rename Web Template Folder", None, ""),
+    ("webui.deleteTemplateFolder", "Delete Web Template Folder", None, ""),
+    ("webui.moveTemplate", "Move Web Template to Folder", None, ""),
+    ("webui.templates", "Web Templates", None, ""),
+    ("webui.guides", "Show Web Guides", None, "Web"),
     // the Book module (crate::book)
     ("book.new", "New Book", None, ""),
     ("book.get", "Book Document", None, ""),
+    ("book.preferences", "Book Preferences", None, ""),
     ("book.autoLayout", "Auto Layout", None, ""),
     ("book.clearLayout", "Clear Layout", None, ""),
     ("book.addPage", "Add Page", None, ""),
@@ -914,6 +947,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.pageText", "Page Text", None, ""),
     ("book.textPreset", "Text Style Preset", None, ""),
     ("book.guides", "Guides", None, ""),
+    ("book.toggleGuides", "Show Guides", None, ""),
+    ("book.refreshCaptions", "Update Metadata Based Captions", None, ""),
     ("book.favorite", "Favorite Template", None, ""),
     ("book.templates", "Page Templates", None, ""),
     ("book.presets", "Auto Layout Presets", None, ""),
@@ -927,6 +962,8 @@ pub const SHELL_COMMANDS: &[crate::menus::UiCommand] = &[
     ("book.redo", "Redo Book Edit", None, ""),
     ("book.view", "Book View", None, ""),
     ("book.go", "Go to Book Page", None, ""),
+    ("book.headerBar", "Show Header Bar", None, ""),
+    ("book.infoOverlay", "Show Info Overlay", None, ""),
     ("book.select", "Select Book Cell", None, ""),
     ("book.export", "Export Book…", None, ""),
     ("book.exportStatus", "Book Export Status", None, ""),
@@ -975,6 +1012,9 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         return r;
     }
     if let Some(r) = crate::web_module::run(app, id, p) {
+        return r;
+    }
+    if let Some(r) = crate::web_templates::run(app, id, p) {
         return r;
     }
     if id == crate::help_overlay::COMMAND {
@@ -1043,7 +1083,7 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "panel.sides" => {
             // Tab: both side panels; shows them when either is hidden
-            let on = bool_param(p, "show").unwrap_or(!(app.ui.left_panel || app.ui.right_edge));
+            let on = bool_param(p, "show").unwrap_or(!(edge_shown(app, Edge::Left) || edge_shown(app, Edge::Right)));
             set_edge(app, Edge::Left, on);
             set_edge(app, Edge::Right, on);
             Ok(edges_json(app))

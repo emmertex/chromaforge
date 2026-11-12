@@ -1922,7 +1922,7 @@ fn a_renamed_folder_keeps_its_place_in_the_tree() {
     }
     let base = std::env::temp_dir().join(format!("lc-ui-rename-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let _cleanup = Cleanup(base.clone());
+    let _cleanup = Cleanup(base.to_path_buf());
     std::fs::create_dir_all(base.join("pics/trip")).unwrap();
     std::fs::create_dir_all(base.join("pics/home")).unwrap();
     // the folder tree writes paths with forward slashes, and its widget ids carry them
@@ -1979,7 +1979,7 @@ fn a_folder_menu_locates_its_missing_tree_only() {
 
     let base = std::env::temp_dir().join(format!("lc-ui-locate-folder-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let _cleanup = Cleanup(base.clone());
+    let _cleanup = Cleanup(base.to_path_buf());
     let new_trip = base.join("new/trip");
     std::fs::create_dir_all(new_trip.join("day2")).unwrap();
     for path in [new_trip.join("a.jpg"), new_trip.join("day2/b.jpg"), new_trip.join("c.jpg")] {
@@ -2105,7 +2105,7 @@ fn a_folder_that_cant_be_shown_in_the_file_manager_says_why() {
 /// grayed out, since only a place can be removed, while its Add to Local makes it a place.
 #[test]
 fn a_local_folders_menu_takes_the_folders_order_and_grays_out_remove_inside_a_place() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-local-menu-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-local-menu");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place/inner")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2114,7 +2114,7 @@ fn a_local_folders_menu_takes_the_folders_order_and_grays_out_remove_inside_a_pl
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let inner = dir.join("place").join("inner").to_string_lossy().to_string();
     let mut h = folders_app_with_services(&["/pics/trip/a.jpg"], [1400.0, 900.0], reveal_and_pick_services(Ok(())));
@@ -2175,7 +2175,7 @@ fn a_folders_menu_without_a_file_manager_keeps_copy_path_in_its_group() {
 #[test]
 fn copy_path_puts_a_folders_path_on_the_clipboard_from_each_kind_of_row() {
     let native = |p: &str| p.replace('/', std::path::MAIN_SEPARATOR_STR);
-    let dir = std::env::temp_dir().join(format!("lc-ui-copy-path-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-copy-path");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2184,7 +2184,7 @@ fn copy_path_puts_a_folders_path_on_the_clipboard_from_each_kind_of_row() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let mut h = folders_app_with_services(
         &["/pics/trip/a.jpg", "/pics/home/b.jpg", "/Volumes/nas/c.jpg"],
@@ -2256,7 +2256,7 @@ fn a_disks_menu_shows_it_in_the_file_manager_and_makes_a_folder_in_it() {
 /// New Folder on Disk… in a Local folder makes the folder inside it, and its row is listed.
 #[test]
 fn a_local_folders_new_folder_is_made_on_disk_and_listed() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-local-new-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-local-new");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place/inner")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2265,7 +2265,7 @@ fn a_local_folders_new_folder_is_made_on_disk_and_listed() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let inner = dir.join("place").join("inner").to_string_lossy().to_string();
     let made = dir.join("place").join("picks").to_string_lossy().to_string();
@@ -2629,7 +2629,7 @@ fn a_menu_commands_toast_shows_after_a_while() {
 /// zero, so a while into a session it had always already expired.
 #[test]
 fn the_tracklog_toast_shows_after_a_while() {
-    let dir = std::env::temp_dir().join(format!("lc-tracklog-toast-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-tracklog-toast");
     std::fs::create_dir_all(&dir).unwrap();
     let gpx = dir.join("walk.gpx");
     std::fs::write(
@@ -2656,8 +2656,8 @@ fn the_tracklog_toast_shows_after_a_while() {
 /// itself, and from then on the box turns it off and on.
 #[test]
 fn recognise_faces_stays_off_until_a_model_is_chosen() {
+    let dir = lcc_testkit::TempDir::new("lc-ui-faces-toggle");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
-    let dir = std::env::temp_dir().join(format!("lc-ui-faces-toggle-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     h.app.session.face_models_dir = Some(dir.join("models"));
@@ -2703,12 +2703,12 @@ fn recognise_faces_stays_off_until_a_model_is_chosen() {
 /// three work.
 #[test]
 fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
+    let dir = lcc_testkit::TempDir::new("lc-ui-albums-local");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
     // (dragging browsed photos onto the library's albums: Import as a tab off)
     h.app.ui.settings.import_as_tab = false;
     let album = h.app.session.execute("album.create", &json!({"name": "Trip", "addSelected": false})).unwrap()["id"].as_u64().unwrap();
     let album_id = lcc_catalog::AlbumId(album);
-    let dir = std::env::temp_dir().join(format!("lc-ui-albums-local-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -2850,7 +2850,7 @@ fn right_click_add_to_album_offers_a_new_album_when_there_is_none() {
 /// the review can't offer (a folder, or an album deleted while the scan ran) leaves its album empty.
 #[test]
 fn an_album_menu_imports_into_that_album() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-album-import-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-album-import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..2u8 {
@@ -3042,9 +3042,9 @@ fn emptying_recently_deleted_asks_first_and_removes_only_trashed_photos() {
 #[test]
 fn delete_from_disk_dialog_trashes_file_and_removes_from_catalog() {
     use crate::state::Dialog;
+    let tmp = lcc_testkit::TempDir::new("lcc-test-ui-delete");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
 
-    let tmp = std::env::temp_dir().join(format!("lcc-test-ui-delete-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
     let file = tmp.join("disk_photo.jpg");
@@ -3145,18 +3145,42 @@ fn the_histogram_clipping_buttons_stay_clear_of_the_hovered_scroll_bar() {
 }
 
 /// An imported folder is listed under its own name, not under every folder from the disk down to
-/// it (the full path is on hover); two folders with the same name say which folder each is in.
+/// it (the full path is on hover); below the first listed folder every folder nests in its own
+/// parent, the ones holding only subfolders included (#1022).
 #[test]
 fn an_imported_folder_is_listed_by_its_own_name() {
     let h = folders_app(&["/Users/me/Desktop/shoot/c.jpg"]);
     assert!(has(&h, "source:libfolder:/Users/me/Desktop/shoot"), "the imported folder is a row straight under its disk");
     assert!(!has(&h, "source:libfolder:/Users") && !has(&h, "source:libfolder:/Users/me"), "no rows for the folders on the way");
-    let h = folders_app(&["/Users/me/Pictures/2024/trip/a.jpg", "/Users/me/Pictures/2025/trip/b.jpg"]);
-    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree());
+    let h =
+        folders_app(&["/Users/me/Pictures/2026/January/31st/a.jpg", "/Users/me/Pictures/2026/August/31st/b.jpg", "/Users/me/Pictures/2025/x/c.jpg"]);
+    let tree = crate::panels::left::sidebar_folders(h.app.session.catalog.folder_tree(), &Default::default());
     let pictures = &tree[0].children[0];
     assert_eq!((pictures.name.as_str(), pictures.path.as_str()), ("Pictures", "/Users/me/Pictures"), "where the two branch");
-    let names: Vec<(&str, &str)> = pictures.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect();
-    assert_eq!(names, [("trip (2024)", "/Users/me/Pictures/2024/trip"), ("trip (2025)", "/Users/me/Pictures/2025/trip")]);
+    let y2026 = pictures.children.iter().find(|n| n.path == "/Users/me/Pictures/2026").expect("2026 is a row");
+    let months: Vec<&str> = y2026.children.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(months, ["August", "January"], "the months holding only subfolders keep their rows");
+    let jan = &y2026.children[1];
+    assert_eq!(
+        jan.children.iter().map(|n| (n.name.as_str(), n.path.as_str())).collect::<Vec<_>>(),
+        [("31st", "/Users/me/Pictures/2026/January/31st")]
+    );
+    let y2025 = pictures.children.iter().find(|n| n.path == "/Users/me/Pictures/2025").expect("2025 is a row");
+    assert_eq!(y2025.children.len(), 1, "a single subfolder below a listed folder is not lifted");
+}
+
+/// Show Parent Folder gives a folder hidden on the way down from the disk a row of its own in the
+/// Folders list and chooses it (#1022).
+#[test]
+fn show_parent_folder_lists_the_parent_in_folders() {
+    let mut h = folders_app(&["/Users/me/Desktop/shoot/c.jpg"]);
+    assert!(!has(&h, "source:libfolder:/Users/me/Desktop"));
+    right_click(&mut h, "source:libfolder:/Users/me/Desktop/shoot");
+    click(&mut h, "folderShowParent");
+    assert_eq!(h.app.session.library_folder.as_deref(), Some("/Users/me/Desktop"));
+    h.step();
+    assert!(has(&h, "source:libfolder:/Users/me/Desktop"), "the parent is a row of the Folders list");
+    assert!(has(&h, "source:libfolder:/Users/me/Desktop/shoot"), "with the folder inside it");
 }
 
 #[test]
@@ -3366,4 +3390,23 @@ fn remembering_folder_and_collection_conditions_across_sessions() {
     // In restored session, /pics folder stays open, and Europe album folder stays collapsed!
     assert!(has(&h2, "source:libfolder:/pics/sub"), "remembered /pics was expanded");
     assert_eq!(h2.app.ui.tree_open.get(&format!("album:{europe2}")), Some(&false));
+}
+
+/// `ui.prompt` asks for one line of text and then runs the named command with it; bad calls
+/// are errors, not dialogs.
+#[test]
+fn ui_prompt_asks_for_a_name_then_runs_the_command_with_it() {
+    let mut h = folders_app(&["/pics/trip/a.jpg"]);
+    for bad in [json!({}), json!({"title": "T", "command": "preset.createGroup"}), json!({"title": "T", "command": "ui.prompt", "key": "name"})] {
+        assert!(h.app.run("ui.prompt", bad).is_err());
+        assert!(h.app.ui.dialog.is_none());
+    }
+    assert!(h.app.run("ui.prompt", json!({"title": "T", "command": "preset.createGroup", "key": "name", "params": 3})).is_err());
+    h.app.run("ui.prompt", json!({"title": "New Preset Folder", "hint": "Folder name", "command": "preset.createGroup", "key": "name"})).unwrap();
+    h.step();
+    let Some(crate::state::Dialog::TextPrompt { value, .. }) = &mut h.app.ui.dialog else { panic!("{:?}", h.app.ui.dialog) };
+    *value = "  Wedding ".into();
+    let r = h.request("ui.dialog.confirm", json!({}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(h.app.session.preset_folders.iter().any(|f| f == "Wedding"), "{:?}", h.app.session.preset_folders);
 }

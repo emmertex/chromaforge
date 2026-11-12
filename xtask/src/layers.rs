@@ -136,6 +136,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["geom", "color", "raster"],
     &["tiff", "raster"],
     &["denoise-core", "denoise"],
+    // the MediaPipe models run on the face models' device program and accelerator (the GPU)
+    &["faces", "tflite"],
     &["meta", "raw"],
     &["meta", "codecs"],
     &["meta", "develop"],

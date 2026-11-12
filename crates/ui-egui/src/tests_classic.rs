@@ -103,8 +103,8 @@ fn quick_develop_steps_every_selected_photo() {
 /// created through the command shows up on disk and undoes.
 #[test]
 fn folders_panel_lists_volumes_with_free_space() {
+    let dir = lcc_testkit::TempDir::new("classic-ui-vol");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("classic-ui-vol-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("a.jpg").to_string_lossy().to_string();
     let id = h.app.session.catalog.alloc_photo_id();
@@ -324,14 +324,14 @@ fn develop_column_is_its_own_classic_stack() {
     }
     assert!(has(&h, "sidebarSection:navigator"), "the Navigator, where Classic puts it");
     assert!(rows(&h, "presetGroup:") > 0, "the presets themselves");
-    // the presets are drawn once: with the presets column open (Window ▸ Presets), that column is the
-    // presets — the same panel, with a header of its own
+    // the column is the one place they are drawn: Window ▸ Presets folds and unfolds that panel,
+    // and never moves the presets to the right, in the Edit panels' place
     let in_column = rows(&h, "presetGroup:");
     run(&mut h, "panel.presets", json!({}));
-    assert!(h.app.ui.presets);
-    assert!(rows(&h, "presetGroup:") <= in_column, "the presets are not drawn twice");
+    assert!(rows(&h, "presetGroup:") == 0 && has(&h, "classicPanel:presets"), "folded in the column");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "the Edit panels stay");
     run(&mut h, "panel.presets", json!({}));
-    assert!(!h.app.ui.presets && rows(&h, "presetGroup:") == in_column, "back in the column");
+    assert_eq!(rows(&h, "presetGroup:"), in_column, "unfolded in the column");
     // the Library's panels are not here
     for p in ["catalog", "folders", "publish"] {
         assert!(!has(&h, &format!("classicPanel:{p}")), "{p} belongs to Library");
@@ -418,6 +418,7 @@ fn the_tool_strip_is_develops_alone() {
 /// written to the settings file and come back folded in an app started from it.
 #[test]
 fn folded_panels_and_solo_mode_survive_a_restart() {
+    let dir = lcc_testkit::TempDir::new("lc-fold");
     let mut h = develop_demo();
     click(&mut h, "classicPanel:versions");
     run(&mut h, "panel.solo", json!({"on": true}));
@@ -429,7 +430,6 @@ fn folded_panels_and_solo_mode_survive_a_restart() {
     click(&mut h, "classicPanel:catalog");
     assert!(!classic::is_open(&h.app, PanelId::Catalog));
     // the settings file, as the host writes and reads it
-    let dir = std::env::temp_dir().join(format!("lc-fold-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("ui.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&h.app.ui).unwrap()).unwrap();
@@ -548,20 +548,22 @@ fn the_presets_fold_from_their_header() {
     assert_eq!(top(&h, "classicPanel:versions"), versions_top, "the panels below are back where they were");
 }
 
-/// The presets fold in the left column only: opening the presets column (Window ▸ Presets) after folding
-/// them there shows the presets, not an empty column, and closing it brings the folded panel back.
+/// Window ▸ Presets brings the presets back from wherever the user put them away — the panel
+/// folded, hidden from the column, or the whole left column hidden — always in the left column.
 #[test]
-fn folding_the_presets_in_the_column_leaves_the_presets_column_whole() {
+fn the_presets_command_brings_the_panel_back_in_the_left_column() {
     let mut h = develop_demo();
     click(&mut h, "classicPanel:presets");
     assert!(!classic::is_open_with_key(&h.app, crate::panels::presets::IN_COLUMN_KEY), "folded in the column");
     run(&mut h, "panel.presets", json!({}));
-    assert!(h.app.ui.presets, "the presets column is open");
-    assert!(rows(&h, "presetGroup:") > 0, "and it shows the presets");
+    assert!(rows(&h, "presetGroup:") > 0, "unfolded");
+    h.app.ui.hidden_panels.push(crate::module::PanelId::Presets);
+    h.app.ui.left_panel = false;
+    h.settle(SETTLE);
+    assert_eq!(rows(&h, "presetGroup:"), 0);
     run(&mut h, "panel.presets", json!({}));
-    assert!(!h.app.ui.presets && rows(&h, "presetGroup:") == 0, "the column is closed and the column's panel is still folded");
-    click(&mut h, "classicPanel:presets");
-    assert!(rows(&h, "presetGroup:") > 0, "unfolded again");
+    assert!(h.app.ui.left_panel && rows(&h, "presetGroup:") > 0, "the column and its panel are back");
+    assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "beside the Edit panels, not in their place");
 }
 
 /// Issue #76: the Navigator stays at the top of the left column — the loupe's presets and the

@@ -260,11 +260,9 @@ pub fn stop_live_view() {
 mod safe_delete_tests {
     use super::*;
 
-    fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lcc-tether-safe-delete-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// An empty Temp folder of the test's own, removed when the test ends.
+    fn dir(name: &str) -> lcc_testkit::TempDir {
+        lcc_testkit::TempDir::new(&format!("lcc-tether-safe-delete-{name}"))
     }
 
     #[test]

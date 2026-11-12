@@ -4,10 +4,9 @@ use serde_json::json;
 
 use crate::Session;
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-engine-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-engine-{tag}"))
 }
 
 fn open(dir: &std::path::Path, seed: bool) -> Session {
@@ -136,6 +135,7 @@ fn close_writes_snapshot_and_view_state() {
 /// loading the source; an edit changes the key.
 #[test]
 fn thumbnails_come_from_the_disk_cache_after_restart() {
+    let _keys = crate::sensor_maps::keep_generation();
     let dir = temp_dir("thumbs");
     let mut s = open(&dir, true);
     let ids: Vec<_> = s.visible_cloned().into_iter().take(3).collect();

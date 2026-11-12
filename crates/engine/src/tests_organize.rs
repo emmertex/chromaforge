@@ -6,10 +6,9 @@ use serde_json::json;
 
 use crate::{EngineError, LibrarySource, Session};
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-organize-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-organize-{tag}"))
 }
 
 fn open(dir: &std::path::Path) -> Session {
@@ -561,4 +560,44 @@ fn stack_toggle_by_ids_leaves_the_selection_alone() {
     assert_eq!(s.commits(), commits);
     // without `ids` the selection still decides (a loose photo selected: not available)
     assert!(matches!(s.execute("stack.toggle", &json!({})), Err(crate::EngineError::Disabled(..))));
+}
+
+#[test]
+fn set_copy_as_original_swaps_edits_with_the_master_and_undoes() {
+    let dir = temp_dir("vc-original");
+    let mut s = open(&dir);
+    let src = s.visible_cloned()[1];
+    s.execute("library.select", &json!({"ids": [src.0]})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    assert!(s.execute("photo.setCopyAsOriginal", &json!({})).is_err(), "not a virtual copy");
+    let c = lcc_catalog::PhotoId(s.execute("photo.virtualCopy", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": -1.0})).unwrap();
+    let r = s.execute("photo.setCopyAsOriginal", &json!({})).unwrap();
+    assert_eq!(r["master"], src.0);
+    assert_eq!(s.catalog.photo(src).unwrap().develop.light.exposure, -1.0);
+    assert_eq!(s.catalog.photo(c).unwrap().develop.light.exposure, 0.5);
+    assert_eq!(s.catalog.photo(c).unwrap().copy_of, Some(src), "the copy relation is unchanged");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(src).unwrap().develop.light.exposure, 0.5);
+    assert_eq!(s.catalog.photo(c).unwrap().develop.light.exposure, -1.0);
+}
+
+#[test]
+fn set_copy_as_original_refuses_damaged_copy_links() {
+    let dir = temp_dir("vc-original-bad");
+    let mut s = open(&dir);
+    let a = s.visible_cloned()[0];
+    s.execute("library.select", &json!({"ids": [a.0]})).unwrap();
+    let c = lcc_catalog::PhotoId(s.execute("photo.virtualCopy", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+    // a copy of a copy, a copy of itself, a copy whose master is gone
+    for master in [Some(c), None, Some(lcc_catalog::PhotoId(9_999_999))] {
+        let id = s.catalog.alloc_photo_id();
+        let mut p = (**s.catalog.photo(a).unwrap()).clone();
+        p.id = id;
+        p.copy_of = master.or(Some(id));
+        s.commit("Damaged Copy", lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        let (before_a, before_c) = (s.catalog.photo(a).unwrap().develop.clone(), s.catalog.photo(c).unwrap().develop.clone());
+        assert!(s.execute("photo.setCopyAsOriginal", &json!({"id": id.0})).is_err());
+        assert_eq!((&s.catalog.photo(a).unwrap().develop, &s.catalog.photo(c).unwrap().develop), (&before_a, &before_c));
+    }
 }

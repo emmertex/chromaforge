@@ -169,14 +169,73 @@ pub(crate) fn virtual_copy(s: &mut Session, src: PhotoId, name: &str) -> Result<
     Ok(Some(id))
 }
 
+/// The active photo when it is a virtual copy whose master is in the catalog (and is itself a
+/// master: a chain or a self-reference, from a damaged catalog, is refused rather than followed).
+fn copy_and_master(s: &Session, id: PhotoId) -> std::result::Result<PhotoId, String> {
+    let copy = s.catalog.photo(id).ok_or("no photo selected")?;
+    let master = copy.copy_of.ok_or("not a virtual copy")?;
+    if master == id {
+        return Err("the virtual copy points at itself".into());
+    }
+    let m = s.catalog.photo(master).ok_or("the master of this virtual copy is missing")?;
+    if m.copy_of.is_some() {
+        return Err("the master of this virtual copy is itself a virtual copy".into());
+    }
+    Ok(master)
+}
+
+fn is_virtual_copy(s: &Session) -> std::result::Result<(), String> {
+    let id = s.active().ok_or("no photo selected")?;
+    copy_and_master(s, id).map(|_| ())
+}
+
+/// Swap what the master and the virtual copy `copy` hold as their own: the develop settings,
+/// History, Before state, metadata, rating, flag and colour label. The master keeps its place
+/// (file, sidecar, stack, albums, versions) and the other copies stay its copies; the photo that
+/// was the original now carries the copy's edit and the copy carries the original's.
+fn set_copy_as_original(s: &mut Session, copy: PhotoId) -> Result<PhotoId> {
+    let master = copy_and_master(s, copy).map_err(|e| bad("photo.setCopyAsOriginal", e))?;
+    let (Some(m), Some(c)) = (s.catalog.photo(master).cloned(), s.catalog.photo(copy).cloned()) else {
+        return Err(bad("photo.setCopyAsOriginal", "the master of this virtual copy is missing"));
+    };
+    let mut ops = Vec::new();
+    for (to, from) in [(&m, &c), (&c, &m)] {
+        let id = to.id;
+        ops.push(Op::SetDevelop { id, settings: from.develop.clone(), label: "Set Copy as Original".into(), edited: from.edited.clone() });
+        ops.push(Op::SetHistory { id, history: from.history.clone() });
+        ops.push(Op::SetHistoryCursor { id, cursor: from.history_cursor });
+        ops.push(Op::SetBefore { id, before: from.before.clone() });
+        ops.push(Op::SetMeta { id, meta: Box::new(from.meta.clone()) });
+        ops.push(Op::SetRating { id, rating: from.rating });
+        ops.push(Op::SetFlag { id, flag: from.flag });
+        ops.push(Op::SetLabel { id, label: from.label });
+    }
+    s.commit("Set Copy as Original", Op::Batch { ops })?;
+    Ok(master)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "photo.setCopyAsOriginal",
+            "Set Copy as Original",
+            ["Photo"],
+            None,
+            "{id?} (default: the active photo, which must be a virtual copy) → {master}: swaps the copy's settings, History, metadata, rating, flag and label with its master's, so the master photo carries the copy's edit and the copy the original's; undoable",
+            is_virtual_copy,
+            |s, p| {
+                let id = s.photo_or_active(p, "photo.setCopyAsOriginal")?;
+                let master = set_copy_as_original(s, id)?;
+                s.selection = Selection::single(master);
+                Ok(json!({"master": master.0}))
+            }
+        ),
         cmd!(
             "photo.virtualCopy",
             "Create Virtual Copy",
             ["Photo"],
             Some("Cmd+'"),
-            "{ids?, name?} → {ids: [new photo ids]} — a new catalog entry sharing the original file, with independent settings; stacked with its original and named `name` or \"Copy N\"",
+            "{ids?, name?} → {ids: [new photo ids]}: a new catalog entry sharing the original file, with independent settings; stacked with its original and named `name` or \"Copy N\"",
             has_selection,
             |s, p| {
                 let targets = s.targets(p)?;
@@ -202,7 +261,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group into Stack",
             ["Photo", "Stack"],
             Some("Cmd+G"),
-            "{ids?, top?: photoId (default: the active photo), collapsed?: bool (default true)} — stacks the photos are already in are merged",
+            "{ids?, top?: photoId (default: the active photo), collapsed?: bool (default true)}: stacks the photos are already in are merged",
             has_selection,
             |s, p| {
                 let targets = s.targets(p)?;
@@ -236,12 +295,12 @@ pub fn specs() -> Vec<CommandSpec> {
             let op = s.catalog.set_top_ops(id);
             Ok(json!({"changed": commit_ops(s, "Set Top of Stack", op.into_iter().collect())?}))
         }),
-        cmd!("stack.moveUp", "Move Up in Stack", ["Photo", "Stack"], None, "{id?} — one place towards the top", in_stack, |s, p| {
+        cmd!("stack.moveUp", "Move Up in Stack", ["Photo", "Stack"], None, "{id?}: one place towards the top", in_stack, |s, p| {
             let id = s.photo_or_active(p, "stack.moveUp")?;
             let op = s.catalog.move_in_stack_ops(id, -1);
             Ok(json!({"changed": commit_ops(s, "Move in Stack", op.into_iter().collect())?}))
         }),
-        cmd!("stack.moveDown", "Move Down in Stack", ["Photo", "Stack"], None, "{id?} — one place away from the top", in_stack, |s, p| {
+        cmd!("stack.moveDown", "Move Down in Stack", ["Photo", "Stack"], None, "{id?}: one place away from the top", in_stack, |s, p| {
             let id = s.photo_or_active(p, "stack.moveDown")?;
             let op = s.catalog.move_in_stack_ops(id, 1);
             Ok(json!({"changed": commit_ops(s, "Move in Stack", op.into_iter().collect())?}))
@@ -251,7 +310,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Split Stack",
             ["Photo", "Stack"],
             None,
-            "{id?} — this photo and the ones after it become their own stack",
+            "{id?}: this photo and the ones after it become their own stack",
             in_stack,
             |s, p| {
                 let id = s.photo_or_active(p, "stack.split")?;
@@ -267,7 +326,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "Expand/Collapse Stack",
                 ["Photo", "Stack"],
                 Some("S"),
-                "{ids?, collapsed?: bool} — the stacks of the named photos (else of the selection)",
+                "{ids?, collapsed?: bool}: the stacks of the named photos (else of the selection)",
                 in_stack,
                 |s, p| {
                     let stacks = stacks_of(s, &s.targets(p)?);

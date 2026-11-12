@@ -52,6 +52,62 @@ fn providers(app: &mut LccApp) -> Vec<Value> {
     list
 }
 
+/// Whether the Remove tool is in Generative mode (Tools ▸ Remove Options ▸ Use Generative AI is ticked).
+pub fn generative_on(app: &LccApp) -> bool {
+    app.ui.right == crate::state::RightPanel::Remove && app.ui.tool == "generate"
+}
+
+/// `remove.useGenerative {on?}`: switch the Remove tool between Generative and Remove (no `on` toggles). Turning it on
+/// opens the Remove panel; with no service set up it opens Settings ▸ Generative Fill instead and changes nothing else.
+pub fn use_generative(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("remove.useGenerative: no photo".into());
+    }
+    let on = match p.get("on") {
+        None | Some(Value::Null) => !generative_on(app),
+        Some(Value::Bool(b)) => *b,
+        Some(other) => return Err(format!("remove.useGenerative: `on` must be true or false, not {other}")),
+    };
+    if on && !providers(app).iter().any(|p| p["configured"] == true) {
+        app.ui.dialog = Some(crate::state::Dialog::Settings { tab: "genfill".into() });
+        return Ok(json!({"on": false, "setup": true}));
+    }
+    let tool = if on { "generate" } else { "remove" };
+    app.ui.right = crate::state::RightPanel::Remove;
+    app.ui.view = crate::state::ViewMode::Detail;
+    app.ui.tool = tool.into();
+    app.ui.remove_tool = tool.into();
+    Ok(json!({"on": on, "setup": false}))
+}
+
+/// Whether Tools ▸ Remove Options ▸ Detect Objects is ticked.
+pub fn detect_objects_on(app: &LccApp) -> bool {
+    app.ui.remove_detect_objects
+}
+
+/// `remove.detectObjects {on?}`: Remove ▸ Detect Objects (no `on` toggles). While it is on, a Remove stroke is a prompt
+/// for the object segmenter (SAM) rather than the area to remove; it opens the Remove panel on the Remove tool.
+pub fn detect_objects(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("remove.detectObjects: no photo".into());
+    }
+    let on = match p.get("on") {
+        None | Some(Value::Null) => !app.ui.remove_detect_objects,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => return Err(format!("remove.detectObjects: `on` must be true or false, not {other}")),
+    };
+    app.ui.remove_detect_objects = on;
+    if on {
+        app.ui.right = crate::state::RightPanel::Remove;
+        app.ui.view = crate::state::ViewMode::Detail;
+        if !matches!(app.ui.tool.as_str(), "remove" | "generate") {
+            app.ui.tool = "remove".into();
+            app.ui.remove_tool = "remove".into();
+        }
+    }
+    Ok(json!({"on": on}))
+}
+
 /// The generated fills in the library for `photo` that no spot keeps (each one paid for). Reading them lists a
 /// folder, so the panel keeps the answer for a couple of seconds.
 fn not_on_photo(app: &mut LccApp, photo: lcc_catalog::PhotoId) -> Vec<Value> {

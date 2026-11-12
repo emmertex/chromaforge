@@ -5,7 +5,7 @@
 //! Its own test binary: the Plug-in Manager's window state is the process's, and other UI tests
 //! drawing frames at the same time would race it. The tests here take turns for the same reason.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -136,8 +136,8 @@ fn filter_module(manifest: &Value, analyze: bool) -> Vec<u8> {
     wat::parse_str(&src).unwrap()
 }
 
-fn folder(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("plugin-manager-ui-{name}-{}", std::process::id()));
+fn folder(name: &str) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("plugin-manager-ui-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -482,7 +482,7 @@ fn the_window_keeps_its_width_and_drags_narrower() {
     lcc_engine::filter_plugins::install_in_memory(&filter_module(&filter, false)).unwrap();
     // a folder whose path is longer than the window
     let top_dir = folder("long");
-    let dir = (0..6).fold(top_dir.clone(), |d, i| d.join(format!("a-rather-long-folder-name-{i}")));
+    let dir = (0..6).fold(top_dir.to_path_buf(), |d, i| d.join(format!("a-rather-long-folder-name-{i}")));
     std::fs::create_dir_all(&dir).unwrap();
     let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
     ui_cmd(&mut h, "plugins.page", json!({"id": "test.mgr.wide"}));
