@@ -74,6 +74,8 @@ pub struct SlideshowState {
     pub settings: Settings,
     /// The user's templates (the built-in ones come from `lcc-classic-slideshow`).
     pub templates: Vec<Template>,
+    /// The Template Browser's folders besides "User Templates" (empty ones too), sorted by name.
+    pub template_folders: Vec<String>,
     /// Saved slideshows as older builds kept them here; they move into the catalog as saved
     /// creations (collections of kind `slideshow`) the first time a slideshow command runs.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -132,6 +134,21 @@ fn plate_text(app: &LccApp) -> String {
     let t = app.ui.identity_plate.text.trim();
     if t.is_empty() { lcc_brand::DISPLAY_NAME.to_string() } else { t.to_string() }
 }
+
+/// Makes the folders read from `ui.json` agree with the templates (see `tidy_folders`).
+fn tidy_folders(app: &mut LccApp) {
+    let s = &mut app.ui.slides;
+    lcc_engine::template_folders::tidy_folders(&mut s.template_folders, &mut s.templates);
+}
+
+const TEMPLATE_CMDS: crate::template_browser::Cmds = crate::template_browser::Cmds {
+    apply: "slideshow.applyTemplate",
+    delete: "slideshow.deleteTemplate",
+    move_to: "slideshow.moveTemplate",
+    create_folder: "slideshow.createTemplateFolder",
+    rename_folder: "slideshow.renameTemplateFolder",
+    delete_folder: "slideshow.deleteTemplateFolder",
+};
 
 fn all_templates(app: &LccApp) -> Vec<Template> {
     let mut v = builtin_templates();
@@ -192,6 +209,7 @@ fn state_json(app: &mut LccApp) -> Value {
         "settings": s.settings,
         "template": s.template,
         "templates": all_templates(app).iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        "templateFolders": crate::template_browser::listing(&s.template_folders, &s.templates),
         "saved": saved_list(app).iter().map(|x| json!({"id": x.id.0, "name": x.name, "photos": x.photos.len()})).collect::<Vec<_>>(),
         "open": s.open,
         "openId": s.open_id,
@@ -282,6 +300,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
 
 fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
     migrate_saved(app);
+    tidy_folders(app);
     match id {
         "slideshow.get" => Ok(state_json(app)),
         "slideshow.set" => {
@@ -294,6 +313,11 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 o.remove("usePhotos");
             }
             app.ui.slides.settings = app.ui.slides.settings.patched(&patch)?;
+            Ok(state_json(app))
+        }
+        "slideshow.toggleGuides" => {
+            let on = !app.ui.slides.settings.layout.show_guides;
+            app.ui.slides.settings = app.ui.slides.settings.patched(&json!({"layout": {"showGuides": on}}))?;
             Ok(state_json(app))
         }
         "slideshow.reset" => {
@@ -314,13 +338,30 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                 return Err(format!("{name} is a built-in template; choose another name"));
             }
             let settings = app.ui.slides.settings.clone();
+            let given = crate::template_browser::folder_param(&app.ui.slides.template_folders, p)?;
             let list = &mut app.ui.slides.templates;
             match list.iter_mut().find(|t| t.name == name) {
-                Some(t) => t.settings = settings,
-                None => list.push(Template { name: name.clone(), settings }),
+                // a template saved over its own name stays in its folder unless the call names another
+                Some(t) => {
+                    t.settings = settings;
+                    if let Some(f) = given {
+                        t.folder = f;
+                    }
+                }
+                None => list.push(Template { name: name.clone(), folder: given.flatten(), settings }),
             }
             app.ui.slides.template = name;
             Ok(state_json(app))
+        }
+        "slideshow.createTemplateFolder" | "slideshow.renameTemplateFolder" | "slideshow.deleteTemplateFolder" | "slideshow.moveTemplate" => {
+            let op = match id {
+                "slideshow.createTemplateFolder" => "create",
+                "slideshow.renameTemplateFolder" => "rename",
+                "slideshow.deleteTemplateFolder" => "delete",
+                _ => "move",
+            };
+            let s = &mut app.ui.slides;
+            crate::template_browser::folder_command(op, &mut s.template_folders, &mut s.templates, p)
         }
         "slideshow.deleteTemplate" => {
             let name = name_param(p)?;
@@ -954,23 +995,22 @@ fn heading(ui: &mut egui::Ui, text: &str) -> bool {
 fn left_column(app: &mut LccApp, ui: &mut egui::Ui) {
     ui.label(egui::RichText::new(crate::i18n::tr("Template Browser")).strong());
     let current = app.ui.slides.template.clone();
-    let builtin: Vec<String> = builtin_templates().into_iter().map(|t| t.name).collect();
-    let user: Vec<String> = app.ui.slides.templates.iter().map(|t| t.name.clone()).collect();
-    for (name, own) in builtin.iter().map(|n| (n, false)).chain(user.iter().map(|n| (n, true))) {
-        // built-in templates show in the UI language, the user's own as named
-        let r = ui.selectable_label(*name == current, if own { name.as_str() } else { crate::i18n::tr(name) });
-        register(ui.ctx(), format!("slideshowTemplate:{name}"), r.rect);
-        if r.clicked() {
-            let _ = app.run("slideshow.applyTemplate", json!({"name": name}));
-        }
-        if own {
-            r.context_menu(|ui| {
-                if ui.button(crate::i18n::tr("Delete")).clicked() {
-                    let _ = app.run("slideshow.deleteTemplate", json!({"name": name}));
-                }
-            });
-        }
-    }
+    tidy_folders(app);
+    // built-in templates show in the UI language, the user's own as named
+    let mut rows: Vec<crate::template_browser::Row> = builtin_templates()
+        .into_iter()
+        .map(|t| crate::template_browser::Row { shown: crate::i18n::tr(&t.name).to_string(), name: t.name, builtin: true, folder: None })
+        .collect();
+    rows.extend(app.ui.slides.templates.iter().map(|t| crate::template_browser::Row {
+        name: t.name.clone(),
+        shown: t.name.clone(),
+        builtin: false,
+        folder: t.folder.clone(),
+    }));
+    let ids = crate::template_browser::Ids { template: "slideshowTemplate:", folder: "slideshowTemplateFolder:", salt: "slideshow-template-folder" };
+    let actions = crate::template_browser::show(ui, &ids, &rows, &app.ui.slides.template_folders, Some(current.as_str()));
+    let ctx = ui.ctx().clone();
+    crate::template_browser::dispatch(app, &ctx, actions, &TEMPLATE_CMDS);
     let draft_id = egui::Id::new("slideshow-template-name");
     let mut draft: String = ui.data(|d| d.get_temp(draft_id)).unwrap_or_default();
     ui.horizontal(|ui| {
@@ -1318,8 +1358,68 @@ mod tests {
         h.app.widgets.iter().any(|(w, _)| w == id)
     }
 
+    /// New Template Folder asks for a name, a template moves into the folder and out again, the
+    /// folders (empty ones too) survive `ui.json`, and a folder's templates survive its deletion.
+    #[test]
+    fn template_folders_group_templates_and_survive_ui_json() {
+        let mut h = demo();
+        ok(&mut h, "module.slideshow", json!({}));
+        h.app.ui.left_panel = true;
+        let wait = Duration::from_secs(120);
+        assert!(h.step_until(wait, |h| has_widget(h, "slideshowTemplate:Default")));
+        // the menu item asks for the name; confirming makes the folder (empty folders are kept)
+        ok(
+            &mut h,
+            "ui.prompt",
+            json!({"title": "New Template Folder", "hint": "Folder name", "command": "slideshow.createTemplateFolder", "key": "name"}),
+        );
+        let Some(crate::state::Dialog::TextPrompt { value, command, key, .. }) = &mut h.app.ui.dialog else { panic!("{:?}", h.app.ui.dialog) };
+        assert_eq!((command.as_str(), key.as_str()), ("slideshow.createTemplateFolder", "name"));
+        *value = " Weddings ".into();
+        let r = h.request("ui.dialog.confirm", json!({}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(h.step_until(wait, |h| has_widget(h, "slideshowTemplateFolder:Weddings")), "the empty folder is listed");
+        // a template saved into it, then moved out and in again; a built-in never moves
+        let r = ok(&mut h, "slideshow.saveTemplate", json!({"name": "Mine", "folder": "weddings"}));
+        assert_eq!(r["templateFolders"]["templates"][0], json!({"name": "Mine", "folder": "Weddings"}));
+        let r = ok(&mut h, "slideshow.moveTemplate", json!({"name": "mine", "folder": "User Templates"}));
+        assert_eq!((r["moved"].as_bool(), r["templates"][0]["folder"].as_str()), (Some(true), Some("User Templates")));
+        let r = ok(&mut h, "slideshow.moveTemplate", json!({"name": "Mine", "folder": "Weddings"}));
+        assert_eq!(r["moved"], true);
+        // saving over its name keeps the folder
+        ok(&mut h, "slideshow.saveTemplate", json!({"name": "Mine"}));
+        assert_eq!(h.app.ui.slides.templates[0].folder.as_deref(), Some("Weddings"));
+        for (id, p) in [
+            ("slideshow.moveTemplate", json!({"name": "Default", "folder": "Weddings"})),
+            ("slideshow.moveTemplate", json!({"name": "Mine", "folder": "Nope"})),
+            ("slideshow.moveTemplate", json!({"name": "Mine"})),
+            ("slideshow.createTemplateFolder", json!({"name": "weddings"})),
+            ("slideshow.createTemplateFolder", json!({"name": "a\tb"})),
+            ("slideshow.renameTemplateFolder", json!({"name": "User Templates", "to": "X"})),
+            ("slideshow.deleteTemplateFolder", json!({"name": "User Templates"})),
+            ("slideshow.saveTemplate", json!({"name": "New", "folder": "Nope"})),
+        ] {
+            assert_eq!(exec(&mut h, id, p.clone())["ok"], false, "{id} {p}");
+        }
+        // folders and the template's place survive ui.json, a hostile one is tidied
+        ok(&mut h, "slideshow.createTemplateFolder", json!({"name": "Empty"}));
+        let mut v = serde_json::to_value(&h.app.ui).unwrap();
+        v["slides"]["templateFolders"] = json!(["Weddings", "", "empty", "User Templates", "Empty"]);
+        let mut saved: crate::state::UiState = serde_json::from_value(v).unwrap();
+        lcc_engine::template_folders::tidy_folders(&mut saved.slides.template_folders, &mut saved.slides.templates);
+        assert_eq!(saved.slides.template_folders, ["empty", "Weddings"]);
+        assert_eq!(saved.slides.templates[0].folder.as_deref(), Some("Weddings"));
+        // renaming takes the template along; deleting the folder keeps the template
+        let r = ok(&mut h, "slideshow.renameTemplateFolder", json!({"name": "WEDDINGS", "to": "Proofs"}));
+        assert_eq!(r["templates"][0]["folder"], "Proofs");
+        let r = ok(&mut h, "slideshow.deleteTemplateFolder", json!({"name": "proofs"}));
+        assert_eq!((r["moved"].as_u64(), r["templates"][0]["folder"].as_str()), (Some(1), Some("User Templates")));
+        assert!(h.app.ui.slides.templates.iter().any(|t| t.name == "Mine"));
+    }
+
     #[test]
     fn the_module_previews_plays_and_saves() {
+        let dir = lcc_testkit::TempDir::new("lcc-slideshow-ui");
         let mut h = demo();
         ok(&mut h, "module.slideshow", json!({}));
         // (wait for what is checked, not a fixed settle: a loaded machine renders slowly)
@@ -1376,18 +1476,20 @@ mod tests {
         assert_eq!(exec(&mut h, "slideshow.addMusic", json!({"path": "/no/such/song.mp3"}))["ok"], false);
         assert!(h.app.ui.slides.settings.music.tracks.is_empty());
         // JPEG sequence
-        let dir = std::env::temp_dir().join(format!("lcc-slideshow-ui-{}", std::process::id()));
         ok(&mut h, "slideshow.closeSaved", json!({}));
         ok(&mut h, "slideshow.set", json!({"usePhotos": "selected"}));
         let first = h.app.session.visible_cloned()[0].0;
         ok(&mut h, "library.select", json!({"ids": [first]}));
         let r = ok(&mut h, "slideshow.exportJpeg", json!({"dir": dir.display().to_string(), "width": 320, "height": 200}));
         assert_eq!(r["background"], true, "{r}");
-        assert!(exec(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string()}))["ok"] == false, "one export at a time");
         let r = wait_export(&mut h);
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{r}");
-        // PDF: one file, a page per slide
-        ok(&mut h, "slideshow.exportPdf", json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"}));
+        // PDF: one file, a page per slide; and one export at a time. The PDF starts from the command's
+        // function, not a request: an export's result lands on a frame and none runs before the second
+        // export, so the PDF is still running then (a request runs frames, and a small export can finish)
+        let pdf = json!({"dir": dir.display().to_string(), "width": 320, "height": 200, "name": "Show"});
+        assert_eq!(super::export(&mut h.app, &pdf, super::Out::Pdf).unwrap()["background"], true);
+        assert!(super::export(&mut h.app, &json!({"dir": dir.display().to_string()}), super::Out::Jpeg).is_err(), "one export at a time");
         let r = wait_export(&mut h);
         let pdf = r["files"][0].as_str().unwrap_or_default().to_string();
         assert!(pdf.ends_with("Show.pdf"), "{r}");

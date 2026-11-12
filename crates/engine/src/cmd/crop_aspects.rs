@@ -236,17 +236,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Crop Aspect Ratio",
             [],
             None,
-            "{name, aspect: [w, h] | \"WxH\"} — adds a ratio to the aspect menu under a name (any number of them; the same name replaces it in place), saved with the library",
+            "{name, aspect: [w, h] | \"WxH\"}: adds a ratio to the aspect menu under a name (any number of them; the same name replaces it in place), saved with the library",
             always,
             save
         ),
-        cmd!("crop.deleteAspect", "Delete Crop Aspect Ratio", [], None, "{name} — removes a saved ratio from the aspect menu", always, delete),
+        cmd!("crop.deleteAspect", "Delete Crop Aspect Ratio", [], None, "{name}: removes a saved ratio from the aspect menu", always, delete),
         cmd!(
             "crop.moveAspect",
             "Move Crop Aspect Ratio",
             [],
             None,
-            "{name, to} — moves a saved ratio to position `to` (0 = first) among the saved ones",
+            "{name, to}: moves a saved ratio to position `to` (0 = first) among the saved ones",
             always,
             move_to
         ),
@@ -255,7 +255,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Crop Aspect Ratio",
             [],
             None,
-            "{aspect: built-in key (\"4x5\"), hidden?: bool (default true)} — leaves a built-in ratio out of the aspect menu, or shows it again (Free and Original always show)",
+            "{aspect: built-in key (\"4x5\"), hidden?: bool (default true)}: leaves a built-in ratio out of the aspect menu, or shows it again (Free and Original always show)",
             always,
             hide
         ),

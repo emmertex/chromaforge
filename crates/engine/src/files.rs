@@ -732,6 +732,7 @@ fn load_bytes_now(
         let reduced =
             (allow_reduced && denoise.is_none() && max_edge < usize::MAX).then(|| lcc_raw::decode_reduced(&bytes, max_edge).ok().flatten()).flatten();
         let used_reduced = reduced.is_some();
+        let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
             None => lcc_raw::decode(&bytes),
@@ -746,6 +747,7 @@ fn load_bytes_now(
             }
             Err(Err(e)) => return Err(e),
         };
+        let decode_ms = t_decode.elapsed().as_secs_f64() * 1e3;
         // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
         let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
@@ -784,6 +786,9 @@ fn load_bytes_now(
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
+        // (a DNG of rendered RGB: no camera profile describes it, so the Profiles panel offers none)
+        let rendered_rgb = lcc_raw::color::is_rendered_rgb(&raw.color);
+        let t_colour = web_time::Instant::now();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
         let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
             || {
@@ -803,6 +808,13 @@ fn load_bytes_now(
             || dng_mattes(&bytes, &info),
         );
         drop(bytes);
+        if lcc_pipeline::profiling() {
+            eprintln!(
+                "[profile] raw load: decode {decode_ms:.1} ms, repair + outliers + profile {:.1} ms, starting colour {:.1} ms",
+                (t_colour - t_decode).as_secs_f64() * 1e3 - decode_ms,
+                t_colour.elapsed().as_secs_f64() * 1e3
+            );
+        }
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
         let t0 = web_time::Instant::now();
@@ -900,10 +912,13 @@ fn load_bytes_now(
                 // (the catalog knows the original's size: `media::source_info`)
                 native_long: None,
                 colorimetric,
+                rendered_rgb,
                 alpha: None,
                 generated: None,
                 avoid: None,
                 pixels: Some(pixels),
+                // (the catalog knows which photo this is: `media::source_info`)
+                identity: None,
             },
             used_reduced,
         ));
@@ -3195,7 +3210,7 @@ pub(crate) mod tests {
         assert_eq!(p.kind, MediaKind::Raw, "still a raw file (filters, Convert to DNG…)");
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
-        assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
+        assert_eq!(SourceInfo { native_long: None, identity: None, ..crate::media::source_info(&p) }, SourceInfo::default());
         // (new photos start with Constrain Crop on, which is not an edit)
         assert!(p.develop.is_unedited() && p.develop.geometry.constrain_crop, "{:?}", p.develop);
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());

@@ -185,6 +185,21 @@ fn photos_imports(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
+/// Photo ▸ Reset Export Status: clear [`lcc_catalog::Photo::exported`] on the targets that have one.
+fn reset_status(s: &mut Session, p: &Value) -> Result<Value> {
+    let ops: Vec<lcc_catalog::Op> = s
+        .targets(p)?
+        .into_iter()
+        .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.exported.is_some()))
+        .map(|id| lcc_catalog::Op::SetExported { id, exported: None })
+        .collect();
+    let changed = ops.len();
+    if changed > 0 {
+        s.commit("Reset Export Status", lcc_catalog::Op::Batch { ops })?;
+    }
+    Ok(json!({"changed": changed}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     #[allow(unused_mut)]
     let mut v = vec![
@@ -213,17 +228,26 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Export Preset",
             [],
             None,
-            "{name, params?: app.export params (default: the last export's): format, quality, limitKb, sizing, sharpening, naming, metadata, watermark, destinationMode, dir (the folder), subfolder… — ids and path are dropped} — adds or replaces a user preset, saved with the library → presets",
+            "{name, params?: app.export params (default: the last export's): format, quality, limitKb, sizing, sharpening, naming, metadata, watermark, destinationMode, dir (the folder), subfolder…; ids and path are dropped}: adds or replaces a user preset, saved with the library → presets",
             always,
             save
         ),
-        cmd!("export.deletePreset", "Delete Export Preset", [], None, "{name} — removes a user preset → presets", always, delete),
+        cmd!("export.deletePreset", "Delete Export Preset", [], None, "{name}: removes a user preset → presets", always, delete),
+        cmd!(
+            "photo.resetExportStatus",
+            "Reset Export Status",
+            ["Photo"],
+            None,
+            "{ids?}: forget that the selected photos (or `ids`) were exported (Photo.exported, the grid's exported badge); one undo step → {changed}: photos that had a status",
+            super::has_selection,
+            reset_status
+        ),
         cmd!(
             query "export.checkTarget",
             "Check Output Path",
             [],
             None,
-            "{path} — fails when writing `path` would replace a photo's original (or its XMP sidecar) in the library; front ends call it before saving a render or screenshot to a user-given path → {path}",
+            "{path}: fails when writing `path` would replace a photo's original (or its XMP sidecar) in the library; front ends call it before saving a render or screenshot to a user-given path → {path}",
             always,
             |s, p| {
                 let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("export.checkTarget", "missing `path`"))?;

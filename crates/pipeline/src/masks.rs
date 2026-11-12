@@ -93,6 +93,23 @@ impl Mattes {
         self.mattes.iter().map(|(k, m)| (*k, m.as_ref()))
     }
 
+    /// Whether `a` and `b` hold the very same mattes (each plane and the automatic selections by
+    /// identity), so mask planes evaluated with one fit the other. A render's plan wraps the
+    /// source's mattes and its cached automatic selections in a new [`Mattes`] every time
+    /// (`auto_mask::needed`), so comparing the outer `Arc`s missed on every slider tick of a photo
+    /// with an AI mask and evaluated all its masks again (about 55 ms of each 45 MP draft).
+    pub fn same(a: &std::sync::Arc<Mattes>, b: &std::sync::Arc<Mattes>) -> bool {
+        use std::sync::Arc;
+        Arc::ptr_eq(a, b)
+            || (a.mattes.len() == b.mattes.len()
+                && a.mattes.iter().zip(&b.mattes).all(|((ka, ma), (kb, mb))| ka == kb && Arc::ptr_eq(ma, mb))
+                && match (&a.auto, &b.auto) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+                    _ => false,
+                })
+    }
+
     fn of(&self, kinds: &[MatteKind]) -> Vec<&Image<u8>> {
         self.mattes.iter().filter(|(k, _)| kinds.contains(k)).map(|(_, m)| &**m).collect()
     }
@@ -312,6 +329,14 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
     let fitting = mattes.map(|m| m.for_shape(shape)).unwrap_or_default();
     if !fitting.is_empty() {
         return matte_alpha(&fitting, frame, w, h);
+    }
+    if let MaskShape::DepthRange { lo, hi, feather } = shape {
+        // the depth model's distance grid (none: nothing selected), sampled like the image
+        let Some(grid) = mattes.and_then(|m| m.auto.as_deref()).and_then(|a| a.depth.as_ref()) else { return Plane::new(w, h) };
+        let mut out = crate::auto_mask::sample(grid, frame, w, h);
+        let (lo, hi, f) = (*lo as f32, *hi as f32, *feather as f32);
+        out.map_in_place(|d| crate::depth_model::range_alpha(d, lo, hi, f));
+        return out;
     }
     if let Some(auto) = mattes.and_then(|m| m.auto.as_deref()) {
         let grid = auto.for_shape(shape);
@@ -1440,6 +1465,23 @@ mod tests {
             assert!((s + b - 1.0).abs() < 1e-4, "subject {s} + background {b}");
         }
         assert!(sub.get(1, 8) > 0.9 && bg.get(14, 8) > 0.9);
+    }
+
+    /// A Depth Range selects the band of the depth grid between its bounds, at any output size;
+    /// without a depth grid (no model) it selects nothing.
+    #[test]
+    fn depth_range_selects_its_band_of_the_depth_grid() {
+        let near = MaskShape::DepthRange { lo: 0.0, hi: 0.3, feather: 0.05 };
+        let mut auto = crate::auto_mask::analyze(&Rgb32f::new(0, 0));
+        // nearest at the left edge, farthest at the right
+        auto.depth = Some(Plane::from_fn(32, 8, |x, _| x as f32 / 31.0));
+        let m = Mattes { auto: Some(std::sync::Arc::new(auto)), ..Default::default() };
+        for (w, h) in [(40, 20), (400, 200)] {
+            let a = shape_alpha(&near, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, Some(&m));
+            assert!(a.get(1, h / 2) > 0.99 && a.get(w - 2, h / 2) < 0.01, "{w}×{h}");
+            let none = shape_alpha(&near, &frame(w, h), w, h, &Rgb32f::new(w, h), &Plane::new(w, h), 0.0, None);
+            assert!(none.data.iter().all(|v| *v == 0.0));
+        }
     }
 
     #[test]

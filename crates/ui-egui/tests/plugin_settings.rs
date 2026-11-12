@@ -76,7 +76,7 @@ fn ask(h: &mut Headless, method: &str, params: Value) -> Value {
 
 #[test]
 fn the_plugin_page_saves_settings_and_dialogs_remember() {
-    let dir = std::env::temp_dir().join(format!("plugin-settings-ui-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("plugin-settings-ui");
     std::fs::create_dir_all(&dir).unwrap();
     let settings = json!({"id": "test.uiset", "name": "Set", "version": "1.0.0",
         "settings": [{"key": "name", "label": "Name", "type": "text", "default": "first"}],

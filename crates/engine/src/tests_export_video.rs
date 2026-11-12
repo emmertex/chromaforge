@@ -20,11 +20,9 @@ const FRAMES: u32 = 50;
 /// Luma of the synthetic clip: sRGB ≈ 0.38, linear ≈ 0.12 (room to double without clipping).
 const LUMA: u8 = 100;
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lcc-engine-video-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn scratch(name: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-engine-video-{name}"))
 }
 
 /// A 2 s, 25 fps, 64×48 flat grey H.264 clip.

@@ -36,3 +36,5 @@ denoise = ["dep:lcc-denoise", "lcc-denoise/runtime"]
 lcc-testkit = { workspace = true }
 lcc-scenes = { workspace = true }
 lcc-raw = { workspace = true }
+# the MediaPipe face models on the GPU against the CPU interpreter
+lcc-tflite = { workspace = true }

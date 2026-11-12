@@ -110,8 +110,8 @@ fn b_the_straighten_tool_line_keeps_the_lock() {
 
 /// A photo with a horizon tilted by 6° and bands below it parallel to it (several agreeing lines,
 /// as Auto needs): bright sky over a striped ground.
-fn tilted_horizon() -> (lcc_engine::Session, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-ui-crop-lock-auto-{}", std::process::id()));
+fn tilted_horizon() -> (lcc_testkit::TempDir, lcc_engine::Session) {
+    let dir = lcc_testkit::TempDir::new("lc-ui-crop-lock-auto");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let (w, ht) = (900usize, 600usize);
@@ -136,12 +136,12 @@ fn tilted_horizon() -> (lcc_engine::Session, std::path::PathBuf) {
     std::fs::write(&path, bytes).unwrap();
     let mut session = lcc_engine::Session::new().with_fs();
     session.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
-    (session, dir)
+    (dir, session)
 }
 
 #[test]
 fn c_auto_straighten_keeps_the_lock() {
-    let (session, dir) = tilted_horizon();
+    let (dir, session) = tilted_horizon();
     let mut h = crop_tool_on(session);
     let want = photo_ratio(&h);
     let r = ask(&mut h, "engine.execute", json!({"command": "crop.autoStraighten"}));

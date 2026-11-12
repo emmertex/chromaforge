@@ -561,7 +561,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reorder Profiles",
             [],
             None,
-            "{ids: [profile id]} — these first, in this order; the others keep theirs → {order}",
+            "{ids: [profile id]}: these first, in this order; the others keep theirs → {order}",
             always,
             reorder
         ),
@@ -570,7 +570,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Built-in Look",
             [],
             None,
-            "{id: a built-in look} — out of this install's lists (photos using it keep it; profile.restoreBuiltins brings it back) → {removed}",
+            "{id: a built-in look}: out of this install's lists (photos using it keep it; profile.restoreBuiltins brings it back) → {removed}",
             always,
             remove
         ),
@@ -579,7 +579,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Restore Built-in Looks",
             [],
             None,
-            "{} — every removed built-in look comes back → {restored}",
+            "{}: every removed built-in look comes back → {restored}",
             always,
             restore_builtins
         ),
@@ -588,7 +588,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Profile Group",
             [],
             None,
-            "{group, name} — every profile of the group moves to `name` → {group, name, profiles}",
+            "{group, name}: every profile of the group moves to `name` → {group, name, profiles}",
             always,
             group_rename
         ),
@@ -606,7 +606,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Profile Group",
             [],
             None,
-            "{group} — its built-in looks are removed (restorable), its imported profiles hidden → {group, removed, hidden}",
+            "{group}: its built-in looks are removed (restorable), its imported profiles hidden → {group, removed, hidden}",
             always,
             group_remove
         ),
@@ -615,7 +615,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Hide Profile",
             [],
             None,
-            "{id (a look, lut:…, dcp:… or cal:…), hidden?: bool (toggles when omitted)} — out of the profile menu, the browser and the camera profile choices (still in profiles.manager; photos using it keep it) → {hidden}",
+            "{id (a look, lut:…, dcp:… or cal:…), hidden?: bool (toggles when omitted)}: out of the profile menu, the browser and the camera profile choices (still in profiles.manager; photos using it keep it) → {hidden}",
             always,
             hide
         ),
@@ -625,7 +625,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Body's Camera Profile",
             [],
             None,
-            "{id: camera profile (dcp:…, cal:… or lc; \"\" clears), body? (from profiles.bodies) | photo? (default: the active photo)} — that body's raws start with it at import → {body, profile}",
+            "{id: camera profile (dcp:…, cal:… or lc; \"\" clears), body? (from profiles.bodies) | photo? (default: the active photo)}: that body's raws start with it at import → {body, profile}",
             always,
             set_body_default
         ),
@@ -634,7 +634,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Body Camera Profiles",
             [],
             None,
-            "{ids?} (default: every photo) — photos of bodies with a camera profile get it, one undo step → {changed}",
+            "{ids?} (default: every photo): photos of bodies with a camera profile get it, one undo step → {changed}",
             always,
             apply_body_defaults
         ),
@@ -643,7 +643,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Imported Camera Profile",
             [],
             None,
-            "{id: dcp:… (from profiles.manager `camera`)} — the imported .dcp goes, and its copy as its camera's default when it is that; photos that chose it go back to their camera's default (one undo step) → {deleted, photos, bodies, wasCameraDefault}",
+            "{id: dcp:… (from profiles.manager `camera`)}: the imported .dcp goes, and its copy as its camera's default when it is that; photos that chose it go back to their camera's default (one undo step) → {deleted, photos, bodies, wasCameraDefault}",
             always,
             delete_camera
         ),
@@ -652,7 +652,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Adopt Camera Profile for Body",
             [],
             None,
-            "{profile: camera profile (dcp:…, cal:… or lc), body? (from profiles.bodies) | photo? (default: the active photo)} — the body's default, and its photos still on the camera's default get it (one undo step) → {body, profile, changed}",
+            "{profile: camera profile (dcp:…, cal:… or lc), body? (from profiles.bodies) | photo? (default: the active photo)}: the body's default, and its photos still on the camera's default get it (one undo step) → {body, profile, changed}",
             always,
             adopt_for_body
         ),
@@ -661,7 +661,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remove Camera Profile from Body",
             [],
             None,
-            "{profile, body? | photo?} — the body no longer starts with it (its photos keep theirs) → {body, released}",
+            "{profile, body? | photo?}: the body no longer starts with it (its photos keep theirs) → {body, released}",
             always,
             release_from_body
         ),
@@ -670,7 +670,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Clear Body's Camera Profile",
             [],
             None,
-            "{body? | photo?} — the body's raws start with their camera's default again → {body, cleared}",
+            "{body? | photo?}: the body's raws start with their camera's default again → {body, cleared}",
             always,
             clear_body_default
         ),
@@ -679,7 +679,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Profile Group",
             [],
             None,
-            "{name} — an empty group, kept in the group order → {group, groups}",
+            "{name}: an empty group, kept in the group order → {group, groups}",
             always,
             group_new
         ),
@@ -689,7 +689,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Profiles",
             [],
             None,
-            "{ids: [profile id], before?: id | after?: id | group?: name} — before or after another profile (joining its group), or at the end of a group, in one save → {placed, group}",
+            "{ids: [profile id], before?: id | after?: id | group?: name}: before or after another profile (joining its group), or at the end of a group, in one save → {placed, group}",
             always,
             place
         ),
@@ -717,6 +717,7 @@ mod tests {
         list.push(lcc_raw::dcp::Calibrated {
             make: "PMHIDE".into(),
             names: vec!["PMHIDE ONE".into()],
+            lens: None,
             looks: vec![("cal:pmhide-me".into(), dcp)],
             default: None,
         });

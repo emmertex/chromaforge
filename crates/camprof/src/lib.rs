@@ -11,8 +11,9 @@
 //!
 //! 1. [`find_chart`] looks for the chart by its colours (or [`refine`] moves hand-placed corners
 //!    onto it).
-//! 2. [`build`] measures the patches ([`reference::measure_rotated`]), fits a forward matrix, a
-//!    colour matrix and a correction table ([`profile::fit`]), and expresses them as a DCP
+//! 2. [`build`] measures the patches ([`reference::measure_rotated`]), evens out the light on the
+//!    chart ([`uneven::even_out`]), fits a forward matrix, a colour matrix and a correction table
+//!    ([`profile::fit`]), and expresses them as a DCP
 //!    ([`dcp::build`]): `ColorMatrix1`, `ForwardMatrix1` and a `ProfileHueSatMap`.
 //! 3. The [`Built`] report says how closely the profile reproduces each patch (CIEDE2000).
 #![forbid(unsafe_code)]
@@ -39,6 +40,7 @@ pub mod simplex;
 pub mod spectrum;
 pub mod synthetic;
 pub mod target;
+pub mod uneven;
 
 pub use frame::RawFrame;
 pub use linalg::{Mat3, Vec3};
@@ -86,35 +88,41 @@ pub struct Located {
     pub turns: u8,
     /// How closely the cells' colours follow the chart's (−1 to 1), when found by them.
     pub score: Option<f64>,
+    /// Which chart it is ([`reference::CHARTS`]).
+    pub chart: &'static reference::Chart,
 }
 
-/// The ColorChecker 24 this crate profiles from.
+/// The chart assumed when none was found: the ColorChecker 24.
 pub fn chart() -> &'static reference::Chart {
     &reference::COLORCHECKER_CLASSIC
 }
 
-/// Look for the ColorChecker in `frame` by its colours (any position, size and quarter turn).
+/// Look for a chart in `frame` by its colours (any position, size and quarter turn): every built-in chart
+/// ([`reference::CHARTS`]) is tried and the best match wins.
 pub fn find_chart(frame: &RawFrame) -> Option<Located> {
-    let found = detect::find_by_pattern(frame, chart())?;
-    Some(Located { corners: found.corners, turns: found.quarter_turns % 4, score: Some(found.score) })
+    reference::CHARTS
+        .iter()
+        .filter_map(|chart| detect::find_by_pattern(frame, chart).map(|found| (found, *chart)))
+        .max_by(|a, b| a.0.score.total_cmp(&b.0.score))
+        .map(|(found, chart)| Located { corners: found.corners, turns: found.quarter_turns % 4, score: Some(found.score), chart })
 }
 
 /// Move corners placed by hand onto the chart (`turns` is kept: the refinement cannot tell a grid
 /// from its half turn). `None` when they are too far from a chart.
-pub fn refine(frame: &RawFrame, corners: &ChartCorners, turns: u8) -> Option<Located> {
+pub fn refine(frame: &RawFrame, chart: &'static reference::Chart, corners: &ChartCorners, turns: u8) -> Option<Located> {
     if !corners.is_usable() {
         return None;
     }
-    let placement = align::align(frame, chart(), corners, SAMPLE_FRACTION)?;
-    Some(Located { corners: placement.corners, turns: turns % 4, score: None })
+    let placement = align::align(frame, chart, corners, SAMPLE_FRACTION)?;
+    Some(Located { corners: placement.corners, turns: turns % 4, score: None, chart })
 }
 
 /// Which way round the chart lies inside corners placed by hand: the quarter turn whose matrix
 /// fit is best (the corners' shape only says upright or on its side).
-pub fn orient(frame: &RawFrame, corners: &ChartCorners) -> u8 {
-    let start = corners.plausible_turns(chart())[0];
+pub fn orient(frame: &RawFrame, chart: &reference::Chart, corners: &ChartCorners) -> u8 {
+    let start = corners.plausible_turns(chart)[0];
     let placement = align::Placement { corners: *corners, quarter_turns: start, variation: f64::NAN };
-    align::resolve_orientation(frame, chart(), &placement, &profile::FitOptions::default(), SAMPLE_FRACTION).placement.quarter_turns % 4
+    align::resolve_orientation(frame, chart, &placement, &profile::FitOptions::default(), SAMPLE_FRACTION).placement.quarter_turns % 4
 }
 
 /// How to build a profile.
@@ -131,11 +139,14 @@ pub struct BuildOptions {
     pub camera_model: String,
     /// `ProfileName`.
     pub name: String,
+    /// Even out the light on the chart ([`uneven::even_out`]): divide out the falloff across the
+    /// card and subtract the glare on the patches, kept only when the grey ramp ends more linear.
+    pub even_light: bool,
 }
 
 impl Default for BuildOptions {
     fn default() -> Self {
-        Self { illuminant: "D55".into(), natural: true, correction_table: true, camera_model: String::new(), name: String::new() }
+        Self { illuminant: "D55".into(), natural: true, correction_table: true, camera_model: String::new(), name: String::new(), even_light: true }
     }
 }
 
@@ -185,7 +196,7 @@ pub struct Built {
 
 /// Measure the chart at `located` in `frame` and build a profile from it.
 pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result<Built, CamprofError> {
-    let chart = chart();
+    let chart = located.chart;
     if !located.corners.is_usable() {
         return Err(CamprofError::NoChart("the chart corners don't make a usable grid".into()));
     }
@@ -199,10 +210,15 @@ pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result
     }
     let white = illuminants::white_point_by_name("1931_2", &illuminant).map_err(|e| CamprofError::Options(e.to_string()))?;
     let turns = located.turns % 4;
-    let measurement = reference::measure_rotated(frame, chart, &located.corners, SAMPLE_FRACTION, turns);
+    let mut measurement = reference::measure_rotated(frame, chart, &located.corners, SAMPLE_FRACTION, turns);
     if measurement.sample_counts.contains(&0) {
         return Err(CamprofError::NoChart("part of the chart grid lies outside the picture".into()));
     }
+    let light_notes = if opts.even_light {
+        uneven::even_out(frame, &located.corners, uneven::frame_layout(chart.layout, turns), &mut measurement).describe()
+    } else {
+        Vec::new()
+    };
     let patch_set = measurement.to_patch_set(white);
     let fit_options = profile::FitOptions {
         illuminant_name: Some(illuminant.clone()),
@@ -251,7 +267,7 @@ pub fn build(frame: &RawFrame, located: &Located, opts: &BuildOptions) -> Result
         patches_used: report.patches_used,
         neutral_ids: report.neutral_ids,
         patches,
-        notes: report.notes,
+        notes: light_notes.into_iter().chain(report.notes).collect(),
         illuminant,
         neutral: [prof.white_balance[0], prof.white_balance[1], prof.white_balance[2]],
     })

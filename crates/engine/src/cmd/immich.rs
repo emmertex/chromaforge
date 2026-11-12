@@ -255,6 +255,57 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"accounts": out, "secretStore": st, "connecting": s.remote.connecting, "connected": s.remote.connected}))
 }
 
+/// The server session's auth state for one account: elevated (locked folders visible), the
+/// unlock secrets the account has, and when the elevation ends.
+fn auth_status(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "immich.authStatus";
+    let id = account_param(s, p, C)?;
+    let (_, client) = match s.immich_client(&id) {
+        Ok(x) => x,
+        Err(e) => return Ok(failure(&e)),
+    };
+    match client.auth_status() {
+        Ok(st) => Ok(json!({
+            "ok": true,
+            "account": id,
+            "isElevated": st.is_elevated,
+            "password": st.password,
+            "pinCode": st.pin_code,
+            "expiresAt": st.expires_at,
+            "pinExpiresAt": st.pin_expires_at,
+        })),
+        Err(e) => Ok(failure(&e)),
+    }
+}
+
+/// Unlock the server session of `account` (locked-folder assets become visible to its listings,
+/// so link, import and sync see them too). The secret is the Immich account's PIN code (4–6
+/// digits, sent as `pinCode`) or its password (anything else, sent as `password`). Like
+/// `immich.connect`/`immich.test`, this command is never journaled: the secret exists only for
+/// this call and is kept neither in the journal, the log nor any result.
+fn unlock_session(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "immich.unlockSession";
+    let id = account_param(s, p, C)?;
+    let secret = str_param(p, "secret")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad(C, "missing `secret` (the Immich account's PIN or password)"))?;
+    let digits = secret.chars().count();
+    let unlock = if (4..=6).contains(&digits) && secret.bytes().all(|b| b.is_ascii_digit()) {
+        lcc_immich::types::SessionUnlock { pin_code: Some(secret.to_string()), password: None }
+    } else {
+        lcc_immich::types::SessionUnlock { pin_code: None, password: Some(secret.to_string()) }
+    };
+    let (_, client) = match s.immich_client(&id) {
+        Ok(x) => x,
+        Err(e) => return Ok(failure(&e)),
+    };
+    match client.unlock_session(&unlock) {
+        Ok(()) => Ok(json!({"ok": true, "account": id})),
+        Err(e) => Ok(failure(&e)),
+    }
+}
+
 /// Start a link pass for `account` (incremental from its last complete pass unless `full`).
 fn start_link(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "immich.link";
@@ -962,25 +1013,27 @@ pub fn specs() -> Vec<CommandSpec> {
 
 fn base_specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "remote.pump", "Remote Work", [], None, "{sha1?: bool} — cheap, every frame: takes in finished background work (SHA-1 back-fill of originals, Immich link passes, imports, original downloads) and starts the next SHA-1 batch → {sha1, links, import, fetching, fetchErrors}", always, pump),
-        cmd!(query "immich.test", "Test Immich Connection", [], None, "{url, apiKey, pinned?} — contact the server (not saved; never journaled) → {ok, url, version, user, permissions, missingPermissions} or {ok: false, error: {kind, message, retryable, fingerprint?}}", always, test),
-        cmd!(query "immich.connect", "Connect Immich Server", [], None, "{url, apiKey, pinned?: certificate fingerprint the user confirmed, background?: bool} — check the server (version ≥ 3.0) and key, store the key in the secret store (system keychain or the unlocked key file) and the account in settings (never journaled) → {ok, account, …} or {ok: false, error}; background → {started}, the result arrives as immich.status `connected`", always, connect),
+        cmd!(query "remote.pump", "Remote Work", [], None, "{sha1?: bool}: cheap, every frame: takes in finished background work (SHA-1 back-fill of originals, Immich link passes, imports, original downloads) and starts the next SHA-1 batch → {sha1, links, import, fetching, fetchErrors}", always, pump),
+        cmd!(query "immich.test", "Test Immich Connection", [], None, "{url, apiKey, pinned?}: contact the server (not saved; never journaled) → {ok, url, version, user, permissions, missingPermissions} or {ok: false, error: {kind, message, retryable, fingerprint?}}", always, test),
+        cmd!(query "immich.connect", "Connect Immich Server", [], None, "{url, apiKey, pinned?: certificate fingerprint the user confirmed, background?: bool}: check the server (version ≥ 3.0) and key, store the key in the secret store (system keychain or the unlocked key file) and the account in settings (never journaled) → {ok, account, …} or {ok: false, error}; background → {started}, the result arrives as immich.status `connected`", always, connect),
         cmd!(
             "immich.disconnect",
             "Disconnect Immich Server",
             [],
             None,
-            "{account?, forgetLinks?: bool} — remove the account and its stored key → {disconnected, forgotLinks}",
+            "{account?, forgetLinks?: bool}: remove the account and its stored key → {disconnected, forgotLinks}",
             always,
             disconnect
         ),
-        cmd!(query "immich.status", "Immich Status", [], None, "{check?: bool — also contact each server, background?: bool — do that on workers (results in later calls' `server`)} → {accounts: [{id, url, userName, version, permissions, linked, probable, link, server?, checking}], secretStore, connecting, connected?}", always, status),
+        cmd!(query "immich.status", "Immich Status", [], None, "{check?: bool (also contact each server), background?: bool (do that on workers; results in later calls' `server`)} → {accounts: [{id, url, userName, version, permissions, linked, probable, link, server?, checking}], secretStore, connecting, connected?}", always, status),
+        cmd!(query "immich.authStatus", "Immich Auth Status", [], None, "{account?}: whether this app's server session is elevated (locked folders visible to its listings), and the unlock secrets the account has → {ok, account, isElevated, password, pinCode, expiresAt?, pinExpiresAt?} or {ok: false, error}", always, auth_status),
+        cmd!(query "immich.unlockSession", "Unlock Immich Locked Folders", [], None, "{account?, secret}: elevate the server session with the account's PIN (4–6 digits, sent as pinCode) or password (anything else), so link, import and sync see locked-folder assets too (never journaled; the session locks again later) → {ok, account} or {ok: false, error}", always, unlock_session),
         cmd!(
             "immich.link",
             "Link Photos with Immich",
             ["Library", "Immich"],
             None,
-            "{account?, full?: bool} — start a background pass that lists the server's assets (incremental by updatedAt) and links them to catalog photos by SHA-1, else as probable by name + capture time + size → {started}",
+            "{account?, full?: bool}: start a background pass that lists the server's assets (incremental by updatedAt) and links them to catalog photos by SHA-1, else as probable by name + capture time + size → {started}",
             always,
             start_link
         ),
@@ -989,20 +1042,20 @@ fn base_specs() -> Vec<CommandSpec> {
             "Confirm Immich Link",
             [],
             None,
-            "{ids?, account?} — confirm probable links of the photos (default: selection) → {confirmed}",
+            "{ids?, account?}: confirm probable links of the photos (default: selection) → {confirmed}",
             always,
             confirm
         ),
-        cmd!("immich.unlink", "Remove Immich Link", [], None, "{ids?, account?} — remove the photos' Immich links → {removed}", always, unlink),
+        cmd!("immich.unlink", "Remove Immich Link", [], None, "{ids?, account?}: remove the photos' Immich links → {removed}", always, unlink),
         cmd!(query "immich.links", "Immich Links", [], None, "{id?} → {state: linked|probable|none, links: [{account, assetId, state, url}], linkOnly}", always, links_of),
         cmd!(query "immich.browse", "Browse Immich", [], None, "{account?, source: timeline|favorites|album|person|albums|people, id?, page?, size?} → {assets: [{id, fileName, captured, favorite, rating, inCatalog}], nextPage} | {albums} | {people}", always, browse),
-        cmd!(query "immich.thumbnail", "Immich Thumbnail", [], None, "{account?, assetId, size?: thumbnail|preview, path?} — save an asset's thumbnail → {path}", always, thumbnail),
+        cmd!(query "immich.thumbnail", "Immich Thumbnail", [], None, "{account?, assetId, size?: thumbnail|preview, path?}: save an asset's thumbnail → {path}", always, thumbnail),
         cmd!(
             "immich.import",
             "Import from Immich",
             [],
             None,
-            "{account?, assets: [ids], mode: copy|link, destination? (copy: required; a dated folder is made inside), albumName?} — in the background: copy downloads originals and imports them; link catalogs a preview and downloads the original on first Develop; rating, favourite (pick), description, tags and GPS are taken over; checksums already in the catalog are skipped → {started}",
+            "{account?, assets: [ids], mode: copy|link, destination? (copy: required; a dated folder is made inside), albumName?}: in the background: copy downloads originals and imports them; link catalogs a preview and downloads the original on first Develop; rating, favourite (pick), description, tags and GPS are taken over; checksums already in the catalog are skipped → {started}",
             always,
             import
         ),
@@ -1011,7 +1064,7 @@ fn base_specs() -> Vec<CommandSpec> {
             "Download Original from Immich",
             ["Library", "Immich"],
             None,
-            "{id?} — download a link-only photo's original (in the background) → {started}",
+            "{id?}: download a link-only photo's original (in the background) → {started}",
             always,
             fetch_original
         ),
@@ -1021,7 +1074,7 @@ fn base_specs() -> Vec<CommandSpec> {
             "Set Immich Path Mapping",
             [],
             None,
-            "{account?, pathMaps: [{container, local}]} — how Immich's container paths map to local folders",
+            "{account?, pathMaps: [{container, local}]}: how Immich's container paths map to local folders",
             always,
             set_path_maps
         ),
@@ -1030,7 +1083,7 @@ fn base_specs() -> Vec<CommandSpec> {
             "Write XMP for Immich",
             [],
             None,
-            "{account?, refresh?: bool = true} — write XMP sidecars for photos in mapped external-library folders and ask Immich to re-read the linked ones (refresh-metadata), so it shows their ratings, descriptions and keywords → {written, failed, refreshed?, refreshError?}",
+            "{account?, refresh?: bool = true}: write XMP sidecars for photos in mapped external-library folders and ask Immich to re-read the linked ones (refresh-metadata), so it shows their ratings, descriptions and keywords → {written, failed, refreshed?, refreshError?}",
             always,
             write_sidecars
         ),
@@ -1039,7 +1092,7 @@ fn base_specs() -> Vec<CommandSpec> {
             "Rescan Immich External Libraries",
             [],
             None,
-            "{account?, library?} — ask Immich to rescan the external libraries covering mapped folders (or `library`), so it reads new files and XMP sidecars → {ok, scanned: [library ids]}",
+            "{account?, library?}: ask Immich to rescan the external libraries covering mapped folders (or `library`), so it reads new files and XMP sidecars → {ok, scanned: [library ids]}",
             always,
             scan_libraries
         ),

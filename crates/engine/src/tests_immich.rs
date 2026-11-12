@@ -16,11 +16,17 @@ use crate::remote::{LINK_ONLY, MemorySecrets};
 
 const KEY: &str = "engine-test-key-42";
 
+/// A folder in Temp that stays (the sync tests keep its path in their `Setup`).
 fn temp_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("lcc-immich-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// The test's folder in Temp, removed when the test ends.
+fn scratch(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-immich-{tag}"))
 }
 
 fn png(seed: u8) -> Vec<u8> {
@@ -41,6 +47,11 @@ struct Fake {
     sidecars: std::collections::HashMap<String, Vec<u8>>,
     /// The version `/server/version` answers (`None`: v3.3.1).
     version: Option<Value>,
+    /// The account's unlock PIN and password (`None`: no such secret), and whether the session is
+    /// elevated (locked-folder assets are listed, `GET /auth/status` says so).
+    pin: Option<String>,
+    password: Option<String>,
+    elevated: bool,
 }
 
 fn read_req(s: impl Read) -> Option<(String, String, Option<String>, Vec<u8>)> {
@@ -104,10 +115,30 @@ fn serve(fake: Fake) -> (String, Arc<Mutex<Vec<String>>>) {
                 json(json!({"id": "user-1", "email": "me@example.invalid", "name": "Me", "isAdmin": false}))
             } else if path == "/api/api-keys/me" {
                 json(json!({"id": "k", "name": "app", "permissions": ["asset.read", "asset.view", "asset.download"]}))
+            } else if path == "/api/auth/status" {
+                json(json!({"isElevated": fake.elevated, "password": fake.password.is_some(), "pinCode": fake.pin.is_some()}))
+            } else if path == "/api/auth/session/unlock" {
+                let b: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let pin = b["pinCode"].as_str().is_some_and(|p| fake.pin.as_deref() == Some(p));
+                let pass = b["password"].as_str().is_some_and(|p| fake.password.as_deref() == Some(p));
+                if pin || pass {
+                    fake.elevated = true;
+                    resp("204 No Content", "application/json", b"")
+                } else {
+                    resp(
+                        "401 Unauthorized",
+                        "application/json",
+                        br#"{"message":"Wrong password or PIN code","statusCode":401,"error":"Unauthorized"}"#,
+                    )
+                }
             } else if path == "/api/search/metadata" {
                 let q: Value = serde_json::from_slice(&body).unwrap_or_default();
-                let items: Vec<Value> =
-                    if q["page"].as_u64().unwrap_or(1) == 1 { fake.assets.iter().map(|(a, _)| a.clone()).collect() } else { vec![] };
+                // a locked session leaves locked-folder assets out of the listing
+                let items: Vec<Value> = if q["page"].as_u64().unwrap_or(1) == 1 {
+                    fake.assets.iter().filter(|(a, _)| fake.elevated || a["visibility"].as_str() != Some("locked")).map(|(a, _)| a.clone()).collect()
+                } else {
+                    vec![]
+                };
                 json(json!({"assets": {"total": items.len(), "count": items.len(), "items": items, "nextPage": null}}))
             } else if path == "/api/asset-files" {
                 let asset = param("assetId").unwrap_or_default();
@@ -213,7 +244,7 @@ fn pump_until(s: &mut Session, mut done: impl FnMut(&Session, &Value) -> bool) -
 
 #[test]
 fn import_records_sha1_and_the_backfill_fills_old_photos() {
-    let dir = temp_dir("sha1");
+    let dir = scratch("sha1");
     let a = dir.join("a.png");
     std::fs::write(&a, png(1)).unwrap();
     let mut s = session();
@@ -239,7 +270,7 @@ fn import_records_sha1_and_the_backfill_fills_old_photos() {
 
 #[test]
 fn connect_link_and_open_in_immich() {
-    let dir = temp_dir("link");
+    let dir = scratch("link");
     let (one, two) = (png(10), png(11));
     let f = dir.join("one.png");
     std::fs::write(&f, &one).unwrap();
@@ -301,8 +332,68 @@ fn connect_link_and_open_in_immich() {
 }
 
 #[test]
+fn locked_folders_stay_hidden_until_the_session_is_unlocked() {
+    let dir = scratch("locked");
+    let (normal, hidden_shot) = (png(31), png(32));
+    let fake = Fake {
+        assets: vec![
+            (asset("cccc-3", "beach.png", &normal, json!({})), normal.clone()),
+            (asset("dddd-4", "secret.png", &hidden_shot, json!({"visibility": "locked"})), hidden_shot.clone()),
+        ],
+        pin: Some("2468".into()),
+        ..Fake::default()
+    };
+    let (url, seen) = serve(fake);
+    let mut s = session();
+    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
+
+    // the session starts locked; authStatus says so
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["ok"], true, "{st}");
+    assert_eq!(st["isElevated"], false, "{st}");
+    assert_eq!(st["pinCode"], true, "{st}");
+
+    // while locked, the server leaves the locked asset out of its listings
+    let br = s.execute("immich.browse", &json!({"source": "timeline"})).unwrap();
+    let names: Vec<&str> = br["assets"].as_array().unwrap().iter().filter_map(|a| a["fileName"].as_str()).collect();
+    assert_eq!(names, vec!["beach.png"], "{br}");
+
+    // a wrong secret is a clear failure and leaves the session locked
+    let r = s.execute("immich.unlockSession", &json!({"secret": "1111"})).unwrap();
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["error"]["kind"], "status", "{r}");
+    assert!(r["error"]["message"].as_str().is_some_and(|m| m.contains("refused")), "{r}");
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["isElevated"], false, "{st}");
+
+    // the right PIN unlocks (4–6 digits go as pinCode)
+    let r = s.execute("immich.unlockSession", &json!({"secret": "2468"})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    let st = s.execute("immich.authStatus", &json!({})).unwrap();
+    assert_eq!(st["isElevated"], true, "{st}");
+
+    // unlocked, the locked asset is listed like any other and can be imported
+    let br = s.execute("immich.browse", &json!({"source": "timeline"})).unwrap();
+    assert_eq!(br["assets"].as_array().unwrap().len(), 2, "{br}");
+    let dest = dir.join("out");
+    let r = s.execute("immich.import", &json!({"assets": ["dddd-4"], "destination": dest.to_string_lossy()})).unwrap();
+    assert_eq!(r["started"], true, "{r}");
+    let v = pump_until(&mut s, |_, v| v["import"]["active"] == false);
+    assert_eq!(v["import"]["imported"], 1, "{v}");
+    assert!(s.catalog.photos().any(|p| p.file_name == "secret.png"), "{:?}", v["import"]);
+
+    // the secret is nowhere but in the request body: not in the journal, a result or a URL
+    assert!(!format!("{:?}", s.journal).contains("2468"), "the PIN must not be journaled");
+    assert!(!s.execute("immich.status", &json!({})).unwrap().to_string().contains("2468"));
+    assert!(!s.execute("immich.authStatus", &json!({})).unwrap().to_string().contains("2468"));
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().all(|r| !r.contains("2468")), "the PIN never goes into a URL: {seen:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn import_copies_maps_metadata_and_skips_duplicates() {
-    let dir = temp_dir("import");
+    let dir = scratch("import");
     let (a, b, c) = (png(20), png(21), png(22));
     let have = dir.join("have.png");
     std::fs::write(&have, &c).unwrap();
@@ -353,7 +444,7 @@ fn import_copies_maps_metadata_and_skips_duplicates() {
 
 #[test]
 fn link_only_downloads_the_original_on_demand() {
-    let dir = temp_dir("linkonly");
+    let dir = scratch("linkonly");
     let a = png(30);
     let (url, _) = serve(Fake { assets: vec![(asset("l-1", "far.png", &a, json!({})), a.clone())], ..Fake::default() });
     let mut s = session();
@@ -392,7 +483,7 @@ fn offline_and_unknown_accounts_never_crash() {
 
 #[test]
 fn sidecars_are_written_for_mapped_folders_only() {
-    let dir = temp_dir("extlib");
+    let dir = scratch("extlib");
     let inside = dir.join("Photos/x.png");
     let outside = dir.join("Other/y.png");
     for (p, n) in [(&inside, 40), (&outside, 41)] {
@@ -478,7 +569,7 @@ fn reconnecting_clears_a_stale_failed_check() {
 // Feature: without a usable keychain, keys live in an encrypted file unlocked once per session.
 #[test]
 fn encrypted_key_file_is_unlocked_once_and_keeps_keys() {
-    let dir = temp_dir("keyfile");
+    let dir = scratch("keyfile");
     let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let fresh = || {
         let mut s = Session::new().with_fs();
@@ -620,7 +711,7 @@ fn live_external_library_links_by_path_and_reads_sidecars() {
 // beside the original), so a library that published with its sidecar can be rebuilt elsewhere.
 #[test]
 fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
-    let dir = temp_dir("pull-sidecars");
+    let dir = scratch("pull-sidecars");
     let bytes = png(30);
     let f = dir.join("shot.png");
     std::fs::write(&f, &bytes).unwrap();
@@ -670,7 +761,7 @@ fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
 
 #[test]
 fn pull_sidecars_leaves_a_newer_local_edit_alone_unless_overwritten() {
-    let dir = temp_dir("pull-sidecars-edit");
+    let dir = scratch("pull-sidecars-edit");
     let bytes = png(32);
     let f = dir.join("shot.png");
     std::fs::write(&f, &bytes).unwrap();
@@ -713,7 +804,7 @@ fn pull_sidecars_leaves_a_newer_local_edit_alone_unless_overwritten() {
 // account card's status line reads it from there.
 #[test]
 fn a_background_pull_applies_through_the_pump() {
-    let dir = temp_dir("pull-sidecars-bg");
+    let dir = scratch("pull-sidecars-bg");
     let bytes = png(34);
     let f = dir.join("shot.png");
     std::fs::write(&f, &bytes).unwrap();
@@ -742,7 +833,7 @@ fn a_background_pull_applies_through_the_pump() {
 
 #[test]
 fn push_sidecars_sends_the_fields_immich_keeps_in_its_sidecar() {
-    let dir = temp_dir("push-sidecars");
+    let dir = scratch("push-sidecars");
     let bytes = png(33);
     let f = dir.join("shot.png");
     std::fs::write(&f, &bytes).unwrap();

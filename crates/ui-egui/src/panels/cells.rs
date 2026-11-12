@@ -351,7 +351,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sidecar_looks_come_back_from_the_worker() {
-        let d = std::env::temp_dir().join(format!("cells-stat-{}", std::process::id()));
+        let d = lcc_testkit::TempDir::new("cells-stat");
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let original = d.join("DSC_0001.NEF");

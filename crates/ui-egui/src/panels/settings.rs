@@ -23,7 +23,7 @@ use crate::theme::Tokens;
 use crate::widgets::register;
 
 /// Sections `app.settings {section}` can open, with their tab.
-pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import")];
+pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import")];
 
 /// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
 /// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
@@ -601,7 +601,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     heading(ui, t, crate::i18n::tr("Catalog"));
     let location = match &app.session.library {
         Some(l) => l.dir.display().to_string(),
-        None => crate::i18n::tr("In memory — nothing is saved").to_string(),
+        None => crate::i18n::tr("In memory (nothing is saved)").to_string(),
     };
     row(ui, t, crate::i18n::tr("Location"), |ui| {
         path_label(ui, "settingsLocation", &location, egui::TextStyle::Body.resolve(ui.style()), t.text, 0.0);
@@ -1109,8 +1109,19 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if check(ui, "settings.importOnCard", &mut on_card, "Show the import review when a camera or card is connected") {
             let _ = app.run("library.preferences", json!({"import": {"showOnCard": on_card}}));
         }
-        heading(ui, t, crate::i18n::tr("Auto Import"));
+        let r = ui.scope(|ui| heading(ui, t, crate::i18n::tr("Auto Import"))).response;
+        register(ui.ctx(), "section:autoImport", r.rect);
+        if app.ui.settings_section.as_deref() == Some("autoImport") {
+            r.scroll_to_me(Some(egui::Align::TOP));
+            app.ui.settings_section = None;
+        }
         hint(ui, t, crate::i18n::tr("Photos that arrive in this folder (tethering, a scanner, a sync app) are added as soon as they're complete."));
+        if d.auto_folder.is_some() {
+            let mut on = !d.auto_paused;
+            if check(ui, "settings.autoImportEnabled", &mut on, "Enable Auto Import") {
+                let _ = app.run("library.autoImport", json!({"enabled": on}));
+            }
+        }
         row(ui, t, crate::i18n::tr("Watched folder"), |ui| {
             match &d.auto_folder {
                 Some(folder) => path_label(
@@ -1160,6 +1171,61 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                     let _ = app.run("library.autoImport", json!({"album": name.trim()}));
                 }
                 ui.data_mut(|m| m.insert_temp(id, name));
+            });
+            let o = d.auto_options.clone();
+            row(ui, t, "", |ui| {
+                let mut sub = o.subfolders;
+                if ui.checkbox(&mut sub, crate::i18n::tr("Include subfolders")).changed() {
+                    let _ = app.run("library.autoImport", json!({"subfolders": sub}));
+                }
+            });
+            hint(ui, t, crate::i18n::tr("Added to every photo that arrives. The file naming applies to copies; separate keywords with commas."));
+            row(ui, t, crate::i18n::tr("File naming"), |ui| {
+                let id = egui::Id::new("auto-rename");
+                let mut text = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| o.rename.clone());
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut text).hint_text(crate::i18n::tr("keep names, or e.g. {date}_{seq:3}")).desired_width(240.0));
+                register(ui.ctx(), "field:settings.autoImportRename", r.rect);
+                if r.lost_focus() {
+                    let _ = app.run("library.autoImport", json!({"rename": text.trim()}));
+                }
+                ui.data_mut(|m| m.insert_temp(id, text));
+            });
+            row(ui, t, crate::i18n::tr("Develop preset"), |ui| {
+                if let Some(v) = preset_combo(app, ui, "settingsAutoPreset", o.preset.as_deref(), "None") {
+                    let _ = app.run("library.autoImport", json!({"preset": v}));
+                }
+            });
+            row(ui, t, crate::i18n::tr("Metadata preset"), |ui| {
+                let cur = o.metadata_preset.clone();
+                let mut pick = None;
+                let r = crate::widgets::combo_box("settingsAutoMetaPreset")
+                    .width(240.0)
+                    .selected_text(cur.clone().unwrap_or_else(|| crate::i18n::tr("None").into()))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(cur.is_none(), crate::i18n::tr("None")).clicked() {
+                            pick = Some(String::new());
+                        }
+                        for m in &app.session.metadata_presets {
+                            if ui.selectable_label(cur.as_deref() == Some(m.name.as_str()), &m.name).clicked() {
+                                pick = Some(m.name.clone());
+                            }
+                        }
+                    });
+                register(ui.ctx(), "combo:settingsAutoMetaPreset", r.response.rect);
+                if let Some(n) = pick {
+                    let _ = app.run("library.autoImport", json!({"metadataPreset": n}));
+                }
+            });
+            row(ui, t, crate::i18n::tr("Keywords"), |ui| {
+                let id = egui::Id::new("auto-keywords");
+                let mut text = ui.data(|m| m.get_temp::<String>(id)).unwrap_or_else(|| o.keywords.join(", "));
+                let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(crate::i18n::tr("None")).desired_width(240.0));
+                register(ui.ctx(), "field:settings.autoImportKeywords", r.rect);
+                if r.lost_focus() {
+                    let _ = app.run("library.autoImport", json!({"keywords": text.trim()}));
+                }
+                ui.data_mut(|m| m.insert_temp(id, text));
             });
         }
     }
@@ -2592,7 +2658,7 @@ pub fn new_library(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     can_switch_library(app)?;
     let name = match p.get("name") {
         None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(valid_library_name(s)?),
+        Some(Value::String(s)) => Some(valid_library_name(s, "app.newLibrary")?),
         Some(_) => return Err("app.newLibrary: name must be a string".into()),
     };
     // from the menu: ask for the name first (default prefilled), then for the location
@@ -2633,19 +2699,116 @@ pub fn new_library(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     switch_library(app, &dir.to_string_lossy(), false)
 }
 
+/// `app.renameLibrary {name?}`: give the open catalog's folder a new name, keeping it open. Without
+/// `name`, asks for one (the current name pre-filled). The name is one folder name next to the
+/// catalog (no path separators; the folder must not exist yet). The catalog is saved and closed, its
+/// folder renamed, the new folder opened, the photos copied into the catalog's own `Originals/`
+/// (stored by absolute path) pointed at the new place, and the recent list and launch library updated.
+/// If anything fails before the rename the catalog is reopened untouched; if opening the renamed
+/// folder fails the folder is renamed back and reopened. Returns `{path, name, previous, relinked}`.
+pub fn rename_library(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    const C: &str = "app.renameLibrary";
+    can_switch_library(app)?;
+    let old = app
+        .session
+        .library
+        .as_ref()
+        .filter(|l| l.on_disk)
+        .map(|l| l.dir.clone())
+        .ok_or_else(|| format!("{C}: the open catalog isn't saved on disk, so there is no folder to rename"))?;
+    let name = match p.get("name") {
+        None | Some(Value::Null) => {
+            crate::panels::dialogs::prompt(app, "Rename Catalog", "Catalog name", &library_name(&old), C, json!({}), "name");
+            return Ok(Value::Null);
+        }
+        Some(Value::String(s)) => valid_library_name(s, C)?.to_string(),
+        Some(_) => return Err(format!("{C}: name must be a string")),
+    };
+    let parent =
+        old.parent().filter(|d| !d.as_os_str().is_empty()).ok_or_else(|| format!("{C}: {} has no parent folder to rename within", old.display()))?;
+    let new = parent.join(&name);
+    if name == library_name(&old) {
+        return Err(format!("{C}: the catalog is already named {name:?}"));
+    }
+    // a case-only change on a case-insensitive disk names the same folder: that is fine
+    let same_folder = matches!((std::fs::canonicalize(&old), std::fs::canonicalize(&new)), (Ok(a), Ok(b)) if a == b);
+    if new.exists() && !same_folder {
+        return Err(format!("{C}: {} exists already; choose another name", new.display()));
+    }
+    let _task = app.session.activity.start("renameCatalog", "Renaming the catalog", lcc_engine::activity::Cancel::No);
+    // save and release the catalog (its log file and lock); on failure it stays open as it was
+    app.session.close_library().map_err(|e| format!("{C}: the catalog couldn't be saved, so it was not renamed: {e}"))?;
+    app.session.library = None;
+    let reopen_old = |app: &mut LccApp| app.session.open_library(&old, false).map(|_| ()).map_err(|e| e.to_string());
+    if let Err(e) = std::fs::rename(&old, &new) {
+        let why = format!("{C}: can't rename {} to {name:?}: {e}", old.display());
+        return Err(match reopen_old(app) {
+            Ok(()) => why,
+            Err(r) => format!("{why}; reopening the catalog failed too: {r}"),
+        });
+    }
+    if let Err(e) = app.session.open_library(&new, false) {
+        let why = format!("{C}: the renamed catalog {} didn't open: {e}", new.display());
+        // put the folder back and open it as it was
+        if let Err(back) = std::fs::rename(&new, &old) {
+            return Err(format!("{why}; renaming it back failed too ({back}): the catalog is now at {}", new.display()));
+        }
+        return Err(match reopen_old(app) {
+            Ok(()) => format!("{why}; the catalog was put back under its old name"),
+            Err(r) => format!("{why}; reopening the old catalog failed too: {r}"),
+        });
+    }
+    app.lightroom_last = None;
+    app.lightroom_result = None;
+    app.renderer.forget_all();
+    app.ui.reference = None;
+    app.ui.compare = None;
+    // photos copied into the catalog (Originals/…) are stored by absolute path: point them at the new
+    // folder, with what the catalog knows about those folders. (Not an undo step: it'd point back at nothing.)
+    let (old_s, new_s) = (old.to_string_lossy().into_owned(), new.to_string_lossy().into_owned());
+    let (undo, redo) = (app.session.undo.len(), app.session.redo.len());
+    let inside = app
+        .session
+        .catalog
+        .photos()
+        .any(|ph| matches!(&ph.source, lcc_catalog::Source::File { path } if std::path::Path::new(path).starts_with(&old)));
+    let mut relinked = 0;
+    let mut warning = None;
+    if inside {
+        match app.run("folder.relocate", json!({"path": old_s, "to": new_s})) {
+            Ok(v) => relinked = v.get("relinked").and_then(Value::as_u64).unwrap_or(0),
+            Err(e) => warning = Some(format!("the catalog was renamed, but its photos inside it could not be pointed at the new folder: {e}")),
+        }
+    }
+    app.session.undo.truncate(undo);
+    app.session.redo.truncate(redo);
+    // the launch library and the recent list follow the rename (the old spelling is gone)
+    let settings = &mut app.ui.settings;
+    settings.recent_libraries.retain(|r| std::path::Path::new(r) != old);
+    if let Some(when) = settings.recent_opened.remove(&old_s) {
+        settings.recent_opened.insert(new_s.clone(), when);
+    }
+    app.recent_checks.forget(&old_s);
+    settings.library_path = new_s.clone();
+    remember_library(&mut settings.recent_libraries, &new_s);
+    let mut out = json!({"path": new_s, "name": name, "previous": old_s, "relinked": relinked});
+    if let Some(w) = warning {
+        out["warning"] = json!(w);
+    }
+    Ok(out)
+}
+
 /// Characters a folder name can't hold on Windows (and `/`, which no system allows).
 const RESERVED_NAME_CHARS: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
-fn valid_library_name(s: &str) -> Result<&str, String> {
+fn valid_library_name<'a>(s: &'a str, command: &str) -> Result<&'a str, String> {
     let n = s.trim();
     // Windows drops trailing dots and spaces from a folder name: refuse them rather than
     // creating a folder whose name differs from the one asked for (spaces around the name
     // are trimmed first)
     let bad = n.is_empty() || n == "." || n == ".." || n.ends_with(['.', ' ']) || n.contains(RESERVED_NAME_CHARS) || n.chars().any(char::is_control);
     if bad {
-        return Err(format!(
-            "app.newLibrary: {s:?} can't be a catalog name (a folder name without < > : \" / \\ | ? * and not ending in a dot or space)"
-        ));
+        return Err(format!("{command}: {s:?} can't be a catalog name (a folder name without < > : \" / \\ | ? * and not ending in a dot or space)"));
     }
     Ok(n)
 }
@@ -2832,7 +2995,7 @@ mod tests {
     /// The folder scan before an import's review counts too: it ends in an import into the open library.
     #[test]
     fn open_library_is_refused_while_an_import_scan_runs() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-switchscan-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-switchscan");
         let _ = std::fs::create_dir_all(&dir);
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());
         app.run("photo.setReference", json!({})).unwrap();

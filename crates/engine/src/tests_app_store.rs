@@ -8,10 +8,9 @@ use serde_json::json;
 
 use crate::Session;
 
-fn temp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-engine-store-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-engine-store-{tag}"))
 }
 
 fn with_store(store: &Path, lib: &Path) -> Session {

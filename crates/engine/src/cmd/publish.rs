@@ -70,7 +70,7 @@ fn service_json(cat: &Catalog, svc: &ServiceConfig) -> Value {
         .collect();
     let caps = match svc.kind.as_str() {
         lcc_publish::KIND_HARD_DRIVE => json!({"comments": false, "likes": false}),
-        lcc_publish::KIND_IMMICH => json!({"comments": false, "likes": true}),
+        lcc_publish::KIND_IMMICH => json!({"comments": true, "likes": true}),
         lcc_publish::KIND_SFTP => json!({"comments": false, "likes": false}),
         _ => json!(null),
     };
@@ -540,19 +540,147 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"runs": runs}))
 }
 
+/// The most published photos one review asks the service about.
+pub const MAX_REVIEW_PHOTOS: usize = 500;
+/// A review stops after this many failures in a row (a bad key or an offline server would fail all).
+const MAX_CONSECUTIVE_FAILURES: usize = 3;
+
+/// Whether a service kind has comments without opening it (`None`: ask the opened service).
+fn kind_comments(kind: &str) -> Option<bool> {
+    match kind {
+        lcc_publish::KIND_IMMICH => Some(true),
+        lcc_publish::KIND_HARD_DRIVE | lcc_publish::KIND_SFTP => Some(false),
+        _ => None,
+    }
+}
+
+/// The comments on published photos, asked on a worker thread: [`comments_job`] (needs the
+/// session) then [`CommentsJob::fetch`] (network, no session).
+pub struct CommentsJob {
+    service: ServiceConfig,
+    collection: CollectionConfig,
+    /// (photo, the service's id for it)
+    targets: Vec<(PhotoId, String)>,
+    open: Option<super::immich::publish::Opener>,
+}
+
+/// What [`CommentsJob::fetch`] found for one published photo.
+#[derive(Clone, Debug)]
+pub struct PhotoComments {
+    pub photo: PhotoId,
+    pub comments: Vec<lcc_publish::Comment>,
+    /// Why the service couldn't answer for this photo.
+    pub error: Option<String>,
+}
+
+/// The answer of a review.
+#[derive(Clone, Debug)]
+pub struct CommentsReview {
+    /// The service has comments at all.
+    pub supported: bool,
+    pub photos: Vec<PhotoComments>,
+    /// Published photos left out because of [`MAX_REVIEW_PHOTOS`].
+    pub skipped: usize,
+}
+
+impl CommentsReview {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "supported": self.supported,
+            "skipped": self.skipped,
+            "photos": self.photos.iter().map(|p| json!({"photo": p.photo.0, "comments": p.comments, "error": p.error})).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// Prepare a review of `photo`'s comments, or of every published photo of the collection when
+/// `photo` is `None`. Reads the account's key here, on the session thread.
+pub fn comments_job(s: &mut Session, p: &Value, photo: Option<PhotoId>, c: &str) -> Result<CommentsJob> {
+    let (_, cfg) = load(s, c)?;
+    let (service, collection) = collection(&cfg, p, c)?;
+    let acct = lcc_publish::account_id(&service.id, collection.album);
+    let mut targets: Vec<(PhotoId, String)> = s
+        .catalog
+        .remote_links()
+        .iter()
+        .filter(|l| l.service == lcc_publish::SERVICE && l.account_id == acct && photo.is_none_or(|x| x == l.photo_id))
+        .map(|l| (l.photo_id, l.remote_id.clone()))
+        .collect();
+    targets.sort_by_key(|(id, _)| *id);
+    let open = if kind_comments(&service.kind) == Some(false) {
+        None
+    } else {
+        match sftp::opener(s, &service, &collection).map_err(|e| bad(c, e))? {
+            Some(o) => Some(o),
+            None => super::immich::publish::opener(s, &service, &collection, &[]).map_err(|e| bad(c, e))?,
+        }
+    };
+    Ok(CommentsJob { service, collection, targets, open })
+}
+
+impl CommentsJob {
+    /// Whether any photo is published to ask about.
+    pub fn is_empty(&self) -> bool {
+        self.targets.is_empty()
+    }
+
+    /// Ask the service (no session needed: run it on a worker thread). Photos the service can't
+    /// answer for get an `error`; a service without comments answers `supported: false` without
+    /// being contacted.
+    pub fn fetch(self) -> std::result::Result<CommentsReview, lcc_publish::PublishError> {
+        let mut review = CommentsReview { supported: kind_comments(&self.service.kind).unwrap_or(true), photos: Vec::new(), skipped: 0 };
+        if !review.supported || self.targets.is_empty() {
+            return Ok(review);
+        }
+        let mut svc = match self.open {
+            Some(open) => open()?,
+            None => open_any(&self.service, &self.collection)?,
+        };
+        if !svc.capabilities().comments {
+            review.supported = false;
+            return Ok(review);
+        }
+        review.skipped = self.targets.len().saturating_sub(MAX_REVIEW_PHOTOS);
+        let mut failures = 0;
+        for (photo, remote) in self.targets.into_iter().take(MAX_REVIEW_PHOTOS) {
+            match svc.comments(&remote) {
+                Ok(comments) => {
+                    failures = 0;
+                    review.photos.push(PhotoComments { photo, comments, error: None });
+                }
+                Err(e) => {
+                    failures += 1;
+                    review.photos.push(PhotoComments { photo, comments: Vec::new(), error: Some(e.to_string()) });
+                    if failures >= MAX_CONSECUTIVE_FAILURES {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(review)
+    }
+}
+
 fn comments(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "publish.comments";
-    let (_, cfg) = load(s, C)?;
-    let (svc, coll) = collection(&cfg, p, C)?;
     let id = s.photo_or_active(p, C)?;
-    let acct = lcc_publish::account_id(&svc.id, coll.album);
-    let Some(link) = s.catalog.remote_links().get(&(id, lcc_publish::SERVICE.to_string(), acct)).cloned() else {
+    let job = comments_job(s, p, Some(id), C)?;
+    if job.is_empty() {
         return Ok(json!({"comments": [], "supported": true, "published": false}));
-    };
-    let mut service = open_any(&svc, &coll).map_err(|e| bad(C, e.to_string()))?;
-    let caps = service.capabilities();
-    let list = service.comments(&link.remote_id).map_err(|e| bad(C, e.to_string()))?;
-    Ok(json!({"comments": list, "supported": caps.comments, "published": true}))
+    }
+    let review = job.fetch().map_err(|e| bad(C, e.to_string()))?;
+    match review.photos.into_iter().next() {
+        Some(PhotoComments { error: Some(e), .. }) => Err(bad(C, e)),
+        Some(one) => Ok(json!({"comments": one.comments, "supported": review.supported, "published": true})),
+        None => Ok(json!({"comments": [], "supported": review.supported, "published": true})),
+    }
+}
+
+/// `publish.reviewComments`: the comments on every published photo of a collection.
+fn review_comments(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "publish.reviewComments";
+    let job = comments_job(s, p, None, C)?;
+    Ok(job.fetch().map_err(|e| bad(C, e.to_string()))?.to_json())
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -565,7 +693,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Up Publish Service…",
             [],
             None,
-            "{kind?: hardDrive (default), name?, dir: absolute folder (Hard Drive), export?: app.export params without targets (default JPEG, 2048 px)} — also makes the service's collection set → the service",
+            "{kind?: hardDrive (default), name?, dir: absolute folder (Hard Drive), export?: app.export params without targets (default JPEG, 2048 px)}: also makes the service's collection set → the service",
             always,
             create_service
         ),
@@ -583,7 +711,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Publish Service",
             [],
             None,
-            "{service: id | name} — removes its collections (published files stay) → publish.services",
+            "{service: id | name}: removes its collections (published files stay) → publish.services",
             always,
             delete_service
         ),
@@ -592,7 +720,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create Published Collection…",
             [],
             None,
-            "{service: id | name, name, parent?: a collection set (folder album id) inside the service's set, addSelected?: bool} — a published collection (an album in the service's set) → publish.status",
+            "{service: id | name, name, parent?: a collection set (folder album id) inside the service's set, addSelected?: bool}: a published collection (an album in the service's set) → publish.status",
             always,
             create_collection
         ),
@@ -601,7 +729,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Published Collection",
             [],
             None,
-            "{collection: albumId} — forgets what was published (files stay) → publish.services",
+            "{collection: albumId}: forgets what was published (files stay) → publish.services",
             always,
             delete_collection
         ),
@@ -617,7 +745,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Publish",
             [],
             None,
-            "{collection: albumId} or {service: id | name} (all its collections) — renders new and modified photos with the service's export settings, sends them, removes photos taken out → {runs: [{collection, published: [{id, remoteId}], removed, failed: [{id, error}], cancelled}]}",
+            "{collection: albumId} or {service: id | name} (all its collections): renders new and modified photos with the service's export settings, sends them, removes photos taken out → {runs: [{collection, published: [{id, remoteId}], removed, failed: [{id, error}], cancelled}]}",
             always,
             run
         ),
@@ -626,13 +754,16 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mark as Up-to-Date",
             [],
             None,
-            "{collection: albumId, ids?: photo ids (default: all modified)} — modified photos count as published again → publish.status + {marked}",
+            "{collection: albumId, ids?: photo ids (default: all modified)}: modified photos count as published again → publish.status + {marked}",
             always,
             mark_up_to_date
         ),
         cmd!(query "publish.comments", "Published Photo Comments", [], None,
             "{collection: albumId, id?: photo (default active)} → {comments: [{author, text, date}], supported, published}",
             always, comments),
+        cmd!(query "publish.reviewComments", "Review Comments", [], None,
+            "{collection: albumId} -> {supported, skipped, photos: [{photo, comments: [{author, text, date}], error}]}: the comments on every published photo (Immich albums: its activity; Hard Drive and SFTP have none)",
+            always, review_comments),
     ]
 }
 

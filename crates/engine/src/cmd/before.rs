@@ -78,7 +78,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Before",
             [],
             None,
-            "{source: import|current|history|version, index? (history step), name? (version)} — what the before side shows (kept with the photo in the library; an undo step)",
+            "{source: import|current|history|version, index? (history step), name? (version)}: what the before side shows (kept with the photo in the library; an undo step)",
             has_active,
             set_before
         ),

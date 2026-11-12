@@ -21,7 +21,6 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use lcc_denoise::net::{Activation, Net, Op};
 use lcc_denoise::run::{Error, TileRunner};
-use wgpu::util::DeviceExt;
 
 /// Longest wait for one tile's GPU work before the device is given up on.
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(60);
@@ -971,26 +970,15 @@ fn runner_with(dev: impl FnOnce() -> Result<&'static Dev, String>, net: &Net, ti
     let weights: Vec<(wgpu::Buffer, wgpu::Buffer)> = layers
         .iter()
         .map(|l| {
-            let make = |v: &[f32]| {
-                d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("weights"),
-                    contents: bytemuck::cast_slice(v),
-                    usage: wgpu::BufferUsages::STORAGE,
-                })
-            };
+            let make =
+                |v: &[f32]| crate::upload::buffer_init(&d.device, &d.queue, Some("weights"), bytemuck::cast_slice(v), wgpu::BufferUsages::STORAGE);
             (make(&l.weight), make(&l.bias))
         })
         .collect();
     let uniforms: Vec<wgpu::Buffer> = layout
         .steps
         .iter()
-        .map(|s| {
-            d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("params"),
-                contents: &s.params,
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-        })
+        .map(|s| crate::upload::buffer_init(&d.device, &d.queue, Some("params"), &s.params, wgpu::BufferUsages::UNIFORM))
         .collect();
     let dummy = storage(d, "dummy", 16, wgpu::BufferUsages::empty());
     let bytes: u64 = layout.slots.iter().sum::<u64>() + ((layout.in_floats + layout.out_floats) * 8) as u64;

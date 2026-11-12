@@ -16,8 +16,8 @@ use crate::{LccApp, Services};
 const T: Duration = Duration::from_secs(20);
 
 /// A fresh scratch folder for one test.
-fn temp(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lc-ui-launch-{tag}-{}", std::process::id()));
+fn temp(tag: &str) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-ui-launch-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -417,7 +417,7 @@ fn open_recent_library_and_the_command_remove_one_entry() {
     assert_eq!(children.len(), 3, "every entry, missing ones too");
     let MenuNode::Item { id, params, label, enabled, .. } = &children[1] else { panic!("{children:?}") };
     assert_eq!((id.as_str(), params, *enabled), ("app.recentLibraries", &json!({"remove": gone}), true));
-    assert!(label.starts_with("gone — "), "{label}");
+    assert!(label.starts_with("gone ("), "{label}");
     assert_eq!(crate::menubar::display_item_label(id, params, label), label, "a path is never translated");
     // what clicking it runs
     let list = app.run(id, params.clone()).unwrap();
@@ -895,7 +895,7 @@ fn a_failed_lookup_doesnt_mark_a_recent_library_missing() {
     }
     let dir = temp("lookup");
     let locked = dir.join("Locked");
-    let _cleanup = Cleanup(dir.clone(), locked.clone());
+    let _cleanup = Cleanup(dir.to_path_buf(), locked.clone());
     let inside = make_library(&locked.join("Inside"));
     let gone = dir.join("Gone").to_string_lossy().into_owned();
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();

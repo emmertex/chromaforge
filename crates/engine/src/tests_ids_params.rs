@@ -104,6 +104,7 @@ fn single_photo_commands_refuse_an_id_that_is_not_a_photo_id() {
             ("photo.relink", json!({"path": "/elsewhere/other.jpg"})),
             ("photo.removeRegion", json!({"index": 0})),
             ("photo.setRegion", json!({"index": 0, "rect": {"x0": 0.2, "y0": 0.2, "x1": 0.4, "y1": 0.4}})),
+            ("photo.addRegion", json!({"rect": {"x0": 0.2, "y0": 0.2, "x1": 0.4, "y1": 0.4}})),
             ("faces.setName", json!({"index": 0, "name": "Ann"})),
             ("library.findSimilar", json!({})),
             ("denoise.cancel", json!({})),
@@ -216,4 +217,28 @@ fn mask_effects_and_components_refuse_values_that_are_not_ids() {
     }
     assert_eq!(s.commits(), commits, "nothing was changed");
     assert_eq!(state(&s), before);
+}
+
+/// Delete All Empty Masks drops the masks that select nothing (an undrawn brush), keeps the rest and the
+/// selection when it survives, and is one undo step.
+#[test]
+fn delete_empty_masks_keeps_masks_that_select_something() {
+    let (mut s, _, _) = session();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    s.execute("mask.add", &json!({"kind": "brush"})).unwrap();
+    let ids = |s: &Session| s.develop_of(s.active().unwrap()).unwrap().masks.iter().map(|m| m.id).collect::<Vec<_>>();
+    let all = ids(&s);
+    assert_eq!(all.len(), 3);
+    s.execute("mask.select", &json!({"id": all[1]})).unwrap();
+    s.execute("mask.deleteEmpty", &json!({})).unwrap();
+    assert_eq!(ids(&s), [all[1]]);
+    assert_eq!(s.active_mask, Some(all[1]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(ids(&s), all, "one undo restores them all");
+    // nothing empty: nothing changes
+    s.execute("mask.delete", &json!({"id": all[0]})).unwrap();
+    s.execute("mask.delete", &json!({"id": all[2]})).unwrap();
+    s.execute("mask.deleteEmpty", &json!({})).unwrap();
+    assert_eq!(ids(&s), [all[1]]);
 }

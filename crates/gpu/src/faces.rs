@@ -22,7 +22,6 @@ use std::time::Duration;
 use bytemuck::{Pod, Zeroable};
 use lcc_faces::net::program::{Arg, Binary, INPUT, Op, Program, Unary};
 use lcc_faces::net::{Accelerator, ConvJob};
-use wgpu::util::DeviceExt;
 
 pub use crate::ai::Card;
 
@@ -433,11 +432,13 @@ impl FaceGpu {
 
     fn upload(&self, label: &str, data: &[f32]) -> wgpu::Buffer {
         let zero = [0f32; 4];
-        self.dev.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(if data.is_empty() { &zero } else { data }),
-            usage: wgpu::BufferUsages::STORAGE,
-        })
+        crate::upload::buffer_init(
+            &self.dev.device,
+            &self.dev.queue,
+            Some(label),
+            bytemuck::cast_slice(if data.is_empty() { &zero } else { data }),
+            wgpu::BufferUsages::STORAGE,
+        )
     }
 
     /// Whether `bytes` more may stay on the device; counts them if so.
@@ -564,11 +565,7 @@ impl FaceGpu {
         for (i, x) in list.iter().enumerate() {
             blob.get_mut(i * align..i * align + x.params.len()).ok_or("parameters too large")?.copy_from_slice(&x.params);
         }
-        let uniform = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("faces params"),
-            contents: &blob,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform = crate::upload::buffer_init(&d.device, &d.queue, Some("faces params"), &blob, wgpu::BufferUsages::UNIFORM);
         let binds = list
             .iter()
             .enumerate()
@@ -673,11 +670,8 @@ impl FaceGpu {
         let _turn = Turn::take(self.dev.card);
         let d = self.dev;
         let scopes = self.scopes();
-        let input = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("faces input"),
-            contents: bytemuck::cast_slice(job.input),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let input =
+            crate::upload::buffer_init(&d.device, &d.queue, Some("faces input"), bytemuck::cast_slice(job.input), wgpu::BufferUsages::STORAGE);
         let output = self.scratch(bytes);
         let Some(list) = self.conv_dispatches(job, &input, &output)? else {
             // leave the scopes balanced
@@ -790,11 +784,13 @@ impl FaceGpu {
         for input in inputs {
             let mut values: Vec<Option<(u64, wgpu::Buffer)>> = vec![None; prog.lens.len()];
             // a fresh buffer: queued writes land before any of the encoder's work, so a pooled one could still be in use
-            let first = d.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("faces input"),
-                contents: bytemuck::cast_slice(input),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            });
+            let first = crate::upload::buffer_init(
+                &d.device,
+                &d.queue,
+                Some("faces input"),
+                bytemuck::cast_slice(input),
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            );
             if let Some(v) = values.get_mut(INPUT) {
                 *v = Some((input.len() as u64 * 4, first));
             }
@@ -1088,6 +1084,59 @@ mod tests {
             let fast = e.embed(&face).unwrap();
             let cosine: f32 = cpu.iter().zip(&fast).map(|(a, b)| a * b).sum();
             assert!(cosine > 0.9999, "{file}: cosine {cosine}");
+        }
+    }
+
+    /// The MediaPipe Face Landmarker models (`lcc-tflite`, lowered to device programs) on the GPU agree with the CPU
+    /// interpreter on a synthetic picture, alone and batched: `LC_MEDIAPIPE_FACE=<folder>` holding `face_landmarker.task`.
+    /// With `--nocapture`, prints the timings.
+    #[test]
+    fn mediapipe_face_models_on_the_gpu_agree_with_the_cpu() {
+        let Some(dir) = std::env::var_os("LC_MEDIAPIPE_FACE").map(std::path::PathBuf::from) else {
+            lcc_testkit::skip!(Model, "LC_MEDIAPIPE_FACE is not set");
+            return;
+        };
+        if gpu().is_none() {
+            return;
+        }
+        let bundle = std::fs::read(dir.join("face_landmarker.task")).unwrap();
+        for name in ["face_detector.tflite", "face_landmarks_detector.tflite"] {
+            let model = lcc_tflite::Model::from_bytes(lcc_tflite::zip::entry(&bundle, name).unwrap()).unwrap();
+            let n: usize = model.input_shapes()[0].iter().product();
+            let inputs: Vec<Vec<f32>> =
+                (0..8).map(|s| (0..n).map(|i| ((i + s * 977) as f32 * 0.0137).sin() * 0.9 + ((i / 3) % 7) as f32 * 0.02).collect()).collect();
+            let refs: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
+            let cpu: Vec<_> = refs.iter().map(|x| model.run(&[x]).unwrap()).collect();
+            let (on_device, steps) = model.device_steps();
+            model.accelerate(accelerator().unwrap(), refs[0], 1e-3, false).unwrap();
+            let one = model.run(&[refs[1]]).unwrap();
+            let batch = model.run_batch(&refs).unwrap();
+            assert!(model.accelerator().is_some(), "{name}: the GPU was dropped");
+            let close = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+                for (x, y) in a.iter().zip(b) {
+                    let scale = x.iter().fold(1e-6f32, |m, v| m.max(v.abs()));
+                    let worst = x.iter().zip(y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
+                    assert!(worst <= 1e-3 * scale, "{name}: off by {} of {scale}", worst);
+                }
+            };
+            close(&cpu[1], &one);
+            for (c, g) in cpu.iter().zip(&batch) {
+                close(c, g);
+            }
+            let time = |f: &mut dyn FnMut()| {
+                f();
+                let t = std::time::Instant::now();
+                for _ in 0..5 {
+                    f();
+                }
+                t.elapsed().as_secs_f64() * 1000.0 / 5.0
+            };
+            let cpu_ms = time(&mut || refs.iter().for_each(|x| drop(model.run_cpu(&[x]).unwrap())));
+            let one_ms = time(&mut || refs.iter().for_each(|x| drop(model.run(&[x]).unwrap())));
+            let batch_ms = time(&mut || drop(model.run_batch(&refs).unwrap()));
+            eprintln!(
+                "{name}: {on_device} of {steps} steps on the GPU; 8 runs: CPU {cpu_ms:.1} ms, GPU one by one {one_ms:.1} ms, GPU batched {batch_ms:.1} ms"
+            );
         }
     }
 

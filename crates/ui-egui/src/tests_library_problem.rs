@@ -18,7 +18,7 @@ fn has(h: &Headless, id: &str) -> bool {
 
 #[test]
 fn unopenable_library_asks_instead_of_running_a_demo() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-libproblem-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-libproblem");
     let _ = std::fs::remove_dir_all(&dir);
     let lib = dir.join("lib");
     std::fs::create_dir_all(&lib).unwrap();
@@ -106,7 +106,7 @@ fn unopenable_library_asks_instead_of_running_a_demo() {
 /// then opened (command-line files imported after).
 #[test]
 fn old_catalog_is_upgraded_with_progress_then_opened() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-libupgrade-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-libupgrade");
     let _ = std::fs::remove_dir_all(&dir);
     let lib = dir.join("lib");
     std::fs::create_dir_all(&lib).unwrap();
@@ -150,7 +150,7 @@ fn old_catalog_is_upgraded_with_progress_then_opened() {
 /// ends, instead of being dropped (upstream #3403).
 #[test]
 fn files_waiting_for_a_library_wait_for_a_running_import() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-waiting-import-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-waiting-import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..300u32 {
@@ -158,7 +158,7 @@ fn files_waiting_for_a_library_wait_for_a_running_import() {
         let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
         std::fs::write(dir.join(format!("{i}.png")), png).unwrap();
     }
-    let late = std::env::temp_dir().join(format!("lc-ui-waiting-late-{}.png", std::process::id()));
+    let late = lcc_testkit::TempFile::new("lc-ui-waiting-late", "late.png");
     let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[1, 2, 3, 255]; 64] };
     std::fs::write(&late, lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap()).unwrap();
     let mut h = Headless::new(LccApp::new(lcc_engine::Session::new(), Services { png: None, ..Default::default() }), [1200.0, 900.0], 1.0);

@@ -25,8 +25,8 @@ fn write_png(path: &Path, seed: u8) {
 /// A library holding `a/one.png`, `a/two.png`, `a/sub/three.png` and `b/four.png`, auto-write off.
 struct Fixture {
     s: Session,
-    src: PathBuf,
-    lib: PathBuf,
+    src: lcc_testkit::TempDir,
+    lib: lcc_testkit::TempDir,
 }
 
 impl Fixture {

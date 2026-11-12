@@ -387,6 +387,10 @@ pub struct Photo {
     /// step, a version, Swap); `None`: the import state ([`Photo::before_base`]). Format version 16.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::settings_ref::opt")]
     pub before: Option<Arc<DevelopSettings>>,
+    /// When the photo was last exported (ISO 8601 local time, set by the engine's export; `None`: never,
+    /// or cleared by Photo ▸ Reset Export Status). Catalog format 17.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported: Option<String>,
     /// Assisted culling scores (`None` until analysed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
@@ -520,6 +524,10 @@ pub struct Analysis {
     /// Combined 0..1 cull score from classical measures.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cull_score: Option<f32>,
+    /// Suggested star rating 1..=5 from the cull score (bulk culling's starting point; the engine
+    /// never applies it over a rating the user set). Absent until a run suggested one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<u8>,
 }
 
 /// Raw formats whose files carry vendor white-balance multipliers but no colour matrices: their starting
@@ -622,6 +630,7 @@ impl Photo {
             import_look: None,
             import_state: None,
             before: None,
+            exported: None,
             analysis: None,
             preview_only: None,
             preview_checked: String::new(),

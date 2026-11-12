@@ -478,8 +478,8 @@ fn contact_sheet_exports_pdf_and_protects_originals() {
     assert!(bytes.starts_with(b"%PDF-1.4"));
     assert!(String::from_utf8_lossy(&bytes).contains("/MediaBox [0 0 792.00 612.00]"));
     let before = std::fs::read(&input).unwrap();
-    for target in [input.clone(), input.with_extension("xmp")] {
-        if target != input {
+    for target in [input.to_path_buf(), input.with_extension("xmp")] {
+        if target != *input {
             std::fs::write(&target, b"existing sidecar").unwrap();
         }
         let (ok, _, _) = run_cli(&["--import", input.to_str().unwrap(), "export.contactSheet", &format!("path={}", target.display())], None);
@@ -535,10 +535,9 @@ fn print_commands_chain_into_a_picture_package_pdf() {
     assert_eq!(std::fs::read(&out).unwrap(), before);
 }
 
-fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("app-cli-test-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name)
+/// The path of a file or folder `name` in a Temp folder of its own, removed when the test ends.
+fn tmp(name: &str) -> lcc_testkit::TempFile {
+    lcc_testkit::TempFile::new(&format!("app-cli-test-{name}"), name)
 }
 
 fn gradient_png(path: &std::path::Path) {
@@ -799,7 +798,7 @@ fn render_refuses_to_overwrite_its_input() {
     let dir = input.parent().unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     let other_spelling = dir.join("sub/../self-in.png");
-    for out in [&input, &other_spelling] {
+    for out in [input.path(), other_spelling.as_path()] {
         let o =
             Command::new(BIN).args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap(), "--set", "light.exposure=1"]).output().unwrap();
         assert!(!o.status.success());

@@ -168,6 +168,10 @@ const FIELDS: &[(&str, usize)] = &[
     ("LUT_MAX", 3),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
+    // the mask planes' stride (0: the whole image's, `w × h`) and the band's first pixel in them
+    // (planes too big for one buffer reach the kernel band by band, see `render`)
+    ("MASK_N", 1),
+    ("MASK_I0", 1),
 ];
 
 /// `(name, index)` of every field (for the WGSL constants).

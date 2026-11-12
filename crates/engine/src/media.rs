@@ -341,9 +341,13 @@ impl DecodedSource {
     /// `header` too (the session knows them, the decoder doesn't).
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
         match &self.info {
-            Some(info) => {
-                SourceInfo { native_long: info.native_long.or(header.native_long), generated: header.generated, avoid: header.avoid, ..info.clone() }
-            }
+            Some(info) => SourceInfo {
+                native_long: info.native_long.or(header.native_long),
+                generated: header.generated,
+                avoid: header.avoid,
+                identity: header.identity.or(info.identity),
+                ..info.clone()
+            },
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
         }
     }
@@ -661,6 +665,8 @@ pub struct MediaCache {
     profile_facts: HashMap<PhotoId, ProfileFacts>,
     /// The camera bodies' corrections the decoded sources were made with ([`crate::sensor_maps::generation`]).
     sensor_generation: u64,
+    /// The same per body ([`crate::sensor_maps::body_corrections`]).
+    sensor_bodies: HashMap<String, u64>,
     /// The renderer version in grid thumbnails' keys: [`RENDER_CACHE_VERSION`] (tests change it to stand for an
     /// update that bumps it).
     pub(crate) thumb_version: u64,
@@ -673,6 +679,8 @@ pub struct MediaCache {
 pub struct ProfileFacts {
     pub colorimetric: bool,
     pub local_tone: bool,
+    /// A DNG of rendered RGB: the Profiles panel offers no camera profile for it (issue #763).
+    pub rendered_rgb: bool,
 }
 
 /// The photos that have a cached denoised picture for the denoise model in use. Only memory: nothing here touches the
@@ -747,6 +755,7 @@ impl Default for MediaCache {
             denoise: DenoiseIndex::default(),
             profile_facts: HashMap::new(),
             sensor_generation: 0,
+            sensor_bodies: HashMap::new(),
             thumb_version: RENDER_CACHE_VERSION,
         }
     }
@@ -870,14 +879,22 @@ impl MediaCache {
     }
 
     fn get_source(&mut self, id: PhotoId, level: SourceLevel) -> Option<DecodedSource> {
-        // a camera body's corrections changed (a pixel was confirmed): raws decoded before are out of date
+        // a camera body's corrections changed (a pixel was confirmed): that body's raws decoded before are out of
+        // date, and only those
         let generation = crate::sensor_maps::generation();
         if generation != self.sensor_generation {
+            let bodies = crate::sensor_maps::body_corrections();
             if self.sensor_generation != 0 {
-                self.thumbs = Lru::new(THUMB_SOURCE_BYTES.min(self.budget));
-                self.previews.clear();
-                self.full.clear();
+                let before = &self.sensor_bodies;
+                let current = |s: &DecodedSource| {
+                    let body = s.info.as_ref().and_then(|i| i.pixels.as_ref()).filter(|p| p.on).and_then(|p| p.body.as_deref());
+                    body.is_none_or(|b| before.get(b).copied().unwrap_or(0) == bodies.get(b).copied().unwrap_or(0))
+                };
+                self.thumbs.retain_entries(|_, s| current(s));
+                self.previews.retain(|e| current(&e.1));
+                self.full.retain(|e| current(&e.1));
             }
+            self.sensor_bodies = bodies;
             self.sensor_generation = generation;
         }
         match level {
@@ -919,11 +936,12 @@ impl MediaCache {
         self.insert_source(id, level, DecodedSource::new(img, Some(info)));
     }
 
-    fn insert_source(&mut self, id: PhotoId, level: SourceLevel, img: DecodedSource) {
+    pub(crate) fn insert_source(&mut self, id: PhotoId, level: SourceLevel, img: DecodedSource) {
         if let Some(info) = &img.info {
             let f = self.profile_facts.entry(id).or_default();
             f.colorimetric |= info.colorimetric;
             f.local_tone |= info.local_tone.is_some();
+            f.rendered_rgb |= info.rendered_rgb;
         }
         let tick = lcc_preview::next_tick();
         match level {
@@ -961,7 +979,11 @@ impl MediaCache {
     pub fn profile_facts(&self, id: PhotoId) -> ProfileFacts {
         let now = self.source_facts(id, SourceInfo::default());
         let seen = self.profile_facts.get(&id).copied().unwrap_or_default();
-        ProfileFacts { colorimetric: seen.colorimetric || now.colorimetric, local_tone: seen.local_tone || now.local_tone.is_some() }
+        ProfileFacts {
+            colorimetric: seen.colorimetric || now.colorimetric,
+            local_tone: seen.local_tone || now.local_tone.is_some(),
+            rendered_rgb: seen.rendered_rgb || now.rendered_rgb,
+        }
     }
 
     /// (decoded thumbnail sources, bytes).
@@ -2133,16 +2155,17 @@ pub fn kept_thumb_key(p: &Photo) -> Hash128 {
     Hasher128::new().str(&pixels_key(p)).str("kept-thumb").u64(p.id.0).finish()
 }
 
+/// The sensor-map part of photo `p`'s preview keys: only its own camera body's corrections change it.
+pub(crate) fn sensor_key(p: &Photo) -> u64 {
+    crate::sensor_maps::preview_key(p.develops_raw(), &p.meta.camera_serial, &p.file_name)
+}
+
 /// A grid thumbnail's cache key: the photo's pixels (`content_key`), its settings, the bucket, the renderer
-/// `version`, the camera profiles and sensor maps, and (a render from a denoised picture) its `salt`.
-fn thumb_key(content_key: &str, settings_hash: u64, bucket: usize, version: u64, salt: u64) -> Hash128 {
+/// `version`, the camera profiles, the `sensor` maps ([`sensor_key`]), and (a render from a denoised picture) its
+/// `salt`.
+fn thumb_key(content_key: &str, settings_hash: u64, bucket: usize, version: u64, sensor: u64, salt: u64) -> Hash128 {
     let mut k = Hasher128::new();
-    k.str(content_key)
-        .u64(settings_hash)
-        .u64(bucket as u64)
-        .u64(version)
-        .u64(crate::camera_profiles::cache_key())
-        .u64(crate::sensor_maps::generation());
+    k.str(content_key).u64(settings_hash).u64(bucket as u64).u64(version).u64(crate::camera_profiles::cache_key()).u64(sensor);
     // (only a render that uses a denoised picture has it in its key, so every other thumbnail stays valid)
     if salt != 0 {
         k.u64(salt);
@@ -2168,6 +2191,8 @@ pub struct KeptThumb {
     settings_hash: u64,
     bucket: usize,
     version: u64,
+    /// [`sensor_key`].
+    sensor: u64,
     salt: u64,
 }
 
@@ -2179,7 +2204,7 @@ impl KeptThumb {
     /// names its look and size. (The copy itself is looked for too: the disk cache may have let it go and kept the
     /// record.)
     fn keep(&self, real: Hash128, img: Arc<Rgba8>) {
-        let mut record = thumb_key(&self.content_key, self.settings_hash, 0, self.version, self.salt).0.to_le_bytes().to_vec();
+        let mut record = thumb_key(&self.content_key, self.settings_hash, 0, self.version, self.sensor, self.salt).0.to_le_bytes().to_vec();
         let look = record.clone();
         record.extend_from_slice(&(self.bucket as u64).to_le_bytes());
         let has = self.cache.latest_meta(self.alias);
@@ -2205,7 +2230,7 @@ impl KeptThumb {
         (0..=KEPT_VERSIONS)
             .filter_map(|back| self.version.checked_sub(back))
             .flat_map(|v| buckets.iter().map(move |b| (v, *b)))
-            .map(|(v, b)| thumb_key(&self.content_key, self.settings_hash, b, v, self.salt))
+            .map(|(v, b)| thumb_key(&self.content_key, self.settings_hash, b, v, self.sensor, self.salt))
             .flat_map(|k| [k, embedded_thumb_key(k)])
             .filter(|k| self.cache.has(*k))
             .find_map(|k| self.cache.get(k))
@@ -2248,7 +2273,17 @@ pub fn source_info(p: &Photo) -> SourceInfo {
         .filter(|b| b.iter().all(|v| v.is_finite()))
         .take(256)
         .collect();
-    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), ..info }
+    SourceInfo { avoid: (!faces.is_empty()).then(|| Arc::new(faces)), identity: source_identity(p), ..info }
+}
+
+/// [`SourceInfo::identity`] of `p`: its pixels' key ([`pixels_key`]), the same at every decoded
+/// size (`None` for the procedural demo scenes, drawn afresh at each size).
+fn source_identity(p: &Photo) -> Option<lcc_pipeline::SourceIdentity> {
+    if matches!(p.source, Source::Demo { .. }) {
+        return None;
+    }
+    let key = Hasher128::new().str("source-identity").str(&pixels_key(p)).finish().0 as u64;
+    Some(lcc_pipeline::SourceIdentity { key, size: [p.width as usize, p.height as usize] })
 }
 
 fn source_info_plain(p: &Photo) -> SourceInfo {
@@ -2357,7 +2392,8 @@ impl crate::Session {
             ^ content.rotate_left(17)
             ^ salt;
         let version = self.media.thumb_version;
-        let cache = thumb_bucket.map(|b| (self.media.rendered.clone(), thumb_key(&content_key, settings_hash, b, version, salt)));
+        let sensor = sensor_key(&p);
+        let cache = thumb_bucket.map(|b| (self.media.rendered.clone(), thumb_key(&content_key, settings_hash, b, version, sensor, salt)));
         // a thumbnail of the photo's own settings is its latest grid picture too, and the one its cell
         // keeps showing while the original is missing
         let latest = cache.as_ref().filter(|_| !before).map(|(c, _)| (c.clone(), latest_thumb_key(&p)));
@@ -2369,6 +2405,7 @@ impl crate::Session {
             settings_hash,
             bucket,
             version,
+            sensor,
             salt,
         });
         let placement = (!before).then(|| self.placement_with(&p, &settings, apply_crop));
@@ -2444,7 +2481,7 @@ impl crate::Session {
             .u64(edge as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
-            .u64(crate::sensor_maps::generation())
+            .u64(sensor_key(p))
             .finish()
     }
 
@@ -2574,7 +2611,7 @@ impl crate::Session {
             .u64(apply_crop as u64)
             .u64(RENDER_CACHE_VERSION)
             .u64(crate::camera_profiles::cache_key())
-            .u64(crate::sensor_maps::generation())
+            .u64(sensor_key(p))
             .finish()
     }
 
@@ -3148,9 +3185,14 @@ pub type FileProbe = Arc<dyn Fn(&str) -> Result<ProbeInfo, String> + Send + Sync
 mod thumbnail_hash_tests {
     use super::*;
 
+    /// A session with one JPEG. Each call names its own file: the decode share
+    /// ([`crate::decode_share`]) is process-wide and keyed by path, so tests running in parallel
+    /// must never share one (issue #1068: a test took another's decode, or lost its own).
     fn session() -> crate::Session {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut s = crate::Session::new();
-        let p = Photo::new(PhotoId(1), Source::File { path: "hash-fixture.jpg".into() }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
+        let p = Photo::new(PhotoId(1), Source::File { path: format!("hash-fixture-{n}.jpg") }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
         s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         s
     }
@@ -3241,6 +3283,7 @@ mod thumbnail_hash_tests {
 
     #[test]
     fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
+        let _keys = crate::sensor_maps::keep_generation();
         let mut s = session();
         for edge in [256, 384, 512, 256] {
             let p = s.catalog.photo(PhotoId(1)).unwrap().clone();
@@ -3256,7 +3299,7 @@ mod thumbnail_hash_tests {
                 .u64(b as u64)
                 .u64(RENDER_CACHE_VERSION)
                 .u64(crate::camera_profiles::cache_key())
-                .u64(crate::sensor_maps::generation())
+                .u64(sensor_key(&p))
                 .finish();
             let job = s.thumb_job(p.id, edge).unwrap();
             assert_eq!(job.key, expected);
@@ -3489,7 +3532,8 @@ mod thumbnail_hash_tests {
         assert_eq!(seen.lock().unwrap().len(), 2, "and the new source is reused");
         // the late job re-decodes with the old option (its source was the cached one: decode it from the file)
         let mut late = late;
-        late.source = s.media.origin_ref(&Source::File { path: "hash-fixture.jpg".into() }, 64);
+        let path = s.catalog.photo(PhotoId(1)).unwrap().source.clone();
+        late.source = s.media.origin_ref(&path, 64);
         let late = late.run();
         assert_eq!(late.loaded.as_ref().map(|l| l.options.colour), Some(CameraColour::Auto));
         s.accept(&late);
@@ -3613,6 +3657,7 @@ mod tests {
     // fitted, with no render; a larger size, a draft or other settings render
     #[test]
     fn the_loupe_uses_a_kept_view_render_at_least_as_big() {
+        let _keys = crate::sensor_maps::keep_generation();
         let mut s = crate::Session::with_demo();
         let id = s.active().unwrap();
         let job = s.loupe_job(id, 1024, 1024, true).unwrap();
@@ -3663,7 +3708,8 @@ mod tests {
         let decoded = SourceInfo { raw: true, as_shot_temp: 4800.0, ..Default::default() };
         let thumb = DecodedSource::new(Arc::new(Rgb32f::new(8, 8)), Some(decoded.clone()));
         let info = thumb.info_or(source_info(&p));
-        assert_eq!(info, SourceInfo { native_long: Some(6000), ..decoded }, "the decoder's facts, the catalog's size");
+        assert_eq!(info, SourceInfo { native_long: Some(6000), identity: source_identity(&p), ..decoded }, "the decoder's facts, the catalog's size");
+        assert_eq!(info.identity.map(|i| i.size), Some([6000, 4000]), "which photo, at every size");
         let unknown = Photo::new(PhotoId(2), Source::File { path: "/photos/b.jpg".into() }, "b.jpg", "JPEG", 0, 0, "");
         assert_eq!(source_info(&unknown).native_long, None);
         assert_eq!(source_info(&Photo::new(PhotoId(3), Source::Demo { scene: 0 }, "d", "ARW", 600, 400, "")).native_long, None);

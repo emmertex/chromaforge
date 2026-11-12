@@ -3,7 +3,7 @@
 //! remembered), and only the user's own clicks allow: the control channel's are ignored, and say
 //! so.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -65,8 +65,8 @@ fn state(h: &mut Headless, id: &str, group: &str) -> Value {
     p["requests"].as_array().into_iter().flatten().find(|r| r["group"] == group).cloned().unwrap_or(Value::Null)
 }
 
-fn folder(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("plugin-permissions-ui-{name}-{}", std::process::id()));
+fn folder(name: &str) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("plugin-permissions-ui-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

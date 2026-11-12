@@ -55,6 +55,48 @@ pub(crate) fn encoded_to_oklch(e: [f32; 3]) -> [f32; 3] {
     lab_to_lch(oklab_from_2020(lin))
 }
 
+/// Defringe amount the Fringe Color Selector turns a colour on at (full strength is 8 on the 0..20 slider).
+const FRINGE_AMOUNT: f64 = 6.0;
+/// OkLab hue spans (degrees) the Purple and Green hue sliders (0..100) cover; see `lcc_pipeline::optics`.
+const PURPLE_SPAN: (f64, f64) = (240.0, 360.0);
+const GREEN_SPAN: (f64, f64) = (90.0, 210.0);
+
+/// Which Defringe colour a sampled hue belongs to and the hue slider range around it.
+#[derive(Debug, PartialEq)]
+pub(crate) struct FringePick {
+    pub purple: bool,
+    pub lo: f64,
+    pub hi: f64,
+}
+
+/// Points Defringe at a sampled colour (OkLCh chroma, hue in degrees): the nearer of the purple and
+/// green hue spans, a window of about +-12 degrees around the hue. `None` for a grey, non-finite or
+/// unreadable sample.
+pub(crate) fn fringe_pick(chroma: f32, hue_deg: f32) -> Option<FringePick> {
+    if !chroma.is_finite() || !hue_deg.is_finite() || chroma < 0.015 {
+        return None;
+    }
+    let h = (hue_deg as f64).rem_euclid(360.0);
+    // angular distance from the hue to a span (0 inside it)
+    let dist = |(a, b): (f64, f64)| {
+        let ang = |x: f64, y: f64| {
+            let d = (x - y).rem_euclid(360.0);
+            d.min(360.0 - d)
+        };
+        if (a..=b).contains(&h) || (a..=b).contains(&(h + 360.0)) { 0.0 } else { ang(h, a).min(ang(h, b)) }
+    };
+    let purple = dist(PURPLE_SPAN) <= dist(GREEN_SPAN);
+    let (a, b) = if purple { PURPLE_SPAN } else { GREEN_SPAN };
+    // the hue as a position in the span (clamped to it when it lies just outside)
+    let at = [h, h + 360.0].into_iter().find(|v| (a..=b).contains(v)).unwrap_or_else(|| {
+        let ends = [a, b].into_iter().flat_map(|e| [(h - e).abs(), (h + 360.0 - e).abs()].map(|d| (d, e)));
+        ends.min_by(|x, y| x.0.total_cmp(&y.0)).map_or(a, |(_, e)| e)
+    });
+    let centre = (at - a) / (b - a) * 100.0;
+    let half = 12.0 / (b - a) * 100.0;
+    Some(FringePick { purple, lo: (centre - half).round().clamp(0.0, 90.0), hi: (centre + half).round().clamp(10.0, 100.0) })
+}
+
 /// Everything after the colour mixer, neutralized (the colour Point Color sees).
 pub(crate) fn after_mixer_neutral(d: &mut DevelopSettings) {
     d.color.vibrance = 0.0;
@@ -166,7 +208,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Point Color Sample",
             [],
             None,
-            "{x, y} normalized image coords — samples the colour there (max 8); returns {index, lum, chroma, hue}",
+            "{x, y} normalized image coords: samples the colour there (max 8); returns {index, lum, chroma, hue}",
             has_active,
             |s, p| {
                 let c = "pointColor.pick";
@@ -185,11 +227,53 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "develop.fringePick",
+            "Fringe Color Selector",
+            [],
+            None,
+            "{x, y} normalized image coords: samples the colour there (3 x 3 proxy pixels) and points Defringe at it: sets the Purple or Green hue range around that hue, and an amount when it was off → {applied: true, colour: purple|green, hueLo, hueHi, amount}, or {applied: false, message} for a spot without colour (nothing changes)",
+            has_active,
+            |s, p| {
+                let c = "develop.fringePick";
+                let (x, y) = (f64_req(p, "x", c)?, f64_req(p, "y", c)?);
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(bad(c, "x and y must be finite numbers"));
+                }
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                // the colour as the fringe is in the photo: Defringe itself switched off
+                let e = probe(s, c, x, y, |d| {
+                    d.optics.defringe_purple_amount = 0.0;
+                    d.optics.defringe_green_amount = 0.0;
+                })?;
+                let [_, chroma, hue] = encoded_to_oklch(e);
+                let Some(pick) = fringe_pick(chroma, hue.to_degrees()) else {
+                    return Ok(json!({"applied": false, "message": "This spot has no colour to defringe: click on the fringe itself"}));
+                };
+                let mut d = (*s.develop_of(id).unwrap_or_default()).clone();
+                let o = &mut d.optics;
+                let amount = if pick.purple {
+                    o.defringe_purple_hue_lo = pick.lo;
+                    o.defringe_purple_hue_hi = pick.hi;
+                    o.defringe_purple_amount = o.defringe_purple_amount.max(FRINGE_AMOUNT);
+                    o.defringe_purple_amount
+                } else {
+                    o.defringe_green_hue_lo = pick.lo;
+                    o.defringe_green_hue_hi = pick.hi;
+                    o.defringe_green_amount = o.defringe_green_amount.max(FRINGE_AMOUNT);
+                    o.defringe_green_amount
+                };
+                s.set_develop(id, d, "Fringe Color Selector")?;
+                Ok(
+                    json!({"applied": true, "colour": if pick.purple { "purple" } else { "green" }, "hueLo": pick.lo, "hueHi": pick.hi, "amount": amount}),
+                )
+            }
+        ),
+        cmd!(
             "develop.targeted",
             "Targeted Adjustment",
             [],
             None,
-            "{target: curve|hue|sat|lum, x, y (normalized image coords), delta (slider units; point curves: output levels 0..255), channel?: parametric|master|red|green|blue (curve)} — adjusts the curve region / colour-mixer bands under the point; returns the changed controls",
+            "{target: curve|hue|sat|lum, x, y (normalized image coords), delta (slider units; point curves: output levels 0..255), channel?: parametric|master|red|green|blue (curve)}: adjusts the curve region / colour-mixer bands under the point; returns the changed controls",
             has_active,
             targeted
         ),
@@ -206,4 +290,32 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
     ]
+}
+
+#[cfg(test)]
+mod fringe_tests {
+    use super::*;
+
+    #[test]
+    fn fringe_pick_chooses_colour_and_window() {
+        let p = fringe_pick(0.1, 300.0).unwrap();
+        assert!(p.purple && p.lo < 50.0 && p.hi > 50.0 && p.lo >= 0.0 && p.hi <= 100.0, "{p:?}");
+        let g = fringe_pick(0.1, 150.0).unwrap();
+        assert!(!g.purple && g.lo < 50.0 && g.hi > 50.0, "{g:?}");
+        // wraps: 10 degrees is nearer the purple span's end (360) than green's start (90)
+        assert!(fringe_pick(0.1, 10.0).unwrap().purple);
+        assert!(fringe_pick(0.1, -60.0).unwrap().purple);
+    }
+
+    #[test]
+    fn fringe_pick_refuses_unreadable_samples() {
+        for (c, h) in [(f32::NAN, 100.0), (0.1, f32::NAN), (0.1, f32::INFINITY), (0.0, 100.0), (-1.0, 100.0), (f32::INFINITY, f32::NAN)] {
+            assert!(fringe_pick(c, h).is_none(), "{c} {h}");
+        }
+        // any finite hue gives an in-range window
+        for h in [-1e9f32, -720.5, 0.0, 359.99, 1e9] {
+            let p = fringe_pick(0.2, h).unwrap();
+            assert!(p.lo >= 0.0 && p.hi <= 100.0 && p.lo <= p.hi, "{h}: {p:?}");
+        }
+    }
 }

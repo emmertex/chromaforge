@@ -225,7 +225,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 ui.painter().text(c, Align2::CENTER_CENTER, active.to_string(), t.semibold(9.5), t.canvas);
             }
             let fresp = fresp.on_hover_text(if active > 0 {
-                crate::i18n::tr_format!("Filter bar — {active} active filter{}", if active == 1 { "" } else { "s" }, active = active)
+                crate::i18n::tr_format!("Filter bar: {active} active filter{}", if active == 1 { "" } else { "s" }, active = active)
             } else {
                 crate::i18n::tr("Filter bar").into()
             });
@@ -246,8 +246,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let r = Rect::from_center_size(pos2(x, full.center().y), vec2(30.0, 30.0));
             let mut right = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)));
             let develop = app.ui.module == crate::module::ModuleId::Develop;
-            let closed = develop && app.ui.right == crate::state::RightPanel::None && !app.ui.presets;
-            let open = !app.ui.right_collapsed && !closed;
+            let closed = develop && app.ui.right == crate::state::RightPanel::None;
+            let open = crate::module::module_edge(app, crate::module::Edge::Right) && !closed;
             if icon_button(&mut right, "collapseRight", Icon::SidebarRight, vec2(30.0, 30.0), open, true, crate::i18n::tr("Show/hide right panel"))
                 .clicked()
             {

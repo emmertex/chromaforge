@@ -45,8 +45,12 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_update;
+pub mod dng_validate;
 pub mod doc_path;
+pub mod duplicates;
 pub mod dust_map;
+pub mod email;
 pub mod enhance;
 mod errors;
 pub mod export;
@@ -83,6 +87,7 @@ mod lightroom_archive;
 pub mod lightroom_catalog;
 pub mod lightroom_folder;
 pub mod lightroom_job;
+mod lightroom_print;
 mod lightroom_smart;
 mod lightroom_sqlite;
 pub mod link;
@@ -105,6 +110,8 @@ pub mod peer_exchange;
 pub mod peers;
 mod people_smart;
 pub mod people_store;
+pub mod phash;
+pub mod phash_store;
 pub mod placement;
 pub mod prep;
 pub mod preset_import;
@@ -140,6 +147,7 @@ pub mod smart_masks;
 pub mod source_report;
 pub mod sync;
 mod sync_same;
+pub mod template_folders;
 pub mod text;
 pub mod timelapse;
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,6 +170,24 @@ pub use media::{RenderJob, SourceLevel};
 use serde_json::Value;
 pub use view::{Browse, FilterChip, LibrarySource, Selection, SelectionState, filter_chips};
 pub use {lcc_catalog as catalog, lcc_develop as develop, lcc_gpu as gpu, lcc_pipeline as pipeline};
+
+/// [`Session::before_step`]: the commit count and the length of the queue of ops not yet written to the library's log.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BeforeStep {
+    commits: u64,
+    log: usize,
+}
+
+/// One step a command has just committed ([`Session::committed_step`]), to take back if the command then fails.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CommittedStep {
+    /// [`Session::commits`] with the step committed.
+    commits: u64,
+    /// The undo stack's length with the step on top.
+    undo_len: usize,
+    /// Where the step's op waits in the queue for the library's log, while it hasn't been written.
+    pending: Option<usize>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -311,6 +337,8 @@ pub struct Session {
     pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
+    /// The sources `library.source` showed, for Go Back / Go Forward (`library.sourceBack`); not saved.
+    pub(crate) source_history: view::SourceHistory,
     pub filter: Filter,
     /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
     pub(crate) shelved_filter: Option<Filter>,
@@ -450,6 +478,14 @@ pub struct Session {
     /// Whether the [`LibrarySource::LibraryFolder`] view also shows the photos of the folders
     /// inside the chosen one (Show Photos in Subfolders, on by default).
     pub folder_subfolders: bool,
+    /// Lock Filters (on by default): the filter bar's filter stays when another source is chosen.
+    /// Off, choosing a source starts from the filter that source had (see `remember_filters`) or none.
+    pub lock_filters: bool,
+    /// Remember Each Source's Filters Separately: with `lock_filters` off, each source gets back
+    /// the filter it had when it was left.
+    pub remember_filters: bool,
+    /// The filter each source had when it was left (key: [`Session::source_key`]); not saved.
+    pub source_filters: std::collections::HashMap<String, Filter>,
     /// Copied metadata (`photo.copyMetadata`): photo.setMeta params.
     pub meta_clipboard: Option<Value>,
     /// The photo that was active before the current one (Paste Settings from Previous).
@@ -555,6 +591,9 @@ pub struct Session {
     pub print: print::template::PrintSettings,
     /// Saved print templates (`print.template.*`), persisted in prefs.json.
     pub print_templates: Vec<print::template::PrintTemplate>,
+    /// The Template Browser's folders besides [`template_folders::DEFAULT_FOLDER`], sorted by name
+    /// (`print.template.folder.*`), persisted in prefs.json.
+    pub print_template_folders: Vec<String>,
     /// Metadata presets (`metadata.*`), persisted in prefs.json.
     pub metadata_presets: Vec<cmd::metadata::MetadataPreset>,
     /// Import presets: named sets of the Import tab's settings (persisted in prefs.json).
@@ -714,6 +753,16 @@ impl Default for Session {
 }
 
 impl Session {
+    /// What the next Auto Import listing looks at (`None`: no active watched folder).
+    pub fn auto_import_scope(&self) -> Option<cmd::library::AutoImportScope> {
+        let folder = self.import_defaults.auto_active_folder()?.clone();
+        Some(cmd::library::AutoImportScope {
+            folder,
+            subfolders: self.import_defaults.auto_options.subfolders,
+            skip: self.library.as_ref().map(|l| l.dir.clone()),
+        })
+    }
+
     pub fn library_generation(&self) -> u64 {
         self.library_generation
     }
@@ -740,6 +789,7 @@ impl Session {
             auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
+            source_history: Default::default(),
             filter: Filter::default(),
             shelved_filter: None,
             sort: Sort::default(),
@@ -811,6 +861,9 @@ impl Session {
             browse: None,
             library_folder: None,
             folder_subfolders: true,
+            lock_filters: true,
+            remember_filters: false,
+            source_filters: Default::default(),
             previous_active: None,
             dialogs: Default::default(),
             preset_undo: None,
@@ -853,6 +906,7 @@ impl Session {
             export_presets: Vec::new(),
             print: Default::default(),
             print_templates: Vec::new(),
+            print_template_folders: Vec::new(),
             metadata_presets: Vec::new(),
             import_presets: Vec::new(),
             filter_presets: Vec::new(),
@@ -1216,6 +1270,49 @@ impl Session {
         }
         let _ = id;
         rect
+    }
+
+    /// Where things stand before a command commits a step it may have to take back if it then fails
+    /// ([`Session::committed_step`]).
+    pub(crate) fn before_step(&self) -> BeforeStep {
+        BeforeStep { commits: self.commits, log: self.pending_log.len() }
+    }
+
+    /// The one step committed since `before`, for [`Session::take_back`]; `None` when no step, or more than one, was
+    /// committed since.
+    pub(crate) fn committed_step(&self, before: BeforeStep) -> Option<CommittedStep> {
+        (self.commits == before.commits.wrapping_add(1) && !self.undo.is_empty()).then(|| CommittedStep {
+            commits: self.commits,
+            undo_len: self.undo.len(),
+            pending: (self.pending_log.len() == before.log.saturating_add(1)).then_some(before.log),
+        })
+    }
+
+    /// Take back `step`, the step a command committed before it failed, as an undo would, with nothing left to redo.
+    /// Only that step: when anything was committed, undone or merged ([`Session::merge_undo`]) since it, the top of the
+    /// undo stack may be a step that isn't the command's, and this refuses instead. When the step isn't written to the
+    /// library's log yet, it leaves the queue, so neither it nor its reversal reaches the disk; otherwise the reversal
+    /// is logged like an undo. A step that can't be taken back stays on the undo stack, and the error says why.
+    pub(crate) fn take_back(&mut self, step: CommittedStep) -> Result<()> {
+        // A later commit changes the count; an undo, a redo or a merge changes the stack's length (at the cap a commit
+        // leaves the length as it was, but changes the count).
+        if self.commits != step.commits || self.undo.len() != step.undo_len {
+            return Err(EngineError::Other("the step to take back is no longer the last one".into()));
+        }
+        let mut e = self.undo.pop().ok_or_else(|| EngineError::Other("nothing to take back".into()))?;
+        if let Err(err) = self.apply_with_files(&mut e, &rename::RealFs) {
+            self.undo.push(e);
+            return Err(err);
+        }
+        self.drop_gone_from_selection();
+        self.reconcile_view();
+        // Dropping the queued step, rather than logging its reversal after it, keeps a write cut short (a crash, a full
+        // disk) from saving the step without its reversal: each op is its own record in the log.
+        match step.pending.filter(|at| at.saturating_add(1) == self.pending_log.len()) {
+            Some(at) => self.pending_log.truncate(at),
+            None => self.pending_log.push(e.op),
+        }
+        Ok(())
     }
 
     /// Apply an op that is the app's own bookkeeping rather than something the user did (faces found by the background
@@ -2374,6 +2471,39 @@ impl Session {
     /// one, or nothing when the view is empty. A view never keeps an active photo it doesn't show
     /// (issue #1447: a Local folder kept a library photo active, so Detail and the info showed a
     /// photo the grid didn't).
+    /// Names the shown source for [`Session::source_filters`] (a folder or collection by its id/path).
+    pub(crate) fn source_key(&self) -> String {
+        match self.source {
+            LibrarySource::LibraryFolder => format!("folder:{}", lcc_catalog::query::folder_key(self.library_folder.as_deref().unwrap_or_default())),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// After the source changed from `left` (key, filter it had): with Lock Filters off, a new source
+    /// starts unfiltered, or with the filter it had when last left when remembering per source.
+    pub(crate) fn switch_source_filter(&mut self, left_key: String, left_filter: Filter) {
+        if self.lock_filters {
+            return;
+        }
+        let key = self.source_key();
+        if key == left_key {
+            return;
+        }
+        if self.remember_filters {
+            // (bounded: one entry per source ever left, folders can be many)
+            if self.source_filters.len() < 10_000 || self.source_filters.contains_key(&left_key) {
+                self.source_filters.insert(left_key, left_filter);
+            }
+        }
+        self.filter = if self.remember_filters { self.source_filters.get(&key).cloned().unwrap_or_default() } else { Filter::default() };
+        // one folder / collection at a time, as `library.source` does
+        self.filter.album = None;
+        if self.source == LibrarySource::LibraryFolder {
+            self.filter.library_folder = None;
+        }
+        self.shelved_filter = None;
+    }
+
     pub fn keep_active_in_view(&mut self) {
         let active = self.selection.active;
         let vis = self.visible();
@@ -2527,6 +2657,8 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
+mod tests_auto_import;
+#[cfg(test)]
 mod tests_auto_mask_range;
 #[cfg(test)]
 mod tests_autosync;
@@ -2567,10 +2699,19 @@ mod tests_crop_aspect;
 #[cfg(test)]
 mod tests_crop_aspects;
 #[cfg(test)]
+mod tests_crop_same;
+#[cfg(test)]
+mod tests_cull_suggest;
+#[cfg(test)]
 mod tests_denoise;
 #[cfg(test)]
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_dng_update;
+#[cfg(test)]
+mod tests_dng_validate;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
@@ -2709,6 +2850,8 @@ mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
 #[cfg(test)]
+mod tests_select_menu;
+#[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]
 mod tests_settings_files;
@@ -2722,6 +2865,8 @@ mod tests_source_report;
 mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_sync_copies;
 #[cfg(test)]
 mod tests_target_params;
 #[cfg(test)]

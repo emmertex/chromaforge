@@ -105,6 +105,29 @@ pub enum CropOverlay {
     None,
 }
 
+impl CropOverlay {
+    /// Every guide, in the order the cycle visits them (`None` hides the guides).
+    pub const ALL: [CropOverlay; 7] = [
+        CropOverlay::Thirds,
+        CropOverlay::Grid,
+        CropOverlay::Golden,
+        CropOverlay::Diagonal,
+        CropOverlay::Triangle,
+        CropOverlay::Spiral,
+        CropOverlay::None,
+    ];
+
+    /// The next guide after `self` among those in `cycle` (Tools ▸ Crop Guide Overlay ▸ Choose
+    /// Overlays to Cycle). An empty cycle falls back to all of them; a current guide outside the
+    /// cycle steps to the first one in cycle order after it.
+    pub fn next_in(self, cycle: &[CropOverlay]) -> CropOverlay {
+        let all = CropOverlay::ALL;
+        let at = all.iter().position(|o| *o == self).unwrap_or(0);
+        let allowed = |o: &CropOverlay| cycle.is_empty() || cycle.contains(o);
+        (1..=all.len()).filter_map(|d| all.get((at + d) % all.len())).copied().find(allowed).unwrap_or(self)
+    }
+}
+
 /// Tool Overlay: when the retouching tools' pins (Remove / Heal / Clone spots, mask pins) show on
 /// the photo. Shift+H steps through the modes in this order (`view.toolOverlay`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +594,14 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// View ▸ Lock Zoom Position (`view.lockZoomPosition`): one zoom and pan for every photo (the
+    /// default); off, each photo keeps its own ([`crate::view_state`]).
+    pub lock_zoom: bool,
+    /// View ▸ Scroll By Row (`view.scrollByRow`): a wheel notch moves the grid a whole row.
+    pub scroll_by_row: bool,
+    /// View ▸ Enable Mirror Image Mode (`view.mirrorImage`): the views are shown flipped left to
+    /// right; photos, edits and exports are untouched.
+    pub mirror_image: bool,
     /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
     pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
@@ -633,6 +664,9 @@ pub struct AppSettings {
     pub double_click_develop: bool,
     /// Hide active filter text / indicator in Develop mode (Settings ▸ Interface ▸ Detail).
     pub hide_filter_in_develop: bool,
+    /// Metadata > Show Metadata for Target Photo Only: the Metadata panel shows and edits the active photo,
+    /// not the whole selection's mixed values (`metadata.targetOnly`).
+    pub metadata_target_only: bool,
     /// Presets panel: list the "User Presets" group first, after Favorites (issue #476; off by
     /// default, as Lightroom Classic keeps groups in name order).
     pub user_presets_first: bool,
@@ -766,6 +800,9 @@ impl Default for AppSettings {
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            lock_zoom: true,
+            scroll_by_row: false,
+            mirror_image: false,
             reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
@@ -790,6 +827,7 @@ impl Default for AppSettings {
             space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
+            metadata_target_only: false,
             user_presets_first: false,
             loupe_info: LoupeInfo::default(),
             lightroom_import: LightroomImport::Ask,
@@ -1190,6 +1228,11 @@ pub struct UiState {
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
+    /// Android: the camera roll is watched (`camera_roll::watch_tick`): it is listed when the
+    /// library opens, when the app comes to the front and every few minutes, and photos new to
+    /// the library are imported without the review. Set by adding the roll for keeps (the
+    /// first-start prompt's Add Camera Roll, Settings ▸ Folders); the toggle there turns it off.
+    pub camera_roll_watch: bool,
     /// The Build Previews run last announced (its identity, finished?).
     #[serde(skip)]
     pub preview_build_seen: Option<(usize, bool)>,
@@ -1262,10 +1305,7 @@ pub struct UiState {
     /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
     /// [`IMPORT_SOURCES_WIDTH`]).
     pub import_sources_width: f32,
-    /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
-    /// to go back to).
-    pub presets: bool,
-    /// Presets column: show a live thumbnail of the photo with each preset.
+    /// Presets panel: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
     /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
@@ -1283,6 +1323,9 @@ pub struct UiState {
     /// Animate the loupe rect toward its target (set by a click-zoom).
     #[serde(skip)]
     pub zoom_anim: bool,
+    /// A momentary before/after layout (`\`, the Original Photo box): a view mode, not a
+    /// workspace, so it never comes back after a restart looking like edits not showing (#1110).
+    #[serde(skip)]
     pub before_after: BeforeAfter,
     pub thumb_size: f32,
     /// Open Edit sections by id.
@@ -1350,6 +1393,11 @@ pub struct UiState {
     /// A mask slider is at work until then: no mask overlay covers the photo.
     #[serde(skip)]
     pub mask_adjusting_until: Option<std::time::Instant>,
+    /// A mask was picked (created, selected, an AI click) until then: its overlay shows for a
+    /// moment even when it has settings (issue #1109), so the user sees which mask is on; then
+    /// judging by its effect takes over again (the overlay auto rule, upstream PR 2920).
+    #[serde(skip)]
+    pub mask_peek_until: Option<std::time::Instant>,
     /// The mask whose row in the Masks list is under the pointer: its overlay shows while nothing is
     /// being adjusted.
     #[serde(skip)]
@@ -1388,6 +1436,10 @@ pub struct UiState {
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// The guides Cycle Crop Overlay visits (Choose Overlays to Cycle…); never empty.
+    pub crop_overlay_cycle: Vec<CropOverlay>,
+    /// Book ▸ Book Preferences…: what a new book starts with.
+    pub book_prefs: crate::book::BookPrefs,
     /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
     pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
@@ -1406,6 +1458,9 @@ pub struct UiState {
     /// without the user choosing it, so only a choice made since is kept.
     #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
+    /// Photo > People > Draw Face Regions is on: a drag over the loupe's photo draws a face box.
+    #[serde(skip)]
+    pub draw_faces: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
@@ -1434,6 +1489,9 @@ pub struct UiState {
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
+    /// The face box the pointer last rested on in the loupe (photo, region): the "chosen face" of Photo ▸ People.
+    #[serde(skip)]
+    pub face_focus: Option<(u64, usize)>,
     /// The person whose page the People view shows (their faces and the faces that look like them); `None`: everyone.
     #[serde(skip)]
     pub person_page: Option<String>,
@@ -1594,6 +1652,8 @@ pub struct UiState {
     /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
     /// opens on it again (this session).
     pub remove_tool: String,
+    /// Tools ▸ Remove Options ▸ Detect Objects: a Remove stroke picks the object under it (`spot.detectObject`).
+    pub remove_detect_objects: bool,
     /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
     /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
@@ -1766,6 +1826,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -1795,6 +1857,9 @@ pub struct UiState {
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
+    /// The report of the last Validate DNG Files (`dng.validate`'s answer; it runs in the background).
+    #[serde(skip)]
+    pub last_dng_validation: Option<serde_json::Value>,
     /// The outcome (success or error) of the last Find Missing Photos task.
     #[serde(skip)]
     pub last_find_missing_result: Option<Result<serde_json::Value, String>>,
@@ -1839,6 +1904,10 @@ pub fn default_preset_groups() -> Vec<String> {
     lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Dialog {
     /// A fresh Create Preset dialog.
     /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
@@ -1874,6 +1943,14 @@ pub struct NameEdit {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Dialog {
+    /// Tools ▸ Crop Guide Overlay ▸ Choose Overlays to Cycle…: the guides `view.cropOverlay` visits.
+    CropOverlays {
+        picked: Vec<CropOverlay>,
+    },
+    /// Book ▸ Book Preferences…: what `book.new` starts a book with.
+    BookPrefs {
+        prefs: crate::book::BookPrefs,
+    },
     /// File ▸ Export ▸ Timelapse Video… (`crate::timelapse_ui`); `size` is "WxH".
     Timelapse {
         fps: u32,
@@ -1882,6 +1959,11 @@ pub enum Dialog {
         hold: u32,
         crossfade: u32,
         prores: bool,
+        quality: u8,
+    },
+    /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
+    EmailPhoto {
+        long_edge: u32,
         quality: u8,
     },
     /// A Lightroom import result stays readable after its activity row disappears.
@@ -2025,6 +2107,12 @@ pub enum Dialog {
     AutoStack {
         gap: f32,
     },
+    /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
+    /// over the grid it filters.
+    AdvancedSearch {
+        #[serde(default)]
+        search: crate::advanced_search::Search,
+    },
     /// Save the current view (source + filter) as a smart album.
     NewSmartAlbum {
         name: String,
@@ -2052,6 +2140,14 @@ pub enum Dialog {
         /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
         #[serde(default)]
         everyone: bool,
+        /// Apply the suggested star ratings (`photo.analyze` `applyRatings`; photos the user
+        /// rated are left alone).
+        #[serde(default = "default_true")]
+        suggest_stars: bool,
+        /// Apply the suggested Pick / Reject flags (`photo.analyze` `applyFlags`; photos the user
+        /// flagged are left alone).
+        #[serde(default)]
+        suggest_flags: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -2067,6 +2163,13 @@ pub enum Dialog {
     },
     SystemInfo {
         rows: Vec<(String, String)>,
+    },
+    /// Library ▸ Validate DNG Files: what the check found (it runs in the background). `damaged` and `unverifiable`
+    /// hold `name: why` lines.
+    DngValidation {
+        summary: String,
+        damaged: Vec<String>,
+        unverifiable: Vec<String>,
     },
     /// Help ▸ Check for Updates…: the release feed's answer, the download and the install
     /// (the panel state lives in the session's updater; see [`crate::panels::update`]).
@@ -2106,6 +2209,14 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
     },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
@@ -2381,12 +2492,14 @@ impl Default for UiState {
             eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
+            camera_roll_watch: false,
             preview_build_seen: None,
             unsaved_seen: false,
             frame_rate: lcc_brand::env("FPS").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")),
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_peek_until: None,
             mask_pin_hover: None,
             mask_menu_for: None,
             mask_hover: None,
@@ -2419,7 +2532,6 @@ impl Default for UiState {
             right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
-            presets: false,
             preset_thumbs: false,
             filmstrip: true,
             film_height: FILM_HEIGHT.default,
@@ -2455,6 +2567,8 @@ impl Default for UiState {
             tool_overlay: ToolOverlay::Auto,
             mask_overlay_all: false,
             crop_overlay: CropOverlay::Thirds,
+            crop_overlay_cycle: CropOverlay::ALL.to_vec(),
+            book_prefs: Default::default(),
             crop_default_aspect: None,
             crop_overlay_orient: 0,
             crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,
@@ -2462,6 +2576,7 @@ impl Default for UiState {
             grid_info: "filename".into(),
             show_counts: true,
             face_boxes: false,
+            draw_faces: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -2469,6 +2584,7 @@ impl Default for UiState {
             section_open: Default::default(),
             tree_open: Default::default(),
             name_edit: None,
+            face_focus: None,
             person_page: None,
             person_from: None,
             last_person: None,
@@ -2524,6 +2640,7 @@ impl Default for UiState {
             selected_guide: None,
             wb_sample: 5,
             remove_tool: "remove".into(),
+            remove_detect_objects: false,
             brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
@@ -2561,6 +2678,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,
@@ -2614,6 +2732,7 @@ impl Default for UiState {
             reference: None,
             toasts: Vec::new(),
             toast_action: None,
+            last_dng_validation: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]

@@ -195,7 +195,7 @@ fn signed(n: i128) -> String {
 }
 
 fn day(iso: &str) -> &str {
-    if iso.is_empty() { "—" } else { iso.get(..10).unwrap_or(iso) }
+    if iso.is_empty() { "" } else { iso.get(..10).unwrap_or(iso) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

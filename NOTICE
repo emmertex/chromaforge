@@ -115,8 +115,9 @@ crates/segment/src/dino.rs, depth.rs and grid.rs (ported by OneSlips, 2026) port
 Depth Anything and DPT image-processor code of Hugging Face Transformers (models/dinov2,
 depth_anything and dpt), Copyright The HuggingFace Team, Meta Platforms, Inc. and the model
 authors, licensed under the Apache License 2.0, modified the same way. The Depth Anything V2 Small
-weights (depth-anything/Depth-Anything-V2-Small-hf, Apache License 2.0) are not part of this
-software; users download them separately.
+weights (depth-anything/Depth-Anything-V2-Small-hf, by Lihe Yang et al., Apache License 2.0),
+which compute Depth Range masks, are not part of this software; the app downloads them from the
+authors' Hugging Face repository only when the user asks for them.
 
 crates/segment/src/scene.rs (ported by OneSlips, 2026) ports the EoMT model and image-processor
 code of Hugging Face Transformers (models/eomt), Copyright The HuggingFace Team and the EoMT

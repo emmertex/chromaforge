@@ -1,18 +1,16 @@
 //! Publish services and studio capture through the commands, on a library on disk.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
 use crate::Session;
 
-fn temp_dir(tag: &str) -> PathBuf {
+/// The test's folder in Temp, removed when the test ends.
+fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let d = std::env::temp_dir().join(format!("lcc-pub-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+    lcc_testkit::TempDir::new(&format!("lcc-pub-{tag}-{n}"))
 }
 
 fn png(path: &Path, seed: u8) {
@@ -23,11 +21,12 @@ fn png(path: &Path, seed: u8) {
     std::fs::write(path, bytes).unwrap();
 }
 
-fn library(tag: &str) -> (Session, PathBuf) {
+/// A library in a fresh folder. The folder comes first: bound first, it is dropped after the session.
+fn library(tag: &str) -> (lcc_testkit::TempDir, Session) {
     let root = temp_dir(tag);
     let mut s = Session::new().with_fs();
     s.open_library(root.join("lib"), false).unwrap();
-    (s, root)
+    (root, s)
 }
 
 fn import(s: &mut Session, root: &Path, n: u8) -> Vec<u64> {
@@ -53,7 +52,7 @@ fn files(dir: &Path) -> Vec<String> {
 
 #[test]
 fn hard_drive_publish_cycle() {
-    let (mut s, root) = library("cycle");
+    let (root, mut s) = library("cycle");
     let ids = import(&mut s, &root, 3);
     let out = root.join("published");
     let svc = s
@@ -120,7 +119,7 @@ fn hard_drive_publish_cycle() {
 /// follows the collection's current name.
 #[test]
 fn immich_album_names_follow_renames_and_sets() {
-    let (mut s, root) = library("immich-sets");
+    let (root, mut s) = library("immich-sets");
     let svc = s.execute("publish.createService", &json!({"kind": "immich", "name": "Immich", "settings": {"account": "x"}})).unwrap();
     let set = svc["set"].as_u64().unwrap();
     let trips = s.execute("album.create", &json!({"name": "Trips", "folder": true, "parent": set})).unwrap();
@@ -145,7 +144,7 @@ fn immich_album_names_follow_renames_and_sets() {
 
 #[test]
 fn bad_publish_params_are_errors() {
-    let (mut s, root) = library("bad");
+    let (root, mut s) = library("bad");
     for p in [
         json!({"dir": "relative/path"}),
         json!({}),
@@ -168,7 +167,7 @@ fn bad_publish_params_are_errors() {
 
 #[test]
 fn studio_capture_imports_new_shots() {
-    let (mut s, root) = library("studio");
+    let (root, mut s) = library("studio");
     let watch = root.join("camera");
     std::fs::create_dir_all(&watch).unwrap();
     png(&watch.join("before.png"), 1);
@@ -224,7 +223,7 @@ fn studio_capture_imports_new_shots() {
 
 #[test]
 fn a_published_collection_lists_new_then_modified_then_published() {
-    let (mut s, root) = library("sections");
+    let (root, mut s) = library("sections");
     let ids = import(&mut s, &root, 4);
     let out = root.join("published");
     s.execute("publish.createService", &json!({"name": "Disk", "dir": out.to_string_lossy(), "export": {"format": "jpeg", "longEdge": 20}})).unwrap();
@@ -255,4 +254,28 @@ fn a_published_collection_lists_new_then_modified_then_published() {
     let plain = s.execute("album.create", &json!({"name": "Plain"})).unwrap();
     let plain = plain["id"].as_u64().or_else(|| plain.as_u64()).unwrap();
     assert!(crate::cmd::publish::sections(&s, lcc_catalog::AlbumId(plain)).is_none());
+}
+
+/// A service without comments says so, without being contacted; an Immich one reports the capability.
+#[test]
+fn review_comments_says_when_a_service_has_none() {
+    let (root, mut s) = library("comments");
+    let ids = import(&mut s, &root, 2);
+    let out = root.join("published");
+    let disk = json!({"name": "Disk", "dir": out.to_string_lossy(), "export": {"format": "jpeg", "longEdge": 20}});
+    s.execute("publish.createService", &disk).unwrap();
+    s.execute("library.select", &json!({"ids": ids})).unwrap();
+    let made = s.execute("publish.createCollection", &json!({"service": "Disk", "name": "Web", "addSelected": true})).unwrap();
+    let coll = made["collection"].as_u64().unwrap();
+    s.execute("publish.run", &json!({"collection": coll})).unwrap();
+    let r = s.execute("publish.reviewComments", &json!({"collection": coll})).unwrap();
+    assert_eq!((r["supported"].clone(), r["photos"].clone()), (json!(false), json!([])), "{r}");
+    let one = s.execute("publish.comments", &json!({"collection": coll, "id": ids[0]})).unwrap();
+    assert_eq!((one["supported"].clone(), one["comments"].clone()), (json!(false), json!([])), "{one}");
+    assert!(s.execute("publish.reviewComments", &json!({})).is_err(), "a collection is required");
+    assert!(s.execute("publish.reviewComments", &json!({"collection": 987654})).is_err());
+    s.execute("publish.createService", &json!({"kind": "immich", "name": "Immich", "settings": {"account": "x"}})).unwrap();
+    let list = s.execute("publish.services", &json!({})).unwrap();
+    let immich = list["services"].as_array().unwrap().iter().find(|x| x["kind"] == "immich").unwrap();
+    assert_eq!(immich["capabilities"]["comments"], true);
 }

@@ -456,7 +456,7 @@ fn slider_laid_out(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
     // the name: double-click it to reset, as the thumb (a disabled slider's name is only text)
     let label_resp = ui.interact(label_rect, id.with("label"), if enabled { Sense::click() } else { Sense::hover() });
     // say how to reset (issue #1436: the double-click was hard to discover), as the curve channels do
-    let reset_hint = crate::i18n::tr_format!("{name} — double-click to reset it", name = label_text);
+    let reset_hint = crate::i18n::tr_format!("{name}: double-click to reset it", name = label_text);
     let label_resp = if enabled { label_resp.on_hover_text(reset_hint.as_str()) } else { label_resp };
     crate::widgets::announce(&label_resp, crate::i18n::tr_format!("Reset {name}", name = label_text.clone()));
     register(ui.ctx(), format!("sliderLabel:{}", spec.id), label_rect);

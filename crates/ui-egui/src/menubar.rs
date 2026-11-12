@@ -45,7 +45,18 @@ impl MenuNode {
 
 /// User-defined names in parameterized menus are data, not message keys.
 pub fn display_item_label<'a>(id: &str, params: &Value, label: &'a str) -> &'a str {
-    if matches!(id, "metadata.applyPreset" | "album.addPhotos" | "label.applySet" | "catalog.openRecent" | "plugins.runItem")
+    if matches!(
+        id,
+        "metadata.applyPreset"
+            | "album.addPhotos"
+            | "label.applySet"
+            | "catalog.openRecent"
+            | "plugins.runItem"
+            | "filter.applyPreset"
+            | "keyword.toggleFromSet"
+            | "keyword.useSet"
+            | "map.style"
+    ) || (id == "map.filter" && params.get("filter").and_then(Value::as_str).is_some_and(|f| f.starts_with("location:")))
         || (id == "app.export" && params.get("preset").is_some())
         || (id == "app.openLibrary" && params.get("path").is_some())
         || (id == "app.recentLibraries" && params.get("remove").is_some())
@@ -341,7 +352,7 @@ pub(crate) fn in_normal_album(app: &LccApp) -> bool {
     }
 }
 
-fn item(id: &str, params: Value, label: impl Into<String>, shortcut: Option<&str>, enabled: bool, checked: Option<bool>) -> MenuNode {
+pub(crate) fn item(id: &str, params: Value, label: impl Into<String>, shortcut: Option<&str>, enabled: bool, checked: Option<bool>) -> MenuNode {
     MenuNode::Item { id: id.into(), params, label: label.into(), shortcut: shortcut.map(str::to_string), enabled, checked }
 }
 
@@ -353,6 +364,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         // Every language's command is checked when it is the active one.
         _ if crate::menus::language_from_command(id).is_some() => Some(crate::menus::language_from_command(id) == Some(u.language)),
         "develop.autoSync" => Some(app.session.auto_sync),
+        "webui.guides" => Some(u.web.show_guides),
         "view.photoCounts" => Some(u.show_counts),
         "view.cellCompact" => Some(u.lib.cell_style == crate::libtools::CellStyle::Compact),
         "view.cellExpanded" => Some(u.lib.cell_style == crate::libtools::CellStyle::Expanded),
@@ -368,11 +380,16 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.reference" => Some(u.view == ViewMode::Reference),
         "view.leftPanel" => Some(u.left_panel),
         "view.faceBoxes" => Some(u.face_boxes),
+        crate::face_menu::DRAW_REGIONS => Some(u.draw_faces),
         "view.hdrPreview" => Some(u.hdr_preview),
         "view.focusPoint" => Some(u.settings.focus_point),
+        "metadata.targetOnly" => Some(u.settings.metadata_target_only),
         "view.zoomToFocus" => Some(u.settings.zoom_to_focus),
         "view.filmstrip" => Some(u.filmstrip),
         "view.shotInfo" => Some(u.shot_info),
+        "view.lockZoomPosition" => Some(u.settings.lock_zoom),
+        "view.scrollByRow" => Some(u.settings.scroll_by_row),
+        "view.mirrorImage" => Some(u.settings.mirror_image),
         "view.frameRate" => Some(u.frame_rate),
         "view.histogram" => Some(if crate::modern::on(app) { crate::modern::histogram_shown(app) } else { u.histogram }),
         "view.clipping" => Some(u.show_clipping),
@@ -381,6 +398,8 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.colorReadoutHsl" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Hsl),
         "view.colorReadoutLab" => Some(u.settings.color_readout == crate::color_readout::ColorReadout::Lab),
         "view.softProof" => Some(u.soft_proof),
+        "remove.useGenerative" => Some(crate::panels::genfill::generative_on(app)),
+        "remove.detectObjects" => Some(crate::panels::genfill::detect_objects_on(app)),
         "view.maskOverlay" => Some(u.mask_overlay),
         "view.maskOverlayAll" => Some(u.mask_overlay_all),
         "view.maskPins" => Some(u.mask_pins),
@@ -396,6 +415,7 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "view.navigator" => Some(u.navigator),
         "view.layoutImage" => Some(u.layout_image.show && !u.layout_image.path.trim().is_empty()),
         "library.holdView" => Some(app.session.hold_view),
+        "app.autoImportToggle" => Some(app.session.import_defaults.auto_active_folder().is_some()),
         "view.fullScreenPreview" => Some(u.fullscreen),
         "view.lightsOut" => Some(u.lights_out != crate::module::LightsOut::Off),
         "view.enterFullScreen" => Some(app.window_is_fullscreen),
@@ -410,9 +430,22 @@ pub fn checked(app: &LccApp, id: &str) -> Option<bool> {
         "panel.info" if crate::modern::on(app) => Some(app.ui.modern.info),
         "panel.info" => panel(RightPanel::Info),
         "panel.keywords" => panel(RightPanel::Keywords),
-        "panel.presets" => Some(u.presets),
+        "panel.presets" => Some(crate::panels::presets::shown(app)),
         "library.toggleAutoWriteXmp" => Some(app.session.xmp.auto_write),
+        "map.showInfo" => Some(app.map.prefs.show_info),
+        "map.showKey" => Some(app.map.prefs.show_key),
+        "book.headerBar" => Some(u.book.header_bar),
+        "book.infoOverlay" => Some(u.book.info_overlay),
+        "printui.infoOverlay" => Some(app.print.info_overlay),
         "library.showSubfolderPhotos" => Some(app.session.folder_subfolders),
+        "map.toggleLockMarkers" => Some(app.map.prefs.lock_markers),
+        "map.toggleSavedLocations" => Some(app.map.prefs.show_saved),
+        "book.toggleGuides" => Some(u.book.book.guides.show),
+        "slideshow.toggleGuides" => Some(u.slides.settings.layout.show_guides),
+        "printui.toggleGuides" => Some(app.print.show),
+        "printui.toggleRulers" => Some(app.print.rulers),
+        "library.lockFilters" => Some(app.session.lock_filters),
+        "library.rememberFilters" => Some(app.session.remember_filters),
         _ => None,
     }
 }
@@ -440,6 +473,10 @@ fn live_label(app: &LccApp, id: &str, label: &str) -> String {
 
 /// The parameterized submenus.
 pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
+    // the state-driven choice submenus (`menu_choices`)
+    if let Some(v) = crate::menu_choices::expanded(app, name) {
+        return Some(v);
+    }
     let active = app.session.active().and_then(|id| app.session.catalog.photo(id).cloned());
     let has = active.is_some();
     Some(match name {
@@ -730,7 +767,7 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
             let recent = &recent;
             let label = |r: &str| {
                 let d = std::path::Path::new(r);
-                format!("{} — {}", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
+                format!("{} ({})", crate::panels::settings::library_name(d), d.parent().map(|p| p.display().to_string()).unwrap_or_default())
             };
             let mut v: Vec<MenuNode> = recent
                 .iter()
@@ -803,18 +840,34 @@ pub(crate) fn expanded(app: &LccApp, name: &str) -> Option<Vec<MenuNode>> {
         "Color Label Set" => {
             let sets = lcc_engine::cmd::manage::label_sets_json(&app.session);
             let current = sets["current"].as_str().map(str::to_string);
-            let mut v: Vec<MenuNode> = sets["sets"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|set| {
+            let mut v = crate::menu_choices::choices(
+                "label.applySet",
+                sets["sets"].as_array().into_iter().flatten().map(|set| {
                     let name = set["name"].as_str().unwrap_or_default();
-                    item("label.applySet", json!({"name": name}), name, None, true, Some(current.as_deref() == Some(name)))
-                })
-                .collect();
+                    crate::menu_choices::Choice::new(name, json!({"name": name}), current.as_deref() == Some(name))
+                }),
+            );
             v.push(MenuNode::Separator);
             v.push(item("dialog.labelNames", Value::Null, "Edit…", None, true, None));
             v
+        }
+        // Classic's Settings ▸ Process Version: every process this build renders, the active photo's checked
+        "Process Version" => {
+            let current = active.as_ref().map(|p| p.develop.process);
+            lcc_develop::Process::ALL
+                .iter()
+                .map(|p| {
+                    let v = p.version();
+                    item(
+                        "develop.setProcess",
+                        json!({"version": v.0}),
+                        crate::i18n::tr_format!("Version: {}", v.0),
+                        None,
+                        has,
+                        Some(current == Some(v)),
+                    )
+                })
+                .collect()
         }
         "Select by" => {
             let mut v: Vec<MenuNode> = [("pick", "Picks"), ("reject", "Rejects"), ("none", "Unflagged")]
@@ -2083,7 +2136,7 @@ mod tests {
 
     #[test]
     fn find_missing_and_locate() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::create_dir_all(dir.join("b")).unwrap();
@@ -2151,7 +2204,7 @@ mod tests {
     /// failures as errors instead of returning `Ok(null)`.
     #[test]
     fn find_missing_waited_invalid_folder_returns_error_with_zero_mutations() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-err-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-err");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dummy = dir.join("dummy.png");
@@ -2200,7 +2253,7 @@ mod tests {
     /// and background mode (`wait: false` or omitted) continues returning `{"background": true}`.
     #[test]
     fn find_missing_waited_structured_results_and_background_mode() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-bg-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-bg");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("orig")).unwrap();
         std::fs::create_dir_all(dir.join("found")).unwrap();
@@ -2238,7 +2291,7 @@ mod tests {
     /// indicating timeout and that the search continues in the background, rather than returning `Ok(null)`.
     #[test]
     fn find_missing_waited_timeout_behavior() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-to-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-to");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -2265,7 +2318,7 @@ mod tests {
     /// even if unrelated background tasks remain active in `app.tasks`.
     #[test]
     fn find_missing_waited_completes_while_unrelated_task_remains_active() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-missing-multi-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-missing-multi");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("orig")).unwrap();
         std::fs::create_dir_all(dir.join("found")).unwrap();
@@ -2310,7 +2363,7 @@ mod tests {
     #[test]
 
     fn auto_tag_from_tracklog() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-tracklog-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-tracklog");
         std::fs::create_dir_all(&dir).unwrap();
         let gpx = dir.join("walk.gpx");
         std::fs::write(

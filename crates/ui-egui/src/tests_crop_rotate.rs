@@ -494,7 +494,7 @@ fn transform_is_a_section_of_the_edit_panel() {
 /// without a word.
 #[test]
 fn auto_straighten_says_when_it_finds_nothing() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-auto-straighten-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-auto-straighten");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = lcc_raster::Rgba8 { width: 64, height: 48, data: vec![[90, 120, 160, 255]; 64 * 48] };

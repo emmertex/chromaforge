@@ -15,6 +15,13 @@ unsafe_code = "deny"
 dbg_macro = "warn"
 todo = "warn"
 
+[features]
+default = ["heif"]
+# Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default so the Android app
+# opens iPhone photos like the desktop builds do; distributors who must avoid HEVC (patents)
+# build with `--no-default-features`.
+heif = ["lcc-codecs/heif"]
+
 [lib]
 # the APK loads it as lib<name>.so; off Android the library is empty
 crate-type = ["cdylib"]

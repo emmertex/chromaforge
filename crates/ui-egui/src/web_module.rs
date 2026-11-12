@@ -54,6 +54,19 @@ thread_local! {
     static RELOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The settings the module shows (for `webui.previewInBrowser` from a command).
     static SHOWN: std::cell::RefCell<Option<GallerySettings>> = const { std::cell::RefCell::new(None) };
+    /// Settings a template command wants shown; the module takes them on its next frame.
+    static QUEUED: std::cell::RefCell<Option<GallerySettings>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The settings the module shows now (the defaults before it was first drawn).
+pub fn shown_settings() -> GallerySettings {
+    SHOWN.with(|s| s.borrow().clone()).unwrap_or_default()
+}
+
+/// Makes the module show `s` from its next frame (applying a template).
+pub fn queue_settings(s: GallerySettings) {
+    SHOWN.with(|x| *x.borrow_mut() = Some(s.clone()));
+    QUEUED.with(|q| *q.borrow_mut() = Some(s));
 }
 
 /// Opens a saved web gallery (a saved creation of kind `web`): its settings load into the module
@@ -115,6 +128,9 @@ impl Module for WebModule {
         register(ui.ctx(), "view:module:web", area);
         let mut st = state(ui.ctx());
         take_pending(app, &mut st);
+        if let Some(s) = QUEUED.with(|q| q.borrow_mut().take()) {
+            st.settings = s;
+        }
         if RELOAD.with(std::cell::Cell::take) {
             st.loaded = false;
             // thumbnails are drawn from the cache: ask for them again
@@ -195,10 +211,12 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, s: &GallerySettings, rect: Rect)
     let scale = 0.6; // the preview is a scaled-down page
     let border = if s.appearance.photo_borders { s.appearance.border_width as f32 * scale } else { 0.0 };
     let border_c = c32(&s.palette.border);
+    let mut cells: Vec<Rect> = Vec::new();
     if s.template == Template::Track || s.template == Template::Single {
         // large image area, then a strip
         let stage_h = (rect.bottom() - y - pad - 90.0).max(60.0);
         let stage = Rect::from_min_size(pos2(rect.left() + pad, y), vec2(inner_w, stage_h));
+        cells.push(stage);
         if let Some(id) = ids.first() {
             draw_photo(&p, app, *id, stage, border, border_c);
         }
@@ -211,12 +229,16 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, s: &GallerySettings, rect: Rect)
                     break;
                 }
                 p.rect_filled(r, 0.0, c32(&s.palette.cell));
+                cells.push(r);
                 draw_photo(&p, app, *id, r.shrink(4.0), border, border_c);
                 if s.appearance.cell_numbers {
                     p.text(r.left_top() + vec2(3.0, 2.0), Align2::LEFT_TOP, format!("{}", i + 1), t.font(9.0), detail);
                 }
                 x += cell + gap;
             }
+        }
+        if app.ui.web.show_guides {
+            draw_guides(&p, rect, pad, &cells);
         }
         return;
     }
@@ -235,6 +257,7 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, s: &GallerySettings, rect: Rect)
             break;
         }
         p.rect_filled(r, 0.0, c32(&s.palette.cell));
+        cells.push(r);
         let img = Rect::from_min_max(r.min + vec2(6.0, 6.0), r.max - vec2(6.0, 6.0 + cap_h));
         if s.template == Template::Square {
             let side = img.width().min(img.height());
@@ -249,6 +272,19 @@ fn preview(ui: &mut egui::Ui, app: &mut LccApp, s: &GallerySettings, rect: Rect)
             let title = app.session.catalog.photo(*id).map(|ph| ph.meta.title.clone()).unwrap_or_default();
             p.text(pos2(r.center().x, r.bottom() - 4.0), Align2::CENTER_BOTTOM, title, t.font(10.0), text);
         }
+    }
+    if app.ui.web.show_guides {
+        draw_guides(&p, rect, pad, &cells);
+    }
+}
+
+/// View ▸ Show Guides: the page margin and every cell outlined, over the preview.
+fn draw_guides(p: &egui::Painter, page: Rect, margin: f32, cells: &[Rect]) {
+    let margin_c = Color32::from_rgb(0x2e, 0xa0, 0xff);
+    let cell_c = Color32::from_rgb(0xff, 0x4d, 0xc4);
+    p.rect_stroke(page.shrink(margin), 0.0, Stroke::new(1.0, margin_c), egui::StrokeKind::Inside);
+    for r in cells {
+        p.rect_stroke(*r, 0.0, Stroke::new(1.0, cell_c), egui::StrokeKind::Inside);
     }
 }
 
@@ -306,14 +342,11 @@ fn color_row(ui: &mut egui::Ui, label: &str, hex: &mut String) {
 
 fn settings_column(ui: &mut egui::Ui, app: &mut LccApp, st: &mut WebUi) {
     let s = &mut st.settings;
-    heading(ui, "Layout Style");
-    ui.horizontal_wrapped(|ui| {
-        for tpl in Template::ALL {
-            if ui.selectable_label(s.template == tpl, crate::i18n::tr(tpl.label())).clicked() {
-                s.template = tpl;
-            }
-        }
-    });
+    heading(ui, "Template Browser");
+    // templates apply through their command (queued, taken on the next frame); keep what is typed
+    SHOWN.with(|x| *x.borrow_mut() = Some(s.clone()));
+    crate::web_templates::browser(ui, app);
+    let s = &mut st.settings;
 
     heading(ui, "Site Info");
     field(ui, "title", "Site title", &mut s.site.title);
@@ -658,7 +691,7 @@ mod tests {
 
     #[test]
     fn web_export_runs_in_the_background() {
-        let dir = std::env::temp_dir().join(format!("lcc-webui-export-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lcc-webui-export");
         let _ = std::fs::remove_dir_all(&dir);
         let app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());
         let mut h = Headless::new(app, [1200.0, 800.0], 1.0);

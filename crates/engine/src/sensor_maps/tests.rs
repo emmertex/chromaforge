@@ -144,6 +144,7 @@ fn the_map_file_round_trips_and_damaged_files_are_set_aside() {
 
 #[test]
 fn records_through_the_registry_change_the_generation_on_confirmation_only() {
+    let _maps = change_generation();
     let body = "registry-body";
     let g0 = generation();
     for k in 0..2 {

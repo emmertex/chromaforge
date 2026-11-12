@@ -110,6 +110,7 @@ fn one_to_one_pixels_equal_export_pixels_on_corpus_raws() {
 // Given 1:1 previews built, they are kept apart from the standard ones and discarded on their own
 #[test]
 fn one_to_one_previews_are_discarded_on_their_own() {
+    let _keys = crate::sensor_maps::keep_generation();
     let mut s = Session::with_demo();
     let id = s.active().unwrap();
     let p = s.catalog.photo(id).unwrap().clone();

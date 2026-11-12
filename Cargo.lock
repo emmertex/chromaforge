@@ -4458,7 +4458,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-actions"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4466,7 +4466,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-android"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "android_logger",
  "eframe",
@@ -4485,7 +4485,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-android-host"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "android-activity",
  "jni 0.21.1",
@@ -4494,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-app"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "bytemuck",
  "chrono",
@@ -4536,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-audio-out"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "cpal",
  "futures",
@@ -4548,7 +4548,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-book"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "hayro",
  "lcc-codecs",
@@ -4565,11 +4565,11 @@ dependencies = [
 
 [[package]]
 name = "lcc-brand"
-version = "26.46.1"
+version = "26.46.2"
 
 [[package]]
 name = "lcc-camdb"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-color",
@@ -4581,7 +4581,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-camprof"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-color",
  "lcc-raw",
@@ -4589,7 +4589,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-catalog"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "chrono",
  "crc32fast",
@@ -4616,7 +4616,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-classic-slideshow"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "claxon",
  "hayro",
@@ -4640,7 +4640,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-cli"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "chrono",
  "dhat",
@@ -4667,7 +4667,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-codecs"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "avif-serialize",
  "bytemuck",
@@ -4702,7 +4702,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-color"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-geom",
@@ -4712,7 +4712,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-colourfit"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-camdb",
@@ -4733,7 +4733,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-credentials"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "argon2 0.5.3",
  "chacha20poly1305",
@@ -4749,7 +4749,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-denoise"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "faer-core",
  "lcc-brand",
@@ -4767,7 +4767,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-denoise-core"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "dhat",
  "lcc-brand",
@@ -4784,7 +4784,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-develop"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-color",
@@ -4797,7 +4797,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-engine"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "ab_glyph",
  "base64",
@@ -4883,7 +4883,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-faces"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-testkit",
@@ -4899,7 +4899,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-fetch"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "log",
@@ -4911,7 +4911,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-filters"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "rayon",
  "serde",
@@ -4924,14 +4924,14 @@ dependencies = [
 
 [[package]]
 name = "lcc-fuzzkit"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "lcc-genfill"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-color",
@@ -4946,7 +4946,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-geo"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "flate2",
  "image",
@@ -4960,7 +4960,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-geocode"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "miniz_oxide 0.8.9",
  "serde",
@@ -4968,7 +4968,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-geom"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "proptest",
@@ -4977,7 +4977,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-gpu"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "bytemuck",
  "lcc-brand",
@@ -4992,6 +4992,7 @@ dependencies = [
  "lcc-raw",
  "lcc-scenes",
  "lcc-testkit",
+ "lcc-tflite",
  "log",
  "pollster 1.0.1",
  "wgpu",
@@ -4999,7 +5000,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-gpumem"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "ash",
  "lcc-testkit",
@@ -5012,14 +5013,15 @@ dependencies = [
 
 [[package]]
 name = "lcc-hash"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
+ "md-5",
  "sha1 0.10.7",
 ]
 
 [[package]]
 name = "lcc-hdrmeta"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "ash",
  "wgpu",
@@ -5028,7 +5030,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-heif"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "heic-rs",
  "lcc-brand",
@@ -5037,7 +5039,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-immich"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "chrono",
  "lcc-catalog",
@@ -5050,6 +5052,7 @@ dependencies = [
  "lcc-net",
  "lcc-publish",
  "lcc-raster",
+ "lcc-testkit",
  "log",
  "serde",
  "serde_json",
@@ -5057,7 +5060,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-inpaint"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "png 0.18.1",
  "rayon",
@@ -5065,7 +5068,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-layout"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-fuzzkit",
  "lcc-raster",
@@ -5076,7 +5079,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-lensdb"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-develop",
  "lcc-geom",
@@ -5085,7 +5088,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-mcp"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-codecs",
@@ -5103,7 +5106,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-merge"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "half",
  "lcc-brand",
@@ -5121,7 +5124,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-meta"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "brotli",
  "brotli-decompressor",
@@ -5139,7 +5142,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-ml"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5156,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-net"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "flate2",
  "lcc-brand",
@@ -5172,11 +5175,11 @@ dependencies = [
 
 [[package]]
 name = "lcc-notes"
-version = "26.46.1"
+version = "26.46.2"
 
 [[package]]
 name = "lcc-pdf"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "hayro",
  "lcc-fuzzkit",
@@ -5191,7 +5194,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-peer"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -5210,7 +5213,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-pipeline"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "dhat",
  "image",
@@ -5233,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-plugins"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-fuzzkit",
  "lcc-net",
@@ -5250,7 +5253,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-preview"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "jpeg-encoder",
  "lcc-brand",
@@ -5263,7 +5266,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-print"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-codecs",
@@ -5285,7 +5288,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-psd"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "flate2",
  "lcc-psd",
@@ -5296,18 +5299,19 @@ dependencies = [
 
 [[package]]
 name = "lcc-publish"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-catalog",
  "lcc-fuzzkit",
  "lcc-hash",
+ "lcc-testkit",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "lcc-raster"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "lcc-color",
@@ -5320,7 +5324,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-raw"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "chrono",
  "dhat",
@@ -5330,6 +5334,7 @@ dependencies = [
  "lcc-codecs",
  "lcc-color",
  "lcc-geom",
+ "lcc-hash",
  "lcc-meta",
  "lcc-raster",
  "lcc-testkit",
@@ -5349,7 +5354,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-scenes"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "image",
  "lcc-brand",
@@ -5361,7 +5366,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-segment"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5379,7 +5384,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-slideshow"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-raster",
  "serde",
@@ -5388,7 +5393,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-surface"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-develop",
  "miniz_oxide 0.8.9",
@@ -5399,23 +5404,24 @@ dependencies = [
 
 [[package]]
 name = "lcc-sysmem"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
 ]
 
 [[package]]
 name = "lcc-testkit"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
 ]
 
 [[package]]
 name = "lcc-tether"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-fuzzkit",
+ "lcc-testkit",
  "nusb",
  "serde",
  "serde_json",
@@ -5423,7 +5429,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-text"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-fuzzkit",
  "lcc-testkit",
@@ -5435,18 +5441,21 @@ dependencies = [
 
 [[package]]
 name = "lcc-tflite"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "candle-core",
  "lcc-brand",
+ "lcc-faces",
  "lcc-testkit",
+ "log",
  "rayon",
  "thiserror 2.0.21",
+ "web-time",
 ]
 
 [[package]]
 name = "lcc-tiff"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-brand",
  "proptest",
@@ -5456,8 +5465,9 @@ dependencies = [
 
 [[package]]
 name = "lcc-ui-egui"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
+ "chrono",
  "craft-ui",
  "egui",
  "egui_kittest",
@@ -5507,13 +5517,14 @@ dependencies = [
 
 [[package]]
 name = "lcc-updater"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "base64",
  "ed25519-dalek 2.2.0",
  "flate2",
  "lcc-brand",
  "lcc-net",
+ "lcc-testkit",
  "lcc-winmsi",
  "log",
  "serde_json",
@@ -5523,7 +5534,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-video"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "chrono",
  "filmcraft-aac",
@@ -5555,7 +5566,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-video-export"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "filmcraft-aac",
  "filmcraft-color",
@@ -5565,13 +5576,14 @@ dependencies = [
  "filmcraft-prores",
  "lcc-brand",
  "lcc-raster",
+ "lcc-testkit",
  "lcc-video",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "lcc-web"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "crc32fast",
  "eframe",
@@ -5593,7 +5605,7 @@ dependencies = [
 
 [[package]]
 name = "lcc-webgallery"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-fuzzkit",
  "russh",
@@ -5605,14 +5617,14 @@ dependencies = [
 
 [[package]]
 name = "lcc-winmsi"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "lcc-winspool"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "lcc-testkit",
  "windows-sys 0.61.2",
@@ -10668,7 +10680,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "26.46.1"
+version = "26.46.2"
 dependencies = [
  "base64",
  "brotli",

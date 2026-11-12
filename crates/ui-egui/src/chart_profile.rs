@@ -32,13 +32,24 @@ pub struct ChartProfileDialog {
     /// Each photo's light: `D55` (Daylight / Flash) or `A` (Tungsten).
     pub lights: [String; 2],
     pub natural: bool,
+    /// Even out the light on the chart (falloff across the card, glare on the patches).
+    pub even_light: bool,
     /// Each photo's chart corners (normalised to its frame) and quarter turns, once known.
     pub corners: [Option<[[f64; 2]; 4]>; 2],
     pub turns: [u8; 2],
+    /// Each photo's chart, by key (found by its colours; the ColorChecker 24 until then).
+    pub charts: [String; 2],
     /// Which photo the picture shows (0 or 1).
     pub slot: usize,
     /// Which light's report is shown (index into the report's calibrations).
     pub report_tab: usize,
+}
+
+impl ChartProfileDialog {
+    /// `slot`'s chart: its key looked up, the ColorChecker 24 when unknown.
+    pub fn chart(&self, slot: usize) -> &'static camprof::reference::Chart {
+        self.charts.get(slot).and_then(|k| camprof::reference::by_key(k)).unwrap_or_else(camprof::chart)
+    }
 }
 
 impl Default for ChartProfileDialog {
@@ -48,8 +59,10 @@ impl Default for ChartProfileDialog {
             name_edited: false,
             lights: ["D55".into(), "A".into()],
             natural: true,
+            even_light: true,
             corners: [None, None],
             turns: [0, 0],
+            charts: [camprof::chart().key.to_string(), camprof::chart().key.to_string()],
             slot: 0,
             report_tab: 0,
         }
@@ -140,13 +153,14 @@ fn load(app: &mut LccApp, slot: usize, photo: Option<PhotoId>, path: String) -> 
                     let img = &prep.display;
                     let color = egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.as_bytes());
                     shot.texture = Some(ctx.load_texture(format!("chart-profile-{slot}"), color, egui::TextureOptions::LINEAR));
-                    let located = prep.located.map(|l| (cp::normalized_corners(&prep.frame, &l.corners), l.turns));
+                    let located = prep.located.map(|l| (cp::normalized_corners(&prep.frame, &l.corners), l.turns, l.chart));
                     shot.prepared = Some(Arc::new(prep));
                     if let Some(Dialog::ChartProfile { opts }) = &mut app.ui.dialog
-                        && let Some((corners, turns)) = located
+                        && let Some((corners, turns, chart)) = located
                     {
                         opts.corners[slot] = Some(corners);
                         opts.turns[slot] = turns;
+                        opts.charts[slot] = chart.key.to_string();
                     }
                     // the second chart is under the other light: tungsten beside daylight, else daylight
                     if slot == 1
@@ -247,19 +261,20 @@ fn adjust_in(state: &mut ChartProfileState, opts: &mut ChartProfileDialog, comma
         "cameraProfile.turn" => opts.turns[slot] = (opts.turns[slot] + 1) % 4,
         "cameraProfile.find" => {
             let found =
-                camprof::find_chart(&prep.frame).ok_or_else(|| crate::i18n::tr("No ColorChecker found: drag the corners onto it").to_string())?;
+                camprof::find_chart(&prep.frame).ok_or_else(|| crate::i18n::tr("No color chart found: drag the corners onto it").to_string())?;
             opts.corners[slot] = Some(cp::normalized_corners(&prep.frame, &found.corners));
             opts.turns[slot] = found.turns;
+            opts.charts[slot] = found.chart.key.to_string();
         }
         _ => {
             let corners = opts.corners[slot].and_then(|c| cp::corners_from_normalized(&prep.frame, c)).ok_or("no corners to align")?;
-            let refined = camprof::refine(&prep.frame, &corners, opts.turns[slot])
+            let refined = camprof::refine(&prep.frame, opts.chart(slot), &corners, opts.turns[slot])
                 .ok_or_else(|| crate::i18n::tr("The corners are too far from the chart to align: drag them closer").to_string())?;
             opts.corners[slot] = Some(cp::normalized_corners(&prep.frame, &refined.corners));
         }
     }
     state.report = None;
-    Ok(json!({"slot": slot, "corners": opts.corners[slot], "turns": opts.turns[slot]}))
+    Ok(json!({"slot": slot, "corners": opts.corners[slot], "turns": opts.turns[slot], "chart": opts.charts[slot]}))
 }
 
 /// A profile of the name asked for is there: what the dialog asks before saving.
@@ -338,7 +353,13 @@ fn build_now(app: &mut LccApp, opts: &ChartProfileDialog, on_exists: cp::OnExist
     let first = shot(0).and_then(|s| s.prepared.clone()).ok_or_else(|| crate::i18n::tr("The chart photo isn't read yet").to_string())?;
     let second =
         shot(1).map(|s| s.prepared.clone().ok_or_else(|| crate::i18n::tr("The second chart photo isn't read yet").to_string())).transpose()?;
-    let request = |i: usize| Request { corners: opts.corners[i], turns: Some(opts.turns[i]), refine: false, illuminant: opts.lights[i].clone() };
+    let request = |i: usize| Request {
+        corners: opts.corners[i],
+        turns: Some(opts.turns[i]),
+        refine: false,
+        illuminant: opts.lights[i].clone(),
+        chart: Some(opts.chart(i).key.to_string()),
+    };
     let (req_a, req_b) = (request(0), request(1));
     let options = camprof::BuildOptions {
         illuminant: String::new(),
@@ -346,6 +367,7 @@ fn build_now(app: &mut LccApp, opts: &ChartProfileDialog, on_exists: cp::OnExist
         correction_table: true,
         camera_model: String::new(),
         name: opts.name.clone(),
+        even_light: opts.even_light,
     };
     let apply: Vec<PhotoId> = (0..2).filter_map(|i| shot(i).and_then(|s| s.photo)).collect();
     // the chart photos' bodies start with the new profile
@@ -474,7 +496,10 @@ fn light_word(v: &str) -> String {
 pub fn estimate(app: &LccApp, opts: &ChartProfileDialog, slot: usize) -> Option<cp::LightEstimate> {
     let prep = app.chart_profile.shots.get(slot)?.as_ref()?.prepared.clone()?;
     let c = opts.corners.get(slot).copied().flatten().and_then(|c| cp::corners_from_normalized(&prep.frame, c))?;
-    cp::estimate_light(&prep, &camprof::Located { corners: c, turns: opts.turns.get(slot).copied().unwrap_or(0), score: None })
+    cp::estimate_light(
+        &prep,
+        &camprof::Located { corners: c, turns: opts.turns.get(slot).copied().unwrap_or(0), score: None, chart: opts.chart(slot) },
+    )
 }
 
 /// The light `slot` will be profiled for.
@@ -677,7 +702,7 @@ fn picture(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) {
         painter.text(
             area.center_bottom() - egui::vec2(0.0, 14.0),
             egui::Align2::CENTER_CENTER,
-            crate::i18n::tr("No ColorChecker found: use Find Chart, or place the corners"),
+            crate::i18n::tr("No color chart found: use Find Chart, or place the corners"),
             t.font(12.0),
             t.text,
         );
@@ -685,7 +710,7 @@ fn picture(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) {
     };
     // the patch grid: the squares sampled, A01 marked
     let Some(px) = cp::corners_from_normalized(&prep.frame, corners) else { return };
-    let chart = camprof::chart();
+    let chart = opts.chart(slot);
     let turns = opts.turns[slot] % 4;
     let layout = if turns % 2 == 1 { camprof::reference::Layout { columns: chart.layout.rows, rows: chart.layout.columns } } else { chart.layout };
     let (fw, fh) = (prep.frame.width.max(1) as f64, prep.frame.height.max(1) as f64);
@@ -1125,6 +1150,15 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, opts: &mut ChartProfileDialog) 
                 }))
                 .color(t.text_dim),
             );
+            let r = ui
+                .checkbox(&mut opts.even_light, crate::i18n::tr("Even out the light on the chart"))
+                .on_hover_text(crate::i18n::tr(
+                    "Corrects light that falls off across the chart and glare on its patches. Kept only when it makes the grey patches more even.",
+                ));
+            crate::widgets::register(ui.ctx(), "check:chartProfileEvenLight", r.rect);
+            if r.changed() {
+                app.chart_profile.report = None;
+            }
             ui.separator();
             ui.label(egui::RichText::new(crate::i18n::tr("Second chart (other light)")).color(t.text_label));
             match app.chart_profile.shots[1].as_ref().map(|s| file_name(&s.path)) {

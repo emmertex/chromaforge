@@ -91,18 +91,24 @@ fn a_tools_drawer_hides_the_develop_panels() {
 #[test]
 fn presets_and_the_fold_button_bring_the_tools_back() {
     let mut h = develop();
-    // Window ▸ Presets puts the presets in the panels' place, and back
+    // Window ▸ Presets shows the presets in the left column and leaves the tools where they are:
+    // the presets never take the Edit panels' place
     let presets = |h: &mut Headless| {
         let r = h.request("engine.execute", json!({"command": "panel.presets"}), T);
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
     };
+    let left_of_tools = |h: &Headless| {
+        let (panel, crop) = (rect(h, "classicPanel:presets").expect("the Presets panel"), rect(h, "icon:crop").expect("the tools"));
+        panel.right() <= crop.left()
+    };
     presets(&mut h);
-    assert!(h.app.ui.presets, "Presets in the panels' place");
-    assert!(rect(&h, "icon:crop").is_none());
+    assert!(crate::panels::presets::shown(&h.app) && h.app.ui.left_panel, "the presets are on screen");
+    assert!(left_of_tools(&h), "in the left column, beside the tools");
+    assert_eq!(h.app.ui.right, RightPanel::Edit);
     presets(&mut h);
-    assert!(!h.app.ui.presets, "a second time goes back to the tools");
-    assert!(rect(&h, "icon:crop").is_some());
+    assert!(!crate::panels::presets::shown(&h.app), "a second time folds the panel");
+    assert!(rect(&h, "icon:crop").is_some() && h.app.ui.right == RightPanel::Edit, "and the tools are untouched");
     // E closes the panels; the top bar's fold button brings them back
     let r = h.request("engine.execute", json!({"command": "panel.edit"}), T);
     assert_eq!(r["ok"], true, "{r}");
@@ -111,6 +117,26 @@ fn presets_and_the_fold_button_bring_the_tools_back() {
     click(&mut h, "icon:collapseRight");
     assert_eq!(h.app.ui.right, RightPanel::Edit);
     assert!(!h.app.ui.right_collapsed && rect(&h, "icon:crop").is_some());
+}
+
+/// Tab (Window ▸ Panels) and the top bar's fold button are two switches on the same side: the
+/// button brings back a side Tab hid, in one click, and the menu's switch undoes the button's fold.
+#[test]
+fn the_fold_button_and_the_edge_switch_never_leave_the_right_side_stuck_hidden() {
+    let mut h = develop();
+    let run = |h: &mut Headless, command: &str, params: serde_json::Value| {
+        let r = h.request("engine.execute", json!({"command": command, "params": params}), T);
+        assert_eq!(r["ok"], true, "{command}: {r}");
+        h.settle(SETTLE);
+    };
+    run(&mut h, "panel.sides", json!({"show": false}));
+    assert!(rect(&h, "icon:crop").is_none(), "Tab hid the tools");
+    click(&mut h, "icon:collapseRight");
+    assert!(rect(&h, "icon:crop").is_some(), "one click on the button brings them back");
+    click(&mut h, "icon:collapseRight");
+    assert!(rect(&h, "icon:crop").is_none(), "and the next folds them away");
+    run(&mut h, "panel.toggle", json!({"edge": "right", "show": true}));
+    assert!(rect(&h, "icon:crop").is_some(), "showing the edge unfolds it");
 }
 
 #[test]

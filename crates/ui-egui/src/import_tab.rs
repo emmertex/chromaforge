@@ -476,13 +476,17 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         // (its rows and scroll bar stop short of the right edge, which is the resize handle's: they took the drag)
         let inner = Rect::from_min_max(r.min, pos2((r.right() - 4.0).max(r.left()), r.bottom()));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-sources").max_rect(inner));
+        let mut lap = crate::now_ms();
         sources(app, &mut child);
+        app.lap(&mut lap, "import.sources");
     }
     if let Some(r) = settings_r {
         ui.painter().rect_filled(r, 0.0, t.chrome);
         ui.painter().vline(r.left(), r.y_range(), Stroke::new(1.0, t.divider));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-settings").max_rect(r.shrink2(vec2(10.0, 0.0))));
+        let mut lap = crate::now_ms();
         settings(app, &mut child);
+        app.lap(&mut lap, "import.settings");
     }
     // Library's toolbar under the browsed photos (View ▸ Show Toolbar): view modes, sort, flags,
     // rating, colour labels and thumbnail size, for culling the card in place
@@ -496,7 +500,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         let r = Rect::from_min_max(pos2(middle.left(), middle.bottom() - t.bottom_bar_h), middle.max);
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-toolbar").max_rect(r));
         child.set_clip_rect(r);
+        let mut lap = crate::now_ms();
         crate::panels::bottombar::show(app, &mut child);
+        app.lap(&mut lap, "import.toolbar");
         register(ui.ctx(), "importToolbar", r);
         middle.max.y = r.top();
     }
@@ -504,7 +510,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let body = Rect::from_min_max(pos2(middle.left(), bar_r.bottom()), middle.max);
     {
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("import-tab-bar").max_rect(bar_r));
+        let mut lap = crate::now_ms();
         bar(app, &mut child, wide, &mut pane);
+        app.lap(&mut lap, "import.bar");
     }
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("import-tab-body", pane as u8)).max_rect(body));
     child.set_clip_rect(body);
@@ -518,7 +526,11 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             let mut inner = child.new_child(egui::UiBuilder::new().max_rect(body.shrink2(vec2(12.0, 0.0))));
             settings(app, &mut inner);
         }
-        Pane::Photos if app.session.source == LibrarySource::Folder => photos(app, &mut child),
+        Pane::Photos if app.session.source == LibrarySource::Folder => {
+            let mut lap = crate::now_ms();
+            photos(app, &mut child);
+            app.lap(&mut lap, "import.photos");
+        }
         Pane::Photos => choose_source(app, &mut child),
     }
     if !wide {

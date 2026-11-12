@@ -72,6 +72,17 @@ pub struct Chart {
 }
 
 impl Chart {
+    /// The chart's mid greys: the neutral patches (|a*|, |b*| < 4) between L* 25 and 85, darkest
+    /// and lightest left out (the ColorChecker's D02 to D05, the SpyderCHECKR's 2E to 5E). What a
+    /// white balance or a light estimate is read from.
+    pub fn mid_grey_ids(&self) -> Vec<&str> {
+        self.patches
+            .iter()
+            .filter(|p| p.lab[1].abs() < 4.0 && p.lab[2].abs() < 4.0 && (25.0..=85.0).contains(&p.lab[0]))
+            .map(|p| p.id.as_ref())
+            .collect()
+    }
+
     /// The same patches read the other way round: the rows as columns.
     ///
     /// A reference file that names its patches only by a letter and a number
@@ -146,7 +157,53 @@ pub static COLORCHECKER_CLASSIC: Chart = Chart {
     reading_known: true,
 };
 
-pub static CHARTS: &[&Chart] = &[&COLORCHECKER_CLASSIC];
+/// The Datacolor SpyderCHECKR 24.
+///
+/// Laid out as the card is printed, upright: four columns `E` to `H` and six
+/// rows `1` to `6`, patch `1E` (card white) at the top left; column `E` is the
+/// grey ramp from white to black in 20 % steps, and the skin tones are at the
+/// bottom right. The same 24 patches are columns E to H of the SpyderCHECKR 48.
+///
+/// Reference values are Datacolor's published CIELAB values for those patches,
+/// as transcribed from Datacolor's colour-data sheet (SpyderCheckr_Color_Data)
+/// at bartneck.de. The sheet does not state its illuminant; D50 is assumed, as
+/// for every other chart here. A measurement of your own chart, loaded as a
+/// reference file, is more accurate.
+pub static SPYDERCHECKR_24: Chart = Chart {
+    key: Cow::Borrowed("spyder24"),
+    name: Cow::Borrowed("SpyderCHECKR 24"),
+    source: Cow::Borrowed("Datacolor's published values for the SpyderCHECKR 24 (columns E to H of the SpyderCHECKR 48), D50 assumed"),
+    layout: Layout { columns: 4, rows: 6 },
+    patches: Cow::Borrowed(&[
+        patch!("1E", "Card White", 96.04, 2.16, 2.60),
+        patch!("1F", "Primary Cyan", 47.12, -32.50, -28.75),
+        patch!("1G", "Primary Orange", 60.94, 38.21, 61.31),
+        patch!("1H", "Aqua", 70.19, -31.90, 1.98),
+        patch!("2E", "20% Gray", 80.44, 1.17, 2.05),
+        patch!("2F", "Primary Magenta", 50.49, 53.45, -13.55),
+        patch!("2G", "Blueprint", 37.80, 7.30, -43.04),
+        patch!("2H", "Lavender", 54.38, 8.84, -25.71),
+        patch!("3E", "40% Gray", 65.52, 0.69, 1.86),
+        patch!("3F", "Primary Yellow", 83.61, 3.36, 87.02),
+        patch!("3G", "Pink", 49.81, 48.50, 15.76),
+        patch!("3H", "Evergreen", 42.03, -15.80, 22.93),
+        patch!("4E", "60% Gray", 49.62, 0.58, 1.56),
+        patch!("4F", "Primary Red", 41.05, 60.75, 31.17),
+        patch!("4G", "Violet", 28.88, 19.36, -24.48),
+        patch!("4H", "Steel Blue", 48.82, -5.11, -23.08),
+        patch!("5E", "80% Gray", 33.55, 0.35, 1.40),
+        patch!("5F", "Primary Green", 54.14, -40.80, 34.75),
+        patch!("5G", "Apple Green", 72.45, -23.60, 60.47),
+        patch!("5H", "Classic Light Skin", 65.10, 18.14, 18.68),
+        patch!("6E", "Card Black", 16.91, 1.43, -0.81),
+        patch!("6F", "Primary Blue", 24.75, 13.78, -49.48),
+        patch!("6G", "Sunflower", 71.65, 23.74, 72.28),
+        patch!("6H", "Classic Dark Skin", 36.13, 14.15, 15.78),
+    ]),
+    reading_known: true,
+};
+
+pub static CHARTS: &[&Chart] = &[&COLORCHECKER_CLASSIC, &SPYDERCHECKR_24];
 
 /// Look a built-in chart up by its key.
 pub fn by_key(key: &str) -> Option<&'static Chart> {
@@ -305,7 +362,7 @@ impl ChartCorners {
     }
 }
 
-fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
+pub(crate) fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
 }
 

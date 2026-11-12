@@ -132,6 +132,7 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("edited", "Has Edits", Kind::Bool),
     ("cropped", "Cropped", Kind::Bool),
     ("treatment", "Treatment", Kind::Choice(&[("color", "In Color"), ("monochrome", "Black & White")])),
+    ("processVersion", "Process Version", Kind::Number),
     // Assisted Culling
     ("sharpness", "Focus (assisted culling)", Kind::Number),
     ("bestOfGroup", "Best of Similar Shots", Kind::Bool),
@@ -139,6 +140,7 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("eyesOpen", "Eyes Open", Kind::Number),
     ("aesthetic", "Aesthetic", Kind::Number),
     ("cullScore", "Cull Score", Kind::Number),
+    ("suggestedStars", "Suggested Stars (assisted culling)", Kind::Number),
 ];
 
 /// The fields the field menu shows at its top level, before the groups.
@@ -155,8 +157,8 @@ pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso", "flash", "exposureBias", "cameraSerial"]),
     ("Location", &["location", "sublocation", "city", "state", "country", "countryCode", "hasGps"]),
     ("Size", &["longEdge", "shortEdge", "width", "height", "aspect", "megapixels"]),
-    ("Develop", &["edited", "cropped", "treatment"]),
-    ("Assisted Culling", &["sharpness", "bestOfGroup", "clipped", "eyesOpen", "aesthetic", "cullScore"]),
+    ("Develop", &["edited", "cropped", "treatment", "processVersion"]),
+    ("Assisted Culling", &["sharpness", "bestOfGroup", "clipped", "eyesOpen", "aesthetic", "cullScore", "suggestedStars"]),
 ];
 
 /// The field-menu group `field` sits in; `None` for a top-level or unknown field.
@@ -1120,12 +1122,14 @@ impl Rule {
                 let (w, h) = p.shown_size();
                 num_op(op, Some(w * h / 1e6), value)
             }
+            "processVersion" => num_op(op, Some(f64::from(p.develop.process.0)), value),
             "sharpness" => num_op(op, p.analysis.map(|a| a.sharpness as f64), value),
             "bestOfGroup" => yes(p.analysis.is_some_and(|a| a.best || a.group.is_none())),
             "clipped" => num_op(op, p.analysis.map(|a| a.clipped as f64), value),
             "eyesOpen" => num_op(op, p.analysis.and_then(|a| a.eyes_open).map(|v| v as f64), value),
             "aesthetic" => num_op(op, p.analysis.and_then(|a| a.aesthetic).map(|v| v as f64), value),
             "cullScore" => num_op(op, p.analysis.and_then(|a| a.cull_score).map(|v| v as f64), value),
+            "suggestedStars" => num_op(op, p.analysis.and_then(|a| a.suggested).map(f64::from), value),
             "album" => {
                 let id = album_rule_id(value);
                 // a smart album's photos are its matches; one being evaluated (a loop) holds none
@@ -2153,15 +2157,19 @@ mod tests {
             eyes_open: Some(0.8),
             aesthetic: Some(6.5),
             cull_score: Some(0.7),
+            suggested: Some(5),
         });
         let m =
             |field: &str, op: &str, value: serde_json::Value| rs(json!({"rules": [{"field": field, "op": op, "value": value}]})).matches(&p, &cat);
         assert!(m("eyesOpen", "gte", json!(0.5)));
         assert!(m("aesthetic", "gte", json!(6.0)));
         assert!(m("cullScore", "gte", json!(0.5)));
+        assert!(m("suggestedStars", "gte", json!(4)));
+        assert!(!m("suggestedStars", "lte", json!(4)));
         assert!(m("clipped", "lte", json!(0.1)));
         assert!(!m("eyesOpen", "gte", json!(0.9)));
         p.analysis = Some(Analysis { sharpness: 10.0, clipped: 0.0, group: None, best: false, ..Analysis::default() });
         assert!(!rs(json!({"rules": [{"field": "eyesOpen", "op": "gte", "value": 0.0}]})).matches(&p, &cat), "missing eyes-open is not 0");
+        assert!(!rs(json!({"rules": [{"field": "suggestedStars", "op": "gte", "value": 1}]})).matches(&p, &cat), "no suggestion is not 0 stars");
     }
 }

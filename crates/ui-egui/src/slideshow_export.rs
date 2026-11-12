@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn menu_dialog_picker_and_background_pdf_export() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-ssexp-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-ssexp");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("Show.pdf").to_string_lossy().to_string();
         let (mut app, asked) = app_answering(path.clone());
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn video_dialog_asks_for_an_mp4_and_jpeg_for_a_folder_name() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-ssexp-v-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-ssexp-v");
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("Show.mp4").to_string_lossy().to_string();
         let (mut app, asked) = app_answering(path.clone());

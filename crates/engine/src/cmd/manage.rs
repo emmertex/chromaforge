@@ -200,6 +200,20 @@ fn auto_tag_tracklog(s: &mut crate::Session, p: &Value) -> Result<Value> {
     }))
 }
 
+/// The capture time the original file's own Exif states (`DateTimeOriginal` with its `OffsetTimeOriginal` and
+/// `SubSecTimeOriginal`) as an ISO time; `None` when the file is missing, unreadable, or states none (or only a
+/// partial one).
+fn exif_time(p: &lcc_catalog::Photo) -> Option<String> {
+    use std::io::Read;
+    /// Exif lives in the first part of every format we read; a hostile or huge file is not read beyond this.
+    const MAX_READ: u64 = 256 << 20;
+    let lcc_catalog::Source::File { path } = &p.source else { return None };
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_READ).read_to_end(&mut bytes).ok()?;
+    let exif = lcc_meta::embedded(&bytes).exif?;
+    lcc_meta::read_exif(&exif).capture_time.filter(lcc_meta::DateTime::is_full).map(|d| d.to_iso())
+}
+
 /// The original file's modification time as an ISO time (UTC), if it has a readable file.
 fn file_time(p: &lcc_catalog::Photo) -> Option<String> {
     let lcc_catalog::Source::File { path } = &p.source else { return None };
@@ -219,7 +233,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save File Naming Preset",
             [],
             None,
-            "{name, template} — adds or replaces a user naming preset (kept with the library); `{text:Label}` tags in it are asked each time it is used → presets",
+            "{name, template}: adds or replaces a user naming preset (kept with the library); `{text:Label}` tags in it are asked each time it is used → presets",
             always,
             |s, p| {
                 let c = "naming.savePreset";
@@ -245,7 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(naming_presets_json(s))
             }
         ),
-        cmd!("naming.deletePreset", "Delete File Naming Preset", [], None, "{name} — user presets only → presets", always, |s, p| {
+        cmd!("naming.deletePreset", "Delete File Naming Preset", [], None, "{name}: user presets only → presets", always, |s, p| {
             let c = "naming.deletePreset";
             let name = str_param(p, "name").ok_or_else(|| bad(c, "missing `name`"))?;
             let before = s.naming_presets.len();
@@ -256,10 +270,10 @@ pub fn specs() -> Vec<CommandSpec> {
             s.save_prefs()?;
             Ok(naming_presets_json(s))
         }),
-        cmd!(query "photo.renameTokens", "Rename Template Tags", [], None, "{} → {tokens: [{tag, aliases, meaning, example}], dateDirectives: [{directive, meaning}], notes: [..], sample} — the file-name template tags shared by photo.rename, library.import (rename) and app.export (naming); examples are for a sample photo", always, |_, _| {
+        cmd!(query "photo.renameTokens", "Rename Template Tags", [], None, "{} → {tokens: [{tag, aliases, meaning, example}], dateDirectives: [{directive, meaning}], notes: [..], sample}: the file-name template tags shared by photo.rename, library.import (rename) and app.export (naming); examples are for a sample photo", always, |_, _| {
             Ok(crate::rename::token_help_json())
         }),
-        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
+        cmd!(query "photo.renamePreview", "Rename Preview", [], None, "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?}: renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable", has_selection, |s, p| {
             let (ids, template, start) = rename_args(s, p, "photo.renamePreview", false)?;
             Ok(serde_json::to_value(s.plan_rename(&ids, &template, start)).unwrap_or_default())
         }),
@@ -268,7 +282,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Photos",
             [],
             None,
-            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?} — renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
+            "{template: e.g. `{date}_{name}`, `Trip-{seq:3}` (tokens: {name} {num} {seq} {seq:N} {date} {date:%Y%m%d} {folder} {camera} {lens} {iso} {rating} {title} {creator} {ext} {text:Label}; photo.renameTokens explains each), start?: first sequence number (1), texts?: {label: text} (what each {text:Label} becomes), ids?}: renames the files on disk (sidecars too, never overwriting: collisions get -1, -2…); undoable",
             has_selection,
             |s, p| {
                 let (ids, template, start) = rename_args(s, p, "photo.rename", true)?;
@@ -286,7 +300,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Capture Time",
             [],
             None,
-            "{ids?, time?: `2026-09-30T14:05:00` (the active photo gets it, the others shift by the same amount), or a year or month alone (`1983`, `1983-04`; kept as stated, for one photo or with `each`), each?: bool (every photo gets `time`), fromFile?: bool (each photo gets its original file's modification time, UTC), fromFilename?: bool (each photo gets the date and time its file name states, as in `IMG_20260921_143000.jpg` or `2026-09-21 14.30.00.heic`; a date alone is midnight), shift?: seconds, hours?: time-zone shift in hours (both also move fromFile / fromFilename times), dryRun?: bool (report, change nothing)} → {changed, captured: [..], noFile, noDateInName: photos whose file name holds no date, unreadable: photos skipped because their capture time can't be read, noTime: photos skipped because their capture time is a year or month alone, with no time to shift}",
+            "{ids?, time?: `2026-09-30T14:05:00` (the active photo gets it, the others shift by the same amount), or a year or month alone (`1983`, `1983-04`; kept as stated, for one photo or with `each`), each?: bool (every photo gets `time`), fromFile?: bool (each photo gets its original file's modification time, UTC), fromExif?: bool (each photo gets the capture time its original file's Exif states, DateTimeOriginal with its offset and sub-seconds: Revert Capture Time to Original; photos whose file states none are left alone), fromFilename?: bool (each photo gets the date and time its file name states, as in `IMG_20260921_143000.jpg` or `2026-09-21 14.30.00.heic`; a date alone is midnight), shift?: seconds, hours?: time-zone shift in hours (both also move fromFile / fromFilename times), dryRun?: bool (report, change nothing)} → {changed, captured: [..], noFile, noExif: photos whose file states no capture time, noDateInName: photos whose file name holds no date, unreadable: photos skipped because their capture time can't be read, noTime: photos skipped because their capture time is a year or month alone, with no time to shift}",
             has_selection,
             |s, p| {
                 use lcc_catalog::dates::{iso_seconds, normalize_iso, partial_capture, shift_iso};
@@ -352,9 +366,11 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let from_file = bool_or(p, "fromFile", false);
                 let from_name = bool_or(p, "fromFilename", false);
-                if from_file && from_name {
-                    return Err(bad(c, "choose fromFile or fromFilename, not both"));
+                let from_exif = bool_or(p, "fromExif", false);
+                if [from_file, from_name, from_exif].iter().filter(|b| **b).count() > 1 {
+                    return Err(bad(c, "choose one of fromFile, fromFilename and fromExif"));
                 }
+                let mut no_exif = 0usize;
                 let dry_run = bool_or(p, "dryRun", false);
                 let mut no_name = 0usize;
                 let mut ops = Vec::new();
@@ -364,12 +380,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut unreadable = 0usize;
                 let mut no_time = 0usize;
                 // a year or a month alone typed is given as it is (a file's time replaces it)
-                let as_stated = partial.is_some() && !from_file && !from_name;
+                let as_stated = partial.is_some() && !from_file && !from_name && !from_exif;
                 for id in &targets {
                     let from = if from_file {
                         // the original's modification time (UTC; `hours` moves it to the camera's zone)
                         let Some(t) = s.catalog.photo(*id).and_then(|p| file_time(p)) else {
                             no_file += 1;
+                            continue;
+                        };
+                        t
+                    } else if from_exif {
+                        let Some(t) = s.catalog.photo(*id).and_then(|p| exif_time(p)) else {
+                            no_exif += 1;
                             continue;
                         };
                         t
@@ -411,6 +433,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 if from_file && out.is_empty() {
                     return Err(bad(c, "none of the photos has a readable original file"));
                 }
+                if from_exif && out.is_empty() {
+                    return Err(bad(c, "none of the photos' files states a capture time"));
+                }
                 if from_name && out.is_empty() {
                     return Err(bad(c, "none of the photos' file names holds a date"));
                 }
@@ -418,7 +443,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.commit("Edit Capture Time", Op::Batch { ops })?;
                 }
                 Ok(
-                    json!({"changed": n, "captured": out, "noFile": no_file, "noDateInName": no_name, "unreadable": unreadable, "noTime": no_time, "dryRun": dry_run}),
+                    json!({"changed": n, "captured": out, "noFile": no_file, "noExif": no_exif, "noDateInName": no_name, "unreadable": unreadable, "noTime": no_time, "dryRun": dry_run}),
                 )
             }
         ),
@@ -427,7 +452,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto-Tag Photos from Tracklog",
             [],
             None,
-            "{path?: GPX file | gpx?: GPX text, ids?, offset?: camera clock's UTC offset for photos whose capture time has no zone (`+02:00`, or hours; default UTC), maxGap?: seconds (600), replace?: bool (also photos that already have GPS), dryRun?: bool} → {tagged, interpolated, nearest, skipped: {noTime, outside, hasGps}, assumedUtc, points, start, end, photos: [{id, gps, match}]} — positions from the track log by capture time; one undo step",
+            "{path?: GPX file | gpx?: GPX text, ids?, offset?: camera clock's UTC offset for photos whose capture time has no zone (`+02:00`, or hours; default UTC), maxGap?: seconds (600), replace?: bool (also photos that already have GPS), dryRun?: bool} → {tagged, interpolated, nearest, skipped: {noTime, outside, hasGps}, assumedUtc, points, start, end, photos: [{id, gps, match}]}: positions from the track log by capture time; one undo step",
             has_selection,
             auto_tag_tracklog
         ),
@@ -442,7 +467,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Color Label Names",
             [],
             None,
-            "{names: {red?: name|null, yellow?, green?, blue?, purple?}} — null or empty restores the colour's name",
+            "{names: {red?: name|null, yellow?, green?, blue?, purple?}}: null or empty restores the colour's name",
             always,
             |s, p| {
                 let names = p.get("names").and_then(Value::as_object).ok_or_else(|| bad("label.setNames", "missing `names`"))?;
@@ -463,7 +488,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(query "label.sets", "Color Label Sets", [], None, "{} → {sets: [{name, names: [red, yellow, green, blue, purple], builtin}], current: name|null}", always, |s, _| Ok(label_sets_json(s))),
-        cmd!("label.applySet", "Apply Color Label Set", [], None, "{name} — use a set's label names (undoable)", always, |s, p| {
+        cmd!("label.applySet", "Apply Color Label Set", [], None, "{name}: use a set's label names (undoable)", always, |s, p| {
             let name = str_param(p, "name").ok_or_else(|| bad("label.applySet", "missing `name`"))?;
             let set = all_label_sets(s)
                 .into_iter()
@@ -481,7 +506,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Color Label Set",
             [],
             None,
-            "{name} — save the current label names as a set (replaces a user set of that name)",
+            "{name}: save the current label names as a set (replaces a user set of that name)",
             always,
             |s, p| {
                 let name =
@@ -498,7 +523,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"name": name}))
             }
         ),
-        cmd!("label.deleteSet", "Delete Color Label Set", [], None, "{name} — user sets only", always, |s, p| {
+        cmd!("label.deleteSet", "Delete Color Label Set", [], None, "{name}: user sets only", always, |s, p| {
             let name = str_param(p, "name").ok_or_else(|| bad("label.deleteSet", "missing `name`"))?;
             let before = s.label_sets.len();
             s.label_sets.retain(|x| !x.name.eq_ignore_ascii_case(name));
@@ -514,7 +539,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Remember Dialog Choices",
             [],
             None,
-            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)} — keep a dialog's last choices across restarts and libraries; null forgets them",
+            "{dialog: id (at most 64 characters), choices: any JSON (at most 64 KB)}: keep a dialog's last choices across restarts and libraries; null forgets them",
             always,
             |s, p| {
                 let c = "dialog.remember";

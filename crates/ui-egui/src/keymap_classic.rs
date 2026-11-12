@@ -97,6 +97,10 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("tool.linear", Some("M")),
     ("tool.radial", Some("Shift+M")),
     ("tool.guidedUpright", Some("Shift+T")),
+    ("tool.colorRange", Some("Shift+J")),
+    ("tool.depthRange", Some("Shift+D")),
+    ("tool.luminanceRange", Some("Shift+Q")),
+    ("tool.pointColor", Some("Cmd+Alt+P")),
     ("panel.keywords", Some("Cmd+K")),
     // flags, collections
     // ` toggles the Pick flag as in Lightroom Classic; cycling all three states (the
@@ -121,9 +125,18 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("file.export", Some("Cmd+Shift+E")),
     ("photo.editInPhotoCraft", Some("Cmd+E")),
     ("dialog.newFolder", None),
+    // Library ▸ New Folder…; New Collection Set… has no key in Classic
+    ("dialog.newDiskFolder", Some("Cmd+Shift+N")),
+    ("dialog.pageSetup", Some("Cmd+Shift+P")),
+    ("album.setTarget", Some("Cmd+Alt+Shift+B")),
+    ("library.deselectActive", Some("/")),
+    ("library.deselectUnflagged", Some("Cmd+Alt+Shift+D")),
+    ("photo.removeFromCatalog", Some("Alt+Delete")),
     ("library.selectNone", Some("Cmd+D")),
     ("edit.redo", Some(if cfg!(target_os = "macos") { "Cmd+Shift+Z" } else { "Cmd+Y" })),
     ("develop.auto", Some("Cmd+U")),
+    // Develop ▸ Tools: Classic's Crop to Same Aspect Ratio (Auto Settings moved to Cmd+U above)
+    ("crop.sameAspect", Some("Shift+A")),
     ("develop.copy", None),
     ("develop.paste", Some("Cmd+Shift+V")),
     ("dialog.pasteSettings", None),

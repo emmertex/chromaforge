@@ -11,25 +11,25 @@ use crate::{LccApp, Services};
 const T: Duration = Duration::from_secs(20);
 const SETTLE: Duration = Duration::from_secs(120);
 
-fn detail(name: &str) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-ui-retouch-{name}-{}", std::process::id()));
+fn detail(name: &str) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-ui-retouch-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut session = lcc_engine::Session::with_demo();
     // a models folder without the models: they are offered, never fetched
-    session.segmenter.models_root = Some(dir.clone());
+    session.segmenter.models_root = Some(dir.to_path_buf());
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1400.0, 2400.0], 1.0);
     let r = h.request("engine.execute", json!({"command": "view.detail"}), T);
     assert_eq!(r["ok"], true, "{r}");
     h.settle(SETTLE);
-    (h, dir)
+    (dir, h)
 }
 
 /// The Smooth Skin section switches it on subtly, offers the models it needs, and sets the skin and the person.
 #[test]
 fn smooth_skin_section_switches_on_offers_the_models_and_sets_skin_and_person() {
-    let (mut h, dir) = detail("skin");
+    let (dir, mut h) = detail("skin");
     h.app.ui.right = crate::state::RightPanel::Edit;
     h.settle(SETTLE);
     open_retouch(&mut h, "skin");
@@ -85,7 +85,7 @@ fn open_retouch(h: &mut Headless, key: &str) {
 /// before/after), and the section's own eye all of Retouch.
 #[test]
 fn retouch_section_groups_skin_and_blemishes_and_their_eyes_switch_them() {
-    let (mut h, dir) = detail("panel");
+    let (dir, mut h) = detail("panel");
     h.app.ui.right = crate::state::RightPanel::Edit;
     h.settle(SETTLE);
     let id = h.app.session.active().unwrap();
@@ -117,7 +117,7 @@ fn retouch_section_groups_skin_and_blemishes_and_their_eyes_switch_them() {
 /// Find Blemishes in Retouch offers the models it needs; Include body skin is remembered.
 #[test]
 fn find_blemishes_offers_the_models_and_remembers_include_body_skin() {
-    let (mut h, dir) = detail("blemish");
+    let (dir, mut h) = detail("blemish");
     h.app.ui.right = crate::state::RightPanel::Edit;
     h.settle(SETTLE);
     open_retouch(&mut h, "blemishes");
@@ -139,7 +139,7 @@ fn find_blemishes_offers_the_models_and_remembers_include_body_skin() {
 /// A part's sub-section (Teeth): its sliders, the person, its eye and Turn Off.
 #[test]
 fn teeth_section_sets_its_sliders_person_eye_and_turns_off() {
-    let (mut h, dir) = detail("teeth");
+    let (dir, mut h) = detail("teeth");
     h.app.ui.right = crate::state::RightPanel::Edit;
     h.settle(SETTLE);
     let id = h.app.session.active().unwrap();

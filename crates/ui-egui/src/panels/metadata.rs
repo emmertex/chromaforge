@@ -280,10 +280,15 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 6, bottom: 6 }).show(ui, add);
 }
 
+/// The photos the panel shows and edits: the selection, or (Show Metadata for Target Photo Only) the active photo `id` alone.
+fn shown_ids(selected: Vec<PhotoId>, id: PhotoId, target_only: bool) -> Vec<PhotoId> {
+    if target_only { vec![id] } else { selected }
+}
+
 /// The panel. `id` is the active photo; the fields show (and edit) every selected photo.
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
-    let targets: Vec<PhotoId> = app.session.selected();
+    let targets = shown_ids(app.session.selected(), id, app.ui.settings.metadata_target_only);
     let photos: Vec<Arc<Photo>> = {
         let mut v: Vec<Arc<Photo>> = targets.iter().filter_map(|i| app.session.catalog.photo(*i).cloned()).collect();
         if v.is_empty()
@@ -457,7 +462,7 @@ fn info_row(ui: &mut egui::Ui, label: &str, v: Option<&str>) {
         ui.painter().text(r.left_center(), egui::Align2::LEFT_CENTER, crate::i18n::tr(label), t.font(11.5), t.text_dim);
         let (text, color) = match v {
             None => (MIXED.to_string(), t.text_dim),
-            Some("") => ("—".to_string(), t.text_dim),
+            Some("") => (String::new(), t.text_dim),
             Some(v) => (v.to_string(), t.text_label),
         };
         ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(color)).truncate());
@@ -567,7 +572,7 @@ fn captured(app: &mut LccApp, ui: &mut egui::Ui, photos: &[Arc<Photo>]) {
     small(ui, "Capture Time");
     let cap = match common(photos, "captured") {
         None => MIXED.to_string(),
-        Some(c) if c.is_empty() => "—".into(),
+        Some(c) if c.is_empty() => String::new(),
         Some(c) => crate::i18n::display_time(&c),
     };
     ui.allocate_ui_with_layout(vec2(ui.available_width(), 22.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -872,6 +877,13 @@ mod tests {
         assert!(rows("location").contains(&Row::Gps));
         assert!(rows("iptc").contains(&Row::Text("countryCode", "Country Code", 1)));
         assert!(rows("exif").contains(&Row::Info("lens", "Lens")));
+    }
+
+    #[test]
+    fn target_only_shows_the_active_photo_not_the_selection() {
+        let sel = vec![PhotoId(1), PhotoId(2), PhotoId(3)];
+        assert_eq!(shown_ids(sel.clone(), PhotoId(2), false), sel);
+        assert_eq!(shown_ids(sel, PhotoId(2), true), vec![PhotoId(2)]);
     }
 
     #[test]

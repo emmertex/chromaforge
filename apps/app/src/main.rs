@@ -448,7 +448,7 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
                 Err(r) => format!("it couldn't be set aside ({r})"),
             };
             let msg = format!(
-                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
+                "The app settings ({}) are damaged ({e}); {what}. Defaults are used. Reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
                 path.display()
             );
             (None, Some(msg), kept.is_err())
@@ -595,6 +595,37 @@ impl PrefsWriter {
             }
         }
     }
+}
+
+/// The program that opens `url` in the default browser.
+fn open_url_command(url: &str) -> std::process::Command {
+    if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        windows_open_url_command(url)
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    }
+}
+
+/// Start `cmd` without waiting for it: a launcher such as `xdg-open` can stay attached to the browser, and
+/// waiting for it froze the window. The child is reaped on its own thread (adapted from upstream #4033).
+fn launch(mut cmd: std::process::Command) -> Result<(), String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd.spawn().map_err(|e| format!("{program}: {e}"))?;
+    let reaper = std::thread::Builder::new().name("lc-open-url".into()).spawn(move || match child.wait() {
+        Ok(s) if s.success() => {}
+        Ok(s) => log::warn!("{program} exited with {s}"),
+        Err(e) => log::warn!("{program}: {e}"),
+    });
+    if let Err(e) = reaper {
+        log::warn!("could not watch the link opener: {e}");
+    }
+    Ok(())
 }
 
 /// The Windows command that opens `url` in the default browser. `explorer <url>` opened File
@@ -747,14 +778,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         open_url: Some(Box::new(|url: &str| {
             // https links, plus the local page Preview in Browser generates (nothing else)
             lcc_ui_egui::links::check_browser_url(url)?;
-            let status = if cfg!(target_os = "macos") {
-                std::process::Command::new("open").arg(url).status()
-            } else if cfg!(target_os = "windows") {
-                windows_open_url_command(url).status()
-            } else {
-                std::process::Command::new("xdg-open").arg(url).status()
-            };
-            status.map(|_| ()).map_err(|e| e.to_string())
+            launch(open_url_command(url))
         })),
         reveal: Some(Box::new(|path: &str| {
             let status = if cfg!(target_os = "macos") {
@@ -1118,7 +1142,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
 
 /// `--help` text; `{bin}`, `{app}`, `{P}` and `{lib}` are filled by [`help`].
 const HELP: &str = "\
-{bin} — photo library + raw developer
+{bin}: photo library + raw developer
 
 USAGE: {bin} [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported; a library's catalog.snap or
                                           folder opens that library)
@@ -1739,6 +1763,25 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 mod tests {
     use super::*;
 
+    /// A link opener that stays running (xdg-open attached to the browser) must not hold the caller; a missing one is an error naming it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_opener_is_not_waited_for() {
+        let mut slow = std::process::Command::new("sleep");
+        slow.arg("3");
+        let t = std::time::Instant::now();
+        launch(slow).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        let err = launch(std::process::Command::new("definitely-not-a-launcher")).unwrap_err();
+        assert!(err.contains("definitely-not-a-launcher"), "{err}");
+    }
+
+    #[test]
+    fn the_link_opener_gets_the_url_last() {
+        let c = open_url_command("https://example.org/");
+        assert_eq!(c.get_args().last().and_then(|a| a.to_str()).map(|a| a.contains("example.org")), Some(true));
+    }
+
     /// The HDR window guard (ported from OneSlips): an HDR monitor keeps the window's device from the
     /// renderer only where the guard holds (Linux / BSD); `<PREFIX>_GPU_WINDOW` decides over both.
     #[test]
@@ -1878,6 +1921,22 @@ mod tests {
         let saved: UiState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.settings.recent_libraries, ["/gone/b"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Issue #1110: the before/after view mode (`\`, the Original Photo box) is momentary, so a
+    /// session quit in it must come back showing the edits, not frozen on the original.
+    #[test]
+    fn the_before_after_view_mode_does_not_outlive_a_restart() {
+        use lcc_ui_egui::state::BeforeAfter;
+        let ui = UiState { before_after: BeforeAfter::Original, ..Default::default() };
+        let saved = serde_json::to_value(&ui).unwrap();
+        assert!(saved.get("beforeAfter").is_none(), "the view mode is not saved: {saved}");
+        let back: UiState = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.before_after, BeforeAfter::Off);
+        // an older preferences file that still carries the mode reads, and starts without it
+        let legacy: UiState = serde_json::from_value(serde_json::json!({"beforeAfter": "original", "thumbSize": 210.0})).unwrap();
+        assert_eq!(legacy.thumb_size, 210.0);
+        assert_eq!(legacy.before_after, BeforeAfter::Off);
     }
 
     /// Issue #103: a damaged ui.json (which holds the library location) is kept aside and
