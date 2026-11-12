@@ -494,7 +494,7 @@ impl Calibration {
     /// `look` as a camera profile, applied the way a person's own `.dcp` is ([`Dcp::apply`]).
     pub fn look_dcp(&self, look: &Look) -> Dcp {
         Dcp {
-            model: format!("{} {}", super::brand(&self.make), self.model.trim()),
+            model: profile_model(&super::brand(&self.make), &self.model),
             name: display_name(&look.name),
             copyright: self.contributor.clone().unwrap_or_default(),
             color: self.color_data(look),
@@ -503,8 +503,7 @@ impl Calibration {
 
     /// The registry form: every name the camera goes by and each look's id and profile.
     pub fn calibrated(&self) -> lcc_raw::dcp::Calibrated {
-        let names: Vec<String> =
-            std::iter::once(&self.model).chain(&self.aliases).map(|m| format!("{} {}", super::brand(&self.make), m.trim())).collect();
+        let names: Vec<String> = std::iter::once(&self.model).chain(&self.aliases).map(|m| profile_model(&super::brand(&self.make), m)).collect();
         let looks = self.looks.iter().map(|l| (look_id(&l.name), std::sync::Arc::new(self.look_dcp(l)))).collect();
         // only a Lightroom calibration gives the camera a default look; other editors' looks are chosen per photo
         let default = (self.editor == Editor::Lightroom).then(|| self.default_look().map(|l| look_id(&l.name))).flatten();
@@ -527,6 +526,13 @@ impl Calibration {
         let safe: String = raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
         format!("{safe}.json")
     }
+}
+
+/// A camera's profile-model name ("make model", see [`lcc_raw::dcp::covers_model`]): `brand` and the model, or the
+/// model alone when it already starts with the brand (Exif "Canon EOS 6D" stays "Canon EOS 6D", issue #1119).
+fn profile_model(brand: &str, model: &str) -> String {
+    let model = model.trim();
+    if model.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case(brand)) { model.to_string() } else { format!("{brand} {model}") }
 }
 
 /// The embedded calibration files `(file name, JSON)`.
@@ -801,7 +807,22 @@ mod tests {
         assert_eq!(look_id(&c.looks[0].name), "cal:camera-provia-standard");
         assert!(c.matches(Some("Xiaomi"), "Xiaomi 17 Ultra/2512BPNDAG"));
         assert!(c.matches(None, "17 ultra/2512bpndag"));
-        assert_eq!(c.look_dcp(&c.looks[0]).model, "XIAOMI Xiaomi 17 Ultra/2512BPNDAG");
+        assert_eq!(c.look_dcp(&c.looks[0]).model, "Xiaomi 17 Ultra/2512BPNDAG");
+    }
+
+    #[test]
+    fn profile_model_does_not_repeat_the_make() {
+        let mut c = sample();
+        c.make = "Canon".into();
+        c.model = "Canon EOS 6D".into();
+        c.aliases = vec![];
+        let d = c.look_dcp(&c.looks[0]);
+        assert_eq!(d.model, "Canon EOS 6D");
+        assert!(lcc_raw::dcp::covers_model(&d.model, "Canon EOS 6D"));
+        assert!(c.calibrated().names.iter().any(|n| lcc_raw::dcp::covers_model(n, "Canon EOS 6D")));
+        c.make = "SONY".into();
+        c.model = "ILCE-7M5".into();
+        assert_eq!(c.look_dcp(&c.looks[0]).model, "SONY ILCE-7M5");
     }
 
     #[test]
