@@ -3422,6 +3422,17 @@ fn wb_loupe(app: &LccApp, ui: &egui::Ui, q: Pos2, img: Rect, canvas: Rect) {
     p.rect_stroke(sq, 0.0, Stroke::new(2.0, Color32::BLACK), egui::StrokeKind::Outside);
     p.rect_stroke(sq, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
     register(ui.ctx(), "canvas:wbLoupe", at);
+    // the colour under the pointer right under the loupe, as under the histogram, so it can be read
+    // without looking away from the photo (#1094); above the loupe when there's no room below
+    if let Some(rgb) = tex.pixels.as_deref().and_then(|px| crate::color_readout::srgb_at(px, u, v, app.renderer.display().map(|d| d.as_ref()))) {
+        let text = app.ui.settings.color_readout.format(rgb);
+        let h = 20.0;
+        let y = if at.bottom() + 2.0 + h <= canvas.bottom() { at.bottom() + 2.0 } else { at.top() - 2.0 - h };
+        let band = Rect::from_min_size(pos2(at.left() - 2.0, y), vec2(side + 4.0, h));
+        p.rect_filled(band, 3.0, Color32::from_black_alpha(200));
+        p.text(band.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), Color32::from_gray(230));
+        register(ui.ctx(), "canvas:wbLoupeReadout", band);
+    }
 }
 
 /// The photo `img` reaches past its pane `canvas`: a drag pans it.

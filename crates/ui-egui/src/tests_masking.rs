@@ -200,6 +200,26 @@ fn a_mask_shows_its_overlay_by_itself_only_without_settings() {
     h.settle(SETTLE);
 }
 
+/// #1042: a released brush stroke leaves the mask's overlay on show (even on a mask with settings),
+/// so the painted area can be judged; the next mask slider hides it so the effect is seen.
+#[test]
+fn a_brush_stroke_leaves_its_overlay_until_a_slider_moves() {
+    use lcc_pipeline::Overlay;
+    let mut h = detail("panel.masking");
+    let shown = |h: &Headless| matches!(crate::panels::detail::view_overlay(&h.app, &develop(h), false), Overlay::Mask { .. });
+    exec(&mut h, "mask.add", json!({"kind": "brush"}));
+    exec(&mut h, "mask.brushStroke", json!({"points": [[0.3, 0.3], [0.4, 0.3]], "size": 0.02}));
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.5}}));
+    h.app.ui.mask_adjusting_until = None;
+    assert!(!shown(&h), "a mask with settings shows its effect");
+    exec(&mut h, "mask.brushStroke", json!({"points": [[0.5, 0.5], [0.6, 0.5]], "size": 0.02}));
+    assert!(shown(&h), "the stroke's area stays on show after it is released");
+    exec(&mut h, "mask.adjust", json!({"values": {"exposure": 0.6}}));
+    h.app.ui.mask_adjusting_until = None;
+    assert!(!shown(&h), "a slider hides it again");
+    h.settle(SETTLE);
+}
+
 /// Issue #1109: picking a mask that has settings peeks its overlay for a moment (the Show Overlay
 /// checkbox stays off), so the user immediately sees which mask the program has selected; the peek
 /// ends by itself, and with the overlay off automatic (or pinned) there is no peek.

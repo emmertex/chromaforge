@@ -64,6 +64,13 @@ fn wb_selector_shows_a_loupe_while_hovering() {
     h.app.synthetic.push(egui::Event::PointerMoved(pos));
     h.settle(SETTLE);
     assert!(loupe(&h), "the loupe follows the pointer over the photo");
+    // the sampled colour is read out right under the loupe (#1094)
+    let rect = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r);
+    let (Some(box_), Some(band)) = (rect(&h, "canvas:wbLoupe"), rect(&h, "canvas:wbLoupeReadout")) else {
+        panic!("a readout beside the loupe: {:?}", h.app.widgets.iter().map(|(w, _)| w).collect::<Vec<_>>());
+    };
+    assert!(band.top() >= box_.bottom() || band.bottom() <= box_.top(), "beside the loupe, not over it");
+    assert!(h.painted_text().iter().any(|t| t.starts_with("R ") && t.contains(" G ") && t.ends_with('%')), "{:?}", h.painted_text());
     h.app.synthetic.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() });
     h.app.synthetic.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     h.settle(SETTLE);

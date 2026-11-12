@@ -1551,6 +1551,11 @@ impl LccApp {
                 self.ui.tool.clear();
             }
         }
+        if r.is_ok() && id == "mask.brushStroke" && self.ui.mask_overlay_auto {
+            // a released stroke leaves what the mask now covers on show, so the painted area can be judged
+            // (#1042); the next mask slider hides it again (`mask.adjust` below)
+            self.ui.mask_overlay = true;
+        }
         if r.is_ok() && id == "mask.adjust" {
             // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
             // an overlay switched on with O (it comes back when the slider rests); one that showed by
