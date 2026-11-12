@@ -6,14 +6,13 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::cmd::plugins::tests::{module_file, turn};
 
-/// A pixel filter `id` at `version`, written to `<name>.wasm` in a temp folder.
-fn filter_file(name: &str, id: &str, version: &str) -> std::path::PathBuf {
+/// A pixel filter `id` at `version`, written to `<name>.wasm` in a Temp folder of its own (removed
+/// when the returned guard is dropped).
+fn filter_file(name: &str, id: &str, version: &str) -> lcc_testkit::TempFile {
     let manifest = format!(r#"{{"id":"{id}","name":"Filter {name}","version":"{version}","kind":"filter","params":{{}}}}"#);
-    let dir = std::env::temp_dir().join(format!("lcc-engine-installs-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("{name}.wasm"));
-    std::fs::write(&path, crate::tests_plugin_filters::module(&manifest, None)).unwrap();
-    path
+    let file = lcc_testkit::TempFile::new(&format!("lcc-engine-installs-file-{name}"), &format!("{name}.wasm"));
+    std::fs::write(&file, crate::tests_plugin_filters::module(&manifest, None)).unwrap();
+    file
 }
 
 fn listed(s: &mut Session, id: &str) -> Option<Value> {
@@ -25,8 +24,7 @@ fn listed(s: &mut Session, id: &str) -> Option<Value> {
 fn inspecting_a_file_over_the_size_limit_fails_as_installing_it_does() {
     let _turn = turn();
     let mut s = Session::with_demo();
-    let dir = std::env::temp_dir().join(format!("lcc-engine-installs-big-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = lcc_testkit::TempDir::new("lcc-engine-installs-big");
     let path = dir.join("big.wasm");
     let max = lcc_plugins::Limits::default().max_module_bytes as u64;
     // sparse: nothing is written, and nothing should be read
@@ -47,16 +45,16 @@ fn a_filter_older_than_the_installed_one_needs_confirming() {
     let v110 = filter_file("older-1.10", id, "1.10");
     let v19 = filter_file("older-1.9", id, "1.9");
     let v1100 = filter_file("older-1.10.0", id, "1.10.0");
-    s.execute("plugin.install", &json!({"path": v110})).unwrap();
+    s.execute("plugin.install", &json!({"path": v110.path()})).unwrap();
 
-    let info = s.execute("plugin.inspectFile", &json!({"path": v19})).unwrap();
+    let info = s.execute("plugin.inspectFile", &json!({"path": v19.path()})).unwrap();
     assert_eq!(info["downgrade"], true, "1.9 is older than 1.10: {info}");
-    assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v1100})).unwrap()["downgrade"], false, "1.10.0 is 1.10 again");
-    let e = s.execute("plugin.install", &json!({"path": v19})).unwrap_err().to_string();
+    assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v1100.path()})).unwrap()["downgrade"], false, "1.10.0 is 1.10 again");
+    let e = s.execute("plugin.install", &json!({"path": v19.path()})).unwrap_err().to_string();
     assert!(e.contains("1.9") && e.contains("1.10") && e.contains("allowDowngrade"), "{e}");
     assert_eq!(listed(&mut s, id).unwrap()["version"], "1.10", "the installed filter is kept");
 
-    let r = s.execute("plugin.install", &json!({"path": v19, "allowDowngrade": true}));
+    let r = s.execute("plugin.install", &json!({"path": v19.path(), "allowDowngrade": true}));
     let after = listed(&mut s, id);
     s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
     assert_eq!(r.unwrap()["version"], "1.9");
@@ -83,9 +81,9 @@ fn a_plugin_and_a_filter_never_share_an_id() {
     let id = "test.installs.clash";
     let plugin = module_file("clash-plugin", &json!({"id": id, "name": "Clash Plug-in", "version": "1.0.0"}));
     let filter = filter_file("clash-filter", id, "1.0");
-    s.execute("plugin.install", &json!({"path": plugin})).unwrap();
-    let conflict = s.execute("plugin.inspectFile", &json!({"path": filter})).unwrap()["conflict"].clone();
-    let refused = s.execute("plugin.install", &json!({"path": filter}));
+    s.execute("plugin.install", &json!({"path": plugin.path()})).unwrap();
+    let conflict = s.execute("plugin.inspectFile", &json!({"path": filter.path()})).unwrap()["conflict"].clone();
+    let refused = s.execute("plugin.install", &json!({"path": filter.path()}));
     let filter_kept = crate::filter_plugins::registry().get(id).is_some();
     let plugin_after = listed(&mut s, id);
     s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
@@ -99,9 +97,9 @@ fn a_plugin_and_a_filter_never_share_an_id() {
     let id = "test.installs.clash2";
     let filter = filter_file("clash2-filter", id, "1.0");
     let plugin = module_file("clash2-plugin", &json!({"id": id, "name": "Clash Two", "version": "1.0.0"}));
-    s.execute("plugin.install", &json!({"path": filter})).unwrap();
-    let conflict = s.execute("plugin.inspectFile", &json!({"path": plugin})).unwrap()["conflict"].clone();
-    let refused = s.execute("plugin.install", &json!({"path": plugin}));
+    s.execute("plugin.install", &json!({"path": filter.path()})).unwrap();
+    let conflict = s.execute("plugin.inspectFile", &json!({"path": plugin.path()})).unwrap()["conflict"].clone();
+    let refused = s.execute("plugin.install", &json!({"path": plugin.path()}));
     let plugin_kept = crate::cmd::plugins::manager().as_ref().is_some_and(|m| m.get(id).is_some());
     s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
     assert!(conflict.as_str().is_some_and(|c| c.contains("Filter clash2-filter")), "the dialog names the filter: {conflict}");
@@ -110,12 +108,9 @@ fn a_plugin_and_a_filter_never_share_an_id() {
     assert!(!plugin_kept, "no plug-in installed");
 }
 
-/// A fresh folder for one test.
-fn folder(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("lcc-engine-installs-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A fresh folder for one test, removed when the test ends.
+fn folder(name: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-engine-installs-{name}"))
 }
 
 fn filter_bytes(id: &str, version: &str) -> Vec<u8> {
@@ -249,7 +244,7 @@ fn inspect_names_unknown_manifest_fields() {
 
     let plugin =
         module_file("unknown-plugin", &json!({"id": "test.installs.unknownplugin", "name": "U", "version": "1.0.0", "hooks": {"exprt": true}}));
-    let info = s.execute("plugin.inspectFile", &json!({"path": plugin})).unwrap();
+    let info = s.execute("plugin.inspectFile", &json!({"path": plugin.path()})).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(info["unknownFields"], json!(["hooks.exprt"]), "{info}");
 }
@@ -265,10 +260,10 @@ fn rollback_goes_back_to_the_version_an_update_replaced() {
     let v1 = module_file("rollback-1", &json!({"id": id, "name": "R", "version": "1.0.0"}));
     let v2 = module_file("rollback-2", &json!({"id": id, "name": "R", "version": "2.0.0"}));
     let before = crate::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
-    s.execute("plugin.install", &json!({"path": v1})).unwrap();
+    s.execute("plugin.install", &json!({"path": v1.path()})).unwrap();
     let none = s.execute("plugin.rollback", &json!({"id": id})).map_err(|e| e.to_string());
     let first = listed(&mut s, id);
-    s.execute("plugin.install", &json!({"path": v2})).unwrap();
+    s.execute("plugin.install", &json!({"path": v2.path()})).unwrap();
     let updated = listed(&mut s, id);
     let back = s.execute("plugin.rollback", &json!({"id": id}));
     let after = listed(&mut s, id);
@@ -298,10 +293,10 @@ fn uninstall_keeps_the_settings_only_with_keep_data() {
     let module = module_file("keepdata", &json!({"id": id, "name": "K", "version": "1.0.0", "settings": settings}));
     let file = dir.join("settings").join(format!("{id}.json"));
     let before = crate::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
-    s.execute("plugin.install", &json!({"path": module})).unwrap();
+    s.execute("plugin.install", &json!({"path": module.path()})).unwrap();
     let set = crate::cmd::plugins::manager().as_mut().unwrap().set_settings(id, &json!({"t": "kept"}), &mut lcc_plugins::NoHost).map(|_| ());
     let kept = s.execute("plugin.uninstall", &json!({"id": id, "keepData": true})).map(|_| file.exists());
-    s.execute("plugin.install", &json!({"path": module})).unwrap();
+    s.execute("plugin.install", &json!({"path": module.path()})).unwrap();
     let back = crate::cmd::plugins::manager().as_mut().unwrap().settings(id, &mut lcc_plugins::NoHost).map(|v| v.values);
     let gone = s.execute("plugin.uninstall", &json!({"id": id})).map(|_| !file.exists());
     *crate::cmd::plugins::manager() = before;
@@ -372,10 +367,10 @@ fn a_plugin_that_failed_to_load_still_holds_its_id() {
         error: "needs a newer host".into(),
         missing: vec![],
         id: id.into(),
-        path: Some(plugin.clone()),
+        path: Some(plugin.to_path_buf()),
     });
-    let conflict = s.execute("plugin.inspectFile", &json!({"path": filter})).unwrap()["conflict"].clone();
-    let refused = s.execute("plugin.install", &json!({"path": filter}));
+    let conflict = s.execute("plugin.inspectFile", &json!({"path": filter.path()})).unwrap()["conflict"].clone();
+    let refused = s.execute("plugin.install", &json!({"path": filter.path()}));
     let filter_kept = crate::filter_plugins::registry().get(id).is_some();
     crate::filter_plugins::registry().remove(id);
     crate::cmd::plugins::manager().as_mut().unwrap().failed.retain(|f| f.id != id);
@@ -407,12 +402,12 @@ fn about_fields_are_listed_and_bad_ones_dropped() {
             "changelog": "javascript:alert(1)", "license": "MIT"}),
     );
     let before = crate::cmd::plugins::manager().replace(lcc_plugins::Manager::open(&dir).unwrap());
-    let inspected = s.execute("plugin.inspectFile", &json!({"path": good}));
-    let installed = s.execute("plugin.install", &json!({"path": good}));
+    let inspected = s.execute("plugin.inspectFile", &json!({"path": good.path()}));
+    let installed = s.execute("plugin.install", &json!({"path": good.path()}));
     let first = listed(&mut s, id);
     let features = s.execute("plugin.list", &json!({})).map(|l| l["host"]["features"].clone());
-    let inspected_bad = s.execute("plugin.inspectFile", &json!({"path": bad}));
-    let installed_bad = s.execute("plugin.install", &json!({"path": bad}));
+    let inspected_bad = s.execute("plugin.inspectFile", &json!({"path": bad.path()}));
+    let installed_bad = s.execute("plugin.install", &json!({"path": bad.path()}));
     let second = listed(&mut s, id);
     let log = s.execute("plugin.log", &json!({"id": id}));
     *crate::cmd::plugins::manager() = before;

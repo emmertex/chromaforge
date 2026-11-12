@@ -576,8 +576,7 @@ mod tests {
             lcc_testkit::skip!(System, "LAN discovery on the macOS CI runner (macOS LAN pairing check, tested in person)");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("lcc-engine-peers-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("lcc-engine-peers");
         let port = 30000 + (std::process::id() % 9000) as u16;
         let (mut a, mut b) = (session(&dir, "a", port), session(&dir, "b", port));
         // nothing runs before it is asked for
@@ -643,8 +642,7 @@ mod tests {
             lcc_testkit::skip!(System, "LAN discovery on the macOS CI runner (macOS LAN pairing check, tested in person)");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("lcc-engine-exchange-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("lcc-engine-exchange");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let photo = dir.join("src/p.png");
         write_png(&photo);
@@ -748,8 +746,7 @@ mod tests {
             lcc_testkit::skip!(System, "LAN discovery on the macOS CI runner (macOS LAN pairing check, tested in person)");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("lcc-engine-chain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("lcc-engine-chain");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let photo = dir.join("src/p.png");
         write_png(&photo);
@@ -812,8 +809,7 @@ mod tests {
     /// exchange doesn't see their applied edits as fresh collisions (a second, spurious copy).
     #[test]
     fn a_failed_merge_keeps_the_base_of_what_it_merged() {
-        let dir = std::env::temp_dir().join(format!("lcc-engine-merge-fail-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("lcc-engine-merge-fail");
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let (p1, p2) = (dir.join("src/a.png"), dir.join("src/b.png"));
         write_png(&p1);

@@ -220,7 +220,7 @@ fn the_settings_section_is_drawn() {
 /// photos stepped through, so a library left mid-build was never finished (upstream #3947).
 #[test]
 fn an_unfinished_background_build_is_taken_up_again_in_the_grid() {
-    let root = std::env::temp_dir().join(format!("lcc-prep-resume-grid-{}", std::process::id()));
+    let root = lcc_testkit::TempDir::new("lcc-prep-resume-grid");
     let _ = std::fs::remove_dir_all(&root);
     let paths: Vec<String> = (0..3usize)
         .map(|n| {

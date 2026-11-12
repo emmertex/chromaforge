@@ -662,10 +662,10 @@ fn settings_shows_the_titles_and_the_preview_shows_a_title_screen() {
 #[test]
 fn template_browser_previews_on_hover_applies_and_manages_user_templates() {
     use lcc_engine::slide_template::SlideLook;
+    let dir = lcc_testkit::TempDir::new("lc-ui-sstpl");
     let mut h = grid();
-    let dir = std::env::temp_dir().join(format!("lc-ui-sstpl-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    h.app.session.slide_templates_dir = Some(dir.clone());
+    h.app.session.slide_templates_dir = Some(dir.to_path_buf());
     let first = h.app.session.visible_cloned()[0];
     run(&mut h, "library.select", json!({"ids": [first.0]}));
     run(&mut h, "view.slideshowOptions", json!({}));

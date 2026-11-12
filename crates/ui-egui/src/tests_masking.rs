@@ -441,10 +441,10 @@ fn object_and_describe_masks_show_pins_that_select_but_do_not_move() {
 #[test]
 fn the_object_tool_selects_the_mask_whose_pin_is_clicked() {
     use lcc_geom::Point;
+    let dir = lcc_testkit::TempDir::new("lc-ui-pin-object");
     let mut h = detail("panel.masking");
     // no SAM 3 model here: a stray Object click would offer the download or show an error
-    let dir = std::env::temp_dir().join(format!("lc-ui-pin-object-{}", std::process::id()));
-    h.app.session.segmenter.dir = Some(dir.clone());
+    h.app.session.segmenter.dir = Some(dir.to_path_buf());
     h.app.session.segmenter.mirrors_file = Some(dir.join("none.txt"));
     let object = |at: Point| MaskShape::Object { hint: vec![at], exclude: vec![], seg: None, detail: vec![], edge: 0.0 };
     let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1});
@@ -482,10 +482,10 @@ fn the_object_tool_selects_the_mask_whose_pin_is_clicked() {
 #[test]
 fn the_object_tool_adds_no_click_on_the_selected_masks_own_pin() {
     use lcc_geom::Point;
+    let dir = lcc_testkit::TempDir::new("lc-ui-own-pin-object");
     let mut h = detail("panel.masking");
     // no SAM 3 model here: a stray Object click would offer the download or show an error
-    let dir = std::env::temp_dir().join(format!("lc-ui-own-pin-object-{}", std::process::id()));
-    h.app.session.segmenter.dir = Some(dir.clone());
+    h.app.session.segmenter.dir = Some(dir.to_path_buf());
     h.app.session.segmenter.mirrors_file = Some(dir.join("none.txt"));
     exec(&mut h, "mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.1, "ry": 0.1}));
     let object = MaskShape::Object { hint: vec![Point::new(0.6, 0.5)], exclude: vec![], seg: None, detail: vec![], edge: 0.0 };
@@ -1414,7 +1414,7 @@ fn b_adds_to_quick_collection_in_the_grid_and_brushes_in_edit() {
 
 #[test]
 fn local_folder_tree_expands_and_browses() {
-    let base = std::env::temp_dir().join(format!("lc-ui-tree-{}", std::process::id()));
+    let base = lcc_testkit::TempDir::new("lc-ui-tree");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("Trip/Day 1")).unwrap();
     std::fs::create_dir_all(base.join(".hidden")).unwrap();
@@ -1449,7 +1449,7 @@ fn local_folder_tree_expands_and_browses() {
 /// the copy drawn later took the clicks of the one drawn first (issue #1093).
 #[test]
 fn local_folder_listed_twice_opens_and_closes_each_row() {
-    let base = std::env::temp_dir().join(format!("lc-ui-twice-{}", std::process::id()));
+    let base = lcc_testkit::TempDir::new("lc-ui-twice");
     let _ = std::fs::remove_dir_all(&base);
     let inner = base.join("Inner");
     std::fs::create_dir_all(inner.join("Sub")).unwrap();
@@ -1505,7 +1505,7 @@ fn geometry_slider_drag_marks_the_grid() {
 
 #[test]
 fn edit_in_external_editor_opens_the_copy() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-ext-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-ext");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let opened: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
@@ -1536,7 +1536,7 @@ fn edit_in_external_editor_opens_the_copy() {
 /// another copy each time).
 #[test]
 fn edit_in_reports_an_editor_that_wont_open_without_failing() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-ext-fail-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-ext-fail");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let services = Services { png: None, open_with: Some(Box::new(|_: &str, _: &str| Err("the editor quit".into()))), ..Default::default() };
@@ -1558,7 +1558,7 @@ fn edit_in_reports_an_editor_that_wont_open_without_failing() {
 /// the host to find; when the host can't find it, no copy is made.
 #[test]
 fn edit_in_photocraft_opens_a_psd_copy() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-pcraft-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-pcraft");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let opened: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
@@ -1619,7 +1619,7 @@ fn edit_in_photocraft_opens_a_psd_copy() {
 #[test]
 fn open_original_in_external_editor_hands_over_the_raw_itself() {
     use lcc_catalog::{Op, Photo, Source};
-    let dir = std::env::temp_dir().join(format!("lc-ui-orig-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-orig");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let opened: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
@@ -1707,7 +1707,7 @@ fn open_original_in_external_editor_hands_over_the_raw_itself() {
 #[test]
 fn open_original_refuses_anything_that_is_not_a_photo_file() {
     use lcc_catalog::{Op, Photo, Source};
-    let dir = std::env::temp_dir().join(format!("lc-ui-gate-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-gate");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let opened: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
@@ -1850,6 +1850,7 @@ fn reference_view_pins_a_photo_beside_the_active_one() {
 
 #[test]
 fn soft_proofing_flags_out_of_gamut_colours_and_makes_proof_copies() {
+    let dir = lcc_testkit::TempDir::new("proof-profile");
     let mut h = detail("panel.edit");
     if h.app.ui.right != RightPanel::Edit {
         exec(&mut h, "panel.edit", json!({}));
@@ -1878,7 +1879,6 @@ fn soft_proofing_flags_out_of_gamut_colours_and_makes_proof_copies() {
     let r = h.request("engine.execute", json!({"command": "view.softProof", "params": {"space": "cmyk"}}), T);
     assert_ne!(r["ok"], true);
     // a device (printer) profile, its intent and Simulate Paper & Ink
-    let dir = std::env::temp_dir().join(format!("proof-profile-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let icc = dir.join("printer.icc");
     std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::Srgb)).unwrap();
@@ -1917,9 +1917,9 @@ fn soft_proofing_flags_out_of_gamut_colours_and_makes_proof_copies() {
 fn ai_masks_without_the_model_offer_the_download() {
     use crate::state::Dialog;
     use lcc_engine::segment::Segmenter;
+    let dir = lcc_testkit::TempDir::new("lc-ui-no-sam3");
     let mut h = detail("panel.masking");
-    let dir = std::env::temp_dir().join(format!("lc-ui-no-sam3-{}", std::process::id()));
-    h.app.session.segmenter.dir = Some(dir.clone());
+    h.app.session.segmenter.dir = Some(dir.to_path_buf());
     h.app.session.segmenter.mirrors_file = Some(dir.join("none.txt"));
     let t = std::time::Instant::now();
     let r = h.request("ui.clickWidget", json!({"id": "maskNew:object"}), T);

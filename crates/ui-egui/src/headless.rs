@@ -573,10 +573,10 @@ mod tests {
     fn detail_offers_ai_denoise_for_raw_photos_without_any_set_up() {
         use crate::state::Dialog;
         use lcc_catalog::{MediaKind, Op, Photo, PhotoId, Source};
+        let dir = lcc_testkit::TempDir::new("lc-ui-denoise");
         // tall enough that the Detail panel's setup button is on screen above the Sync bar, whatever the panel order
         let mut h = demo([1400.0, 1600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-denoise-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
@@ -681,9 +681,9 @@ mod tests {
     #[test]
     fn a_rejected_model_file_says_why_in_settings() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-denoise-rejected");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-denoise-rejected-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
@@ -1564,9 +1564,9 @@ mod tests {
     #[test]
     fn adding_a_face_model_shows_its_terms_and_installs_only_once_accepted() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facemodel");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facemodel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1621,8 +1621,8 @@ mod tests {
     #[test]
     fn detect_faces_without_the_face_model_offers_its_download_and_fetches_nothing() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-detector");
         let mut h = demo([1400.0, 900.0]);
-        let dir = std::env::temp_dir().join(format!("lc-ui-detector-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1653,9 +1653,9 @@ mod tests {
     #[test]
     fn download_shows_the_terms_first_and_fetches_nothing_until_accepted() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facedl");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facedl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1696,9 +1696,9 @@ mod tests {
     fn people_and_the_name_box_offer_to_set_face_recognition_up() {
         use crate::state::{Dialog, ViewMode};
         use lcc_catalog::Op;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facesetup");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facesetup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -2805,9 +2805,9 @@ mod tests {
     /// Cancelling it exports nothing; a host without a folder dialog asks for `dir`.
     #[test]
     fn export_choose_folder_later_asks_when_the_export_starts() {
+        let out = lcc_testkit::TempDir::new("lc-choose-later");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-choose-later-{}", std::process::id()));
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (a, folder) = (asked.clone(), out.to_string_lossy().into_owned());
         h.app.services.pick_folder = Some(Box::new(move || {
@@ -3008,9 +3008,9 @@ mod tests {
     /// `bitDepth` is checked against JPEG's, not let through to an 8-bit file.
     #[test]
     fn export_checks_the_depth_of_the_format_a_bare_path_gets() {
+        let out = lcc_testkit::TempDir::new("lc-bare-path-depth");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-bare-path-depth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         h.app.services.write = Some(Box::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
@@ -3078,9 +3078,9 @@ mod tests {
     /// osascript or Photos) and the toast says how it went.
     #[test]
     fn export_dialog_adds_to_apple_photos_on_macos() {
+        let out = lcc_testkit::TempDir::new("lc-photos-dialog");
         let mut h = demo([1200.0, 1100.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-dialog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
         let calls = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
@@ -3133,12 +3133,12 @@ mod tests {
     /// worker thread, whose language is always English.
     #[test]
     fn the_photos_progress_line_is_in_the_users_language() {
+        let out = lcc_testkit::TempDir::new("lc-photos-language");
         if !cfg!(target_os = "macos") {
             return;
         }
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-language-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.ui.language = crate::i18n::Locale::De;
         crate::i18n::set_language(crate::i18n::Locale::De);
@@ -3153,7 +3153,7 @@ mod tests {
             Ok(lcc_engine::apple_photos::Output { status: Some(0), stdout: "ID\n".into(), stderr: String::new() })
         }));
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(1).map(|p| p.0).collect();
-        let params = json!({"ids": ids, "dir": out, "longEdge": 48, "addToPhotos": true, "background": true});
+        let params = json!({"ids": ids, "dir": out.path(), "longEdge": 48, "addToPhotos": true, "background": true});
         let r = h.request("engine.execute", json!({"command": "app.export", "params": params}), t);
         assert_eq!(r["ok"], true, "{r}");
         // Photos has been asked, and the window hasn't drawn a frame since (Codex review of #643):
@@ -3183,9 +3183,9 @@ mod tests {
     /// drawing frames with the activity row up, and the DNGs arrive stacked on their originals.
     #[test]
     fn render_to_dng_keeps_the_window_drawing() {
+        let out = lcc_testkit::TempDir::new("lc-render-dng-ui");
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(30);
-        let out = std::env::temp_dir().join(format!("lc-render-dng-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
@@ -3221,9 +3221,9 @@ mod tests {
     /// once with the running job; the app announces the outcome when Photos is done.
     #[test]
     fn a_slow_photos_import_never_blocks_the_window() {
+        let out = lcc_testkit::TempDir::new("lc-photos-slow-ui");
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(30);
-        let out = std::env::temp_dir().join(format!("lc-photos-slow-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let file = out.join("a.jpg");
@@ -3271,9 +3271,9 @@ mod tests {
     /// `wait: false` is still running waits for it, on every exit path (dropping the `Headless`).
     #[test]
     fn a_headless_run_waits_for_its_photos_import_before_ending() {
+        let dir = lcc_testkit::TempDir::new("lc-photos-headless-drop");
         let mut h = demo([800.0, 600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-photos-headless-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.jpg");
@@ -3306,12 +3306,12 @@ mod tests {
     /// export is still writing waits through the writing and then the import the export starts.
     #[test]
     fn a_headless_run_waits_for_its_exports_photos_import() {
+        let dir = lcc_testkit::TempDir::new("lc-photos-headless-export-drop");
         if !cfg!(target_os = "macos") {
             return; // addToPhotos is refused before exporting elsewhere
         }
         let mut h = demo([800.0, 600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-photos-headless-export-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let marker = dir.join("imported");
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| {
@@ -3338,12 +3338,12 @@ mod tests {
     /// export's job number; the export then adds its files under that job.
     #[test]
     fn a_background_export_holds_photos_while_it_writes() {
+        let out = lcc_testkit::TempDir::new("lc-photos-hold-ui");
         if !cfg!(target_os = "macos") {
             return; // addToPhotos is refused before exporting elsewhere
         }
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-hold-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let other = out.join("other.jpg");
@@ -3424,6 +3424,7 @@ mod tests {
     /// moves it there, and the sort becomes Custom Order (Lightroom Classic's drag to reorder).
     #[test]
     fn drag_photos_to_reorder_an_album() {
+        let out = lcc_testkit::TempDir::new("lc-ui-custom-order");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(4).map(|p| p.0).collect();
@@ -3455,7 +3456,6 @@ mod tests {
         assert_eq!(now, vec![shown[0], shown[3], shown[1], shown[2]]);
         assert!(h.app.ui.dragging_photos.is_none(), "the drag ended");
         // exporting the selection numbers it in Custom Order, however it was selected
-        let out = std::env::temp_dir().join(format!("lc-ui-custom-order-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
         let picked: Vec<u64> = now.iter().rev().copied().collect();
@@ -3714,9 +3714,9 @@ mod tests {
     /// subfolders and Add to My Photos work from the grid header.
     #[test]
     fn browse_a_local_folder() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-browse");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-browse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("inner")).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -3759,7 +3759,7 @@ mod tests {
         assert_eq!(h.request("ui.clickWidget", json!({"id": format!("crumb:{parent_index}")}), t)["ok"], true);
         h.settle(SETTLE);
         // the same folder, whatever the platform's separators (issue #538)
-        assert_eq!(std::path::Path::new(&h.app.session.browse.as_ref().unwrap().path), dir.as_path());
+        assert_eq!(std::path::Path::new(&h.app.session.browse.as_ref().unwrap().path), dir.path());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3769,10 +3769,11 @@ mod tests {
     /// open down to the hidden folder and push the restore row out of view.
     #[test]
     fn local_location_can_be_hidden_and_restored() {
+        let dir2 = lcc_testkit::TempDir::new("lc-ui-hide-b");
+        let dir = lcc_testkit::TempDir::new("lc-ui-hide");
         let size = [1300.0, 900.0];
         let mut h = demo(size);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-hide-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.to_string_lossy().to_string();
@@ -3823,7 +3824,6 @@ mod tests {
         assert!(dir.is_dir(), "the folder itself is untouched");
         // a second hidden place: the row lists them, and each comes back on its own (issue #2114:
         // the row used to bring every hidden place back at once)
-        let dir2 = std::env::temp_dir().join(format!("lc-ui-hide-{}-b", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir2);
         std::fs::create_dir_all(&dir2).unwrap();
         let path2 = dir2.to_string_lossy().to_string();
@@ -3877,9 +3877,9 @@ mod tests {
     /// the view, the way it did before; it used to leave the view empty ("No photos in this folder").
     #[test]
     fn favorite_folder_click_shows_its_photos() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-fav");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-fav-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -3911,9 +3911,9 @@ mod tests {
     #[test]
     fn unreadable_folder_browse_says_so() {
         use std::os::unix::fs::PermissionsExt;
+        let dir = lcc_testkit::TempDir::new("lc-ui-unreadable");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-unreadable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -3937,9 +3937,9 @@ mod tests {
     /// the kept folders survive a save/load of the UI state (a restart).
     #[test]
     fn kept_local_root_stays_while_browsing_below_and_elsewhere() {
+        let base = lcc_testkit::TempDir::new("lc-ui-roots");
         let mut h = demo([1300.0, 1400.0]);
         let t = Duration::from_secs(10);
-        let base = std::env::temp_dir().join(format!("lc-ui-roots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for d in ["Photos/2026/20260101", "Photos/2026/20260114", "Other"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
@@ -4294,9 +4294,9 @@ mod tests {
     /// them in place (they aren't "In catalog" yet), and confirming brings them into the library.
     #[test]
     fn import_from_folder_offers_the_photos_browsed_in_local() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-browsed-import");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-browsed-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4328,9 +4328,9 @@ mod tests {
     /// File → Import from Folder… opens the import review for a folder (searched recursively).
     #[test]
     fn add_folder_opens_the_import_review() {
+        let dir = lcc_testkit::TempDir::new("lc-addfolder");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-addfolder-{}", std::process::id()));
         let sub = dir.join("day 2");
         std::fs::create_dir_all(&sub).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4438,9 +4438,9 @@ mod tests {
     /// asks once it's free.
     #[test]
     fn a_connected_card_opens_the_import_review() {
+        let root = lcc_testkit::TempDir::new("lc-card");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let root = std::env::temp_dir().join(format!("lc-card-{}", std::process::id()));
         let dcim = root.join("DCIM/100NIKON");
         std::fs::create_dir_all(&dcim).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4480,9 +4480,9 @@ mod tests {
     /// Clicking the folder being read again keeps the running read (and its progress).
     #[test]
     fn browsing_the_same_folder_again_does_not_restart() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-again");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-again-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -4521,9 +4521,9 @@ mod tests {
     /// untouched Local photos are only forgotten from folders not browsed for the set number of days.
     #[test]
     fn browsing_from_the_ui_records_the_folder() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-stamp");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-stamp-{}", std::process::id()));
         let day = dir.join("2026/10/14");
         std::fs::create_dir_all(&day).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4545,9 +4545,9 @@ mod tests {
     /// another app, as `library.browse` does (issue #1392).
     #[test]
     fn browsing_again_from_the_ui_forgets_deleted_files() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-gone");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-gone-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -4580,9 +4580,9 @@ mod tests {
 
     #[test]
     fn add_folder_scans_in_the_background() {
+        let dir = lcc_testkit::TempDir::new("lc-scanbg");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-scanbg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let png = lcc_engine::export::encode_image(
@@ -4603,9 +4603,9 @@ mod tests {
     /// refused and leaves the running scan's options alone.
     #[test]
     fn folder_scan_cancel_and_busy() {
+        let dir = lcc_testkit::TempDir::new("lc-scancancel");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-scancancel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let png = lcc_engine::export::encode_image(
@@ -4781,7 +4781,7 @@ mod tests {
     /// with keywords, as one undo step.
     #[test]
     fn import_review_dialog() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..5u8 {
@@ -4839,7 +4839,7 @@ mod tests {
     #[test]
     fn import_review_offers_recently_deleted_files() {
         for (choice, tag) in [("restore", "r"), ("fresh", "f")] {
-            let dir = std::env::temp_dir().join(format!("lc-ui-import-trash-{tag}-{}", std::process::id()));
+            let dir = lcc_testkit::TempDir::new(&format!("lc-ui-import-trash-{tag}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             for i in 0..2u8 {
@@ -4905,7 +4905,7 @@ mod tests {
     /// photo (issue #1285).
     #[test]
     fn import_review_checks_a_recently_deleted_file_by_hand() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-trash-click-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-trash-click");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..2u8 {
@@ -5007,7 +5007,7 @@ mod tests {
     /// and the filmstrip don't show.
     #[test]
     fn an_import_from_an_album_view_shows_the_first_new_photo() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-show-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-show");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..3u8 {
@@ -5040,7 +5040,7 @@ mod tests {
     /// the import's batches.
     #[test]
     fn import_copy_renames_into_destination() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-copy-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-copy");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("out"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5090,7 +5090,7 @@ mod tests {
     /// template that would climb out of the destination is refused.
     #[test]
     fn import_copy_into_a_custom_folder_template() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-tpl-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-tpl");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("out"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5148,7 +5148,7 @@ mod tests {
     /// Move; the files land in the folder template, renamed, and leave the card.
     #[test]
     fn import_move_into_a_folder_template() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-move-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-move");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("Photos"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5205,7 +5205,7 @@ mod tests {
     /// inserts it at the text cursor (not appended, not replacing the template).
     #[test]
     fn import_rename_tags_insert_at_the_cursor() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-tags-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-tags");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[90, 3, 9, 255]; 64] };
@@ -5741,7 +5741,7 @@ mod tests {
     #[test]
     fn display_profile_converts_previews() {
         use crate::render::Slot;
-        let dir = std::env::temp_dir().join(format!("app-display-ui-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("app-display-ui");
         std::fs::create_dir_all(&dir).unwrap();
         let p3 = dir.join("p3.icc");
         std::fs::write(&p3, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::DisplayP3)).unwrap();
@@ -5831,7 +5831,7 @@ mod tests {
         use lcc_codecs::{NamedSpace, icc::write_named};
         use std::sync::{Arc, Mutex};
         let id = |space| lcc_engine::display::Display::from_bytes("", &write_named(space)).unwrap().id();
-        let dir = std::env::temp_dir().join(format!("app-screen-profile-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("app-screen-profile");
         std::fs::create_dir_all(&dir).unwrap();
         let chosen = dir.join("prophoto.icc");
         std::fs::write(&chosen, write_named(NamedSpace::ProPhoto)).unwrap();

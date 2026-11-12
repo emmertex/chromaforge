@@ -231,7 +231,7 @@ fn templates_save_apply_and_delete_from_the_dialog() {
 
 #[test]
 fn templates_export_and_import_from_the_dialog() {
-    let dir = std::env::temp_dir().join(format!("lcc-ui-print-templates-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-ui-print-templates");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("Sheet 5x6.lcprint").to_string_lossy().to_string();
     let suggested = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -361,7 +361,7 @@ fn the_print_dialog_fits_the_window_with_its_buttons_on_screen() {
 #[test]
 fn print_job_colour_controls_reach_the_job_and_the_pdf() {
     use lcc_engine::print_color::{PrintIntent, PrintMedia, PrintProfile, PrintSharpen};
-    let dir = std::env::temp_dir().join(format!("app-print-ui-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("app-print-ui");
     std::fs::create_dir_all(&dir).unwrap();
     let icc = dir.join("Baryta Paper.icc");
     std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::AdobeRgb)).unwrap();

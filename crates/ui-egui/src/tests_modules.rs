@@ -221,7 +221,7 @@ fn every_module_draws_and_the_picker_hides_modules() {
         assert_eq!(r["ok"], false, "{r}");
     }
     // a graphic plate from an SVG file, drawn in the bar; "" goes back to text
-    let svg = std::env::temp_dir().join(format!("plate-{}.svg", std::process::id()));
+    let svg = lcc_testkit::TempFile::new("plate", "plate.svg");
     std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="30"><circle cx="15" cy="15" r="14" fill="teal"/></svg>"#)
         .unwrap();
     run(&mut h, "view.identityPlate", json!({"image": svg.to_string_lossy()}));

@@ -255,6 +255,7 @@ fn classic_keys_switch_modules_views_and_panels() {
 
 #[test]
 fn the_alternative_set_restores_the_previous_keys_and_keymaps_round_trip() {
+    let dir = lcc_testkit::TempDir::new("keymap");
     let mut h = demo();
     h.app.run("app.keymapSet", json!({"set": "alternative"})).unwrap();
     assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.detail"), Some("D"));
@@ -264,7 +265,6 @@ fn the_alternative_set_restores_the_previous_keys_and_keymaps_round_trip() {
     assert!(h.app.run("app.keymapSet", json!({"set": "emacs"})).is_err());
     // export / import a keymap file
     h.app.run("app.setShortcut", json!({"id": "view.survey", "shortcut": "Cmd+Shift+K"})).unwrap();
-    let dir = std::env::temp_dir().join(format!("keymap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("keys.json");
     h.app.run("app.keymapExport", json!({"path": path.to_str().unwrap()})).unwrap();
@@ -896,8 +896,8 @@ fn x_in_the_crop_tool_swaps_the_crop_orientation() {
 /// MCP or the control channel); a free path still exports.
 #[test]
 fn keymap_export_refuses_to_overwrite_an_original_or_its_sidecar() {
+    let dir = lcc_testkit::TempDir::new("keymap-guard");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("keymap-guard-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let orig = dir.join("IMG_1.jpg");
     std::fs::write(&orig, b"original").unwrap();

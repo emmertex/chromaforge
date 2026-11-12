@@ -271,7 +271,7 @@ fn plugin_fields_edit_every_selected_photo() {
         ml = manifest.len(),
         rl = reply.len()
     );
-    let dir = std::env::temp_dir().join(format!("plugin-fields-ui-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("plugin-fields-ui");
     std::fs::create_dir_all(&dir).unwrap();
     let wasm = dir.join("fields.wasm");
     std::fs::write(&wasm, wat::parse_str(&src).unwrap()).unwrap();

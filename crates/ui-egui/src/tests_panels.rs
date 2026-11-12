@@ -1922,7 +1922,7 @@ fn a_renamed_folder_keeps_its_place_in_the_tree() {
     }
     let base = std::env::temp_dir().join(format!("lc-ui-rename-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let _cleanup = Cleanup(base.clone());
+    let _cleanup = Cleanup(base.to_path_buf());
     std::fs::create_dir_all(base.join("pics/trip")).unwrap();
     std::fs::create_dir_all(base.join("pics/home")).unwrap();
     // the folder tree writes paths with forward slashes, and its widget ids carry them
@@ -1979,7 +1979,7 @@ fn a_folder_menu_locates_its_missing_tree_only() {
 
     let base = std::env::temp_dir().join(format!("lc-ui-locate-folder-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let _cleanup = Cleanup(base.clone());
+    let _cleanup = Cleanup(base.to_path_buf());
     let new_trip = base.join("new/trip");
     std::fs::create_dir_all(new_trip.join("day2")).unwrap();
     for path in [new_trip.join("a.jpg"), new_trip.join("day2/b.jpg"), new_trip.join("c.jpg")] {
@@ -2105,7 +2105,7 @@ fn a_folder_that_cant_be_shown_in_the_file_manager_says_why() {
 /// grayed out, since only a place can be removed, while its Add to Local makes it a place.
 #[test]
 fn a_local_folders_menu_takes_the_folders_order_and_grays_out_remove_inside_a_place() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-local-menu-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-local-menu");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place/inner")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2114,7 +2114,7 @@ fn a_local_folders_menu_takes_the_folders_order_and_grays_out_remove_inside_a_pl
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let inner = dir.join("place").join("inner").to_string_lossy().to_string();
     let mut h = folders_app_with_services(&["/pics/trip/a.jpg"], [1400.0, 900.0], reveal_and_pick_services(Ok(())));
@@ -2175,7 +2175,7 @@ fn a_folders_menu_without_a_file_manager_keeps_copy_path_in_its_group() {
 #[test]
 fn copy_path_puts_a_folders_path_on_the_clipboard_from_each_kind_of_row() {
     let native = |p: &str| p.replace('/', std::path::MAIN_SEPARATOR_STR);
-    let dir = std::env::temp_dir().join(format!("lc-ui-copy-path-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-copy-path");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2184,7 +2184,7 @@ fn copy_path_puts_a_folders_path_on_the_clipboard_from_each_kind_of_row() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let mut h = folders_app_with_services(
         &["/pics/trip/a.jpg", "/pics/home/b.jpg", "/Volumes/nas/c.jpg"],
@@ -2256,7 +2256,7 @@ fn a_disks_menu_shows_it_in_the_file_manager_and_makes_a_folder_in_it() {
 /// New Folder on Disk… in a Local folder makes the folder inside it, and its row is listed.
 #[test]
 fn a_local_folders_new_folder_is_made_on_disk_and_listed() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-local-new-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-local-new");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("place/inner")).unwrap();
     struct Cleanup(std::path::PathBuf);
@@ -2265,7 +2265,7 @@ fn a_local_folders_new_folder_is_made_on_disk_and_listed() {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
-    let _cleanup = Cleanup(dir.clone());
+    let _cleanup = Cleanup(dir.to_path_buf());
     let place = dir.join("place").to_string_lossy().to_string();
     let inner = dir.join("place").join("inner").to_string_lossy().to_string();
     let made = dir.join("place").join("picks").to_string_lossy().to_string();
@@ -2629,7 +2629,7 @@ fn a_menu_commands_toast_shows_after_a_while() {
 /// zero, so a while into a session it had always already expired.
 #[test]
 fn the_tracklog_toast_shows_after_a_while() {
-    let dir = std::env::temp_dir().join(format!("lc-tracklog-toast-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-tracklog-toast");
     std::fs::create_dir_all(&dir).unwrap();
     let gpx = dir.join("walk.gpx");
     std::fs::write(
@@ -2656,8 +2656,8 @@ fn the_tracklog_toast_shows_after_a_while() {
 /// itself, and from then on the box turns it off and on.
 #[test]
 fn recognise_faces_stays_off_until_a_model_is_chosen() {
+    let dir = lcc_testkit::TempDir::new("lc-ui-faces-toggle");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
-    let dir = std::env::temp_dir().join(format!("lc-ui-faces-toggle-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     h.app.session.face_models_dir = Some(dir.join("models"));
@@ -2703,12 +2703,12 @@ fn recognise_faces_stays_off_until_a_model_is_chosen() {
 /// three work.
 #[test]
 fn local_photos_cannot_be_added_to_albums_until_they_join_my_photos() {
+    let dir = lcc_testkit::TempDir::new("lc-ui-albums-local");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
     // (dragging browsed photos onto the library's albums: Import as a tab off)
     h.app.ui.settings.import_as_tab = false;
     let album = h.app.session.execute("album.create", &json!({"name": "Trip", "addSelected": false})).unwrap()["id"].as_u64().unwrap();
     let album_id = lcc_catalog::AlbumId(album);
-    let dir = std::env::temp_dir().join(format!("lc-ui-albums-local-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -2850,7 +2850,7 @@ fn right_click_add_to_album_offers_a_new_album_when_there_is_none() {
 /// the review can't offer (a folder, or an album deleted while the scan ran) leaves its album empty.
 #[test]
 fn an_album_menu_imports_into_that_album() {
-    let dir = std::env::temp_dir().join(format!("lc-ui-album-import-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-ui-album-import");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..2u8 {
@@ -3042,9 +3042,9 @@ fn emptying_recently_deleted_asks_first_and_removes_only_trashed_photos() {
 #[test]
 fn delete_from_disk_dialog_trashes_file_and_removes_from_catalog() {
     use crate::state::Dialog;
+    let tmp = lcc_testkit::TempDir::new("lcc-test-ui-delete");
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid"}));
 
-    let tmp = std::env::temp_dir().join(format!("lcc-test-ui-delete-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
     let file = tmp.join("disk_photo.jpg");

@@ -592,24 +592,24 @@ mod tests {
     use crate::Session;
     use crate::remote::MemorySecrets;
 
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("lcc-web-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// The test's folder in Temp, removed when the test ends.
+    fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+        lcc_testkit::TempDir::new(&format!("lcc-web-{tag}"))
     }
 
-    fn session(tag: &str) -> (Session, std::path::PathBuf) {
+    /// A demo session keeping its connections in a fresh folder. The folder comes first: bound
+    /// first, it is dropped after the session.
+    fn session(tag: &str) -> (lcc_testkit::TempDir, Session) {
         let dir = temp_dir(tag);
         let mut s = Session::with_demo();
         s.remote.connections_path = Some(dir.join("connections.json"));
         s.set_secret_store(Arc::new(MemorySecrets::default()));
-        (s, dir)
+        (dir, s)
     }
 
     #[test]
     fn preview_lists_pages_and_images_for_the_visible_photos() {
-        let (mut s, _) = session("preview");
+        let (_dir, mut s) = session("preview");
         let n = s.visible().len();
         let v = s.execute("web.preview", &json!({"settings": {"template": "square", "site": {"title": "Demo <b>"}}})).unwrap();
         assert_eq!(v["photos"].as_array().unwrap().len(), n);
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn export_writes_a_complete_site() {
-        let (mut s, dir) = session("export");
+        let (dir, mut s) = session("export");
         let ids: Vec<u64> = s.visible().iter().take(2).map(|i| i.0).collect();
         let out = dir.join("site");
         let v = s
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn saved_galleries_and_servers_round_trip_without_secrets() {
-        let (mut s, dir) = session("saved");
+        let (dir, mut s) = session("saved");
         s.execute("web.saveGallery", &json!({"name": "Trip", "settings": {"site": {"title": "Trip"}}})).unwrap();
         let g = s.execute("web.galleries", &json!({})).unwrap();
         assert_eq!(g[0]["settings"]["site"]["title"], "Trip");
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn prepared_export_runs_off_the_session_and_share_needs_an_account() {
-        let (mut s, dir) = session("prepared");
+        let (dir, mut s) = session("prepared");
         let ids: Vec<u64> = s.visible().iter().take(1).map(|i| i.0).collect();
         let out = dir.join("site");
         let job = super::prepare(&mut s, "web.export", &json!({"dir": out.to_string_lossy(), "ids": ids})).unwrap();
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn upload_to_an_unreachable_server_is_an_error() {
-        let (mut s, _) = session("upload");
+        let (_dir, mut s) = session("upload");
         // (one photo: the gallery is rendered before the server is tried)
         let id = s.catalog.photos().next().unwrap().id.0;
         let server = json!({"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"});
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn a_server_that_cannot_be_reached_fails_before_anything_renders() {
-        let (mut s, _) = session("upload-first");
+        let (_dir, mut s) = session("upload-first");
         let p = json!({"server": {"host": "127.0.0.1", "port": 1, "user": "u", "path": "g"}, "password": "x"});
         let job = super::prepare(&mut s, "web.upload", &p).unwrap();
         assert!(job.steps() > 1, "images to render");
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn galleries_are_catalog_creations_and_old_ones_move_in() {
-        let (mut s, dir) = session("migrate");
+        let (dir, mut s) = session("migrate");
         let ids: Vec<u64> = s.catalog.photos().take(2).map(|p| p.id.0).collect();
         let old = json!({"galleries": [{"name": "Old", "settings": {"site": {"title": "Old"}}, "ids": ids}], "servers": [{"name": "Home", "host": "example.org", "user": "ann", "path": "/www"}]});
         std::fs::write(dir.join("web.json"), old.to_string()).unwrap();

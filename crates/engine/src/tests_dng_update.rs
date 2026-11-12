@@ -10,7 +10,7 @@ use crate::Session;
 use crate::tests_xmp::{synthetic_dng_with, temp_dir};
 
 /// A session holding the one DNG `bytes` written to a scratch folder.
-fn with_dng(tag: &str, bytes: &[u8]) -> (Session, PathBuf, PathBuf) {
+fn with_dng(tag: &str, bytes: &[u8]) -> (Session, lcc_testkit::TempDir, PathBuf) {
     let dir = temp_dir(tag);
     let file = dir.join("shot.dng");
     std::fs::write(&file, bytes).unwrap();

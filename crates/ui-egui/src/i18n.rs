@@ -1885,7 +1885,7 @@ mod tests {
     #[test]
     fn a_dropped_photos_notice_names_every_outcome_of_the_import_and_is_silent_for_duplicates_only() {
         set_language(Locale::En);
-        let dir = std::env::temp_dir().join(format!("lc-drop-notice-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-drop-notice");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let png = |name: &str, seed: u8| {
