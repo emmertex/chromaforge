@@ -151,7 +151,7 @@ fn summary_text(report: &ScanReport) -> String {
         (count(GroupKind::Similar), "sets of copies that differ"),
         (count(GroupKind::SameShot), "raw + JPEG pairs"),
     ];
-    let shown: Vec<String> = parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| tr_format!("{n} {what}", n = n, what = tr(what))).collect();
+    let shown: Vec<String> = parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| tr_format!("{what}: {n}", what = tr(what), n = n)).collect();
     if shown.is_empty() { tr("No duplicates found.").to_string() } else { shown.join(" · ") }
 }
 
@@ -232,9 +232,13 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             if finder.failed > 0 {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(tr_format!("{failed} pictures could not be read; their photos are not in the groups", failed = finder.failed))
-                            .small()
-                            .color(t.text_dim),
+                        RichText::new(tr_format!(
+                            "Could not read {failed} picture{}; those photos are not in the groups",
+                            if finder.failed == 1 { "" } else { "s" },
+                            failed = finder.failed
+                        ))
+                        .small()
+                        .color(t.text_dim),
                     )
                     .wrap(),
                 );
@@ -261,7 +265,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let n = marked.len();
-                    let r = ui.add_enabled(n > 0, egui::Button::new(tr_format!("Remove {n} Photos", n = n)).min_size(vec2(0.0, 26.0)));
+                    let r = ui.add_enabled(
+                        n > 0,
+                        egui::Button::new(tr_format!("Remove {n} Photo{}", if n == 1 { "" } else { "s" }, n = n)).min_size(vec2(0.0, 26.0)),
+                    );
                     register(ui.ctx(), "button:duplicates.remove", r.rect);
                     if r.clicked() {
                         action = Some(Action::Remove(marked.clone()));
@@ -310,7 +317,9 @@ fn summary_line(finder: &Finder) -> String {
     }
     let n: usize = finder.groups.iter().map(|g| g.members.len().saturating_sub(1)).sum();
     tr_format!(
-        "{groups} groups: {n} photos are copies of another photo. The best copy of each group is first and unmarked; click a photo to change what is marked.",
+        "{groups} group{}: {n} photo{} are copies of another photo. The best copy of each group is first and unmarked; click a photo to change what is marked.",
+        if finder.groups.len() == 1 { "" } else { "s" },
+        if n == 1 { "" } else { "s" },
         groups = finder.groups.len(),
         n = n
     )
@@ -434,7 +443,7 @@ fn apply(app: &mut LccApp, ctx: &egui::Context, action: Action) {
                 if let Some(f) = app.duplicates.as_mut() {
                     f.drop_ids(&list);
                 }
-                app.toast(ctx, tr_format!("Removed {n} photos to Recently Deleted", n = n));
+                app.toast(ctx, tr_format!("Removed {n} photo{} to Recently Deleted", if n == 1 { "" } else { "s" }, n = n));
             }
         }
         Action::Reject(list) => {
@@ -447,7 +456,7 @@ fn apply(app: &mut LccApp, ctx: &egui::Context, action: Action) {
                         }
                     }
                 }
-                app.toast(ctx, tr_format!("Rejected {n} photos", n = n));
+                app.toast(ctx, tr_format!("Rejected {n} photo{}", if n == 1 { "" } else { "s" }, n = n));
             }
         }
         Action::Stack(groups) => {
@@ -457,7 +466,7 @@ fn apply(app: &mut LccApp, ctx: &egui::Context, action: Action) {
                     stacked += 1;
                 }
             }
-            app.toast(ctx, tr_format!("Stacked {n} groups", n = stacked));
+            app.toast(ctx, tr_format!("Stacked {n} group{}", if stacked == 1 { "" } else { "s" }, n = stacked));
         }
     }
 }
