@@ -22,6 +22,7 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::email_photo::COMMANDS)
         .chain(crate::panels::filterbar::COMMANDS)
         .chain(crate::import_report::COMMANDS)
+        .chain(crate::duplicates_ui::COMMANDS)
         .chain(crate::comments_ui::COMMANDS)
         .chain(crate::face_menu::COMMANDS)
         .chain(crate::modern::COMMANDS)
@@ -105,6 +106,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
         return Some(r);
     }
     if let Some(r) = crate::import_report::run(app, id, p) {
+        return Some(r);
+    }
+    if let Some(r) = crate::duplicates_ui::run(app, id, p) {
         return Some(r);
     }
     if let Some(r) = crate::comments_ui::run(app, id, p) {
@@ -278,6 +282,7 @@ pub(super) fn enabled(app: &LccApp, id: &str) -> Option<bool> {
         .or_else(|| crate::timelapse_ui::enabled(app, id))
         .or_else(|| crate::email_photo::enabled(app, id))
         .or_else(|| crate::import_report::enabled(app, id))
+        .or_else(|| crate::duplicates_ui::enabled(app, id))
         .or_else(|| crate::comments_ui::enabled(app, id))
         .or_else(|| crate::face_menu::enabled(app, id))
 }

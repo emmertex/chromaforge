@@ -53,6 +53,7 @@ pub mod date_picker;
 pub mod dialog_frame;
 pub mod dng_update_task;
 pub mod docking;
+pub mod duplicates_ui;
 mod drop_overlay;
 mod edit_in;
 pub mod email_photo;
@@ -287,6 +288,7 @@ mod tests_import_metadata_preset;
 mod tests_import_recipe;
 #[cfg(test)]
 mod tests_import_report;
+mod tests_duplicates_ui;
 #[cfg(test)]
 mod tests_import_scan_note;
 #[cfg(test)]
@@ -961,6 +963,8 @@ pub struct LccApp {
     pub import: Option<import::ImportTask>,
     /// The last import's XMP warnings (File ▸ More Imports ▸ Import Warnings…).
     pub import_report: Option<import_report::Report>,
+    /// The Find Duplicates window (Library ▸ Find Duplicates…).
+    pub duplicates: Option<duplicates_ui::Finder>,
     /// Library ▸ Review Comments.
     pub review_comments: comments_ui::View,
     /// A folder scan in progress (feeds the import review).
@@ -1295,6 +1299,7 @@ impl LccApp {
             enhance: enhance_ui::EnhanceUi::default(),
             import: None,
             import_report: None,
+            duplicates: None,
             review_comments: comments_ui::View::default(),
             scan: None,
             sync: None,
@@ -3082,6 +3087,7 @@ impl LccApp {
         panels::second::show(self, &ctx);
         panels::notices::show(self, &ctx);
         import_report::show(self, &ctx);
+        duplicates_ui::show(self, &ctx);
         comments_ui::show(self, &ctx);
         panels::dialogs::show(self, &ctx);
         catalog_ui::show(self, &ctx);
