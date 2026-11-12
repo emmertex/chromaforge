@@ -679,6 +679,8 @@ pub struct MediaCache {
 pub struct ProfileFacts {
     pub colorimetric: bool,
     pub local_tone: bool,
+    /// A DNG of rendered RGB: the Profiles panel offers no camera profile for it (issue #763).
+    pub rendered_rgb: bool,
 }
 
 /// The photos that have a cached denoised picture for the denoise model in use. Only memory: nothing here touches the
@@ -939,6 +941,7 @@ impl MediaCache {
             let f = self.profile_facts.entry(id).or_default();
             f.colorimetric |= info.colorimetric;
             f.local_tone |= info.local_tone.is_some();
+            f.rendered_rgb |= info.rendered_rgb;
         }
         let tick = lcc_preview::next_tick();
         match level {
@@ -976,7 +979,11 @@ impl MediaCache {
     pub fn profile_facts(&self, id: PhotoId) -> ProfileFacts {
         let now = self.source_facts(id, SourceInfo::default());
         let seen = self.profile_facts.get(&id).copied().unwrap_or_default();
-        ProfileFacts { colorimetric: seen.colorimetric || now.colorimetric, local_tone: seen.local_tone || now.local_tone.is_some() }
+        ProfileFacts {
+            colorimetric: seen.colorimetric || now.colorimetric,
+            local_tone: seen.local_tone || now.local_tone.is_some(),
+            rendered_rgb: seen.rendered_rgb || now.rendered_rgb,
+        }
     }
 
     /// (decoded thumbnail sources, bytes).
@@ -3178,9 +3185,14 @@ pub type FileProbe = Arc<dyn Fn(&str) -> Result<ProbeInfo, String> + Send + Sync
 mod thumbnail_hash_tests {
     use super::*;
 
+    /// A session with one JPEG. Each call names its own file: the decode share
+    /// ([`crate::decode_share`]) is process-wide and keyed by path, so tests running in parallel
+    /// must never share one (issue #1068: a test took another's decode, or lost its own).
     fn session() -> crate::Session {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut s = crate::Session::new();
-        let p = Photo::new(PhotoId(1), Source::File { path: "hash-fixture.jpg".into() }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
+        let p = Photo::new(PhotoId(1), Source::File { path: format!("hash-fixture-{n}.jpg") }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
         s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         s
     }
@@ -3520,7 +3532,8 @@ mod thumbnail_hash_tests {
         assert_eq!(seen.lock().unwrap().len(), 2, "and the new source is reused");
         // the late job re-decodes with the old option (its source was the cached one: decode it from the file)
         let mut late = late;
-        late.source = s.media.origin_ref(&Source::File { path: "hash-fixture.jpg".into() }, 64);
+        let path = s.catalog.photo(PhotoId(1)).unwrap().source.clone();
+        late.source = s.media.origin_ref(&path, 64);
         let late = late.run();
         assert_eq!(late.loaded.as_ref().map(|l| l.options.colour), Some(CameraColour::Auto));
         s.accept(&late);

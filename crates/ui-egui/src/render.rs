@@ -86,6 +86,8 @@ pub enum Slot {
     Hover,
     /// An import candidate's thumbnail in the import review dialog (by index).
     Import(u32),
+    /// A duplicate group member's thumbnail in the Find Duplicates window (by index).
+    Duplicates(u32),
     /// The second window's view of the active photo.
     Second,
     /// A tile of a zoomed view (see [`crate::region::TileCache`]): the pane it is shown in
@@ -2422,6 +2424,16 @@ impl Renderer {
         self.requests.retain(|s, _| !matches!(s, Slot::Import(_)));
         self.textures.retain(|s, _| !matches!(s, Slot::Import(_)));
         self.quick_tried.retain(|s, _| !matches!(s, Slot::Import(_)));
+    }
+
+    /// Drop the Find Duplicates window's thumbnails (the window closed).
+    pub fn forget_duplicates(&mut self) {
+        self.pool.reprioritize(|s, p| if matches!(s, Slot::Duplicates(_)) { None } else { Some(p) });
+        self.queue.retain(|q| !matches!(q.slot, Slot::Duplicates(_)));
+        self.pending.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.requests.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.textures.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.quick_tried.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
     }
 
     /// Drop thumbnails that aren't in `keep` (bounded memory for huge libraries), and queued

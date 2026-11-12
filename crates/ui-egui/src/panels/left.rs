@@ -2010,16 +2010,29 @@ pub(crate) fn reveal_chosen(app: &mut LccApp, ui: &egui::Ui, tree: &[FolderNode]
 /// instead of under every folder from the disk down to it (the full path is the row's hover
 /// text). Folders listed side by side with the same name say which folder each is in:
 /// `trip (2024)`, `trip (2025)`. Disk rows stay as they are.
-pub(crate) fn sidebar_folders(mut nodes: Vec<FolderNode>) -> Vec<FolderNode> {
-    fn lift(mut n: FolderNode) -> FolderNode {
-        while !n.volume && n.own == 0 && n.label.is_none() && n.children.len() == 1 {
+/// A folder in `shown` (folder keys, added by Show Parent Folder) always keeps its own row.
+pub(crate) fn sidebar_folders(nodes: Vec<FolderNode>, shown: &std::collections::BTreeSet<String>) -> Vec<FolderNode> {
+    shape_folders(nodes, true, shown)
+}
+
+/// Only the chain right below a disk is lifted (`lift`): once a folder is listed, every folder
+/// inside it keeps its own row, so `2026` → `January` → `31st` nests as it does on disk.
+fn shape_folders(mut nodes: Vec<FolderNode>, lift: bool, shown: &std::collections::BTreeSet<String>) -> Vec<FolderNode> {
+    let shape = |mut n: FolderNode| {
+        while lift
+            && !shown.contains(&lcc_catalog::query::folder_key(&n.path))
+            && !n.volume
+            && n.own == 0
+            && n.label.is_none()
+            && n.children.len() == 1
+        {
             let Some(child) = n.children.pop() else { break };
             n = child;
         }
-        n.children = sidebar_folders(std::mem::take(&mut n.children));
+        n.children = shape_folders(std::mem::take(&mut n.children), n.volume, shown);
         n
-    }
-    nodes = nodes.into_iter().map(lift).collect();
+    };
+    nodes = nodes.into_iter().map(shape).collect();
     disambiguate(&mut nodes);
     nodes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name)));
     nodes
@@ -2712,6 +2725,9 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
             if r.clicked()
                 && let Some(parent) = parent_folder(path)
             {
+                // the parent gets a row of its own in the Folders list even when it holds no
+                // photo itself; choosing it then opens the rows above it
+                app.caches.show_folder(&parent);
                 if let Err(e) = app.run("library.source", json!({"kind": "libraryFolder", "path": parent})) {
                     app.toast(ui.ctx(), e);
                 }

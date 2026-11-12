@@ -1,0 +1,3 @@
+## Features
+
+- **Library ▸ Find Duplicates…:** groups photos that are copies of one another across the whole library. Same-file copies are found at once from the catalog's content hashes; Find Similar Copies reads every photo's picture in the background (a raw by its camera JPEG, a clip by a poster frame) and finds copies that differ (resized, re-compressed, renamed) plus raw + JPEG pairs of the same shot, kept apart as something to stack rather than delete. The best copy of each group comes first and unmarked, the rest marked; Remove sends them to Recently Deleted, Reject flags them, Stack Groups stacks each group. `library.findDuplicates {similar}` returns the groups for the control channel and MCP.

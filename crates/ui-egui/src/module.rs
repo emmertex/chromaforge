@@ -257,8 +257,6 @@ pub struct ModuleLayout {
     pub toolbar: bool,
     /// The right panel open last in this module.
     pub right: RightPanel,
-    /// Develop's presets column.
-    pub presets: bool,
     /// Solo mode: opening one section closes the others.
     pub solo: bool,
     /// The right group's panel order (tab strip order); empty = the module's declared order.
@@ -277,7 +275,6 @@ impl Default for ModuleLayout {
             auto_hide: EdgeFlags::default(),
             toolbar: true,
             right: RightPanel::None,
-            presets: false,
             solo: false,
             order: Vec::new(),
             hidden: Vec::new(),
@@ -651,7 +648,6 @@ fn capture(app: &LccApp) -> ModuleLayout {
         auto_hide: u.auto_hide,
         toolbar: u.toolbar,
         right,
-        presets: u.presets,
         solo: u.single_panel,
         order: u.panel_order.clone(),
         hidden: u.hidden_panels.clone(),
@@ -673,7 +669,6 @@ fn apply(app: &mut LccApp, l: &ModuleLayout, full: bool) {
     u.panel_order = l.order.clone();
     u.hidden_panels = l.hidden.clone();
     if full {
-        u.presets = l.presets;
         u.right = l.right;
     }
 }
@@ -803,8 +798,24 @@ fn edge_shown(app: &LccApp, e: Edge) -> bool {
         Edge::Top => app.ui.module_bar,
         Edge::Bottom => app.ui.filmstrip,
         Edge::Left => app.ui.left_panel,
-        Edge::Right => app.ui.right_edge,
+        // the right side has two switches — the edge (Tab, Window ▸ Panels) and the top bar's
+        // fold button (F8) — and is on screen only with both on, in every module
+        Edge::Right => app.ui.right_edge && !app.ui.right_collapsed,
     }
+}
+
+/// Fold the right side away or bring it back (the top bar's button, F8): bringing it back also
+/// undoes Tab / Window ▸ Panels having hidden the edge, so the button never ends up doing nothing.
+/// Returns whether the side is shown now.
+pub fn toggle_right(app: &mut LccApp) -> bool {
+    let on = !edge_shown(app, Edge::Right);
+    if on {
+        set_edge(app, Edge::Right, true);
+    } else {
+        app.ui.right_collapsed = true;
+        app.ui.peek.set(Edge::Right, false);
+    }
+    on
 }
 
 fn set_edge(app: &mut LccApp, e: Edge, on: bool) {
@@ -812,7 +823,13 @@ fn set_edge(app: &mut LccApp, e: Edge, on: bool) {
         Edge::Top => app.ui.module_bar = on,
         Edge::Bottom => app.ui.filmstrip = on,
         Edge::Left => app.ui.left_panel = on,
-        Edge::Right => app.ui.right_edge = on,
+        Edge::Right => {
+            app.ui.right_edge = on;
+            // showing the edge unfolds it: one of the two switches must not keep it hidden
+            if on {
+                app.ui.right_collapsed = false;
+            }
+        }
     }
     app.ui.peek.set(e, false);
 }
@@ -1066,7 +1083,7 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "panel.sides" => {
             // Tab: both side panels; shows them when either is hidden
-            let on = bool_param(p, "show").unwrap_or(!(app.ui.left_panel || app.ui.right_edge));
+            let on = bool_param(p, "show").unwrap_or(!(edge_shown(app, Edge::Left) || edge_shown(app, Edge::Right)));
             set_edge(app, Edge::Left, on);
             set_edge(app, Edge::Right, on);
             Ok(edges_json(app))

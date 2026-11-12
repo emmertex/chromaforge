@@ -4185,7 +4185,7 @@ mod tests {
             r["result"].clone()
         };
         ask(&mut h, "engine.execute", json!({"command": "app.gpu", "params": {"enabled": false}}));
-        ask(&mut h, "ui.set", json!({"settings": {"gpu": false, "previewEdge": 1280}, "presets": false}));
+        ask(&mut h, "ui.set", json!({"settings": {"gpu": false, "previewEdge": 1280}}));
         ask(&mut h, "engine.execute", json!({"command": "library.select", "params": {"ids": [1], "active": 1}}));
         ask(
             &mut h,

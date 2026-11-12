@@ -1180,11 +1180,11 @@ fn center(ui: &mut egui::Ui, app: &mut LccApp) {
         area.max.y = film.top();
         filmstrip(ui, app, film);
     }
-    if app.ui.right_edge {
+    if crate::module::module_edge(app, Edge::Right) {
         let right = crate::panels::split_side(ui, &mut area, false, "book:right", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(right), |ui| right_panels(ui, app, right));
     }
-    if app.ui.left_panel {
+    if crate::module::module_edge(app, Edge::Left) {
         let left = crate::panels::split_side(ui, &mut area, true, "book:left", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(left), |ui| left_panels(ui, app, left));
     }
