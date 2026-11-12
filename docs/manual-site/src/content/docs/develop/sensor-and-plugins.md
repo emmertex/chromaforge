@@ -5,7 +5,8 @@ sidebar:
   order: 18
 ---
 
-- **Hot, dead and stuck pixels** are fixed automatically on raw data, on by default; **Detail ▸ Sensor ▸ Fix hot and dead pixels** in the Edit panel turns it off. Each camera body keeps its own map. **Photo ▸ Develop Settings ▸ Rebuild Hot Pixel Map**.
+- **Hot, dead and stuck pixels** are fixed automatically on raw data, on by default; **Detail ▸ Sensor ▸ Fix hot and dead pixels** in the Edit panel turns it off. Each camera body keeps its own map; confirming a hot pixel rebuilds only that body's previews. **Photo ▸ Develop Settings ▸ Rebuild Hot Pixel Map**.
 - **Sensor dust**: **Remove Dust** in the Remove panel (or **Photo ▸ Develop Settings ▸ Remove Dust**) adds heal spots for dust shadows. **Settings ▸ Import ▸ Remove dust on import** does it automatically (off by default).
-- **Plug-in Filters** section at the bottom of the Edit panel: pixel filters written as sandboxed WebAssembly modules. Install and manage them in the Plug-in Manager.
+- **Flat-Field Correction** follows a steep light fall-off to the frame's edges, so corners of wide lenses are no longer left too dark.
+- **Plug-in Filters** section at the bottom of the Edit panel: pixel filters written as sandboxed WebAssembly modules. Install and manage them in the Plug-in Manager (**Pixel Filters** list; their page shows where each comes from). An older pixel filter needs confirming before it installs; a plug-in and a pixel filter cannot share an id.
 - **Plug-ins** also add menu commands, export steps and metadata. See [Automation](../../automate/cli-and-mcp/).

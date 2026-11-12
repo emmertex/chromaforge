@@ -11,7 +11,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Shot name="ai-mask-types" alt="Create New Mask: Object, Describe, Subject, Sky, Background, People, Remembered and the drawn types" />
 
-Open **Masks** and pick a tile. All AI tiles are in Create New Mask; the result is a normal mask with the same Light, Colour, Effects and Detail sliders (see [Masks](../../develop/masking/)).
+Open **Masks** and pick a tile. Only masks that use **Subject** run the subject model: Sky, Landscape and Depth masks do not, even when it is installed. Editing a photo with AI masks is faster, because the analysis runs once per photo and slider drags reuse it. All AI tiles are in Create New Mask; the result is a normal mask with the same Light, Colour, Effects and Detail sliders (see [Masks](../../develop/masking/)).
 
 | Tile | What it selects | Needs |
 |---|---|---|
