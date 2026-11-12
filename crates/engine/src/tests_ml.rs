@@ -211,6 +211,30 @@ fn ml_status_preference_is_session_only_while_device_persists() {
 }
 
 #[test]
+fn turning_background_indexing_off_lasts_across_sessions() {
+    // #1133: the Settings ▸ AI Models checkbox was forgotten on quit, so indexing resumed on the next launch
+    let temp = temp_dir("enable-stick");
+    let mut s = session();
+    s.ml_models_dir = Some(temp.clone());
+    assert_eq!(s.execute("ml.status", &json!({})).unwrap()["enabled"], true, "on by default");
+    s.execute("ml.enable", &json!({"enabled": false})).unwrap();
+
+    let mut s2 = session();
+    s2.ml_models_dir = Some(temp.clone());
+    let pump = s2.execute("ml.pump", &json!({})).unwrap();
+    assert_eq!((pump["enabled"].clone(), pump["active"].clone()), (json!(false), json!(false)), "{pump}");
+    assert_eq!(s2.execute("ml.status", &json!({})).unwrap()["enabled"], false);
+    assert_eq!(s2.execute("ml.models.list", &json!({})).unwrap()["enabled"], false);
+
+    s2.execute("ml.enable", &json!({"enabled": true})).unwrap();
+    let mut s3 = session();
+    s3.ml_models_dir = Some(temp.clone());
+    assert_eq!(s3.execute("ml.status", &json!({})).unwrap()["enabled"], true);
+
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
 fn ml_status_sets_the_preference_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();
