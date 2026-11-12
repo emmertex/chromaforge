@@ -49,6 +49,7 @@ pub mod dng_update;
 pub mod dng_validate;
 pub mod doc_path;
 pub mod dust_map;
+pub mod duplicates;
 pub mod email;
 pub mod enhance;
 mod errors;
@@ -107,6 +108,8 @@ mod pdf;
 pub mod peer_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peers;
+pub mod phash;
+pub mod phash_store;
 mod people_smart;
 pub mod people_store;
 pub mod placement;

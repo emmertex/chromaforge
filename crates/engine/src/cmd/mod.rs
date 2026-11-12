@@ -25,6 +25,7 @@ pub mod dcp_profiles;
 pub(crate) mod denoise;
 pub(crate) mod develop;
 mod edit;
+pub mod duplicates;
 pub mod edit_in;
 mod enhance;
 mod export;
@@ -297,6 +298,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(import_tab::specs());
         v.extend(folders::specs());
         v.extend(missing::specs());
+        v.extend(duplicates::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
         v.extend(store::specs());
