@@ -9,7 +9,7 @@
 //! compares like with like — videos with videos, photos with photos — so the gamma difference
 //! between the front ends never lands inside a comparison.
 
-use lcc_raster::{Image, Rgba8, Rgb32f};
+use lcc_raster::{Image, Rgb32f, Rgba8};
 
 /// Bump when the hash changes what it computes (the cache key holds it).
 pub const PHASH_VERSION: u64 = 1;
@@ -59,7 +59,7 @@ fn luma_grid<T: Copy>(img: &Image<T>, w: usize, h: usize, luma: impl Fn(T) -> f3
 }
 
 /// The DCT-II basis: `t[k][x] = c(k) · cos(π(2x+1)k / 2N)` with the orthonormal scale factors.
-fn table() -> &'static Box<[[f32; N]; N]> {
+fn table() -> &'static [[f32; N]; N] {
     static TABLE: std::sync::OnceLock<Box<[[f32; N]; N]>> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
         let mut t = Box::new([[0.0f32; N]; N]);
@@ -173,12 +173,7 @@ mod tests {
         let first = hash_rgb32f(&scenes[0].render(256, 192));
         for scene in scenes.iter().skip(1).take(4) {
             let other = hash_rgb32f(&scene.render(256, 192));
-            assert!(
-                distance(first, other) > MATCH_DISTANCE,
-                "scene {} vs scene 0: only {} bits apart",
-                scene.id,
-                distance(first, other),
-            );
+            assert!(distance(first, other) > MATCH_DISTANCE, "scene {} vs scene 0: only {} bits apart", scene.id, distance(first, other),);
         }
     }
 

@@ -116,19 +116,12 @@ fn start_similar(app: &mut LccApp, ctx: &egui::Context) {
     }
     let work_cancel = Arc::clone(&cancel);
     let work = move |handle: TaskHandle| {
-        scan(
-            &snapshot,
-            loader.as_ref(),
-            Some(cache.as_ref()),
-            true,
-            &work_cancel,
-            &|done, total| {
-                handle.progress(done as u64, total as u64);
-                if let Ok(mut p) = progress.lock() {
-                    *p = (done, total);
-                }
-            },
-        )
+        scan(&snapshot, loader.as_ref(), Some(cache.as_ref()), true, &work_cancel, &|done, total| {
+            handle.progress(done as u64, total as u64);
+            if let Ok(mut p) = progress.lock() {
+                *p = (done, total);
+            }
+        })
     };
     let label = tr("Find Similar Copies").to_string();
     let done = move |app: &mut LccApp, ctx: &egui::Context, report: ScanReport| {
@@ -159,11 +152,7 @@ fn summary_text(report: &ScanReport) -> String {
         (count(GroupKind::SameShot), "raw + JPEG pairs"),
     ];
     let shown: Vec<String> = parts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| tr_format!("{n} {what}", n = n, what = tr(what))).collect();
-    if shown.is_empty() {
-        tr("No duplicates found.").to_string()
-    } else {
-        shown.join(" · ")
-    }
+    if shown.is_empty() { tr("No duplicates found.").to_string() } else { shown.join(" · ") }
 }
 
 pub fn enabled(app: &LccApp, id: &str) -> Option<bool> {
@@ -220,10 +209,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     if r.clicked() {
                         similar = true;
                     }
-                    ui.add(egui::Label::new(RichText::new(tr("Reads every photo's picture; a large library takes as long as reading it")).color(t.text_dim).small()).wrap());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(tr("Reads every photo's picture; a large library takes as long as reading it")).color(t.text_dim).small(),
+                        )
+                        .wrap(),
+                    );
                 }
                 if scanning {
-                    ui.add(egui::Label::new(RichText::new(tr_format!("Reading pictures {done} of {total}", done = done_count, total = total)).color(t.text_label)));
+                    ui.add(egui::Label::new(
+                        RichText::new(tr_format!("Reading pictures {done} of {total}", done = done_count, total = total)).color(t.text_label),
+                    ));
                     if let Some(cancel) = finder.cancel.clone() {
                         let r = ui.add(egui::Button::new(tr("Stop")).min_size(vec2(0.0, 24.0)));
                         register(ui.ctx(), "button:duplicates.stop", r.rect);
@@ -248,14 +244,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                 let mut member_index = 0u32;
                 for (gi, g) in finder.groups.iter_mut().enumerate() {
                     let header = format!("{} · {}", g.members.len(), tr(kind_label(g.kind)));
-                    egui::CollapsingHeader::new(RichText::new(header).strong()).id_salt(("duplicates-group", gi)).default_open(gi == 0).show(ui, |ui| {
-                        egui::Grid::new(("duplicates-grid", gi)).num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
-                            for m in g.members.iter_mut() {
-                                member_cell(session, renderer, ui, &t, member_index, m, g.kind);
-                                member_index += 1;
-                            }
-                        });
-                    });
+                    egui::CollapsingHeader::new(RichText::new(header).strong()).id_salt(("duplicates-group", gi)).default_open(gi == 0).show(
+                        ui,
+                        |ui| {
+                            egui::Grid::new(("duplicates-grid", gi)).num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
+                                for m in g.members.iter_mut() {
+                                    member_cell(session, renderer, ui, &t, member_index, m, g.kind);
+                                    member_index += 1;
+                                }
+                            });
+                        },
+                    );
                 }
             });
             layout.footer(ui, |ui| {
@@ -365,12 +364,23 @@ fn member_cell(session: &mut Session, renderer: &mut Renderer, ui: &mut egui::Ui
                 let [tw, th] = tex.size;
                 let s = ((rect.width() - 8.0) / tw as f32).min((rect.height() - 8.0) / th as f32);
                 let fit = Rect::from_center_size(rect.center(), vec2(tw as f32 * s, th as f32 * s));
-                p.image(tex.id(), fit, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), if m.marked { Color32::from_gray(110) } else { Color32::WHITE });
+                p.image(
+                    tex.id(),
+                    fit,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    if m.marked { Color32::from_gray(110) } else { Color32::WHITE },
+                );
             }
             // the mark's checkbox, top left
             let cb = Rect::from_min_size(rect.left_top() + vec2(6.0, 6.0), vec2(16.0, 16.0));
             if m.marked || kind != GroupKind::SameShot {
-                p.rect(cb, 3.0, if m.marked { t.accent } else { Color32::from_black_alpha(150) }, Stroke::new(1.0, Color32::from_gray(200)), StrokeKind::Inside);
+                p.rect(
+                    cb,
+                    3.0,
+                    if m.marked { t.accent } else { Color32::from_black_alpha(150) },
+                    Stroke::new(1.0, Color32::from_gray(200)),
+                    StrokeKind::Inside,
+                );
                 if m.marked {
                     p.line_segment([cb.left_center() + vec2(3.5, 0.5), cb.center_bottom() + vec2(-1.0, -4.0)], Stroke::new(2.0, Color32::WHITE));
                     p.line_segment([cb.center_bottom() + vec2(-1.0, -4.0), cb.right_top() + vec2(-3.5, 4.0)], Stroke::new(2.0, Color32::WHITE));
@@ -397,7 +407,13 @@ fn member_cell(session: &mut Session, renderer: &mut Renderer, ui: &mut egui::Ui
         let shown_name = if name.chars().count() > 16 { format!("{}…", name.chars().take(15).collect::<String>()) } else { name.clone() };
         p.text(rect.left_bottom() + vec2(0.0, 11.0), Align2::LEFT_CENTER, shown_name, t.font(10.5), if m.marked { t.text_dim } else { t.text_label });
         let mb = (size as f64 / 1e6 * 10.0).round() / 10.0;
-        p.text(rect.left_bottom() + vec2(0.0, 24.0), Align2::LEFT_CENTER, tr_format!("{w} × {h} · {mb} MB · {format}", w = w, h = h, mb = mb, format = format), t.font(9.5), t.text_dim);
+        p.text(
+            rect.left_bottom() + vec2(0.0, 24.0),
+            Align2::LEFT_CENTER,
+            tr_format!("{w} × {h} · {mb} MB · {format}", w = w, h = h, mb = mb, format = format),
+            t.font(9.5),
+            t.text_dim,
+        );
         if let Some(path) = path {
             resp = resp.on_hover_text(path);
         }

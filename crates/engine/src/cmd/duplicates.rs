@@ -29,7 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Find Duplicates",
         [],
         None,
-        "{similar?: false}: the photos another photo of the library has the same file bytes as, as groups with the best copy to keep first (most pixels, then the largest file); similar: true also reads every photo's picture (a raw by its camera JPEG, a clip by a poster frame) and adds groups of copies that differ — resized, re-compressed, renamed — plus raw + JPEG pairs of the same shot (kind: exact | similar | sameShot; a scan of a large library takes as long as reading it) → {groups: [{kind, photos: [{id, name, path, kind, format, width, height, fileSize, imported, captured, identical}]}], scanned, unhashed, failed, failures: [{id, why}], cancelled}",
+        "{similar?: false}: the photos another photo of the library has the same file bytes as, as groups with the best copy to keep first (most pixels, then the largest file); similar: true also reads every photo's picture (a raw by its camera JPEG, a clip by a poster frame) and adds groups of copies that differ (resized, re-compressed, renamed), plus raw + JPEG pairs of the same shot (kind: exact | similar | sameShot; a scan of a large library takes as long as reading it) → {groups: [{kind, photos: [{id, name, path, kind, format, width, height, fileSize, imported, captured, identical}]}], scanned, unhashed, failed, failures: [{id, why}], cancelled}",
         always,
         find_duplicates
     )]
@@ -84,9 +84,7 @@ mod tests {
         write_scene_jpeg(&src.0.join("one.jpg"), scene, 512, 384);
         std::fs::copy(src.0.join("one.jpg"), src.0.join("one-again.jpg")).unwrap();
         let (mut s, _lib) = session_with_library("exact-lib");
-        let r = s
-            .execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true}))
-            .unwrap();
+        let r = s.execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true})).unwrap();
         assert_eq!(r["imported"].as_array().map(Vec::len), Some(2), "{r}");
 
         let r = s.execute("library.findDuplicates", &json!({})).unwrap();
@@ -134,9 +132,7 @@ mod tests {
         write_scene_jpeg(&src.0.join("one.jpg"), scene, 512, 384);
         std::fs::copy(src.0.join("one.jpg"), src.0.join("one-again.jpg")).unwrap();
         let (mut s, _lib) = session_with_library("scope-lib");
-        let r = s
-            .execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true}))
-            .unwrap();
+        let r = s.execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true})).unwrap();
         assert_eq!(r["imported"].as_array().map(Vec::len), Some(2), "{r}");
         let ids: Vec<u64> = s.catalog.photos().map(|p| p.id.0).collect();
 

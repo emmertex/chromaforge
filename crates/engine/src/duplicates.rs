@@ -171,10 +171,7 @@ pub fn scan(
 /// A hash's `:dup<id>` suffix (a duplicate's own key) is stripped here as well, so a caller that
 /// passes stored hashes unstripped groups them with their base.
 fn group(candidates: &[DupCandidate], hashes: &[Option<String>], phashes: &[Option<u64>]) -> Vec<DupGroup> {
-    let hashes: Vec<Option<String>> = hashes
-        .iter()
-        .map(|h| h.as_deref().map(crate::sync::base_hash).map(str::to_string))
-        .collect();
+    let hashes: Vec<Option<String>> = hashes.iter().map(|h| h.as_deref().map(crate::sync::base_hash).map(str::to_string)).collect();
     let mut uf = UnionFind::new(candidates.len());
     let mut by_hash: HashMap<&str, usize> = HashMap::new();
     for (i, h) in hashes.iter().enumerate() {
@@ -193,9 +190,8 @@ fn group(candidates: &[DupCandidate], hashes: &[Option<String>], phashes: &[Opti
         let mut ranked: Vec<usize> = members;
         ranked.sort_by(|&a, &b| rank(&candidates[b], &hashes[b]).cmp(&rank(&candidates[a], &hashes[a])));
         let best = ranked.first().and_then(|&i| hashes.get(i)).cloned().flatten();
-        let (has_raw, has_image) = ranked.iter().fold((false, false), |(r, i), &k| {
-            (r || candidates[k].kind == MediaKind::Raw, i || candidates[k].kind == MediaKind::Image)
-        });
+        let (has_raw, has_image) =
+            ranked.iter().fold((false, false), |(r, i), &k| (r || candidates[k].kind == MediaKind::Raw, i || candidates[k].kind == MediaKind::Image));
         let all_one_hash = best.is_some() && ranked.iter().all(|&i| hashes.get(i).and_then(|h| h.as_deref()) == best.as_deref());
         let kind = if all_one_hash {
             GroupKind::Exact
@@ -210,9 +206,7 @@ fn group(candidates: &[DupCandidate], hashes: &[Option<String>], phashes: &[Opti
             .collect();
         groups.push(DupGroup { kind, members });
     }
-    groups.sort_by(|a, b| {
-        a.kind.cmp(&b.kind).then_with(|| b.members.len().cmp(&a.members.len())).then_with(|| first_id(a).cmp(&first_id(b)))
-    });
+    groups.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| b.members.len().cmp(&a.members.len())).then_with(|| first_id(a).cmp(&first_id(b))));
     groups
 }
 
@@ -241,7 +235,11 @@ fn look_at(
         },
         (None, _, _) => picture_hash(c, path, loader),
     };
-    let why = if phash.is_none() { Some(format!("{path}: no picture to compare (no camera JPEG, an unreadable file or an unsupported clip)")) } else { None };
+    let why = if phash.is_none() {
+        Some(format!("{path}: no picture to compare (no camera JPEG, an unreadable file or an unsupported clip)"))
+    } else {
+        None
+    };
     (hash, phash, why)
 }
 
@@ -283,10 +281,10 @@ fn pair_similar(phashes: &[Option<u64>], candidates: &[DupCandidate], mut pair: 
                     if j <= i || !same_family(i, j) || !seen.insert((i, j)) {
                         continue;
                     }
-                    if let Some(hj) = phashes.get(j).copied().flatten() {
-                        if crate::phash::distance(h, hj) <= MATCH_DISTANCE {
-                            pair(i, j);
-                        }
+                    if let Some(hj) = phashes.get(j).copied().flatten()
+                        && crate::phash::distance(h, hj) <= MATCH_DISTANCE
+                    {
+                        pair(i, j);
                     }
                 }
             }
@@ -420,7 +418,7 @@ mod tests {
             cand(3, Some("aa"), MediaKind::Image, 400, 20),
             cand(4, Some("bb"), MediaKind::Image, 100, 10),
         ];
-        let groups = group(&cs, &cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>(), &vec![None; 4]);
+        let groups = group(&cs, &cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>(), &[None, None, None, None]);
         assert_eq!(groups.len(), 1, "{groups:?}");
         let g = &groups[0];
         assert_eq!(g.kind, GroupKind::Exact);
@@ -438,7 +436,7 @@ mod tests {
             cand(3, Some("bb"), MediaKind::Image, 100, 10),
         ];
         let hashes = cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>();
-        let groups = group(&cs, &hashes, &vec![None; 3]);
+        let groups = group(&cs, &hashes, &[None, None, None]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
     }
@@ -447,11 +445,11 @@ mod tests {
     fn photos_without_hashes_never_count_as_exact() {
         // two records with no hash at all share nothing until the similar scan says so
         let cs = vec![cand(1, None, MediaKind::Image, 100, 10), cand(2, None, MediaKind::Image, 100, 10)];
-        let groups = group(&cs, &vec![None, None], &vec![None, None]);
+        let groups = group(&cs, &[None, None], &[None, None]);
         assert!(groups.is_empty());
         // and when their pictures match, the group is similar, not exact
         let a = 0x00ff_00ff_00ff_00ff;
-        let groups = group(&cs, &vec![None, None], &vec![Some(a), Some(a ^ 3)]);
+        let groups = group(&cs, &[None, None], &[Some(a), Some(a ^ 3)]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].kind, GroupKind::Similar);
     }
@@ -466,7 +464,7 @@ mod tests {
         ];
         let hashes = cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>();
         // 2 within 10 bits of 1, 3 far away
-        let groups = group(&cs, &hashes, &vec![Some(a), Some(a ^ 3), Some(!a)]);
+        let groups = group(&cs, &hashes, &[Some(a), Some(a ^ 3), Some(!a)]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].kind, GroupKind::Similar);
         assert_eq!(groups[0].members.len(), 2);
@@ -478,12 +476,9 @@ mod tests {
     #[test]
     fn a_raw_and_its_jpeg_are_a_same_shot_group() {
         let a = 0x0f0f_0f0f_0f0f_0f0f;
-        let cs = vec![
-            cand(1, Some("aa"), MediaKind::Raw, 2400, 24_000_000),
-            cand(2, Some("bb"), MediaKind::Image, 600, 8_000_000),
-        ];
+        let cs = vec![cand(1, Some("aa"), MediaKind::Raw, 2400, 24_000_000), cand(2, Some("bb"), MediaKind::Image, 600, 8_000_000)];
         let hashes = cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>();
-        let groups = group(&cs, &hashes, &vec![Some(a), Some(a ^ 1)]);
+        let groups = group(&cs, &hashes, &[Some(a), Some(a ^ 1)]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].kind, GroupKind::SameShot);
         // the raw is the better copy to keep
@@ -499,7 +494,7 @@ mod tests {
             cand(3, Some("cc"), MediaKind::Video, 100, 10),
         ];
         let hashes = cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>();
-        let groups = group(&cs, &hashes, &vec![Some(a), Some(a), Some(a ^ 2)]);
+        let groups = group(&cs, &hashes, &[Some(a), Some(a), Some(a ^ 2)]);
         // the still's hash equals the clips' but they never pair; the two clips do
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members, vec![(PhotoId(1), true), (PhotoId(3), false)]);
@@ -518,7 +513,7 @@ mod tests {
         ];
         let hashes = cs.iter().map(|c| c.hash.clone()).collect::<Vec<_>>();
         // 1 and 2 share bytes; 3, 4 and 5 share only their picture
-        let groups = group(&cs, &hashes, &vec![Some(a), Some(a), Some(b), Some(b ^ 3), Some(b ^ 5)]);
+        let groups = group(&cs, &hashes, &[Some(a), Some(a), Some(b), Some(b ^ 3), Some(b ^ 5)]);
         assert_eq!(groups.len(), 2);
         // the exact pair, then the similar triple (bigger than the pair, but exact comes first)
         assert_eq!(groups[0].kind, GroupKind::Exact);

@@ -53,8 +53,8 @@ pub mod date_picker;
 pub mod dialog_frame;
 pub mod dng_update_task;
 pub mod docking;
-pub mod duplicates_ui;
 mod drop_overlay;
+pub mod duplicates_ui;
 mod edit_in;
 pub mod email_photo;
 mod enhance_pump;
@@ -231,6 +231,8 @@ mod tests_dialogs;
 #[cfg(test)]
 mod tests_drop_import;
 #[cfg(test)]
+mod tests_duplicates_ui;
+#[cfg(test)]
 mod tests_edit_layout;
 #[cfg(test)]
 mod tests_empty_library;
@@ -288,7 +290,6 @@ mod tests_import_metadata_preset;
 mod tests_import_recipe;
 #[cfg(test)]
 mod tests_import_report;
-mod tests_duplicates_ui;
 #[cfg(test)]
 mod tests_import_scan_note;
 #[cfg(test)]
