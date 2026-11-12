@@ -895,7 +895,7 @@ fn a_failed_lookup_doesnt_mark_a_recent_library_missing() {
     }
     let dir = temp("lookup");
     let locked = dir.join("Locked");
-    let _cleanup = Cleanup(dir.clone(), locked.clone());
+    let _cleanup = Cleanup(dir.to_path_buf(), locked.clone());
     let inside = make_library(&locked.join("Inside"));
     let gone = dir.join("Gone").to_string_lossy().into_owned();
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
