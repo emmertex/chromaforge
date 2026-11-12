@@ -2388,6 +2388,7 @@ mod tests {
         // (preset groups start folded)
         let groups: Vec<String> = h.app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
         h.app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
+        crate::panels::presets::set_shown(&mut h.app, false);
         h.request("engine.execute", json!({"command": "panel.presets"}), t);
         h.settle(SETTLE);
         let id = h.app.session.active().unwrap();
@@ -2413,7 +2414,9 @@ mod tests {
         assert_eq!(h.app.hover_preview.as_ref().map(|p| p.label.as_str()), Some("Preset: Warm Glow"));
         // thumbnails: variant textures for the visible presets
         h.app.ui.preset_thumbs = true;
-        h.request("ui.move", json!({"x": 5, "y": 500}), t);
+        // (off the left column, where the presets now are)
+        let away = h.app.image_rect.map_or(egui::pos2(800.0, 500.0), |r| r.center());
+        h.request("ui.move", json!({"x": away.x, "y": away.y}), t);
         h.settle(SETTLE);
         h.step();
         assert!(h.app.hover_preview.is_none());

@@ -43,6 +43,8 @@ fn inactive_same_mode_commands_reveal_without_closing_or_editing() {
     }
     // the presets are a panel of the Library column: their command exposes that column, and
     // never opens a Presets dock panel
+    // they start unfolded and the command toggles them: fold first so the command shows them
+    crate::panels::presets::set_shown(&mut h.app, false);
     h.app.run("panel.presets", json!({})).unwrap();
     let workspace = h.app.ui.docking.as_ref().unwrap();
     assert!(crate::docking::exposed_in(workspace, Panel::Library));
@@ -85,6 +87,8 @@ fn preset_hover_survives_dock_changes_without_mutating_photo() {
     // (preset groups start folded)
     let groups: Vec<String> = h.app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
     h.app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
+    // they start unfolded and the command toggles them: fold first so the command shows them
+    crate::panels::presets::set_shown(&mut h.app, false);
     h.app.run("panel.presets", json!({})).unwrap();
     dock(&mut h, json!({"operation":"float","panel":"tools","rect":[500,100,300,700]}));
     let undo = h.app.session.undo.len();
