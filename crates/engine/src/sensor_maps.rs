@@ -796,7 +796,7 @@ impl KeyBaseline {
         if let Some(path) = path {
             let saved = path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(|e| e.to_string()).and_then(|()| {
                 let json = serde_json::to_vec(&made).map_err(|e| e.to_string())?;
-                lcc_catalog::safe_file::write_atomic(&path, &json).map_err(|e| e.to_string())
+                lcc_catalog::safe_file::write_atomic_nosync(&path, &json).map_err(|e| e.to_string())
             });
             if let Err(e) = saved {
                 log::warn!("sensor maps: {}: {e}", path.display());
