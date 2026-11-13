@@ -71,7 +71,13 @@ pub struct Queued {
 /// Start exporting `items` in the background, then do `after` with the files written (Add to Apple
 /// Photos; `None`: work it out from `opts` when the export starts). Errors per photo are collected, not fatal.
 /// While another export runs it is queued behind it ([`Queued`]); the result then says `queued: n`.
-pub fn start(app: &mut LccApp, items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: Option<AfterExport>) -> Result<Value, String> {
+pub fn start(
+    app: &mut LccApp,
+    items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: Option<AfterExport>,
+) -> Result<Value, String> {
     start_then(app, items, opts, to, after, None)
 }
 
