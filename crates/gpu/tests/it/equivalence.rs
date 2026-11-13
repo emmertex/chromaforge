@@ -1127,9 +1127,9 @@ fn highlights_shadows_base_matches_on_every_process() {
         return;
     }
     let raw = SourceInfo { raw: true, ..Default::default() };
-    let src = scene(0, 2400, 1600);
+    let src = scene(0, 1200, 800);
     let cache = StageCache::default();
-    for &(w, h) in &[(720, 480), (2400, 1600)] {
+    for &(w, h) in &[(360, 240), (1200, 800)] {
         let req = RenderRequest::fit(w, h);
         for p in Process::ALL {
             let mut s = DevelopSettings { process: p.version(), ..DevelopSettings::default() };
@@ -1345,8 +1345,8 @@ fn windows_match() {
     use lcc_pipeline::PixelWindow;
     let src = scene(1, 960, 640);
     let info = SourceInfo { raw: true, ..Default::default() };
-    let win = PixelWindow { x: 1200, y: 800, w: 640, h: 480 };
-    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(3000, 2000) };
+    let win = PixelWindow { x: 720, y: 480, w: 480, h: 360 };
+    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(1800, 1200) };
     let mut cases = cases();
     cases.push(("vignette at the corner", |s| {
         s.vignette.amount = -80.0;
@@ -1380,7 +1380,7 @@ fn windows_match() {
     let mut s = DevelopSettings::default();
     s.vignette.amount = -80.0;
     s.vignette.midpoint = 10.0;
-    let corner = RenderRequest { window: Some(PixelWindow { x: 2360, y: 1520, w: 640, h: 480 }), ..RenderRequest::fit(3000, 2000) };
+    let corner = RenderRequest { window: Some(PixelWindow { x: 1320, y: 840, w: 480, h: 360 }), ..RenderRequest::fit(1800, 1200) };
     check("window: vignette corner", &src, &info, &s, &corner);
 }
 

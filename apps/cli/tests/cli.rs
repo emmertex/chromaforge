@@ -890,23 +890,6 @@ fn snapshot_subcommand_renders_the_ui_headlessly() {
     assert_eq!((d.width, d.height), (640, 480));
 }
 
-/// `snapshot` sessions look for the SAM 3 model where the app does (`<PREFIX>_SAM3_DIR`), so a
-/// scripted Object / Describe mask works headlessly instead of failing with "no folder is set".
-#[test]
-fn snapshot_sessions_get_the_sam3_model_folder() {
-    let script = tmp("snap-sam3.jsonl");
-    let out = tmp("snap-sam3.png");
-    let dir = tmp("snap-sam3-model");
-    std::fs::write(&script, format!("{}\n", json!({"method": "engine.execute", "params": {"command": "segment.model.status"}}))).unwrap();
-    let o = Command::new(BIN)
-        .env(lcc_brand::env_var("SAM3_DIR"), &dir)
-        .args(["snapshot", "--demo", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", "320x200"])
-        .output()
-        .unwrap();
-    let reply: Value = serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().next().unwrap()).unwrap();
-    assert_eq!(reply["result"]["dir"].as_str(), dir.to_str(), "{reply}");
-}
-
 /// Issue #166: a scripted request that fails makes `snapshot` exit non-zero. The failed reply is
 /// still printed, the later lines still run, and the final `-o` screenshot is still written.
 #[test]
@@ -963,32 +946,42 @@ fn snapshot_ui_zoom_keeps_requested_pixel_dimensions() {
     let script = tmp("snap-ui-zoom.jsonl");
     std::fs::write(&script, format!("{}\n{}\n", json!({"method": "ui.zoomFactor", "params": {"factor": 1.1}}), json!({"method": "ui.inspect"})))
         .unwrap();
-    for (size, scale, expected) in [("400x240", "1", (400, 240)), ("345x200", "0.9", (311, 180))] {
-        let out = tmp(&format!("snap-ui-zoom-{scale}.png"));
-        let o = Command::new(BIN)
-            .args(["snapshot", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", size, "--scale", scale])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        let replies: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert!(replies.iter().all(|reply| reply["ok"] == true), "{replies:?}");
-        assert!(replies[1]["result"]["pixelsPerPoint"].as_f64().unwrap() > scale.parse::<f64>().unwrap());
-        let decoded = lcc_codecs::decode(&std::fs::read(out).unwrap(), Default::default()).unwrap();
-        assert_eq!((decoded.width, decoded.height), expected);
-    }
+    // a fractional scale as well: 345x200 points at 0.9 is 311x180 pixels (310.5 rounds up), zoomed or not
+    let (size, scale, expected) = ("345x200", "0.9", (311, 180));
+    let out = tmp("snap-ui-zoom.png");
+    let o = Command::new(BIN)
+        .env(lcc_brand::env_var("GPU"), "0")
+        .args(["snapshot", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", size, "--scale", scale])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let replies: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(replies.iter().all(|reply| reply["ok"] == true), "{replies:?}");
+    assert!(replies[1]["result"]["pixelsPerPoint"].as_f64().unwrap() > scale.parse::<f64>().unwrap());
+    let decoded = lcc_codecs::decode(&std::fs::read(out).unwrap(), Default::default()).unwrap();
+    assert_eq!((decoded.width, decoded.height), expected);
 }
 
-/// Headless snapshots default to CPU photo rendering as well as CPU UI rasterization.
+/// Headless snapshots default to CPU photo rendering as well as CPU UI rasterization. The same
+/// session looks for the SAM 3 model where the app does (`<PREFIX>_SAM3_DIR`), so a scripted
+/// Object / Describe mask works headlessly instead of failing with "no folder is set".
 #[test]
 fn snapshot_defaults_to_cpu_without_gpu_environment_overrides() {
     let script = tmp("default-cpu.jsonl");
     std::fs::write(
         &script,
-        format!("{}\n{}\n", json!({"method": "engine.execute", "params": {"command": "app.gpu"}}), json!({"method": "ui.screenshot"})),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({"method": "engine.execute", "params": {"command": "app.gpu"}}),
+            json!({"method": "ui.screenshot"}),
+            json!({"method": "engine.execute", "params": {"command": "segment.model.status"}}),
+        ),
     )
     .unwrap();
     let image = tmp("default-cpu.png");
+    let sam3 = tmp("snap-sam3-model");
     let output = Command::new(BIN)
+        .env(lcc_brand::env_var("SAM3_DIR"), &sam3)
         .env_remove(lcc_brand::env_var("GPU"))
         .env_remove(lcc_brand::env_var("GPU_BACKEND"))
         .env_remove("WGPU_BACKEND")
@@ -1003,6 +996,7 @@ fn snapshot_defaults_to_cpu_without_gpu_environment_overrides() {
     assert_eq!(gpu["available"], false, "{gpu}");
     assert_eq!(gpu["adapter"], Value::Null, "no device is created: {gpu}");
     assert!(gpu["reason"].as_str().is_some_and(|reason| reason.contains("preference")), "{gpu}");
+    assert_eq!(replies[2]["result"]["dir"].as_str(), sam3.to_str(), "the SAM 3 folder from the environment: {}", replies[2]);
     let decoded = lcc_codecs::decode(&std::fs::read(image).unwrap(), Default::default()).unwrap();
     assert_eq!((decoded.width, decoded.height), (480, 320));
 }
@@ -1368,20 +1362,6 @@ fn snapshot_rejects_invalid_dimensions_before_creating_an_image() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("snapshot: bad --size/--scale"), "{}", String::from_utf8_lossy(&output.stderr));
         assert!(!image.exists());
     }
-}
-
-#[test]
-fn snapshot_preserves_fractional_scale_rounding() {
-    let image = tmp("fractional-scale-rounding.png");
-    let output = Command::new(BIN)
-        .env(lcc_brand::env_var("GPU"), "0")
-        .args(["snapshot", "--size", "345x200", "--scale", "0.9", "-o"])
-        .arg(&image)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let decoded = lcc_codecs::decode(&std::fs::read(image).unwrap(), Default::default()).unwrap();
-    assert_eq!((decoded.width, decoded.height), (311, 180));
 }
 
 /// Snapshot's CPU setting must never replace the desktop preference, including with --library.

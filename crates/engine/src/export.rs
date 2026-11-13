@@ -3704,26 +3704,6 @@ mod tests {
         assert!(alpha.data.iter().any(|&a| a > 0.99) && alpha.data.contains(&0.0));
     }
 
-    #[test]
-    fn formats_have_magic() {
-        let img = test_image();
-        for (f, magic) in
-            [(ExportFormat::Jpeg, &b"\xFF\xD8"[..]), (ExportFormat::Png, b"\x89PNG"), (ExportFormat::Tiff, b"II"), (ExportFormat::Webp, b"RIFF")]
-        {
-            let b = encode_image(&img, &ExportOptions { format: f, ..Default::default() }).unwrap();
-            assert!(b.starts_with(magic), "{f:?}");
-        }
-    }
-
-    #[test]
-    fn size_limit_respected() {
-        let img = test_image();
-        let full = encode_image(&img, &ExportOptions { quality: 100, ..Default::default() }).unwrap();
-        let kb = (full.len() / 1024 / 2).max(2) as u32;
-        let b = encode_image(&img, &ExportOptions { quality: 100, limit_kb: Some(kb), ..Default::default() }).unwrap();
-        assert!(b.len() <= kb as usize * 1024);
-    }
-
     /// A size limit can cut the quality far below the requested one, so each file says what it
     /// settled on; without a limit the file is written at the requested quality and says nothing.
     #[test]

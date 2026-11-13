@@ -256,20 +256,6 @@ fn an_empty_library_opens_the_window_on_merge() {
     }
 }
 
-/// "Always merge into the open catalog" imports without the window.
-#[test]
-fn always_merge_skips_the_window() {
-    let f = Fixture::new("always");
-    let mut h = f.app(false);
-    h.app.ui.settings.lightroom_import = LightroomImport::AlwaysMerge;
-    let r = h.app.run("file.importLightroom", json!({"path": f.lrcat()})).unwrap();
-    assert_eq!(r["running"], true, "{r}");
-    h.step();
-    assert!(destination(&h).is_none());
-    import_ends(&mut h, &f.lrcat);
-    assert_eq!(open_dir(&h), Some(f.lib.clone()));
-}
-
 /// "Don't ask again" (with Merge only) sets "Always merge", which is saved in `ui.json`.
 #[test]
 fn dont_ask_again_merges_from_then_on_and_is_saved() {

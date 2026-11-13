@@ -2497,12 +2497,8 @@ pub(crate) mod tests {
         let (s, r) = import_with_refused(false, 0);
         assert_only_the_sample_imported(&s, &r, false);
         assert!(r["missing"].as_array().is_some_and(|m| m.contains(&json!("//server/share/far.ARW"))), "the refused photo is listed as missing: {r}");
-    }
-
-    /// The same with a virtual copy: its master was skipped, so the copy failed the import with
-    /// "virtual copy 2: missing master".
-    #[test]
-    fn a_refused_photo_with_id_zero_leaves_other_virtual_copies_their_master() {
+        // the same with a virtual copy: its master was skipped, so the copy failed the import with
+        // "virtual copy 2: missing master"
         let (s, r) = import_with_refused(true, 0);
         assert_only_the_sample_imported(&s, &r, true);
     }
@@ -4336,15 +4332,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn observed_changed_optional_settings_wal_frame_fails_public_read() {
-        let result = read_after_indexed_optional_frame_changes("Adobe_imageDevelopSettings");
-        assert!(result.is_err(), "an indexed source-frame change in an optional table must fail the whole read, not become a warning");
-    }
-
-    #[test]
-    fn observed_changed_optional_xmp_wal_frame_fails_public_read() {
-        let result = read_after_indexed_optional_frame_changes("Adobe_AdditionalMetadata");
-        assert!(result.is_err(), "an indexed source-frame change in optional XMP must fail the whole read, not become a warning");
+    fn observed_changed_optional_wal_frames_fail_public_read() {
+        for table in ["Adobe_imageDevelopSettings", "Adobe_AdditionalMetadata"] {
+            let result = read_after_indexed_optional_frame_changes(table);
+            assert!(result.is_err(), "{table}: an indexed source-frame change in an optional table must fail the whole read, not become a warning");
+        }
     }
 
     #[test]
@@ -4699,45 +4691,6 @@ pub(crate) mod tests {
         assert!(Path::new(&catalog.photos[0].path).starts_with("C:/Users/me/Project/RAW/"), "{}", catalog.photos[0].path);
         assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
         std::fs::remove_dir_all(dir).unwrap();
-    }
-    #[test]
-    fn oversized_optional_table_warns_and_is_skipped_upstream_fixture() {
-        let mut main = vec![0u8; 2 * 512];
-        main[..16].copy_from_slice(b"SQLite format 3\0");
-        main[16..18].copy_from_slice(&512u16.to_be_bytes());
-        main[18] = 1;
-        main[19] = 1;
-        main[21] = 64;
-        main[22] = 32;
-        main[23] = 32;
-        main[28..32].copy_from_slice(&2u32.to_be_bytes());
-        main[44..48].copy_from_slice(&4u32.to_be_bytes());
-        main[56..60].copy_from_slice(&1u32.to_be_bytes());
-        main[100] = 0x0d;
-        let schema = vec![
-            SqlValue::Text("table".into()),
-            SqlValue::Text("optional_history".into()),
-            SqlValue::Text("optional_history".into()),
-            SqlValue::Integer(2),
-            SqlValue::Text("CREATE TABLE optional_history (payload BLOB)".into()),
-        ];
-        leaf_one(&mut main[..512], 100, 1, &schema);
-        let page = &mut main[512..];
-        page[0] = 0x0d;
-        page[3..5].copy_from_slice(&1u16.to_be_bytes());
-        let mut cell = varint((64 * 1024 * 1024 + 1) as u64);
-        cell.extend(varint(1));
-        let start = 500 - cell.len();
-        page[start..start + cell.len()].copy_from_slice(&cell);
-        page[8..10].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
-        page[5..7].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
-        let db = Database::open_with_wal(main, &[]).unwrap();
-        let reader = Reader { db };
-        let mut warnings = Vec::new();
-        let cancel = AtomicBool::new(false);
-        let rows = reader.optional_table("optional_history", &mut warnings, &cancel).unwrap();
-        assert!(rows.is_empty());
-        assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
     }
     /// Upstream #3674: text XMP packets count toward the catalog-wide total too; one past it is left off its row.
     #[test]

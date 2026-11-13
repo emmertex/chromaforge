@@ -250,19 +250,21 @@ mod tests {
     }
 
     #[test]
-    fn installing_without_a_download_is_an_error() {
-        let mut s = session();
-        let err = s.execute("update.install", &json!({"confirm": true})).expect_err("nothing staged");
-        assert!(err.to_string().contains("update.download"), "{err}");
-        let err = s.execute("update.discard", &json!({})).expect_err("nothing staged");
-        assert!(err.to_string().contains("no update"), "{err}");
-    }
-
-    #[test]
-    fn a_download_without_an_update_is_an_error() {
-        let mut s = session();
-        let err = s.execute("update.download", &json!({})).expect_err("nothing on offer");
-        assert!(err.to_string().contains("check"), "{err}");
+    fn installing_or_downloading_with_nothing_to_act_on_is_an_error() {
+        // installing without a download is an error
+        {
+            let mut s = session();
+            let err = s.execute("update.install", &json!({"confirm": true})).expect_err("nothing staged");
+            assert!(err.to_string().contains("update.download"), "{err}");
+            let err = s.execute("update.discard", &json!({})).expect_err("nothing staged");
+            assert!(err.to_string().contains("no update"), "{err}");
+        }
+        // a download without an update is an error
+        {
+            let mut s = session();
+            let err = s.execute("update.download", &json!({})).expect_err("nothing on offer");
+            assert!(err.to_string().contains("check"), "{err}");
+        }
     }
 
     #[test]

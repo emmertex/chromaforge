@@ -935,19 +935,14 @@ mod tests {
         }
     }
 
-    /// #736: the release input must carry Thai, not silently skip the check with an older pin.
-    /// Exercise the Thai characters of the reported folder name through every egui family.
-    #[test]
-    fn thai_folder_name_has_glyphs_in_every_ui_family() {
-        folder_name_has_glyphs_in_every_ui_family("Thai", "Studio34 ถ่ายภาพงานแต่งงาน");
-    }
-
-    /// #1915: Hebrew folder names drew as boxes. The release input carries Noto Sans Hebrew, and
-    /// every egui family reaches it (letters, final forms, maqaf, geresh and gershayim, niqqud).
+    /// #736, #1915: Thai and Hebrew folder names drew as boxes. The release input carries their
+    /// faces (not silently skipped with an older pin), and every egui family reaches them: the
+    /// reported Thai folder name; Hebrew letters, final forms, maqaf, geresh and gershayim, niqqud.
     /// No ₪ here: Inter and Hack draw it before the Hebrew face, and Hack also holds monospace's
     /// replacement glyph, where `has_glyph` answers false (the engine test checks ₪ in the face).
     #[test]
-    fn hebrew_folder_name_has_glyphs_in_every_ui_family() {
+    fn thai_and_hebrew_folder_names_have_glyphs_in_every_ui_family() {
+        folder_name_has_glyphs_in_every_ui_family("Thai", "Studio34 ถ่ายภาพงานแต่งงาน");
         folder_name_has_glyphs_in_every_ui_family("Hebr", "תמונות טנזניה 2024 ךםןףץ ־ ׳ ״ שָׁלוֹם");
     }
 

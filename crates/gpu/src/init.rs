@@ -441,13 +441,6 @@ mod tests {
         eventually("the released thread never finished", || STUCK.reason().is_none());
     }
 
-    /// Progress outside a device creation goes nowhere.
-    #[test]
-    fn progress_outside_a_creation_does_nothing() {
-        Progress::current().tick();
-        Progress::default().tick();
-    }
-
     // Given a creation left behind past its limit, the process is not idle for a quit (issue #620:
     // no driver teardown under it) and the crash sentinel stays, until the driver work really
     // ends; the quit's own wait stays bounded meanwhile

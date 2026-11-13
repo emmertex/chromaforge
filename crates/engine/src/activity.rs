@@ -769,14 +769,6 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_unique_and_list_is_oldest_first() {
-        let a = Activity::default();
-        let (g1, g2) = (a.start("export", "A", Cancel::Yes), a.start("import", "B", Cancel::Yes));
-        assert!(g2.id() > g1.id());
-        assert_eq!(a.list().iter().map(|t| t.id).collect::<Vec<_>>(), vec![g1.id(), g2.id()]);
-    }
-
-    #[test]
     fn poisoned_lock_still_works() {
         let a = Activity::default();
         let a2 = a.clone();

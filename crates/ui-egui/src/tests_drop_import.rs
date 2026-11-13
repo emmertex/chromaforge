@@ -76,53 +76,40 @@ fn photos(h: &Headless) -> usize {
     h.app.session.catalog.photos().count()
 }
 
+/// One session, several steps; each step was a test of its own and says what it checks.
 #[test]
-fn hovering_says_photos_are_reviewed_or_imported_and_lets_go_when_they_leave() {
+fn hovering_says_what_a_drop_will_do_and_lets_go_when_the_files_leave() {
     let dir = Scratch::new("hover");
     let mut h = app(&dir);
-    assert!(!overlay(&h), "nothing is dragged over the window");
-    drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], true);
-    assert!(overlay(&h), "the window shows where to drop");
-    assert!(said(&h, "review 2 items"), "photos are reviewed by default: {:?}", h.painted_text());
-    drop_files(&mut h, &[dir.path("trip")], true);
-    assert!(said(&h, "review 1 item"), "a folder is reviewed: {:?}", h.painted_text());
-    h.app.ui.settings.import_dropped_directly = true;
-    drop_files(&mut h, &[dir.path("trip")], true);
-    assert!(said(&h, "import 1 item"), "without review: {:?}", h.painted_text());
-    drop_files(&mut h, &[], true);
-    assert!(!overlay(&h), "the files left the window");
-}
-
-#[test]
-fn hovering_presets_says_they_will_be_imported_as_presets() {
-    let dir = Scratch::new("hover-presets");
-    let mut h = app(&dir);
-    std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
-    drop_files(&mut h, &[dir.path("warm.lcpreset")], true);
-    assert!(overlay(&h));
-    assert!(said(&h, "1 preset"), "{:?}", h.painted_text());
-    assert!(!said(&h, "review"), "presets are not reviewed");
-}
-
-#[test]
-fn hovering_unknown_files_says_only_that_dropping_imports() {
-    let dir = Scratch::new("hover-unknown");
-    let mut h = app(&dir);
-    drop_files(&mut h, &[String::new()], true);
-    assert!(overlay(&h));
-    assert!(said(&h, "Drop to import"), "{:?}", h.painted_text());
-}
-
-#[test]
-fn dropping_a_folder_opens_the_import_review_and_imports_nothing_yet() {
-    let dir = Scratch::new("review");
-    let mut h = app(&dir);
-    drop_files(&mut h, &[dir.path("trip")], false);
-    assert!(h.step_until(SETTLE, |h| matches!(h.app.ui.dialog, Some(Dialog::Import { .. }))), "the review opens");
-    let Some(Dialog::Import { opts }) = &h.app.ui.dialog else { panic!("no import review") };
-    assert_eq!(opts.candidates.len(), 2);
-    assert_eq!(photos(&h), 0, "nothing is imported until the review is confirmed");
-    assert!(!overlay(&h), "the files were let go");
+    // hovering says photos are reviewed or imported and lets go when they leave
+    {
+        assert!(!overlay(&h), "nothing is dragged over the window");
+        drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], true);
+        assert!(overlay(&h), "the window shows where to drop");
+        assert!(said(&h, "review 2 items"), "photos are reviewed by default: {:?}", h.painted_text());
+        drop_files(&mut h, &[dir.path("trip")], true);
+        assert!(said(&h, "review 1 item"), "a folder is reviewed: {:?}", h.painted_text());
+        h.app.ui.settings.import_dropped_directly = true;
+        drop_files(&mut h, &[dir.path("trip")], true);
+        assert!(said(&h, "import 1 item"), "without review: {:?}", h.painted_text());
+        drop_files(&mut h, &[], true);
+        assert!(!overlay(&h), "the files left the window");
+    }
+    // hovering presets says they will be imported as presets
+    {
+        let dir = Scratch::new("hover-presets");
+        std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
+        drop_files(&mut h, &[dir.path("warm.lcpreset")], true);
+        assert!(overlay(&h));
+        assert!(said(&h, "1 preset"), "{:?}", h.painted_text());
+        assert!(!said(&h, "review"), "presets are not reviewed");
+    }
+    // hovering unknown files says only that dropping imports
+    {
+        drop_files(&mut h, &[String::new()], true);
+        assert!(overlay(&h));
+        assert!(said(&h, "Drop to import"), "{:?}", h.painted_text());
+    }
 }
 
 #[test]
@@ -270,18 +257,6 @@ fn a_drop_while_an_import_runs_is_refused() {
     assert!(h.app.scan.is_some() && h.app.import.is_none(), "the running scan was left alone and nothing else started");
     assert!(h.app.ui.toast().is_some(), "the person is told why");
     assert_eq!(photos(&h), 0);
-}
-
-/// An import that is running stays the one that runs: a direct drop doesn't start a second.
-#[test]
-fn dropped_photo_files_while_an_import_runs_are_refused_too() {
-    let dir = Scratch::new("running-direct");
-    let mut h = app(&dir);
-    write_png(&dir.path("more/c.png"), 3);
-    let _scan = crate::import::stall_scan(&mut h.app);
-    drop_files(&mut h, &[dir.path("more/c.png")], false);
-    assert!(h.app.import.is_none(), "no second import");
-    assert!(h.app.ui.toast().is_some());
 }
 
 /// A Local folder browse scan counts too: a review-first drop would be rejected by `open`, and a

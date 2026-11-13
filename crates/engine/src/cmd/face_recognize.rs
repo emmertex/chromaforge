@@ -1146,121 +1146,124 @@ mod imp {
         }
 
         #[test]
-        fn faces_found_by_the_scan_become_unnamed_regions_without_an_undo_step() {
-            let (mut s, d) = loaded("found");
-            let (a, b) = two_photos(&s);
-            set_regions(&mut s, b, vec![region(0.1, Some("Ann"))]);
-            let (undo, redo) = (s.undo.len(), s.redo.len());
-            let found = region(0.3, None).rect;
-            let done = finished(&s, a, Some(vec![found]), vec![(found, Some(unit(&[(0, 1.0)])), found)]);
-            assert_eq!(ingest(&mut s, done), (1, 0));
-            let regions = &s.catalog.photo(a).unwrap().meta.regions;
-            assert_eq!(regions.len(), 1);
-            assert!(regions[0].kind == RegionKind::Face && regions[0].name.is_none() && regions[0].rect == found);
-            assert!(regions[0].description.as_deref().unwrap().starts_with(MARK), "marked as detected");
-            // not something the user did, and its embedding is already there
-            assert_eq!((s.undo.len(), s.redo.len()), (undo, redo));
-            assert!(s.skip_auto_write, "no sidecar is rewritten for it");
-            assert!(s.faces.scanned.contains(a.0) && s.faces.index.contains(a.0, &found));
-            // a photo that has faces by now (the user, an import) keeps exactly those
-            let other = region(0.6, None).rect;
-            let done = finished(&s, b, Some(vec![other]), vec![(other, None, other)]);
-            ingest(&mut s, done);
-            assert_eq!(s.catalog.photo(b).unwrap().meta.regions.len(), 1);
-            assert!(s.faces.scanned.contains(b.0));
-            let _ = std::fs::remove_dir_all(&d);
-        }
-
-        #[test]
-        fn a_photo_that_could_not_be_searched_is_left_alone_for_the_session() {
-            let (mut s, d) = loaded("scanfail");
-            let (a, _) = two_photos(&s);
-            assert!(needs_search(&s, s.catalog.photo(a).unwrap()));
-            let done = finished(&s, a, None, vec![]);
-            ingest(&mut s, done);
-            assert!(!s.faces.scanned.contains(a.0), "not remembered as searched: the file may come back");
-            assert!(!needs_search(&s, s.catalog.photo(a).unwrap()), "but not retried on every pass");
-            assert!(!pending(&s, &[], true).contains(&a));
-            let _ = std::fs::remove_dir_all(&d);
-        }
-
-        #[test]
-        fn only_the_background_scan_looks_for_faces_and_only_in_photos_without_any() {
-            let (mut s, d) = loaded("search");
-            // finding faces needs the detector, which is not bundled; without it the scan only embeds
-            let detector = install_face_model(&mut s);
-            let (a, b) = two_photos(&s);
-            set_regions(&mut s, b, vec![region(0.1, Some("Ann")), region(0.5, None)]);
-            // `faces.index` embeds what is boxed; only the scan (search = true) also searches the rest, last
-            assert_eq!(pending(&s, &[], false), vec![b]);
-            let scan = pending(&s, &[], true);
-            assert_eq!(scan.first(), Some(&b), "named faces first");
-            assert!(scan.contains(&a) && scan.len() > 2, "the unsearched photos follow");
-            assert!(prepare(&mut s, a, false).is_none(), "nothing to embed in a photo without boxes");
-            if detector {
-                assert!(prepare(&mut s, a, true).is_some_and(|p| p.detect && p.todo.is_empty()));
-            } else {
-                assert!(prepare(&mut s, a, true).is_none(), "no detector: nothing to do, and not marked as searched");
+        fn the_background_scan_finds_faces_once_and_only_in_photos_without_any() {
+            // faces found by the scan become unnamed regions without an undo step
+            {
+                let (mut s, d) = loaded("found");
+                let (a, b) = two_photos(&s);
+                set_regions(&mut s, b, vec![region(0.1, Some("Ann"))]);
+                let (undo, redo) = (s.undo.len(), s.redo.len());
+                let found = region(0.3, None).rect;
+                let done = finished(&s, a, Some(vec![found]), vec![(found, Some(unit(&[(0, 1.0)])), found)]);
+                assert_eq!(ingest(&mut s, done), (1, 0));
+                let regions = &s.catalog.photo(a).unwrap().meta.regions;
+                assert_eq!(regions.len(), 1);
+                assert!(regions[0].kind == RegionKind::Face && regions[0].name.is_none() && regions[0].rect == found);
+                assert!(regions[0].description.as_deref().unwrap().starts_with(MARK), "marked as detected");
+                // not something the user did, and its embedding is already there
+                assert_eq!((s.undo.len(), s.redo.len()), (undo, redo));
+                assert!(s.skip_auto_write, "no sidecar is rewritten for it");
+                assert!(s.faces.scanned.contains(a.0) && s.faces.index.contains(a.0, &found));
+                // a photo that has faces by now (the user, an import) keeps exactly those
+                let other = region(0.6, None).rect;
+                let done = finished(&s, b, Some(vec![other]), vec![(other, None, other)]);
+                ingest(&mut s, done);
+                assert_eq!(s.catalog.photo(b).unwrap().meta.regions.len(), 1);
+                assert!(s.faces.scanned.contains(b.0));
+                let _ = std::fs::remove_dir_all(&d);
             }
-            assert!(prepare(&mut s, b, true).is_some_and(|p| !p.detect && p.todo.len() == 2), "a photo with boxes is not searched");
-            // once searched, a photo is not searched again
-            s.faces.scanned.insert(a.0);
-            assert!(!pending(&s, &[], true).contains(&a));
-            let _ = std::fs::remove_dir_all(&d);
+            // a photo that could not be searched is left alone for the session
+            {
+                let (mut s, d) = loaded("scanfail");
+                let (a, _) = two_photos(&s);
+                assert!(needs_search(&s, s.catalog.photo(a).unwrap()));
+                let done = finished(&s, a, None, vec![]);
+                ingest(&mut s, done);
+                assert!(!s.faces.scanned.contains(a.0), "not remembered as searched: the file may come back");
+                assert!(!needs_search(&s, s.catalog.photo(a).unwrap()), "but not retried on every pass");
+                assert!(!pending(&s, &[], true).contains(&a));
+                let _ = std::fs::remove_dir_all(&d);
+            }
+            // only the background scan looks for faces and only in photos without any
+            {
+                let (mut s, d) = loaded("search");
+                // finding faces needs the detector, which is not bundled; without it the scan only embeds
+                let detector = install_face_model(&mut s);
+                let (a, b) = two_photos(&s);
+                set_regions(&mut s, b, vec![region(0.1, Some("Ann")), region(0.5, None)]);
+                // `faces.index` embeds what is boxed; only the scan (search = true) also searches the rest, last
+                assert_eq!(pending(&s, &[], false), vec![b]);
+                let scan = pending(&s, &[], true);
+                assert_eq!(scan.first(), Some(&b), "named faces first");
+                assert!(scan.contains(&a) && scan.len() > 2, "the unsearched photos follow");
+                assert!(prepare(&mut s, a, false).is_none(), "nothing to embed in a photo without boxes");
+                if detector {
+                    assert!(prepare(&mut s, a, true).is_some_and(|p| p.detect && p.todo.is_empty()));
+                } else {
+                    assert!(prepare(&mut s, a, true).is_none(), "no detector: nothing to do, and not marked as searched");
+                }
+                assert!(prepare(&mut s, b, true).is_some_and(|p| !p.detect && p.todo.len() == 2), "a photo with boxes is not searched");
+                // once searched, a photo is not searched again
+                s.faces.scanned.insert(a.0);
+                assert!(!pending(&s, &[], true).contains(&a));
+                let _ = std::fs::remove_dir_all(&d);
+            }
         }
 
         #[test]
-        fn opening_another_library_forgets_the_old_ones_faces() {
-            let (mut s, d) = loaded("newlib");
-            let (a, _) = two_photos(&s);
-            let rect = region(0.2, None).rect;
-            s.faces.index.insert(a.0, &rect, unit(&[(0, 1.0)]));
-            s.faces.scanned.insert(a.0);
-            let epoch = s.faces.epoch;
-            let old = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(1, 1.0)])), rect)]);
-            s.open_library(d.join("second"), true).unwrap();
-            assert_eq!((s.faces.index.len(), s.faces.scanned.len(), s.faces.queue.len(), s.faces.in_flight.len()), (0, 0, 0, 0));
-            assert!(s.faces.epoch != epoch && s.faces.embedder.is_none());
-            // a worker that was still busy with the old library cannot put its faces into the new one
-            assert_eq!(ingest(&mut s, old), (0, 0));
-            assert!(s.faces.index.len() == 0 && !s.faces.scanned.contains(a.0));
-            let _ = std::fs::remove_dir_all(&d);
-        }
-
-        /// A Reload that finds the file replaced (an outside edit) gives the photo other pixels: what a worker made from
-        /// the old file is dropped when it comes back, the faces already embedded from it are forgotten and the photo is
-        /// searched again (issue #1524).
-        #[test]
-        fn faces_made_from_a_replaced_file_are_dropped() {
-            let (mut s, d) = loaded("replaced");
-            let (a, b) = two_photos(&s);
-            let rect = region(0.2, None).rect;
-            s.faces.index.insert(a.0, &rect, unit(&[(0, 1.0)]));
-            s.faces.scanned.insert(a.0);
-            s.faces.index.insert(b.0, &rect, unit(&[(1, 1.0)]));
-            s.faces.scanned.insert(b.0);
-            let old = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(2, 1.0)])), rect)]);
-            let (width, height) = s.catalog.photo(a).map(|p| (p.width, p.height)).unwrap();
-            let replace = Op::SetContent {
-                id: a,
-                width,
-                height,
-                file_size: 1234,
-                content_hash: Some("edited".into()),
-                preview_only: None,
-                preview_checked: String::new(),
-            };
-            s.commit("Reload Changed Files", replace).unwrap();
-            assert!(s.faces.index.get(a.0, &rect).is_none() && !s.faces.scanned.contains(a.0), "the old file's faces are forgotten");
-            assert!(needs_search(&s, s.catalog.photo(a).unwrap()), "and the photo is searched again");
-            assert!(s.faces.index.get(b.0, &rect).is_some() && s.faces.scanned.contains(b.0), "other photos keep theirs");
-            assert_eq!(ingest(&mut s, old), (0, 0), "a result made from the old file is dropped");
-            assert!(s.catalog.photo(a).unwrap().meta.regions.is_empty() && !s.faces.scanned.contains(a.0));
-            // what is made from the new file is taken in
-            let new = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(3, 1.0)])), rect)]);
-            assert_eq!(ingest(&mut s, new), (1, 0));
-            assert!(s.faces.scanned.contains(a.0) && s.faces.index.get(a.0, &rect).is_some());
-            let _ = std::fs::remove_dir_all(&d);
+        fn faces_from_another_library_or_a_replaced_file_are_dropped() {
+            // opening another library forgets the old ones faces
+            {
+                let (mut s, d) = loaded("newlib");
+                let (a, _) = two_photos(&s);
+                let rect = region(0.2, None).rect;
+                s.faces.index.insert(a.0, &rect, unit(&[(0, 1.0)]));
+                s.faces.scanned.insert(a.0);
+                let epoch = s.faces.epoch;
+                let old = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(1, 1.0)])), rect)]);
+                s.open_library(d.join("second"), true).unwrap();
+                assert_eq!((s.faces.index.len(), s.faces.scanned.len(), s.faces.queue.len(), s.faces.in_flight.len()), (0, 0, 0, 0));
+                assert!(s.faces.epoch != epoch && s.faces.embedder.is_none());
+                // a worker that was still busy with the old library cannot put its faces into the new one
+                assert_eq!(ingest(&mut s, old), (0, 0));
+                assert!(s.faces.index.len() == 0 && !s.faces.scanned.contains(a.0));
+                let _ = std::fs::remove_dir_all(&d);
+            }
+            // faces made from a replaced file are dropped
+            // A Reload that finds the file replaced (an outside edit) gives the photo other pixels: what a worker made from
+            // the old file is dropped when it comes back, the faces already embedded from it are forgotten and the photo is
+            // searched again (issue #1524).
+            {
+                let (mut s, d) = loaded("replaced");
+                let (a, b) = two_photos(&s);
+                let rect = region(0.2, None).rect;
+                s.faces.index.insert(a.0, &rect, unit(&[(0, 1.0)]));
+                s.faces.scanned.insert(a.0);
+                s.faces.index.insert(b.0, &rect, unit(&[(1, 1.0)]));
+                s.faces.scanned.insert(b.0);
+                let old = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(2, 1.0)])), rect)]);
+                let (width, height) = s.catalog.photo(a).map(|p| (p.width, p.height)).unwrap();
+                let replace = Op::SetContent {
+                    id: a,
+                    width,
+                    height,
+                    file_size: 1234,
+                    content_hash: Some("edited".into()),
+                    preview_only: None,
+                    preview_checked: String::new(),
+                };
+                s.commit("Reload Changed Files", replace).unwrap();
+                assert!(s.faces.index.get(a.0, &rect).is_none() && !s.faces.scanned.contains(a.0), "the old file's faces are forgotten");
+                assert!(needs_search(&s, s.catalog.photo(a).unwrap()), "and the photo is searched again");
+                assert!(s.faces.index.get(b.0, &rect).is_some() && s.faces.scanned.contains(b.0), "other photos keep theirs");
+                assert_eq!(ingest(&mut s, old), (0, 0), "a result made from the old file is dropped");
+                assert!(s.catalog.photo(a).unwrap().meta.regions.is_empty() && !s.faces.scanned.contains(a.0));
+                // what is made from the new file is taken in
+                let new = finished(&s, a, Some(vec![rect]), vec![(rect, Some(unit(&[(3, 1.0)])), rect)]);
+                assert_eq!(ingest(&mut s, new), (1, 0));
+                assert!(s.faces.scanned.contains(a.0) && s.faces.index.get(a.0, &rect).is_some());
+                let _ = std::fs::remove_dir_all(&d);
+            }
         }
 
         #[test]

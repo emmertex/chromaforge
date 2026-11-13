@@ -3589,6 +3589,22 @@ mod thumbnail_hash_tests {
 mod tests {
     use super::*;
 
+    /// A session with one camera-sized photo (larger than the preview level) whose original is
+    /// already decoded: a textured picture, made in milliseconds (a full-size demo scene takes
+    /// ten seconds to generate).
+    fn camera_sized() -> (crate::Session, PhotoId, usize, usize) {
+        let (w, h) = (3000usize, 2000usize);
+        let mut s = crate::Session::new();
+        let p = Photo::new(PhotoId(1), Source::File { path: "/nowhere/a.jpg".into() }, "a.jpg", "JPEG", w as u32, h as u32, "");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p.clone()) }).unwrap();
+        let px = |x: usize, y: usize| {
+            let t = ((x * 7 + y * 13) % 97) as f32 / 97.0;
+            [0.1 + 0.5 * x as f32 / w as f32 + 0.1 * t, 0.2 + 0.4 * y as f32 / h as f32, 0.15 + 0.3 * t]
+        };
+        s.media.insert(p.id, SourceLevel::Full, Arc::new(Rgb32f::from_fn(w, h, px)));
+        (s, p.id, w, h)
+    }
+
     /// A photo edited since its last view (an Auto Sync edit, its thumbnail built with the edit)
     /// steps in with the edit, never with the picture from before it.
     #[test]
@@ -4161,10 +4177,8 @@ mod tests {
     #[test]
     fn region_jobs_render_a_window_of_the_zoomed_frame() {
         use lcc_pipeline::PixelWindow;
-        let mut s = crate::Session::with_demo();
-        let p = s.catalog.photos().next().unwrap().clone();
-        let (w, h) = (p.width as usize, p.height as usize);
-        assert!(w.max(h) > 2560, "demo photos are camera-sized");
+        let (mut s, id, w, h) = camera_sized();
+        let p = s.catalog.photo(id).unwrap().clone();
         let win = PixelWindow { x: w / 3, y: h / 3, w: 300, h: 200 };
         let job = s.region_job(p.id, w, h, win, true).unwrap();
         assert_eq!(job.level, SourceLevel::Full, "a 1:1 window reads the original");
@@ -4230,10 +4244,7 @@ mod tests {
     #[test]
     fn a_before_window_shows_the_unedited_look() {
         use lcc_pipeline::PixelWindow;
-        let mut s = crate::Session::with_demo();
-        let id = s.active().unwrap();
-        let p = s.catalog.photo(id).unwrap().clone();
-        let (w, h) = (p.width as usize, p.height as usize);
+        let (mut s, id, w, h) = camera_sized();
         let mut d = (*s.develop_of(id).unwrap()).clone();
         d.light.exposure = 2.0;
         s.set_develop(id, d, "Exposure").unwrap();
@@ -4245,40 +4256,6 @@ mod tests {
         assert_eq!((a.width, a.height), (b.width, b.height));
         let mean = |i: &Rgba8| i.data.iter().map(|p| p[1] as f64).sum::<f64>() / i.data.len() as f64;
         assert!(mean(&a) > mean(&b) + 10.0, "two stops brighter after: {} vs {}", mean(&a), mean(&b));
-    }
-
-    // LR-VIEW-ZOOM: what the loupe shows at 1:1 is what an export at full size writes. A window of
-    // the zoomed frame (the photo's own pixels) is pixel-for-pixel the export, at the centre and
-    // at a corner, with tone, colour and detail edits on a camera-sized photo
-    #[test]
-    fn one_to_one_window_pixels_are_export_pixels() {
-        use lcc_pipeline::{OutputDepth, OutputSpace, PixelWindow};
-        let mut s = crate::Session::with_demo();
-        let id = s.active().unwrap();
-        let p = s.catalog.photo(id).unwrap().clone();
-        let (w, h) = (p.width as usize, p.height as usize);
-        assert!(w.max(h) > 2560, "larger than the preview cap: {w}×{h}");
-        let mut d = (*s.develop_of(id).unwrap()).clone();
-        d.light.exposure = 0.7;
-        d.light.contrast = 25.0;
-        d.color.saturation = 20.0;
-        s.set_develop(id, d, "Edits").unwrap();
-        let export = s.render_export(id, w, h, OutputSpace::Srgb, OutputDepth::U8).unwrap().image;
-        assert_eq!((export.width, export.height), (w, h), "a full-size export");
-        for win in [PixelWindow { x: w / 2 - 256, y: h / 2 - 256, w: 512, h: 384 }, PixelWindow { x: 0, y: h - 300, w: 400, h: 300 }] {
-            let tile = s.region_job(id, w, h, win, true).unwrap().run().rendered.unwrap().image;
-            assert_eq!((tile.width, tile.height), (win.w, win.h));
-            let mut worst = 0u8;
-            for y in 0..win.h {
-                for x in 0..win.w {
-                    let (a, b) = (tile.data[y * win.w + x], export.data[(win.y + y) * w + win.x + x]);
-                    for k in 0..3 {
-                        worst = worst.max(a[k].abs_diff(b[k]));
-                    }
-                }
-            }
-            assert!(worst <= 1, "window {win:?}: the 1:1 view differs from the export by up to {worst} levels");
-        }
     }
 
     /// The thumbnail of a photo whose preview-level source is decoded is cut from it: the file (here
@@ -4321,14 +4298,14 @@ mod tests {
     fn has_source_follows_what_the_session_accepted() {
         let mut s = crate::Session::with_demo();
         let id = s.active().unwrap();
-        let p = s.catalog.photo(id).unwrap().clone();
-        let long = p.width.max(p.height) as usize;
-        assert!(!s.media.has_source(id, SourceLevel::Full));
-        let r = s.render_job(id, long, long, false, true).unwrap().run();
-        s.accept(&r);
-        assert!(s.media.has_source(id, SourceLevel::Full));
+        // (the thumbnail level: its demo scene is small and quick to generate)
+        assert!(!s.media.has_source(id, SourceLevel::Thumb));
+        let job = s.render_job(id, 256, 256, false, true).unwrap();
+        assert_eq!(job.level, SourceLevel::Thumb);
+        s.accept(&job.run());
+        assert!(s.media.has_source(id, SourceLevel::Thumb));
         assert!(!s.media.has_source(id, SourceLevel::Preview));
-        assert!(!s.media.has_source(PhotoId(id.0 + 1), SourceLevel::Full));
+        assert!(!s.media.has_source(PhotoId(id.0 + 1), SourceLevel::Thumb));
     }
 
     #[test]

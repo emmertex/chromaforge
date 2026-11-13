@@ -43,23 +43,25 @@ mod tests {
     use crate::activity::Cancel;
 
     #[test]
-    fn list_and_cancel_through_execute() {
-        let mut s = Session::new();
-        let g = s.activity.start("export", "Exporting", Cancel::Yes);
-        let r = s.execute("activity.list", &json!({})).unwrap();
-        assert_eq!(r["tasks"][0]["kind"], "export");
-        assert_eq!(r["tasks"][0]["cancellable"], true);
-        let r = s.execute("activity.cancel", &json!({"id": g.id()})).unwrap();
-        assert_eq!(r["cancelled"], 1);
-        assert!(g.is_cancelled());
-    }
-
-    #[test]
-    fn cancel_all_and_errors() {
-        let mut s = Session::new();
-        let (_a, _b) = (s.activity.start("export", "E", Cancel::Yes), s.activity.start("faces", "F", Cancel::No));
-        assert_eq!(s.execute("activity.cancel", &json!({"all": true})).unwrap()["cancelled"], 1);
-        assert!(s.execute("activity.cancel", &json!({"id": 999})).is_err());
-        assert!(s.execute("activity.cancel", &json!({})).is_err());
+    fn list_cancel_cancel_all_and_errors_through_execute() {
+        // list and cancel through execute
+        {
+            let mut s = Session::new();
+            let g = s.activity.start("export", "Exporting", Cancel::Yes);
+            let r = s.execute("activity.list", &json!({})).unwrap();
+            assert_eq!(r["tasks"][0]["kind"], "export");
+            assert_eq!(r["tasks"][0]["cancellable"], true);
+            let r = s.execute("activity.cancel", &json!({"id": g.id()})).unwrap();
+            assert_eq!(r["cancelled"], 1);
+            assert!(g.is_cancelled());
+        }
+        // cancel all and errors
+        {
+            let mut s = Session::new();
+            let (_a, _b) = (s.activity.start("export", "E", Cancel::Yes), s.activity.start("faces", "F", Cancel::No));
+            assert_eq!(s.execute("activity.cancel", &json!({"all": true})).unwrap()["cancelled"], 1);
+            assert!(s.execute("activity.cancel", &json!({"id": 999})).is_err());
+            assert!(s.execute("activity.cancel", &json!({})).is_err());
+        }
     }
 }
