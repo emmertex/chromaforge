@@ -477,7 +477,7 @@ impl RgbContrast {
     /// Display-linear channel value before Contrast/Blacks → display-linear channel value after.
     #[inline]
     pub fn apply(&self, v: f32) -> f32 {
-        if v <= 0.0 {
+        if v <= 0.0 || v.is_nan() {
             return self.zero;
         }
         if v >= self.peak {
@@ -488,7 +488,9 @@ impl RgbContrast {
         let f = u * (RGB_CONTRAST_N - 1) as f32;
         let i = (f as usize).min(RGB_CONTRAST_N - 2);
         let t = f - i as f32;
-        self.lut[i] + (self.lut[i + 1] - self.lut[i]) * t
+        let a = self.lut.get(i).copied().unwrap_or(self.zero);
+        let b = self.lut.get(i + 1).copied().unwrap_or(a);
+        a + (b - a) * t
     }
 }
 
@@ -846,5 +848,18 @@ mod tests {
         let o_base = base.apply(yl);
         let d_rgb = rgb.map(|v| rc.apply(v * o_base / yl));
         assert!(d_rgb[0] > d_lum[0] && d_rgb[2] < d_lum[2], "RGB contrast separates bright and dark channels: rgb={d_rgb:?} vs lum={d_lum:?}");
+    }
+
+    #[test]
+    fn rgb_contrast_handles_hostile_inputs_without_panicking_or_nans() {
+        let base = ToneMap::new(0.0, 0.0, 0.0);
+        let full = ToneMap::new(30.0, 0.0, 20.0);
+        for peak in [0.0f32, -1.0, f32::NAN, f32::INFINITY, 1.0] {
+            let rc = RgbContrast::new(&base, &full, f64::NAN, peak);
+            assert!(rc.apply(f32::NAN).is_finite());
+            assert!(rc.apply(f32::NEG_INFINITY).is_finite());
+            assert!(rc.apply(-0.5).is_finite());
+            assert!(rc.apply(0.5).is_finite());
+        }
     }
 }

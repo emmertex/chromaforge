@@ -499,9 +499,9 @@ fn base_tone_at_with(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast
         // a raw's tone curve rolls off into white in stops: a camera curve past its last knot, the
         // generic curve from half a stop below its white point instead of clipping (upstream #3783)
         Process::V8 | Process::V9 => match info.camera_tone.as_ref().filter(|_| raw) {
-            Some(curve) => ToneMap::camera_rolloff_hdr(curve, l.contrast, l.whites, l.blacks, peak),
-            None if raw => ToneMap::rolloff_hdr(l.contrast, l.whites, l.blacks, peak),
-            None => ToneMap::display_hdr(l.contrast, l.whites, l.blacks, peak),
+            Some(curve) => ToneMap::camera_rolloff_hdr(curve, contrast, l.whites, blacks, peak),
+            None if raw => ToneMap::rolloff_hdr(contrast, l.whites, blacks, peak),
+            None => ToneMap::display_hdr(contrast, l.whites, blacks, peak),
         },
     }
 }

@@ -1,7 +1,7 @@
-//! CPU â†” GPU equivalence: the same settings rendered by the CPU pipeline (the reference) and by
+//! CPU ↔ GPU equivalence: the same settings rendered by the CPU pipeline (the reference) and by
 //! `lcc_gpu::render`, compared in 8-bit sRGB.
 //!
-//! Bounds (documented in `docs/gpu-pipeline.md`): mean |Î”| < 0.5 LSB and max |Î”| â‰¤ 3 LSB per
+//! Bounds (documented in `docs/gpu-pipeline.md`): mean |Δ| < 0.5 LSB and max |Δ| ≤ 3 LSB per
 //! channel for every case. Skips (passes with a note) when no GPU adapter exists, e.g. on CI.
 
 use std::sync::Arc;
@@ -69,7 +69,7 @@ fn scene(i: usize, w: usize, h: usize) -> Arc<Rgb32f> {
     Arc::new(lcc_scenes::demo_library()[i].render(w, h))
 }
 
-/// (mean |Î”|, max |Î”|, share of channels with |Î”| > 1).
+/// (mean |Δ|, max |Δ|, share of channels with |Δ| > 1).
 fn diff(a: &Rgba8, b: &Rgba8) -> (f64, u8, f64) {
     assert_eq!((a.width, a.height), (b.width, b.height));
     let (mut sum, mut max, mut over) = (0u64, 0u8, 0u64);
@@ -200,7 +200,7 @@ fn banded_full_size_render_matches() {
     let src = scene(3, w, h);
     let mut s = DevelopSettings::default();
     typical(&mut s);
-    // the value-noise grain (processes V1â€“V6)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.vignette.amount = -30.0;
@@ -215,7 +215,7 @@ fn banded_full_size_render_matches() {
         adjust: lcc_develop::LocalAdjustments { exposure: -0.6, ..Default::default() },
         ..Default::default()
     }];
-    check("banded 3000Ã—2000", &src, &SourceInfo { raw: true, ..Default::default() }, &s, &RenderRequest::fit(w, h));
+    check("banded 3000×2000", &src, &SourceInfo { raw: true, ..Default::default() }, &s, &RenderRequest::fit(w, h));
 }
 
 fn cases() -> Vec<(&'static str, Edit)> {
@@ -343,7 +343,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.grain.color = 30.0;
         }),
         ("grain", |s| {
-            // processes V1â€“V6 keep their value-noise grain
+            // processes V1–V6 keep their value-noise grain
             s.process = lcc_develop::Process::V6.version();
             s.grain.amount = 50.0;
             s.grain.size = 40.0;
@@ -562,7 +562,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
             ];
         }),
-        ("masks (local noise, moirÃ©, defringe)", |s| {
+        ("masks (local noise, moiré, defringe)", |s| {
             let radial = MaskShape::Radial { center: Point::new(0.4, 0.6), rx: 0.3, ry: 0.25, angle: 0.0, feather: 50.0, invert: false };
             let linear = MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.7) };
             let m = |shape, adjust| Mask {
@@ -1317,7 +1317,7 @@ fn saturated(s: &mut DevelopSettings) {
     s.color.vibrance = 40.0;
     s.curve.highlights = 30.0;
     s.curve.shadows = -20.0;
-    // the value-noise grain (processes V1â€“V6)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
 }
@@ -1413,7 +1413,7 @@ fn windows_match() {
 }
 
 /// A zoomed window of a photo with a dress brushed over (thousands of dabs, TEST-NOTES 2026-10-16
-/// item 28: 9â€“55 s a window): the brush kernel looks only at the dabs near each pixel, matches the
+/// item 28: 9–55 s a window): the brush kernel looks only at the dabs near each pixel, matches the
 /// CPU, and a window of a few megapixels takes well under a second (`LC_BRUSH_BENCH=1` prints the
 /// times at 45 MP, 100 %).
 #[test]
@@ -1485,8 +1485,8 @@ fn a_window_does_not_keep_the_whole_source_on_the_device() {
     let req = RenderRequest { window: Some(PixelWindow { x: 2000, y: 1500, w: 640, h: 480 }), ..RenderRequest::fit(6000, 4000) };
     let _ = lcc_gpu::render(&src, &info, &s, &req, Some(&stages)).expect("gpu render");
     let held = lcc_gpu::stage_bytes(&stages);
-    assert!(held < 100 << 20, "the view's GPU stages hold {} MiB for a 640Ã—480 window", held >> 20);
-    // â€¦and the next tick of a drag reuses what is there
+    assert!(held < 100 << 20, "the view's GPU stages hold {} MiB for a 640×480 window", held >> 20);
+    // …and the next tick of a drag reuses what is there
     let mut s2 = s.clone();
     s2.light.exposure = 0.5;
     let again = lcc_gpu::render(&src, &info, &s2, &req, Some(&stages)).expect("gpu render");
@@ -1494,7 +1494,7 @@ fn a_window_does_not_keep_the_whole_source_on_the_device() {
     assert!(lcc_gpu::stage_bytes(&stages) < 100 << 20);
 }
 
-/// â€¦but the 288 MB is uploaded once for every window of every view of the photo, not once per
+/// …but the 288 MB is uploaded once for every window of every view of the photo, not once per
 /// window: panning at 1:1, and the Before and After windows, share one device copy of it, which
 /// goes when the app idles (`trim_pool(0)`).
 #[test]
@@ -1545,7 +1545,7 @@ fn gpu_histogram_matches_the_cpu_oracle() {
     }
 }
 
-/// An HDR render's linear float samples encoded with the sRGB curve extended past 1 (Ã—255), so the
+/// An HDR render's linear float samples encoded with the sRGB curve extended past 1 (×255), so the
 /// part above SDR white compares in the same 8-bit steps as the rest.
 fn hdr_codes(r: &lcc_pipeline::Rendered) -> Vec<f32> {
     let Some(lcc_pipeline::DeepImage { samples: lcc_pipeline::DeepSamples::F32(v), .. }) = &r.deep else { panic!("no float HDR samples") };
@@ -1602,7 +1602,7 @@ fn hdr_renders_match() {
     s.effects.clarity = 30.0;
     s.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.5, 0.6), Point::new(1.0, 1.0)];
     check_hdr("hdr vignette + curve", &src, &raw, &s, 320, 240);
-    // the value-noise grain (processes V1â€“V6)
+    // the value-noise grain (processes V1–V6)
     s.process = lcc_develop::Process::V6.version();
     s.grain.amount = 30.0;
     s.color.saturation = 20.0;
@@ -1690,7 +1690,7 @@ fn soft_proofs_match() {
                 saturated(&mut s);
                 let proof = Some(Proof { space, dest_warning, display_warning, profile: 0 });
                 let req = RenderRequest { space: out, proof, ..RenderRequest::fit(640, 640) };
-                let name = format!("proof {space:?} â†’ {out:?} warn {dest_warning}/{display_warning}");
+                let name = format!("proof {space:?} → {out:?} warn {dest_warning}/{display_warning}");
                 if dest_warning || display_warning {
                     check_warned(&name, &src, &raw, &s, &req);
                 } else {
@@ -1869,7 +1869,7 @@ fn lut_profiles_match() {
     assert!(diff(&gpu(&s), &gpu(&looked)).1 > 10, "the LUT applies");
 }
 
-/// Refine Edges (the cross guided filter, blended by âˆšrefine) and Feather (a Gaussian of the
+/// Refine Edges (the cross guided filter, blended by √refine) and Feather (a Gaussian of the
 /// combined alpha) on a mask render on the GPU, before the mask's invert and amount.
 #[test]
 fn refine_edges_and_feather_match() {

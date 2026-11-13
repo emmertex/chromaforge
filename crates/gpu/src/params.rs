@@ -166,7 +166,7 @@ const FIELDS: &[(&str, usize)] = &[
     ("LUT_AMT", 1),
     ("LUT_MIN", 3),
     ("LUT_MAX", 3),
-    // per-channel RGB Contrast/Blacks LUT (`FinishParams::rgb_contrast`), `TONE_N` floats in `aux`
+    // per-channel RGB Contrast/Blacks LUT (`FinishParams::rgb_contrast`), `RGB_CONTRAST_N` floats in `aux`
     ("RGB_CONTRAST", 1),
     ("RGB_CONTRAST_OFF", 1),
     ("RGB_CONTRAST_ZERO", 1),
