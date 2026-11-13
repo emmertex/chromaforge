@@ -348,18 +348,12 @@ mod config_tests {
     }
 
     #[test]
-    fn config_override_wins_without_reading_user_profile() {
+    fn config_override_wins_empty_disables_and_unset_keeps_the_platform_default() {
         let actual = config_dir_with(Some(OsString::from("isolated/settings")), || panic!("no portable probe"), || panic!("the default is not read"));
         assert_eq!(actual, Some(PathBuf::from("isolated/settings")));
-    }
-
-    #[test]
-    fn config_empty_override_disables_profile_without_reading_defaults() {
+        // empty: no settings folder at all, and the defaults are not read
         assert_eq!(config_dir_with(Some(OsString::new()), || panic!("no portable probe"), || panic!("the default is not read")), None);
-    }
-
-    #[test]
-    fn config_unset_override_keeps_platform_defaults() {
+        // unset: the platform's own
         assert_eq!(config_dir_with(None, || None, || Some(PathBuf::from("/xdg/app"))), Some(PathBuf::from("/xdg/app")));
         assert_eq!(config_dir_with(None, || None, || None), None);
     }

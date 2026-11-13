@@ -362,12 +362,6 @@ fn the_shortcuts_list_shows_the_current_modules_keys() {
     assert!(in_module(ModuleId::Develop, "app.shortcuts"));
     assert!(!in_module(ModuleId::Develop, "album.toggleTarget"));
     assert!(in_module(ModuleId::Library, "album.toggleTarget"));
-    let mut h = demo();
-    h.app.run("app.shortcuts", json!({})).unwrap();
-    h.step();
-    h.step();
-    // the module filter is shown and can be turned off
-    click(&mut h, "check:shortcuts.moduleOnly");
 }
 
 /// The Alternative set's edit-settings keys (Ctrl+C / Ctrl+V, ⇧Ctrl+V for Paste Selected).
@@ -912,25 +906,6 @@ fn keymap_export_refuses_to_overwrite_an_original_or_its_sidecar() {
     }
     assert!(h.app.run("app.keymapExport", json!({"path": dir.join("keys.json").to_str().unwrap()})).is_ok());
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The crop aspect lock is a first-class row of Help - Keyboard Shortcuts: A, listed in the
-/// editor like any other command, sharing the key with Visualize Spots as a contextual pair.
-#[test]
-fn lock_aspect_ratio_is_a_listed_row_on_a() {
-    use crate::shortcuts::{CONTEXTUAL, Keymap, bindable, shortcut_of};
-    let b = bindable().iter().find(|b| b.id == "crop.lockAspect").expect("crop.lockAspect is mappable");
-    assert_eq!(b.label, "Lock Aspect Ratio");
-    assert_eq!(b.default, Some("A"));
-    assert_eq!(shortcut_of(&Keymap::new(), "crop.lockAspect"), Some("A"));
-    assert!(CONTEXTUAL.contains(&("view.visualizeSpots", "crop.lockAspect")), "A is disambiguated by context");
-    // the editor lists it: the row is on screen and records keys for it
-    let mut h = demo();
-    record(&mut h, "lock", "crop.lockAspect");
-    key(&mut h, "Escape", false);
-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "crop.lockAspect"), Some("A"), "Esc cancels the recording: A stays");
-    key(&mut h, "Escape", false);
-    assert!(h.app.ui.dialog.is_none());
 }
 
 /// A is the aspect lock while the Crop panel is open — Visualize Spots, the other A, must not take

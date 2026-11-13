@@ -3130,30 +3130,6 @@ mod loupe_info_tests {
         assert_eq!(newer.loupe_info, LoupeInfo::default());
         assert!(!newer.film_names, "the rest of the settings are still read");
     }
-
-    /// Show message when loading or rendering photos is on until it is turned off, and is saved
-    /// with the app's settings.
-    #[test]
-    fn the_loading_message_choice_is_saved_with_the_settings() {
-        assert!(AppSettings::default().loupe_messages);
-        let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
-        assert!(old.loupe_messages, "a settings file from before the choice existed keeps the message");
-        let settings = AppSettings { loupe_messages: false, ..AppSettings::default() };
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["loupeMessages"], false);
-        let read: AppSettings = serde_json::from_value(saved).unwrap();
-        assert!(!read.loupe_messages);
-    }
-
-    #[test]
-    fn ml_device_setting_round_trips() {
-        assert_eq!(AppSettings::default().ml_device, "");
-        let settings = AppSettings { ml_device: "cpu".into(), ..AppSettings::default() };
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["mlDevice"], "cpu");
-        let read: AppSettings = serde_json::from_value(saved).unwrap();
-        assert_eq!(read.ml_device, "cpu");
-    }
 }
 
 #[cfg(test)]

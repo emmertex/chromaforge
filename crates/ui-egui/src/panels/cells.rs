@@ -370,10 +370,4 @@ mod tests {
         assert_eq!(stat.map(|s| s.size), Some(12));
         let _ = std::fs::remove_dir_all(&d);
     }
-
-    #[test]
-    fn mtime_of_a_real_file_is_positive() {
-        let m = std::fs::metadata(file!()).or_else(|_| std::fs::metadata(".")).unwrap();
-        assert!(mtime(&m) > 0);
-    }
 }

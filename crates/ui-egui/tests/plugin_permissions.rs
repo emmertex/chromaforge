@@ -23,6 +23,7 @@ fn app() -> Headless {
     // install into memory, never into the real user's settings folder
     lcc_engine::cmd::plugins::use_in_memory_manager();
     let services = Services { png: None, ..Default::default() };
+    lcc_engine::scene_disk::use_build_dir();
     let app = LccApp::new(lcc_engine::Session::with_demo(), services);
     let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
     h.step();

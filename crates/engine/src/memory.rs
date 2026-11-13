@@ -453,13 +453,6 @@ mod tests {
         };
         assert!(ram as u64 <= limit, "total_ram {ram} above the cgroup limit {limit}");
     }
-
-    /// Prints what the budget is sized from; run by hand inside and outside a limited scope.
-    #[test]
-    #[ignore = "diagnostic: prints the RAM and default budget this process sees"]
-    fn prints_the_default_budget() {
-        println!("total_ram {:?} MiB, default_budget {} MiB", total_ram().map(|b| b >> 20), default_budget() >> 20);
-    }
 }
 
 #[cfg(test)]

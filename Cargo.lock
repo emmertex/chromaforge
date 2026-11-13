@@ -4651,6 +4651,7 @@ dependencies = [
  "lcc-denoise",
  "lcc-engine",
  "lcc-genfill",
+ "lcc-hash",
  "lcc-inpaint",
  "lcc-mcp",
  "lcc-merge",
@@ -4662,7 +4663,10 @@ dependencies = [
  "lcc-ui-egui",
  "lcc-video",
  "log",
+ "russh",
+ "russh-sftp",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -5093,15 +5097,11 @@ dependencies = [
  "lcc-brand",
  "lcc-codecs",
  "lcc-engine",
- "lcc-hash",
  "lcc-meta",
  "lcc-raster",
  "lcc-video",
  "log",
- "russh",
- "russh-sftp",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

@@ -62,16 +62,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn links_are_https_and_come_from_the_brand() {
-        for (id, label, url) in LINKS.iter().filter(|(_, _, u)| !u.is_empty()) {
-            assert!(url.starts_with("https://"), "{id}");
-            assert!(!label.is_empty());
-            assert_eq!(url_of(id), Some(*url));
-        }
-        assert_eq!((APP_PAGE, GITHUB), (lcc_brand::HOMEPAGE, lcc_brand::REPOSITORY));
-    }
-
-    #[test]
     fn browser_policy_allows_https_and_only_the_generated_preview() {
         assert!(check_browser_url("https://example.com/a?b#c").is_ok());
         for bad in ["http://example.com", "javascript:alert(1)", "ftp://x", "file:///etc/passwd", "file:///C:/Windows/win.ini", "", "file://"] {

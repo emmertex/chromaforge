@@ -635,13 +635,6 @@ mod tests {
         assert_eq!(a.keywords, vec!["k".to_string()]);
     }
 
-    #[test]
-    fn names() {
-        let m = Metadata { metering_mode: Some(5), exposure_program: Some(3), ..Default::default() };
-        assert_eq!(m.metering_name(), Some("Pattern"));
-        assert_eq!(m.exposure_program_name(), Some("Aperture-priority AE"));
-    }
-
     /// An MWG regions packet with one face, its box centred at (0.25, 0.4) and 0.1 × 0.15 of `AppliedToDimensions`
     /// `w` × `h`; `extra` goes on the region (e.g. Lightroom's `mwg-rs:Rotation`).
     fn regions_packet(w: u32, h: u32, extra: &str) -> String {

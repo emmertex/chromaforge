@@ -522,7 +522,7 @@ impl RemoteOf for Photo {
 
 // Feature: Connect and Check run off the UI thread; their results come through `remote.pump`.
 #[test]
-fn background_connect_and_check_report_through_the_pump() {
+fn background_connect_and_check_report_through_the_pump_and_reconnecting_clears_a_failed_check() {
     let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
     let mut s = session();
     let r = s.execute("immich.connect", &json!({"url": url, "apiKey": "wrong", "background": true})).unwrap();
@@ -544,17 +544,9 @@ fn background_connect_and_check_report_through_the_pump() {
     assert_eq!(st["accounts"][0]["server"]["version"], "3.3.1");
     assert!(!st.to_string().contains(KEY));
     assert!(!format!("{:?}", s.journal).contains(KEY));
-}
 
-// Regression: a failed check ("no API key is stored") stayed on the account card after the key was
-// connected again, so the panel kept saying the key was missing.
-#[test]
-fn reconnecting_clears_a_stale_failed_check() {
-    let (url, _) = serve(Fake { assets: vec![], ..Fake::default() });
-    let mut s = session();
-    let r = s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
-    let account = r["account"].as_str().unwrap().to_string();
-    // lose the key, then check: the failure is remembered for the card
+    // Regression: a failed check ("no API key is stored") stayed on the account card after the key was connected
+    // again, so the panel kept saying the key was missing. Lose the key, then check: the failure is remembered
     s.set_secret_store(Arc::new(MemorySecrets::default()));
     s.execute("immich.status", &json!({"check": true, "background": true})).unwrap();
     let st = s.execute("immich.status", &json!({})).unwrap();
@@ -708,15 +700,14 @@ fn live_external_library_links_by_path_and_reads_sidecars() {
 }
 
 // IMM-SIDECARS: the XMP Immich stores for an asset is read back into the catalog (and written
-// beside the original), so a library that published with its sidecar can be rebuilt elsewhere.
+// beside the original), so a library that published with its sidecar can be rebuilt elsewhere; a newer local edit is
+// left alone unless overwritten; the panel's background pull reports through `remote.pump`; and a push sends the
+// fields Immich keeps in its sidecar.
 #[test]
-fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
-    let dir = scratch("pull-sidecars");
-    let bytes = png(30);
-    let f = dir.join("shot.png");
-    std::fs::write(&f, &bytes).unwrap();
+fn sidecars_pull_respects_local_edits_runs_in_the_background_and_push_sends_immichs_fields() {
+    let dir = scratch("sidecars");
     // what another instance sent with its upload: metadata and `crs:` develop settings
-    let xmp = r#"<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
+    let xmp_full = r#"<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
 <x:xmpmeta xmlns:x='adobe:ns:meta/'>
  <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
   <rdf:Description rdf:about='' xmlns:dc='http://purl.org/dc/elements/1.1/' xmlns:xmp='http://ns.adobe.com/xap/1.0/'
@@ -728,20 +719,42 @@ fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end='w'?>"#;
-    let mut fake = Fake {
-        assets: vec![(asset("asset-pull", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
-        ..Fake::default()
-    };
-    fake.sidecars.insert("asset-pull".into(), xmp.as_bytes().to_vec());
-    let (url, _) = serve(fake);
+    let xmp_edit = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmlns:dc='http://purl.org/dc/elements/1.1/'>
+<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Remote caption</rdf:li></rdf:Alt></dc:description><xmp:Rating>5</xmp:Rating></rdf:Description>
+</rdf:RDF></x:xmpmeta>"#;
+    let xmp_bg = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:Rating>2</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+    let mut fake = Fake::default();
+    let mut paths = Vec::new();
+    for (name, asset_id, seed, xmp) in [
+        ("shot.png", "asset-pull", 30u8, Some(xmp_full)),
+        ("edit.png", "asset-edit", 32, Some(xmp_edit)),
+        ("bg.png", "asset-bg", 34, Some(xmp_bg)),
+        ("push.png", "asset-push", 33, None),
+    ] {
+        let bytes = png(seed);
+        let f = dir.join(name);
+        std::fs::write(&f, &bytes).unwrap();
+        paths.push(f.to_string_lossy().to_string());
+        fake.assets.push((asset(asset_id, name, &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes));
+        if let Some(xmp) = xmp {
+            fake.sidecars.insert(asset_id.into(), xmp.as_bytes().to_vec());
+        }
+    }
+    let (url, seen) = serve(fake);
     let mut s = session();
-    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
-    let id = s.catalog.photos().next().unwrap().id;
+    s.execute("library.import", &json!({"paths": paths})).unwrap();
+    let id_of = |s: &Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).unwrap().id;
+    let (id, id_edit, id_bg, id_push) = (id_of(&s, "shot.png"), id_of(&s, "edit.png"), id_of(&s, "bg.png"), id_of(&s, "push.png"));
     s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
     s.execute("immich.link", &json!({})).unwrap();
     pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
-    assert_eq!(lcc_immich::link::link_state(&s.catalog, id), "linked");
+    for linked in [id, id_edit, id_bg, id_push] {
+        assert_eq!(lcc_immich::link::link_state(&s.catalog, linked), "linked");
+    }
 
+    // pull: what Immich stored is applied, and the local sidecar written
     let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0]})).unwrap();
     assert_eq!(r["pulled"], 1, "{r}");
     assert_eq!(r["applied"], 1, "{r}");
@@ -756,105 +769,41 @@ fn pull_sidecars_applies_what_immich_stored_and_writes_the_local_sidecar() {
     let local = dir.join("shot.xmp");
     let written = std::fs::read_to_string(&local).or_else(|_| std::fs::read_to_string(dir.join("shot.png.xmp"))).unwrap();
     assert!(written.contains("lc:settings"), "{written}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
 
-#[test]
-fn pull_sidecars_leaves_a_newer_local_edit_alone_unless_overwritten() {
-    let dir = scratch("pull-sidecars-edit");
-    let bytes = png(32);
-    let f = dir.join("shot.png");
-    std::fs::write(&f, &bytes).unwrap();
-    let xmp = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
-<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/' xmlns:dc='http://purl.org/dc/elements/1.1/'>
-<dc:description><rdf:Alt><rdf:li xml:lang='x-default'>Remote caption</rdf:li></rdf:Alt></dc:description><xmp:Rating>5</xmp:Rating></rdf:Description>
-</rdf:RDF></x:xmpmeta>"#;
-    let mut fake = Fake {
-        assets: vec![(asset("asset-edit", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
-        ..Fake::default()
-    };
-    fake.sidecars.insert("asset-edit".into(), xmp.as_bytes().to_vec());
-    let (url, _) = serve(fake);
-    let mut s = session();
-    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
-    let id = s.catalog.photos().next().unwrap().id;
-    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
-    s.execute("immich.link", &json!({})).unwrap();
-    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
-    // an edit made here, later than the asset's own change
-    let mut edited = (**s.catalog.photo(id).unwrap()).clone();
+    // an edit made here, later than the asset's own change, is left alone unless overwritten
+    let mut edited = (**s.catalog.photo(id_edit).unwrap()).clone();
     edited.meta.caption = "Local caption".into();
     s.catalog
-        .apply(Op::SetDevelop { id, settings: edited.develop.clone(), label: "Local edit".into(), edited: Some("2999-01-01T00:00:00".into()) })
+        .apply(Op::SetDevelop {
+            id: id_edit,
+            settings: edited.develop.clone(),
+            label: "Local edit".into(),
+            edited: Some("2999-01-01T00:00:00".into()),
+        })
         .unwrap();
-    s.catalog.apply(Op::SetMeta { id, meta: Box::new(edited.meta) }).unwrap();
-
-    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0]})).unwrap();
+    s.catalog.apply(Op::SetMeta { id: id_edit, meta: Box::new(edited.meta) }).unwrap();
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id_edit.0]})).unwrap();
     assert_eq!(r["applied"], 0, "{r}");
     assert_eq!(r["skipped"][0]["reason"], "editedLocally", "{r}");
-    assert_eq!(s.catalog.photo(id).unwrap().meta.caption, "Local caption");
-
-    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0], "overwrite": true})).unwrap();
+    assert_eq!(s.catalog.photo(id_edit).unwrap().meta.caption, "Local caption");
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id_edit.0], "overwrite": true})).unwrap();
     assert_eq!(r["applied"], 1, "{r}");
-    assert_eq!(s.catalog.photo(id).unwrap().meta.caption, "Remote caption");
-    let _ = std::fs::remove_dir_all(&dir);
-}
+    assert_eq!(s.catalog.photo(id_edit).unwrap().meta.caption, "Remote caption");
 
-// Feature: the panel starts the pull on a worker; `remote.pump` takes the result in and the
-// account card's status line reads it from there.
-#[test]
-fn a_background_pull_applies_through_the_pump() {
-    let dir = scratch("pull-sidecars-bg");
-    let bytes = png(34);
-    let f = dir.join("shot.png");
-    std::fs::write(&f, &bytes).unwrap();
-    let xmp = r#"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
-<rdf:Description rdf:about='' xmlns:xmp='http://ns.adobe.com/xap/1.0/'><xmp:Rating>2</xmp:Rating></rdf:Description></rdf:RDF></x:xmpmeta>"#;
-    let mut fake = Fake {
-        assets: vec![(asset("asset-bg", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
-        ..Fake::default()
-    };
-    fake.sidecars.insert("asset-bg".into(), xmp.as_bytes().to_vec());
-    let (url, _) = serve(fake);
-    let mut s = session();
-    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
-    let id = s.catalog.photos().next().unwrap().id;
-    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
-    s.execute("immich.link", &json!({})).unwrap();
-    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
-    let r = s.execute("immich.pullSidecars", &json!({"ids": [id.0], "background": true})).unwrap();
+    // Feature: the panel starts the pull on a worker; `remote.pump` takes the result in and the account card's status
+    // line reads it from there
+    let r = s.execute("immich.pullSidecars", &json!({"ids": [id_bg.0], "background": true})).unwrap();
     assert_eq!(r["started"], true, "{r}");
     let v = pump_until(&mut s, |_, v| v["sidecars"]["active"] == false && v["sidecars"]["last"].is_object());
     assert_eq!(v["sidecars"]["direction"], "pull", "{v}");
     assert_eq!(v["sidecars"]["last"]["applied"], 1, "{v}");
-    assert_eq!(s.catalog.photo(id).unwrap().rating, 2);
-    let _ = std::fs::remove_dir_all(&dir);
-}
+    assert_eq!(s.catalog.photo(id_bg).unwrap().rating, 2);
 
-#[test]
-fn push_sidecars_sends_the_fields_immich_keeps_in_its_sidecar() {
-    let dir = scratch("push-sidecars");
-    let bytes = png(33);
-    let f = dir.join("shot.png");
-    std::fs::write(&f, &bytes).unwrap();
-    let fake = Fake {
-        assets: vec![(asset("asset-push", "shot.png", &bytes, json!({"updatedAt": "2026-10-01T00:00:00.000Z"})), bytes.clone())],
-        ..Fake::default()
-    };
-    let (url, seen) = serve(fake);
-    let mut s = session();
-    s.execute("library.import", &json!({"paths": [f.to_string_lossy()]})).unwrap();
-    let id = s.catalog.photos().next().unwrap().id;
-    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 3})).unwrap();
-    s.execute("photo.setMeta", &json!({"ids": [id.0], "caption": "Pushed caption", "keywords": ["trips/sea"]})).unwrap();
-    s.execute("immich.connect", &json!({"url": url, "apiKey": KEY})).unwrap();
-    s.execute("immich.link", &json!({})).unwrap();
-    pump_until(&mut s, |_, v| v["links"].as_object().is_some_and(|m| m.values().all(|l| l["active"] == false)));
-    assert_eq!(lcc_immich::link::link_state(&s.catalog, id), "linked");
-
-    let r = s.execute("immich.pushSidecars", &json!({"ids": [id.0]})).unwrap();
+    // push: the server applies the metadata, and gets the tag (a managed asset keeps its sidecar)
+    s.execute("photo.rate", &json!({"ids": [id_push.0], "rating": 3})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [id_push.0], "caption": "Pushed caption", "keywords": ["trips/sea"]})).unwrap();
+    let r = s.execute("immich.pushSidecars", &json!({"ids": [id_push.0]})).unwrap();
     assert_eq!(r["pushed"], 1, "{r}");
-    // the server applied the metadata, and got the tag (a managed asset keeps its sidecar)
     let c = lcc_immich::Client::new(&url, lcc_credentials::Secret::new(KEY), &lcc_immich::ServerOptions::standard()).unwrap();
     let a = c.asset("asset-push").unwrap();
     let e = a.exif_info.unwrap_or_default();

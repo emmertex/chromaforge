@@ -770,62 +770,64 @@ mod tests {
     }
 
     #[test]
-    fn edits_are_history_steps_and_undo_restores() {
-        let mut s = Session::with_demo();
-        let u0 = s.undo.len();
-        let a = add_one(&mut s, "Neg");
-        let b = add_one(&mut s, "Glow");
-        assert_ne!(a, b);
-        assert_eq!(s.undo.len(), u0 + 2);
-        s.execute("develop.pluginFilter.set", &json!({"uid": a, "params": {"gamma": 2.2}, "stage": "source"})).unwrap();
-        let f = &stack(&s)[0];
-        assert_eq!((f.params.len(), f.stage), (2, FilterStage::Source));
-        s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": a, "analysis": {"base": [0.8, 0.5, 0.3]}})).unwrap();
-        s.execute("develop.pluginFilter.set", &json!({"uid": a, "enabled": false})).unwrap();
-        assert!(stack(&s)[0].analysis.is_some(), "set keeps the analysis");
-        s.execute("develop.pluginFilter.move", &json!({"uid": a, "index": 1})).unwrap();
-        assert_eq!(stack(&s)[1].uid as u64, a);
-        s.execute("develop.pluginFilter.remove", &json!({"uid": b})).unwrap();
-        assert_eq!(stack(&s).len(), 1);
-        assert_eq!(s.undo.len(), u0 + 7);
-        let listed = s.execute("develop.pluginFilter.list", &json!({})).unwrap();
-        assert_eq!(listed["filters"].as_array().unwrap().len(), 1);
-        for _ in 0..7 {
-            s.execute("edit.undo", &json!({})).unwrap();
+    fn edits_are_history_steps_undo_restores_and_hostile_args_error_without_panic() {
+        // edits are history steps and undo restores
+        {
+            let mut s = Session::with_demo();
+            let u0 = s.undo.len();
+            let a = add_one(&mut s, "Neg");
+            let b = add_one(&mut s, "Glow");
+            assert_ne!(a, b);
+            assert_eq!(s.undo.len(), u0 + 2);
+            s.execute("develop.pluginFilter.set", &json!({"uid": a, "params": {"gamma": 2.2}, "stage": "source"})).unwrap();
+            let f = &stack(&s)[0];
+            assert_eq!((f.params.len(), f.stage), (2, FilterStage::Source));
+            s.execute("develop.pluginFilter.setAnalysis", &json!({"uid": a, "analysis": {"base": [0.8, 0.5, 0.3]}})).unwrap();
+            s.execute("develop.pluginFilter.set", &json!({"uid": a, "enabled": false})).unwrap();
+            assert!(stack(&s)[0].analysis.is_some(), "set keeps the analysis");
+            s.execute("develop.pluginFilter.move", &json!({"uid": a, "index": 1})).unwrap();
+            assert_eq!(stack(&s)[1].uid as u64, a);
+            s.execute("develop.pluginFilter.remove", &json!({"uid": b})).unwrap();
+            assert_eq!(stack(&s).len(), 1);
+            assert_eq!(s.undo.len(), u0 + 7);
+            let listed = s.execute("develop.pluginFilter.list", &json!({})).unwrap();
+            assert_eq!(listed["filters"].as_array().unwrap().len(), 1);
+            for _ in 0..7 {
+                s.execute("edit.undo", &json!({})).unwrap();
+            }
+            assert!(stack(&s).is_empty());
         }
-        assert!(stack(&s).is_empty());
-    }
-
-    #[test]
-    fn hostile_args_error_without_panic() {
-        let mut s = Session::with_demo();
-        let a = add_one(&mut s, "Neg");
-        let bad_calls = [
-            ("develop.pluginFilter.add", json!({})),
-            ("develop.pluginFilter.add", json!({"plugin": 1, "module_hash": "x", "name": "n"})),
-            ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "params": [1]})),
-            ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "params": {"a": {"b": 1}}})),
-            ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "stage": "middle"})),
-            ("develop.pluginFilter.add", json!({"plugin": "x".repeat(10_000), "module_hash": "x", "name": "n"})),
-            ("develop.pluginFilter.remove", json!({"uid": 999})),
-            ("develop.pluginFilter.remove", json!({"uid": u64::MAX})),
-            ("develop.pluginFilter.remove", json!({"uid": "1"})),
-            ("develop.pluginFilter.set", json!({"uid": a, "enabled": "yes"})),
-            ("develop.pluginFilter.set", json!({"uid": 12345, "enabled": false})),
-            ("develop.pluginFilter.move", json!({"uid": a, "index": u64::MAX})),
-            ("develop.pluginFilter.move", json!({"uid": a, "index": -1})),
-            ("develop.pluginFilter.move", json!({"uid": a, "index": 1})),
-            ("develop.pluginFilter.setAnalysis", json!({"uid": a})),
-            ("develop.pluginFilter.setAnalysis", json!({"uid": 77, "analysis": 1})),
-            ("develop.pluginFilter.setAnalysis", json!({"uid": a, "analysis": "x".repeat(100_000)})),
-        ];
-        for (id, p) in bad_calls {
-            assert!(s.execute(id, &p).is_err(), "{id} {p}");
+        // hostile args error without panic
+        {
+            let mut s = Session::with_demo();
+            let a = add_one(&mut s, "Neg");
+            let bad_calls = [
+                ("develop.pluginFilter.add", json!({})),
+                ("develop.pluginFilter.add", json!({"plugin": 1, "module_hash": "x", "name": "n"})),
+                ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "params": [1]})),
+                ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "params": {"a": {"b": 1}}})),
+                ("develop.pluginFilter.add", json!({"plugin": "p", "module_hash": "x", "name": "n", "stage": "middle"})),
+                ("develop.pluginFilter.add", json!({"plugin": "x".repeat(10_000), "module_hash": "x", "name": "n"})),
+                ("develop.pluginFilter.remove", json!({"uid": 999})),
+                ("develop.pluginFilter.remove", json!({"uid": u64::MAX})),
+                ("develop.pluginFilter.remove", json!({"uid": "1"})),
+                ("develop.pluginFilter.set", json!({"uid": a, "enabled": "yes"})),
+                ("develop.pluginFilter.set", json!({"uid": 12345, "enabled": false})),
+                ("develop.pluginFilter.move", json!({"uid": a, "index": u64::MAX})),
+                ("develop.pluginFilter.move", json!({"uid": a, "index": -1})),
+                ("develop.pluginFilter.move", json!({"uid": a, "index": 1})),
+                ("develop.pluginFilter.setAnalysis", json!({"uid": a})),
+                ("develop.pluginFilter.setAnalysis", json!({"uid": 77, "analysis": 1})),
+                ("develop.pluginFilter.setAnalysis", json!({"uid": a, "analysis": "x".repeat(100_000)})),
+            ];
+            for (id, p) in bad_calls {
+                assert!(s.execute(id, &p).is_err(), "{id} {p}");
+            }
+            assert_eq!(stack(&s).len(), 1);
+            for _ in 0..MAX_PLUGIN_FILTERS - 1 {
+                add_one(&mut s, "More");
+            }
+            assert!(s.execute("develop.pluginFilter.add", &json!({"plugin": "p", "module_hash": "x", "name": "n"})).is_err());
         }
-        assert_eq!(stack(&s).len(), 1);
-        for _ in 0..MAX_PLUGIN_FILTERS - 1 {
-            add_one(&mut s, "More");
-        }
-        assert!(s.execute("develop.pluginFilter.add", &json!({"plugin": "p", "module_hash": "x", "name": "n"})).is_err());
     }
 }

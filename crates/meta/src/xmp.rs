@@ -1306,24 +1306,6 @@ mod tests {
         assert_eq!(read("True").copyright_url.as_deref(), Some("https://example.org/c"));
     }
 
-    /// A zero or negative `exif:ISOSpeedRatings` is "no ISO" (as in the EXIF reader), not `Some(0)`, and
-    /// must not hide a valid `exifEX:PhotographicSensitivity`.
-    #[test]
-    fn non_positive_iso_is_ignored() {
-        let read = |attrs: &str| {
-            let x = format!(
-                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-                <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:exifEX="http://cipa.jp/exif/1.0/" {attrs}/>
-                </rdf:RDF></x:xmpmeta>"#
-            );
-            parse_xmp(&x).unwrap().metadata.iso
-        };
-        assert_eq!(read(r#"exif:ISOSpeedRatings="0" exifEX:PhotographicSensitivity="400""#), Some(400));
-        assert_eq!(read(r#"exif:ISOSpeedRatings="-100""#), None);
-        assert_eq!(read(r#"exif:ISOSpeedRatings="0""#), None);
-        assert_eq!(read(r#"exif:ISOSpeedRatings="200""#), Some(200));
-    }
-
     /// Fractional, oversized or non-finite ISO values are dropped (never truncated or saturated) and the
     /// alternate property is still considered.
     #[test]
@@ -1342,6 +1324,23 @@ mod tests {
         assert_eq!(read(r#"exif:ISOSpeedRatings="NaN""#), None);
         assert_eq!(read(r#"exif:ISOSpeedRatings="100.5" exifEX:PhotographicSensitivity="400""#), Some(400));
         assert_eq!(read(r#"exif:ISOSpeedRatings="200.0""#), Some(200));
+        // non positive iso is ignored
+        // A zero or negative `exif:ISOSpeedRatings` is "no ISO" (as in the EXIF reader), not `Some(0)`, and
+        // must not hide a valid `exifEX:PhotographicSensitivity`.
+        {
+            let read = |attrs: &str| {
+                let x = format!(
+                    r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                    <rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:exifEX="http://cipa.jp/exif/1.0/" {attrs}/>
+                    </rdf:RDF></x:xmpmeta>"#
+                );
+                parse_xmp(&x).unwrap().metadata.iso
+            };
+            assert_eq!(read(r#"exif:ISOSpeedRatings="0" exifEX:PhotographicSensitivity="400""#), Some(400));
+            assert_eq!(read(r#"exif:ISOSpeedRatings="-100""#), None);
+            assert_eq!(read(r#"exif:ISOSpeedRatings="0""#), None);
+            assert_eq!(read(r#"exif:ISOSpeedRatings="200""#), Some(200));
+        }
     }
 
     /// Fractional, oversized or negative pixel dimensions are dropped, not truncated or saturated.
@@ -1361,6 +1360,21 @@ mod tests {
         }
         assert_eq!(read(r#"tiff:ImageWidth="640.5" exif:PixelXDimension="800""#), Some(800));
         assert_eq!(read(r#"tiff:ImageWidth="640""#), Some(640));
+        // negative xmp pixel width is ignored
+        {
+            let read = |attrs: &str| {
+                let x = format!(
+                    r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                    <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/" {attrs}/>
+                </rdf:RDF>"#
+                );
+                parse_xmp(&x).unwrap().metadata.width
+            };
+
+            assert_eq!(read(r#"tiff:ImageWidth="-1""#), None);
+            assert_eq!(read(r#"tiff:ImageWidth="-1" exif:PixelXDimension="640""#), Some(640));
+            assert_eq!(read(r#"exif:PixelXDimension="-1""#), None);
+        }
     }
 
     #[test]
@@ -1396,6 +1410,13 @@ mod tests {
             assert_eq!(parsed.properties["tiff:Orientation"], vec![value.to_string()], "{value}");
             assert!(!write_xmp(&parsed.metadata, None).contains("tiff:Orientation"), "rejected {value} must not become a written orientation");
         }
+        // xmp orientation rejects out of range values
+        {
+            for value in ["0", "9", "-1", "nan", "inf"] {
+                let parsed = parse_xmp(&orientation_packet(value)).unwrap();
+                assert_eq!(parsed.metadata.orientation, None, "{value}");
+            }
+        }
     }
 
     #[test]
@@ -1408,30 +1429,6 @@ mod tests {
             let parsed = parse_xmp(&orientation_packet(value)).unwrap();
             assert_eq!(parsed.metadata.orientation.map(|orientation| orientation.to_exif()), Some(6), "{value}");
         }
-    }
-
-    #[test]
-    fn xmp_orientation_rejects_out_of_range_values() {
-        for value in ["0", "9", "-1", "nan", "inf"] {
-            let parsed = parse_xmp(&orientation_packet(value)).unwrap();
-            assert_eq!(parsed.metadata.orientation, None, "{value}");
-        }
-    }
-
-    #[test]
-    fn negative_xmp_pixel_width_is_ignored() {
-        let read = |attrs: &str| {
-            let x = format!(
-                r#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-                <rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:exif="http://ns.adobe.com/exif/1.0/" {attrs}/>
-            </rdf:RDF>"#
-            );
-            parse_xmp(&x).unwrap().metadata.width
-        };
-
-        assert_eq!(read(r#"tiff:ImageWidth="-1""#), None);
-        assert_eq!(read(r#"tiff:ImageWidth="-1" exif:PixelXDimension="640""#), Some(640));
-        assert_eq!(read(r#"exif:PixelXDimension="-1""#), None);
     }
 
     #[test]
@@ -1472,24 +1469,6 @@ mod tests {
         assert_eq!(fmt_gps_coord(-45.51, 'N', 'S'), "45,30.600000S");
         assert_eq!(fmt_gps_coord(10.9999999999, 'N', 'S'), "11,0.000000N");
         assert_eq!(fmt_gps_coord(-0.9999999999, 'E', 'W'), "1,0.000000W");
-    }
-
-    /// Like the EXIF and GPX readers, XMP drops a position outside latitude ±90° / longitude ±180°.
-    #[test]
-    fn xmp_gps_out_of_range_rejected() {
-        let gps = |lat: &str, lon: &str| {
-            let x = format!(
-                r#"<rdf:Description xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-                xmlns:e="http://ns.adobe.com/exif/1.0/" e:GPSLatitude="{lat}" e:GPSLongitude="{lon}"/>"#
-            );
-            parse_xmp(&x).unwrap().metadata.gps
-        };
-        assert_eq!(gps("95,0N", "200,30E"), None);
-        assert_eq!(gps("95,0N", "10,0E"), None);
-        assert_eq!(gps("10,0S", "200,30W"), None);
-        assert_eq!(gps("90,0,1N", "0,0E"), None);
-        assert_eq!(gps("90,0N", "180,0E"), Some(Gps { latitude: 90.0, longitude: 180.0, altitude: None }));
-        assert_eq!(gps("90,0S", "180,0W"), Some(Gps { latitude: -90.0, longitude: -180.0, altitude: None }));
     }
 
     #[test]
@@ -1533,6 +1512,23 @@ mod tests {
 
         assert_eq!(parse("95,0N", "7,0E").metadata.gps, None, "combined latitude range remains checked");
         assert_eq!(parse("45,0N", "200,0E").metadata.gps, None, "combined longitude range remains checked");
+        // xmp gps out of range rejected
+        // Like the EXIF and GPX readers, XMP drops a position outside latitude ±90° / longitude ±180°.
+        {
+            let gps = |lat: &str, lon: &str| {
+                let x = format!(
+                    r#"<rdf:Description xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                    xmlns:e="http://ns.adobe.com/exif/1.0/" e:GPSLatitude="{lat}" e:GPSLongitude="{lon}"/>"#
+                );
+                parse_xmp(&x).unwrap().metadata.gps
+            };
+            assert_eq!(gps("95,0N", "200,30E"), None);
+            assert_eq!(gps("95,0N", "10,0E"), None);
+            assert_eq!(gps("10,0S", "200,30W"), None);
+            assert_eq!(gps("90,0,1N", "0,0E"), None);
+            assert_eq!(gps("90,0N", "180,0E"), Some(Gps { latitude: 90.0, longitude: 180.0, altitude: None }));
+            assert_eq!(gps("90,0S", "180,0W"), Some(Gps { latitude: -90.0, longitude: -180.0, altitude: None }));
+        }
     }
 
     /// MWG Region Guidelines v2.0, element form (`rdf:parseType="Resource"`, self-closing `Area`) — how

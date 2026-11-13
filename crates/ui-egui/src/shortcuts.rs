@@ -1653,12 +1653,6 @@ mod tests {
         key(&mut h, "Delete", false);
         assert!(!h.app.session.catalog.photo(PhotoId(1)).unwrap().deleted);
     }
-
-    #[test]
-    fn delete_means_the_backspace_key() {
-        assert_eq!(parse("Delete"), Some((Modifiers::NONE, Key::Backspace)));
-        assert_eq!(parse("Cmd+Delete"), Some((Modifiers::COMMAND, Key::Backspace)));
-    }
     use super::*;
 
     #[test]
@@ -1668,6 +1662,9 @@ mod tests {
         assert_eq!(k, Key::Z);
         assert_eq!(parse("Right").unwrap().1, Key::ArrowRight);
         assert_eq!(parse("\\").unwrap().1, Key::Backslash);
+        // Delete means the Backspace key
+        assert_eq!(parse("Delete"), Some((Modifiers::NONE, Key::Backspace)));
+        assert_eq!(parse("Cmd+Delete"), Some((Modifiers::COMMAND, Key::Backspace)));
         // every declared shortcut parses
         for (id, _, sc, _) in crate::menus::ui_commands() {
             if let Some(sc) = sc {

@@ -1,5 +1,6 @@
 //! Phase 4 exit gate (P4.7): one scripted session through MCP, headless, driving the real CLI
-//! binary (`app-cli mcp --library …`) over stdio:
+//! binary (`app-cli mcp --library …`) over stdio. The only test that publishes to a live SFTP
+//! server; the rest of the chain is what makes it a session:
 //!
 //! 1. tethered shoot with the simulated PTP camera;
 //! 2. the shoot's import preset (develop preset + keywords) lands on every shot;
@@ -28,25 +29,10 @@ use serde_json::{Value, json};
 // ---------------------------------------------------------------------------------------------
 // The CLI binary
 
-/// `app-cli` in this test's target folder. It lives in another package, so cargo neither hands us
-/// its path nor rebuilds it for `cargo test -p lcc-mcp`: build it here (a no-op when it is up to
-/// date), so the session never drives a stale binary.
-fn app_cli() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().and_then(Path::parent).unwrap().to_path_buf(); // target/<profile>
-    let bin = dir.join(format!("app-cli{}", std::env::consts::EXE_SUFFIX));
-    let mut cmd = Command::new(option_env!("CARGO").unwrap_or("cargo"));
-    cmd.args(["build", "--quiet", "-p", "lcc-cli", "--bin", "app-cli"]);
-    if dir.file_name().is_some_and(|n| n == "release") {
-        cmd.arg("--release");
-    }
-    if let Some(target) = dir.parent() {
-        cmd.env("CARGO_TARGET_DIR", target);
-    }
-    let built = cmd.current_dir(env!("CARGO_MANIFEST_DIR")).status().is_ok_and(|s| s.success());
-    assert!(built || bin.exists(), "building app-cli failed and there is none in {}", dir.display());
-    bin
-}
+/// Built by cargo for this package's tests. (The session used to live in `lcc-mcp` and ran a
+/// nested `cargo build -p lcc-cli`, which re-resolved features and rebuilt the binary: two
+/// minutes of the test's 121 s.)
+const BIN: &str = env!("CARGO_BIN_EXE_app-cli");
 
 struct Mcp {
     child: Child,
@@ -57,7 +43,7 @@ struct Mcp {
 
 impl Mcp {
     fn start(library: &Path, home: &Path) -> Mcp {
-        let mut cmd = Command::new(app_cli());
+        let mut cmd = Command::new(BIN);
         // an inherited <PREFIX>_CONFIG_DIR (any prefix) outranks HOME: the account would be saved there and
         // break the next run (issue #167)
         for prefix in std::iter::once(lcc_brand::ENV_PREFIX).chain(lcc_brand::LEGACY_ENV_PREFIXES.iter().copied()) {

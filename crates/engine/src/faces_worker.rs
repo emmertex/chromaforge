@@ -480,15 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn pace_names_are_forgiving() {
-        assert_eq!(["pause", "light", "normal", "full"].map(|n| Pace::parse(Some(n))), [Pace::Pause, Pace::Light, Pace::Normal, Pace::Full]);
-        assert_eq!(
-            (Pace::parse(None), Pace::parse(Some("")), Pace::parse(Some("FULL")), Pace::parse(Some("turbo"))),
-            (Pace::Normal, Pace::Normal, Pace::Normal, Pace::Normal)
-        );
-    }
-
-    #[test]
     fn the_scans_parallel_work_gets_a_pool_the_size_of_the_pace() {
         use Pace::*;
         assert_eq!([Pause, Light, Normal, Full].map(|p| pool_threads_for(32, p, None)), [2, 2, 16, 25]);

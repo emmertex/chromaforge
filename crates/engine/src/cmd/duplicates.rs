@@ -78,28 +78,6 @@ mod tests {
     }
 
     #[test]
-    fn identical_files_group_as_exact_duplicates() {
-        let src = scratch("exact");
-        let scene = &lcc_scenes::demo_library()[0];
-        write_scene_jpeg(&src.0.join("one.jpg"), scene, 512, 384);
-        std::fs::copy(src.0.join("one.jpg"), src.0.join("one-again.jpg")).unwrap();
-        let (mut s, _lib) = session_with_library("exact-lib");
-        let r = s.execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true})).unwrap();
-        assert_eq!(r["imported"].as_array().map(Vec::len), Some(2), "{r}");
-
-        let r = s.execute("library.findDuplicates", &json!({})).unwrap();
-        assert_eq!(r["groups"].as_array().map(Vec::len), Some(1), "{r}");
-        let g = &r["groups"][0];
-        assert_eq!(g["kind"], "exact");
-        assert_eq!(g["photos"].as_array().map(Vec::len), Some(2));
-        // both members are the same bytes; the keeper's facts come from the catalog
-        assert_eq!(g["photos"][0]["identical"], true);
-        assert_eq!(g["photos"][1]["identical"], true);
-        assert!(g["photos"][0]["fileSize"].as_u64().is_some_and(|n| n > 0));
-        assert!(g["photos"][0]["width"].as_u64().is_some_and(|n| n > 0));
-    }
-
-    #[test]
     fn a_resized_copy_groups_only_with_the_similar_scan() {
         let src = scratch("similar");
         let scene = &lcc_scenes::demo_library()[1];
@@ -126,15 +104,32 @@ mod tests {
     }
 
     #[test]
-    fn deleted_photos_and_virtual_copies_stay_out_of_the_groups() {
+    fn identical_files_group_as_exact_duplicates_without_deleted_photos_and_virtual_copies() {
         let src = scratch("out-of-scope");
         let scene = &lcc_scenes::demo_library()[2];
         write_scene_jpeg(&src.0.join("one.jpg"), scene, 512, 384);
         std::fs::copy(src.0.join("one.jpg"), src.0.join("one-again.jpg")).unwrap();
         let (mut s, _lib) = session_with_library("scope-lib");
+        // an empty library has no duplicates, and a wrong-typed parameter is an error, not a guess
+        let r = s.execute("library.findDuplicates", &json!({})).unwrap();
+        assert_eq!(r["groups"].as_array().map(Vec::len), Some(0), "empty library");
+        assert_eq!(r["unhashed"], 0);
+        assert!(s.execute("library.findDuplicates", &json!({"similar": "yes"})).is_err());
         let r = s.execute("library.import", &json!({"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true})).unwrap();
         assert_eq!(r["imported"].as_array().map(Vec::len), Some(2), "{r}");
         let ids: Vec<u64> = s.catalog.photos().map(|p| p.id.0).collect();
+
+        // identical files group as exact duplicates
+        let r = s.execute("library.findDuplicates", &json!({})).unwrap();
+        assert_eq!(r["groups"].as_array().map(Vec::len), Some(1), "{r}");
+        let g = &r["groups"][0];
+        assert_eq!(g["kind"], "exact");
+        assert_eq!(g["photos"].as_array().map(Vec::len), Some(2));
+        // both members are the same bytes; the keeper's facts come from the catalog
+        assert_eq!(g["photos"][0]["identical"], true);
+        assert_eq!(g["photos"][1]["identical"], true);
+        assert!(g["photos"][0]["fileSize"].as_u64().is_some_and(|n| n > 0));
+        assert!(g["photos"][0]["width"].as_u64().is_some_and(|n| n > 0));
 
         // a virtual copy shares its master's file but is the same photo, not another copy
         s.execute("library.select", &json!({"ids": [ids[0]]})).unwrap();
@@ -156,20 +151,5 @@ mod tests {
         s.execute("photo.restore", &json!({"ids": [ids[1]]})).unwrap();
         let r = s.execute("library.findDuplicates", &json!({})).unwrap();
         assert_eq!(r["groups"][0]["photos"].as_array().map(Vec::len), Some(3), "{r}");
-    }
-
-    #[test]
-    fn a_wrong_typed_parameter_is_an_error_not_a_guess() {
-        let mut s = Session::new();
-        let r = s.execute("library.findDuplicates", &json!({"similar": "yes"}));
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn an_empty_library_has_no_duplicates() {
-        let mut s = Session::new();
-        let r = s.execute("library.findDuplicates", &json!({})).unwrap();
-        assert_eq!(r["groups"].as_array().map(Vec::len), Some(0));
-        assert_eq!(r["unhashed"], 0);
     }
 }

@@ -40,6 +40,7 @@ pub mod crs_masks;
 pub mod crs_point_color;
 pub(crate) mod decode_share;
 pub mod demo;
+pub mod scene_disk;
 pub mod denoise;
 pub mod desktop;
 pub mod devices;
