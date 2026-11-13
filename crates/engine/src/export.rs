@@ -2106,6 +2106,46 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
     Some(out)
 }
 
+/// Recognized raw XMP location properties make an Original unsafe to copy even when malformed or held
+/// in an ordinary packet not projected into `Metadata` (port of upstream PR 3054). Every ordinary JPEG
+/// packet and the extended one are parsed; a packet or chunk stream that can't be fully inspected
+/// fails closed.
+fn original_embeds_xmp_location(bytes: &[u8], label: &str) -> Result<bool, String> {
+    if bytes.starts_with(b"8BPS") {
+        return Ok(false);
+    }
+    let (embedded, ordinary_packets) = if bytes.starts_with(&[0xff, 0xd8]) {
+        lcc_meta::jpeg_segments_with_all_xmp(bytes)
+    } else {
+        let embedded = lcc_meta::embedded(bytes);
+        let packets = embedded.xmp.iter().cloned().collect();
+        (embedded, packets)
+    };
+    let mut found = false;
+    for packet in ordinary_packets.iter().map(String::as_str).chain(embedded.xmp_extended.as_deref()) {
+        let xmp = lcc_meta::parse_xmp(packet)
+            .map_err(|e| format!("{label}: can't verify location metadata in this original file: malformed embedded XMP: {e}"))?;
+        if xmp.properties_truncated {
+            return Err(format!("{label}: can't verify location metadata in this original file: embedded XMP property limit was exceeded"));
+        }
+        found |= [
+            "exif:GPSLatitude",
+            "exif:GPSLongitude",
+            "exif:GPSAltitude",
+            "photoshop:City",
+            "photoshop:State",
+            "photoshop:Country",
+            "Iptc4xmpCore:Location",
+        ]
+        .into_iter()
+        .any(|key| xmp.properties.get(key).is_some_and(|values| values.iter().any(|v| !v.trim().is_empty())));
+    }
+    if embedded.chunk_walk_incomplete {
+        return Err(format!("{label}: can't verify location metadata in this original file: embedded PNG/WebP chunk stream is incomplete"));
+    }
+    Ok(found)
+}
+
 /// One exported file.
 pub struct Exported {
     pub file_name: String,
@@ -2544,20 +2584,7 @@ impl PreparedExport {
                         // fail closed: a PSD whose metadata can't be read might hide a location
                         let metadata = lcc_meta::try_extract(&bytes)
                             .map_err(|e| format!("{label}: can't verify location metadata in this original file: {e}"))?;
-                        let mut embeds_xmp_gps = false;
-                        if !bytes.starts_with(b"8BPS") {
-                            let embedded = lcc_meta::embedded(&bytes);
-                            // standard and Extended XMP packets alike; a GPS property whose value is malformed cannot be
-                            // projected into `Metadata`, so the raw properties are looked at too (upstream #3054)
-                            for packet in [embedded.xmp.as_deref(), embedded.xmp_extended.as_deref()].into_iter().flatten() {
-                                let xmp = lcc_meta::parse_xmp(packet).map_err(|e| {
-                                    format!("{label}: can't verify location metadata in this original file: malformed embedded XMP: {e}")
-                                })?;
-                                embeds_xmp_gps |= ["exif:GPSLatitude", "exif:GPSLongitude"]
-                                    .into_iter()
-                                    .any(|key| xmp.properties.get(key).is_some_and(|values| values.iter().any(|v| !v.trim().is_empty())));
-                            }
-                        }
+                        let embeds_xmp_gps = original_embeds_xmp_location(&bytes, &label)?;
                         let embeds_place_name =
                             [metadata.sublocation.as_deref(), metadata.city.as_deref(), metadata.state.as_deref(), metadata.country.as_deref()]
                                 .into_iter()
