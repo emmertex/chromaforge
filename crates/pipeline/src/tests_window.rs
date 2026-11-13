@@ -237,7 +237,8 @@ fn a_mask_overlay_window_matches_the_whole_render() {
             ..Default::default()
         });
         // every view of one shape; the views share the mask, so the other shapes show one
-        let views: &[MaskView] = if name == "radial" { &[MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] } else { &[MaskView::Color] };
+        let views: &[MaskView] =
+            if name == "radial" { &[MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] } else { &[MaskView::Color] };
         for &view in views {
             let overlay = Overlay::Mask { id: 3, view, color: [255, 0, 0], opacity: 70 };
             let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).image;

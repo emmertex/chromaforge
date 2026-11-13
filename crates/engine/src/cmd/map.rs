@@ -514,7 +514,12 @@ mod tests {
             assert!(r["changed"].as_u64() >= Some(2), "{r}");
             let m = &s.catalog.photo(ids[0]).unwrap().meta;
             assert!(
-                m.gps.is_none() && m.city.is_empty() && m.country.is_empty() && m.country_code.is_empty() && m.location.is_empty() && m.state.is_empty()
+                m.gps.is_none()
+                    && m.city.is_empty()
+                    && m.country.is_empty()
+                    && m.country_code.is_empty()
+                    && m.location.is_empty()
+                    && m.state.is_empty()
             );
             s.undo_step().unwrap();
             let m = &s.catalog.photo(ids[0]).unwrap().meta;
@@ -640,7 +645,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn private_locations_strip_gps_on_export() {
         // private locations strip gps on export
@@ -648,7 +652,8 @@ mod tests {
             use crate::export::{ExportOptions, export_metadata};
             use lcc_catalog::{Catalog, Photo, Source};
             let mut c = Catalog::new();
-            c.apply(Op::SetSavedLocation { name: "Home".into(), location: Some(SavedLocation::new("Home", 48.85, 2.35, 500.0, true).unwrap()) }).unwrap();
+            c.apply(Op::SetSavedLocation { name: "Home".into(), location: Some(SavedLocation::new("Home", 48.85, 2.35, 500.0, true).unwrap()) })
+                .unwrap();
             let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
             p.meta.gps = Some((48.851, 2.351));
             p.meta.city = "Paris".into();

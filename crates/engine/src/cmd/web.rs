@@ -659,7 +659,8 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(v["photos"], 2);
-            for f in ["index.html", "assets/gallery.css", "assets/gallery.js", "content/0002.html", "images/large/0001.jpg", "images/thumb/0002.jpg"] {
+            for f in ["index.html", "assets/gallery.css", "assets/gallery.js", "content/0002.html", "images/large/0001.jpg", "images/thumb/0002.jpg"]
+            {
                 assert!(out.join(f).is_file(), "{f}");
             }
             let jpg = std::fs::read(out.join("images/large/0001.jpg")).unwrap();

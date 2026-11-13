@@ -1207,11 +1207,7 @@ mod tests {
             (Locale::Uk, "ҐґЄєІіЇї’«»", &[('\u{0400}', '\u{04ff}')]),
             (Locale::It, "àèéìòùÀÈÉÌÒÙ’“”«»", &[('\u{00c0}', '\u{017f}')]),
             (Locale::Fi, "äöåÄÖÅ”–", &[('\u{00c0}', '\u{017f}')]),
-            (
-                Locale::Vi,
-                "ĂăÂâÊêÔôƠơƯưĐđáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ",
-                &[('\u{00c0}', '\u{024f}'), ('\u{1ea0}', '\u{1ef9}')],
-            ),
+            (Locale::Vi, "ĂăÂâÊêÔôƠơƯưĐđáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ", &[('\u{00c0}', '\u{024f}'), ('\u{1ea0}', '\u{1ef9}')]),
         ];
         let ctx = fonts_ctx(&[]);
         let mut app = crate::LccApp::new(lcc_engine::Session::with_demo(), Default::default());
@@ -1230,7 +1226,8 @@ mod tests {
             ctx.fonts_mut(|fonts| {
                 for family in [egui::FontFamily::Proportional, egui::FontFamily::Name(crate::theme::FONT_SEMIBOLD.into())] {
                     let font = egui::FontId::new(13.0, family);
-                    let used = locale.catalog().values().flat_map(|text| text.chars()).filter(|ch| ranges.iter().any(|(a, b)| (*a..=*b).contains(ch)));
+                    let used =
+                        locale.catalog().values().flat_map(|text| text.chars()).filter(|ch| ranges.iter().any(|(a, b)| (*a..=*b).contains(ch)));
                     for ch in letters.chars().chain(used) {
                         assert!(fonts.has_glyph(&font, ch), "{locale:?}: missing glyph {ch}");
                     }

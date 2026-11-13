@@ -173,7 +173,6 @@ fn verify_measures_edited_renders_against_their_exports() {
         assert_eq!(p["settings_from"], "export", "{p}");
     }
     assert!(from_export["overall"]["median"].as_f64().unwrap() < 1.0, "the export's own settings are applied: {from_export}");
-
 }
 
 #[test]
