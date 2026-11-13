@@ -115,7 +115,11 @@ pub fn start_then(
 fn start_next(app: &mut LccApp, ctx: &egui::Context) {
     app.export_queue.retain(|q| !q.cancel.load(Ordering::Relaxed));
     while let Some(q) = app.export_queue.front() {
-        if q.opts.add_to_photos && app.session.apple_photos_imports.running().is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let photos_busy = q.opts.add_to_photos && app.session.apple_photos_imports.running().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let photos_busy = false;
+        if photos_busy {
             q.row.detail(crate::i18n::tr("waiting for Apple Photos"));
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
             return;
