@@ -977,21 +977,35 @@ fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> st
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok((packets.with_gps.clone(), false, None));
     }
-    match std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(|old| {
-        let gps = GpsOnSave::of(p, old);
-        let partial_capture = p.captured.as_deref().and_then(lcc_catalog::dates::partial_capture).is_some();
-        let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().chain(partial_capture.then_some("exif:DateTimeOriginal")).collect();
-        let rules = lcc_meta::MergeRules { owned: &owned, owned_if_present: OWNED_IF_STATED };
-        let fresh = if gps.write() { &packets.with_gps } else { &packets.without_gps };
-        lcc_meta::merge_xmp(old, fresh, rules).map_err(|e| e.to_string())
-    }) {
-        Ok(merged) => Ok((merged, true, None)),
-        Err(why) => {
-            let b = backup(path, stamp)?;
-            log::warn!("{}: not readable as XMP ({why}); kept a copy as {} before replacing it", path.display(), b.display());
-            Ok((packets.with_gps.clone(), false, Some(b)))
+    let why = match std::str::from_utf8(&bytes) {
+        Ok(old) => {
+            let gps = GpsOnSave::of(p, old);
+            let partial_capture = p.captured.as_deref().and_then(lcc_catalog::dates::partial_capture).is_some();
+            let owned: Vec<&str> = OWNED.iter().chain(gps.owned_tags()).copied().chain(partial_capture.then_some("exif:DateTimeOriginal")).collect();
+            let rules = lcc_meta::MergeRules { owned: &owned, owned_if_present: OWNED_IF_STATED };
+            let fresh = if gps.write() { &packets.with_gps } else { &packets.without_gps };
+            match lcc_meta::merge_xmp(old, fresh, rules) {
+                Ok(merged) => return Ok((merged, true, None)),
+                // a readable sidecar whose merge fails (e.g. the merged packet exceeds the XMP limits), or one
+                // that is valid but over the parser's complexity limits: fail the save and keep the file as it
+                // is, rather than replace metadata that could be read (upstream #3696). Text with no `rdf:RDF`
+                // element parses as empty metadata but holds nothing to keep: it is replaced after a backup,
+                // as any sidecar that is not XMP.
+                Err(why)
+                    if why == lcc_meta::XmpError::TooComplex
+                        || (lcc_meta::parse_xmp(old.strip_prefix('\u{feff}').unwrap_or(old)).is_ok()
+                            && !matches!(&why, lcc_meta::XmpError::Xml(m) if m.contains("no rdf:RDF element"))) =>
+                {
+                    return Err(std::io::Error::other(format!("the sidecar is readable but could not be merged ({why}); it was left unchanged")));
+                }
+                Err(why) => why.to_string(),
+            }
         }
-    }
+        Err(why) => why.to_string(),
+    };
+    let b = backup(path, stamp)?;
+    log::warn!("{}: not readable as XMP ({why}); kept a copy as {} before replacing it", path.display(), b.display());
+    Ok((packets.with_gps.clone(), false, Some(b)))
 }
 
 /// Make a background sidecar write ([`crate::sidecar_writer`]): the packet merged into an existing one and written
