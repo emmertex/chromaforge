@@ -58,6 +58,8 @@ pub mod spectral;
 mod tiffraw;
 mod unpack;
 mod vc5;
+pub mod vignetting_calibration;
+pub mod vignetting_plausibility;
 
 /// Synthetic inputs for other crates' tests.
 #[cfg(feature = "testdata")]

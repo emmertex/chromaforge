@@ -236,11 +236,17 @@ fn op_variants_are_versioned() {
             Op::SetHistoryCursor { .. } => 11,
             Op::SetBefore { .. } => 16,
             Op::SetExported { .. } => 17,
+            Op::AddVignettingMap { .. } | Op::SetVignettingMapState { .. } => 18,
         }
     }
     /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
     const NEWEST_FIELDS: u32 = 15;
-    let newest = since(&Op::SetExported { id: crate::PhotoId(1), exported: None });
+    let map = lcc_develop::EmbeddedVignettingMap::from_ev([4, 4], [2, 2], None, Default::default(), &[0.0; 4]).unwrap();
+    let id = lcc_develop::VignettingMapId::of(&map);
+    let newest = since(&Op::AddVignettingMap {
+        id,
+        record: Box::new(crate::VignettingMapRecord { map, photo: None, added: String::new(), withdrawn: false }),
+    });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
 

@@ -129,6 +129,7 @@
   "Version {new} is older than the installed version {installed}": "Версия {new} старше установленной версии {installed}",
   "Version {version} is available.": "Доступна версия {version}.",
   "Video in {dir}": "Видео в {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Калибровка виньетирования не применена к {n} фото: нет эталона для их камеры, объектива и диафрагмы",
   "Where should the Capture One catalog “{catalog}” go?": "Куда импортировать каталог Capture One «{catalog}»?",
   "about {} hours": "около {} ч",
   "about {} minutes": "около {} мин",

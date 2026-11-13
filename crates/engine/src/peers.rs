@@ -376,6 +376,10 @@ pub(crate) fn answer_offer(s: &mut Session, device: &str, accept: bool) -> Resul
 /// Writes one record onto a photo (only what differs), as one undoable step.
 fn apply_record(s: &mut Session, id: lcc_catalog::PhotoId, r: &Record, label: &str) -> Result<()> {
     let Some(p) = s.catalog.photo(id).cloned() else { return Ok(()) };
+    // the other library's flat-field map comes with its settings: stored with the edit that takes them
+    for m in &r.vignetting_maps {
+        s.offer_vignetting_calibration(m.clone());
+    }
     if p.develop != r.develop {
         s.set_develop(id, (*r.develop).clone(), label)?;
     }

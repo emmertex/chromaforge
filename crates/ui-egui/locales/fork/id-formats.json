@@ -147,6 +147,7 @@
   "Version {new} is older than the installed version {installed}": "Versi {new} lebih lama dari versi terinstal {installed}",
   "Version {version} is available.": "Versi {version} tersedia.",
   "Video in {dir}": "Video di {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Kalibrasi vignet tidak diterapkan pada {n} foto: tidak ada referensi untuk kamera, lensa, dan bukaannya",
   "What {name} does with it:": "Apa yang dilakukan {name} dengannya:",
   "Where should the Capture One catalog “{catalog}” go?": "Ke mana katalog Capture One “{catalog}” diimpor?",
   "about {} hours": "sekitar {} jam",

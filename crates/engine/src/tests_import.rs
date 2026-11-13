@@ -1728,7 +1728,7 @@ fn smart_previews_keep_the_decoder_facts_offline_edits_need() {
             gamma: 1.0,
             gains: vec![1.0, 4.0],
         },
-        placement: lcc_raw::gaintable::SourcePlacement { rect: [0.0, 0.0, 1.0, 1.0], orientation: lcc_geom::Orientation::Normal },
+        placement: lcc_raw::gaintable::SourcePlacement::new([0.0, 0.0, 1.0, 1.0], lcc_geom::Orientation::Normal),
     };
     // the facts differ per case; the rest is the raw source's usual shape
     let info = |camera_color: Option<lcc_pipeline::CameraColor>, local_tone: Option<lcc_pipeline::local_tone::LocalTone>, mattes: Option<Mattes>| {
