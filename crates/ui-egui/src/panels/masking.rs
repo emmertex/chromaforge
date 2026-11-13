@@ -1252,10 +1252,15 @@ fn mask_menu(app: &mut LccApp, ui: &mut egui::Ui, id: u32, name: &str, visible: 
 /// Overlay colours offered as swatches (the colour of the selected one is used for the tint).
 pub const OVERLAY_COLORS: [[u8; 3]; 5] = [[230, 30, 40], [40, 200, 70], [40, 110, 240], [250, 210, 30], [255, 255, 255]];
 
+/// Width of the Color Overlay Settings popup: the swatch row plus a short Opacity slider, so the
+/// popup fits beside the right panel instead of reaching over the photo (#1146).
+pub(crate) const COLOR_OVERLAY_POPUP_WIDTH: f32 = 220.0;
+
 /// Color Overlay Settings popup: custom color selection swatches and opacity control.
 pub(crate) fn color_overlay_popup(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    ui.set_min_width(200.0);
+    // the slider takes all the width it is offered, and a popup offers the whole window
+    ui.set_width(COLOR_OVERLAY_POPUP_WIDTH);
     ui.label(egui::RichText::new(crate::i18n::tr("Color Overlay Settings")).font(t.semibold(12.0)).color(t.text_label));
     ui.add_space(4.0);
 
@@ -2564,5 +2569,27 @@ mod tests {
         assert!(!enter_submits(true, true, true));
         assert!(!enter_submits(false, false, true));
         assert!(!enter_submits(false, true, false));
+    }
+
+    #[test]
+    fn the_color_overlay_popup_stays_narrow_on_a_wide_window() {
+        let app = LccApp::new(lcc_engine::Session::new(), crate::Services { png: None, ..Default::default() });
+        // the headless view's context has the app's fonts and theme installed
+        let mut h = crate::headless::Headless::new(app, [3200.0, 1400.0], 1.0);
+        h.settle(std::time::Duration::from_secs(30));
+        let ctx = h.view.ctx.clone();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(3200.0, 1400.0))),
+            ..Default::default()
+        };
+        let mut width = 0.0;
+        let mut out = ctx.run_ui(input, |root| {
+            egui::Area::new(egui::Id::new("overlayPopupTest")).show(root.ctx(), |ui| {
+                color_overlay_popup(&mut h.app, ui);
+                width = ui.min_rect().width();
+            });
+        });
+        out.textures_delta.clear();
+        assert!(width > 0.0 && width <= COLOR_OVERLAY_POPUP_WIDTH + 1.0, "popup is {width} points wide");
     }
 }
