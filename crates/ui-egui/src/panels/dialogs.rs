@@ -709,7 +709,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             .color(t.text_dim),
                     );
                 }
-                Dialog::CaptureTime { mode, time, days, hours, minutes, zone } => {
+                Dialog::CaptureTime { mode, time, days, hours, minutes, zone, each } => {
                     let n = app.session.selected().len();
                     field(ui, "Change", |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
@@ -725,7 +725,12 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                                 let r = ui.add(egui::TextEdit::singleline(time).hint_text("2026-09-30 14:05:00 · 1983-04 · 1983").desired_width(f32::INFINITY));
                                 crate::widgets::register(ui.ctx(), "field:captureTime", r.rect);
                             });
-                            json!({"time": time})
+                            // several photos: give them all this time, rather than move them by the active photo's change
+                            if n > 1 {
+                                let r = ui.checkbox(each, crate::i18n::tr("Give every selected photo this time"));
+                                crate::widgets::register(ui.ctx(), "captureTimeEach", r.rect);
+                            }
+                            json!({"time": time, "each": *each})
                         }
                         "shift" => {
                             field(ui, "Shift", |ui| {
@@ -772,6 +777,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         let after = match (mode.as_str(), unreadable && n == 1) {
                             ("name", _) => lcc_catalog::dates::date_from_filename(&name),
                             ("set", _) if partial(time) => Some(time.trim().to_string()),
+                            ("set", _) if *each && n > 1 => lcc_catalog::dates::normalize_iso(time),
                             // alone, it simply gets the time typed (photo.setCaptureTime repairs it)
                             ("set", true) => lcc_catalog::dates::normalize_iso(time),
                             _ => delta.and_then(|d| lcc_catalog::dates::shift_iso(&cur, d)),
@@ -794,6 +800,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     }
                     if n > 1 && mode == "set" && lcc_catalog::dates::partial_capture(time.trim()).is_some() {
                         crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("All {n} selected photos get this date.", n = n)).color(t.text_dim));
+                    } else if n > 1 && mode == "set" && *each {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("All {n} selected photos get this time.", n = n)).color(t.text_dim));
                     } else if n > 1 && !matches!(mode.as_str(), "file" | "name") {
                         crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr_format!("All {n} selected photos move by the same amount.", n = n)).color(t.text_dim));
                     }
@@ -2191,12 +2199,12 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             p[key.as_str()] = json!(value.trim());
             app.run(command, p)
         }
-        Dialog::CaptureTime { mode, time, days, hours, minutes, zone } => app.run(
+        Dialog::CaptureTime { mode, time, days, hours, minutes, zone, each } => app.run(
             "photo.setCaptureTime",
             match mode.as_str() {
                 // a year or a month alone has no time to move the others by: every photo gets it
                 "set" if lcc_catalog::dates::partial_capture(time.trim()).is_some() => json!({"time": time, "each": true}),
-                "set" => json!({"time": time}),
+                "set" => json!({"time": time, "each": each}),
                 "shift" => json!({"shift": *days as i64 * 86_400 + *hours as i64 * 3600 + *minutes as i64 * 60}),
                 "file" => json!({"fromFile": true}),
                 "name" => json!({"fromFilename": true}),

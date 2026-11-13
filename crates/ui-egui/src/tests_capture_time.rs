@@ -274,4 +274,39 @@ fn edit_capture_time_handles_unreadable_and_partial_capture_times() {
         assert_eq!(h.app.session.catalog.photo(a).unwrap().captured.as_deref(), Some("1983-04"));
         assert_eq!(h.app.session.catalog.photo(b).unwrap().captured.as_deref(), Some("2026-01-01T11:00:00"));
     }
+
+    // Issue #4205: with several photos selected, Set date & time moves them all by the active photo's change (as
+    // Lightroom does), and "Give every selected photo this time" gives each of them the time typed instead.
+    {
+        fresh(&mut h);
+        let ids: Vec<_> = h.app.session.visible_cloned().into_iter().take(3).collect();
+        let times = ["2026-01-01T10:00:00", "2026-01-02T08:30:00", "2026-02-10T18:45:00"];
+        let run = |h: &mut Headless, each: bool| {
+            for (id, t) in ids.iter().zip(times) {
+                set_captured(h, *id, t);
+            }
+            open(h, &ids, ids[0]);
+            match &mut h.app.ui.dialog {
+                Some(Dialog::CaptureTime { mode, time, .. }) => {
+                    *mode = "set".into();
+                    *time = "2026-05-05 12:00:00".into();
+                }
+                other => panic!("Edit Capture Time is not open: {other:?}"),
+            }
+            h.settle(SETTLE);
+            assert!(painted(h, "All 3 selected photos move by the same amount."), "{:?}", h.painted_text());
+            if each {
+                let r = h.request("ui.clickWidget", json!({"id": "captureTimeEach"}), T);
+                assert_eq!(r["ok"], true, "the option is offered with several photos: {r}");
+                h.settle(SETTLE);
+                assert!(painted(h, "All 3 selected photos get this time."), "{:?}", h.painted_text());
+            }
+            let r = h.request("ui.clickWidget", json!({"id": "button:dialogOk"}), T);
+            assert_eq!(r["ok"], true, "{r}");
+            h.settle(SETTLE);
+            ids.iter().map(|id| h.app.session.catalog.photo(*id).and_then(|p| p.captured.clone()).unwrap_or_default()).collect::<Vec<_>>()
+        };
+        assert_eq!(run(&mut h, false), ["2026-05-05T12:00:00", "2026-05-06T10:30:00", "2026-06-14T20:45:00"]);
+        assert_eq!(run(&mut h, true), ["2026-05-05T12:00:00"; 3]);
+    }
 }
