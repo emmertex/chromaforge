@@ -94,7 +94,10 @@ pub(crate) fn show(app: &mut LccApp, ctx: &egui::Context) {
         ui.painter().rect_filled(bg, 0.0, t.chrome);
         // header
         let header = Rect::from_min_size(bg.min, vec2(bg.width(), HEADER_H));
-        let b = Rect::from_min_size(pos2(header.left() + 10.0, header.center().y - 18.0), Vec2::splat(36.0));
+        // macOS draws the traffic lights over the header's top-left corner: clear them like
+        // Settings does (issue #1083, as #793); full screen hides them and gives the room back.
+        let traffic = if app.integrated_titlebar && !app.window_is_fullscreen { 68.0 } else { 0.0 };
+        let b = Rect::from_min_size(pos2(header.left() + 10.0 + traffic, header.center().y - 18.0), Vec2::splat(36.0));
         let resp = ui.interact(b, ui.id().with("import-back"), Sense::click());
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::tr("Back")));
         register(ui.ctx(), "import:back", b);
@@ -509,7 +512,7 @@ pub(crate) fn options_for(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDia
         egui::RichText::new(crate::i18n::tr(match (d.copy, d.move_files) {
             (true, false) => "The files are copied; the originals are left as they are.",
             (true, true) => "Each original is removed from the source only after its copy is verified.",
-            _ => "The library uses the files where they are; nothing is copied or moved.",
+            _ => "The catalog uses the files where they are; nothing is copied or moved.",
         }))
         .color(if d.copy && d.move_files { t.caution } else { t.text_dim })
         .small(),
@@ -518,7 +521,7 @@ pub(crate) fn options_for(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDia
     if d.copy {
         form_row(ui, "Into", |ui| {
             ui.horizontal_wrapped(|ui| {
-                let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Library Originals").to_string() } else { d.destination.clone() };
+                let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Catalog Originals").to_string() } else { d.destination.clone() };
                 ui.label(egui::RichText::new(shown).color(t.text_label));
                 if app.services.pick_folder.is_some()
                     && crate::widgets::text_button(ui, "importDest", crate::i18n::tr("Choose…"), false).clicked()

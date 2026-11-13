@@ -1,0 +1,40 @@
+---
+title: Remove and heal
+description: Spot removal with Remove, Heal and Clone, dust, blemishes and red eye.
+sidebar:
+  order: 5
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="heal" alt="A heal spot with its source circle on a tree" />
+
+- **Open** the Remove tool (`H`) from the tool strip.
+- **Modes**: **Remove** (the app picks the source), **Heal**, **Clone**, **Content-Aware** (partial: rebuilt from patches of the surroundings), and **Generative**. `⌥⇧Q` cycles the selected spot's mode.
+- **Click or paint** on the blemish. The target circle and its **source** circle appear; drag either to move it. **Refresh source** picks another.
+- **Size**, **Feather**, **Opacity** sliders; `[` and `]` change the size.
+- **Select** a spot by clicking its pin; `Delete` removes it. **Delete all spots** is at the bottom.
+- **Visualize Spots** (`A`) shows a threshold view that makes dust and blemishes stand out; **Tool Overlay** (Auto / Always / Never).
+- **Remove Dust** finds soft dust shadows and adds spots for them. It can also run after import. See [Sensor and plug-ins](../sensor-and-plugins/).
+- **Find Blemishes**: spots on skin in faces (beyond Lightroom). See [Retouch](../../ai/retouch/).
+- Spots are part of the photo's settings: they copy with **Copy Edit Settings** and sync to other photos.
+- Generative remove: [Generative remove](../../ai/generative-remove/).
+
+## Red eye
+
+<Shot name="redeye" alt="The Red Eye panel with Red Eye and Pet Eye buttons" menu="Window ▸ Edit Panels ▸ Red Eye" />
+
+- **Red Eye** tool: drag over an eye; the pupil is found automatically.
+- **Pet Eye** adds a catchlight control. Delete a correction by selecting it.
+
+## Dodge and burn
+
+<Shot name="dodge-burn" alt="A Dodge brush mask with exposure +0.35" menu="Heal, Dodge and Burn are in the dock" />
+
+- **Dodge** and **Burn** start a brush mask that lightens (+0.35 exposure) or darkens (−0.35). Paint, then adjust like any [mask](../masking/).
+
+<Aside type="note" title="Modern layout">
+  **Heal**, **Dodge** and **Burn** are in the dock. Red Eye: **Window ▸ Edit Sections** (or the tool strip in **Side**).
+</Aside>

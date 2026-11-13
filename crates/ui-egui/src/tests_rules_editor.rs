@@ -35,10 +35,6 @@ fn rect(h: &Headless, id: &str) -> egui::Rect {
     h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("no widget {id}"))
 }
 
-fn has(h: &Headless, id: &str) -> bool {
-    h.app.widgets.iter().any(|(w, _)| w == id)
-}
-
 fn request(h: &mut Headless, method: &str, id: &str) {
     let r = h.request(method, json!({"id": id}), T);
     assert_eq!(r["ok"], true, "{method} {id}: {r}");
@@ -54,8 +50,8 @@ fn rule_count(h: &Headless) -> usize {
 /// instead of being drawn over them, the dialog widens to hold it, and every row's buttons stay
 /// lined up at the right.
 #[test]
-fn add_and_remove_never_cover_a_between_dates_rule() {
-    let h = editor(json!([
+fn add_and_remove_never_cover_a_between_dates_rule_and_its_end_calendar_opens() {
+    let mut h = editor(json!([
         {"field": "captureDate", "op": "between", "value": ["2026-02-01", "2026-02-28"]},
         {"field": "rating", "op": "gte", "value": 3},
     ]));
@@ -71,16 +67,13 @@ fn add_and_remove_never_cover_a_between_dates_rule() {
     }
     let (long, short) = (rect(&h, "button:ruleAdd-rules-0"), rect(&h, "button:ruleAdd-rules-1"));
     assert!((long.right() - short.right()).abs() < 0.5, "the rows' + don't line up: {long:?} vs {short:?}");
-}
-
-/// The end date's calendar is there and opens when clicked; the click doesn't land on the + that
-/// used to cover it (and add a rule).
-#[test]
-fn the_end_dates_calendar_opens() {
-    let mut h = editor(json!([{"field": "captureDate", "op": "between", "value": ["2026-03", "2026-06"]}]));
+    // the end date's calendar opens when clicked; the click doesn't land on the + that used to cover it (and add a rule)
     request(&mut h, "ui.clickWidget", "datePicker:rules-0-b");
-    assert!(has(&h, "datePickerCell:2026-06:rules-0-b"), "the end date's calendar opened on its month");
-    assert_eq!(rule_count(&h), 1, "no rule was added");
+    assert!(
+        h.app.widgets.iter().any(|(w, _)| w.starts_with("datePickerCell:2026-02") && w.ends_with(":rules-0-b")),
+        "the end date's calendar opened on its month"
+    );
+    assert_eq!(rule_count(&h), 2, "no rule was added");
 }
 
 /// Hovering any field in the field menu, top-level or in a group's submenu, keeps it the size it
@@ -107,4 +100,36 @@ fn hovering_a_field_keeps_its_size() {
             hover(&mut h, id);
         }
     }
+}
+
+/// A rule's move handle takes the keyboard: ↓ moves the row down one place and the handle keeps the
+/// focus, so the next ↓ moves it again; a refused move changes nothing.
+#[test]
+fn arrow_keys_reorder_rules_from_the_move_handle() {
+    let mut h = editor(json!([
+        {"field": "rating", "op": "gte", "value": 1},
+        {"field": "rating", "op": "gte", "value": 2},
+        {"field": "rating", "op": "gte", "value": 3},
+    ]));
+    let order = |h: &Headless| -> Vec<i64> {
+        let Some(crate::state::Dialog::SmartRules { rules, .. }) = &h.app.ui.dialog else { panic!("no rule editor") };
+        rules
+            .rules
+            .iter()
+            .filter_map(|r| match r {
+                lcc_catalog::Rule::Field { value, .. } => value.as_i64(),
+                lcc_catalog::Rule::Group { .. } => None,
+            })
+            .collect()
+    };
+    request(&mut h, "ui.clickWidget", "button:ruleMove-rules-0");
+    for _ in 0..2 {
+        let r = h.request("ui.key", json!({"key": "down"}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+    }
+    assert_eq!(order(&h), vec![2, 3, 1], "two presses moved the first rule to the end");
+    h.request("ui.key", json!({"key": "down"}), T);
+    h.settle(SETTLE);
+    assert_eq!(order(&h), vec![2, 3, 1], "the last rule has nowhere further down");
 }

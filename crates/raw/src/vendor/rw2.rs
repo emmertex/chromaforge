@@ -423,6 +423,11 @@ fn format8<'a>(ifd: &Ifd, order: ByteOrder, bytes: &'a [u8], w: usize, h: usize)
         let Some(data) = data.filter(|_| inside) else {
             return Err(RawError::Corrupt(format!("RW2 format 8: strip {i} outside the image or file")));
         };
+        // every sample costs at least one bit (no code is shorter), so a strip stating fewer bits than samples is
+        // corrupt: refusing it here keeps a few-byte file from sizing the full-sensor buffer
+        if bits[i] < (width * height) as u64 {
+            return Err(RawError::Corrupt(format!("RW2 format 8: strip {i} states {} bits for {} samples", bits[i], width * height)));
+        }
         area += width * height;
         strips.push(Strip { data, left, top, width, height, bits: bits[i] });
     }
@@ -752,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn format4_known_blocks() {
+    fn format4_and_6_known_blocks() {
         // every branch: differences at each scale, a zero code, absolute scale-3 codes keeping the low bits
         let mut f = FieldWriter::new();
         seed(&mut f, 1000);
@@ -796,29 +801,28 @@ mod tests {
         }
         assert_eq!(f.left, 0);
         assert_eq!(decode4(f.block()), [0, 1600, 0, 1600, 0, 1600, 0, 1600, 0, 1600, 0, 1600, 7, 1600]);
-    }
+        // format6 known blocks
+        {
+            let mut f = FieldWriter::new();
+            f.put(14, 5000).put(14, 6000);
+            f.put(2, 0).put(10, 520).put(10, 500).put(10, 512); // 5008, 5988, 5008
+            f.put(2, 3).put(10, 1023).put(10, 300).put(10, 0); // 16368 + 5988 % 16, 4800 + 5008 % 16, kept
+            f.put(2, 1).put(10, 600).put(10, 400).put(10, 10); // 4976, 16148, 3972
+            let mut out = [0u16; 11];
+            format6(&f.block(), true, &mut out);
+            assert_eq!(out, [5000, 6000, 5008, 5988, 5008, 16372, 4800, 16372, 4976, 16148, 3972]);
 
-    #[test]
-    fn format6_known_blocks() {
-        let mut f = FieldWriter::new();
-        f.put(14, 5000).put(14, 6000);
-        f.put(2, 0).put(10, 520).put(10, 500).put(10, 512); // 5008, 5988, 5008
-        f.put(2, 3).put(10, 1023).put(10, 300).put(10, 0); // 16368 + 5988 % 16, 4800 + 5008 % 16, kept
-        f.put(2, 1).put(10, 600).put(10, 400).put(10, 10); // 4976, 16148, 3972
-        let mut out = [0u16; 11];
-        format6(&f.block(), true, &mut out);
-        assert_eq!(out, [5000, 6000, 5008, 5988, 5008, 16372, 4800, 16372, 4976, 16148, 3972]);
-
-        let mut f = FieldWriter::new();
-        f.put(12, 300).put(12, 4000);
-        f.put(2, 2).put(8, 140).put(8, 100).put(8, 130); // 300 < 512: 560 + 0; 3888; 568
-        f.put(2, 0).put(8, 129).put(8, 127).put(8, 128); // 3889, 567, 3889
-        f.put(2, 3).put(8, 10).put(8, 255).put(8, 20); // 160 + 7, 4080 + 1, 320 + 7
-        f.put(2, 1).put(8, 128).put(8, 130).put(8, 0); // 4081, 331, 4081 (kept)
-        assert_eq!(f.left, 0);
-        let mut out = [0u16; 14];
-        format6(&f.block(), false, &mut out);
-        assert_eq!(out, [300, 4000, 560, 3888, 568, 3889, 567, 3889, 167, 4081, 327, 4081, 331, 4081]);
+            let mut f = FieldWriter::new();
+            f.put(12, 300).put(12, 4000);
+            f.put(2, 2).put(8, 140).put(8, 100).put(8, 130); // 300 < 512: 560 + 0; 3888; 568
+            f.put(2, 0).put(8, 129).put(8, 127).put(8, 128); // 3889, 567, 3889
+            f.put(2, 3).put(8, 10).put(8, 255).put(8, 20); // 160 + 7, 4080 + 1, 320 + 7
+            f.put(2, 1).put(8, 128).put(8, 130).put(8, 0); // 4081, 331, 4081 (kept)
+            assert_eq!(f.left, 0);
+            let mut out = [0u16; 14];
+            format6(&f.block(), false, &mut out);
+            assert_eq!(out, [300, 4000, 560, 3888, 568, 3889, 567, 3889, 167, 4081, 327, 4081, 331, 4081]);
+        }
     }
 
     /// A camera-like format 4/6 encoder: per group the smallest scale that codes the targets exactly, else scale 3.
@@ -1329,6 +1333,24 @@ mod tests {
         assert!(matches!(case(STRIP_BITS, undefined(&[2, 0, 256, 0, 256])), Err(RawError::Corrupt(_))));
         // a strip whose stated length ends before its data does
         assert!(matches!(case(STRIP_BITS, undefined(&[2, 64, 0, 64, 0])), Err(RawError::Corrupt(_))));
+        // strips stating fewer bits than they have samples (one bit each at least): refused while reading the layout,
+        // so before the sensor-sized buffer is made (probing, which never decodes, refuses it too)
+        let short_bits = format8_file(w, h, &px, &[32, 32], &TABLE14, &|t| replace(t, STRIP_BITS, undefined(&[2, 959, 0, 959, 0])));
+        assert!(matches!(crate::probe_info(&short_bits), Err(RawError::Corrupt(_))));
+        assert!(matches!(crate::decode(&short_bits), Err(RawError::Corrupt(_))));
+        // only the second strip short (the first keeps its real length), by one bit or entirely: still refused, naming it
+        let second_strip_bits = |stated: u32| {
+            format8_file(w, h, &px, &[32, 32], &TABLE14, &|t| {
+                let Some((_, Value::Undefined(b))) = t.iter_mut().find(|(tag, _)| *tag == STRIP_BITS) else { panic!("strip bits tag") };
+                b[6..10].copy_from_slice(&[stated as u8, (stated >> 8) as u8, (stated >> 16) as u8, (stated >> 24) as u8]);
+            })
+        };
+        for stated in [959, 0] {
+            let file = second_strip_bits(stated);
+            for got in [crate::probe_info(&file).map(|_| ()), crate::decode(&file).map(|_| ())] {
+                assert!(matches!(&got, Err(RawError::Corrupt(m)) if m.contains("strip 1 states")), "{stated} bits: {got:?}");
+            }
+        }
         // code tables: two categories with the same code, a code longer than its length, missing entries
         let table: Vec<u16> = std::iter::once(17).chain(TABLE14.iter().flat_map(|&(l, c)| [l as u16, c as u16])).collect();
         let mut dup = table.clone();

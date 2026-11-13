@@ -1,0 +1,26 @@
+---
+title: Location and naming
+description: Where exported files go and what they are called.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Export Location
+- **Export to**: **Choose folder later** (default; asks when the export starts), **Specific folder**, or **Same folder as original photo**.
+- **Subfolder**: one folder name inside the destination. `..`, path separators and Windows-reserved names and characters are refused. A destination whose `..` leads back to an original is refused too.
+- **If file exists**: **Add number** (-2, -3…), **Overwrite** or **Skip**. A file and its sidecars follow the same rule.
+- A catalogued original is never overwritten, whatever the policy.
+
+## File Naming
+- **Template** menu: Filename, Filename - Sequence, Custom Name - Sequence, Custom Name, Date - Filename.
+- **File name** field takes a template; **Tags** inserts tokens.
+- Tokens: `{name}`, `{num}`, `{seq}` / `{seq:N}`, `{date}` / `{date:%Y-%m-%d}`, `{folder}`, `{camera}`, `{lens}`, `{iso}`, `{rating}`, `{title}`, `{creator}`, `{ext}`, `{custom}`.
+- Quick presets: **Original name**, **Date - Name**, **Title - Number**, **Custom Text - Number**, **+ Number**; **Save as Preset…** keeps your own.
+- The same template language is used by **Library ▸ Rename Photos** and import renaming.
+- Sequence numbers follow the selection order.
+
+<Aside type="note" title="Modern layout">
+  **☰ ▸ Shortcuts ▸ Export…**.
+</Aside>

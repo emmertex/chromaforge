@@ -8,7 +8,7 @@ use crate::menus::UiCommand;
 /// The command's id.
 pub const IMPORT_LIBRARY_ID: &str = "dialog.importLegacyLibrary";
 /// File ▸ More Imports ▸ Import LightCraft Library….
-pub const IMPORT_LIBRARY: UiCommand = (IMPORT_LIBRARY_ID, "Import LightCraft Library…", None, "File>More Imports");
+pub const IMPORT_LIBRARY: UiCommand = (IMPORT_LIBRARY_ID, "Import {upstream} Library…", None, "File>More Imports");
 
 /// Import LightCraft Library…: `{path?}`; without a path, a folder picker first. A folder that holds no LightCraft
 /// library is refused (Import from Another Catalog takes this app's own).
@@ -19,11 +19,11 @@ pub fn import_library(app: &mut crate::LccApp, id: &str, p: &serde_json::Value) 
         Some(path) => {
             let found = lcc_catalog::library::resolve(std::path::Path::new(path)).is_ok_and(|d| lcc_catalog::legacy::is_legacy(&d));
             if !found {
-                return Err(format!("{path} {}", crate::i18n::tr("holds no LightCraft library (its catalog.snap)")));
+                return Err(format!("{path} {}", crate::i18n::tr("holds no {upstream} library (its catalog.snap)")));
             }
             crate::catalog_ui::run(app, "dialog.importCatalog", &json!({"path": path})).unwrap_or(Ok(Value::Null))
         }
-        None => match crate::catalog_ui::pick_folder(app, id, p, "path", "Import LightCraft Library") {
+        None => match crate::catalog_ui::pick_folder(app, id, p, "path", "Import {upstream} Library") {
             Ok(Some(path)) => import_library(app, id, &json!({"path": path})),
             Ok(None) => Ok(Value::Null),
             Err(e) => Err(e),
@@ -39,8 +39,8 @@ mod tests {
     use crate::catalog_ui::CatalogDialog;
     use crate::{LccApp, Services};
 
-    fn temp(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("lc-ui-legacy-{tag}-{}", std::process::id()));
+    fn temp(tag: &str) -> lcc_testkit::TempDir {
+        let d = lcc_testkit::TempDir::new(&format!("lc-ui-legacy-{tag}"));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -94,5 +94,35 @@ mod tests {
         assert!(app.catalog_ui.dialog.is_none());
         app.session.close_library().unwrap();
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The menu label and the refusal name the earlier format by `{upstream}`, filled in English and in a translation
+    /// alike, so a catalog can translate them without naming it.
+    #[test]
+    fn the_upstream_name_is_filled_in_every_language() {
+        use crate::i18n::{Locale, set_language, tr};
+        let name = lcc_brand::UPSTREAM_NAME;
+        for language in [Locale::En, Locale::De, Locale::Ja] {
+            set_language(language);
+            for text in [super::IMPORT_LIBRARY.1, "holds no {upstream} library (its catalog.snap)"] {
+                let shown = tr(text);
+                assert!(!shown.contains("{upstream}") && shown.contains(name), "{language:?}: {shown:?}");
+                assert!(language == Locale::En || !shown.contains("Library"), "{language:?} translates it: {shown:?}");
+            }
+        }
+        set_language(Locale::En);
+    }
+
+    /// An agent's command and menu listings (`engine.commands`, `ui.menu.list`, `ui.menu.tree`) show the label as the
+    /// menu does, the name filled in.
+    #[test]
+    fn agents_see_the_label_with_the_name_filled_in() {
+        let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+        let mut h = crate::headless::Headless::new(app, [1200.0, 800.0], 1.0);
+        let label = format!("Import {} Library…", lcc_brand::UPSTREAM_NAME);
+        for request in ["engine.commands", "ui.menu.list", "ui.menu.tree"] {
+            let listing = h.request(request, json!({}), std::time::Duration::from_secs(20))["result"].to_string();
+            assert!(listing.contains(&label) && !listing.contains("{upstream}"), "{request}: {listing}");
+        }
     }
 }

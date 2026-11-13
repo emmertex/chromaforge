@@ -342,11 +342,7 @@ impl Scanned {
     }
 
     fn load(&mut self, path: &Path) {
-        let Ok(meta) = std::fs::metadata(path) else { return };
-        if meta.len() > SCAN_MAX_FILE {
-            return;
-        }
-        let Ok(bytes) = std::fs::read(path) else { return };
+        let Ok(bytes) = crate::bounded_read::read_bounded(path, SCAN_MAX_FILE) else { return };
         let head = self.header();
         let Some(rest) = bytes.strip_prefix(head.as_slice()) else { return };
         self.file_matches = true;
@@ -592,6 +588,8 @@ mod tests {
 /// What the recognition commands keep between calls: the loaded model and the embeddings made with it.
 #[derive(Default)]
 pub(crate) struct FacesState {
+    /// `<model id>@<sha256>` and the chosen model's manifest (reused without loading the ONNX network).
+    pub manifest: Option<(String, lcc_faces::ModelManifest)>,
     /// `<model id>@<sha256>` and the loaded model.
     pub embedder: Option<(String, Arc<lcc_faces::runtime::Embedder>)>,
     pub index: Index,
@@ -630,6 +628,7 @@ impl FacesState {
         self.index.reset("", 0, None);
         self.scanned.reset(None);
         self.scan_failed.clear();
+        self.manifest = None;
         self.embedder = None;
         self.checked = None;
         self.queue.clear();

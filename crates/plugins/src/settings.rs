@@ -207,6 +207,35 @@ impl SettingsStore {
         serde_json::to_vec_pretty(&FileRef { format: FORMAT, settings: &self.settings, dialogs: &self.dialogs })
     }
 
+    /// The store as kept with its plug-in's previous version ([`crate::Manager::rollback`]).
+    pub(crate) fn snapshot(&self) -> Value {
+        serde_json::json!({"format": FORMAT, "settings": self.settings, "dialogs": self.dialogs})
+    }
+
+    /// The file `snapshot` ([`SettingsStore::snapshot`]) is written as, or why this version can't
+    /// take it back.
+    pub(crate) fn snapshot_file(snapshot: &Value) -> std::result::Result<Vec<u8>, String> {
+        let f: File = serde_json::from_value(snapshot.clone()).map_err(|e| e.to_string())?;
+        if f.format > FORMAT {
+            return Err(format!("written by a newer version (format {})", f.format));
+        }
+        let bytes = serde_json::to_vec_pretty(&f).map_err(|e| e.to_string())?;
+        if bytes.len() > MAX_SETTINGS_BYTES {
+            return Err(format!("over {MAX_SETTINGS_BYTES} bytes"));
+        }
+        Ok(bytes)
+    }
+
+    /// Takes `snapshot` back, already written to the store's file: a change of the settings.
+    pub(crate) fn restored(&mut self, snapshot: &Value) {
+        let f: File = serde_json::from_value(snapshot.clone()).unwrap_or_default();
+        self.settings = f.settings;
+        self.dialogs = f.dialogs;
+        self.damaged = false;
+        self.dirty = false;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     fn too_big(&self) -> bool {
         self.serialized().map_or(true, |b| b.len() > MAX_SETTINGS_BYTES)
     }
@@ -240,11 +269,9 @@ mod tests {
         Manifest::parse(v.to_string().as_bytes()).unwrap()
     }
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lcc-settings-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d.join("p.json")
+    /// `p.json` in an empty Temp folder of the test's own, removed when the test ends.
+    fn tmp(name: &str) -> lcc_testkit::TempFile {
+        lcc_testkit::TempFile::new(&format!("lcc-settings-{name}"), "p.json")
     }
 
     #[test]
@@ -252,7 +279,7 @@ mod tests {
         let path = tmp("forget");
         let m =
             manifest(json!({"id": "a", "name": "A", "settings": [{"key": "n", "label": "N", "type": "number", "min": 0, "max": 9, "default": 1}]}));
-        let (mut s, _) = SettingsStore::open(path.clone());
+        let (mut s, _) = SettingsStore::open(path.to_path_buf());
         s.forget();
         s.set("n", Some(json!(2.0))).unwrap();
         s.save().unwrap();
@@ -266,13 +293,13 @@ mod tests {
             {"key": "n", "label": "N", "type": "number", "min": 0, "max": 10, "default": 3},
             {"key": "c", "label": "C", "type": "choice", "options": ["x", "y"]}]}));
         let path = tmp("values");
-        let (mut s, err) = SettingsStore::open(path.clone());
+        let (mut s, err) = SettingsStore::open(path.to_path_buf());
         assert!(err.is_none());
         assert_eq!(s.values(&m.settings), *json!({"n": 3.0, "c": "x"}).as_object().unwrap());
         s.set("n", Some(json!(7.0))).unwrap();
         s.set("c", Some(json!("y"))).unwrap();
         s.save().unwrap();
-        let (s, _) = SettingsStore::open(path);
+        let (s, _) = SettingsStore::open(path.to_path_buf());
         assert_eq!(s.values(&m.settings), *json!({"n": 7.0, "c": "y"}).as_object().unwrap());
         // the plug-in changed its fields: values they no longer take read as the new defaults
         let m2 = manifest(json!({"id": "a", "name": "A", "settings": [
@@ -285,15 +312,15 @@ mod tests {
     fn a_damaged_file_reads_as_defaults_and_is_moved_aside_on_save() {
         let path = tmp("damaged");
         std::fs::write(&path, b"{not json").unwrap();
-        let (mut s, err) = SettingsStore::open(path.clone());
+        let (mut s, err) = SettingsStore::open(path.to_path_buf());
         assert!(err.unwrap().contains("using the defaults"));
         assert!(s.settings.is_empty());
         s.set("k", Some(json!(true))).unwrap();
         s.save().unwrap();
         assert_eq!(std::fs::read(format!("{}.bad", path.display())).unwrap(), b"{not json");
-        assert_eq!(SettingsStore::open(path.clone()).0.settings["k"], true);
+        assert_eq!(SettingsStore::open(path.to_path_buf()).0.settings["k"], true);
         std::fs::write(&path, br#"{"format": 99}"#).unwrap();
-        assert!(SettingsStore::open(path).1.unwrap().contains("newer"));
+        assert!(SettingsStore::open(path.to_path_buf()).1.unwrap().contains("newer"));
     }
 
     #[test]

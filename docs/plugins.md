@@ -8,7 +8,7 @@ plug-ins are not supported.
 
 | Contribution | Manifest | Request it receives |
 |---|---|---|
-| Menu commands, optionally with a dialog | `commands: [{id, label, menu, dialog, prepare?}]` | `{"hook":"command","command","args","selection","source"}`; with `prepare: true`, first `{"hook":"command.prepare","command","selection","source"}` (`source`: see [Adding files to the library](#adding-files-to-the-library); see [Settings, remembered values and prepare steps](#settings-remembered-values-and-prepare-steps)) |
+| Menu commands, optionally with a dialog | `commands: [{id, label, menu, dialog, prepare?, job?}]` (`job: true`: see [Jobs](#jobs-long-commands-with-progress)) | `{"hook":"command","command","args","selection","source"}`; with `prepare: true`, first `{"hook":"command.prepare","command","selection","source"}` (`source`: see [Adding files to the library](#adding-files-to-the-library); see [Settings, remembered values and prepare steps](#settings-remembered-values-and-prepare-steps)) |
 | Settings (the plug-in's page in the Plug-in Manager) | `settings: [{key, label, type, …, prepare?}]` | none, or `{"hook":"settings.prepare"}` when a field has `prepare: true`; the plug-in reads them with `settings.get` |
 | Export post-processing | `hooks.export: true` | `{"hook":"export","files":[{path, photo}]}`; the exported files are lent to the call for reading and writing |
 | Metadata and keyword suggestions | `hooks.metadata: true` | `{"hook":"metadata","photos":[photo.inspect JSON]}` → `{"suggestions":[{photo, fields?, keywords?}]}` |
@@ -17,7 +17,37 @@ plug-ins are not supported.
 | Programs it starts (an installed tool, such as a raw converter) | `permissions.programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `{"hook":"program.end","run","program","status","code","tmpDir"}` when a run ends (see [Programs](#programs)) |
 | Custom metadata fields (Metadata panel ▸ Plug-in fields) | `metadataFields: [{key, label, type, …, readOnly?}]` | none: the values are the plug-in's namespace entries under each field's `key` (`ns.set {photo, key, value}`); the user edits them in the panel on every selected photo (`plugin.setField {ids}`; differing values read `< mixed >`), read-only ones only the plug-in sets. The plug-in's data stays the source; the app keeps an in-memory index of it (`Photo.plugin_fields`, never saved with the catalog, so its format is unchanged: rebuilt when a library opens and after every plug-in command and export hook): Library filter text search finds the values (`key:value` for one field), smart-album and filter rules test them as `plugin:<id>/<key>` (Rules ▸ Plug-in Fields; text operators, number fields compare as numbers: is ≥, is between, …), and XMP sidecars carry them as `lcpf:fields` (a bag of `{lcpf:plugin, lcpf:key, lcpf:value}`, namespace `<homepage>/ns/plugin-fields/1.0/`, from `homepage` in `brand.toml`) when metadata is saved, and give them back to the plug-in's data on import, Synchronize Folder and Read Metadata from File (installed, enabled plug-ins only; read-only fields included; values the field doesn't take are skipped) |
 
-Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?}`. The UI, CLI,
+**Its own pictures.** A plug-in's manifest may carry an `"icon"` and a `"header"`, as a pixel
+filter's does ([A filter's own pictures](#pixel-filters-photocraft-abi)): the icon, a square SVG,
+in place of the one the Plug-in Manager draws from the id; the header (`"<svg…>"`, or `{"dark":
+"<svg…>", "light": "<svg…>"}`) in place of the plug-in's name on its page in the Plug-in Manager,
+and above the title of its command dialogs. The same rules apply: at most 24 KiB each, within the
+manifest's 64 KiB, drawn as untrusted documents (their own shapes only), and a picture that isn't
+an SVG document is dropped. `plugin.list` shows `icon` and `header` as booleans, and
+`plugin.picture {id, picture?, theme?}` gives the SVG text, for plug-ins and pixel filters alike.
+The host feature `pictures` names them (a plug-in may require it; one that just looks better with
+them needn't, as an older host ignores them).
+
+**Where it comes from.** A manifest may carry `"homepage"`, `"repository"` and `"changelog"`
+(`https://` links) and `"license"` (text, an SPDX expression such as `MIT OR Apache-2.0`), named as
+in `Cargo.toml`. The Plug-in Manager's About tab shows each one present: Homepage, Source Code and
+Changelog as links named by their host (`github.com`), so the user sees where a link goes before
+clicking (the whole link shows on hover), and Licence as text. A `repository` on
+`https://github.com/<owner>/<repo>`, or a page inside one (`…/tree/main/plugins/geo`), adds *Report
+a Problem*, the repository's `/issues` page; any other host doesn't. Nothing is fetched to show the
+tab: a link opens in the browser only when clicked, or through `plugins.openLink`. A value the host
+can't use is dropped, never an install error: one that isn't a string, has control or invisible
+characters (direction overrides, zero-width spaces), is over its cap (2 KiB a link, 256 bytes the
+licence), or a link that isn't `https://` with a plain host (letters, digits, dots and dashes, an
+optional port, no user name: `https://a.com@b.com/` is refused, as its real host is hidden). The
+plug-in's log names each one dropped and why (`manifest value dropped: homepage: not an https://
+link`), and so do the install dialog and `plugin.inspectFile` (`dropped`). `plugin.list` and
+`plugin.inspectFile` (`manifest.about`) give them as `about: {homepage?, repository?, changelog?,
+license?, issues?}`, `issues` being Report a Problem's page. The host feature `about` names them.
+The SDK can fill them from the plug-in crate's `Cargo.toml` ([Writing one in
+Rust](#2-declare-a-manifest-and-handle-requests)).
+
+Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?, wait?}`. The UI, CLI,
 control channel and MCP all use this command. `plugin.commands` lists the commands so front
 ends can build menus and dialogs. Dialog fields are `{key, label, type}`, where `type` is one of
 `text` (`default`), `number` (`min`, `max`, `default`), `bool` (`default`) or `choice`
@@ -74,22 +104,53 @@ These need the host feature **`settings`**: a plug-in that uses any of them says
 
 ## Permissions
 
-A plug-in gets nothing it did not ask for in `permissions`, and nothing the user did not approve.
-Installing shows every requested permission with a checkbox, unticked, and grants only the ones the
-user ticks; an update shows what it newly asks for and keeps nothing beyond the previous grant
-unless approved. Through the engine, `plugin.install` without `grant` grants nothing new, and
-`plugin.install` and `plugin.grant` never add `programs` (below). The Plug-in Manager can revoke a permission at any
-time, and the change applies from the next call. In every call, the plug-in's effective rights
-are the granted permissions intersected with the requested ones.
+A plug-in gets nothing it did not ask for in `permissions`, and nothing the user did not allow.
+The manifest lists everything a plug-in may ask for; installing grants none of it. The install
+dialog lists those requests for information, with nothing to tick. The first call that needs one
+asks the user:
+
+- **From a command the user started** (a menu item, a plug-in's dialog, the Plug-in Manager),
+  its prepare step included, the call fails, the command ends, and a prompt names the plug-in and
+  the permission: *Allow* grants it and runs the same command again, once (after a prepare step,
+  the command starts again as from its menu, so its dialog may open); *Deny* is remembered with
+  its date, and later calls that need it fail with "permission `X` not granted to this plug-in",
+  asking nothing. A command that does something before the call that fails does it twice when
+  the user allows: ask early (make the call that needs the permission first).
+- **With nobody to ask** (the command line, `mcp` without `--connect`, an agent's `plugin.run`, a
+  [job](#jobs-long-commands-with-progress) on a worker, and every hook: export hooks and
+  destinations, publish services, metadata providers, `program.end`, settings' prepare steps,
+  even after an export the user started) the call fails with "needs `X`, not granted to this
+  plug-in; allow it in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…)", and nothing is
+  recorded as asked.
+
+The Plug-in Manager's Permissions tab shows each request as allowed, denied on a date, not asked
+yet, or refused (below), with *Allow* and *Revoke*. Only the user allows: commands
+(`plugin.install {grant}`, `plugin.grant`), whoever calls them (MCP, the control channel, an
+action, the command line), may repeat or leave out what is granted, and refuse a grant that adds
+anything, changing nothing; `plugin.revoke {id, group, value?}` takes one permission (or one
+host, folder or program) away. The control channel's input requests (`ui.pointer`,
+`ui.clickWidget`, `ui.key`) can't allow: *Allow* in the prompt or on the Permissions tab ignores
+them and says so, and through them *Install* and *Go Back* act as `plugin.install` and
+`plugin.rollback`. Revoking, disabling and removing work from anywhere, and a change applies from
+the next call. An update or `plugin.rollback` keeps what was allowed for what the new version
+still asks for, never more, and keeps the denials. `plugins.json` from before this model loads
+unchanged, its grants as allowed.
+
+A folder (`fs`) root that contains the settings folder or the plug-ins folder, or lies inside the
+plug-ins folder, is never granted, by any path: the Permissions tab shows it as refused, with the
+reason. A plug-in with such a root would be able to rewrite its own grant or another plug-in.
 
 | Permission | Allows |
 |---|---|
 | `catalog: true` | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` (read-only) |
 | `metadataWrite: true` | `metadata.setStandard {ids, title?, caption?, keywords?, addKeywords?, …}` |
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
+| `pixels: true` | `photo.pixels {photo, longEdge?}`: a downsized copy of a photo, the whole uncropped frame (see [Pixels and crop](#pixels-and-crop)). Requires `pixels`. |
+| `virtualCopy: true` | `photo.virtualCopy {photo, name?}`: makes a virtual copy of a photo, stacked with it (see [Pixels and crop](#pixels-and-crop)). Requires `virtualCopy`. |
+| `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
 | `network: ["api.example.com", "*.example.org"]` | `http.request` to those hosts only. Redirects are not followed: the plug-in has to request the new URL itself, and that request is checked again. A binary body goes as `bodyBase64` (with `contentType`) instead of `body`. |
 | `fs: [{path: "/abs/dir", write?}]` | `fs.readText`, `fs.readBytes`, `fs.list`, `fs.exists` below each root, and `fs.writeText`, `fs.writeBytes`, `fs.remove` (files only) below writable roots. Bytes travel as base64 (`{path}` → base64 text; `{path, base64}`). `..` is rejected, and symbolic links are resolved so a link cannot lead out of a root. Files lent to a call (an export hook's or destination's exported files, a publish upload's rendered file) can be read and rewritten without any root, never removed. A program run's folder is lent to its `program.end` call for reading. |
-| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Only the user grants one, by ticking it in the install dialog or the Plug-in Manager. `plugin.install` with `grant` and `plugin.grant`, whoever calls them (MCP, the control channel, an action, the command line), may repeat the programs already granted (they stay granted) or leave them out (revoked), and refuse a grant that names any other program or a wider entry than the granted one, changing nothing. The control channel's input requests (`ui.pointer`, `ui.clickWidget`, `ui.key`) work the dialog as the user's mouse and keyboard would, so a row ticked through them counts as the user's: give the control port only to agents you would let tick it. |
+| `programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `program.start` of those programs, with the arguments the plug-in chooses on each run (see [Programs](#programs)); `program.list` needs nothing. Each program is allowed on its own, by the user, as any other permission. |
 
 Every plug-in can always use its own **metadata namespace** (`ns.get {photo}`,
 `ns.set {photo, key, value}`, `ns.photos`). The namespace is stored next to the module, never in
@@ -122,15 +183,13 @@ drive); a copy in the Trash never is. A
 lookup that takes more than 3 seconds is stopped and finds nothing. The install dialog and the
 Plug-in Manager show each entry as a permission row with what it names on this system (the bundle
 ids, or the executable) and where it is installed ("not installed" if nowhere, "checking…" while
-the app looks; the dialog never waits for a lookup). An update that widens a granted entry shows it
-unticked and marked new. An update keeps a granted entry when
+the app looks; the dialog never waits for a lookup). An update keeps an allowed entry when
 it names no more than before: renaming it, reordering or removing bundle ids and dropping an
-executable keep the grant. An update that adds a bundle id or changes an executable unticks the
-entry, with a line in the plug-in's log, until the user ticks it again: the user allowed
-particular programs, not whatever the entry names later. An install from a command
-(`plugin.install`) whose module differs from the installed one keeps none of the plug-in's
-programs, with a line in its log: the user allowed them for the code they had. Installing the same
-module again keeps them.
+executable keep it. An update that adds a bundle id or changes an executable drops the entry, with
+a line in the plug-in's log, until the user allows it again: the user allowed particular programs,
+not whatever the entry names later. An install from a command (`plugin.install`) whose module
+differs from the installed one keeps none of the plug-in's programs, with a line in its log: the
+user allowed them for the code they had. Installing the same module again keeps them.
 
 **What a grant covers:** the user allows a program, not a particular use of it. The plug-in chooses
 the arguments and the files it hands the program on every run (`program.start {args, files}`); the
@@ -238,6 +297,105 @@ covers the permission, `library.add` and `source`.
 
 The `program-tools` example (below) does the whole round trip.
 
+## Jobs: long commands with progress
+
+A command that works through many photos, or waits on a server, runs as a **job**: on a worker of
+its own, with a row in the activity stack, so the window stays responsive. This needs the host
+feature **`jobs`**: a command with `"job": true` in a manifest without `"requires": ["jobs"]` is a
+manifest error.
+
+```json
+"requires": ["jobs"],
+"commands": [{"id": "check", "label": "Check Photos", "job": true}]
+```
+
+- **Starting:** from its menu item, a shortcut or `plugin.run`, a job returns at once. Its
+  prepare step and dialog work as for any command. Its row is named after the command and the
+  plug-in ("Check Photos (Job Tools)"), of kind `pluginJob`, and shows wherever the app shows
+  activity (`activity.list` for agents). `plugin.run` answers
+  `{job: <activity id>, running: true, plugin, command}`.
+- **Progress:** the job reports through host calls that only a job may make (anything else gets an
+  error saying so):
+
+  | Host call | SDK | Effect |
+  |---|---|---|
+  | `job.progress {done, total, unit?}` | `job::progress(done, total)`, `job::progress_in(done, total, unit)` | the bar and its count; `total` 0 makes the bar sweep; `unit` is `count` (default), `bytes` or `percent` |
+  | `job.detail {text}` | `job::detail(text)` | the detail line: what it is working on, a name, not a sentence (cut at 200 characters) |
+  | `job.itemDone` | `job::item_done()` | one photo done |
+  | `job.itemFailed {why}` | `job::item_failed(why)` | one photo failed; `why` names it and the reason |
+  | `job.cancelled` | `job::cancelled()` | `true` once the user stopped the job; never fails |
+
+  A job that counts photos (`itemDone`, `itemFailed`) gets a batch row: the time left, the
+  failures, and a summary when it ends ("Check Photos (Job Tools): 24 done, 1 failed"), as the
+  app's own batches do.
+- **Continuing:** every call of a job has the per-call budget ([Limits](#limits)). A job that needs
+  longer replies `{"continue": state}` (SDK: `job::continue_with(state)`): the host calls it again,
+  in a fresh instance with a fresh budget, under the same row, with the same request plus
+  `"state": state` (`req.state()`; null on the first call). The next request, state included, must
+  fit in a message (16 MiB), or the job fails saying so. Between calls the plug-in's namespace data
+  is saved, so a quit or a crash loses only what the call then running wrote.
+- **Stopping:** the row's ✕, `activity.cancel {id}` and Quit Anyway stop a job between calls.
+  From then on `job.cancelled` answers `true`, every other host call fails with "cancelled", and a
+  reply asking to continue is not called again. A plug-in that checks `job.cancelled` can stop
+  cleanly and say how far it got in its reply. Quit asks first while a job runs.
+- **Ending:** the row goes. The last reply's `message` is shown (a toast in the desktop app); an
+  error is shown and written to the plug-in's log, like any failed call. A stopped job shows
+  nothing and logs "command cancelled".
+- **Busy:** while a job runs, other calls of the same plug-in (its other commands, its hooks) are
+  refused with an error that names the job.
+- **Reading, not writing:** a job may read the catalog (`catalog.query`, `photo.inspect`, …), and
+  read and write its own namespace (`ns.set`) and settings, files and the network as granted. It
+  may not change the catalog:
+  `metadata.setStandard`, `library.add`, `develop.setCrop` and `photo.virtualCopy` fail with "writes to the catalog aren't available in a
+  job yet", and `program.start` fails too. The catalog reads are answered by the window between
+  frames; a session with no window (headless CLI or MCP) refuses them, so run a job there with
+  **`plugin.run {…, wait: true}`**: it runs to its end on the caller's thread and returns the
+  job's last reply (a stopped job is an error, "cancelled"). Without `wait`, a one-shot CLI run
+  returns the job's id and exits, which ends the job with it. Sent to the running app (its control
+  channel, `mcp --connect`), `wait` holds the window until the job ends, and its ✕ can't be
+  clicked meanwhile: leave `wait` out there and follow the row (`activity.list`).
+
+The `job-tools` example works through the selected photos ten per call, reporting each one.
+
+## Pixels and crop
+
+A plug-in can look at a photo and set its crop: find a film frame's picture area inside its
+rebate, square up a scan, trim a border. The crop it sets is an ordinary one: one History step,
+undone with Undo, and adjusted afterwards in the crop tool like any other. Two permissions, each
+with a host feature of the same name (`"requires": ["pixels", "crop"]`):
+
+- **`photo.pixels {photo, longEdge?}`** (`pixels`; `host::photo_pixels(photo, long_edge)`) →
+  `{width, height, channels: 3, encoding: "srgb8", data}`: the photo as the crop tool shows it
+  before cropping (orientation, flips, lens corrections and perspective applied; no crop, no
+  straighten), downsized to a long edge of `longEdge` (default 1024, kept within 64..=1536, never
+  larger than the photo), as 8-bit sRGB, `data` the interleaved RGB rows, top to bottom, as base64.
+  The pixels are the decoded photo before tone and colour adjustments (a raw's are its linear
+  values with the sRGB curve on top, so they may look dark): enough to find edges, not a render.
+  It only reads, so a prepare step may call it.
+- **`develop.setCrop {photo, rect, angle?}`** (`crop`; `host::set_crop(photo, rect, angle)`) →
+  `{rect, angle}`: sets the crop as `crop.set` does. `rect` is `[x0, y0, x1, y1]`, normalized (0..1)
+  in the frame `photo.pixels` gives, so a box found in those pixels is set as it is; `angle` is the
+  straighten angle in degrees, clockwise (clamped to ±45°; left out, 0, whatever the photo was
+  straightened by before). With an angle, `rect` is in that frame turned by `angle` about its
+  centre: the frame `crop.set` reads, so a box found in the pixels after turning them level is set
+  as found. The host fits the crop inside the photo (a straightened crop may come out smaller) and
+  returns it as set; a rect smaller than the crop tool's smallest crop is refused. It writes, so
+  prepare steps and jobs can't call it.
+
+- **`photo.virtualCopy {photo, name?}`** (`virtualCopy`, with a host feature of the same name;
+  `host::virtual_copy(photo, name)`) → `{photo}`: a virtual copy, as *Create Virtual Copy*
+  makes one: a new catalog entry sharing the photo's file, with a copy of its settings and
+  metadata, stacked right after it and added to the albums that hold it, named `name` (at most
+  256 characters) or the next "Copy N". One History step; the user's selection stays as it was.
+  A photo in Recently Deleted is refused. It writes, so prepare steps and jobs can't call it. With
+  `develop.setCrop` it lets a plug-in split one capture into several photos: two half-frame
+  exposures in one 35 mm scan, say, the original cropped to one and a copy to the other.
+
+From a hook running on a worker (an export hook, `program.end`) all three are answered on the UI
+thread, and from a job `photo.pixels` is, like the catalog reads. Each call loads the photo's
+source at the smallest level that covers `longEdge` (the 512 px thumbnail level up to 520, the
+preview level above), as the library grid and the loupe do.
+
 ## Limits
 
 Each call runs in a fresh instance. It has an instruction budget, a wall-clock budget (time spent
@@ -255,13 +413,13 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
   error. A name is a minimum, never a maximum.
 - **Installing** a plug-in that requires a name the host doesn't know is refused, naming each
-  missing feature ("needs `jobs`, which this version of the app doesn't have"), and nothing is
+  missing feature ("needs `cache`, which this version of the app doesn't have"), and nothing is
   written. `plugin.inspectFile` lists them as `missing`, and the install dialog shows them with
   no Install button.
 - **An installed plug-in** that requires a name the host no longer knows (the app was
@@ -270,7 +428,7 @@ hook that's never called, a host call that fails as an unknown method).
   app is updated again.
 - **Removing** a plug-in that didn't load (it needs missing features, or its module can't be read)
   works like any other: each `failed` row gives its `id`, `plugin.uninstall {id}` deletes its
-  module, its `plugins.json` entry and its data, and the Plug-in Manager lists it with a
+  module, its `plugins.json` entry and its data (`keepData: true` keeps its data and settings), and the Plug-in Manager lists it with a
   didn't-load mark (under Pixel Filters for a filter module) and a page that says why, with a
   Remove button.
 - Versions of the app from before `requires` ignore it, like any field they don't know: the check
@@ -288,8 +446,38 @@ refused unless `plugin.install` gets `allowDowngrade: true`; `plugin.inspectFile
 button. The older version keeps the grant, cut back to what it asks for, and its log says
 "downgraded from X to Y". The same version again is a repair and installs without asking.
 
-Pixel filters (below) have their own manifest, shared with PhotoCraft, and none of this applies to
-them.
+**Going back.** An update with other code keeps the version it replaces, its module and its
+settings as they were before the update, in `previous/<id>.wasm` and `previous/<id>.json` (one
+level deep; nothing loads from that folder). `plugin.list` gives that version as
+`previousVersion`, the plug-in's page offers *Go Back to Version X*, and `plugin.rollback {id}`
+does the same. Going back restores the module and the settings, keeps the grant cut back to what
+that version asks for, and logs "rolled back from Y to X". Programs the user granted stay when
+the user goes back from the page; the command drops them, since that version's code is different
+(as for an install). A job running meanwhile keeps its permissions, as through an update. When the
+old module or its settings can't be staged and written, nothing changes and the error says why;
+if only putting the staged settings in place fails afterwards, the old version runs with the
+current settings, and its log says so.
+
+**Unknown manifest fields** are ignored, but not silently: `plugin.inspectFile` lists them by path
+(`commands[2].lable`) as `unknownFields`, the install dialog shows them, and installing writes
+them to the plug-in's log (a pixel filter's to the app's log). The install still goes ahead.
+
+**One id, one module.** A plug-in and a pixel filter can't share an id: installing one whose id a
+module of the other kind has is refused (`plugin.inspectFile` gives why as `conflict`). Of the
+modules in the folder with one id, the first by file name that loads is the one used (a module
+that needs features this version lacks doesn't hold its id, and keeps that error); each other one
+is listed under `failed` ("another module has this id"), and `plugin.uninstall {file}` deletes
+only that file. Removing a plug-in by its id is refused while a pixel filter module that didn't
+load sits at `<id>.wasm` (the file removing the plug-in would delete): remove that module first,
+by its file or its row in the Plug-in Manager.
+Plug-ins load from the first 256 modules in the folder by file name, pixel filters' modules
+counted too, and pixel filters from the first 1,000; `plugin.list` gives how many modules neither
+loaded as `skipped` (counted only, not listed one by one), and the Plug-in Manager says so.
+
+Pixel filters (below) have their own manifest, shared with PhotoCraft: `requires` and the semver
+rule don't apply to them. Installing an older filter needs confirming as above (versions that
+aren't semver compare as dotted numbers, `1.9` before `1.10`), and a filter keeps no version to go
+back to.
 
 ## The ABI
 
@@ -309,7 +497,7 @@ Imports (module `host`):
 
 ## Writing one in Rust
 
-The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Six examples, each a complete plug-in:
+The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Seven examples, each a complete plug-in:
 
 | Example | Shows |
 |---|---|
@@ -319,6 +507,7 @@ The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Six examples, each a complete 
 | `sdk/examples/publish-folder` | a **publish service** "Local Gallery": copies each rendered photo into a gallery folder (one writable `fs` root), keeps an `index.json`, replaces on re-publish and deletes on removal |
 | `sdk/examples/program-tools` | **programs and adding files** (`requires: ["programs", "libraryAdd"]`): *Send to Converter* writes the selected photos' ids and originals, and the album it was started from, into the run's folder and starts a granted program on that list (`host::program_start`); its **`program.end`** hook reads the program's `result.txt` and adds each result to the library, stacked on its photo and in that album (`host::library_add`), or logs the exit code when the program failed |
 | `sdk/examples/keyword-picker` | **settings, remembered values and a prepare step** (`requires: ["settings"]`): *Apply Keyword…* adds (or, with a switch that is never remembered, removes) one keyword on the selected photos, picked from the keywords in use. Its prepare step offers the keywords used on at least *n* photos (a setting), most used first or A to Z (another), runs at once when only one qualifies and explains when none does |
+| `sdk/examples/job-tools` | **a job** (`requires: ["jobs"]`): *Check Photos* works through the selected photos ten per call on a worker, reads each from the catalog, counts it done or failed (`job::item_done`, `job::item_failed`), shows the photo it is on (`job::detail`) and its progress, goes on with `job::continue_with(next)`, and stops cleanly when the row's ✕ is clicked (`job::cancelled`) |
 | `sdk/examples/custom-fields` | **custom metadata fields** Client / Job / Usage (editable in the Metadata panel) and Delivered (read-only), a *Set Job Fields…* command for the selection, an export hook that marks exported photos delivered, and a metadata provider that suggests the client as a keyword |
 
 ```sh
@@ -379,7 +568,13 @@ fn handle(req: &Request) -> Result<Value, String> {
 export_plugin!(MANIFEST, handle);
 ```
 
-`export_plugin!` exports the ABI; `handle` gets every request. Reply with `Ok(value)` or
+`export_plugin!` exports the ABI; `handle` gets every request. `export_plugin!(package: MANIFEST,
+handle)` also fills `version`, `description`, `author`, `homepage`, `repository` and `license`
+from the crate's own `Cargo.toml` wherever the manifest JSON leaves them out (`author` joins
+`authors` with ", "; a field `Cargo.toml` doesn't set stays out), so the plug-in's version can't
+drift from its crate's. It reads them when the plug-in is compiled (`lcc_plugin_sdk::package!()`);
+`lcc_plugin_sdk::with_package(json, &package)` does the same for a manifest built another way. The
+examples use it. Reply with `Ok(value)` or
 `Err(message)`: an error is shown to the user and written to the plug-in's log. A `message` in a
 command's or destination's reply is shown as a notice.
 
@@ -391,6 +586,8 @@ The manifest fields:
 | `version` | required, semver `MAJOR.MINOR.PATCH` (see [Compatibility](#compatibility-requires-and-version)) |
 | `requires` | `[names]`: the host features the plug-in uses beyond the baseline (see [Compatibility](#compatibility-requires-and-version)) |
 | `name`, `description`, `author` | shown in the Plug-in Manager |
+| `homepage`, `repository`, `changelog`, `license` | optional, shown on the About tab: `https://` links and the licence as text (see [Where it comes from](#what-a-plug-in-can-add)); host feature `about` |
+| `icon`, `header` | optional SVG pictures (see [Its own pictures](#what-a-plug-in-can-add)); host feature `pictures` |
 | `permissions` | what the plug-in asks for (see [Permissions](#permissions)); ask for as little as possible |
 | `commands` | `[{id, label, menu?, dialog?, prepare?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false` |
 | `settings` | `[{key, label, type, …, prepare?}]`, at most 32; needs `requires: ["settings"]` |
@@ -403,7 +600,7 @@ The manifest fields:
 
 | `req.hook()` | Fields (`req.get(…)`, helpers) | Reply |
 |---|---|---|
-| `command` | `req.command()`, `req.arg(key)`, `req.selection()` (photo ids as strings), `req.source()` | anything; `message` is shown |
+| `command` | `req.command()`, `req.arg(key)`, `req.selection()` (photo ids as strings), `req.source()`; a job also `req.state()` | anything; `message` is shown; a job may reply `job::continue_with(state)` |
 | `command.prepare` | `req.command()`, `req.selection()`, `req.source()` | exactly one of `{dialog: {<key>: {options?, default?}}}`, `{run: args}`, `{message}`; host calls may only read |
 | `settings.prepare` | | `{fields: {<key>: {options?, default?}}}`, for fields with `prepare: true`; host calls may only read |
 | `export` | `req.files()` → `(path, photo)` of the written files | anything |
@@ -421,6 +618,9 @@ The manifest fields:
 | `host::query(params)` | `catalog.query` (also `photo.inspect`, `catalog.stats`, `keyword.list` via `call`) | `catalog` |
 | `host::call("metadata.setStandard", {ids, title?, caption?, keywords?, addKeywords?, …})` | writes standard fields | `metadataWrite` |
 | `host::library_add(path, from, stack, album)` | `library.add {path, from, stack?, album?}` → `{photo, added, reloaded}` | `libraryAdd` |
+| `host::photo_pixels(photo, long_edge)` → `Pixels {width, height, rgb}` | `photo.pixels {photo, longEdge?}` | `pixels` |
+| `host::set_crop(photo, rect, angle)` | `develop.setCrop {photo, rect, angle?}` → `{rect, angle}` | `crop` |
+| `host::virtual_copy(photo, name)` → the copy's id | `photo.virtualCopy {photo, name?}` → `{photo}` | `virtualCopy` |
 | `host::ns_get(photo)`, `host::ns_set(photo, key, value)` | `ns.get`, `ns.set`, `ns.photos` | nothing (own namespace; also holds `metadataFields` values) |
 | `host::read_text`, `host::write_text`, `host::read_bytes`, `host::write_bytes`, `host::remove`, `host::exists` | `fs.*` | an `fs` root (or a lent file) |
 | `host::http(method, url, headers, body)`, `host::http_bytes(…)` | `http.request` → `{status, contentType, location, body}` | the URL's host in `network` |
@@ -428,29 +628,31 @@ The manifest fields:
 | `host::program_start(program, args, files, bundle_id)` | `program.start` → `{run, tmpDir}` | the program in `programs` (granted by the user) |
 | `host::settings()`, `host::setting(key)`, `host::set_setting(key, value)` | `settings.get`, `settings.set {key, value}` | nothing (own settings) |
 | `host::log(line)` | `host.log` | nothing; Plug-in Manager ▸ Log |
+| `job::progress`, `job::progress_in`, `job::detail`, `job::item_done`, `job::item_failed`, `job::cancelled` | `job.*` ([Jobs](#jobs-long-commands-with-progress)) | a command with `job: true` |
 | `lcc_plugin_sdk::base64::{encode, decode}` | | |
 
 ### 5. Rules the host enforces
 
 - Every call runs in a **fresh instance**: keep state in the namespace, not in statics.
 - **Budgets per call**: instructions (fuel), wall-clock time (network time counts), 256 MiB of
-  memory, call depth, 16 MiB per message, 10 000 host calls, 8 MiB per file or HTTP body. Batch
-  work in chunks the user can re-run rather than one huge call.
+  memory, call depth, 16 MiB per message, 10 000 host calls, 8 MiB per file or HTTP body. Long
+  work is a [job](#jobs-long-commands-with-progress) that goes on with `{continue: state}`.
 - Everything a plug-in returns is **checked**: dialog values are coerced to their fields before
   the plug-in sees them, `metadataFields` values that no longer fit the field show as empty, and a
   reply that is not JSON, too large or late is an error. Nothing a plug-in does can crash the app.
-- **Permissions are the user's**: each requested capability is a separate checkbox on install,
-  unticked; an update that asks for more gets nothing new until approved; the user can revoke any
-  permission later. Handle `permission … not granted` errors with a clear message.
+- **Permissions are the user's**: nothing is granted at install; the first call that needs one
+  asks the user, from a command they started, and fails with nobody to ask. Make that call early
+  (Allow runs the command again), and handle `not granted` errors with a clear message: the user
+  may have said no, and may revoke any permission later.
 - Paths must be **absolute** without `..`; links can't lead out of a root.
-- **Programs** start only once the user has ticked them, one run per program at a time, and their
+- **Programs** start only once the user has allowed them, one run per program at a time, and their
   folder lives only until the run is over: copy what you need out of it in `program.end`.
 
 ### 6. Test and ship
 
 - Unit-test your logic natively (`cargo test`; the host calls answer "no host" off wasm).
 - Build `--release --target wasm32-unknown-unknown`, then install from File ▸ Plug-ins ▸ Plug-in Manager…
-  (*Install…* shows every permission for approval) or `<cli> commands plugin.install`.
+  (*Install…* lists what it may ask for) or `<cli> commands plugin.install`.
 - Drive it without the UI: `plugin.run`, `plugin.exportTo`, `plugin.setField`, `plugin.log` from
   the CLI, the control channel or MCP.
 - Raise `version` with every release you hand out, and list in `requires` each host feature you
@@ -461,17 +663,23 @@ The manifest fields:
 ## Engine commands
 
 `plugin.list`, `plugin.inspectFile {path}`, `plugin.install {path, grant?, allowDowngrade?}`,
-`plugin.uninstall {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}`,
+`plugin.uninstall {id | file, keepData?}`, `plugin.rollback {id}`, `plugin.enable {id, enabled}`, `plugin.grant {id, grant}` (revokes only), `plugin.revoke {id, group, value?}`,
 `plugin.log {id}`, `plugin.commands`, `plugin.prepare {plugin, command, ids?, source?}`,
-`plugin.run {plugin, command, args?, ids?, source?}`, `plugin.settings {id}`, `plugin.setSettings {id, values}`,
+`plugin.run {plugin, command, args?, ids?, source?, wait?}` (a job: `{job}` at once, or its result with `wait`), `plugin.settings {id}`, `plugin.setSettings {id, values}`,
 `plugin.suggestMetadata {ids?}`, `plugin.postExport {files}`, `plugin.publishServices`,
 `plugin.exportDestinations`, `plugin.exportTo {plugin, destination, files, args?}`,
 `plugin.metadataFields {id?}`, `plugin.setField {plugin, field, value, id?}`.
 
-`plugin.list` gives `{dir, host, plugins, failed}`: `dir` is the plug-ins folder (`null`
-when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256) and a
-`settingsRevision` that changes when one of its settings does, and each `failed` row has `file`, `error`, `kind` (`plugin` or
-`filter`) and, when the module named one, `id`. A pixel filter module the filter loader refuses
+`plugin.list` gives `{dir, host, plugins, failed, skipped}`: `dir` is the plug-ins folder (`null`
+when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256), a
+`settingsRevision` that changes when one of its settings does, and `previousVersion` (the version
+`plugin.rollback` goes back to, or `null`), each `failed` row has `file`, `error`, `kind` (`plugin` or
+`filter`) and, when the module named one, `id`, and `skipped` counts the modules past the most the
+folder loads.
+
+`plugin.uninstall {id}` removes a plug-in, its module, data and settings; with `keepData: true`
+its data and settings stay (and its version to go back to), for a later install of the same id,
+and a call still running can't write its settings back. Its grant goes either way. A pixel filter module the filter loader refuses
 gives the loader's error, not the plug-in host's. `plugin.enable` refuses a pixel filter: filters can't be turned off,
 only removed.
 
@@ -479,21 +687,24 @@ only removed.
 
 File ▸ Plug-ins ▸ Plug-in Manager… (Cmd+Alt+Shift+, on macOS, Ctrl+Alt+Shift+, elsewhere; it can
 be rebound in Keyboard Shortcuts) lists the plug-ins on the left, in two sections, Plug-ins and
-Pixel Filters, each with an icon drawn from its id (the same id always gets the same icon), its
-name, version and a mark: enabled, disabled or didn't load. The selected entry's page is on the
+Pixel Filters, each with an icon drawn from its id (the same id always gets the same icon; the
+plug-in's own icon when its manifest carries one), its name, version and a mark: enabled, disabled or didn't load. The selected entry's page is on the
 right:
 
-- **A plug-in:** Enabled, Remove, and tabs: Settings (when it declares settings), Permissions (each
-  one it asks for, granted or revoked by its box), About (description, what it adds, its commands
-  to run, the module's size) and Log.
+- **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), and tabs: Settings (when it declares settings), Permissions (each
+  one it may ask for: allowed, denied on a date, not asked yet or refused, with Allow / Revoke), About (description, what it adds, its commands
+  to run, where it comes from: Homepage, Source Code with *Report a Problem*, Changelog, Licence; the module's size) and Log.
 - **A pixel filter:** Remove, its stage, whether it measures the photo (the cropped photo or the
-  whole one), its base tone, parameters, and the module's size and hash. Filters have no Enabled
+  whole one), its base tone, parameters, the module's size and hash, and where it comes from (as a plug-in's About). Filters have no Enabled
   box.
 - **A module that didn't load:** why, and Remove.
 
+Remove asks first, on every page, and Cancel changes nothing; for a plug-in the question offers to
+keep its data and settings for a later install. `plugin.uninstall` doesn't ask.
+
 *Install from File…* opens the file picker for a `.wasm` module, and dropping one `.wasm` file on
-the app while the window is open installs it too; either way the install dialog asks for the
-permissions first. One install at a time: while the dialog waits, another module is refused with a
+the app while the window is open installs it too; either way the install dialog lists the
+permissions it may ask for first. One install at a time: while the dialog waits, another module is refused with a
 note to finish or cancel the first. A module that is exactly what is installed (the same id,
 version and code) opens no dialog: its entry is selected, with a note that it is already
 installed. Other code under the installed version (a repair) and a newer version open the dialog.
@@ -507,7 +718,10 @@ while the app runs): `plugins.manager {open?}` (toggles the window), `plugins.in
 install dialog for `path`, or the file picker without one: `{pending: path}`, or `{installed: id,
 message}` when that module is already installed; an error while another install waits), `plugins.page {id, tab?, open?}` (the
 window with that entry selected, on `tab`: `settings`, `permissions`, `about` or `log`; it fails
-for a tab the entry doesn't have), `plugins.showFolder` (the folder in the system file manager) and
+for a tab the entry doesn't have), `plugins.showFolder` (the folder in the system file manager),
+`plugins.openLink {id, link}` (opens `link`, one of `homepage`, `repository`, `issues` or
+`changelog`, of that plug-in's or filter's About in the browser, which opens only `https://`
+links; an unknown id or link, or one the manifest doesn't have, is an error that opens nothing) and
 `plugins.runItem {plugin, command}`.
 
 `app.export` runs the enabled export hooks after every export (the Export dialog, Export with
@@ -533,7 +747,9 @@ library opened from a folder, so no value is lost), and `settings/<id>.json` (it
 remembered dialog values: `{"format": 1, "settings": {…}, "dialogs": {"command/<id>" |
 "destination/<id>": {…}}}`; a damaged file reads as empty, says so in the plug-in's log, and is
 kept as `<id>.json.bad` when the next save replaces it; an update drops the keys the new version no
-longer declares, and removing the plug-in deletes the file). A module copied into the folder by hand loads
+longer declares, and removing the plug-in deletes the file unless its data is kept), and
+`previous/<id>.wasm` and `previous/<id>.json` (the version an update replaced and its settings,
+[Going back](#compatibility-requires-and-version)). A module copied into the folder by hand loads
 disabled and with no permissions granted.
 
 ## Pixel filters (PhotoCraft ABI)
@@ -543,7 +759,7 @@ Besides the plug-ins above, <app> runs **pixel filters** written for PhotoCraft'
 `memory`, `pc_abi_version`, `pc_manifest`, `pc_alloc` and `pc_filter`. They install the same way
 (File ▸ Plug-ins ▸ Plug-in Manager…, or `<cli> commands plugin.install '{"path": "film.wasm"}'`): the host
 sniffs the exports and keeps filter modules in the same folder, in a registry of their own.
-`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze}`
+`plugin.list` shows each as `{id, name, version, kind: "filter", params, moduleHash, size, analyze, merge, sections, shortcut, icon, header}`
 (`params` is the manifest's spec); `plugin.uninstall` removes one. Filters ask for no permissions.
 
 A photo's filter stack is part of its develop settings (`develop.pluginFilter.add {plugin,
@@ -571,6 +787,26 @@ with the photo (`setAnalysis`). It runs in the background as an activity row (ki
 `pluginAnalyze`, cancellable) and returns at once; `wait: true` runs it to the end and returns the
 result. Every later `pc_filter` call gets it as `_analysis`, so crop and
 zoom don't move the measurement. Modules without the export give an "unsupported" error.
+With `ids: [photo, …]` it measures every photo named, one after the other, each getting its own
+measurement; the entry is `uid` on the active photo and the first entry of the same plug-in on
+the others, and a photo without one first gets a copy of the active entry (parameters, stage,
+on/off; no measurement), in one History step for all of them. `develop.pluginFilter.applyTo
+{uid, ids?, measurement?}` does that copy on its own, with the measurement unless `measurement:
+false`, replacing an entry of the same plug-in; the panel's Measure… menu offers the batch for
+the selection, and *Apply to N Selected* the copy.
+
+**A roll (ABI v1.1 proposal).** A module may also export
+`pc_merge(buf, len, count, 0, 0, 0, params, params_len) -> i64`, where `buf` holds `len` bytes of
+UTF-8 JSON: a list of `count` objects its `pc_analyze` returned, one per photo. It returns, like
+`pc_analyze`, one JSON object: the measurement of all of them together (a film converter takes
+the roll's thinnest and densest points, say, so every frame is converted alike and keeps its own
+exposure). `develop.pluginFilter.analyze {uid, ids, roll: true}` measures each photo, hands the
+list to `pc_merge`, and stores the result on every photo with `_roll`: how many it came from
+(the panel's *Measure N Selected as a Roll*; "Measured as part of a roll of N" under the tools).
+A roll with one photo unmeasured has no measurement: the error is reported for all of them.
+Modules without `pc_merge` give an "unsupported" error for `roll`; `plugin.list` shows the
+export as `merge`. At most 1024 photos and 16 MiB of measurements go in one call.
+
 A manifest may set `"analyzeArea": "crop"` (default `"frame"`; other values mean the frame) to be
 measured on the photo as its develop geometry frames it instead: orientation, crop, straighten,
 flips, lens profile and perspective, what the Source stage sees (a negative converter measuring
@@ -586,6 +822,27 @@ options without a group stay at the top level, in place. A list of another lengt
 that isn't 1-64 printable characters, is ignored (a flat menu), as hosts without the field do.
 `plugin.list` gives each grouped parameter's `groups`. The dropdown is widget
 `pluginFilterChoice:<uid>:<param>`.
+**Sections (ABI v1.1 proposal).** A manifest may group its parameters under headings:
+`"sections": [{"label": "Tone", "params": ["exposure", "contrast"], "collapsed": false}, …]`.
+Develop ▸ Plug-in Filters shows each as a heading with a fold arrow (widget
+`pluginFilterSection:<uid>:<label>`; the fold is remembered for the session), the parameters
+under it in the section's order; parameters in no section come first, in the manifest's order.
+A section without a printable 1-64 character label or without a parameter of the manifest is
+dropped, a parameter named twice stays in the first section, and at most 16 sections are read.
+Hosts without the field show a flat list. `plugin.list` gives them as `sections`.
+
+**A key to add the filter (ABI v1.1 proposal).** A manifest may name a shortcut, `"shortcut":
+"Ctrl+Alt+N"` (`Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined with `+`; `Cmd` is ⌘ on macOS and
+Ctrl elsewhere, `Ctrl` the Control key everywhere). Every installed filter is a command *Add
+<name>* in Help ▸ Keyboard Shortcuts (id `pluginFilter.add:<plug-in id>`), with the manifest's
+key as its default when the key is free on this platform's keyboard, else none (on Windows and
+Linux `Ctrl` is `Cmd`, so a key another command has as `Cmd+…` is taken there); the user binds or
+changes it like any other, and giving the filter a taken key moves the key to it.
+The key runs `develop.pluginFilter.addTo {plugin, ids?}`: a new entry of the plug-in (its
+defaults, its stage) on every selected photo that has none, in one History step, then opens
+Develop ▸ Plug-in Filters and says what it did. `plugin.list` shows the manifest's key as
+`shortcut`.
+
 **Base tone (ABI v1.1 proposal).** A raw is toned after the Source stage: by its camera's own
 curve when the file has one, else by the default raw curve. A Source filter whose output is
 already a finished picture (a negative conversion with its own tone curve) may set
@@ -593,6 +850,24 @@ already a finished picture (a negative conversion with its own tone curve) may s
 shown as it is, as a JPEG would be, so the filter's tones aren't toned a second time. Contrast,
 Whites and Blacks still apply. Hosts without the field use their base tone. `plugin.list` shows it as
 `baseTone`.
+
+**A filter's own pictures (ABI v1.1 proposal).** A manifest may carry `"icon"`, a square SVG
+document the Plug-in Manager shows in place of the icon it draws from the id, and `"header"`, an
+SVG the Develop panel shows at the top of the filter's controls in place of its name (`"header":
+"<svg…>"`, or `{"dark": "<svg…>", "light": "<svg…>"}` for the dark and light interface themes;
+with one of the two the other theme gets it as well). Each is at most 24 KiB and is drawn as an
+untrusted document: only its own shapes, never an image it links to (a file on disk) or embeds (a
+`data:` URL); a picture that isn't square is fitted into the icon's square with its aspect kept;
+one that isn't an SVG document is dropped (the icon from the id, the name). Hosts without the fields ignore them.
+`plugin.list` shows `icon` and `header` as booleans; `plugin.picture {id, picture?: header|icon,
+theme?: dark|light}` gives the SVG text.
+
+**Where a filter comes from (ABI v1.1 proposal).** A manifest may carry `"homepage"`,
+`"repository"`, `"changelog"` and `"license"`, with the same checks as a plug-in's
+([Where it comes from](#what-a-plug-in-can-add)); the filter's page in the Plug-in Manager shows
+them the same way, and `plugin.list` gives them as `about`. A filter has no log: a value dropped is
+named in the install dialog, in `plugin.inspectFile` (`dropped`) and as a warning in the app's log.
+Hosts without the fields ignore them.
 
 **Pixel scale.** A Source filter that reads neighbours (manifest `overlap` > 0: an unsharp mask,
 grain, a blur) would look different at each render size, its kernel spanning more of the photo in
@@ -609,7 +884,17 @@ filters turn it (long edge 2048, cached per photo and stack; a change of the sta
 
 ## Not done yet
 
-- A plug-in call that has started can't be interrupted (✕ takes effect between plug-ins), and one
+- Jobs can't change the catalog yet: writes held for the job and applied as one undo step when it
+  ends come later. `job.progress` moves only a job's row, not an export hook's or a program wait's.
+- A job that keeps replying `continue` runs until it is stopped; nothing caps the number of its
+  calls. With `wait` from the CLI, only ending the process stops it.
+- While a job holds its plug-in busy, a `program.end` hook of that plug-in waits up to ten
+  minutes, as for any busy plug-in; a job still running then drops the hook, with a warning in the
+  app's log.
+- Quit Anyway stops a job between calls but doesn't wait for the call then running: the app
+  exits, and what that call wrote to its namespace is lost.
+- A plug-in call that has started can't be interrupted (✕ takes effect between plug-ins, and
+  between a job's calls), and one
   export's hooks run at a time: hooks for an export that ends while the previous ones still run
   are skipped with a message.
 - Network and filesystem permissions are fixed in the manifest: a WebDAV destination for "any

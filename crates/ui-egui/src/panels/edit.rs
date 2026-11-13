@@ -194,7 +194,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     // (Lightroom Classic's Basic has no on/off switch: it shows only while an older edit has Basic or Color switched off,
     // so that edit can be switched back on)
     let basic_switch = !d.section_enabled("light") || !d.section_enabled("color");
-    section_with(app, ui, &d, "light", "Basic", basic_switch, |app, ui, d| {
+    section_with(app, ui, &d, "light", "Basic", basic_switch, None, |app, ui, d| {
         if dense {
             header_rows(app, ui, id, d, preview_only.as_deref());
         }
@@ -253,6 +253,26 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Witchcraft's palettes follow Basic (the grade continues where every photo starts: Basic,
+    // then the colourist's Primaries wheels and HSL curves) before Lightroom's own panels — in
+    // Eboda all three are away; the histogram's own mode menu (its scopes included) stays
+    // Lightroom's way, and the two Witchcraft sections carry the mode's pill beside their titles
+    if app.ui.settings.grading_mode == crate::state::GradingMode::Witchcraft {
+        if shows("primaries") {
+            section_with(app, ui, &d, "primaries", "Primaries", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::primaries(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+        // Resolve's HSL curves over the colour mixer's bands (colour photos: the B&W mix has its
+        // own panel)
+        if shows("hsl") && !crate::is_bw(&d) {
+            section_with(app, ui, &d, "hsl", "HSL Curves", true, Some("Witchcraft"), |app, ui, d| {
+                super::witchcraft::hsl_curves(app, ui, d);
+                ui.add_space(8.0);
+            });
+        }
+    }
     // Lightroom Classic's Develop panels, in its order: Basic, Tone Curve, Color Mixer, Color Grading, Detail, Lens
     // Corrections, Transform, Effects, Calibration (the fork's: upstream groups them as the cloud app does)
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {
@@ -404,7 +424,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     None => (crate::i18n::tr("{app} Default").to_string(), String::new()),
                 };
                 // which photos it reaches, said on hover rather than as a line of its own
-                let reach = crate::i18n::tr("Photos imported from now on; photos already in the library keep theirs.");
+                let reach = crate::i18n::tr("Photos imported from now on; photos already in the catalog keep theirs.");
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(crate::i18n::tr("New photos start from")).small().weak()).on_hover_text(reach);
                     ui.label(RichText::new(starts_from).small()).on_hover_text(reach);
@@ -479,7 +499,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         sub_title(ui, crate::i18n::tr("Grain"));
         // process V7's particle grain has its own controls (OneSlips); earlier processes render the
         // value-noise grain, which only reads Amount, Size and Roughness
-        let particles = d.process.process() == lcc_develop::Process::V7;
+        let particles = d.process.process() >= lcc_develop::Process::V7;
         let grain: &[&str] = if particles {
             &["grain.amount", "grain.size", "grain.sizeVariation", "grain.roughness", "grain.clumping", "grain.color", "grain.response", "grain.seed"]
         } else {
@@ -518,18 +538,13 @@ fn header_rows(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSett
     // header: Edit (Reset sits in the bar under the panels, issue #116), then Lightroom Classic's Basic button row:
     // Auto, B&W | HDR (issue #124). Compact: no title (the tool row says which panel this is), the
     // buttons on one row of the panel's row height
-    if !dense {
-        egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 14, bottom: 0 }, 3, 0)).show(
-            ui,
-            |ui| {
-                ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
-            },
-        );
-    }
-    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 10, bottom: 14 }, 3, 3)).show(ui, |ui| {
+    // (Classic: the title shares the buttons' row, as Camera Raw's does — issue #530)
+    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 12, bottom: 14 }, 3, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             if dense {
                 ui.set_height(crate::widgets::DENSE_ROW_H - 2.0);
+            } else {
+                ui.label(egui::RichText::new(crate::i18n::tr("Edit")).font(t.semibold(15.0)).color(t.text));
             }
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -863,10 +878,11 @@ pub(crate) fn section(
     title: &str,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
-    section_with(app, ui, d, id, title, true, body);
+    section_with(app, ui, d, id, title, true, None, body);
 }
 
-/// [`section`], with its on/off switch (`switch`) or without.
+/// [`section`], with its on/off switch (`switch`) or without, and optionally a small pill
+/// (`badge`, e.g. "Witchcraft") beside the title saying which mode the section belongs to.
 pub(crate) fn section_with(
     app: &mut LccApp,
     ui: &mut egui::Ui,
@@ -874,6 +890,7 @@ pub(crate) fn section_with(
     id: &str,
     title: &str,
     switch: bool,
+    badge: Option<&str>,
     body: impl FnOnce(&mut LccApp, &mut egui::Ui, &DevelopSettings),
 ) {
     // one section alone (the Modern layout's card): open, no header
@@ -885,7 +902,7 @@ pub(crate) fn section_with(
         return;
     }
     let open = app.ui.section_open(id);
-    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)));
+    let (resp, toggled) = section_header(ui, id, title, open, switch.then(|| d.section_enabled(id)), badge);
     // video takes the global Light and Color controls only: the rest show greyed out
     let blocked = !crate::video_ui::section_allowed(id) && app.session.active().is_some_and(|p| crate::video_ui::photo_is_video(app, p));
     let resp = if blocked { resp.on_hover_text(crate::i18n::tr(crate::video_ui::NOT_FOR_VIDEO)) } else { resp };
@@ -1218,7 +1235,21 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if clicked && !menu_clicked {
         let _ = app.run("view.clipping", json!({}));
     }
-    app.clipping_preview = preview;
+    // (only once the pointer rests on the indicator: gliding across the histogram passes over the
+    // triangles, and each preview toggled the overlay, so the photo rendered again, every tile at
+    // 100 %, twice per pass)
+    let (now, pass) = (ui.input(|i| i.time), ui.ctx().cumulative_pass_nr());
+    app.clipping_hover = if preview {
+        let since = app.clipping_hover.filter(|(_, seen)| seen.saturating_add(1) >= pass).map_or(now, |(since, _)| since);
+        Some((since, pass))
+    } else {
+        None
+    };
+    app.clipping_preview = app.clipping_hover.is_some_and(|(since, _)| clipping_preview_due(since, now));
+    if let Some((since, _)) = app.clipping_hover.filter(|_| !app.clipping_preview) {
+        let left = (since + CLIPPING_PREVIEW_REST_S - now).clamp(0.0, CLIPPING_PREVIEW_REST_S);
+        ui.ctx().request_repaint_after(std::time::Duration::try_from_secs_f64(left).unwrap_or_default());
+    }
     // the histogram's context menu: which distribution it draws and how tall its bins are, then the
     // format of the colour readout (Lightroom's "Show Lab Color Values")
     crate::widgets::context_menu(&resp, |ui| {
@@ -1739,6 +1770,21 @@ impl CurveTarget {
 }
 
 /// The Tone Curve editor (`CurveTarget::Photo`) or a mask's local Curve editor.
+/// The closest two points of a point curve may be in x (a fraction of the graph's width).
+pub(crate) const POINT_GAP: f64 = 0.01;
+
+/// `pts` with a point added at (`x`, `y`), and where it went; `None` when a point is already
+/// within [`POINT_GAP`] of `x` (the curve would fall off a cliff between the two).
+pub(crate) fn with_point(pts: &[Point], x: f64, y: f64) -> Option<(usize, Vec<Point>)> {
+    if pts.iter().any(|p| (p.x - x).abs() < POINT_GAP) {
+        return None;
+    }
+    let i = pts.iter().position(|p| p.x > x).unwrap_or(pts.len());
+    let mut v = pts.to_vec();
+    v.insert(i, Point::new(x, y));
+    Some((i, v))
+}
+
 pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSettings, target: CurveTarget) {
     let t = Tokens::get(ui.ctx());
     let photo = target == CurveTarget::Photo;
@@ -1780,7 +1826,7 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
                     "green" => "Green channel",
                     _ => "Blue channel",
                 };
-                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name} — double-click to reset it", name = name));
+                let resp = resp.on_hover_text(crate::i18n::tr_format!("{name}: double-click to reset it", name = name));
                 if resp.double_clicked() {
                     target.set_channel(app, ch);
                     let _ = app.run("curve.reset", target.params(json!({"channel": ch})));
@@ -1803,7 +1849,6 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let resp = ui.interact(r, egui::Id::new(("curve", target.widget(""), &ch)), Sense::click_and_drag());
     crate::widgets::announce(&resp, crate::i18n::tr(target.label()));
     register(ui.ctx(), target.widget(""), r);
-    crate::widgets::context_menu(&resp, |ui| curve_reset_menu(app, ui, &ch, target));
     let p = ui.painter();
     p.rect_filled(r, 2.0, t.canvas);
     if let Some(hist) = preview_histogram(app, id) {
@@ -1870,6 +1915,31 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
     let mut selected: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(sel_id)).flatten().filter(|i| *i < pts.len());
     let nearest = |q: Pos2| pts.iter().enumerate().map(|(i, p)| (i, to_screen(p.x, p.y).distance(q))).min_by(|a, b| a.1.total_cmp(&b.1));
     let hovered = resp.hover_pos().and_then(nearest).filter(|(_, dist)| *dist < 10.0).map(|(i, _)| i);
+    // right-click on a point: the menu opens with Delete Control Point (not on the two end points);
+    // the point under the pointer is read when the menu opens and kept while it is open
+    let menu_point_id = egui::Id::new(("curve-menu-point", target.widget(""), &ch));
+    if resp.secondary_clicked() {
+        let hit = resp
+            .interact_pointer_pos()
+            .and_then(nearest)
+            .filter(|(i, dist)| *dist < 10.0 && *i != 0 && i.checked_add(1).is_some_and(|n| n < pts.len()))
+            .map(|(i, _)| i);
+        ui.data_mut(|dd| dd.insert_temp(menu_point_id, hit));
+    }
+    let menu_point: Option<usize> = ui.data(|dd| dd.get_temp::<Option<usize>>(menu_point_id)).flatten().filter(|i| *i < pts.len());
+    crate::widgets::context_menu(&resp, |ui| {
+        if let Some(i) = menu_point {
+            let r = ui.button(crate::i18n::tr("Delete Control Point"));
+            register(ui.ctx(), target.widget("Menu:deletePoint"), r.rect);
+            if r.clicked() {
+                let arr: Vec<[f64; 2]> = pts.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| [p.x, p.y]).collect();
+                let _ = app.run("develop.curve", target.params(json!({"channel": ch, "points": arr})));
+                ui.close();
+            }
+            ui.separator();
+        }
+        curve_reset_menu(app, ui, &ch, target);
+    });
     if dragging.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if hovered.is_some() {
@@ -1909,21 +1979,17 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
         && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
     {
         // pick the point under the press, not where the pointer is once the drag threshold passed
-        let _ = app.run("develop.beginInteraction", json!({"label": target.label()}));
-        match nearest(q) {
-            Some((i, dist)) if dist < 10.0 => {
-                dragging = Some(i);
-                selected = Some(i);
-            }
-            _ => {
-                let (x, y) = from_screen(q);
-                let mut v = pts.clone();
-                let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-                v.insert(i, Point::new(x, y));
-                dragging = Some(i);
-                selected = Some(i);
-                new_pts = Some(v);
-            }
+        let (x, y) = from_screen(q);
+        let grabbed = match nearest(q) {
+            Some((i, dist)) if dist < 10.0 => Some((i, None)),
+            _ => with_point(&pts, x, y).map(|(i, v)| (i, Some(v))),
+        };
+        // a press that grabs nothing and may add nothing starts no interaction (it would never be closed)
+        if let Some((i, added)) = grabbed {
+            let _ = app.run("develop.beginInteraction", json!({"label": target.label()}));
+            dragging = Some(i);
+            selected = Some(i);
+            new_pts = added;
         }
     } else if resp.dragged()
         && let (Some(i), Some(q)) = (dragging, resp.interact_pointer_pos())
@@ -1940,8 +2006,8 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
             _ => from_screen(q),
         };
         if i < v.len() {
-            let lo = if i == 0 { 0.0 } else { v[i - 1].x + 0.01 };
-            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - 0.01 };
+            let lo = if i == 0 { 0.0 } else { v[i - 1].x + POINT_GAP };
+            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - POINT_GAP };
             if i == 0 {
                 x = x.min(hi);
             } else if i + 1 == v.len() {
@@ -1964,11 +2030,10 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
         // point doesn't change the curve until it is dragged
         let (x, _) = from_screen(q);
         let y = curve.eval(x).clamp(0.0, 1.0);
-        let mut v = pts.clone();
-        let i = v.iter().position(|p| p.x > x).unwrap_or(v.len());
-        v.insert(i, Point::new(x, y));
-        selected = Some(i);
-        new_pts = Some(v);
+        if let Some((i, v)) = with_point(&pts, x, y) {
+            selected = Some(i);
+            new_pts = Some(v);
+        }
     } else if resp.clicked()
         && let Some(q) = resp.interact_pointer_pos()
         && let Some((i, _)) = nearest(q)
@@ -2191,6 +2256,40 @@ fn set_tat(app: &mut LccApp, ctx: &egui::Context, tool: &str, active: bool) {
         app.ui.tool = tool.to_string();
         app.toast(ctx, crate::i18n::tr("Targeted adjustment on: drag up or down on the photo · Esc to stop"));
     }
+}
+
+/// Targeted adjustment `target` (`curve|hue|sat|lum`) on, from Tools > Target Adjustment: the Edit panel
+/// opens on the section whose control the drag changes, and a Color Mixer group is chosen the way its
+/// button chooses it. Dragging on the photo then adjusts; Esc or None puts it away.
+pub(crate) fn start_tat(app: &mut LccApp, target: &str) -> Result<(), String> {
+    let Some(id) = app.session.active() else { return Err("tool.tat: no photo is open".into()) };
+    let bw = app.session.develop_of(id).is_some_and(|d| crate::is_bw(&d));
+    let section = match target {
+        "curve" => "curve",
+        "hue" | "sat" | "lum" => {
+            if bw && target != "lum" {
+                return Err(format!("tool.tat: a B&W photo has the B&W Mix (`lum`) only, not `{target}`"));
+            }
+            "mixer"
+        }
+        other => return Err(format!("tool.tat: unknown target `{other}` (curve|hue|sat|lum)")),
+    };
+    app.ui.right = RightPanel::Edit;
+    app.ui.view = crate::state::ViewMode::Detail;
+    if !app.ui.section_open(section) {
+        app.ui.toggle_section(section);
+    }
+    if section == "mixer" {
+        // the Mixer tab (not Point Color), on the group the drag changes unless All shows them all
+        if app.ui.flyout_open("pointColor") {
+            app.ui.toggle_flyout("pointColor");
+        }
+        if app.ui.mixer_adjust != "color" && app.ui.mixer_group != "all" {
+            app.ui.mixer_group = target.to_string();
+        }
+    }
+    app.ui.tool = format!("tat:{target}");
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------ colour mixer
@@ -2539,9 +2638,9 @@ fn hdr_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     }
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
         let mut v = app.ui.hdr_visualize;
-        let r = ui.checkbox(&mut v, "Visualize HDR");
+        let r = ui.checkbox(&mut v, crate::i18n::tr("Visualize HDR"));
         register(ui.ctx(), "check:hdrVisualize", r.rect);
-        if r.on_hover_text("Grey below SDR white; yellow, orange, red, magenta up to 1, 2, 3 and over 3 stops above it").changed() {
+        if r.on_hover_text(crate::i18n::tr("Grey below SDR white; yellow, orange, red, magenta up to 1, 2, 3 and over 3 stops above it")).changed() {
             app.ui.hdr_visualize = v;
         }
         // Lightroom Classic's Preview for SDR Display: the photo as SDR displays and SDR exports
@@ -2868,19 +2967,19 @@ impl WheelGrab {
 /// in place for the drag; elsewhere it moves unseen and is put back. The browser can't move it
 /// (eframe's web host ignores the command), so there it only shows again where the drag ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct WheelCapture {
+pub(crate) struct WheelCapture {
     /// Where the button went down: the pointer goes back there.
-    origin: Pos2,
+    pub(crate) origin: Pos2,
     /// Where the pointer would be had it been free: where the drag began plus the travel since.
     pos: Pos2,
     /// Let go early (the window lost focus): the rest of this drag leaves the wheel alone.
-    dropped: bool,
+    pub(crate) dropped: bool,
     /// The pass that last drew the dragged wheel.
     pass: u64,
 }
 
 /// One wheel is dragged at a time, so one capture for them all.
-const WHEEL_CAPTURE: &str = "wheelCapture";
+pub(crate) const WHEEL_CAPTURE: &str = "wheelCapture";
 
 /// The mouse's travel this frame: the pointer's, or, while the pointer stands still (locked, or
 /// against a screen edge), the raw motion the host reports.
@@ -2894,7 +2993,7 @@ fn wheel_travel(delta: egui::Vec2, motion: Option<egui::Vec2>) -> egui::Vec2 {
 /// Where the wheel `resp` reads the pointer this frame: where it clicked, or for a drag the held
 /// pointer ([`WheelCapture`]), `None` once a lost focus let go of it (Esc ends the drag itself:
 /// egui stops a drag on Esc).
-fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
+pub(crate) fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
     let q = resp.interact_pointer_pos()?;
     if !resp.dragged() {
         return Some(q);
@@ -2930,7 +3029,7 @@ fn wheel_pointer(ui: &egui::Ui, resp: &egui::Response) -> Option<Pos2> {
 }
 
 /// Unlock and show the pointer a wheel drag held, back at `origin`.
-fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
+pub(crate) fn give_pointer_back(ctx: &egui::Context, origin: Pos2) {
     if cfg!(target_os = "macos") {
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
     }
@@ -2975,7 +3074,7 @@ pub(crate) fn wheel_pick(v: egui::Vec2, rad: f32, lock: Option<WheelLock>) -> (f
     }
 }
 
-fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
+pub(crate) fn paint_wheel(p: &egui::Painter, c: Pos2, rad: f32) {
     p.add(wheel_mesh(c, rad));
     p.circle_stroke(c, rad, Stroke::new(1.0, Color32::from_gray(40)));
 }
@@ -3094,7 +3193,7 @@ fn lens_note(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, has_
     let Some(state) = app.session.catalog.photo(id).and_then(|p| app.session.lens_match(p)) else { return };
     let text = match state {
         Match::NoDatabase => {
-            let link = egui::RichText::new(tr("No lens database — set one up or download it…")).size(11.0).color(t.accent).underline();
+            let link = egui::RichText::new(tr("No lens database. Set one up or download it…")).size(11.0).color(t.accent).underline();
             let r = ui.add(egui::Label::new(link).sense(egui::Sense::click()));
             crate::widgets::register(ui.ctx(), "link:lensDbSetup", r.rect);
             if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -3216,6 +3315,17 @@ pub(crate) fn reset_tip(keymap: &crate::shortcuts::Keymap, mac: bool) -> String 
     }
 }
 
+/// How long the pointer rests on a histogram clipping indicator before its overlay is previewed
+/// on the photo (see [`crate::LccApp::clipping_hover`]).
+pub(crate) const CLIPPING_PREVIEW_REST_S: f64 = 0.3;
+
+/// Whether a clipping indicator hovered since `since` has been rested on long enough at `now` (a
+/// clock that went back counts as no rest).
+pub(crate) fn clipping_preview_due(since: f64, now: f64) -> bool {
+    let rested = now - since;
+    rested.is_finite() && rested >= CLIPPING_PREVIEW_REST_S
+}
+
 #[cfg(test)]
 mod curve_histogram_tests {
     use super::*;
@@ -3243,6 +3353,18 @@ mod curve_histogram_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_point_is_not_added_on_top_of_another() {
+        use super::{POINT_GAP, with_point};
+        use lcc_geom::Point;
+        let pts = [Point::new(0.0, 0.0), Point::new(0.5, 0.5), Point::new(1.0, 1.0)];
+        assert!(with_point(&pts, 0.5 + POINT_GAP / 2.0, 0.2).is_none());
+        assert!(with_point(&pts, 0.0, 0.2).is_none());
+        let (i, v) = with_point(&pts, 0.6, 0.2).expect("clear of the others");
+        assert_eq!((i, v.len()), (2, 4));
+        assert!(v.windows(2).all(|w| w[1].x - w[0].x >= POINT_GAP));
+    }
+
     use super::*;
 
     /// The Profile Manager's hidden camera profiles are left out of the Camera Profiles submenu too, except the

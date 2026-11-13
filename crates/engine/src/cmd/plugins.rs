@@ -10,8 +10,12 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lcc_plugins::{HostApi, Manager, Permissions};
+use lcc_plugins::{Begun, HostApi, Manager, Permissions};
 use serde_json::{Value, json};
+
+/// The host of a link in a plug-in's or filter's About (`plugin.list` → `about`), lower-cased, as
+/// the Plug-in Manager names the link; `None` for a link the host doesn't show.
+pub use lcc_plugins::about::link_host;
 
 use super::{CommandSpec, always, bad, bool_or, cmd, str_param};
 use crate::{Result, Session};
@@ -30,11 +34,19 @@ pub fn manager() -> MutexGuard<'static, Option<Manager>> {
     if g.is_none() {
         let dir = if cfg!(test) { None } else { plugins_dir() };
         *g = Some(match dir {
-            Some(d) => Manager::open(&d).unwrap_or_else(|e| {
-                let mut m = Manager::in_memory();
-                m.failed.push(lcc_plugins::Failed::new(d.display().to_string(), e.to_string()));
-                m
-            }),
+            Some(d) => match Manager::open(&d) {
+                Ok(mut m) => {
+                    // no plug-in may be granted a folder holding the settings (its own grant)
+                    m.set_protected(crate::config::config_dir().into_iter().collect());
+                    crate::filter_plugins::settle_shared_ids(&mut m, crate::filter_plugins::registry());
+                    m
+                }
+                Err(e) => {
+                    let mut m = Manager::in_memory();
+                    m.failed.push(lcc_plugins::Failed::new(d.display().to_string(), e.to_string()));
+                    m
+                }
+            },
             None => Manager::in_memory(),
         });
     }
@@ -146,6 +158,18 @@ impl HostApi for SessionHost<'_> {
         super::plugin_library::add(self.0, params)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        super::plugin_develop::pixels(self.0, photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        super::plugin_develop::set_crop(self.0, photo, rect, angle)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        super::plugin_develop::virtual_copy(self.0, photo, name)
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.0.desktop.find_program(program)
     }
@@ -172,7 +196,14 @@ fn grant_param(p: &Value, cmd: &str) -> Result<Option<Permissions>> {
 
 fn list(_: &mut Session, _: &Value) -> Result<Value> {
     with_manager(|m| {
-        let mut plugins: Vec<Value> = m.list().map(|p| p.info()).collect();
+        let mut plugins: Vec<Value> = m
+            .list()
+            .map(|p| {
+                let mut v = p.info();
+                v["previousVersion"] = json!(m.previous_version(&p.plugin.manifest().id));
+                v
+            })
+            .collect();
         // pixel-filter plug-ins (kind "filter"); the manager can't load their modules
         plugins.extend(crate::filter_plugins::registry().list().iter().map(|f| crate::filter_plugins::info(f)));
         let filter_files = crate::filter_plugins::sources();
@@ -192,18 +223,25 @@ fn list(_: &mut Session, _: &Value) -> Result<Value> {
                     _ => f.error.as_str(),
                 };
                 let kind = if what == FilterFile::No { "plugin" } else { "filter" };
+                // a filter module another one with its id stands in for: its own id, and why
+                let (id, error) = match crate::filter_plugins::duplicate(&f.file) {
+                    Some((id, why)) => (id, why),
+                    None => (f.id.clone(), error.to_string()),
+                };
                 let mut v = json!({"file": f.file, "error": error, "kind": kind});
                 if !f.missing.is_empty() {
                     v["missing"] = json!(f.missing);
                 }
-                if !f.id.is_empty() {
-                    v["id"] = json!(f.id);
+                if !id.is_empty() {
+                    v["id"] = json!(id);
                 }
                 v
             })
             .collect();
         let host = json!({"abi": lcc_plugins::ABI_VERSION, "features": m.features()});
-        Ok(json!({"dir": m.dir(), "host": host, "plugins": plugins, "failed": failed}))
+        // past the most the folder loads: neither kind looked at them
+        let skipped = m.skipped.iter().filter(|p| !filter_files.contains(&p.display().to_string())).count();
+        Ok(json!({"dir": m.dir(), "host": host, "plugins": plugins, "failed": failed, "skipped": skipped}))
     })
 }
 
@@ -211,15 +249,73 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
     install_as(s, p, false)
 }
 
-/// Installs a plug-in as the user approved it in the Plug-in Manager's install dialog (`{path,
-/// grant?}`, as `plugin.install`): the grant may include programs, which no command can grant.
-/// The UI's install button only; never registered as a command.
+/// Installs a plug-in from the Plug-in Manager's install dialog (`{path, allowDowngrade?}`, as
+/// `plugin.install`): an update keeps the programs the user allowed even when its code differs,
+/// which a command's install drops. The UI's install button only; never registered as a command.
 pub fn install_by_user(s: &mut Session, p: &Value) -> Result<Value> {
     install_as(s, p, true)
 }
 
-/// Sets a plug-in's grant as the user ticked it in the Plug-in Manager (`{id, grant}`, as
-/// `plugin.grant`): it may grant programs. The UI's checkboxes only; never registered as a command.
+/// A permission a plug-in command the user started needs and the user was never asked about
+/// ([`Session::plugin_asks`]): the UI asks, Allow ([`allow_by_user`]) runs `rerun` again, Deny
+/// ([`deny_by_user`]) remembers the answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginAsk {
+    pub plugin: String,
+    pub plugin_name: String,
+    pub request: lcc_plugins::Request,
+    /// The `plugin.run` params to run again once allowed.
+    pub rerun: Value,
+    /// Asked by the command's prepare step (`plugin.prepare`): once allowed, the command starts
+    /// again as from its menu item (its dialog may open) instead of running with `rerun`.
+    pub prepare: bool,
+}
+
+/// `{id, group, value?}` → the request it names.
+fn request_param(p: &Value, cmd: &str) -> Result<lcc_plugins::Request> {
+    let group = str_param(p, "group").ok_or_else(|| bad(cmd, "missing `group`"))?;
+    let group = lcc_plugins::Group::parse(group).ok_or_else(|| {
+        let names: Vec<&str> = lcc_plugins::Group::ALL.iter().map(|g| g.name()).collect();
+        bad(cmd, format!("unknown group {group:?} (one of {})", names.join(", ")))
+    })?;
+    match p.get("value") {
+        None | Some(Value::Null) => Ok(lcc_plugins::Request::group(group)),
+        Some(Value::String(v)) if group.has_values() => Ok(lcc_plugins::Request::value(group, v.clone())),
+        Some(Value::String(_)) => Err(bad(cmd, format!("`{}` takes no value", group.name()))),
+        Some(_) => Err(bad(cmd, "`value` must be a string")),
+    }
+}
+
+/// The user allowed a request of a plug-in (`{id, group, value?}`): when the plug-in asked, or on
+/// its Permissions tab. The UI's Allow buttons only (and tests); never registered as a command.
+pub fn allow_by_user(_: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "plugin.allow";
+    let id = id_param(p, C)?;
+    let r = request_param(p, C)?;
+    with_manager(|m| m.allow_by_user(id, &r).map(|g| json!({"id": id, "granted": g})).map_err(|e| plugin_err(C, e)))
+}
+
+/// The user said no to a request of a plug-in (`{id, group, value?}`) when it asked: remembered
+/// with today's date. The UI's Deny button only (and tests); never registered as a command.
+pub fn deny_by_user(_: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "plugin.deny";
+    let id = id_param(p, C)?;
+    let r = request_param(p, C)?;
+    let today = chrono::Local::now().date_naive().format("%Y-%m-%d").to_string();
+    with_manager(|m| m.deny_by_user(id, &r, &today).map(|()| json!({"id": id})).map_err(|e| plugin_err(C, e)))
+}
+
+fn revoke(_: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "plugin.revoke";
+    let id = id_param(p, C)?;
+    let r = request_param(p, C)?;
+    with_manager(|m| m.revoke(id, &r).map(|g| json!({"id": id, "granted": g})).map_err(|e| plugin_err(C, e)))
+}
+
+/// Sets a plug-in's whole grant at once (`{id, grant}`, as `plugin.grant`, without its check that
+/// nothing is added). Tests only: never registered as a command, and the UI allows one request at
+/// a time ([`allow_by_user`]).
+#[cfg(test)]
 pub fn grant_by_user(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.grant";
     let id = id_param(p, C)?;
@@ -244,37 +340,106 @@ pub fn find_program(s: &Session, program: &Value) -> Option<Vec<Value>> {
 fn install_as(s: &mut Session, p: &Value, by_user: bool) -> Result<Value> {
     const C: &str = "plugin.install";
     let path = str_param(p, "path").ok_or_else(|| bad(C, "missing `path` (a .wasm file)"))?;
-    let grant = grant_param(p, C)?;
+    // the install dialog grants nothing: the user allows each permission when it's asked for
+    let grant = if by_user { None } else { grant_param(p, C)? };
     let allow_downgrade = bool_or(p, "allowDowngrade", false);
-    if crate::filter_plugins::is_filter_file(std::path::Path::new(path)) {
+    let bytes = lcc_plugins::read_module(std::path::Path::new(path), &lcc_plugins::Limits::default()).map_err(|e| plugin_err(C, e))?;
+    if lcc_filters::is_filter_module(&bytes) {
         // a pixel filter: no capabilities to grant, nothing for the manager
-        let f = crate::filter_plugins::install_file(std::path::Path::new(path)).map_err(|e| bad(C, e))?;
-        return Ok(crate::filter_plugins::info(&f));
+        let f = lcc_filters::Filter::load(&bytes, lcc_filters::Limits::default()).map_err(|e| bad(C, e.to_string()))?;
+        // checked and installed under the manager's lock, so a plug-in install can't take the id meanwhile
+        let (f, unknown) = with_manager(|m| {
+            if let Some(e) = plugin_has_id(m, f.id()) {
+                return Err(bad(C, e));
+            }
+            if let Some(e) = filter_downgrade(&f)
+                && !allow_downgrade
+            {
+                return Err(bad(C, e.to_string()));
+            }
+            let unknown = crate::filter_plugins::unknown_fields(&f);
+            if !unknown.is_empty() {
+                // a filter has no log of its own
+                log::warn!("pixel filter {}: unknown manifest fields: {}", f.id(), unknown.join(", "));
+            }
+            for d in &f.manifest().dropped {
+                log::warn!("pixel filter {}: manifest value dropped: {d}", f.id());
+            }
+            Ok((crate::filter_plugins::install_loaded(f, &bytes).map_err(|e| bad(C, e))?, unknown))
+        })?;
+        let mut info = crate::filter_plugins::info(&f);
+        info["unknownFields"] = json!(unknown);
+        return Ok(info);
     }
     let lib = s.plugin_library.clone();
     let r = with_library(&lib, |m| {
-        let path = std::path::Path::new(path);
-        let installed = if by_user { m.install_file_by_user(path, grant, allow_downgrade) } else { m.install_file(path, grant, allow_downgrade) };
+        let plugin = m.load(&bytes).map_err(|e| plugin_err(C, e))?;
+        if let Some(e) = filter_has_id(plugin.id()) {
+            return Err(bad(C, e));
+        }
+        let installed = if by_user {
+            m.install_loaded_by_user(plugin, &bytes, grant, allow_downgrade)
+        } else {
+            m.install_loaded(plugin, &bytes, grant, allow_downgrade)
+        };
         installed.map(|i| i.info()).map_err(|e| plugin_err(C, e))
     })?;
     sync_fields(s);
     Ok(r)
 }
 
+/// Plug-ins and pixel filters share the folder's `<id>.wasm` names: why a filter with `id` can't be
+/// installed while plug-in `id` is (loaded, or a plug-in module in the folder that didn't load:
+/// it needs features this version lacks, can't be read, or a filter with its id came first).
+fn plugin_has_id(m: &Manager, id: &str) -> Option<String> {
+    use crate::filter_plugins::{FilterFile, filter_file_cached};
+    let failed = || m.failed.iter().any(|f| f.id == id && f.path.as_deref().is_some_and(|p| filter_file_cached(p) == FilterFile::No));
+    let name = match (m.get(id), m.unloaded(id).is_some() || failed()) {
+        (Some(p), _) => p.plugin.manifest().name.clone(),
+        (None, true) => id.to_string(),
+        (None, false) => return None,
+    };
+    Some(format!("{id:?} is the id of the installed plug-in \"{name}\"; a pixel filter can't share it (remove the plug-in first)"))
+}
+
+/// [`plugin_has_id`] the other way round: why a plug-in with `id` can't be installed.
+fn filter_has_id(id: &str) -> Option<String> {
+    let f = crate::filter_plugins::registry().get(id)?;
+    Some(format!("{id:?} is the id of the installed pixel filter \"{}\"; a plug-in can't share it (remove the filter first)", f.manifest().name))
+}
+
+/// Filter `f` is older than the installed filter with its id: the error installing it without
+/// `allowDowngrade` gives (the same as a plug-in's).
+fn filter_downgrade(f: &lcc_filters::Filter) -> Option<lcc_plugins::Error> {
+    let installed = crate::filter_plugins::registry().get(f.id())?;
+    let (new, old) = (&f.manifest().version, &installed.manifest().version);
+    crate::filter_plugins::is_older(new, old).then(|| lcc_plugins::Error::Downgrade { installed: old.clone(), new: new.clone() })
+}
+
 fn inspect_file(_: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.inspectFile";
     let path = str_param(p, "path").ok_or_else(|| bad(C, "missing `path`"))?;
-    let bytes = std::fs::read(path).map_err(|e| bad(C, format!("{path}: {e}")))?;
+    // as install reads it: a file over the size limit is refused before it is read
+    let bytes = lcc_plugins::read_module(std::path::Path::new(path), &lcc_plugins::Limits::default()).map_err(|e| plugin_err(C, e))?;
     if lcc_filters::is_filter_module(&bytes) {
         let f = lcc_filters::Filter::load(&bytes, lcc_filters::Limits::default()).map_err(|e| bad(C, e.to_string()))?;
         let installed = crate::filter_plugins::registry().get(f.id()).map(|i| {
             let same = i.manifest().version == f.manifest().version && i.module_hash() == f.module_hash();
             json!({"version": i.manifest().version, "moduleHash": i.module_hash(), "same": same})
         });
-        return Ok(json!({"manifest": crate::filter_plugins::info(&f), "installed": installed}));
+        let conflict = with_manager(|m| Ok(plugin_has_id(m, f.id())))?;
+        let downgrade = filter_downgrade(&f).is_some();
+        let unknown = crate::filter_plugins::unknown_fields(&f);
+        return Ok(json!({
+            "manifest": crate::filter_plugins::info(&f), "installed": installed, "downgrade": downgrade, "conflict": conflict,
+            "unknownFields": unknown, "dropped": f.manifest().dropped,
+        }));
     }
     let plugin = lcc_plugins::Plugin::load(&bytes, lcc_plugins::Limits::default()).map_err(|e| plugin_err(C, e))?;
-    let manifest = serde_json::to_value(plugin.manifest()).map_err(|e| bad(C, e.to_string()))?;
+    let mut manifest = serde_json::to_value(plugin.manifest()).map_err(|e| bad(C, e.to_string()))?;
+    if let Some(o) = manifest.as_object_mut() {
+        o.insert("about".into(), plugin.manifest().about.info());
+    }
     // an update: what is granted now, so the dialog can show what the new version adds; and what
     // would stop the install, so the dialog can say so before the user approves anything
     with_manager(|m| {
@@ -287,12 +452,21 @@ fn inspect_file(_: &mut Session, p: &Value) -> Result<Value> {
             })
             .or_else(|| m.unloaded(plugin.id()).map(|(version, grant)| json!({"version": version, "granted": grant, "loaded": false})));
         let (missing, version_error, downgrade) = m.install_check(plugin.manifest());
-        Ok(json!({"manifest": manifest, "installed": installed, "missing": missing, "versionError": version_error, "downgrade": downgrade.is_some()}))
+        let conflict = filter_has_id(plugin.id());
+        let (unknown, dropped) = (&plugin.manifest().unknown_fields, &plugin.manifest().dropped);
+        Ok(json!({
+            "manifest": manifest, "installed": installed, "missing": missing, "versionError": version_error,
+            "downgrade": downgrade.is_some(), "conflict": conflict, "unknownFields": unknown, "dropped": dropped,
+        }))
     })
 }
 
 fn uninstall(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.uninstall";
+    let keep_data = bool_or(p, "keepData", false);
+    if let Some(file) = str_param(p, "file") {
+        return uninstall_file(s, file, keep_data);
+    }
     let id = id_param(p, C)?;
     if crate::filter_plugins::uninstall(id).map_err(|e| bad(C, e))? {
         return Ok(Value::Null);
@@ -304,10 +478,70 @@ fn uninstall(s: &mut Session, p: &Value) -> Result<Value> {
         if m.failed.iter().any(|f| f.id == id && filter_files.contains(&f.file)) {
             return Err(bad(C, format!("{id:?} is a pixel filter module, not a plug-in; remove it by its filter id")));
         }
-        m.uninstall(id).map(|_| Value::Null).map_err(|e| plugin_err(C, e))
+        // nor a filter module that didn't load (a duplicate): removing by id would delete it too
+        let filter_row = m.failed.iter().find(|f| {
+            use crate::filter_plugins::{FilterFile, filter_file_cached};
+            f.id == id && f.path.as_deref().is_some_and(|p| filter_file_cached(p) != FilterFile::No)
+        });
+        if let Some(f) = filter_row {
+            return Err(bad(C, format!("{} is a pixel filter module with the id {id:?}; remove that file first (by `file`)", f.file)));
+        }
+        m.uninstall_with(id, keep_data).map(|_| Value::Null).map_err(|e| plugin_err(C, e))
     })?;
     sync_fields(s);
     Ok(Value::Null)
+}
+
+/// `plugin.uninstall {file}`: a module that didn't load. Another module with its id loaded (or
+/// stands in for it): only this file goes. Otherwise it is the plug-in's only module, and the
+/// plug-in is removed as by its id, data and all.
+fn uninstall_file(s: &mut Session, file: &str, keep_data: bool) -> Result<Value> {
+    const C: &str = "plugin.uninstall";
+    let lib = s.plugin_library.clone();
+    with_library(&lib, |m| {
+        let Some(row) = m.failed.iter().find(|f| f.file == file).cloned() else {
+            return Err(bad(C, format!("{file}: no module that didn't load is listed with this file")));
+        };
+        let id = crate::filter_plugins::duplicate(file).map_or(row.id.clone(), |(id, _)| id);
+        let others =
+            m.get(&id).is_some() || crate::filter_plugins::registry().get(&id).is_some() || m.failed.iter().any(|f| f.file != file && f.id == id);
+        // a pixel filter module that didn't load has no plug-in data: only its file goes
+        let filter = row.path.as_deref().is_some_and(|p| crate::filter_plugins::filter_file_cached(p) != crate::filter_plugins::FilterFile::No);
+        if others || filter || crate::filter_plugins::duplicate(file).is_some() {
+            m.remove_failed_module(file).map_err(|e| plugin_err(C, e))?;
+            crate::filter_plugins::forget_duplicate(file);
+            return Ok(());
+        }
+        m.uninstall_with(&id, keep_data).map_err(|e| plugin_err(C, e))
+    })?;
+    sync_fields(s);
+    Ok(Value::Null)
+}
+
+fn rollback(s: &mut Session, p: &Value) -> Result<Value> {
+    rollback_as(s, p, false)
+}
+
+/// Goes back to a plug-in's previous version as the user asked on its page (`{id}`, as
+/// `plugin.rollback`): it keeps the programs granted, which a command's rollback drops. The
+/// plug-in page's button only; never registered as a command.
+pub fn rollback_by_user(s: &mut Session, p: &Value) -> Result<Value> {
+    rollback_as(s, p, true)
+}
+
+fn rollback_as(s: &mut Session, p: &Value, by_user: bool) -> Result<Value> {
+    const C: &str = "plugin.rollback";
+    let id = id_param(p, C)?;
+    if crate::filter_plugins::registry().get(id).is_some() {
+        return Err(bad(C, format!("{id:?} is a pixel filter: pixel filters keep no previous version")));
+    }
+    let lib = s.plugin_library.clone();
+    let r = with_library(&lib, |m| {
+        let back = if by_user { m.rollback_by_user(id) } else { m.rollback(id) };
+        back.map(|i| i.info()).map_err(|e| plugin_err(C, e))
+    })?;
+    sync_fields(s);
+    Ok(r)
 }
 
 fn enable(s: &mut Session, p: &Value) -> Result<Value> {
@@ -336,16 +570,73 @@ fn log(_: &mut Session, p: &Value) -> Result<Value> {
     with_manager(|m| m.get(id).map(|i| json!(i.log)).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed"))))
 }
 
+fn picture(_: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "plugin.picture";
+    let id = id_param(p, C)?;
+    let dark = match str_param(p, "theme") {
+        None | Some("dark") => true,
+        Some("light") => false,
+        Some(t) => return Err(bad(C, format!("`theme` must be dark or light, not {t:?}"))),
+    };
+    let header = match str_param(p, "picture") {
+        None | Some("header") => true,
+        Some("icon") => false,
+        Some(k) => return Err(bad(C, format!("`picture` must be header or icon, not {k:?}"))),
+    };
+    // a pixel filter's, else a plug-in's: both manifests carry the same two pictures
+    let svg = if let Some(f) = crate::filter_plugins::registry().get(id) {
+        let m = f.manifest();
+        if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() }
+    } else {
+        with_manager(|m| {
+            let i = m.get(id).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed")))?;
+            let m = i.plugin.manifest();
+            Ok(if header { m.header.as_ref().map(|h| h.for_theme(dark).to_string()) } else { m.icon.clone() })
+        })?
+    };
+    Ok(json!({"svg": svg}))
+}
+
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.run";
     let id = id_param(p, C)?;
     let command = str_param(p, "command").ok_or_else(|| bad(C, "missing `command`"))?;
     let args = p.get("args").cloned().unwrap_or(Value::Null);
-    let selection: Vec<String> = s.targets(p)?.iter().map(|i| i.0.to_string()).collect();
+    let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+    let ids: Vec<u64> = s.targets(p)?.iter().map(|i| i.0).collect();
+    let selection: Vec<String> = ids.iter().map(u64::to_string).collect();
     let source = source_param(s, p, C)?;
     let lib = s.plugin_library.clone();
-    let mut host = SessionHost(s);
-    let r = with_library(&lib, |m| m.run_command_from(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)));
+    let begun = {
+        let mut host = SessionHost(s);
+        with_library(&lib, |m| m.begin_command(id, command, &args, &selection, &source, &mut host).map_err(|e| plugin_err(C, e)))?
+    };
+    let r = match begun {
+        Begun::Message(m) => return Ok(json!({"message": m, "ran": false})),
+        Begun::Call(call) if call.is_job() => return super::plugin_jobs::run(s, *call, wait).map_err(|e| plugin_err(C, e)),
+        Begun::Call(mut call) => {
+            if s.plugin_ask_user {
+                call.ask_user();
+            }
+            let outcome = call.run(&mut SessionHost(s));
+            let needs = call.take_needs();
+            let name = call.plugin_name().to_string();
+            let r = with_library(&lib, |m| m.end(*call, Some(outcome)).map_err(|e| plugin_err(C, e)));
+            // the user is asked about each, once the command has ended (Allow runs it again)
+            for request in needs {
+                let mut rerun = json!({"plugin": id, "command": command, "args": args, "source": source});
+                // the same photos (the selection may have changed by then)
+                if !ids.is_empty() {
+                    rerun["ids"] = json!(ids);
+                }
+                let ask = PluginAsk { plugin: id.to_string(), plugin_name: name.clone(), request, rerun, prepare: false };
+                if !s.plugin_asks.contains(&ask) {
+                    s.plugin_asks.push(ask);
+                }
+            }
+            r
+        }
+    };
     // the command may have written the plug-in's own fields
     sync_fields(s);
     r
@@ -397,17 +688,40 @@ fn prepare(s: &mut Session, p: &Value) -> Result<Value> {
     let selection: Vec<String> = s.targets(p)?.iter().map(|i| i.0.to_string()).collect();
     let source = source_param(s, p, C)?;
     let lib = s.plugin_library.clone();
-    let mut host = SessionHost(s);
-    with_library(&lib, |m| {
-        Ok(match m.prepare_command_from(id, command, &selection, &source, &mut host).map_err(|e| plugin_err(C, e))? {
-            lcc_plugins::Prepared::Dialog { fields, error } => {
-                let values = m.command_values(id, command, &fields);
-                json!({"dialog": fields_with_values(&fields, &values), "error": error})
+    let asking = s.plugin_ask_user;
+    let mut needs = Vec::new();
+    let mut name = String::new();
+    let r = {
+        let mut host = SessionHost(s);
+        with_library(&lib, |m| {
+            let prepared = if asking {
+                m.prepare_command_asking(id, command, &selection, &source, &mut host, &mut needs)
+            } else {
+                m.prepare_command_from(id, command, &selection, &source, &mut host)
+            };
+            if let Some(p) = m.get(id) {
+                name.clone_from(&p.plugin.manifest().name);
             }
-            lcc_plugins::Prepared::Run(args) => json!({"run": args}),
-            lcc_plugins::Prepared::Message(message) => json!({"message": message}),
+            Ok(match prepared.map_err(|e| plugin_err(C, e))? {
+                lcc_plugins::Prepared::Dialog { fields, error } => {
+                    let values = m.command_values(id, command, &fields);
+                    json!({"dialog": fields_with_values(&fields, &values), "error": error})
+                }
+                lcc_plugins::Prepared::Run(args) => json!({"run": args}),
+                lcc_plugins::Prepared::Message(message) => json!({"message": message}),
+            })
         })
-    })
+    };
+    // the user is asked about each, whether the prepare step failed or not (Allow starts the
+    // command again)
+    for request in needs {
+        let ask =
+            PluginAsk { plugin: id.to_string(), plugin_name: name.clone(), request, rerun: json!({"plugin": id, "command": command}), prepare: true };
+        if !s.plugin_asks.contains(&ask) {
+            s.plugin_asks.push(ask);
+        }
+    }
+    r
 }
 
 fn settings(s: &mut Session, p: &Value) -> Result<Value> {
@@ -625,7 +939,8 @@ impl ExportHooks {
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
-    /// The host call: a catalog read, `metadata.setStandard` or `library.add`.
+    /// The host call: a catalog read, `metadata.setStandard`, `library.add`, `photo.pixels`,
+    /// `develop.setCrop` or `photo.virtualCopy`.
     method: Relayed,
     params: Value,
     reply: std::sync::mpsc::Sender<std::result::Result<Value, String>>,
@@ -644,6 +959,52 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
+    /// `photo.pixels`: `{photo, longEdge}`, already checked. The session's thread only finds the
+    /// source and leaves it here; the caller decodes it on its own thread.
+    Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
+    /// `develop.setCrop`: `{photo, rect, angle}`, already checked.
+    SetCrop,
+    /// `photo.virtualCopy`: `{photo, name}`, already checked.
+    VirtualCopy,
+}
+
+/// [`Relayed::Pixels`]'s parameters, and back.
+pub(super) fn pixels_params(photo: &str, long_edge: u32) -> Value {
+    json!({"photo": photo, "longEdge": long_edge})
+}
+
+/// [`Relayed::SetCrop`]'s parameters, and back.
+pub(super) fn crop_params(photo: &str, rect: [f64; 4], angle: Option<f64>) -> Value {
+    json!({"photo": photo, "rect": rect, "angle": angle})
+}
+
+/// [`Relayed::VirtualCopy`]'s parameters, and back.
+pub(super) fn copy_params(photo: &str, name: Option<&str>) -> Value {
+    json!({"photo": photo, "name": name})
+}
+
+fn relayed_copy(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.virtualCopy: missing photo")?;
+    host.virtual_copy(photo, p["name"].as_str())
+}
+
+fn relayed_pixels(
+    s: &mut Session,
+    p: &Value,
+    slot: &std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>,
+) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("photo.pixels: missing photo")?;
+    let edge = p["longEdge"].as_u64().and_then(|e| u32::try_from(e).ok()).ok_or("photo.pixels: missing longEdge")?;
+    let source = super::plugin_develop::pixels_source(s, photo, edge)?;
+    *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    Ok(Value::Null)
+}
+
+fn relayed_crop(host: &mut SessionHost<'_>, p: &Value) -> std::result::Result<Value, String> {
+    let photo = p["photo"].as_str().ok_or("develop.setCrop: missing photo")?;
+    let v: Vec<f64> = p["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
+    let rect: [f64; 4] = v.try_into().map_err(|_| "develop.setCrop: missing rect")?;
+    host.set_crop(photo, rect, p["angle"].as_f64())
 }
 
 const WAITING: u8 = 0;
@@ -663,6 +1024,9 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
+            Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
+            Relayed::SetCrop => relayed_crop(&mut host, &self.params),
+            Relayed::VirtualCopy => relayed_copy(&mut host, &self.params),
         };
         let _ = self.reply.send(r);
     }
@@ -686,6 +1050,20 @@ impl RelayHost {
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(WAITING));
         self.0.send(HostRequest { method, params: params.clone(), reply, state }).map_err(|_| "the catalog is closed".to_string())?;
         rx.recv().map_err(|_| "the catalog is closed".to_string())?
+    }
+
+    /// `photo.pixels`: the session's thread finds the source ([`Relayed::Pixels`]), and it is
+    /// decoded here, on the caller's thread. With a `limit`, as [`RelayHost::ask_within`].
+    pub(super) fn pixels_within(&self, photo: &str, long_edge: u32, limit: Option<std::time::Duration>) -> std::result::Result<Value, String> {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let method = Relayed::Pixels(slot.clone());
+        let params = pixels_params(photo, long_edge);
+        match limit {
+            Some(limit) => self.ask_within(method, &params, limit)?,
+            None => self.ask(method, &params)?,
+        };
+        let source = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        source.ok_or_else(|| "photo.pixels: the catalog gave no source".to_string())?.decode()
     }
 
     /// [`RelayHost::ask`], giving up after `limit` unless the session's thread has already taken
@@ -722,6 +1100,18 @@ impl HostApi for RelayHost {
         self.ask(Relayed::LibraryAdd, params)
     }
 
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.pixels_within(photo, long_edge, None)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::SetCrop, &crop_params(photo, rect, angle))
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.ask(Relayed::VirtualCopy, &copy_params(photo, name))
+    }
+
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
         self.1.find_program(program)
     }
@@ -753,6 +1143,18 @@ impl HostApi for HookSession<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         self.0.library_add(params)
+    }
+
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
+        self.0.photo_pixels(photo, long_edge)
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> std::result::Result<Value, String> {
+        self.0.set_crop(photo, rect, angle)
+    }
+
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> std::result::Result<Value, String> {
+        self.0.virtual_copy(photo, name)
     }
 
     fn find_program(&mut self, program: &lcc_plugins::ProgramDecl) -> Vec<lcc_plugins::Found> {
@@ -964,24 +1366,27 @@ pub(crate) fn sync_fields_with(s: &mut Session, write_sidecars: bool) -> usize {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, commands, hooks, publish, moduleHash: sha256 of the module, settingsRevision: changes when a setting does}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}]}", always, list),
-        cmd!(query "plugin.inspectFile", "Inspect Plug-in File", [], None, "{path} — loads a .wasm without installing it → {manifest, installed: {version, granted, same: the installed version and code are this file's (installing it changes nothing), loaded?: false (it needs features this version lacks)} | null, missing: [features this version lacks], versionError: why `version` isn't semver | null, downgrade: older than the installed version}; plugin.install refuses each of these (a downgrade only without allowDowngrade). The install dialog shows each requested permission for approval", always, inspect_file),
-        cmd!(query "plugin.install", "Install Plug-in", [], None, "{path: .wasm, grant?: {catalog, metadataWrite, network: [hosts], fs: [{path, write}], programs: [entries as plugin.list gives them]}, allowDowngrade?: bool = false} — installs or updates with the permissions the user approved (each one shown first, see plugin.inspectFile); without `grant` nothing new is granted: none on a first install, the previous grant on an update. A grant may repeat or leave out the `programs` the installed version has granted, never add one or widen one: only the user allows those, in the Plug-in Manager (an error, nothing installed). A module whose code differs from the installed one keeps none of its programs (its log says so). Refused: features in `requires` this version lacks, a `version` that isn't semver, an older version than the installed one unless allowDowngrade → plugin", always, install),
-        cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} — removes the module and its data; also a plug-in listed under plugin.list → failed (by its id there)", always, uninstall),
+        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, requests: [{group, value?: host, folder or program id, write?: (fs), state: allowed|denied|never|refused, deniedOn?: YYYY-MM-DD, reason?: why a folder can't be granted}], commands, hooks, publish, about: {homepage?, repository?, changelog?, license?, issues?: the GitHub repository's issues page}, moduleHash: sha256 of the module, settingsRevision: changes when a setting does, previousVersion: the version plugin.rollback goes back to | null}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}], skipped: modules in the folder past the most it loads (256 plug-ins counting every module, 1,000 pixel filters), not looked at}", always, list),
+        cmd!(query "plugin.inspectFile", "Inspect Plug-in File", [], None, "{path}: loads a .wasm without installing it → {manifest, installed: {version, granted, same: the installed version and code are this file's (installing it changes nothing), loaded?: false (it needs features this version lacks)} | null, missing: [features this version lacks], versionError: why `version` isn't semver | null, downgrade: older than the installed version (pixel filters too), conflict: why a module of the other kind (plug-in or pixel filter) with this id stops it | null, unknownFields: manifest fields this version doesn't know, by path (they're ignored; installing still goes ahead), dropped: manifest values this version can't use, each with why (`homepage: not an https:// link`; left out, installing still goes ahead)}; manifest.about: {homepage?, repository?, changelog?, license?, issues?}; plugin.install refuses each of these (a downgrade only without allowDowngrade). A file over the install size limit is refused as install refuses it. The install dialog lists the permissions it may ask for", always, inspect_file),
+        cmd!(query "plugin.install", "Install Plug-in", [], None, "{path: .wasm, grant?: {catalog, metadataWrite, network: [hosts], fs: [{path, write}], programs: [entries as plugin.list gives them]}, allowDowngrade?: bool = false}: installs or updates. Nothing is granted: a fresh install has no permissions, and the plug-in asks the user for each as it needs it; an update keeps what the user allowed (cut back to what the new version asks for) and what they denied. `grant` may repeat or leave out what the installed version has, never add to it (an error, nothing installed): only the user allows. A module whose code differs from the installed one keeps none of its programs (its log says so). Refused: features in `requires` this version lacks, a `version` that isn't semver, an older version than the installed one unless allowDowngrade (pixel filters too), an id an installed module of the other kind (plug-in or pixel filter) has → plugin", always, install),
+        cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} | {file}, keepData?: bool = false: removes the module and its data (with keepData its data and settings stay, for a later install of the same id; a pixel filter keeps none); also a plug-in listed under plugin.list → failed (by its id there). With `file` (a plugin.list → failed row's): only that module file when another module has its id (the first by file name loads), else the plug-in as by its id", always, uninstall),
+        cmd!(query "plugin.rollback", "Go Back to Previous Plug-in Version", [], None, "{id}: goes back to the version the plug-in's last update replaced (plugin.list → previousVersion), with its settings as they were before that update; one level deep. Its grant is kept, cut back to what that version asks for, without programs (only the user keeps those, from the plug-in's page). An error when no version is kept; nothing changes when the old module can't be written → the plug-in, as plugin.list lists it", always, rollback),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
-        cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant} — replaces the grant (revokes what it leaves out, programs included; never more than requested). Granted `programs` may be repeated (kept) or left out (revoked), never added or widened: only the user allows those, in the Plug-in Manager (an error, nothing changes) → granted", always, set_grant),
+        cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant}: replaces the grant with one that may repeat or leave out what is granted (revoking what it leaves out), never add to it: a permission, host, folder (or its write), program or wider program entry the plug-in doesn't have is an error and changes nothing. Only the user allows, when the plug-in asks or in the Plug-in Manager → granted", always, set_grant),
+        cmd!(query "plugin.revoke", "Revoke Plug-in Permission", [], None, "{id, group: catalog|metadataWrite|libraryAdd|pixels|crop|virtualCopy|network|fs|programs, value?: the host, folder or program id (none: all of the group)}: takes back one permission; the plug-in may ask for it again → granted", always, revoke),
+        cmd!(query "plugin.picture", "Plug-in Picture", [], None, "{id, picture?: header|icon (header), theme?: dark|light (dark)}: a plug-in's or pixel filter's own picture: its header for that interface theme, or its icon (the manifest's `header` and `icon`) → {svg: SVG text | null}", always, picture),
         cmd!(query "plugin.log", "Plug-in Log", [], None, "{id} → [lines]", always, log),
         cmd!(query "plugin.commands", "Plug-in Commands", [], None, "{} → [{plugin, pluginName, command, label, menu, dialog, prepare, values: what the dialog opens with (the last-run values of fields that remember, else defaults)}] of enabled plug-ins", always, commands),
-        cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)} — asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
-        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare} — runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared", always, run),
+        cmd!(query "plugin.prepare", "Prepare Plug-in Command", [], None, "{plugin, command, ids?, source?: {kind: album|smartAlbum|folder|allPhotos|other, id?, name?, path?} (default: the Library source shown)}: asks a command with `prepare` how to run on ids / the selection (others: their dialog as declared) → {dialog: [field + value], error: why the plug-in's own options are missing | null} | {run: args} | {message}; runs nothing", always, prepare),
+        cmd!(query "plugin.run", "Run Plug-in Command", [], None, "{plugin, command, args?: dialog values, ids?, source?: as plugin.prepare, wait?: a job runs to its end}: runs a plug-in menu command on ids / the selection, telling it the Library source it was started from (`source`, default: the one shown) → its result; args given are remembered for its dialog. A command with `prepare` is asked first: a message → {message, ran: false} and nothing runs; its own args are used when `args` is missing; args are checked against its dialog as prepared. A job (a command with `job`) runs on a worker with a row in the activity stack and returns at once → {job: its activity id (activity.list, activity.cancel), running: true, plugin, command}; with `wait: true` it runs here to its end → its result (a cancelled job is an error). Headless sessions answer a job's catalog reads only with `wait`", always, run),
         cmd!(query "plugin.settings", "Plug-in Settings", [], None, "{id} → {id, fields: [field + value], values: {key: value}, error: why the plug-in's own options are missing | null}; kept for the whole app, defaults for what was never set", always, settings),
-        cmd!(query "plugin.setSettings", "Set Plug-in Settings", [], None, "{id, values: {key: value (null: the default)}} — each value checked against its field (numbers clamped); an unknown key or a value that doesn't fit changes nothing → {id, values}", always, set_settings),
-        cmd!(query "plugin.suggestMetadata", "Suggest Metadata (Plug-ins)", [], None, "{ids?} — asks metadata providers about the photos → [{plugin, ok: {suggestions}} | {plugin, error}]; writes nothing", always, suggest),
-        cmd!(query "plugin.postExport", "Run Export Hooks", [], None, "{files: [{path, photo?}]} — runs plug-in export post-process hooks on exported files → [{plugin, ok|error}]", always, post_export),
+        cmd!(query "plugin.setSettings", "Set Plug-in Settings", [], None, "{id, values: {key: value (null: the default)}}: each value checked against its field (numbers clamped); an unknown key or a value that doesn't fit changes nothing → {id, values}", always, set_settings),
+        cmd!(query "plugin.suggestMetadata", "Suggest Metadata (Plug-ins)", [], None, "{ids?}: asks metadata providers about the photos → [{plugin, ok: {suggestions}} | {plugin, error}]; writes nothing", always, suggest),
+        cmd!(query "plugin.postExport", "Run Export Hooks", [], None, "{files: [{path, photo?}]}: runs plug-in export post-process hooks on exported files → [{plugin, ok|error}]", always, post_export),
         cmd!(query "plugin.exportDestinations", "Plug-in Export Destinations", [], None, "{} → [{plugin, pluginName, destination, name, dialog, values: what its dialog opens with}] of enabled plug-ins; pass one as app.export {pluginDestination: {plugin, destination, args}} (args are remembered)", always, destinations),
-        cmd!(query "plugin.exportTo", "Send to Plug-in Destination", [], None, "{plugin, destination, files: [{path, photo?}], args?: dialog values} — hands exported files to a plug-in export destination → its result", always, export_to),
+        cmd!(query "plugin.exportTo", "Send to Plug-in Destination", [], None, "{plugin, destination, files: [{path, photo?}], args?: dialog values}: hands exported files to a plug-in export destination → its result", always, export_to),
         cmd!(query "plugin.metadataFields", "Plug-in Metadata Fields", [], None, "{ids?: photos | id?: photo (default the active one)} → {photo, count, plugins: [{plugin, pluginName, fields: [{key, label, type, readOnly, value, mixed?}]} | {plugin, error}]}; with several photos a field whose values differ is `mixed` (value null)", always, metadata_fields),
-        cmd!(query "plugin.setField", "Set Plug-in Metadata Field", [], None, "{plugin, field, value (null clears), ids?: photos | id?: photo (default the active one)} — read-only fields and values the field doesn't take are refused → {photo, count, field, value}; the catalog's copy (rules `plugin:<plugin>/<field>`, Any Searchable Text, XMP) follows", always, set_field),
+        cmd!(query "plugin.setField", "Set Plug-in Metadata Field", [], None, "{plugin, field, value (null clears), ids?: photos | id?: photo (default the active one)}: read-only fields and values the field doesn't take are refused → {photo, count, field, value}; the catalog's copy (rules `plugin:<plugin>/<field>`, Any Searchable Text, XMP) follows", always, set_field),
         cmd!(query "plugin.publishServices", "Plug-in Publish Services", [], None, "{} → [{kind: plugin:<id> (a publish.addService kind), plugin, id, name}]", always, services),
     ]
 }
@@ -1184,8 +1589,7 @@ pub(crate) mod tests {
         // an index in memory only: the catalog's saved form (format 7) doesn't carry it
         assert!(!s.catalog.to_snapshot().contains("J-77"), "not saved with the catalog");
         // a library opened again rebuilds it from the plug-in's data
-        let dir = std::env::temp_dir().join(format!("plugin-fields-lib-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = lcc_testkit::TempDir::new("plugin-fields-lib");
         let mut lib = Session::new();
         lib.open_library(&dir, true).unwrap();
         let first = lib.visible_cloned()[0].0;
@@ -1308,19 +1712,9 @@ pub(crate) mod tests {
         manager().get_or_insert_with(Manager::in_memory).uninstall("test.libs").unwrap();
     }
 
-    #[test]
-    fn plugin_commands_answer_without_plugins() {
-        let mut s = Session::with_demo();
-        let l = s.execute("plugin.list", &json!({})).unwrap();
-        assert!(l["plugins"].is_array());
-        assert!(s.execute("plugin.run", &json!({"plugin": "nope", "command": "x"})).is_err());
-        assert!(s.execute("plugin.install", &json!({"path": "/no/such.wasm"})).is_err());
-        assert!(s.execute("plugin.grant", &json!({"id": "nope", "grant": {"bogus": 1}})).is_err());
-        assert!(s.execute("plugin.postExport", &json!({"files": []})).unwrap().is_array());
-    }
-
-    /// A plug-in with `manifest` that answers every call with `{}`, written to a temp file.
-    fn module_file(name: &str, manifest: &Value) -> PathBuf {
+    /// A plug-in with `manifest` that answers every call with `{}`, written to `<name>.wasm` in a
+    /// Temp folder of its own, removed when the returned guard is dropped.
+    pub(crate) fn module_file(name: &str, manifest: &Value) -> lcc_testkit::TempFile {
         let manifest = manifest.to_string();
         let esc = |s: &str| s.replace('"', "\\\"");
         let src = format!(
@@ -1333,168 +1727,193 @@ pub(crate) mod tests {
             m = esc(&manifest),
             ml = manifest.len()
         );
-        let dir = std::env::temp_dir().join(format!("lcc-engine-plugin-compat-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.wasm"));
-        std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
-        path
+        let file = lcc_testkit::TempFile::new(&format!("lcc-engine-plugin-compat-{name}"), &format!("{name}.wasm"));
+        std::fs::write(&file, wat::parse_str(&src).unwrap()).unwrap();
+        file
     }
 
-    /// `requires`, the version rule and downgrades through the commands the install dialog and
-    /// agents use; `plugin.list` says what the host has.
+    /// A plug-in's own icon and header, as a pixel filter's: listed, and served by `plugin.picture`.
     #[test]
-    fn install_checks_requires_and_versions() {
+    fn a_plugins_pictures_are_listed_and_served() {
         let _turn = turn();
         let mut s = Session::with_demo();
-        let list = s.execute("plugin.list", &json!({})).unwrap();
-        assert_eq!(list["host"]["abi"], lcc_plugins::ABI_VERSION);
-        assert_eq!(list["host"]["features"], json!(lcc_plugins::HOST_FEATURES));
-
-        // a feature no host has: the dialog learns why, the install is refused
-        let needs = module_file("needs", &json!({"id": "test.needs", "name": "N", "version": "1.0.0", "requires": ["test-unknown-feature"]}));
-        let info = s.execute("plugin.inspectFile", &json!({"path": needs})).unwrap();
-        assert_eq!(info["missing"], json!(["test-unknown-feature"]));
-        let e = s.execute("plugin.install", &json!({"path": needs})).unwrap_err().to_string();
-        assert!(e.contains("test-unknown-feature"), "{e}");
-        let listed = |s: &mut Session, id: &str| {
-            let l = s.execute("plugin.list", &json!({})).unwrap();
-            l["plugins"].as_array().unwrap().iter().find(|p| p["id"] == id).cloned()
-        };
-        assert!(listed(&mut s, "test.needs").is_none());
-
-        // a feature this host has (set for the test): installs, and the list shows what it requires
-        manager().get_or_insert_with(Manager::in_memory).set_features(&["test-known-feature"]);
-        let known = module_file("known", &json!({"id": "test.known", "name": "K", "version": "1.0.0", "requires": ["test-known-feature"]}));
-        let r = s.execute("plugin.install", &json!({"path": known}));
-        manager().get_or_insert_with(Manager::in_memory).set_features(lcc_plugins::HOST_FEATURES);
-        r.unwrap();
-        assert_eq!(listed(&mut s, "test.known").unwrap()["requires"], json!(["test-known-feature"]));
-        s.execute("plugin.uninstall", &json!({"id": "test.known"})).unwrap();
-
-        // the version: semver, and a downgrade only when confirmed
-        let bad = module_file("bad", &json!({"id": "test.ver", "name": "V", "version": "1.2"}));
-        assert!(s.execute("plugin.inspectFile", &json!({"path": bad})).unwrap()["versionError"].is_string());
-        assert!(s.execute("plugin.install", &json!({"path": bad})).unwrap_err().to_string().contains("MAJOR.MINOR.PATCH"));
-        let v12 = module_file("v12", &json!({"id": "test.ver", "name": "V", "version": "1.2.0"}));
-        let v11 = module_file("v11", &json!({"id": "test.ver", "name": "V", "version": "1.1.0"}));
-        s.execute("plugin.install", &json!({"path": v12})).unwrap();
-        let info = s.execute("plugin.inspectFile", &json!({"path": v11})).unwrap();
-        assert_eq!((info["downgrade"].clone(), info["installed"]["version"].clone()), (json!(true), json!("1.2.0")));
-        assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v12})).unwrap()["downgrade"], false, "the same version is a repair");
-        let e = s.execute("plugin.install", &json!({"path": v11})).unwrap_err().to_string();
-        assert!(e.contains("1.1.0") && e.contains("1.2.0"), "{e}");
-        assert_eq!(listed(&mut s, "test.ver").unwrap()["version"], "1.2.0");
-        let r = s.execute("plugin.install", &json!({"path": v11, "allowDowngrade": true})).unwrap();
-        assert_eq!(r["version"], "1.1.0");
-        let log = s.execute("plugin.log", &json!({"id": "test.ver"})).unwrap();
-        assert!(log.as_array().unwrap().iter().any(|l| l == "downgraded from 1.2.0 to 1.1.0"), "{log}");
-        s.execute("plugin.uninstall", &json!({"id": "test.ver"})).unwrap();
-        let _ = std::fs::remove_dir_all(needs.parent().unwrap());
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'><rect width='4' height='4'/></svg>";
+        let light = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 2 2'><rect width='1' height='1'/></svg>";
+        let manifest = json!({"id": "test.pictures", "name": "Pictures", "version": "1.0.0", "icon": svg, "header": {"dark": svg, "light": light}});
+        let pictures = module_file("pictures", &manifest);
+        let info = s.execute("plugin.install", &json!({"path": pictures.path()})).unwrap();
+        assert_eq!((info["icon"].as_bool(), info["header"].as_bool()), (Some(true), Some(true)));
+        let listed = s.execute("plugin.list", &json!({})).unwrap();
+        let row = listed["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.pictures").unwrap().clone();
+        assert_eq!(row["icon"], true);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "picture": "icon"})).unwrap()["svg"], svg);
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures"})).unwrap()["svg"], svg, "the header, dark by default");
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.pictures", "theme": "light"})).unwrap()["svg"], light);
+        // without pictures: listed as absent, none served
+        let plain_file = module_file("plain", &json!({"id": "test.plain", "name": "Plain", "version": "1.0.0"}));
+        let plain = s.execute("plugin.install", &json!({"path": plain_file.path()})).unwrap();
+        assert_eq!((plain["icon"].as_bool(), plain["header"].as_bool()), (Some(false), Some(false)));
+        assert_eq!(s.execute("plugin.picture", &json!({"id": "test.plain", "picture": "icon"})).unwrap()["svg"], Value::Null);
+        assert!(s.execute("plugin.picture", &json!({"id": "test.nowhere"})).is_err());
+        for id in ["test.pictures", "test.plain"] {
+            s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+        }
     }
 
-    /// The install dialog learns whether a file is exactly what is installed (`installed.same`):
-    /// the same version and code, not a repair (other code) or an update; and `plugin.list` gives
-    /// what a page of the plug-in needs to notice it changed (`moduleHash`, `settingsRevision`).
     #[test]
-    fn inspect_says_when_a_file_is_what_is_installed() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let settings = json!([{"key": "level", "label": "Level", "type": "number", "min": 0, "max": 10, "default": 1}]);
-        let v1 = module_file("same-v1", &json!({"id": "test.same", "name": "S", "version": "1.0.0", "settings": settings}));
-        let repair = module_file("same-v1b", &json!({"id": "test.same", "name": "S again", "version": "1.0.0", "settings": settings}));
-        let v2 = module_file("same-v2", &json!({"id": "test.same", "name": "S", "version": "2.0.0", "settings": settings}));
-        let same =
-            |s: &mut Session, path: &std::path::Path| s.execute("plugin.inspectFile", &json!({"path": path})).unwrap()["installed"]["same"].clone();
-        assert_eq!(same(&mut s, &v1), Value::Null, "nothing installed yet");
-        s.execute("plugin.install", &json!({"path": v1})).unwrap();
-        assert_eq!(same(&mut s, &v1), true, "the installed module again");
-        assert_eq!(same(&mut s, &repair), false, "the same version with other code is a repair");
-        assert_eq!(same(&mut s, &v2), false, "a newer version is an update");
+    fn install_checks_requires_and_versions_and_inspect_says_when_a_file_is_what_is_installed() {
+        // `requires`, the version rule and downgrades through the commands the install dialog and
+        // agents use; `plugin.list` says what the host has.
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let list = s.execute("plugin.list", &json!({})).unwrap();
+            assert_eq!(list["host"]["abi"], lcc_plugins::ABI_VERSION);
+            assert_eq!(list["host"]["features"], json!(lcc_plugins::HOST_FEATURES));
 
-        let listed = |s: &mut Session| {
-            let l = s.execute("plugin.list", &json!({})).unwrap();
-            l["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.same").cloned().unwrap()
-        };
-        let before = listed(&mut s);
-        assert!(before["moduleHash"].as_str().is_some_and(|h| h.len() == 64), "{before}");
-        s.execute("plugin.setSettings", &json!({"id": "test.same", "values": {"level": 5}})).unwrap();
-        let after = listed(&mut s);
-        assert_ne!(before["settingsRevision"], after["settingsRevision"], "a saved setting changes the revision");
-        s.execute("plugin.install", &json!({"path": v2})).unwrap();
-        assert_ne!(after["moduleHash"], listed(&mut s)["moduleHash"], "an update changes the module hash");
-        s.execute("plugin.uninstall", &json!({"id": "test.same"})).unwrap();
-        let _ = std::fs::remove_dir_all(v1.parent().unwrap());
+            // a feature no host has: the dialog learns why, the install is refused
+            let needs = module_file("needs", &json!({"id": "test.needs", "name": "N", "version": "1.0.0", "requires": ["test-unknown-feature"]}));
+            let info = s.execute("plugin.inspectFile", &json!({"path": needs.path()})).unwrap();
+            assert_eq!(info["missing"], json!(["test-unknown-feature"]));
+            let e = s.execute("plugin.install", &json!({"path": needs.path()})).unwrap_err().to_string();
+            assert!(e.contains("test-unknown-feature"), "{e}");
+            let listed = |s: &mut Session, id: &str| {
+                let l = s.execute("plugin.list", &json!({})).unwrap();
+                l["plugins"].as_array().unwrap().iter().find(|p| p["id"] == id).cloned()
+            };
+            assert!(listed(&mut s, "test.needs").is_none());
+
+            // a feature this host has (set for the test): installs, and the list shows what it requires
+            manager().get_or_insert_with(Manager::in_memory).set_features(&["test-known-feature"]);
+            let known = module_file("known", &json!({"id": "test.known", "name": "K", "version": "1.0.0", "requires": ["test-known-feature"]}));
+            let r = s.execute("plugin.install", &json!({"path": known.path()}));
+            manager().get_or_insert_with(Manager::in_memory).set_features(lcc_plugins::HOST_FEATURES);
+            r.unwrap();
+            assert_eq!(listed(&mut s, "test.known").unwrap()["requires"], json!(["test-known-feature"]));
+            s.execute("plugin.uninstall", &json!({"id": "test.known"})).unwrap();
+
+            // the version: semver, and a downgrade only when confirmed
+            let bad = module_file("bad", &json!({"id": "test.ver", "name": "V", "version": "1.2"}));
+            assert!(s.execute("plugin.inspectFile", &json!({"path": bad.path()})).unwrap()["versionError"].is_string());
+            assert!(s.execute("plugin.install", &json!({"path": bad.path()})).unwrap_err().to_string().contains("MAJOR.MINOR.PATCH"));
+            let v12 = module_file("v12", &json!({"id": "test.ver", "name": "V", "version": "1.2.0"}));
+            let v11 = module_file("v11", &json!({"id": "test.ver", "name": "V", "version": "1.1.0"}));
+            s.execute("plugin.install", &json!({"path": v12.path()})).unwrap();
+            let info = s.execute("plugin.inspectFile", &json!({"path": v11.path()})).unwrap();
+            assert_eq!((info["downgrade"].clone(), info["installed"]["version"].clone()), (json!(true), json!("1.2.0")));
+            assert_eq!(s.execute("plugin.inspectFile", &json!({"path": v12.path()})).unwrap()["downgrade"], false, "the same version is a repair");
+            let e = s.execute("plugin.install", &json!({"path": v11.path()})).unwrap_err().to_string();
+            assert!(e.contains("1.1.0") && e.contains("1.2.0"), "{e}");
+            assert_eq!(listed(&mut s, "test.ver").unwrap()["version"], "1.2.0");
+            let r = s.execute("plugin.install", &json!({"path": v11.path(), "allowDowngrade": true})).unwrap();
+            assert_eq!(r["version"], "1.1.0");
+            let log = s.execute("plugin.log", &json!({"id": "test.ver"})).unwrap();
+            assert!(log.as_array().unwrap().iter().any(|l| l == "downgraded from 1.2.0 to 1.1.0"), "{log}");
+            s.execute("plugin.uninstall", &json!({"id": "test.ver"})).unwrap();
+        }
+        // The install dialog learns whether a file is exactly what is installed (`installed.same`):
+        // the same version and code, not a repair (other code) or an update; and `plugin.list` gives
+        // what a page of the plug-in needs to notice it changed (`moduleHash`, `settingsRevision`).
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let settings = json!([{"key": "level", "label": "Level", "type": "number", "min": 0, "max": 10, "default": 1}]);
+            let v1 = module_file("same-v1", &json!({"id": "test.same", "name": "S", "version": "1.0.0", "settings": settings}));
+            let repair = module_file("same-v1b", &json!({"id": "test.same", "name": "S again", "version": "1.0.0", "settings": settings}));
+            let v2 = module_file("same-v2", &json!({"id": "test.same", "name": "S", "version": "2.0.0", "settings": settings}));
+            let same = |s: &mut Session, path: &std::path::Path| {
+                s.execute("plugin.inspectFile", &json!({"path": path})).unwrap()["installed"]["same"].clone()
+            };
+            assert_eq!(same(&mut s, &v1), Value::Null, "nothing installed yet");
+            s.execute("plugin.install", &json!({"path": v1.path()})).unwrap();
+            assert_eq!(same(&mut s, &v1), true, "the installed module again");
+            assert_eq!(same(&mut s, &repair), false, "the same version with other code is a repair");
+            assert_eq!(same(&mut s, &v2), false, "a newer version is an update");
+
+            let listed = |s: &mut Session| {
+                let l = s.execute("plugin.list", &json!({})).unwrap();
+                l["plugins"].as_array().unwrap().iter().find(|p| p["id"] == "test.same").cloned().unwrap()
+            };
+            let before = listed(&mut s);
+            assert!(before["moduleHash"].as_str().is_some_and(|h| h.len() == 64), "{before}");
+            s.execute("plugin.setSettings", &json!({"id": "test.same", "values": {"level": 5}})).unwrap();
+            let after = listed(&mut s);
+            assert_ne!(before["settingsRevision"], after["settingsRevision"], "a saved setting changes the revision");
+            s.execute("plugin.install", &json!({"path": v2.path()})).unwrap();
+            assert_ne!(after["moduleHash"], listed(&mut s)["moduleHash"], "an update changes the module hash");
+            s.execute("plugin.uninstall", &json!({"id": "test.same"})).unwrap();
+        }
     }
 
-    /// A module that didn't load is listed with its kind: a pixel filter's module as a filter, anything
-    /// else as a plug-in, so the Plug-in Manager shows it in its section.
     #[test]
-    fn modules_that_did_not_load_are_listed_with_their_kind() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-failed-kind-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let filter = dir.join("test.failedkind.filter.wasm");
-        std::fs::write(&filter, crate::tests_plugin_filters::invert_module("test.failedkind.filter")).unwrap();
-        // a filter module the registry refuses (its manifest isn't JSON)
-        let refused = dir.join("test.failedkind.refused.wasm");
-        let refused_bytes = crate::tests_plugin_filters::module("{ not a manifest", None);
-        let why = lcc_filters::Filter::load(&refused_bytes, lcc_filters::Limits::default()).expect_err("the filter is refused").to_string();
-        std::fs::write(&refused, &refused_bytes).unwrap();
-        let other = dir.join("test.failedkind.plugin.wasm");
-        std::fs::write(&other, b"\0asm and then nothing a module needs").unwrap();
-        let row = |path: &std::path::Path, id: &str| lcc_plugins::Failed {
-            file: path.file_name().unwrap().to_string_lossy().into_owned(),
-            error: "didn't load".into(),
-            missing: vec![],
-            id: id.into(),
-            path: Some(path.to_path_buf()),
-        };
-        let mut g = manager();
-        let m = g.get_or_insert_with(Manager::in_memory);
-        m.failed.push(row(&filter, "test.failedkind.filter"));
-        m.failed.push(row(&other, "test.failedkind.plugin"));
-        m.failed.push(row(&refused, "test.failedkind.refused"));
-        // a file that's gone isn't a filter
-        m.failed.push(row(&dir.join("test.failedkind.gone.wasm"), "test.failedkind.gone"));
-        drop(g);
-        let listed = s.execute("plugin.list", &json!({}));
-        manager().as_mut().unwrap().failed.retain(|f| !f.id.starts_with("test.failedkind."));
-        let _ = std::fs::remove_dir_all(&dir);
-        let listed = listed.unwrap();
-        let kind = |id: &str| listed["failed"].as_array().unwrap().iter().find(|f| f["id"] == id).map(|f| f["kind"].clone());
-        assert_eq!(kind("test.failedkind.filter"), Some(json!("filter")));
-        assert_eq!(kind("test.failedkind.plugin"), Some(json!("plugin")));
-        assert_eq!(kind("test.failedkind.gone"), Some(json!("plugin")));
-        // a refused filter: listed as one, with the filter registry's reason
-        assert_eq!(kind("test.failedkind.refused"), Some(json!("filter")));
-        let error = |id: &str| listed["failed"].as_array().unwrap().iter().find(|f| f["id"] == id).map(|f| f["error"].clone());
-        assert_eq!(error("test.failedkind.refused"), Some(json!(why)), "the filter's own reason");
-        assert_eq!(error("test.failedkind.plugin"), Some(json!("didn't load")), "a plug-in keeps the manager's");
+    fn modules_that_did_not_load_are_listed_with_their_kind_and_a_filter_module_is_never_uninstalled_as_one() {
+        // A module that didn't load is listed with its kind: a pixel filter's module as a filter, anything
+        // else as a plug-in, so the Plug-in Manager shows it in its section.
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let dir = lcc_testkit::TempDir::new("lcc-engine-failed-kind");
+            let filter = dir.join("test.failedkind.filter.wasm");
+            std::fs::write(&filter, crate::tests_plugin_filters::invert_module("test.failedkind.filter")).unwrap();
+            // a filter module the registry refuses (its manifest isn't JSON)
+            let refused = dir.join("test.failedkind.refused.wasm");
+            let refused_bytes = crate::tests_plugin_filters::module("{ not a manifest", None);
+            let why = lcc_filters::Filter::load(&refused_bytes, lcc_filters::Limits::default()).expect_err("the filter is refused").to_string();
+            std::fs::write(&refused, &refused_bytes).unwrap();
+            let other = dir.join("test.failedkind.plugin.wasm");
+            std::fs::write(&other, b"\0asm and then nothing a module needs").unwrap();
+            let row = |path: &std::path::Path, id: &str| lcc_plugins::Failed {
+                file: path.file_name().unwrap().to_string_lossy().into_owned(),
+                error: "didn't load".into(),
+                missing: vec![],
+                id: id.into(),
+                path: Some(path.to_path_buf()),
+            };
+            let mut g = manager();
+            let m = g.get_or_insert_with(Manager::in_memory);
+            m.failed.push(row(&filter, "test.failedkind.filter"));
+            m.failed.push(row(&other, "test.failedkind.plugin"));
+            m.failed.push(row(&refused, "test.failedkind.refused"));
+            // a file that's gone isn't a filter
+            m.failed.push(row(&dir.join("test.failedkind.gone.wasm"), "test.failedkind.gone"));
+            drop(g);
+            let listed = s.execute("plugin.list", &json!({}));
+            manager().as_mut().unwrap().failed.retain(|f| !f.id.starts_with("test.failedkind."));
+            let _ = std::fs::remove_dir_all(&dir);
+            let listed = listed.unwrap();
+            let kind = |id: &str| listed["failed"].as_array().unwrap().iter().find(|f| f["id"] == id).map(|f| f["kind"].clone());
+            assert_eq!(kind("test.failedkind.filter"), Some(json!("filter")));
+            assert_eq!(kind("test.failedkind.plugin"), Some(json!("plugin")));
+            assert_eq!(kind("test.failedkind.gone"), Some(json!("plugin")));
+            // a refused filter: listed as one, with the filter registry's reason
+            assert_eq!(kind("test.failedkind.refused"), Some(json!("filter")));
+            let error = |id: &str| listed["failed"].as_array().unwrap().iter().find(|f| f["id"] == id).map(|f| f["error"].clone());
+            assert_eq!(error("test.failedkind.refused"), Some(json!(why)), "the filter's own reason");
+            assert_eq!(error("test.failedkind.plugin"), Some(json!("didn't load")), "a plug-in keeps the manager's");
+        }
+        // A pixel filter's module also fails to load in the plug-in manager; `plugin.uninstall` by its
+        // file name never removes it as a failed plug-in.
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let file = std::env::temp_dir().join("lcc-engine-guard").join("copied-in.wasm").display().to_string();
+            let bytes = crate::tests_plugin_filters::invert_module("test.guard.filter");
+            let filter = lcc_filters::Filter::load(&bytes, lcc_filters::Limits::default()).unwrap().with_source(file.clone());
+            crate::filter_plugins::registry().install(filter);
+            let row = lcc_plugins::Failed { file: file.clone(), error: "not a plug-in".into(), missing: vec![], id: "copied-in".into(), path: None };
+            manager().get_or_insert_with(Manager::in_memory).failed.push(row);
+            let r = s.execute("plugin.uninstall", &json!({"id": "copied-in"}));
+            let kept = manager().as_ref().unwrap().failed.iter().any(|f| f.id == "copied-in");
+            manager().as_mut().unwrap().failed.retain(|f| f.id != "copied-in");
+            crate::filter_plugins::registry().remove("test.guard.filter");
+            assert!(r.unwrap_err().to_string().contains("pixel filter"));
+            assert!(kept, "the filter's row is untouched");
+        }
     }
 
-    /// A pixel filter's module also fails to load in the plug-in manager; `plugin.uninstall` by its
-    /// file name never removes it as a failed plug-in.
-    #[test]
-    fn uninstall_never_takes_a_filter_module_for_a_failed_plugin() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let file = std::env::temp_dir().join("lcc-engine-guard").join("copied-in.wasm").display().to_string();
-        let bytes = crate::tests_plugin_filters::invert_module("test.guard.filter");
-        let filter = lcc_filters::Filter::load(&bytes, lcc_filters::Limits::default()).unwrap().with_source(file.clone());
-        crate::filter_plugins::registry().install(filter);
-        let row = lcc_plugins::Failed { file: file.clone(), error: "not a plug-in".into(), missing: vec![], id: "copied-in".into(), path: None };
-        manager().get_or_insert_with(Manager::in_memory).failed.push(row);
-        let r = s.execute("plugin.uninstall", &json!({"id": "copied-in"}));
-        let kept = manager().as_ref().unwrap().failed.iter().any(|f| f.id == "copied-in");
-        manager().as_mut().unwrap().failed.retain(|f| f.id != "copied-in");
-        crate::filter_plugins::registry().remove("test.guard.filter");
-        assert!(r.unwrap_err().to_string().contains("pixel filter"));
-        assert!(kept, "the filter's row is untouched");
-    }
-
-    /// A plug-in with `manifest` that answers every call with `reply`, written to a file.
-    fn replying_module_file(name: &str, manifest: &Value, reply: &str) -> PathBuf {
+    /// A plug-in with `manifest` that answers every call with `reply`, written to `<name>.wasm` in a
+    /// Temp folder of its own, removed when the returned guard is dropped.
+    fn replying_module_file(name: &str, manifest: &Value, reply: &str) -> lcc_testkit::TempFile {
         let manifest = manifest.to_string();
         let esc = |s: &str| s.replace('"', "\\\"");
         let src = format!(
@@ -1509,11 +1928,9 @@ pub(crate) mod tests {
             ml = manifest.len(),
             rl = reply.len()
         );
-        let dir = std::env::temp_dir().join(format!("lcc-engine-plugin-settings-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("{name}.wasm"));
-        std::fs::write(&path, wat::parse_str(&src).unwrap()).unwrap();
-        path
+        let file = lcc_testkit::TempFile::new(&format!("lcc-engine-plugin-settings-{name}"), &format!("{name}.wasm"));
+        std::fs::write(&file, wat::parse_str(&src).unwrap()).unwrap();
+        file
     }
 
     /// Agents read and change a plug-in's settings with `plugin.settings` / `plugin.setSettings`,
@@ -1529,7 +1946,7 @@ pub(crate) mod tests {
             "commands": [{"id": "go", "label": "Go", "dialog": [{"key": "who", "label": "Who", "type": "text", "default": "me"}]},
                 {"id": "ask", "label": "Ask", "prepare": true, "dialog": [{"key": "v", "label": "V", "type": "choice", "options": []}]}]});
         let path = replying_module_file("engset", &manifest, r#"{"ok":{"message":"Nothing to do here."}}"#);
-        s.execute("plugin.install", &json!({"path": path})).unwrap();
+        s.execute("plugin.install", &json!({"path": path.path()})).unwrap();
 
         let got = s.execute("plugin.settings", &json!({"id": "test.engset"})).unwrap();
         assert_eq!(got["values"], json!({"n": 3.0, "mode": "fast"}));
@@ -1565,32 +1982,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn host_reads_catalog_and_guards_writes() {
-        let mut s = Session::with_demo();
-        let mut h = SessionHost(&mut s);
-        let stats = h.catalog("catalog.stats", &json!({})).unwrap();
-        assert!(stats.is_object());
-        assert!(h.catalog("photo.delete", &json!({})).is_err());
-        assert!(h.set_metadata(&json!({"title": "x"})).is_err(), "ids required");
-        assert!(h.set_metadata(&json!({"ids": [1], "rating": 5})).is_err(), "only standard fields");
-    }
-
-    #[test]
-    fn host_takes_the_string_ids_plugins_get() {
-        let mut s = Session::with_demo();
-        let ids: Vec<u64> = s.visible_cloned().iter().take(2).map(|p| p.0).collect();
-        // the app's selection is another photo: a string id must not fall back to it
-        s.execute("library.select", &json!({"ids": [ids[1]]})).unwrap();
-        let mut h = SessionHost(&mut s);
-        let v = h.catalog("photo.inspect", &json!({"id": ids[0].to_string()})).unwrap();
-        assert_eq!(v["id"], ids[0]);
-        h.set_metadata(&json!({"ids": [ids[0].to_string()], "title": "From a plug-in"})).unwrap();
-        assert!(h.catalog("photo.inspect", &json!({"id": "not-an-id"})).is_err());
-        assert!(h.set_metadata(&json!({"ids": ["x"], "title": "y"})).is_err());
-        let a = s.execute("photo.inspect", &json!({"id": ids[0]})).unwrap();
-        let b = s.execute("photo.inspect", &json!({"id": ids[1]})).unwrap();
-        assert_eq!(a["meta"]["title"], "From a plug-in");
-        assert_ne!(b["meta"]["title"], "From a plug-in");
+    fn host_reads_the_catalog_guards_writes_and_takes_string_ids() {
+        // the host reads the catalog and guards writes
+        {
+            let mut s = Session::with_demo();
+            let mut h = SessionHost(&mut s);
+            let stats = h.catalog("catalog.stats", &json!({})).unwrap();
+            assert!(stats.is_object());
+            assert!(h.catalog("photo.delete", &json!({})).is_err());
+            assert!(h.set_metadata(&json!({"title": "x"})).is_err(), "ids required");
+            assert!(h.set_metadata(&json!({"ids": [1], "rating": 5})).is_err(), "only standard fields");
+        }
+        // the host takes the string ids plug-ins get
+        {
+            let mut s = Session::with_demo();
+            let ids: Vec<u64> = s.visible_cloned().iter().take(2).map(|p| p.0).collect();
+            // the app's selection is another photo: a string id must not fall back to it
+            s.execute("library.select", &json!({"ids": [ids[1]]})).unwrap();
+            let mut h = SessionHost(&mut s);
+            let v = h.catalog("photo.inspect", &json!({"id": ids[0].to_string()})).unwrap();
+            assert_eq!(v["id"], ids[0]);
+            h.set_metadata(&json!({"ids": [ids[0].to_string()], "title": "From a plug-in"})).unwrap();
+            assert!(h.catalog("photo.inspect", &json!({"id": "not-an-id"})).is_err());
+            assert!(h.set_metadata(&json!({"ids": ["x"], "title": "y"})).is_err());
+            let a = s.execute("photo.inspect", &json!({"id": ids[0]})).unwrap();
+            let b = s.execute("photo.inspect", &json!({"id": ids[1]})).unwrap();
+            assert_eq!(a["meta"]["title"], "From a plug-in");
+            assert_ne!(b["meta"]["title"], "From a plug-in");
+        }
     }
 
     /// A plug-in with the program `conv` whose every call sends `program.start` for it. Its
@@ -1642,26 +2061,6 @@ pub(crate) mod tests {
             .get_or_insert_with(Manager::in_memory)
             .get("test.prog")
             .map_or(0, |p| p.log.iter().filter(|l| l.starts_with("program.end failed")).count())
-    }
-
-    #[test]
-    fn agents_cannot_grant_programs() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let grant = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
-        let _ = manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog");
-        manager().get_or_insert_with(Manager::in_memory).install_bytes(&program_module(), None, false).unwrap();
-        let e = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": grant})).unwrap_err().to_string();
-        assert!(e.contains("Plug-in Manager"), "{e}");
-        // the Plug-in Manager's path grants it
-        let g = grant_by_user(&mut s, &json!({"id": "test.prog", "grant": grant})).unwrap();
-        assert_eq!(g["granted"]["programs"][0]["id"], "conv", "{g}");
-        // an agent may repeat it (kept) or leave it out (revoked)
-        let kept = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": grant})).unwrap();
-        assert_eq!(kept["granted"]["programs"][0]["id"], "conv", "{kept}");
-        let revoked = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": {}})).unwrap();
-        assert!(revoked["granted"]["programs"].as_array().is_none_or(Vec::is_empty), "{revoked}");
-        manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog").unwrap();
     }
 
     /// A run: recorded start with its folder, a row in the activity stack, ✕ ends it without
@@ -1757,15 +2156,14 @@ pub(crate) mod tests {
     #[test]
     fn a_program_that_fails_as_it_starts_leaves_nothing_behind() {
         let _turn = turn();
-        let root = std::env::temp_dir().join(format!("lcc-engine-runs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = lcc_testkit::TempDir::new("lcc-engine-runs");
         let mut s = Session::with_demo();
         s.desktop = std::sync::Arc::new(FailsAtOnce);
         let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
         {
             let mut g = manager();
             let m = g.get_or_insert_with(Manager::in_memory);
-            m.set_runs_root(Some(root.clone()));
+            m.set_runs_root(Some(root.to_path_buf()));
             m.install_bytes_by_user(&program_module(), Some(serde_json::from_value(decl).unwrap()), false).unwrap();
         }
         for _ in 0..2 {
@@ -1797,7 +2195,7 @@ pub(crate) mod tests {
             json!({"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}),
         )
         .unwrap();
-        let root = std::env::temp_dir().join(format!("lcc-engine-hook-runs-{}", std::process::id()));
+        let root = lcc_testkit::TempDir::new("lcc-engine-hook-runs");
         let check = |host: &mut dyn HostApi, what: &str| {
             assert_eq!(host.find_program(&decl).len(), 1, "{what}: found through the desktop");
             let dir = lcc_plugins::RunDir::create(&root).unwrap();
@@ -1826,77 +2224,77 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A prepare step only reads, so it starts no program: opening a command's dialog or the
-    /// plug-in's settings never runs one.
     #[test]
-    fn prepare_steps_start_no_program() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
-        s.desktop = desktop.clone();
-        let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
-        manager()
-            .get_or_insert_with(Manager::in_memory)
-            .install_bytes_by_user(
-                &program_module_with(
-                    r#""commands":[{"id":"go","label":"Go","prepare":true}],"settings":[{"key":"n","label":"N","type":"number","min":0,"max":10,"default":1,"prepare":true}]"#,
-                ),
-                Some(serde_json::from_value(decl).unwrap()),
-                false,
-            )
-            .unwrap();
-        let id = s.visible_cloned()[0].0;
-        let prepared = s.execute("plugin.prepare", &json!({"id": "test.prog", "command": "go", "ids": [id]}));
-        let settings = s.execute("plugin.settings", &json!({"id": "test.prog"}));
-        let started = desktop.requests();
-        // a program started by mistake exits, so its run ends and its folder goes
-        desktop.finish_programs();
-        for r in &started {
-            if let crate::desktop::Request::StartProgram { tmp, .. } = r {
-                eventually("a mistaken run's folder to go", || !tmp.exists());
+    fn prepare_steps_export_hooks_and_destinations_start_no_program() {
+        // A prepare step only reads, so it starts no program: opening a command's dialog or the
+        // plug-in's settings never runs one.
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
+            s.desktop = desktop.clone();
+            let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
+            manager()
+                .get_or_insert_with(Manager::in_memory)
+                .install_bytes_by_user(
+                    &program_module_with(
+                        r#""commands":[{"id":"go","label":"Go","prepare":true}],"settings":[{"key":"n","label":"N","type":"number","min":0,"max":10,"default":1,"prepare":true}]"#,
+                    ),
+                    Some(serde_json::from_value(decl).unwrap()),
+                    false,
+                )
+                .unwrap();
+            let id = s.visible_cloned()[0].0;
+            let prepared = s.execute("plugin.prepare", &json!({"id": "test.prog", "command": "go", "ids": [id]}));
+            let settings = s.execute("plugin.settings", &json!({"id": "test.prog"}));
+            let started = desktop.requests();
+            // a program started by mistake exits, so its run ends and its folder goes
+            desktop.finish_programs();
+            for r in &started {
+                if let crate::desktop::Request::StartProgram { tmp, .. } = r {
+                    eventually("a mistaken run's folder to go", || !tmp.exists());
+                }
+            }
+            manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog").unwrap();
+            assert!(started.is_empty(), "nothing started: {started:?}\nprepare: {prepared:?}\nsettings: {settings:?}");
+            for (what, reply) in [("the dialog's prepare step", &prepared), ("the settings' prepare step", &settings)] {
+                let error = reply.as_ref().ok().and_then(|r| r["error"].as_str()).unwrap_or_default();
+                assert!(error.contains("can only read"), "{what} is refused as read-only: {reply:?}");
             }
         }
-        manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog").unwrap();
-        assert!(started.is_empty(), "nothing started: {started:?}\nprepare: {prepared:?}\nsettings: {settings:?}");
-        for (what, reply) in [("the dialog's prepare step", &prepared), ("the settings' prepare step", &settings)] {
-            let error = reply.as_ref().ok().and_then(|r| r["error"].as_str()).unwrap_or_default();
-            assert!(error.contains("can only read"), "{what} is refused as read-only: {reply:?}");
+        // The hook commands run on the session's thread start nothing either.
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
+            s.desktop = desktop.clone();
+            let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
+            manager()
+                .get_or_insert_with(Manager::in_memory)
+                .install_bytes_by_user(
+                    &program_module_with(r#""hooks":{"export":true,"metadata":true},"exportDestinations":[{"id":"d","name":"D"}]"#),
+                    Some(serde_json::from_value(decl).unwrap()),
+                    false,
+                )
+                .unwrap();
+            let file = json!([{"path": "/tmp/x.jpg"}]);
+            let _ = s.execute("plugin.postExport", &json!({"files": file}));
+            let _ = s.execute("plugin.exportTo", &json!({"plugin": "test.prog", "destination": "d", "files": file}));
+            let _ = s.execute("plugin.suggestMetadata", &json!({}));
+            let _ = after_export(&mut s, &[json!({"path": "/tmp/x.jpg"})], Some(&json!({"plugin": "test.prog", "destination": "d"})));
+            assert!(desktop.requests().is_empty(), "nothing started");
+            let mut g = manager();
+            let m = g.get_or_insert_with(Manager::in_memory);
+            let refused = m
+                .get("test.prog")
+                .unwrap()
+                .log
+                .iter()
+                .filter(|l| l.starts_with("program.start failed") && l.contains("start the program from a command"))
+                .count();
+            assert_eq!(refused, 5, "each hook's start is refused: {:?}", m.get("test.prog").unwrap().log);
+            m.uninstall("test.prog").unwrap();
         }
-    }
-
-    /// The hook commands run on the session's thread start nothing either.
-    #[test]
-    fn export_hooks_and_destinations_start_no_program() {
-        let _turn = turn();
-        let mut s = Session::with_demo();
-        let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
-        s.desktop = desktop.clone();
-        let decl = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
-        manager()
-            .get_or_insert_with(Manager::in_memory)
-            .install_bytes_by_user(
-                &program_module_with(r#""hooks":{"export":true,"metadata":true},"exportDestinations":[{"id":"d","name":"D"}]"#),
-                Some(serde_json::from_value(decl).unwrap()),
-                false,
-            )
-            .unwrap();
-        let file = json!([{"path": "/tmp/x.jpg"}]);
-        let _ = s.execute("plugin.postExport", &json!({"files": file}));
-        let _ = s.execute("plugin.exportTo", &json!({"plugin": "test.prog", "destination": "d", "files": file}));
-        let _ = s.execute("plugin.suggestMetadata", &json!({}));
-        let _ = after_export(&mut s, &[json!({"path": "/tmp/x.jpg"})], Some(&json!({"plugin": "test.prog", "destination": "d"})));
-        assert!(desktop.requests().is_empty(), "nothing started");
-        let mut g = manager();
-        let m = g.get_or_insert_with(Manager::in_memory);
-        let refused = m
-            .get("test.prog")
-            .unwrap()
-            .log
-            .iter()
-            .filter(|l| l.starts_with("program.start failed") && l.contains("start the program from a command"))
-            .count();
-        assert_eq!(refused, 5, "each hook's start is refused: {:?}", m.get("test.prog").unwrap().log);
-        m.uninstall("test.prog").unwrap();
     }
 
     /// A relayed write its caller gave up on is never made later; one the session's thread has
@@ -1915,12 +2313,160 @@ pub(crate) mod tests {
 
         // taken in time: the answer comes back even when it arrives after the limit
         let worker =
-            std::thread::spawn(move || host.ask_within(Relayed::Catalog("catalog.stats".into()), &json!({}), std::time::Duration::from_secs(2)));
+            std::thread::spawn(move || host.ask_within(Relayed::Catalog("catalog.stats".into()), &json!({}), std::time::Duration::from_millis(500)));
         let taken = requests.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
         use std::sync::atomic::Ordering;
         assert!(taken.state.compare_exchange(WAITING, TAKEN, Ordering::AcqRel, Ordering::Acquire).is_ok(), "taken before the limit");
-        std::thread::sleep(std::time::Duration::from_millis(2500));
+        std::thread::sleep(std::time::Duration::from_millis(800));
         taken.reply.send(Ok(json!({"late": true}))).unwrap();
         assert_eq!(worker.join().unwrap().unwrap()["late"], true, "the answer after the limit is the one returned");
+    }
+
+    /// A plug-in `id` whose command `go` sends `catalog.stats` and returns the reply.
+    fn catalog_module(id: &str) -> Vec<u8> {
+        catalog_module_with(id, r#"{"id":"go","label":"Go"}"#)
+    }
+
+    /// A plug-in `id` asking for `catalog` and `pixels` whose every call (a command, a prepare
+    /// step) reads `catalog.stats`, with `command` its one command.
+    fn catalog_module_with(id: &str, command: &str) -> Vec<u8> {
+        let manifest =
+            format!(r#"{{"id":"{id}","name":"Asks","version":"1.0.0","permissions":{{"catalog":true,"pixels":true}},"commands":[{command}]}}"#);
+        let request = r#"{"method":"catalog.stats","params":{}}"#;
+        let esc = |s: &str| s.replace('"', "\\\"");
+        let src = format!(
+            r#"(module
+  (import "host" "call" (func $call (param i32 i32) (result i32)))
+  (import "host" "response" (func $response (param i32)))
+  (memory (export "memory") 2)
+  (data (i32.const 16) "{m}") (data (i32.const 8192) "{r}")
+  (func (export "lcc_abi_version") (result i32) (i32.const 1))
+  (func (export "lcc_manifest") (result i64) (i64.or (i64.shl (i64.const {ml}) (i64.const 32)) (i64.const 16)))
+  (func (export "lcc_alloc") (param i32) (result i32) (i32.const 65536))
+  (func (export "lcc_handle") (param i32 i32) (result i64) (local $n i32)
+    (local.set $n (call $call (i32.const 8192) (i32.const {rl})))
+    (call $response (i32.const 16384))
+    (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 16384))))"#,
+            m = esc(&manifest),
+            r = esc(request),
+            ml = manifest.len(),
+            rl = request.len()
+        );
+        wat::parse_str(&src).unwrap()
+    }
+
+    fn request_state(s: &mut Session, id: &str, group: &str) -> Value {
+        let list = s.execute("plugin.list", &json!({})).unwrap();
+        let p = list["plugins"].as_array().unwrap().iter().find(|p| p["id"] == id).cloned().unwrap();
+        p["requests"].as_array().unwrap().iter().find(|r| r["group"] == group).cloned().unwrap()
+    }
+
+    #[test]
+    fn commands_never_grant_and_a_run_or_prepare_step_the_user_started_leaves_an_ask() {
+        // commands never grant, and a run the user started leaves an ask
+        {
+            let id = "test.asks";
+            let mut s = Session::with_demo();
+            let dir = lcc_testkit::TempDir::new("lcc-engine-asks");
+            let file = dir.join("asks.wasm");
+            std::fs::write(&file, catalog_module(id)).unwrap();
+            // a command can't install with a grant, nor grant afterwards
+            let e = s.execute("plugin.install", &json!({"path": file, "grant": {"catalog": true}})).unwrap_err().to_string();
+            assert!(e.contains("only be allowed by the user"), "{e}");
+            s.execute("plugin.install", &json!({"path": file})).unwrap();
+            let e = s.execute("plugin.grant", &json!({"id": id, "grant": {"catalog": true}})).unwrap_err().to_string();
+            assert!(e.contains("only be allowed by the user"), "{e}");
+            assert_eq!(request_state(&mut s, id, "catalog")["state"], "never");
+            // run by a request (an agent, a script): told where to allow it, nothing to ask
+            let e = s.execute("plugin.run", &json!({"plugin": id, "command": "go"})).unwrap_err().to_string();
+            assert!(e.contains("allow it in the Plug-in Manager"), "{e}");
+            assert!(s.plugin_asks.is_empty(), "nobody is asked");
+            // started by the user in the UI: the usual error, and an ask for the UI
+            s.plugin_ask_user = true;
+            let e = s.execute("plugin.run", &json!({"plugin": id, "command": "go"})).unwrap_err().to_string();
+            s.plugin_ask_user = false;
+            assert!(e.contains("permission `catalog` not granted"), "{e}");
+            let ask = s.plugin_asks.pop().expect("an ask");
+            assert!(s.plugin_asks.is_empty(), "one ask");
+            assert_eq!(
+                (ask.plugin.as_str(), ask.plugin_name.as_str(), ask.request.clone()),
+                (id, "Asks", lcc_plugins::Request::group(lcc_plugins::Group::Catalog))
+            );
+            assert_eq!((ask.rerun["plugin"].as_str(), ask.rerun["command"].as_str()), (Some(id), Some("go")));
+            // Allow, then the same run again
+            allow_by_user(&mut s, &json!({"id": id, "group": "catalog"})).unwrap();
+            let r = s.execute("plugin.run", &ask.rerun).unwrap();
+            assert!(r.is_object(), "it ran: {r}");
+            assert_eq!(request_state(&mut s, id, "catalog")["state"], "allowed");
+            // a command revokes; the plug-in may ask again
+            let g = s.execute("plugin.revoke", &json!({"id": id, "group": "catalog"})).unwrap();
+            assert_eq!(g["granted"]["catalog"], false);
+            assert_eq!(request_state(&mut s, id, "catalog")["state"], "never");
+            assert!(s.execute("plugin.revoke", &json!({"id": id, "group": "nope"})).is_err(), "an unknown group");
+            assert!(s.execute("plugin.revoke", &json!({"id": id, "group": "catalog", "value": "x"})).is_err(), "catalog takes no value");
+            // Deny: remembered with a date, and a later run asks nothing
+            deny_by_user(&mut s, &json!({"id": id, "group": "catalog"})).unwrap();
+            let state = request_state(&mut s, id, "catalog");
+            assert_eq!(state["state"], "denied");
+            assert!(state["deniedOn"].as_str().is_some_and(|d| d.len() == 10), "{state}");
+            s.plugin_ask_user = true;
+            let e = s.execute("plugin.run", &json!({"plugin": id, "command": "go"})).unwrap_err().to_string();
+            s.plugin_ask_user = false;
+            assert!(e.contains("permission `catalog` not granted"), "{e}");
+            assert!(s.plugin_asks.is_empty(), "a denied permission isn't asked again");
+            s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // A prepare step the user started asks too; Allow starts the command again (`prepare`), and
+        // one with nobody to ask is told where to allow it.
+        // a prepare step
+        {
+            let id = "test.asks.prepare";
+            let mut s = Session::with_demo();
+            let dir = lcc_testkit::TempDir::new("lcc-engine-asks-prepare");
+            let file = dir.join("asks.wasm");
+            std::fs::write(&file, catalog_module_with(id, r#"{"id":"go","label":"Go","prepare":true}"#)).unwrap();
+            s.execute("plugin.install", &json!({"path": file})).unwrap();
+            let prepare = json!({"plugin": id, "command": "go"});
+            let r = s.execute("plugin.prepare", &prepare).unwrap();
+            assert!(r["error"].as_str().is_some_and(|e| e.contains("allow it in the Plug-in Manager")), "{r}");
+            assert!(s.plugin_asks.is_empty(), "nobody is asked");
+            s.plugin_ask_user = true;
+            let r = s.execute("plugin.prepare", &prepare).unwrap();
+            s.plugin_ask_user = false;
+            assert!(r["error"].as_str().is_some_and(|e| e.contains("permission `catalog` not granted")), "{r}");
+            let ask = s.plugin_asks.pop().expect("an ask");
+            assert!(s.plugin_asks.is_empty(), "one ask");
+            assert_eq!(ask.request, lcc_plugins::Request::group(lcc_plugins::Group::Catalog));
+            assert!(ask.prepare, "Allow starts the command again, as from its menu");
+            assert_eq!((ask.rerun["plugin"].as_str(), ask.rerun["command"].as_str()), (Some(id), Some("go")));
+            // denied: the next prepare step asks nothing
+            deny_by_user(&mut s, &json!({"id": id, "group": "catalog"})).unwrap();
+            s.plugin_ask_user = true;
+            s.execute("plugin.prepare", &prepare).unwrap();
+            s.plugin_ask_user = false;
+            assert!(s.plugin_asks.is_empty(), "a denied permission isn't asked again");
+            s.execute("plugin.uninstall", &json!({"id": id})).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // agents cannot grant programs
+        {
+            let _turn = turn();
+            let mut s = Session::with_demo();
+            let grant = json!({"programs": [{"id": "conv", "name": "Converter", "linuxExe": "conv", "windowsExe": "conv.exe", "macBundleIds": ["org.example.conv"]}]});
+            let _ = manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog");
+            manager().get_or_insert_with(Manager::in_memory).install_bytes(&program_module(), None, false).unwrap();
+            let e = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": grant})).unwrap_err().to_string();
+            assert!(e.contains("Plug-in Manager"), "{e}");
+            // the Plug-in Manager's path grants it
+            let g = grant_by_user(&mut s, &json!({"id": "test.prog", "grant": grant})).unwrap();
+            assert_eq!(g["granted"]["programs"][0]["id"], "conv", "{g}");
+            // an agent may repeat it (kept) or leave it out (revoked)
+            let kept = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": grant})).unwrap();
+            assert_eq!(kept["granted"]["programs"][0]["id"], "conv", "{kept}");
+            let revoked = s.execute("plugin.grant", &json!({"id": "test.prog", "grant": {}})).unwrap();
+            assert!(revoked["granted"]["programs"].as_array().is_none_or(Vec::is_empty), "{revoked}");
+            manager().get_or_insert_with(Manager::in_memory).uninstall("test.prog").unwrap();
+        }
     }
 }

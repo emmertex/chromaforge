@@ -45,7 +45,10 @@ fn without(field: &str, f: &Filter) -> Filter {
             f.label = None;
             f.labels.clear();
         }
-        "flag" => f.flag = None,
+        "flag" => {
+            f.flag = None;
+            f.flags.clear();
+        }
         "rating" => f.rating = 0,
         "kind" => f.kind = None,
         "year" => {
@@ -257,7 +260,7 @@ fn values(s: &Session, field: &str, p: &Photo) -> Vec<String> {
 
 /// Numeric fields sort by value; the rest by count, most first, then by name.
 fn numeric(field: &str) -> bool {
-    matches!(field, "rating" | "year" | "iso" | "focal")
+    matches!(field, "rating" | "year" | "iso" | "focal" | "aperture" | "shutter")
 }
 
 fn facets(s: &mut Session, p: &Value) -> Result<Value> {
@@ -305,7 +308,8 @@ fn facets(s: &mut Session, p: &Value) -> Result<Value> {
         let mut rows: Vec<(String, usize)> = counts.into_iter().collect();
         if numeric(field) {
             rows.sort_by(|a, b| {
-                a.0.parse::<f64>().unwrap_or(f64::MAX).total_cmp(&b.0.parse::<f64>().unwrap_or(f64::MAX)).then_with(|| a.0.cmp(&b.0))
+                let key = |v: &str| lcc_catalog::facets::sort_key(field, v).unwrap_or(f64::MAX);
+                key(&a.0).total_cmp(&key(&b.0)).then_with(|| a.0.cmp(&b.0))
             });
         } else {
             rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
@@ -323,7 +327,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Pick Metadata Value",
             [],
             None,
-            "{field: a library.facets field, value?: a value as library.facets lists it (null: clear the field), none?: true (toggle the photos without a value)} → {field, chosen, none, count} — a Metadata filter column's click: flag, rating (exactly; 0 = unrated), kind and year take the one value, and a second click clears it; the other fields toggle the value among the chosen ones (any matches). `none` adds or removes the photos without a value (no camera, keyword, label, capture date, title…), which any chosen value also lets through",
+            "{field: a library.facets field, value?: a value as library.facets lists it (null: clear the field), none?: true (toggle the photos without a value)} → {field, chosen, none, count}: a Metadata filter column's click: flag, rating (exactly; 0 = unrated), kind and year take the one value, and a second click clears it; the other fields toggle the value among the chosen ones (any matches). `none` adds or removes the photos without a value (no camera, keyword, label, capture date, title…), which any chosen value also lets through",
             always,
             pick
         ),
@@ -332,7 +336,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Metadata Facets",
         [],
         None,
-        "{fields?: [camera | lens | keyword | person | label | flag | rating | kind | year | iso | focal | format | title | headline | caption | creator | copyright | location | city | country | aspect | preset | ai] (default: all), limit? (values per field, default 200, at most 2000)} → {<field>: {photos, none, distinct, values: [{value, count}], chosen: [the values the filter picked], noneChosen}} — format: the file format (JPG, CR3, TIFF…); aspect: the developed aspect ratio (3:2, 4:5, 16:9…); preset: develop presets applied (from History); ai: AI tools in use (Denoise, Subject mask…) — the values each field takes among the photos in view (the source, and the filter without that field's own constraint), with how many photos have each; `none`: photos without one. Counts by most photos first; rating, year, ISO and focal length by value",
+        "{fields?: [camera | lens | keyword | person | label | flag | rating | kind | year | iso | focal | format | title | headline | caption | creator | copyright | location | city | country | aspect | preset | ai] (default: all), limit? (values per field, default 200, at most 2000)} → {<field>: {photos, none, distinct, values: [{value, count}], chosen: [the values the filter picked], noneChosen}}. format: the file format (JPG, CR3, TIFF…); aspect: the developed aspect ratio (3:2, 4:5, 16:9…); preset: develop presets applied (from History); ai: AI tools in use (Denoise, Subject mask…). The values each field takes among the photos in view (the source, and the filter without that field's own constraint), with how many photos have each; `none`: photos without one. Counts by most photos first; rating, year, ISO and focal length by value",
             always,
             facets
         ),

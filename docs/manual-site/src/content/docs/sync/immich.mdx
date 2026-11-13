@@ -1,0 +1,55 @@
+---
+title: Immich
+description: Link the library with an Immich server, import from it, sync metadata and publish to it.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+
+Works with [Immich](https://immich.app) servers, version 3.0 or later. Older servers are refused with an upgrade message.
+
+<Shot name="settings-connections" alt="Settings, Connections tab: key storage and Add Immich server" />
+
+## Connect
+- **Settings ▸ Connections ▸ Add Immich server**: server URL and API key. **Test** shows the version, user and the key's permissions; **Connect** stores the key and starts linking.
+- Several servers and accounts can be connected.
+- **Key storage**: the system keychain or an encrypted file. The key is never written to the catalog, settings, logs or command results.
+- A self-signed certificate shows its fingerprint; **Trust This Certificate** pins it for that account.
+- A key with fewer permissions still works; Test lists what it cannot do.
+
+<NeedsImage what="Connections tab with a connected Immich account card: version, user, link progress, Sync and XMP Sidecars sections" />
+
+## What it does
+- **Link**: each Immich asset is matched to a library photo by checksum (SHA-1), else as a *probable* match by file name, capture time and size. Probable links show a dashed badge and a **Confirm** button in Info.
+- **Badge and filter**: grid badge "Immich", an Immich filter (linked, not linked, probable), and **Open in Immich** in Info.
+- **Import from Immich**: browse timeline, favourites, albums and people; **Copy** downloads originals, **Link only** keeps a preview and fetches the original when you open the photo in Develop. Rating, favourite, caption, tags and GPS come across; albums become albums.
+- **Sync**: ratings, picks/favourites, captions, keywords/tags, GPS and capture time, both ways. A change on one side flows to the other; when both changed, a per-field policy decides (catalog, Immich, newest, or ask). Reject to archived is off by default.
+- **Deletions never sync on their own**: they wait in a queue for you to apply or keep; Immich gets them in its trash.
+- **Albums**: link an album by hand, or set the album rule in **Sync…** (off, to Immich, from Immich, two-way). Deleting an album never deletes photos.
+- **Stacks** and Edit In versions: a saved Edit In version is uploaded and stacked on the original.
+- **People and smart search**: import Immich's faces and names, push names back; search Immich's index (smart, text in image, description, place) and show the result as a collection.
+- **External libraries**: when Immich indexes the same folders, nothing is uploaded; photos link by path through a path-mapping table.
+- **XMP sidecars**: Push and Pull sidecars so two libraries can share one server.
+- **Publish**: an Immich publish service sends a collection to the Immich album of the same name (rendered, original or both), checked by checksum so nothing is stored twice. A shared link can be made for a published gallery.
+- Long runs show in the activity stack and can be stopped.
+
+## Locked folders
+- Photos in Immich's **locked folders** can be synced, imported and linked once the session is unlocked.
+- **Settings ▸ Connections**, account card ▸ **Locked Folders** shows whether the session is unlocked; **Unlock…** asks for the account's PIN (4–6 digits) or password.
+- The PIN or password is sent once and never stored or logged. The unlock lasts until Immich locks the session again; locked photos then drop out of the next sync.
+
+## Review comments
+- **Library ▸ Review Comments** lists the comments on photos published to an Immich service (the album's activity: author, date, text), per photo; **Refresh** asks again.
+- Hard Drive and SFTP publish services have no comments and say so.
+
+## Limits
+- Keychain storage depends on the platform; where none is reachable, connecting says so. Use the encrypted file option.
+- Sync is for photos already linked; it is not a full mirror of the Immich library.
+- Sidecar pull needs a server 3.2 or later.
+
+<Aside type="note" title="Modern layout">
+  Settings: **Edit ▸ Settings… ▸ Connections**. Import from Immich: **File ▸ More Imports**.
+</Aside>

@@ -1,6 +1,6 @@
 //! The About window's credits: every contributor (GitHub login always; display and real names only
 //! with recorded consent) and the AI models that helped. The tables are baked into the binary by
-//! build.rs from contributors/contributors.json (craftrules standards/contributors.md); nothing is
+//! build.rs from contributors/contributors.json (docs/contributors.md); nothing is
 //! read at run time.
 
 use std::cmp::Ordering;
@@ -195,7 +195,7 @@ fn signed(n: i128) -> String {
 }
 
 fn day(iso: &str) -> &str {
-    if iso.is_empty() { "—" } else { iso.get(..10).unwrap_or(iso) }
+    if iso.is_empty() { "" } else { iso.get(..10).unwrap_or(iso) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

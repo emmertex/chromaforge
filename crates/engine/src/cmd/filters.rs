@@ -62,11 +62,11 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Filter Preset",
             [],
             None,
-            "{name} — the current filter (library.filter), saved with the library",
+            "{name}: the current filter (library.filter), saved with the library",
             always,
             save
         ),
-        cmd!("filter.applyPreset", "Apply Filter Preset", [], None, "{name} — replaces the current filter → {photos}", always, apply),
+        cmd!("filter.applyPreset", "Apply Filter Preset", [], None, "{name}: replaces the current filter → {photos}", always, apply),
         cmd!("filter.deletePreset", "Delete Filter Preset", [], None, "{name}", always, delete),
     ]
 }

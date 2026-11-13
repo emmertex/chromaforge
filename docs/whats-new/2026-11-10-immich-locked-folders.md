@@ -1,0 +1,2 @@
+### Immich locked folders
+- Settings ▸ Connections ▸ an Immich account's Locked Folders section shows whether this session sees locked-folder photos, and Unlock… asks for the account's PIN or password to elevate it (issue #1023). Unlocked, link, import, sync and sidecar runs see those photos too; Immich locks the session again later, so unlock again when they stop appearing. The secret is used once and is never stored or journaled.

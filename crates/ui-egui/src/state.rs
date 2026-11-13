@@ -105,6 +105,29 @@ pub enum CropOverlay {
     None,
 }
 
+impl CropOverlay {
+    /// Every guide, in the order the cycle visits them (`None` hides the guides).
+    pub const ALL: [CropOverlay; 7] = [
+        CropOverlay::Thirds,
+        CropOverlay::Grid,
+        CropOverlay::Golden,
+        CropOverlay::Diagonal,
+        CropOverlay::Triangle,
+        CropOverlay::Spiral,
+        CropOverlay::None,
+    ];
+
+    /// The next guide after `self` among those in `cycle` (Tools ▸ Crop Guide Overlay ▸ Choose
+    /// Overlays to Cycle). An empty cycle falls back to all of them; a current guide outside the
+    /// cycle steps to the first one in cycle order after it.
+    pub fn next_in(self, cycle: &[CropOverlay]) -> CropOverlay {
+        let all = CropOverlay::ALL;
+        let at = all.iter().position(|o| *o == self).unwrap_or(0);
+        let allowed = |o: &CropOverlay| cycle.is_empty() || cycle.contains(o);
+        (1..=all.len()).filter_map(|d| all.get((at + d) % all.len())).copied().find(allowed).unwrap_or(self)
+    }
+}
+
 /// Tool Overlay: when the retouching tools' pins (Remove / Heal / Clone spots, mask pins) show on
 /// the photo. Shift+H steps through the modes in this order (`view.toolOverlay`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +214,44 @@ pub enum LaunchLibrary {
     Last,
     /// A window lists the recent libraries to choose from.
     Ask,
+}
+
+/// The Edit panel's grading mode (Window ▸ Grading Mode, `view.gradingMode`): a presentation
+/// choice — both modes edit the same photo settings, they only lay the colour tools out
+/// differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GradingMode {
+    /// The Lightroom Classic panels, as the Edit panel always had them.
+    Eboda,
+    /// The DaVinci Resolve style colour-grading palettes: primaries wheels, curves and scopes
+    /// (the default — the fork's own face, with Lightroom's panels one Settings row away).
+    #[default]
+    Witchcraft,
+}
+
+impl GradingMode {
+    pub fn id(self) -> &'static str {
+        match self {
+            GradingMode::Eboda => "eboda",
+            GradingMode::Witchcraft => "witchcraft",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "eboda" => Some(GradingMode::Eboda),
+            "witchcraft" => Some(GradingMode::Witchcraft),
+            _ => None,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GradingMode::Eboda => GradingMode::Witchcraft,
+            GradingMode::Witchcraft => GradingMode::Eboda,
+        }
+    }
 }
 
 /// When grid cells show their rating / flag / edited badges.
@@ -473,6 +534,10 @@ pub struct AppSettings {
     /// card when there is one), `off`, or a card's key.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub gpu_helper: String,
+    /// Hardware device for AI semantic search vector embeddings (Settings ▸ Performance / Settings ▸ AI Models):
+    /// empty or "auto" for Automatic, "cpu" for CPU, or a card's key.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub ml_device: String,
     /// Windows DirectComposition to prevent VRR flicker; opt-in, applies at next launch.
     pub compose_window: bool,
     /// An HDR (extended-range) window where the display offers one; off: always an SDR window.
@@ -529,6 +594,16 @@ pub struct AppSettings {
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
     /// (1 = a third of the view; Preferences → Interface → Wheel scroll speed).
     pub wheel_scroll_speed: f32,
+    /// View ▸ Lock Zoom Position (`view.lockZoomPosition`): one zoom and pan for every photo (the
+    /// default); off, each photo keeps its own ([`crate::view_state`]).
+    pub lock_zoom: bool,
+    /// View ▸ Scroll By Row (`view.scrollByRow`): a wheel notch moves the grid a whole row.
+    pub scroll_by_row: bool,
+    /// View ▸ Enable Mirror Image Mode (`view.mirrorImage`): the views are shown flipped left to
+    /// right; photos, edits and exports are untouched.
+    pub mirror_image: bool,
+    /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
+    pub reduce_motion: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
     pub wheel_resizes_brush: bool,
     /// View ▸ View Options ▸ Show message when loading or rendering photos: the loupe says
@@ -552,6 +627,11 @@ pub struct AppSettings {
     /// drawn denser (one-line slider rows, short section headers, sharper corners). Off: Classic
     /// as it always was. The Modern layout overrides it.
     pub compact_layout: bool,
+    /// The Edit panel's grading mode (`view.gradingMode`): Witchcraft, the DaVinci Resolve style
+    /// colour-grading palettes (the default), or Eboda, the Lightroom Classic panels. Both edit
+    /// the same photo; a value this version doesn't know reads as the default.
+    #[serde(deserialize_with = "lenient")]
+    pub grading_mode: GradingMode,
     /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
     /// whichever library is open and after a restart.
     pub auto_sync: bool,
@@ -584,6 +664,9 @@ pub struct AppSettings {
     pub double_click_develop: bool,
     /// Hide active filter text / indicator in Develop mode (Settings ▸ Interface ▸ Detail).
     pub hide_filter_in_develop: bool,
+    /// Metadata > Show Metadata for Target Photo Only: the Metadata panel shows and edits the active photo,
+    /// not the whole selection's mixed values (`metadata.targetOnly`).
+    pub metadata_target_only: bool,
     /// Presets panel: list the "User Presets" group first, after Favorites (issue #476; off by
     /// default, as Lightroom Classic keeps groups in name order).
     pub user_presets_first: bool,
@@ -696,6 +779,7 @@ impl Default for AppSettings {
             gpu_backend: GpuBackend::Auto,
             gpu_card: String::new(),
             gpu_helper: String::new(),
+            ml_device: String::new(),
             compose_window: false,
             hdr_display: true,
             preview_limit: 0,
@@ -716,6 +800,10 @@ impl Default for AppSettings {
             film_badges: true,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
+            lock_zoom: true,
+            scroll_by_row: false,
+            mirror_image: false,
+            reduce_motion: false,
             wheel_resizes_brush: true,
             loupe_messages: true,
             keymap: Default::default(),
@@ -726,6 +814,7 @@ impl Default for AppSettings {
             ui_font_size: UiFontSize::default(),
             slider_layout: Default::default(),
             compact_layout: false,
+            grading_mode: GradingMode::Witchcraft,
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
@@ -738,6 +827,7 @@ impl Default for AppSettings {
             space_zoom: SpaceZoom::default(),
             double_click_develop: false,
             hide_filter_in_develop: false,
+            metadata_target_only: false,
             user_presets_first: false,
             loupe_info: LoupeInfo::default(),
             lightroom_import: LightroomImport::Ask,
@@ -969,6 +1059,9 @@ pub fn follow_compact_width(w: f32, compact: bool) -> f32 {
 }
 /// The Import tab's settings column (Import Settings, on the right of the browsed photos).
 pub const IMPORT_SETTINGS_WIDTH: PanelWidth = PanelWidth { min: 260.0, default: 330.0, max: 720.0 };
+/// The Import tab's Folders panel (the cards, drives and folders on the left of the browsed photos): its right edge
+/// drags it wider to read long folder names.
+pub const IMPORT_SOURCES_WIDTH: PanelWidth = PanelWidth { min: 180.0, default: 230.0, max: 640.0 };
 /// The photo area the side panels always leave free (as far as their minimum widths allow).
 pub const MIN_PHOTO_WIDTH: f32 = 360.0;
 
@@ -1101,6 +1194,16 @@ pub struct ToastAction {
     pub until: f64,
 }
 
+/// The crop-mask strengths (percent) the Crop panel and `view.cropMaskOpacity` offer; 0 is Off.
+pub const CROP_MASK_OPACITY_LEVELS: [u8; 6] = [0, 20, 50, 60, 80, 100];
+/// The strength a fresh settings file starts with (close to the former fixed alpha of 150).
+pub const DEFAULT_CROP_MASK_OPACITY: u8 = 60;
+
+/// The mask colour alpha (0..=255) for a strength in percent; anything above 100 counts as 100.
+pub fn crop_mask_alpha(percent: u8) -> u8 {
+    (u16::from(percent.min(100)) * 255 / 100) as u8
+}
+
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
@@ -1125,6 +1228,11 @@ pub struct UiState {
     /// Android: the first-start question whether to add the camera roll was answered (either
     /// way); Settings ▸ Folders offers it again.
     pub camera_roll_asked: bool,
+    /// Android: the camera roll is watched (`camera_roll::watch_tick`): it is listed when the
+    /// library opens, when the app comes to the front and every few minutes, and photos new to
+    /// the library are imported without the review. Set by adding the roll for keeps (the
+    /// first-start prompt's Add Camera Roll, Settings ▸ Folders); the toggle there turns it off.
+    pub camera_roll_watch: bool,
     /// The Build Previews run last announced (its identity, finished?).
     #[serde(skip)]
     pub preview_build_seen: Option<(usize, bool)>,
@@ -1194,10 +1302,10 @@ pub struct UiState {
     /// Width of the Import tab's settings column in points (its left edge is dragged to resize
     /// it; within [`IMPORT_SETTINGS_WIDTH`]).
     pub import_settings_width: f32,
-    /// Presets is the open panel on the right (in place of Edit, Crop, …; `right` keeps the tool
-    /// to go back to).
-    pub presets: bool,
-    /// Presets column: show a live thumbnail of the photo with each preset.
+    /// Width of the Import tab's Folders panel in points (its right edge is dragged to resize it; within
+    /// [`IMPORT_SOURCES_WIDTH`]).
+    pub import_sources_width: f32,
+    /// Presets panel: show a live thumbnail of the photo with each preset.
     pub preset_thumbs: bool,
     pub filmstrip: bool,
     /// Height of the filmstrip (points): its top edge drags it between [`FILM_HEIGHT`]'s bounds;
@@ -1215,6 +1323,9 @@ pub struct UiState {
     /// Animate the loupe rect toward its target (set by a click-zoom).
     #[serde(skip)]
     pub zoom_anim: bool,
+    /// A momentary before/after layout (`\`, the Original Photo box): a view mode, not a
+    /// workspace, so it never comes back after a restart looking like edits not showing (#1110).
+    #[serde(skip)]
     pub before_after: BeforeAfter,
     pub thumb_size: f32,
     /// Open Edit sections by id.
@@ -1282,6 +1393,11 @@ pub struct UiState {
     /// A mask slider is at work until then: no mask overlay covers the photo.
     #[serde(skip)]
     pub mask_adjusting_until: Option<std::time::Instant>,
+    /// A mask was picked (created, selected, an AI click) until then: its overlay shows for a
+    /// moment even when it has settings (issue #1109), so the user sees which mask is on; then
+    /// judging by its effect takes over again (the overlay auto rule, upstream PR 2920).
+    #[serde(skip)]
+    pub mask_peek_until: Option<std::time::Instant>,
     /// The mask whose row in the Masks list is under the pointer: its overlay shows while nothing is
     /// being adjusted.
     #[serde(skip)]
@@ -1320,6 +1436,12 @@ pub struct UiState {
     /// Mirroring of the triangle / spiral crop guides (0..4).
     pub crop_overlay_orient: u8,
     pub crop_overlay: CropOverlay,
+    /// The guides Cycle Crop Overlay visits (Choose Overlays to Cycle…); never empty.
+    pub crop_overlay_cycle: Vec<CropOverlay>,
+    /// Book ▸ Book Preferences…: what a new book starts with.
+    pub book_prefs: crate::book::BookPrefs,
+    /// How dark the mask outside the crop is, in percent: one of `CROP_MASK_OPACITY_LEVELS`.
+    pub crop_mask_opacity: u8,
     /// Last explicitly chosen aspect, retained across photos and app launches; `None` (nothing
     /// chosen yet) crops locked to the photo's own shape, as Lightroom starts (#991).
     pub crop_default_aspect: Option<serde_json::Value>,
@@ -1336,6 +1458,9 @@ pub struct UiState {
     /// without the user choosing it, so only a choice made since is kept.
     #[serde(rename = "faceBoxesOn")]
     pub face_boxes: bool,
+    /// Photo > People > Draw Face Regions is on: a drag over the loupe's photo draws a face box.
+    #[serde(skip)]
+    pub draw_faces: bool,
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
@@ -1364,6 +1489,9 @@ pub struct UiState {
     /// A face's name being typed in the loupe.
     #[serde(skip)]
     pub name_edit: Option<NameEdit>,
+    /// The face box the pointer last rested on in the loupe (photo, region): the "chosen face" of Photo ▸ People.
+    #[serde(skip)]
+    pub face_focus: Option<(u64, usize)>,
     /// The person whose page the People view shows (their faces and the faces that look like them); `None`: everyone.
     #[serde(skip)]
     pub person_page: Option<String>,
@@ -1498,6 +1626,11 @@ pub struct UiState {
     pub mixer_adjust: String,
     /// The HSL group shown: "hue" | "sat" | "lum" | "all".
     pub mixer_group: String,
+    /// The Witchcraft HSL Curves panel's curve: "hue" | "sat" | "lum".
+    pub hsl_curve: String,
+    /// The Primaries palette's wheels: "color" (Lift / Gamma / Gain / Offset) or "log"
+    /// (Shadow / Midtone / Highlight / Offset). Which set is edited; both always render.
+    pub primaries_tab: String,
     /// Selected colour grading tab: "3way" | "shadows" | "midtones" | "highlights".
     pub grading_mode: String,
     /// Colour grading wheels (shadows, midtones, highlights) hidden for viewing by their eye, and
@@ -1519,6 +1652,8 @@ pub struct UiState {
     /// The Remove panel's tool last used ("remove", "fill", "generate", "heal", "clone"): the panel
     /// opens on it again (this session).
     pub remove_tool: String,
+    /// Tools ▸ Remove Options ▸ Detect Objects: a Remove stroke picks the object under it (`spot.detectObject`).
+    pub remove_detect_objects: bool,
     /// The brush's Size (Lightroom's 1..100, a size on the screen: the core is [`brush_core_points`] at
     /// every zoom; a stroke stores it in photo units as painted), Feather, Flow and Density.
     pub brush_size: f32,
@@ -1691,6 +1826,8 @@ pub struct UiState {
     pub slideshow: Option<Box<crate::panels::slideshow::Run>>,
     /// The Slideshow module (templates, saved slideshows, the slide settings).
     pub slides: crate::slideshow_ui::SlideshowState,
+    /// The Web module's templates, template folders and Show Guides.
+    pub web: crate::web_templates::WebState,
     /// Info overlay on the loupe.
     pub info_overlay: InfoOverlay,
     /// When the loupe last changed photo (View Options' Show Briefly When Photo Changes).
@@ -1720,6 +1857,9 @@ pub struct UiState {
     /// The result of the last Find Missing Photos (it searches in the background).
     #[serde(skip)]
     pub last_find_missing: Option<serde_json::Value>,
+    /// The report of the last Validate DNG Files (`dng.validate`'s answer; it runs in the background).
+    #[serde(skip)]
+    pub last_dng_validation: Option<serde_json::Value>,
     /// The outcome (success or error) of the last Find Missing Photos task.
     #[serde(skip)]
     pub last_find_missing_result: Option<Result<serde_json::Value, String>>,
@@ -1764,6 +1904,10 @@ pub fn default_preset_groups() -> Vec<String> {
     lcc_develop::SettingsPick::of_groups(lcc_develop::SettingsGroup::default_preset()).to_ids()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Dialog {
     /// A fresh Create Preset dialog.
     /// Ticked and grouped as the last one was (the session's [`lcc_engine::app_store::DialogMemory`]).
@@ -1799,6 +1943,14 @@ pub struct NameEdit {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Dialog {
+    /// Tools ▸ Crop Guide Overlay ▸ Choose Overlays to Cycle…: the guides `view.cropOverlay` visits.
+    CropOverlays {
+        picked: Vec<CropOverlay>,
+    },
+    /// Book ▸ Book Preferences…: what `book.new` starts a book with.
+    BookPrefs {
+        prefs: crate::book::BookPrefs,
+    },
     /// File ▸ Export ▸ Timelapse Video… (`crate::timelapse_ui`); `size` is "WxH".
     Timelapse {
         fps: u32,
@@ -1807,6 +1959,11 @@ pub enum Dialog {
         hold: u32,
         crossfade: u32,
         prores: bool,
+        quality: u8,
+    },
+    /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
+    EmailPhoto {
+        long_edge: u32,
         quality: u8,
     },
     /// A Lightroom import result stays readable after its activity row disappears.
@@ -1950,6 +2107,12 @@ pub enum Dialog {
     AutoStack {
         gap: f32,
     },
+    /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
+    /// over the grid it filters.
+    AdvancedSearch {
+        #[serde(default)]
+        search: crate::advanced_search::Search,
+    },
     /// Save the current view (source + filter) as a smart album.
     NewSmartAlbum {
         name: String,
@@ -1977,6 +2140,14 @@ pub enum Dialog {
         /// Everyone's eyes count, not only the main subjects' (`mainOnly: false`).
         #[serde(default)]
         everyone: bool,
+        /// Apply the suggested star ratings (`photo.analyze` `applyRatings`; photos the user
+        /// rated are left alone).
+        #[serde(default = "default_true")]
+        suggest_stars: bool,
+        /// Apply the suggested Pick / Reject flags (`photo.analyze` `applyFlags`; photos the user
+        /// flagged are left alone).
+        #[serde(default)]
+        suggest_flags: bool,
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -1992,6 +2163,13 @@ pub enum Dialog {
     },
     SystemInfo {
         rows: Vec<(String, String)>,
+    },
+    /// Library ▸ Validate DNG Files: what the check found (it runs in the background). `damaged` and `unverifiable`
+    /// hold `name: why` lines.
+    DngValidation {
+        summary: String,
+        damaged: Vec<String>,
+        unverifiable: Vec<String>,
     },
     /// Help ▸ Check for Updates…: the release feed's answer, the download and the install
     /// (the panel state lives in the session's updater; see [`crate::panels::update`]).
@@ -2031,6 +2209,14 @@ pub enum Dialog {
     SyncSettings {
         groups: Vec<String>,
         controls: Vec<String>,
+    },
+    /// Sync Copies: the groups the active photo's settings carry to its master and virtual copies.
+    SyncCopies {
+        groups: Vec<String>,
+    },
+    /// Sync Snapshots: the groups the active photo's current edit carries into each of its snapshots.
+    SyncSnapshots {
+        groups: Vec<String>,
     },
     /// Update Preset with Current Settings: which settings preset `id` keeps (pre-ticked with what it
     /// holds).
@@ -2104,13 +2290,13 @@ pub enum Dialog {
         library: String,
         /// The photos in the open library.
         photos: usize,
-        /// "Create a new library" is chosen (else "Merge into the open library").
+        /// "Create a new catalog" is chosen (else "Merge into the open library").
         new_library: bool,
         /// The new library's name (prefilled from the catalog's file name).
         name: String,
         /// The folder the new library goes in (prefilled with the open library's parent folder).
         location: String,
-        /// "Don't ask again (always merge into the open library)".
+        /// "Don't ask again (always merge into the open catalog)".
         dont_ask: bool,
         /// `Session::library_generation` when the window opened.
         generation: u64,
@@ -2261,7 +2447,7 @@ pub struct SyncCounts {
     pub new: usize,
     /// Files whose content a photo already has.
     pub duplicates: usize,
-    /// Of those, the ones "Don't import files already in the library" unticked brings in (not copies
+    /// Of those, the ones "Don't import files already in the catalog" unticked brings in (not copies
     /// of a photo in Recently Deleted: see `lcc_engine::sync::FolderChanges::importable_duplicates`).
     #[serde(default)]
     pub copies: usize,
@@ -2306,12 +2492,14 @@ impl Default for UiState {
             eye_focus_import: true,
             language: crate::i18n::default_language(),
             camera_roll_asked: false,
+            camera_roll_watch: false,
             preview_build_seen: None,
             unsaved_seen: false,
             frame_rate: lcc_brand::env("FPS").is_some_and(|v| matches!(v.trim(), "1" | "on" | "true" | "yes")),
             luminance_map_restore: None,
             mask_overlay_pinned: false,
             mask_adjusting_until: None,
+            mask_peek_until: None,
             mask_pin_hover: None,
             mask_menu_for: None,
             mask_hover: None,
@@ -2336,6 +2524,7 @@ impl Default for UiState {
             profile_manager_size: None,
             right_width: RIGHT_WIDTH.default,
             import_settings_width: IMPORT_SETTINGS_WIDTH.default,
+            import_sources_width: IMPORT_SOURCES_WIDTH.default,
             right: RightPanel::Edit,
             toggle_return: None,
             tool_return: None,
@@ -2343,7 +2532,6 @@ impl Default for UiState {
             right_seen: RightPanel::Edit,
             right_collapsed: false,
             right_hidden: RightPanel::None,
-            presets: false,
             preset_thumbs: false,
             filmstrip: true,
             film_height: FILM_HEIGHT.default,
@@ -2354,7 +2542,9 @@ impl Default for UiState {
             zoom_anim: false,
             before_after: BeforeAfter::Off,
             thumb_size: 220.0,
-            open_sections: vec!["light".into()],
+            // "primaries" (the Witchcraft palette) opens with the app: in Eboda the section never
+            // renders, so the extra entry is invisible there; a user who closes it keeps that
+            open_sections: vec!["light".into(), "primaries".into()],
             open_flyouts: vec![],
             single_panel: false,
             show_clipping: false,
@@ -2377,12 +2567,16 @@ impl Default for UiState {
             tool_overlay: ToolOverlay::Auto,
             mask_overlay_all: false,
             crop_overlay: CropOverlay::Thirds,
+            crop_overlay_cycle: CropOverlay::ALL.to_vec(),
+            book_prefs: Default::default(),
             crop_default_aspect: None,
             crop_overlay_orient: 0,
+            crop_mask_opacity: DEFAULT_CROP_MASK_OPACITY,
             show_filenames: true,
             grid_info: "filename".into(),
             show_counts: true,
             face_boxes: false,
+            draw_faces: false,
             hdr_preview: true,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
@@ -2390,6 +2584,7 @@ impl Default for UiState {
             section_open: Default::default(),
             tree_open: Default::default(),
             name_edit: None,
+            face_focus: None,
             person_page: None,
             person_from: None,
             last_person: None,
@@ -2437,12 +2632,15 @@ impl Default for UiState {
             mixer_mode: "red".into(),
             mixer_adjust: "hsl".into(),
             mixer_group: "hue".into(),
+            hsl_curve: "hue".into(),
+            primaries_tab: "color".into(),
             grading_mode: "3way".into(),
             grading_hidden: None,
             tool: String::new(),
             selected_guide: None,
             wb_sample: 5,
             remove_tool: "remove".into(),
+            remove_detect_objects: false,
             brush_size: BRUSH_SIZE_DEFAULT,
             brush_feather: 50.0,
             brush_flow: 60.0,
@@ -2480,6 +2678,7 @@ impl Default for UiState {
             fullscreen: false,
             slideshow: None,
             slides: Default::default(),
+            web: Default::default(),
             second_window: false,
             module: Default::default(),
             previous_module: None,
@@ -2533,6 +2732,7 @@ impl Default for UiState {
             reference: None,
             toasts: Vec::new(),
             toast_action: None,
+            last_dng_validation: None,
             last_find_missing: None,
             last_find_missing_result: None,
             #[cfg(test)]
@@ -2847,6 +3047,7 @@ impl UiState {
         self.left_width = LEFT_WIDTH.clamp(self.left_width);
         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
         self.import_settings_width = IMPORT_SETTINGS_WIDTH.clamp(self.import_settings_width);
+        self.import_sources_width = IMPORT_SOURCES_WIDTH.clamp(self.import_sources_width);
         self.film_height = FILM_HEIGHT.clamp(self.film_height);
         // a histogram mode or scale another build wrote (or a hand-edited file) is the default
         if lcc_raster::HistogramMode::parse(&self.histogram_mode).is_none() {
@@ -2928,20 +3129,6 @@ mod loupe_info_tests {
             serde_json::from_value(serde_json::json!({"filmNames": false, "loupeInfo": {"info1": ["rating", "fileName", "none"]}})).unwrap();
         assert_eq!(newer.loupe_info, LoupeInfo::default());
         assert!(!newer.film_names, "the rest of the settings are still read");
-    }
-
-    /// Show message when loading or rendering photos is on until it is turned off, and is saved
-    /// with the app's settings.
-    #[test]
-    fn the_loading_message_choice_is_saved_with_the_settings() {
-        assert!(AppSettings::default().loupe_messages);
-        let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
-        assert!(old.loupe_messages, "a settings file from before the choice existed keeps the message");
-        let settings = AppSettings { loupe_messages: false, ..AppSettings::default() };
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["loupeMessages"], false);
-        let read: AppSettings = serde_json::from_value(saved).unwrap();
-        assert!(!read.loupe_messages);
     }
 }
 

@@ -65,7 +65,8 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     // modules and views
     ("view.loupe", Some("E")),
     ("panel.edit", None),
-    ("module.develop", Some("D")),
+    // Lightroom Classic: ⌘⌥2 (D too, `classic_extra_keys`)
+    ("module.develop", Some("Cmd+Alt+2")),
     ("view.detail", None),
     ("view.compare", Some("C")),
     ("module.library", Some("Cmd+Alt+1")),
@@ -96,6 +97,10 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("tool.linear", Some("M")),
     ("tool.radial", Some("Shift+M")),
     ("tool.guidedUpright", Some("Shift+T")),
+    ("tool.colorRange", Some("Shift+J")),
+    ("tool.depthRange", Some("Shift+D")),
+    ("tool.luminanceRange", Some("Shift+Q")),
+    ("tool.pointColor", Some("Cmd+Alt+P")),
     ("panel.keywords", Some("Cmd+K")),
     // flags, collections
     // ` toggles the Pick flag as in Lightroom Classic; cycling all three states (the
@@ -104,8 +109,8 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("photo.cycleFlag", None),
     ("album.toggleTarget", Some("B")),
     ("library.showQuickCollection", Some("Cmd+B")),
-    ("album.clearQuick", Some("Cmd+Alt+B")),
-    ("album.saveQuick", Some("Cmd+Shift+B")),
+    ("album.clearQuick", Some("Cmd+Shift+B")),
+    ("album.saveQuick", Some("Cmd+Alt+B")),
     ("photo.copyMetadata", Some("Cmd+Alt+Shift+C")),
     ("photo.pasteMetadata", Some("Cmd+Alt+Shift+V")),
     // secondary window
@@ -113,7 +118,42 @@ pub const CLASSIC: &[(&str, Option<&str>)] = &[
     ("second.loupe", Some("Shift+E")),
     ("second.compare", Some("Shift+C")),
     ("second.survey", Some("Shift+N")),
-    ("second.slideshow", Some("Cmd+Shift+Enter")),
+    ("second.slideshow", Some("Cmd+Alt+Shift+Enter")),
+    ("second.locked", Some("Cmd+Shift+Enter")),
+    // Lightroom Classic's menu keys where the declared ones differ (docs/lrc-menu-gaps.md; the
+    // menus follow `crate::lrc_menus`)
+    ("file.export", Some("Cmd+Shift+E")),
+    ("photo.editInPhotoCraft", Some("Cmd+E")),
+    ("dialog.newFolder", None),
+    // Library ▸ New Folder…; New Collection Set… has no key in Classic
+    ("dialog.newDiskFolder", Some("Cmd+Shift+N")),
+    ("dialog.pageSetup", Some("Cmd+Shift+P")),
+    ("album.setTarget", Some("Cmd+Alt+Shift+B")),
+    ("library.deselectActive", Some("/")),
+    ("library.deselectUnflagged", Some("Cmd+Alt+Shift+D")),
+    ("photo.removeFromCatalog", Some("Alt+Delete")),
+    ("library.selectNone", Some("Cmd+D")),
+    ("edit.redo", Some(if cfg!(target_os = "macos") { "Cmd+Shift+Z" } else { "Cmd+Y" })),
+    ("develop.auto", Some("Cmd+U")),
+    // Develop ▸ Tools: Classic's Crop to Same Aspect Ratio (Auto Settings moved to Cmd+U above)
+    ("crop.sameAspect", Some("Shift+A")),
+    ("develop.copy", None),
+    ("develop.paste", Some("Cmd+Shift+V")),
+    ("dialog.pasteSettings", None),
+    ("dialog.createPreset", None),
+    ("view.toolOverlay", None),
+    ("develop.hdr", Some("Shift+H")),
+    ("view.histogram", Some("Cmd+0")),
+    ("view.zoomFit", None),
+    ("view.slideshow", Some("Cmd+Enter")),
+    ("view.leftPanel", None),
+    ("view.gradingMode", None),
+    ("stack.ungroup", Some("Cmd+Shift+G")),
+    ("masks.updateAi", Some("Cmd+Alt+U")),
+    ("develop.matchExposure", Some("Cmd+Alt+Shift+M")),
+    ("library.deleteRejected", Some("Cmd+Delete")),
+    ("view.chooseLayoutImage", Some("Cmd+Alt+Shift+O")),
+    ("app.shortcuts", None),
 ];
 
 /// The largest keymap file read (a keymap is a few kilobytes).
@@ -212,7 +252,21 @@ pub(super) fn taken() -> Vec<(Modifiers, Key)> {
 
 /// The module's own keys (Classic set): they come first and take their key from the global keymap.
 pub(super) fn module_keys(module: crate::module::ModuleId) -> &'static [crate::module::ModuleKey] {
+    module_keys_of(module)
+}
+
+/// The keys `module` binds over the global keymap in the active set (none in the Alternative set);
+/// the menus show them beside their items.
+pub fn module_keys_of(module: crate::module::ModuleId) -> &'static [crate::module::ModuleKey] {
     if active_set() == KeymapSet::Classic { crate::module::get(module).keymap() } else { &[] }
+}
+
+/// Second keys the Classic set gives commands in every module, as Lightroom Classic does (`D` goes
+/// to Develop besides ⌘⌥2; ⇧⌘L dims the lights). Like module keys they come before
+/// the global keymap and yield to a key the user gave a command. None in the Alternative set.
+pub fn classic_extra_keys() -> &'static [crate::module::ModuleKey] {
+    const EXTRA: &[crate::module::ModuleKey] = &[("D", "module.develop", "{}"), ("Cmd+Shift+L", "view.lightsOut", r#"{"mode": "dim"}"#)];
+    if active_set() == KeymapSet::Classic { EXTRA } else { &[] }
 }
 
 /// Whether a Tab pressed with `m` is the binding's (`bm`). On macOS Control is a key of its own

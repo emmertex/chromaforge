@@ -429,6 +429,8 @@ pub struct ImportTask {
     pub cancelled: bool,
     /// Auto Import (the watched folder): the selection stays as it is, a short toast when done.
     auto: bool,
+    /// Android's watched camera roll: like `auto`, and the toast says where the photos came from.
+    camera_roll: bool,
     /// Auto Import: the selection to keep.
     keep_selection: Option<lcc_engine::Selection>,
     /// The selection and source as the import last left them: a change between frames is the
@@ -460,6 +462,12 @@ impl ImportTask {
     /// An Auto Import (see [`ImportTask::auto`]).
     pub fn auto(mut self) -> Self {
         self.auto = true;
+        self
+    }
+
+    /// The watched camera roll's import (see [`ImportTask::camera_roll`]).
+    pub fn camera_roll(mut self) -> Self {
+        self.camera_roll = true;
         self
     }
 
@@ -714,6 +722,7 @@ pub fn rescan_with_subfolders(app: &mut LccApp, d: &ImportDialog, subfolders: bo
 /// and the photos then join the view in small batches under a progress window. A browse already
 /// running is replaced; the import review's scan is not.
 pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Option<&str>) -> Result<Value, String> {
+    let mut lap = crate::now_ms();
     let dir = std::path::absolute(std::path::Path::new(path)).map_err(|e| e.to_string())?;
     if !dir.is_dir() {
         return Err(format!("{path}: not a folder"));
@@ -745,15 +754,26 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.import = None;
     app.session.browse = Some(lcc_engine::Browse { path: dir_s.clone(), subfolders, not_imported });
     app.session.source = lcc_engine::LibrarySource::Folder;
+    app.lap(&mut lap, "browse.start");
     // the photos the library already knows from this folder show at once: keep or pick the active one
     app.session.keep_active_in_view();
+    app.lap(&mut lap, "browse.view");
     let (input, _) = ScanInput::new(&mut app.session, std::slice::from_ref(&dir_s));
+    app.lap(&mut lap, "browse.library");
     let progress = std::sync::Arc::new(ScanProgress::default());
     let (tx, rx) = std::sync::mpsc::channel();
     let p = progress.clone();
     let root = dir_s.clone();
     let sort = app.session.sort;
     let job = move || {
+        // a folder that can't be listed (no permission: macOS asks per folder; gone; offline) is
+        // said so, not shown as an empty folder (issue #966)
+        if let Err(e) = std::fs::read_dir(&root) {
+            log::warn!("browse {root}: {e}");
+            let error = lcc_engine::import::ImportCandidate { path: root, error: Some(e.to_string()), ..Default::default() };
+            let _ = tx.send(lcc_engine::import::ScanOutput { candidates: vec![error], unreadable: 1, ..Default::default() });
+            return;
+        }
         let files: Vec<String> = if subfolders {
             lcc_engine::import::expand(&[root], None)
         } else {
@@ -788,6 +808,7 @@ pub fn browse(app: &mut LccApp, path: &str, subfolders: Option<bool>, show: Opti
     app.scan =
         Some(ScanTask { progress, rx, copy: false, destination: None, album: None, browse: true, sources: Vec::new(), guard, subfolders: false });
     app.renderer.forget_imports();
+    app.lap(&mut lap, "browse.rest");
     Ok(json!({"path": dir_s, "subfolders": subfolders, "scanning": true}))
 }
 
@@ -822,6 +843,15 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
     }
     app.session.import_probes = out.probes;
     if task.browse {
+        // the folder couldn't be listed: said so (the photos the library knows from there stay)
+        if out.unreadable > 0
+            && let [c] = out.candidates.as_slice()
+            && let Some(e) = &c.error
+        {
+            app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
+            return;
+        }
+        let mut lap = crate::now_ms();
         // the folder and the ones its photos are in count as browsed now, as `library.browse` records them, so
         // their untouched Local photos aren't forgotten while the folder is in use
         if let Some(root) = app.session.browse.as_ref().map(|b| b.path.clone()) {
@@ -832,7 +862,9 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
         // as `library.browse` forgets them (issue #1392)
         if let Some(b) = app.session.browse.clone() {
             let listed: Vec<String> = out.candidates.iter().map(|c| c.path.clone()).collect();
+            app.lap(&mut lap, "browse.noted");
             app.session.forget_gone_from(&b.path, b.subfolders, &listed);
+            app.lap(&mut lap, "browse.forgetGone");
         }
         // what the library doesn't know yet joins the Local view
         let queue: Vec<String> =
@@ -966,7 +998,7 @@ pub fn start(app: &mut LccApp, d: &ImportDialog) -> Result<Value, String> {
         return crate::panels::connections::start_import(app);
     }
     if !d.in_library(app) {
-        return Err("another library was opened since the photos were scanned: nothing was imported".into());
+        return Err("another catalog was opened since the photos were scanned: nothing was imported".into());
     }
     // a browse scan that finishes starts its own import, replacing this one
     if app.import.is_some() || app.scan.as_ref().is_some_and(|t| t.browse) {
@@ -1054,6 +1086,23 @@ fn start_paths_with(app: &mut LccApp, paths: Vec<String>, params: Value) -> Resu
     Ok(json!({"importing": total}))
 }
 
+/// Start importing `paths` in place, without review, the way the watched camera roll adds new
+/// photos (Android, `camera_roll::watch_tick`): as [`start_paths_with`] with the library's import
+/// settings ([`dropped_import_params`]), the selection stays as it is, and the toast when it is
+/// done says where the photos came from. Refused while another import runs or a folder
+/// synchronizes.
+pub(crate) fn start_camera_roll(app: &mut LccApp, paths: Vec<String>) -> Result<Value, String> {
+    let params = dropped_import_params(app);
+    busy_synchronizing(app)?;
+    if running(app) {
+        return Err(crate::i18n::tr("An import is running").to_string());
+    }
+    let undo0 = app.session.undo.len();
+    let total = paths.len();
+    app.import = Some(ImportTask::new(paths, params, undo0, false).auto().camera_roll());
+    Ok(json!({"importing": total}))
+}
+
 /// The `library.import` params of a drop imported without review: added in place, with the
 /// library's import settings (its presets, camera defaults, creator and copyright apply to every
 /// import; the metadata preset is the one the review would start with).
@@ -1099,6 +1148,10 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     }
 }
 
+/// The activity kind of a browse's folder read (`library.browse` in the Import tab): a scan, not
+/// [`lcc_engine::activity::Activity::user_work`].
+pub(crate) const BROWSE_READ_KIND: &str = "scan";
+
 /// Advance the import in progress (called every frame): start its worker, then add the batches it
 /// has readied to the catalog.
 pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
@@ -1115,8 +1168,11 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         }
         match started {
             Ok(run) => {
-                let label = if task.browse { "Reading folder" } else { "Importing" };
-                task.guard = Some(app.session.activity.start("import", label, lcc_engine::activity::Cancel::Flag(run.cancel.clone())));
+                // (reading a folder to browse it is not the user's own work the way an import is:
+                // the photos being culled meanwhile are prepared, and their neighbours made ahead;
+                // as an "import" it held all of that back for the whole read, 90 s for a wedding)
+                let (kind, label) = if task.browse { (BROWSE_READ_KIND, "Reading folder") } else { ("import", "Importing") };
+                task.guard = Some(app.session.activity.start(kind, label, lcc_engine::activity::Cancel::Flag(run.cancel.clone())));
                 task.run = Some(run);
             }
             Err(e) => {
@@ -1231,7 +1287,12 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
                 8.0,
             );
         } else if task.imported > 0 {
-            app.toast(ctx, crate::i18n::tr_format!("Auto Import: added {} photo{}", task.imported, if task.imported == 1 { "" } else { "s" }));
+            let msg = if task.camera_roll {
+                crate::i18n::tr_format!("{n} new photo{} from the camera roll", plural(task.imported), n = task.imported)
+            } else {
+                crate::i18n::tr_format!("Auto Import: added {} photo{}", task.imported, plural(task.imported))
+            };
+            app.toast(ctx, msg);
         }
         return;
     }
@@ -1323,10 +1384,10 @@ fn show_existing(app: &mut LccApp, ctx: &egui::Context, existing: &[u64]) -> boo
     let n = ids.len();
     let plural = if n == 1 { "" } else { "s" };
     let msg = if kind == "all" {
-        crate::i18n::tr_format!("Already in the library: {} photo{} selected in All Photos", n, plural)
+        crate::i18n::tr_format!("Already in the catalog: {} photo{} selected in All Photos", n, plural)
     } else {
         crate::i18n::tr_format!(
-            "Already in the library, in Recently Deleted: {} photo{} selected · right-click ▸ Restore, or Delete Permanently to import afresh",
+            "Already in the catalog, in Recently Deleted: {} photo{} selected · right-click ▸ Restore, or Delete Permanently to import afresh",
             n,
             plural
         )
@@ -1401,7 +1462,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(crate::i18n::tr_format!("{n} found · {sel} selected", n = n, sel = sel)).color(t.text));
         if dups > 0 {
-            ui.label(egui::RichText::new(crate::i18n::tr_format!("· {dups} already in the library", dups = dups)).color(t.text_dim));
+            ui.label(egui::RichText::new(crate::i18n::tr_format!("· {dups} already in the catalog", dups = dups)).color(t.text_dim));
         }
         if in_source > 0 {
             ui.label(egui::RichText::new(crate::i18n::tr_format!("· {in_source} identical copies", in_source = in_source)).color(t.text_dim))
@@ -1501,13 +1562,13 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
         let can_copy = app.session.library.as_ref().is_some_and(|l| l.on_disk) || app.services.pick_folder.is_some();
         let r =
             ui.add_enabled_ui(can_copy, |ui| crate::widgets::text_button(ui, "importCopy", crate::i18n::tr("Copy"), d.copy && !d.move_files)).inner;
-        if r.on_hover_text(crate::i18n::tr("Copy the files (into the library's Originals/, or a folder you choose)")).clicked() {
+        if r.on_hover_text(crate::i18n::tr("Copy the files (into the catalog's Originals/, or a folder you choose)")).clicked() {
             d.copy = true;
             d.move_files = false;
         }
         let r =
             ui.add_enabled_ui(can_copy, |ui| crate::widgets::text_button(ui, "importMove", crate::i18n::tr("Move"), d.copy && d.move_files)).inner;
-        if r.on_hover_text(crate::i18n::tr("Move the files (into the library's Originals/, or a folder you choose), removing them from the source"))
+        if r.on_hover_text(crate::i18n::tr("Move the files (into the catalog's Originals/, or a folder you choose), removing them from the source"))
             .clicked()
         {
             d.copy = true;
@@ -1517,12 +1578,12 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     let r = ui.label(
         egui::RichText::new(crate::i18n::tr(match (d.copy, d.move_files) {
             (true, false) => {
-                "Copy: the files are copied to the folder below and the library uses the copies; the originals are left as they are."
+                "Copy: the files are copied to the folder below and the catalog uses the copies; the originals are left as they are."
             }
             (true, true) => {
                 "Move: the files are moved to the folder below; each original (and its XMP sidecar) is removed from the source only after its copy is verified. Duplicates and files that fail stay where they are."
             }
-            _ => "Add in place: the library references the files where they are; nothing is copied or moved.",
+            _ => "Add in place: the catalog references the files where they are; nothing is copied or moved.",
         }))
         .color(if d.copy && d.move_files { t.caution } else { t.text_dim })
         .small(),
@@ -1531,7 +1592,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
     if d.copy {
         field(ui, if d.move_files { "Move to" } else { "Copy to" }, |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Library Originals").to_string() } else { d.destination.clone() };
+            let shown = if d.destination.trim().is_empty() { crate::i18n::tr("Catalog Originals").to_string() } else { d.destination.clone() };
             ui.label(egui::RichText::new(shown).color(Tokens::get(ui.ctx()).text_label));
             if app.services.pick_folder.is_some()
                 && crate::widgets::text_button(ui, "importDest", crate::i18n::tr("Choose…"), false).clicked()
@@ -1606,7 +1667,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &mut ImportDialog) {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.rename)
                     .id(rename_id)
-                    .hint_text(crate::i18n::tr("keep names — or e.g. {date}_{seq:3}"))
+                    .hint_text(crate::i18n::tr("keep names, or e.g. {date}_{seq:3}"))
                     .desired_width(w),
             );
             register(ui.ctx(), "field:importRename", r.rect);
@@ -1781,7 +1842,7 @@ pub(crate) fn recipe_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
     }
     ui.label(
         egui::RichText::new(crate::i18n::tr(
-            "Set on every photo this import adds, after its XMP sidecar and the preset above; photos the library already has are left alone. A slider left at its default changes nothing. Nothing is saved unless you save it as a preset.",
+            "Set on every photo this import adds, after its XMP sidecar and the preset above; photos the catalog already has are left alone. A slider left at its default changes nothing. Nothing is saved unless you save it as a preset.",
         ))
         .color(t.text_dim)
         .small(),
@@ -1959,8 +2020,8 @@ pub(crate) fn candidate_cell(app: &mut LccApp, ui: &mut egui::Ui, d: &mut Import
         // checked with "Leave them", the file goes without `onDeleted`: the engine restores it
         (Some(_), _) if in_trash && on => Some(if d.on_deleted == "fresh" { "Will be replaced" } else { "Will be restored" }),
         (Some(_), _) if in_trash => Some("In Recently Deleted"),
-        (Some(r), _) if r == "path" => Some("In library"),
-        (None, None) if d.copy && d.is_browsed(i) => Some("In library"),
+        (Some(r), _) if r == "path" => Some("In catalog"),
+        (None, None) if d.copy && d.is_browsed(i) => Some("In catalog"),
         (Some(_), _) if on => Some("Will be copied"),
         (Some(_), _) => Some("Duplicate"),
         (None, Some(_)) => Some("Unreadable"),

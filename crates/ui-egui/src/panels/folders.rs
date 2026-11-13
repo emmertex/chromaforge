@@ -12,12 +12,10 @@ use crate::widgets::{icon_button, register};
 
 /// The + menu at the right end of the Folders header: Add Folder… (Import from Folder…, its photos
 /// added where they are), Create Folder…. Hosts with only the background picker (Android) get Add
-/// Folder… alone: their picker copies a picked folder into the app, no place to create one in.
+/// Folder… alone: their picker copies a picked folder into the app, no place to create one in. Show Photos in Subfolders ends the menu on every host.
 pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewport: Rect) {
     let can_create = app.services.pick_folder.is_some();
-    if !can_create && app.services.picker.is_none() {
-        return;
-    }
+    let can_add = can_create || app.services.picker.is_some();
     let right = (header.left() + viewport.max.x).min(header.right()) - 26.0;
     let mut hdr = ui.new_child(
         egui::UiBuilder::new()
@@ -26,11 +24,35 @@ pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewpor
     );
     let plus = icon_button(&mut hdr, "folderAdd", Icon::Plus, vec2(22.0, 22.0), false, true, "Add Folder");
     egui::Popup::menu(&plus).show(|ui| {
-        // disabled while a Lightroom catalog import runs, as File ▸ Import from Folder… is
+        if can_add {
+            add_folder_items(app, ui, can_create);
+            ui.separator();
+        }
+        subfolder_photos_item(app, ui);
+    });
+}
+
+/// Show Photos in Subfolders, as a checked menu item: whether a chosen folder also shows the
+/// photos of the folders inside it (`library.showSubfolderPhotos`).
+pub fn subfolder_photos_item(app: &mut LccApp, ui: &mut egui::Ui) {
+    let mut on = app.session.folder_subfolders;
+    let r = ui.checkbox(&mut on, crate::i18n::tr("Show Photos in Subfolders"));
+    register(ui.ctx(), "folderShowSubfolderPhotos", r.rect);
+    if r.clicked() {
+        if let Err(e) = app.run("library.showSubfolderPhotos", json!({"on": on})) {
+            app.toast(ui.ctx(), e);
+        }
+        ui.close();
+    }
+}
+
+fn add_folder_items(app: &mut LccApp, ui: &mut egui::Ui, can_create: bool) {
+    // disabled while a Lightroom catalog import runs, as File ▸ Import from Folder… is
+    {
         let enabled = crate::menus::ui_enabled(app, "file.addFolder");
         let add = ui
             .add_enabled(enabled, egui::Button::new(crate::i18n::tr("Add Folder…")))
-            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the library where they are"));
+            .on_hover_text(crate::i18n::tr("Add the photos of a folder to the catalog where they are"));
         register(ui.ctx(), "button:folderAddFolder", add.rect);
         if add.clicked() {
             // File ▸ Import from Folder…: the dialog and the scan run off the UI thread (#734)
@@ -46,7 +68,7 @@ pub fn header_buttons(app: &mut LccApp, ui: &mut egui::Ui, header: Rect, viewpor
             }
             ui.close();
         }
-    });
+    }
 }
 
 fn create_prompt(app: &mut LccApp, parent: &str) {

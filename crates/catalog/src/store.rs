@@ -62,6 +62,13 @@ pub trait Store: Send {
     fn dir(&self) -> Option<&Path> {
         None
     }
+    /// Is there a folder called `name` among the files? The journal refuses a library laid out
+    /// with a folder this version doesn't read (upstream #3962) rather than load part of it and
+    /// overwrite the rest. The default: a flat store (no folders), so `false`.
+    fn has_folder(&mut self, name: &str) -> io::Result<bool> {
+        let _ = name;
+        Ok(false)
+    }
 }
 
 /// What a store's log thread has made durable ([`Store::log_progress`]).
@@ -142,6 +149,9 @@ pub(crate) fn create_staging(tmp: &std::path::Path) -> io::Result<std::fs::File>
     std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)
 }
 
+/// Most bytes of one catalog file read into memory.
+const MAX_READ: u64 = 8 << 30;
+
 impl Store for FsStore {
     /// Never through a link at the name, nor from a FIFO or a device (issue #2552): a `prefs.json`
     /// linked to a private file would be read as damaged and copied into the library.
@@ -154,7 +164,10 @@ impl Store for FsStore {
         }
         let Some(mut f) = crate::safe_file::open_regular(&self.path(name), std::fs::OpenOptions::new().read(true))? else { return Ok(None) };
         let mut b = Vec::new();
-        f.read_to_end(&mut b)?;
+        (&mut f).take(MAX_READ.saturating_add(1)).read_to_end(&mut b)?;
+        if b.len() as u64 > MAX_READ {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{name} is more than the {MAX_READ} bytes allowed")));
+        }
         Ok(Some(b))
     }
 
@@ -281,6 +294,16 @@ impl Store for FsStore {
         self.dir.display().to_string()
     }
 
+    fn has_folder(&mut self, name: &str) -> io::Result<bool> {
+        // (a link to a folder counts: what it points at is what another build would read)
+        match std::fs::metadata(self.path(name)) {
+            Ok(md) => Ok(md.is_dir()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            // can't tell: an error, not a guess that would let the open go on to write
+            Err(e) => Err(e),
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn background_writer(&self) -> Option<Box<dyn Store>> {
         Some(Box::new(FsStore { dir: self.dir.clone(), appender: None, log: None, json_only: self.json_only }))
@@ -361,6 +384,11 @@ impl Store for MemStore {
     }
     fn describe(&self) -> String {
         "memory".into()
+    }
+    /// A file named `<name>/...` stands for a file inside folder `name`.
+    fn has_folder(&mut self, name: &str) -> io::Result<bool> {
+        let prefix = format!("{name}/");
+        Ok(self.files.lock().unwrap_or_else(|e| e.into_inner()).keys().any(|k| k.starts_with(&prefix)))
     }
     fn background_writer(&self) -> Option<Box<dyn Store>> {
         self.background.then(|| Box::new(self.clone()) as Box<dyn Store>)

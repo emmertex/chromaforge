@@ -62,7 +62,7 @@ fn double_click(h: &mut Headless, id: &str, fx: f32) {
 }
 
 #[test]
-fn double_clicking_a_sliders_name_resets_it_in_one_step() {
+fn double_clicking_a_sliders_name_or_thumb_resets_it_in_one_step() {
     let mut h = edit_panel();
     for (control, edited) in EDITED {
         set(&mut h, control, edited);
@@ -73,13 +73,8 @@ fn double_clicking_a_sliders_name_resets_it_in_one_step() {
         ask(&mut h, "engine.execute", json!({"command": "edit.undo"}));
         assert_eq!(value(&h, control), edited, "{control}: undo brings the edit back");
     }
-}
-
-/// The first click of the double-click lands a few points off the thumb's centre: it leaves the value
-/// alone (it used to move it there, a history step of its own before the reset).
-#[test]
-fn double_clicking_a_sliders_thumb_resets_it_in_one_step() {
-    let mut h = edit_panel();
+    // the thumb: the first click of the double-click lands a few points off its centre and leaves the value alone
+    // (it used to move it there, a history step of its own before the reset)
     for (control, edited) in EDITED {
         set(&mut h, control, edited);
         let undo = h.app.session.undo.len();
@@ -90,12 +85,7 @@ fn double_clicking_a_sliders_thumb_resets_it_in_one_step() {
         ask(&mut h, "engine.execute", json!({"command": "edit.undo"}));
         assert_eq!(value(&h, control), edited, "{control}: undo brings the edit back");
     }
-}
-
-/// A click on the thumb leaves the value alone; a click elsewhere on the track still moves it there.
-#[test]
-fn a_click_on_the_thumb_keeps_the_value() {
-    let mut h = edit_panel();
+    // a click on the thumb leaves the value alone; a click elsewhere on the track still moves it there
     set(&mut h, "light.exposure", 1.25);
     let fx = thumb_fx(&h, "light.exposure", -4.0);
     ask(&mut h, "ui.clickWidget", json!({"id": "slider:light.exposure", "fx": fx}));
@@ -118,4 +108,22 @@ fn a_typed_value_still_applies_after_a_reset() {
     }
     assert_eq!(value(&h, "light.exposure"), 0.5);
     assert_eq!(h.app.session.undo.len() - undo, 1, "one undo step");
+}
+
+/// After a click on a slider, Left / Right still move to the next and previous photo (#880), while
+/// Up / Down keep nudging the selected slider.
+#[test]
+fn arrows_still_change_the_photo_after_a_slider_edit() {
+    let mut h = edit_panel();
+    let first = h.app.session.selection.active.unwrap();
+    ask(&mut h, "ui.clickWidget", json!({"id": "slider:light.exposure", "fx": 0.75}));
+    assert!(crate::widgets::slider_has_focus(&h.view.ctx), "the click selects the slider");
+    let before = value(&h, "light.exposure");
+    ask(&mut h, "ui.key", json!({"key": "ArrowUp"}));
+    assert!(value(&h, "light.exposure") > before, "Up still nudges the selected slider");
+    ask(&mut h, "ui.key", json!({"key": "ArrowRight"}));
+    let next = h.app.session.selection.active.unwrap();
+    assert_ne!(next, first, "Right shows the next photo after a develop edit");
+    ask(&mut h, "ui.key", json!({"key": "ArrowLeft"}));
+    assert_eq!(h.app.session.selection.active.unwrap(), first, "Left goes back");
 }

@@ -1551,7 +1551,8 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
     }
     let bytes = match &spec.read {
         Some(r) => r(&spec.path).map_err(MakeError::Failed)?,
-        None => std::fs::read(&spec.path).map_err(|e| MakeError::Failed(format!("{}: {e}", spec.path)))?,
+        None => crate::bounded_read::read_bounded(std::path::Path::new(&spec.path), crate::bounded_read::MAX_MEDIA_BYTES)
+            .map_err(|e| MakeError::Failed(format!("{}: {e}", spec.path)))?,
     };
     if spec.manifest.domain == Domain::RgbToRgb {
         return make_rgb_product(spec, bytes, progress, began);
@@ -2103,7 +2104,7 @@ impl Session {
         }
         if self.denoise_products_dir().is_none() {
             return PhotoState::Failed {
-                why: "AI Denoise keeps its pictures in the library folder, and this session has none.".into(),
+                why: "AI Denoise keeps its pictures in the catalog folder, and this session has none.".into(),
                 unsupported: true,
             };
         }
@@ -2575,7 +2576,7 @@ impl Session {
             ));
         }
         if self.denoise_products_dir().is_none() {
-            return Err(format!("{name}: Denoise needs a library on disk to keep its pictures in"));
+            return Err(format!("{name}: Denoise needs a catalog on disk to keep its pictures in"));
         }
         self.denoise_check_photo(id);
         let Some(job) = self.denoise_job_spec(&p, Pace::Full.parallel(std::thread::available_parallelism().map_or(1, |n| n.get()), None)) else {
@@ -2923,7 +2924,7 @@ mod gpu_tests {
                 Ok(g) => {
                     let got = g.runner.run(&input).unwrap();
                     let off = worst(&want, &got);
-                    eprintln!("{} card: {} — check tile {:.1} ms (CPU {:.0} ms), off by {off:.1e}", card.id(), g.adapter, g.card_ms, g.cpu_ms);
+                    eprintln!("{} card: {}: check tile {:.1} ms (CPU {:.0} ms), off by {off:.1e}", card.id(), g.adapter, g.card_ms, g.cpu_ms);
                     assert!(off <= GPU_AGREE, "{}: {off:e}", g.adapter);
                     answers.push(got);
                 }

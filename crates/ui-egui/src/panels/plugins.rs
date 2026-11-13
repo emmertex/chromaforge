@@ -8,20 +8,27 @@
 //!   so it is no command of its own: `plugins.page {id, tab?}` does it for agents.
 //! - Install: *Install from File…* opens the system file picker; a `.wasm` dropped on the app while
 //!   the window is open installs too ([`take_drop`]). The module is inspected first and every
-//!   permission it asks for is listed with a checkbox, unchecked unless an installed version
-//!   already has it. Only what the user ticks is granted; an update shows what it newly asks for.
-//!   One install waits at a time, and a module that is exactly what is installed selects its entry
-//!   instead of asking again.
-//! - Per plug-in: enable/disable, toggle (revoke) each requested permission, remove, read the log,
-//!   edit its settings, run its commands (with their declarative dialogs, opening with the values
-//!   they last ran with, or as the plug-in's `prepare` step says).
+//!   permission it may ask for is listed, for information: nothing is granted at install (an
+//!   update keeps what the user allowed). One install waits at a time, and a module that is exactly
+//!   what is installed selects its entry instead of asking again.
+//! - Per plug-in: enable/disable, each requested permission with its state (allowed, denied on a
+//!   date, not asked yet, or a folder that can't be granted) and **Allow** / **Revoke**, remove,
+//!   read the log, edit its settings, run its commands (with their declarative dialogs, opening
+//!   with the values they last ran with, or as the plug-in's `prepare` step says).
+//! - A command the user starts that needs a permission they were never asked about ends with the
+//!   usual error, then a prompt names the plug-in and the permission: **Allow** grants it and runs
+//!   the command again, **Deny** remembers the answer ([`ask_ui`]).
 //! - After an export, enabled export hooks and the chosen export destination run on the written
 //!   files, on a worker with an activity row ([`after_export`], [`poll`]).
 //!
-//! - A program a plug-in may start (`programs`) is granted only here, by the user: the install
-//!   button and the permission checkboxes go through [`lcc_engine::cmd::plugins::install_by_user`]
-//!   and [`lcc_engine::cmd::plugins::grant_by_user`], which no command reaches. Each such row
-//!   shows where the program is installed.
+//! - Permissions are granted only here, by the user: the Allow buttons go through
+//!   [`lcc_engine::cmd::plugins::allow_by_user`], which no command reaches, and ignore a click in a
+//!   frame carrying the control channel's synthetic input (an agent's or a script's; it says so
+//!   instead). The install button and going back to the previous version
+//!   ([`lcc_engine::cmd::plugins::install_by_user`], [`lcc_engine::cmd::plugins::rollback_by_user`])
+//!   keep the programs granted when the code changes; clicked by an agent they act as the
+//!   `plugin.install` / `plugin.rollback` commands, which don't. A program's row shows where it is
+//!   installed.
 //!
 //! Every other action is an engine `plugin.*` command. State lives in a static here (no field on the
 //! app), so the shell only needs the calls in `run`, `show`, `menu_items`, `after_export` and
@@ -36,12 +43,19 @@ use serde_json::{Value, json};
 use crate::LccApp;
 use crate::i18n::{tr, tr_format};
 
-/// An install waiting for the user's approval: the file, its inspection and the ticked grant.
+/// An install waiting for the user's approval: the file and its inspection.
 #[derive(Clone)]
 struct Pending {
     path: String,
     info: Value,
-    grant: Value,
+}
+
+/// A permission a command the user started needs, on screen as a prompt ([`ask_ui`]).
+#[derive(Clone)]
+struct Asking {
+    ask: lcc_engine::cmd::plugins::PluginAsk,
+    /// What it allows, as the Permissions tab words it.
+    label: String,
 }
 
 /// A command's dialog, as `plugin.prepare` gave it.
@@ -84,7 +98,7 @@ impl Tab {
             Tab::Settings => "Settings",
             Tab::Permissions => "Permissions",
             Tab::About => "About",
-            Tab::Log => "Log",
+            Tab::Log => "plug-in tab|Log",
         }
     }
 
@@ -119,7 +133,20 @@ struct State {
     tab: Tab,
     /// The selected plug-in's settings, when it declares any.
     page: Option<Page>,
+    /// Remove was clicked on this entry's page: it asks first.
+    removing: Option<Removing>,
+    /// The permission prompt on screen.
+    asking: Option<Asking>,
     message: String,
+}
+
+/// The question Remove asks before anything is deleted.
+#[derive(Clone)]
+struct Removing {
+    /// The entry being removed ([`Entry::id`]).
+    entry: String,
+    /// "Keep its data and settings" is ticked (plug-ins only: a filter keeps none).
+    keep_data: bool,
 }
 
 fn key() -> egui::Id {
@@ -127,16 +154,34 @@ fn key() -> egui::Id {
 }
 
 /// Window state: one Plug-in Manager per process (the manager itself is process-wide).
+#[cfg(not(test))]
 static STATE: std::sync::Mutex<Option<State>> = std::sync::Mutex::new(None);
+
+// Tests run many apps in one process, each test on its own thread: there every test has a
+// Plug-in Manager of its own. Shared, one test's open manager covered the other tests' windows
+// (tests_i18n_sweep leaves it open; tests_import_tab's clicks in a 900 x 700 window landed on it).
+#[cfg(test)]
+thread_local! {
+    static STATE: std::cell::RefCell<Option<State>> = const { std::cell::RefCell::new(None) };
+}
 
 fn state(ctx: &egui::Context) -> State {
     let _ = ctx;
-    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
+    #[cfg(not(test))]
+    let s = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    #[cfg(test)]
+    let s = STATE.with_borrow(Clone::clone);
+    s.unwrap_or_default()
 }
 
 fn set_state(ctx: &egui::Context, s: State) {
     let _ = ctx;
-    *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    #[cfg(not(test))]
+    {
+        *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    }
+    #[cfg(test)]
+    STATE.set(Some(s));
 }
 
 fn app_ctx(app: &LccApp) -> egui::Context {
@@ -148,7 +193,8 @@ fn app_ctx(app: &LccApp) -> egui::Context {
 /// one; refused while another waits, and a module that is already installed selects its entry); `plugins.runItem {plugin, command}` runs a plug-in command from the menu (asking its
 /// dialog first, if it has one); `plugins.page {id, tab?, open?}` opens the window on a plug-in's
 /// page (`tab`: settings, permissions, about or log; `open: false` closes the window if it shows
-/// that page); `plugins.showFolder` opens the plug-ins folder in the system file manager.
+/// that page); `plugins.showFolder` opens the plug-ins folder in the system file manager;
+/// `plugins.openLink {id, link}` opens a link of a plug-in's About ([`open_link`]).
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     let ctx = app_ctx(app);
     let mut s = state(&ctx);
@@ -181,6 +227,7 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         }
         "plugins.page" => page_command(app, &mut s, p),
         "plugins.showFolder" => show_folder(app),
+        "plugins.openLink" => open_link(app, p),
         _ => return None,
     };
     set_state(&ctx, s);
@@ -269,9 +316,23 @@ fn one_install_at_a_time(s: &State) -> Result<(), String> {
     Err(tr_format!("Finish or cancel installing {name} first", name = name))
 }
 
-/// Inspects `path` and opens the approval dialog with everything unticked but what an installed
-/// version already holds: `{pending: path}`. A module that is exactly what is installed (the same
-/// version and code) opens no approval: its page shows instead, `{installed: id, message}`.
+/// `plugin.run` for a command the user started here: a permission it needs that the user was
+/// never asked about leaves a prompt ([`lcc_engine::Session::plugin_asks`], [`ask_ui`]).
+fn run_as_user(app: &mut LccApp, params: &Value) -> Result<Value, String> {
+    app.session.plugin_ask_user = true;
+    let r = app.session.execute("plugin.run", params).map_err(|e| e.to_string());
+    app.session.plugin_ask_user = false;
+    r
+}
+
+/// The note for a click on something only the user may do, made by the control channel.
+fn agent_click() -> String {
+    tr("Only you can allow a permission: a click from an agent or a script changes nothing.").to_string()
+}
+
+/// Inspects `path` and opens the install dialog, which lists what the plug-in may ask for:
+/// `{pending: path}`. A module that is exactly what is installed (the same version and code) opens
+/// no dialog: its page shows instead, `{installed: id, message}`.
 fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, String> {
     one_install_at_a_time(s)?;
     if path.is_empty() {
@@ -292,13 +353,7 @@ fn begin_install(app: &mut LccApp, s: &mut State, path: &str) -> Result<Value, S
         s.message.clone_from(&message);
         return Ok(json!({"installed": id, "message": message}));
     }
-    let grant = info["installed"]["granted"].clone();
-    let grant = if grant.is_object() {
-        grant
-    } else {
-        json!({"catalog": false, "metadataWrite": false, "libraryAdd": false, "network": [], "fs": [], "programs": []})
-    };
-    s.pending = Some(Pending { path: path.to_string(), info, grant });
+    s.pending = Some(Pending { path: path.to_string(), info });
     s.open = true;
     Ok(json!({"pending": path}))
 }
@@ -311,7 +366,12 @@ fn start_command(app: &mut LccApp, s: &mut State, plugin: &str, command: &str) -
     let list = app.session.execute("plugin.commands", &json!({})).map_err(|e| e.to_string())?;
     let decl = list.as_array().into_iter().flatten().find(|c| c["plugin"] == plugin && c["command"] == command).cloned();
     let decl = decl.ok_or_else(|| format!("{plugin}: {command}: {}", tr("no such plug-in command (is the plug-in enabled?)")))?;
-    let prepared = app.session.execute("plugin.prepare", &json!({"plugin": plugin, "command": command})).map_err(|e| e.to_string())?;
+    // the prepare step runs for the user too: what it needs that they were never asked about
+    // leaves a prompt
+    app.session.plugin_ask_user = true;
+    let prepared = app.session.execute("plugin.prepare", &json!({"plugin": plugin, "command": command}));
+    app.session.plugin_ask_user = false;
+    let prepared = prepared.map_err(|e| e.to_string())?;
     if let Some(m) = prepared.get("message").and_then(Value::as_str) {
         return Ok(json!({"message": m}));
     }
@@ -322,7 +382,7 @@ fn start_command(app: &mut LccApp, s: &mut State, plugin: &str, command: &str) -
     }
     if prepared.get("run").is_some() || fields.is_empty() {
         // `plugin.run` asks the prepare step again and runs with what it gives
-        return app.session.execute("plugin.run", &json!({"plugin": plugin, "command": command})).map_err(|e| e.to_string());
+        return run_as_user(app, &json!({"plugin": plugin, "command": command}));
     }
     let values: serde_json::Map<String, Value> = fields.iter().filter_map(|f| Some((f["key"].as_str()?.to_string(), f["value"].clone()))).collect();
     s.dialog = Some(Dialog {
@@ -456,9 +516,12 @@ fn entries(list: &Value) -> Vec<Entry> {
             })
         })
         .collect();
+    let mut seen: std::collections::HashSet<String> = out.iter().map(|e| e.id.clone()).collect();
     out.extend(list["failed"].as_array().into_iter().flatten().filter_map(|f| {
-        let id = f["id"].as_str().filter(|i| !i.is_empty())?.to_string();
-        Some(Entry { name: id.clone(), version: String::new(), filter: f["kind"] == "filter", mark: Mark::Failed, info: f.clone(), id })
+        let name = f["id"].as_str().filter(|i| !i.is_empty())?.to_string();
+        // another module has its id (the first by file name loaded): its row goes by its file
+        let id = if seen.insert(name.clone()) { name.clone() } else { f["file"].as_str().unwrap_or(&name).to_string() };
+        Some(Entry { name, version: String::new(), filter: f["kind"] == "filter", mark: Mark::Failed, info: f.clone(), id })
     }));
     // plug-ins first; failures after the ones that loaded, each section by name
     out.sort_by_key(|e| (e.filter, e.mark == Mark::Failed, e.name.to_lowercase()));
@@ -553,10 +616,22 @@ struct ExportHooksTask {
     guard: TaskGuard,
 }
 
+#[cfg(not(test))]
 static TASK: Mutex<Option<ExportHooksTask>> = Mutex::new(None);
 
+// Under test, each test's own (as the manager's [`STATE`]): a lock per test thread, leaked so its
+// guard lives as long as the static's.
+#[cfg(test)]
+thread_local! {
+    static TASK: &'static Mutex<Option<ExportHooksTask>> = Box::leak(Box::new(Mutex::new(None)));
+}
+
 fn task_lock() -> std::sync::MutexGuard<'static, Option<ExportHooksTask>> {
-    TASK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    #[cfg(not(test))]
+    let task = &TASK;
+    #[cfg(test)]
+    let task = TASK.with(|t| *t);
+    task.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Whether export hooks are running (`ui.inspect`, tests).
@@ -567,10 +642,13 @@ pub fn export_hooks_running() -> bool {
 /// Per frame: answer the running export hooks' catalog requests, keep their activity row up to
 /// date and, when they finish, report how they went.
 pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
-    // a plug-in's program.end hook asks for the catalog from its own thread
+    // a plug-in's program.end hook, or a job, asks for the catalog from its own thread
     lcc_engine::cmd::plugin_programs::answer_requests(&mut app.session);
-    if lcc_engine::cmd::plugin_programs::hooks_running() {
+    if lcc_engine::cmd::plugin_programs::hooks_running() || lcc_engine::cmd::plugin_jobs::running() {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    for ended in lcc_engine::cmd::plugin_jobs::take_finished(&mut app.session) {
+        job_ended(app, ctx, &ended);
     }
     let mut g = task_lock();
     let Some(task) = g.as_mut() else { return };
@@ -594,6 +672,17 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     report(app, ctx, &results);
 }
 
+/// A plug-in job ended (`plugin_jobs::take_finished`): its last reply's `message` as a toast, or
+/// its error; a cancelled job says nothing (its row was stopped on purpose).
+fn job_ended(app: &mut LccApp, ctx: &egui::Context, ended: &Value) {
+    if let Some(e) = ended["error"].as_str() {
+        let label = ended["label"].as_str().unwrap_or("");
+        app.toast_error(ctx, format!("{} {label}: {e}", tr("Plug-in command failed:")));
+    } else if let Some(m) = ended["ok"]["message"].as_str() {
+        app.toast(ctx, m.to_string());
+    }
+}
+
 fn report(app: &mut LccApp, ctx: &egui::Context, results: &[Value]) {
     if let Some(last) = app.last_export_result.as_mut().filter(|l| l.is_object()) {
         last["plugins"] = json!(results);
@@ -610,10 +699,21 @@ fn report(app: &mut LccApp, ctx: &egui::Context, results: &[Value]) {
 }
 
 /// The plug-in export destination chosen in the Export dialog: (plugin, destination, values).
+#[cfg(not(test))]
 static DESTINATION: std::sync::Mutex<Option<(String, String, Value)>> = std::sync::Mutex::new(None);
 
+// Under test, each test's own, as [`TASK`].
+#[cfg(test)]
+thread_local! {
+    static DESTINATION: &'static Mutex<Option<(String, String, Value)>> = Box::leak(Box::new(Mutex::new(None)));
+}
+
 fn destination_lock() -> std::sync::MutexGuard<'static, Option<(String, String, Value)>> {
-    DESTINATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    #[cfg(not(test))]
+    let destination = &DESTINATION;
+    #[cfg(test)]
+    let destination = DESTINATION.with(|d| *d);
+    destination.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// What to pass as `app.export {pluginDestination}`: the destination chosen in the Export
@@ -719,8 +819,8 @@ fn metadata_field_ui(ui: &mut egui::Ui, plugin: &str, photo: u64, f: &Value, mix
         if read_only {
             let text = match value {
                 _ if mixed => super::metadata::MIXED.to_string(),
-                Value::Null => "—".to_string(),
-                Value::Bool(b) => if *b { "✓" } else { "—" }.to_string(),
+                Value::Null => crate::i18n::tr("None").to_string(),
+                Value::Bool(b) => crate::i18n::tr(if *b { "On" } else { "Off" }).to_string(),
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
@@ -758,12 +858,12 @@ fn metadata_field_ui(ui: &mut egui::Ui, plugin: &str, photo: u64, f: &Value, mix
                 let shown = if mixed {
                     super::metadata::MIXED
                 } else if cur.is_empty() {
-                    "—"
+                    crate::i18n::tr("None")
                 } else {
                     &cur
                 };
                 let r = egui::ComboBox::from_id_salt(("plugin-meta", plugin, key)).selected_text(shown).show_ui(ui, |ui| {
-                    if ui.selectable_label(cur.is_empty() && !mixed, "—").clicked() && (mixed || !cur.is_empty()) {
+                    if ui.selectable_label(cur.is_empty() && !mixed, crate::i18n::tr("None")).clicked() && (mixed || !cur.is_empty()) {
                         out = Some(Value::Null);
                     }
                     for o in f["options"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -815,7 +915,9 @@ const MIN_PAGE_W: f32 = 360.0;
 
 pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let mut s = state(ctx);
+    ask_ui(app, ctx, &mut s);
     if !s.open && s.dialog.is_none() && s.pending.is_none() {
+        set_state(ctx, s);
         return;
     }
     let list = app.session.execute("plugin.list", &json!({})).unwrap_or(Value::Null);
@@ -825,6 +927,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
     let entries = entries(&list);
+    own_icons(app, ctx, &entries);
+    own_headers(app, ctx, &entries);
     let mut actions: Vec<(&'static str, Value)> = Vec::new();
     if s.open {
         // a page on screen: the first entry's when none (or one just removed) was selected
@@ -861,6 +965,13 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         actions.push(("plugins.pick", Value::Null));
                     }
                 });
+                // modules past the most the folder loads: not looked at, so they have no rows
+                if let Some(n) = list["skipped"].as_u64().filter(|n| *n > 0) {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        tr_format!("{count} modules in the plug-ins folder weren't loaded: it holds more than it can load.", count = n),
+                    );
+                }
                 // a failure that isn't a module (the folder couldn't be opened) has no row
                 for f in list["failed"].as_array().into_iter().flatten().filter(|f| f["id"].as_str().is_none_or(str::is_empty)) {
                     ui.colored_label(
@@ -893,7 +1004,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         ui.set_max_width(w);
                         if let Some(e) = selected {
                             egui::ScrollArea::vertical().id_salt("plugin-page").auto_shrink([false, false]).max_height(BODY_H).show(ui, |ui| {
-                                page_ui(ui, e, &mut s.tab, s.page.as_mut(), &installs, &mut actions);
+                                page_ui(ui, e, &mut s.tab, s.page.as_mut(), &mut s.removing, &installs, &mut actions);
                             });
                         }
                     });
@@ -942,6 +1053,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     s.message = e;
                 }
             }
+            "plugins.openLink" => {
+                if let Err(e) = open_link(app, &p) {
+                    s.message = e;
+                }
+            }
             "plugins.revertSettings" => match settings_page(app, p["id"].as_str().unwrap_or("")) {
                 Ok(page) => s.page = page,
                 Err(e) => s.message = e,
@@ -967,44 +1083,146 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Err(e) => s.message = e,
                 }
             }
-            // only these two can grant programs: the user's own clicks, never a command
+            "plugins.askRemove" => {
+                s.removing = p["entry"].as_str().map(|entry| Removing { entry: entry.to_string(), keep_data: false });
+            }
+            // only the user's own clicks allow a permission or keep programs; one in a frame the
+            // control channel's input reached (an agent, a script) does what a command does
+            "plugins.userAllow" if app.synthetic_frame => s.message = agent_click(),
+            "plugins.userAllow" => {
+                if let Err(e) = lcc_engine::cmd::plugins::allow_by_user(&mut app.session, &p) {
+                    s.message = e.to_string();
+                }
+            }
+            "plugins.userInstall" if app.synthetic_frame => {
+                exec(app, "plugin.install", p, &mut s.message);
+            }
             "plugins.userInstall" => {
                 if let Err(e) = lcc_engine::cmd::plugins::install_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
                 }
             }
-            "plugins.userGrant" => {
-                if let Err(e) = lcc_engine::cmd::plugins::grant_by_user(&mut app.session, &p) {
+            "plugins.userRollback" if app.synthetic_frame => {
+                exec(app, "plugin.rollback", p, &mut s.message);
+            }
+            "plugins.userRollback" => {
+                if let Err(e) = lcc_engine::cmd::plugins::rollback_by_user(&mut app.session, &p) {
                     s.message = e.to_string();
                 }
             }
+            "plugin.run" => match run_as_user(app, &p) {
+                Ok(v) => toast_result(app, ctx, &mut s, &v),
+                Err(e) => s.message = e,
+            },
             _ => {
-                if let Some(v) = exec(app, id, p, &mut s.message)
-                    && id == "plugin.run"
-                {
-                    toast_result(app, ctx, &mut s, &v);
-                }
+                exec(app, id, p, &mut s.message);
             }
         }
     }
     set_state(ctx, s);
 }
 
+/// The prompt for a permission a command the user started needs and they were never asked about
+/// ([`lcc_engine::Session::plugin_asks`]), one at a time: **Allow** grants it and runs the command
+/// again (through the same path, so it may ask for the next one), **Deny** remembers the answer.
+/// Allow ignores a click the control channel made.
+fn ask_ui(app: &mut LccApp, ctx: &egui::Context, s: &mut State) {
+    if s.asking.is_none() && !app.session.plugin_asks.is_empty() {
+        let ask = app.session.plugin_asks.remove(0);
+        let list = app.session.execute("plugin.list", &json!({})).unwrap_or(Value::Null);
+        let requested = list["plugins"].as_array().into_iter().flatten().find(|p| p["id"] == ask.plugin.as_str()).map(|p| p["requested"].clone());
+        let want = serde_json::to_value(&ask.request).unwrap_or(Value::Null);
+        let row = requested.as_ref().map(permission_rows).unwrap_or_default().into_iter().find(|r| {
+            let r = r.request();
+            r["group"] == want["group"] && (r["value"] == want["value"] || want.get("value").is_none() && r["value"].is_null())
+        });
+        let label = row.map_or_else(|| ask.request.describe(), |r| r.label(&Installs::new(), &ask.plugin));
+        s.asking = Some(Asking { ask, label });
+    }
+    let Some(asking) = s.asking.clone() else { return };
+    let window_id = key().with("ask");
+    let mut answer = None;
+    let shown = egui::Window::new(tr("Allow Permission"))
+        .id(window_id)
+        .title_bar(false)
+        .frame(crate::dialog_frame::card_frame(ctx))
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            crate::dialog_frame::card_header(ui, tr("Allow Permission"), None);
+            let mut layout = crate::dialog_frame::ModalLayout::begin(ui, window_id);
+            layout.body(ui, |ui| {
+                ui.label(tr_format!("{plugin} asks to: {permission}", plugin = asking.ask.plugin_name, permission = asking.label));
+                ui.weak(tr("Allow runs the command again. You can change this later on the plug-in's Permissions tab."));
+            });
+            layout.footer(ui, |ui| {
+                ui.separator();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    use crate::button::{Button, Kind};
+                    if Button::new("Allow").kind(Kind::Primary).widget("button:pluginAskAllow").show(ui).clicked() {
+                        answer = Some(true);
+                    }
+                    if Button::new("Deny").widget("button:pluginAskDeny").show(ui).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        });
+    crate::dialog_frame::ModalLayout::finish(ctx, window_id, shown.as_ref().map(|w| w.response.rect));
+    let mut call = serde_json::to_value(&asking.ask.request).unwrap_or(Value::Null);
+    call["id"] = json!(asking.ask.plugin);
+    match answer {
+        None => {}
+        Some(true) if app.synthetic_frame => app.toast(ctx, agent_click()),
+        Some(true) => {
+            s.asking = None;
+            match lcc_engine::cmd::plugins::allow_by_user(&mut app.session, &call) {
+                // a prepare step's ask starts the command again as from its menu item
+                Ok(_) if asking.ask.prepare => {
+                    match start_command(app, s, &asking.ask.plugin, asking.ask.rerun["command"].as_str().unwrap_or_default()) {
+                        Ok(v) if !v.is_null() => toast_result(app, ctx, s, &v),
+                        Ok(_) => {}
+                        Err(e) => app.toast(ctx, e),
+                    }
+                }
+                Ok(_) => match run_as_user(app, &asking.ask.rerun) {
+                    Ok(v) => toast_result(app, ctx, s, &v),
+                    Err(e) => app.toast(ctx, e),
+                },
+                Err(e) => app.toast(ctx, e.to_string()),
+            }
+        }
+        Some(false) => {
+            s.asking = None;
+            if let Err(e) = lcc_engine::cmd::plugins::deny_by_user(&mut app.session, &call) {
+                app.toast(ctx, e.to_string());
+            }
+        }
+    }
+}
+
 fn toast_result(app: &mut LccApp, ctx: &egui::Context, s: &mut State, v: &Value) {
+    // a job started: its row shows it, and its message comes when it ends
+    if v["running"] == true && v["job"].is_u64() {
+        return;
+    }
     s.message = v.get("message").and_then(Value::as_str).map_or_else(|| v.to_string(), str::to_string);
     app.toast(ctx, s.message.clone());
 }
 
-/// The install approval: each requested permission with a checkbox; new ones marked.
+/// The install dialog: each permission the plug-in may ask for, for information; new ones marked.
 fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
-    let Some(mut pending) = s.pending.take() else { return };
+    let Some(pending) = s.pending.take() else { return };
     let m = pending.info["manifest"].clone();
     let installed = pending.info["installed"].clone();
     let had = if installed.is_object() { installed["granted"].clone() } else { Value::Null };
+    let id = m["id"].as_str().unwrap_or("").to_string();
     // what stops the install (plugin.install refuses it too): features this version lacks, a bad version
     let missing: Vec<String> = pending.info["missing"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
     let version_error = pending.info["versionError"].as_str().map(str::to_string);
-    let blocked = !missing.is_empty() || version_error.is_some();
+    // a module of the other kind (plug-in or pixel filter) has its id
+    let conflict = pending.info["conflict"].as_str().map(str::to_string);
+    let blocked = !missing.is_empty() || version_error.is_some() || conflict.is_some();
     let downgrade = pending.info["downgrade"].as_bool() == Some(true);
     let mut keep = true;
     let window_id = key().with("approve");
@@ -1026,6 +1244,22 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                 } else if installed.is_object() {
                     ui.label(format!("{} {old}", tr("Updates the installed version")));
                 }
+                // fields this version doesn't know: a typo, or a field from a newer app
+                let unknown: Vec<&str> = pending.info["unknownFields"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if !unknown.is_empty() {
+                    ui.label(tr_format!(
+                        "Its manifest has fields this version doesn't know, which it ignores: {fields}",
+                        fields = unknown.join(", ")
+                    ));
+                }
+                // values it can't use (a link that isn't https://): left out, the install goes ahead
+                let dropped: Vec<&str> = pending.info["dropped"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                if !dropped.is_empty() {
+                    ui.label(tr_format!(
+                        "Its manifest has values this version can't use, which it leaves out: {values}",
+                        values = dropped.join("; ")
+                    ));
+                }
                 ui.separator();
                 if blocked {
                     if !missing.is_empty() {
@@ -1035,26 +1269,22 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                         }
                         ui.label(tr("Install a newer version of the app to use it."));
                     }
-                    if let Some(e) = &version_error {
+                    for e in version_error.iter().chain(&conflict) {
                         ui.label(format!("{} {e}", tr("It can't be installed:")));
                     }
                     return;
                 }
-                let req = &m["permissions"];
-                let rows = permission_rows(req);
+                let rows = permission_rows(&m["permissions"]);
                 if rows.is_empty() {
                     ui.label(tr("It asks for no permissions: it can only keep its own data."));
                 } else {
-                    ui.label(tr("It asks for these permissions. Tick the ones you allow:"));
+                    ui.label(tr("It may ask for these permissions when it needs them; nothing is allowed until you say so:"));
                 }
                 for row in rows {
-                    let mut on = row.granted(&pending.grant);
-                    let new = !row.granted(&had);
-                    let label = row.label(installs, m["id"].as_str().unwrap_or(""));
-                    let text = if new && installed.is_object() { format!("{label}  ({})", tr("new")) } else { label };
-                    if ui.checkbox(&mut on, text).changed() {
-                        row.set(&mut pending.grant, on);
-                    }
+                    let label = row.label(installs, &id);
+                    // an update keeps what the user allowed
+                    let text = if row.granted(&had) { format!("• {label}  ({})", tr("allowed")) } else { format!("• {label}") };
+                    ui.label(text);
                 }
             });
             layout.footer(ui, |ui| {
@@ -1063,7 +1293,7 @@ fn approval_ui(ctx: &egui::Context, s: &mut State, installs: &Installs, actions:
                     use crate::button::{Button, Kind};
                     let label = if downgrade { "Install Older Version" } else { "Install" };
                     if !blocked && Button::new(label).kind(Kind::Primary).widget("button:pluginInstall").show(ui).clicked() {
-                        actions.push(("plugins.userInstall", json!({"path": pending.path, "grant": pending.grant, "allowDowngrade": downgrade})));
+                        actions.push(("plugins.userInstall", json!({"path": pending.path, "allowDowngrade": downgrade})));
                         keep = false;
                     }
                     if Button::new("Cancel").widget("button:pluginInstallCancel").show(ui).clicked() {
@@ -1152,7 +1382,7 @@ enum Row {
 
 fn permission_rows(req: &Value) -> Vec<Row> {
     let mut v = Vec::new();
-    for k in ["catalog", "metadataWrite", "libraryAdd"] {
+    for k in ["catalog", "metadataWrite", "libraryAdd", "pixels", "crop", "virtualCopy"] {
         if req[k].as_bool() == Some(true) {
             v.push(Row::Flag(k));
         }
@@ -1177,7 +1407,10 @@ impl Row {
                 }
             }
             Row::Flag("catalog") => tr("Read the catalog").to_string(),
-            Row::Flag("libraryAdd") => tr("Add files made from photos to the library").to_string(),
+            Row::Flag("libraryAdd") => tr("Add files made from photos to the catalog").to_string(),
+            Row::Flag("pixels") => tr("Look at downsized copies of photos").to_string(),
+            Row::Flag("crop") => tr("Change the crop of photos").to_string(),
+            Row::Flag("virtualCopy") => tr("Make virtual copies of photos").to_string(),
             Row::Flag(_) => tr("Write photo metadata").to_string(),
             Row::Host(h) => format!("{} {}", tr("Connect to"), h.as_str().unwrap_or("")),
             Row::Root(r) => {
@@ -1191,24 +1424,17 @@ impl Row {
             Row::Flag(k) => g[*k].as_bool() == Some(true),
             Row::Host(h) => g["network"].as_array().is_some_and(|a| a.contains(h)),
             Row::Root(r) => g["fs"].as_array().is_some_and(|a| a.iter().any(|x| x["path"] == r["path"])),
-            // an update that widened a granted entry shows it unticked (and new)
+            // an update that widened a granted entry is no longer allowed (and shows as new)
             Row::Program(d) => g["programs"].as_array().is_some_and(|a| a.iter().any(|x| program_within(d, x))),
         }
     }
-    fn set(&self, g: &mut Value, on: bool) {
-        let list = |g: &mut Value, k: &str, item: &Value, same: &dyn Fn(&Value) -> bool| {
-            let mut a: Vec<Value> = g[k].as_array().cloned().unwrap_or_default();
-            a.retain(|x| !same(x));
-            if on {
-                a.push(item.clone());
-            }
-            g[k] = Value::Array(a);
-        };
+    /// The request it is, as `plugin.list` → `requests` and the Allow / Revoke calls name it.
+    fn request(&self) -> Value {
         match self {
-            Row::Flag(k) => g[*k] = json!(on),
-            Row::Host(h) => list(g, "network", h, &|x| x == h),
-            Row::Root(r) => list(g, "fs", r, &|x| x["path"] == r["path"]),
-            Row::Program(d) => list(g, "programs", d, &|x| x["id"] == d["id"]),
+            Row::Flag(k) => json!({"group": k}),
+            Row::Host(h) => json!({"group": "network", "value": h}),
+            Row::Root(r) => json!({"group": "fs", "value": r["path"]}),
+            Row::Program(d) => json!({"group": "programs", "value": d["id"]}),
         }
     }
 }
@@ -1219,6 +1445,11 @@ fn dialog_ui(ctx: &egui::Context, s: &mut State, actions: &mut Vec<(&'static str
     egui::Window::new(d.label.clone()).id(key().with("dialog")).title_bar(false).frame(crate::dialog_frame::card_frame(ctx)).collapsible(false).show(
         ctx,
         |ui| {
+            // the plug-in's own header picture above the command's title
+            if let Some(tex) = header_of(ctx, &d.plugin) {
+                ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width()));
+                ui.add_space(4.0);
+            }
             crate::dialog_frame::card_header(ui, &d.label, None);
             if let Some(e) = &d.error {
                 ui.colored_label(ui.visuals().warn_fg_color, e);
@@ -1249,6 +1480,73 @@ fn dialog_ui(ctx: &egui::Context, s: &mut State, actions: &mut Vec<(&'static str
 /// whole height and leaves the dialog tall and mostly empty).
 fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), egui::Layout::right_to_left(egui::Align::Center), add);
+}
+
+/// Loads the own icon of every plug-in and filter whose manifest carries one (`plugin.picture`),
+/// once per module: the rows and pages then draw it in place of the identicon. A module without
+/// one (an update or a rollback to a version without a picture) clears the one kept for its id.
+fn own_icons(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    for e in entries {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("");
+        if super::plugin_icon::custom_is_current(ctx, &e.id, hash) {
+            continue;
+        }
+        if e.info["icon"].as_bool() != Some(true) {
+            super::plugin_icon::keep_custom(ctx, &e.id, hash, None);
+            continue;
+        }
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "icon"}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, 128, 128).ok())
+            .map(|img| ctx.load_texture("plugin-own-icon", img, egui::TextureOptions::LINEAR));
+        super::plugin_icon::keep_custom(ctx, &e.id, hash, tex);
+    }
+}
+
+/// The box a header picture is rasterised into (pixels: about twice what it's shown at, for sharp
+/// HiDPI) and its height on screen (points).
+const HEADER_PIXELS: (u32, u32) = (640, 96);
+const HEADER_HEIGHT: f32 = 40.0;
+
+/// The key a plug-in's header picture is kept under for an interface theme.
+fn header_key(id: &str, dark: bool) -> egui::Id {
+    egui::Id::new(("plugin-own-header", id, dark))
+}
+
+/// Loads the header picture of every plug-in whose manifest carries one (`plugin.picture`), once
+/// per module and interface theme: its page and its command dialogs draw it in place of its name.
+/// A module without one clears the one kept for its id.
+fn own_headers(app: &mut LccApp, ctx: &egui::Context, entries: &[Entry]) {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    for e in entries.iter().filter(|e| !e.filter) {
+        let hash = e.info["moduleHash"].as_str().unwrap_or("").to_string();
+        let key = header_key(&e.id, dark);
+        if ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(key)).is_some_and(|(h, _)| h == hash) {
+            continue;
+        }
+        if e.info["header"].as_bool() != Some(true) {
+            ctx.data_mut(|d| d.insert_temp::<(String, Option<egui::TextureHandle>)>(key, (hash, None)));
+            continue;
+        }
+        let theme = if dark { "dark" } else { "light" };
+        let tex = app
+            .session
+            .execute("plugin.picture", &json!({"id": e.id, "picture": "header", "theme": theme}))
+            .ok()
+            .and_then(|r| r["svg"].as_str().map(str::to_string))
+            .and_then(|svg| crate::plate::rasterise_untrusted_svg(&svg, HEADER_PIXELS.0, HEADER_PIXELS.1).ok())
+            .map(|img| ctx.load_texture("plugin-own-header", img, egui::TextureOptions::LINEAR));
+        ctx.data_mut(|d| d.insert_temp(key, (hash, tex)));
+    }
+}
+
+/// Plug-in `id`'s header picture for the current interface theme, once [`own_headers`] loaded it.
+fn header_of(ctx: &egui::Context, id: &str) -> Option<egui::TextureHandle> {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    ctx.data(|d| d.get_temp::<(String, Option<egui::TextureHandle>)>(header_key(id, dark))).and_then(|(_, t)| t)
 }
 
 /// The list: plug-ins, then pixel filters, each under its heading.
@@ -1312,7 +1610,7 @@ fn entry_row(ui: &mut egui::Ui, e: &Entry, selected: bool) -> bool {
     };
     ui.painter().rect_filled(rect, 4.0, fill);
     let icon = egui::Rect::from_min_size(rect.min + egui::vec2(4.0, 4.0), egui::vec2(22.0, 22.0));
-    super::plugin_icon::paint(ui, icon, &super::plugin_icon::identicon(&e.id));
+    super::plugin_icon::paint_for(ui, icon, &e.id);
     let mark = egui::pos2(icon.right() + 10.0, rect.center().y);
     paint_mark(ui.painter(), mark, e.mark, &t);
     let font = egui::FontId::proportional(13.0);
@@ -1324,13 +1622,29 @@ fn entry_row(ui: &mut egui::Ui, e: &Entry, selected: bool) -> bool {
 }
 
 /// The selected entry's page: its header, then what its kind shows.
-fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
+fn page_ui(
+    ui: &mut egui::Ui,
+    e: &Entry,
+    tab: &mut Tab,
+    page: Option<&mut Page>,
+    removing: &mut Option<Removing>,
+    installs: &Installs,
+    actions: &mut Vec<(&'static str, Value)>,
+) {
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         super::plugin_icon::show(ui, &e.id, 52.0);
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                match header_of(ui.ctx(), &e.id).filter(|_| !e.filter) {
+                    // the plug-in's own header picture stands for its name
+                    Some(tex) => {
+                        ui.add(egui::Image::new(&tex).max_height(HEADER_HEIGHT).max_width(ui.available_width() - 60.0)).on_hover_text(&e.name);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new(&e.name).font(t.semibold(16.0)).color(t.text));
+                    }
+                }
                 if !e.version.is_empty() {
                     ui.weak(&e.version);
                 }
@@ -1342,6 +1656,14 @@ fn page_ui(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Page>,
         });
     });
     ui.add_space(6.0);
+    // another entry's question goes when this page shows
+    if removing.as_ref().is_some_and(|r| r.entry != e.id) {
+        *removing = None;
+    }
+    if removing.is_some() {
+        confirm_remove(ui, e, removing, actions);
+        ui.add_space(6.0);
+    }
     match (e.mark, e.filter) {
         (Mark::Failed, _) => failed_page(ui, e, actions),
         (_, true) => filter_page(ui, e, actions),
@@ -1366,7 +1688,14 @@ fn plugin_page(ui: &mut egui::Ui, e: &Entry, tab: &mut Tab, page: Option<&mut Pa
             actions.push(("plugin.enable", json!({"id": id, "enabled": on})));
         }
         if Button::new("Remove").widget(format!("button:pluginRemove:{id}")).show(ui).clicked() {
-            actions.push(("plugin.uninstall", json!({"id": id})));
+            actions.push(("plugins.askRemove", json!({"entry": id})));
+        }
+        // the version its last update replaced
+        if let Some(v) = e.info["previousVersion"].as_str() {
+            let label = tr_format!("Go Back to Version {version}", version = v);
+            if Button::new(&label).widget(format!("button:pluginRollback:{id}")).show(ui).clicked() {
+                actions.push(("plugins.userRollback", json!({"id": id})));
+            }
         }
     });
     ui.add_space(6.0);
@@ -1416,26 +1745,48 @@ fn settings_tab(ui: &mut egui::Ui, page: Option<&mut Page>, actions: &mut Vec<(&
     });
 }
 
-/// Each permission the plug-in asks for, ticked when granted; a change grants or revokes it.
+/// Each permission the plug-in asks for, with where it stands (allowed, denied on a date, not
+/// asked yet, or a folder that can't be granted and why), and **Allow** or **Revoke**.
 fn permissions_tab(ui: &mut egui::Ui, e: &Entry, installs: &Installs, actions: &mut Vec<(&'static str, Value)>) {
+    use crate::button::Button;
     let rows = permission_rows(&e.info["requested"]);
     if rows.is_empty() {
         ui.label(tr("It asks for no permissions: it can only keep its own data."));
         return;
     }
-    let mut grant = e.info["granted"].clone();
-    let mut changed = false;
+    let states = e.info["requests"].as_array().cloned().unwrap_or_default();
     for (i, row) in rows.iter().enumerate() {
-        let mut on = row.granted(&grant);
-        let r = ui.checkbox(&mut on, row.label(installs, &e.id));
-        crate::widgets::register(ui.ctx(), format!("pluginPermission:{}:{i}", e.id), r.rect);
-        if r.changed() {
-            row.set(&mut grant, on);
-            changed = true;
-        }
-    }
-    if changed {
-        actions.push(("plugins.userGrant", json!({"id": e.id, "grant": grant})));
+        let req = row.request();
+        let state =
+            states.iter().find(|r| r["group"] == req["group"] && (r["value"] == req["value"] || req["value"].is_null() && r.get("value").is_none()));
+        let state = state.cloned().unwrap_or(Value::Null);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(row.label(installs, &e.id));
+            let what = state["state"].as_str().unwrap_or("never");
+            match what {
+                "allowed" => {
+                    ui.weak(tr("allowed"));
+                }
+                "denied" => {
+                    ui.weak(tr_format!("denied on {date}", date = state["deniedOn"].as_str().unwrap_or("")));
+                }
+                "refused" => {
+                    ui.weak(format!("{} {}", tr("can't be granted:"), state["reason"].as_str().unwrap_or("")));
+                }
+                _ => {
+                    ui.weak(tr("not asked yet"));
+                }
+            }
+            let mut call = req.clone();
+            call["id"] = json!(e.id);
+            if what == "allowed" {
+                if Button::new("Revoke").small().widget(format!("pluginRevoke:{}:{i}", e.id)).show(ui).clicked() {
+                    actions.push(("plugin.revoke", call));
+                }
+            } else if what != "refused" && Button::new("Allow").small().widget(format!("pluginAllow:{}:{i}", e.id)).show(ui).clicked() {
+                actions.push(("plugins.userAllow", call));
+            }
+        });
     }
 }
 
@@ -1460,7 +1811,79 @@ fn about_tab(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Valu
             }
         });
     }
+    ui.add_space(4.0);
+    about_rows(ui, e, actions);
     ui.weak(tr_format!("Module: {size} KB", size = kilobytes(p)));
+}
+
+/// The links an entry's About may open (`plugins.openLink` → `link`) besides `issues`, in the
+/// order of their rows.
+const ABOUT_LINKS: &[&str] = &["homepage", "repository", "changelog"];
+
+/// The name of link `key`'s row.
+fn about_link_name(key: &str) -> &'static str {
+    match key {
+        "homepage" => tr("Homepage"),
+        "repository" => tr("Source Code"),
+        _ => tr("Changelog"),
+    }
+}
+
+/// Where a plug-in or filter comes from (`plugin.list` → `about`): Homepage, Source Code and Changelog
+/// as links named by their host, so the user sees where one goes before clicking (the whole link
+/// on hover); Report a Problem beside a GitHub repository; Licence as text. Only the fields the
+/// manifest has get a row, and nothing is fetched to show them.
+fn about_rows(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Value)>) {
+    let about = &e.info["about"];
+    let mut link = |ui: &mut egui::Ui, key: &'static str, text: &str, url: &str| {
+        let r = ui.link(text).on_hover_text(url);
+        crate::widgets::register(ui.ctx(), format!("link:plugin-{key}-{}", e.id), r.rect);
+        if r.clicked() {
+            actions.push(("plugins.openLink", json!({"id": e.id, "link": key})));
+        }
+    };
+    for &key in ABOUT_LINKS {
+        let Some(url) = about[key].as_str() else { continue };
+        let Some(host) = lcc_engine::cmd::plugins::link_host(url) else { continue };
+        about_row(ui, about_link_name(key), |ui| {
+            link(ui, key, &host, url);
+            if let Some(issues) = about["issues"].as_str().filter(|_| key == "repository") {
+                ui.weak("·");
+                link(ui, "issues", tr("Report a Problem"), issues);
+            }
+        });
+    }
+    if let Some(l) = about["license"].as_str() {
+        fact_row(ui, tr("Licence"), l);
+    }
+}
+
+/// A fact row ([`fact_row`]) whose value is drawn by `value` (links).
+fn about_row(ui: &mut egui::Ui, name: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(egui::vec2(FACT_W, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(FACT_W);
+            ui.weak(name);
+        });
+        ui.horizontal_wrapped(value);
+    });
+}
+
+/// `plugins.openLink {id, link}`: opens link `link` (`homepage`, `repository`, `issues` or
+/// `changelog`) of installed plug-in or filter `id`'s About in the browser, as its page's link
+/// does. The browser service opens only `https://` links.
+fn open_link(app: &mut LccApp, p: &Value) -> Result<Value, String> {
+    let (Some(id), Some(link)) = (p.get("id").and_then(Value::as_str), p.get("link").and_then(Value::as_str)) else {
+        return Err("plugins.openLink needs `id` and `link`".into());
+    };
+    if link != "issues" && !ABOUT_LINKS.contains(&link) {
+        return Err(format!("plugins.openLink: no link {link:?} (homepage, repository, issues or changelog)"));
+    }
+    let list = app.session.execute("plugin.list", &json!({})).map_err(|e| e.to_string())?;
+    let entry = entries(&list).into_iter().find(|e| e.id == id && e.mark != Mark::Failed);
+    let entry = entry.ok_or_else(|| format!("{id}: {}", tr("no such plug-in is installed")))?;
+    let url = entry.info["about"][link].as_str().ok_or_else(|| format!("{id}: {}", tr_format!("its manifest has no {link} link", link = link)))?;
+    crate::links::open(app, url)
 }
 
 /// What the plug-in has logged.
@@ -1482,7 +1905,7 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     use crate::button::Button;
     let p = &e.info;
     if Button::new("Remove").widget(format!("button:pluginRemove:{}", e.id)).show(ui).clicked() {
-        actions.push(("plugin.uninstall", json!({"id": e.id})));
+        actions.push(("plugins.askRemove", json!({"entry": e.id})));
     }
     ui.add_space(6.0);
     if let Some(d) = p["description"].as_str().filter(|d| !d.is_empty()) {
@@ -1507,9 +1930,10 @@ fn filter_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     };
     fact_row(ui, tr("Measures"), measures);
     fact_row(ui, tr("Base tone"), if p["baseTone"] == "neutral" { tr("Neutral (its own rendering)") } else { tr("The camera's") });
-    fact_row(ui, tr("Parameters"), &if params.is_empty() { "—".to_string() } else { params.join(", ") });
+    fact_row(ui, tr("Parameters"), &if params.is_empty() { tr("None").to_string() } else { params.join(", ") });
     let module = format!("{} KB · sha256 {}…", kilobytes(p), hash.get(..12).unwrap_or(hash));
     fact_row(ui, tr("Module"), &module).on_hover_text(format!("sha256 {hash}"));
+    about_rows(ui, e, actions);
 }
 
 /// The width of a filter fact's name.
@@ -1547,7 +1971,43 @@ fn failed_page(ui: &mut egui::Ui, e: &Entry, actions: &mut Vec<(&'static str, Va
     ui.add_space(6.0);
     // a module that didn't load can still be removed
     if Button::new("Remove").widget(format!("button:pluginRemoveFailed:{}", e.id)).show(ui).clicked() {
-        actions.push(("plugin.uninstall", json!({"id": e.id})));
+        actions.push(("plugins.askRemove", json!({"entry": e.id})));
+    }
+}
+
+/// Remove's question: Remove (keeping a plug-in's data and settings when ticked) or Cancel, which
+/// changes nothing.
+fn confirm_remove(ui: &mut egui::Ui, e: &Entry, removing: &mut Option<Removing>, actions: &mut Vec<(&'static str, Value)>) {
+    use crate::button::{Button, Kind};
+    let Some(r) = removing.as_mut() else { return };
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let mut done = false;
+    egui::Frame::NONE.fill(t.inset).stroke(egui::Stroke::new(1.0, t.caution.gamma_multiply(0.7))).corner_radius(4.0).inner_margin(8).show(ui, |ui| {
+        ui.label(tr_format!("Remove {name}?", name = e.name));
+        if !e.filter {
+            let c = ui.checkbox(&mut r.keep_data, tr("Keep its data and settings, for when it's installed again"));
+            crate::widgets::register(ui.ctx(), format!("pluginKeepData:{}", e.id), c.rect);
+        }
+        ui.horizontal(|ui| {
+            if Button::new("Remove").kind(Kind::Primary).widget(format!("button:pluginRemoveConfirm:{}", e.id)).show(ui).clicked() {
+                // a module that didn't load goes by its file, so only it goes when another module has its id
+                let mut p = match (e.mark, e.info["file"].as_str()) {
+                    (Mark::Failed, Some(file)) => json!({"file": file}),
+                    _ => json!({"id": e.id}),
+                };
+                if !e.filter {
+                    p["keepData"] = json!(r.keep_data);
+                }
+                actions.push(("plugin.uninstall", p));
+                done = true;
+            }
+            if Button::new("Cancel").widget(format!("button:pluginRemoveCancel:{}", e.id)).show(ui).clicked() {
+                done = true;
+            }
+        });
+    });
+    if done {
+        *removing = None;
     }
 }
 
@@ -1631,24 +2091,71 @@ fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) -> bo
 mod tests {
     use super::*;
 
+    /// Under test every test has a Plug-in Manager of its own: one opened on another test's thread
+    /// doesn't cover this test's window.
     #[test]
-    fn approval_rows_tick_only_what_the_user_allows() {
-        let req = json!({"catalog": true, "metadataWrite": false, "network": ["a.com", "b.com"], "fs": [{"path": "/x", "write": true}]});
-        let rows = permission_rows(&req);
-        assert_eq!(rows.len(), 4, "catalog, two hosts, one root");
-        let mut g = json!({"catalog": false, "metadataWrite": false, "network": [], "fs": []});
-        assert!(rows.iter().all(|r| !r.granted(&g)), "nothing is pre-approved on a first install");
-        rows[2].set(&mut g, true);
-        rows[3].set(&mut g, true);
-        assert_eq!(g["network"], json!(["b.com"]));
-        assert_eq!(g["fs"], json!([{"path": "/x", "write": true}]));
-        rows[3].set(&mut g, false);
-        assert_eq!(g["fs"], json!([]));
-        assert!(!rows[0].granted(&g));
+    fn a_manager_opened_on_another_test_thread_stays_there() {
+        let ctx = egui::Context::default();
+        let other = std::thread::spawn(|| {
+            let ctx = egui::Context::default();
+            set_state(&ctx, State { open: true, ..State::default() });
+            state(&ctx).open
+        });
+        assert!(other.join().unwrap(), "open on its own thread");
+        assert!(!state(&ctx).open, "and closed on this one");
+    }
+
+    /// So are the running export hooks: hooks started on another test's thread don't run here.
+    #[test]
+    fn export_hooks_started_on_another_test_thread_stay_there() {
+        let other = std::thread::spawn(|| {
+            let session = lcc_engine::Session::new();
+            let (_asks, requests) = std::sync::mpsc::channel();
+            let (_ends, results) = std::sync::mpsc::channel();
+            let guard = session.activity.start("plugins", "Running plug-in export hooks", Cancel::No);
+            *task_lock() = Some(ExportHooksTask { total: 1, progress: Arc::default(), requests, results, guard });
+            let running = export_hooks_running();
+            *task_lock() = None;
+            running
+        });
+        assert!(other.join().unwrap(), "running on its own thread");
+        assert!(!export_hooks_running(), "and not on this one");
+    }
+
+    /// And the plug-in export destination chosen in the Export dialog.
+    #[test]
+    fn a_destination_chosen_on_another_test_thread_stays_there() {
+        let other = std::thread::spawn(|| {
+            *destination_lock() = Some(("test.plugin".into(), "upload".into(), json!({})));
+            destination_lock().is_some()
+        });
+        assert!(other.join().unwrap(), "chosen on its own thread");
+        assert!(destination_lock().is_none(), "and none on this one");
     }
 
     #[test]
-    fn program_rows_say_where_the_program_is_and_grant_its_whole_entry() {
+    fn rows_name_the_request_each_one_is() {
+        let req = json!({"catalog": true, "metadataWrite": false, "network": ["a.com", "b.com"], "fs": [{"path": "/x", "write": true}]});
+        let rows = permission_rows(&req);
+        assert_eq!(rows.len(), 4, "catalog, two hosts, one root");
+        let requests: Vec<Value> = rows.iter().map(Row::request).collect();
+        assert_eq!(
+            requests,
+            vec![
+                json!({"group": "catalog"}),
+                json!({"group": "network", "value": "a.com"}),
+                json!({"group": "network", "value": "b.com"}),
+                json!({"group": "fs", "value": "/x"})
+            ]
+        );
+        // the order plugin.list gives its requests in
+        let manifest: lcc_plugins::Permissions = serde_json::from_value(req).unwrap();
+        let listed: Vec<Value> = manifest.requests().iter().map(|r| serde_json::to_value(r).unwrap()).collect();
+        assert_eq!(listed, requests);
+    }
+
+    #[test]
+    fn program_rows_say_where_the_program_is() {
         let conv = json!({"id": "conv", "name": "Converter", "macBundleIds": ["org.example.conv"]});
         let rows = permission_rows(&json!({"catalog": true, "programs": [conv.clone(), {"id": "x", "name": "X", "linuxExe": "x"}]}));
         assert_eq!(rows.len(), 3, "catalog and two programs");
@@ -1656,29 +2163,25 @@ mod tests {
         installs.insert(("p".into(), "conv".into()), "installed: Converter 2.0".into());
         let label = rows[1].label(&installs, "p");
         assert!(label.contains("Converter") && label.contains("installed: Converter 2.0"), "{label}");
-        let mut g = json!({"catalog": true, "programs": []});
-        assert!(!rows[1].granted(&g), "a program starts unticked");
-        rows[1].set(&mut g, true);
-        assert_eq!(g["programs"], json!([conv]), "ticking grants the entry as the manifest declares it");
+        assert_eq!(rows[1].request(), json!({"group": "programs", "value": "conv"}));
+        let g = json!({"catalog": true, "programs": [conv]});
         assert!(rows[1].granted(&g) && !rows[2].granted(&g));
-        rows[1].set(&mut g, false);
-        assert_eq!(g["programs"], json!([]));
         if cfg!(target_os = "macos") {
             assert!(label.contains("org.example.conv"), "the row names what it starts: {label}");
         }
     }
 
     #[test]
-    fn a_widened_program_shows_unticked_and_a_narrowed_one_ticked() {
+    fn a_widened_program_is_no_longer_allowed_and_a_narrowed_one_is() {
         let had = json!({"programs": [{"id": "conv", "name": "Converter", "macBundleIds": ["a.one", "a.two"], "linuxExe": "conv"}]});
         let rows = |entry: Value| permission_rows(&json!({"programs": [entry]}));
         let narrowed = rows(json!({"id": "conv", "name": "Converter 2", "macBundleIds": ["a.two"]}));
         assert!(narrowed[0].granted(&had), "renamed and narrowed: still granted");
         let more_ids = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one", "a.three"], "linuxExe": "conv"}));
-        assert!(!more_ids[0].granted(&had), "another bundle id: unticked and new");
+        assert!(!more_ids[0].granted(&had), "another bundle id: no longer allowed");
         let other_exe = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one"], "linuxExe": "sh"}));
-        assert!(!other_exe[0].granted(&had), "another executable: unticked and new");
+        assert!(!other_exe[0].granted(&had), "another executable: no longer allowed");
         let added_exe = rows(json!({"id": "conv", "name": "Converter", "macBundleIds": ["a.one"], "linuxExe": "conv", "windowsExe": "conv.exe"}));
-        assert!(!added_exe[0].granted(&had), "an added executable: unticked and new");
+        assert!(!added_exe[0].granted(&had), "an added executable: no longer allowed");
     }
 }

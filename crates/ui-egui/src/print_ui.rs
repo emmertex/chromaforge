@@ -3,7 +3,7 @@
 //!
 //! The settings are a [`lcc_print::PrintSettings`]; the pages come from
 //! [`lcc_print::PrintSettings::build`] over the selected photos (all photos in the filmstrip when
-//! one or none is selected… as Print One prints just the active photo). The canvas draws the same
+//! none is selected… as Print One prints just the active photo). The canvas draws the same
 //! layout from thumbnails; Print renders every photo with the export pipeline at the print
 //! resolution on a worker thread and writes a PDF or JPEG files, or sends the PDF to an IPP/CUPS
 //! printer.
@@ -20,6 +20,7 @@
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use lcc_catalog::PhotoId;
+use lcc_engine::print::layout::Unit;
 use lcc_layout::tokens::{PhotoInfo, expand};
 use lcc_layout::{Align, CellKind, Document, Fit};
 use lcc_print::job::{PAPERS, builtin_templates};
@@ -34,6 +35,28 @@ use crate::widgets::register;
 /// Most photos one print job takes from the filmstrip.
 const MAX_JOB_PHOTOS: usize = lcc_print::job::MAX_PHOTOS;
 const RULER: f32 = 18.0;
+/// The selected custom cell's resize handle, screen points.
+const RESIZE_HANDLE: f32 = 10.0;
+
+/// A user template: `{name, folder, settings}`; `folder` `None` is "User Templates".
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserTemplate {
+    pub name: String,
+    pub folder: Option<String>,
+    pub settings: PrintSettings,
+}
+
+impl lcc_engine::template_folders::Foldered for UserTemplate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn folder(&self) -> Option<&str> {
+        self.folder.as_deref()
+    }
+    fn set_folder(&mut self, folder: Option<String>) {
+        self.folder = folder;
+    }
+}
 
 /// The module's state (lives in [`LccApp::print`]).
 #[derive(Clone, Debug)]
@@ -41,15 +64,21 @@ pub struct PrintUi {
     pub settings: PrintSettings,
     /// The template last applied.
     pub template: Option<String>,
-    /// User templates (name, settings), saved with `printui.saveTemplate`.
-    pub user_templates: Vec<(String, PrintSettings)>,
+    /// User templates, saved with `printui.saveTemplate`.
+    pub user_templates: Vec<UserTemplate>,
+    /// The Template Browser's folders besides "User Templates" (empty ones too), sorted by name.
+    pub template_folders: Vec<String>,
     /// Preview page (0-based).
     pub page: usize,
+    /// Master switch for the guides (margins, image cells, bleed, dimensions); the rulers have their own.
+    pub show: bool,
     pub rulers: bool,
     pub margins: bool,
     pub cells: bool,
     pub bleed: bool,
     pub dimensions: bool,
+    /// View ▸ Show Info Overlay: paper, printer, page and resolution in a corner box (saved in print.json).
+    pub info_overlay: bool,
     pub printer_uri: String,
     pub cups_server: String,
     pub printers: Vec<lcc_print::ipp::PrinterEntry>,
@@ -76,6 +105,14 @@ pub struct PrintUi {
     pub trusted_certs: Vec<(String, String)>,
     /// Trust an `ipps://` printer's certificate the first time it is seen.
     pub trust_on_first_use: bool,
+    /// Unit of the rulers, cell dimensions and size fields (saved in print.json).
+    pub units: Unit,
+    /// Custom Package: the cell chosen on the page, whose size and place the panel edits.
+    pub selected: Option<usize>,
+    /// Size of the next custom cell, points.
+    pub new_cell: (f32, f32),
+    /// Page Setup… was chosen: open the paper choice on the next frame (`dialog.pageSetup`).
+    pub open_paper: bool,
 }
 
 impl Default for PrintUi {
@@ -85,12 +122,15 @@ impl Default for PrintUi {
             settings,
             template: Some(name),
             user_templates: Vec::new(),
+            template_folders: Vec::new(),
             page: 0,
+            show: true,
             rulers: true,
             margins: true,
             cells: true,
             bleed: true,
             dimensions: false,
+            info_overlay: false,
             printer_uri: String::new(),
             cups_server: "localhost:631".into(),
             printers: Vec::new(),
@@ -107,6 +147,10 @@ impl Default for PrintUi {
             trusted_certs: Vec::new(),
             trust_on_first_use: false,
             save_failed: None,
+            units: Unit::Inches,
+            selected: None,
+            new_cell: (360.0, 504.0),
+            open_paper: false,
         }
     }
 }
@@ -118,12 +162,19 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.pageSetup", "Page Setup", None, ""),
     ("printui.page", "Print Preview Page", None, ""),
     ("printui.guides", "Print Guides", None, ""),
+    ("printui.toggleGuides", "Show Guides", None, ""),
+    ("printui.toggleRulers", "Show Rulers", None, ""),
+    ("printui.infoOverlay", "Show Info Overlay", None, ""),
     ("printui.print", "Print", None, ""),
     ("printui.printOne", "Print One", None, ""),
     ("printui.printers", "Find Printers", None, ""),
     ("printui.profile", "Printer Color Profile", None, ""),
     ("printui.saveTemplate", "New Print Template", None, ""),
     ("printui.deleteTemplate", "Delete Print Template", None, ""),
+    ("printui.createTemplateFolder", "New Print Template Folder", None, ""),
+    ("printui.renameTemplateFolder", "Rename Print Template Folder", None, ""),
+    ("printui.deleteTemplateFolder", "Delete Print Template Folder", None, ""),
+    ("printui.moveTemplate", "Move Print Template to Folder", None, ""),
     ("printui.media", "Printer Paper Sizes", None, ""),
     ("printui.state", "Print State", None, ""),
     ("printui.saveCreation", "Create Saved Print", None, ""),
@@ -131,6 +182,7 @@ pub const COMMANDS: &[crate::menus::UiCommand] = &[
     ("printui.driver", "Printer Options", None, ""),
     ("printui.trustCertificate", "Trust Printer Certificate", None, ""),
     ("printui.trustOnFirstUse", "Trust Printer Certificates on First Use", None, ""),
+    ("printui.cell", "Print Cell Size", None, ""),
 ];
 
 /// Push the trusted printer certificates and the first-use setting to the IPP client.
@@ -144,14 +196,16 @@ fn sync_trust(pu: &mut PrintUi) {
     pu.trusted_certs = lcc_print::ipp::trusted_certificates();
 }
 
-/// The photos a print takes: the selection when it has more than one photo, else every photo in
-/// the filmstrip (Print One: the active photo).
+/// The photos a print takes: the filmstrip's selection when it has one, else every photo in the
+/// filmstrip (Print One: the active photo).
 pub fn job_photos(app: &mut LccApp, one: bool) -> Vec<PhotoId> {
     if one {
         return app.session.active().into_iter().collect();
     }
+    // the photos the filmstrip selects are what prints (Lightroom's Print module works on the
+    // filmstrip selection); only with nothing selected does the job fall back to the whole view
     let sel = app.session.selection.ids.clone();
-    if sel.len() > 1 {
+    if !sel.is_empty() {
         return sel.into_iter().take(MAX_JOB_PHOTOS).collect();
     }
     app.session.visible().iter().copied().take(MAX_JOB_PHOTOS).collect()
@@ -232,11 +286,20 @@ fn stored_json(pu: &PrintUi) -> Value {
     json!({
         "settings": serde_json::to_value(&pu.settings).unwrap_or(Value::Null),
         "template": pu.template,
-        "userTemplates": pu.user_templates.iter().map(|(n, s)| json!({"name": n, "settings": serde_json::to_value(s).unwrap_or(Value::Null)})).collect::<Vec<_>>(),
+        "userTemplates": pu.user_templates.iter().map(|t| {
+            let mut v = json!({"name": t.name, "settings": serde_json::to_value(&t.settings).unwrap_or(Value::Null)});
+            if let (Some(f), Some(o)) = (&t.folder, v.as_object_mut()) {
+                o.insert("folder".into(), json!(f));
+            }
+            v
+        }).collect::<Vec<_>>(),
+        "templateFolders": pu.template_folders,
         "printerUri": pu.printer_uri,
         "cupsServer": pu.cups_server,
         "trustedCertificates": pu.trusted_certs.iter().map(|(h, f)| json!({"printer": h, "fingerprint": f})).collect::<Vec<_>>(),
         "trustOnFirstUse": pu.trust_on_first_use,
+        "units": pu.units,
+        "infoOverlay": pu.info_overlay,
     })
 }
 
@@ -252,11 +315,23 @@ fn apply_stored(pu: &mut PrintUi, v: &Value) {
     if let Some(list) = v.get("userTemplates").and_then(Value::as_array) {
         pu.user_templates = list
             .iter()
-            .filter_map(|t| Some((t.get("name")?.as_str()?.trim().to_string(), settings(t.get("settings")?)?)))
-            .filter(|(n, _)| !n.is_empty())
+            .filter_map(|t| {
+                Some(UserTemplate {
+                    name: t.get("name")?.as_str()?.trim().to_string(),
+                    folder: t.get("folder").and_then(Value::as_str).map(str::to_string),
+                    settings: settings(t.get("settings")?)?,
+                })
+            })
+            .filter(|t| !t.name.is_empty())
             .take(500)
             .collect();
     }
+    if let Some(list) = v.get("templateFolders").and_then(Value::as_array) {
+        pu.template_folders = list.iter().filter_map(|f| f.as_str().map(str::to_string)).collect();
+    }
+    // folders and templates agree: bad or repeated folder names dropped, a template in an unlisted
+    // folder gets it listed (or goes to User Templates)
+    lcc_engine::template_folders::tidy_folders(&mut pu.template_folders, &mut pu.user_templates);
     if let Some(u) = v.get("printerUri").and_then(Value::as_str) {
         pu.printer_uri = u.to_string();
     }
@@ -273,6 +348,12 @@ fn apply_stored(pu: &mut PrintUi, v: &Value) {
     }
     if let Some(on) = v.get("trustOnFirstUse").and_then(Value::as_bool) {
         pu.trust_on_first_use = on;
+    }
+    if let Some(u) = v.get("units").and_then(|u| serde_json::from_value::<Unit>(u.clone()).ok()) {
+        pu.units = u;
+    }
+    if let Some(on) = v.get("infoOverlay").and_then(Value::as_bool) {
+        pu.info_overlay = on;
     }
 }
 
@@ -338,7 +419,7 @@ fn persist_reported(app: &mut LccApp, ctx: Option<&egui::Context>) {
     if let Err(e) = persist(app) {
         log::warn!("print settings not saved: {e}");
         if let (Some(ctx), Some((_, SAVE_ATTEMPTS))) = (ctx, &app.print.save_failed) {
-            app.toast(ctx, format!("Print settings not saved: {e}"));
+            app.toast(ctx, crate::i18n::tr_format!("Print settings not saved: {e}", e = e));
         }
     }
 }
@@ -356,15 +437,18 @@ fn state_json(app: &mut LccApp) -> Value {
         "pages": pages,
         "photos": photos,
         "error": err,
-        "guides": {"rulers": pu.rulers, "margins": pu.margins, "cells": pu.cells, "bleed": pu.bleed, "dimensions": pu.dimensions},
+        "infoOverlay": pu.info_overlay,
+        "guides": {"show": pu.show, "rulers": pu.rulers, "margins": pu.margins, "cells": pu.cells, "bleed": pu.bleed, "dimensions": pu.dimensions, "units": pu.units},
+        "selectedCell": pu.selected,
         "printer": pu.printer_uri,
         "profileName": pu.profile_name,
         "printers": pu.printers.iter().map(|p| json!({"name": p.name, "uri": p.uri, "info": p.info})).collect::<Vec<_>>(),
         "busy": pu.busy,
         "creation": pu.creation,
         "last": pu.last,
-        "templates": builtin_templates().into_iter().map(|t| t.0).chain(pu.user_templates.iter().map(|t| t.0.clone())).collect::<Vec<_>>(),
-        "userTemplates": pu.user_templates.iter().map(|t| t.0.clone()).collect::<Vec<_>>(),
+        "templates": builtin_templates().into_iter().map(|t| t.0).chain(pu.user_templates.iter().map(|t| t.name.clone())).collect::<Vec<_>>(),
+        "userTemplates": pu.user_templates.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        "templateFolders": crate::template_browser::listing(&pu.template_folders, &pu.user_templates),
         "media": pu.media.iter().map(|m| json!({"name": m.name, "w": m.size.w, "h": m.size.h, "margins": m.margins})).collect::<Vec<_>>(),
         "printerOptions": {
             "mediaTypes": pu.options.media_types, "mediaTypeDefault": pu.options.media_type_default,
@@ -379,11 +463,221 @@ fn state_json(app: &mut LccApp) -> Value {
     })
 }
 
+/// Smallest and largest cell side, points (0.1 in and 30 in).
+const MIN_CELL_PT: f32 = 7.2;
+const MAX_CELL_PT: f32 = 2160.0;
+/// Most cells a package holds.
+const MAX_CELLS: usize = 64;
+
+/// Points in one `unit`.
+fn pt_per(unit: Unit) -> f32 {
+    (72.0 / unit.per_inch()) as f32
+}
+
+/// A length in points shown in `unit`, e.g. "12.70 cm".
+fn fmt_len(pt: f32, unit: Unit) -> String {
+    format!("{} {}", fmt_num(pt, unit), unit.label())
+}
+
+/// A length in points as a number in `unit`, without its label.
+fn fmt_num(pt: f32, unit: Unit) -> String {
+    let d = match unit {
+        Unit::Inches | Unit::Centimeters => 2,
+        Unit::Millimeters | Unit::Points => 1,
+    };
+    let v = format!("{:.*}", d, pt / pt_per(unit));
+    if v.contains('.') { v.trim_end_matches('0').trim_end_matches('.').to_string() } else { v }
+}
+
+/// Typed text ("12.5", "12,5", "12.5 cm") as points; a unit typed after the number wins over `unit`.
+fn parse_len(text: &str, unit: Unit) -> Option<f32> {
+    let t = text.trim().replace(',', ".");
+    let split = t.find(|c: char| c.is_ascii_alphabetic() || c == '"').unwrap_or(t.len());
+    let (num, suffix) = t.split_at(split);
+    let unit = match suffix.trim() {
+        "" => unit,
+        "in" | "\"" => Unit::Inches,
+        "cm" => Unit::Centimeters,
+        "mm" => Unit::Millimeters,
+        "pt" => Unit::Points,
+        _ => return None,
+    };
+    let v: f32 = num.trim().parse().ok()?;
+    (v.is_finite() && v > 0.0).then(|| v * pt_per(unit))
+}
+
+/// A `printui.cell` number in `unit`, as points.
+fn len_param(p: &Value, key: &str, unit: Unit) -> Result<Option<f32>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let n = v.as_f64().filter(|n| n.is_finite()).ok_or_else(|| format!("{key} must be a number"))?;
+            Ok(Some(n as f32 * pt_per(unit)))
+        }
+    }
+}
+
+fn check_side(key: &str, pt: f32, unit: Unit) -> Result<f32, String> {
+    if (MIN_CELL_PT..=MAX_CELL_PT).contains(&pt) {
+        Ok(pt)
+    } else {
+        Err(format!("{key} must be between {} and {}", fmt_len(MIN_CELL_PT, unit), fmt_len(MAX_CELL_PT, unit)))
+    }
+}
+
+/// `printui.cell`: add (no `index`), resize or move (`index` with `w`, `h`, `x`, `y`), or remove
+/// (`index`, `remove: true`) a Picture Package or Custom Package cell; lengths are in `unit`.
+fn edit_cell(s: &mut PrintSettings, p: &Value, unit: Unit) -> Result<Value, String> {
+    let index = match p.get("index") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or("index must be a cell number from 0")? as usize),
+    };
+    let remove = p.get("remove").and_then(Value::as_bool).unwrap_or(false);
+    let w = len_param(p, "w", unit)?.map(|v| check_side("w", v, unit)).transpose()?;
+    let h = len_param(p, "h", unit)?.map(|v| check_side("h", v, unit)).transpose()?;
+    let x = len_param(p, "x", unit)?;
+    let y = len_param(p, "y", unit)?;
+    let content = s.page.content();
+    let size = s.page.size;
+    let (index, cells) = match &mut s.layout {
+        LayoutStyle::SingleImage { .. } => return Err("cells are sized in Picture Package and Custom Package; the grid sizes its own".into()),
+        LayoutStyle::PicturePackage(spec) => {
+            if x.is_some() || y.is_some() {
+                return Err("Picture Package places its cells itself: give w and h only".into());
+            }
+            let i = match (index, remove) {
+                (None, _) => {
+                    if spec.cells.len() >= MAX_CELLS {
+                        return Err(format!("a package holds at most {MAX_CELLS} cells"));
+                    }
+                    let (w, h) = w.zip(h).ok_or("a new cell needs w and h")?;
+                    spec.cells.push(lcc_layout::Size::new(w, h));
+                    spec.cells.len() - 1
+                }
+                (Some(i), true) => {
+                    if i >= spec.cells.len() {
+                        return Err(format!("no cell {i}"));
+                    }
+                    spec.cells.remove(i);
+                    i
+                }
+                (Some(i), false) => {
+                    let c = spec.cells.get_mut(i).ok_or_else(|| format!("no cell {i}"))?;
+                    c.w = w.unwrap_or(c.w);
+                    c.h = h.unwrap_or(c.h);
+                    i
+                }
+            };
+            (i, spec.cells.iter().map(|c| json!({"w": c.w, "h": c.h})).collect::<Vec<_>>())
+        }
+        LayoutStyle::CustomPackage { pages } => {
+            if pages.is_empty() {
+                pages.push(lcc_layout::PageLayout { cells: Vec::new(), guides: Vec::new() });
+            }
+            let Some(pg) = pages.first_mut() else { return Err("no page".into()) };
+            // keep a cell on the paper
+            let place = |r: &mut lcc_layout::Rect| {
+                r.w = r.w.min(size.w);
+                r.h = r.h.min(size.h);
+                r.x = r.x.clamp(0.0, (size.w - r.w).max(0.0));
+                r.y = r.y.clamp(0.0, (size.h - r.h).max(0.0));
+            };
+            let i = match (index, remove) {
+                (None, _) => {
+                    if pg.cells.len() >= MAX_CELLS {
+                        return Err(format!("a package holds at most {MAX_CELLS} cells"));
+                    }
+                    let (w, h) = w.zip(h).ok_or("a new cell needs w and h")?;
+                    let mut r = lcc_layout::Rect::new(x.unwrap_or(content.x), y.unwrap_or(content.y), w, h);
+                    place(&mut r);
+                    pg.cells.push(lcc_layout::Cell::photo(r));
+                    pg.cells.len() - 1
+                }
+                (Some(i), true) => {
+                    if i >= pg.cells.len() {
+                        return Err(format!("no cell {i}"));
+                    }
+                    pg.cells.remove(i);
+                    i
+                }
+                (Some(i), false) => {
+                    let c = pg.cells.get_mut(i).ok_or_else(|| format!("no cell {i}"))?;
+                    let r = &mut c.rect;
+                    r.w = w.unwrap_or(r.w);
+                    r.h = h.unwrap_or(r.h);
+                    r.x = x.unwrap_or(r.x);
+                    r.y = y.unwrap_or(r.y);
+                    place(r);
+                    i
+                }
+            };
+            (i, pg.cells.iter().map(|c| json!({"x": c.rect.x, "y": c.rect.y, "w": c.rect.w, "h": c.rect.h})).collect::<Vec<_>>())
+        }
+    };
+    let index = (!remove).then_some(index);
+    Ok(json!({"index": index, "cells": cells, "unit": unit}))
+}
+
+/// "Custom size: [w] × [h] unit [Add]": true when Add was clicked (the size is in `cell`).
+fn new_cell_row(ui: &mut egui::Ui, ctx: &egui::Context, cell: &mut (f32, f32), unit: Unit) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr("Custom Size"));
+        if let Some(v) = len_field(ui, "print:newCellW", cell.0, unit) {
+            cell.0 = v;
+        }
+        ui.label("×");
+        if let Some(v) = len_field(ui, "print:newCellH", cell.1, unit) {
+            cell.1 = v;
+        }
+        ui.label(unit.label());
+        let b = ui.button(crate::i18n::tr("Add Cell"));
+        register(ctx, "print:addCustomCell", b.rect);
+        b.clicked()
+    })
+    .inner
+}
+
+/// A position field in the print unit (0 allowed): the new position in points once committed.
+fn pos_field(ui: &mut egui::Ui, id: &str, pt: f32, unit: Unit) -> Option<f32> {
+    let key = egui::Id::new(("print-len", id));
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(key)).unwrap_or_else(|| fmt_num(pt, unit));
+    let r = crate::text_field::TextField::singleline(id, &mut text).width(52.0).select_on_focus(true).show(ui);
+    let out = if r.committed() {
+        let t = text.trim();
+        if t.trim_end_matches(|c: char| c.is_ascii_alphabetic()).trim().parse::<f32>() == Ok(0.0) { Some(0.0) } else { parse_len(t, unit) }
+    } else {
+        None
+    };
+    if r.editing && !r.committed() && !r.cancelled() {
+        ui.data_mut(|d| d.insert_temp(key, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(key));
+    }
+    out
+}
+
+/// A length field in the print unit: the new length in points once an edit is committed.
+fn len_field(ui: &mut egui::Ui, id: &str, pt: f32, unit: Unit) -> Option<f32> {
+    let key = egui::Id::new(("print-len", id));
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(key)).unwrap_or_else(|| fmt_num(pt, unit));
+    let r = crate::text_field::TextField::singleline(id, &mut text).width(52.0).select_on_focus(true).show(ui);
+    let out = if r.committed() { parse_len(&text, unit).map(|v| v.clamp(MIN_CELL_PT, MAX_CELL_PT)) } else { None };
+    if r.editing && !r.committed() && !r.cancelled() {
+        ui.data_mut(|d| d.insert_temp(key, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(key));
+    }
+    out
+}
+
 fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
     match id {
         "printui.template" => {
             let name = p.get("name").and_then(Value::as_str).ok_or("missing name")?;
-            let found = builtin_templates().into_iter().chain(app.print.user_templates.iter().cloned()).find(|(n, _)| n == name);
+            let found = builtin_templates()
+                .into_iter()
+                .chain(app.print.user_templates.iter().map(|t| (t.name.clone(), t.settings.clone())))
+                .find(|(n, _)| n == name);
             let (n, s) = found.ok_or_else(|| format!("no print template named {name}"))?;
             app.print.settings = s;
             app.print.template = Some(n);
@@ -425,9 +719,14 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             };
             app.print.page = want.min(n - 1);
         }
+        "printui.infoOverlay" => {
+            let pu = &mut app.print;
+            pu.info_overlay = p.get("on").and_then(Value::as_bool).unwrap_or(!pu.info_overlay);
+        }
         "printui.guides" => {
             let pu = &mut app.print;
             for (k, f) in [
+                ("show", &mut pu.show),
                 ("rulers", &mut pu.rulers),
                 ("margins", &mut pu.margins),
                 ("cells", &mut pu.cells),
@@ -438,18 +737,48 @@ fn run_inner(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
                     *f = v;
                 }
             }
+            if let Some(u) = p.get("units") {
+                pu.units = serde_json::from_value(u.clone()).map_err(|_| format!("unknown unit {u}: in, cm, mm or pt"))?;
+            }
+        }
+        "printui.toggleGuides" => app.print.show = !app.print.show,
+        "printui.toggleRulers" => app.print.rulers = !app.print.rulers,
+        "printui.cell" => {
+            let unit = match p.get("unit") {
+                Some(u) => serde_json::from_value(u.clone()).map_err(|_| format!("unknown unit {u}: in, cm, mm or pt"))?,
+                None => app.print.units,
+            };
+            let out = edit_cell(&mut app.print.settings, p, unit)?;
+            if matches!(app.print.settings.layout, LayoutStyle::CustomPackage { .. }) {
+                app.print.selected = out.get("index").and_then(Value::as_u64).map(|i| i as usize);
+            }
+            return Ok(out);
         }
         "printui.saveTemplate" => {
             let name = p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).ok_or("missing name")?.to_string();
-            let s = app.print.settings.clone();
-            app.print.user_templates.retain(|t| t.0 != name);
-            app.print.user_templates.push((name.clone(), s));
+            let settings = app.print.settings.clone();
+            let given = crate::template_browser::folder_param(&app.print.template_folders, p)?;
+            // a template saved over its own name stays in its folder unless the call names another
+            let kept = app.print.user_templates.iter().find(|t| t.name == name).and_then(|t| t.folder.clone());
+            let folder = given.unwrap_or(kept);
+            app.print.user_templates.retain(|t| t.name != name);
+            app.print.user_templates.push(UserTemplate { name: name.clone(), folder, settings });
             app.print.template = Some(name);
+        }
+        "printui.createTemplateFolder" | "printui.renameTemplateFolder" | "printui.deleteTemplateFolder" | "printui.moveTemplate" => {
+            let op = match id {
+                "printui.createTemplateFolder" => "create",
+                "printui.renameTemplateFolder" => "rename",
+                "printui.deleteTemplateFolder" => "delete",
+                _ => "move",
+            };
+            let pu = &mut app.print;
+            return crate::template_browser::folder_command(op, &mut pu.template_folders, &mut pu.user_templates, p);
         }
         "printui.deleteTemplate" => {
             let name = p.get("name").and_then(Value::as_str).ok_or("missing name")?;
             let before = app.print.user_templates.len();
-            app.print.user_templates.retain(|t| t.0 != name);
+            app.print.user_templates.retain(|t| t.name != name);
             if app.print.user_templates.len() == before {
                 return Err(format!("no user print template named {name}"));
             }
@@ -936,37 +1265,35 @@ fn heading(ui: &mut egui::Ui, title: &str) {
     ui.separator();
 }
 
+/// The commands the Template Browser runs.
+const TEMPLATE_CMDS: crate::template_browser::Cmds = crate::template_browser::Cmds {
+    apply: "printui.template",
+    delete: "printui.deleteTemplate",
+    move_to: "printui.moveTemplate",
+    create_folder: "printui.createTemplateFolder",
+    rename_folder: "printui.renameTemplateFolder",
+    delete_folder: "printui.deleteTemplateFolder",
+};
+
 fn template_browser(ui: &mut egui::Ui, app: &mut LccApp) {
-    let t = Tokens::get(ui.ctx());
     let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical().id_salt("print-templates").show(ui, |ui| {
         heading(ui, "Template Browser");
         let current = app.print.template.clone();
-        let mut groups: Vec<(&str, Vec<String>)> = vec![("Built-in", builtin_templates().into_iter().map(|t| t.0).collect())];
-        if !app.print.user_templates.is_empty() {
-            groups.push(("User Templates", app.print.user_templates.iter().map(|t| t.0.clone()).collect()));
-        }
-        for (group, names) in groups {
-            ui.label(egui::RichText::new(crate::i18n::tr(group)).color(t.text_dim).size(11.0));
-            for name in names {
-                // built-in templates show in the UI language, the user's own as named
-                let shown = if group == "Built-in" { crate::i18n::tr(&name).to_string() } else { name.clone() };
-                let r = ui.selectable_label(current.as_deref() == Some(name.as_str()), shown);
-                register(&ctx, format!("print:template:{name}"), r.rect);
-                if r.clicked() {
-                    cmd(app, &ctx, "printui.template", json!({"name": name}));
-                }
-                if group == "User Templates" {
-                    r.context_menu(|ui| {
-                        if ui.button(crate::i18n::tr("Delete")).clicked() {
-                            cmd(app, &ctx, "printui.deleteTemplate", json!({"name": name}));
-                            ui.close();
-                        }
-                    });
-                }
-            }
-            ui.add_space(6.0);
-        }
+        let mut rows: Vec<crate::template_browser::Row> = builtin_templates()
+            .into_iter()
+            .map(|t| crate::template_browser::Row { shown: crate::i18n::tr(&t.0).to_string(), name: t.0, builtin: true, folder: None })
+            .collect();
+        rows.extend(app.print.user_templates.iter().map(|t| crate::template_browser::Row {
+            name: t.name.clone(),
+            shown: t.name.clone(),
+            builtin: false,
+            folder: t.folder.clone(),
+        }));
+        let ids = crate::template_browser::Ids { template: "print:template:", folder: "print:templateFolder:", salt: "print-template-folder" };
+        let actions = crate::template_browser::show(ui, &ids, &rows, &app.print.template_folders, current.as_deref());
+        crate::template_browser::dispatch(app, &ctx, actions, &TEMPLATE_CMDS);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             let id = egui::Id::new("print-new-template");
             let mut name: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
@@ -1007,6 +1334,7 @@ fn template_browser(ui: &mut egui::Ui, app: &mut LccApp) {
         heading(ui, "Guides");
         let g = &mut app.print;
         for (k, label, v) in [
+            ("show", "Show Guides", &mut g.show),
             ("rulers", "Rulers", &mut g.rulers),
             ("margins", "Margins and Gutters", &mut g.margins),
             ("cells", "Image Cells", &mut g.cells),
@@ -1016,12 +1344,25 @@ fn template_browser(ui: &mut egui::Ui, app: &mut LccApp) {
             let r = ui.checkbox(v, crate::i18n::tr(label));
             register(&ctx, format!("print:guide:{k}"), r.rect);
         }
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Units"));
+            for u in [Unit::Inches, Unit::Centimeters, Unit::Millimeters] {
+                let r = ui.selectable_label(g.units == u, u.label());
+                register(&ctx, format!("print:units:{}", u.label()), r.rect);
+                if r.clicked() {
+                    g.units = u;
+                }
+            }
+        });
     });
 }
 
 fn settings_panels(ui: &mut egui::Ui, app: &mut LccApp) {
     let ctx = ui.ctx().clone();
     let before = app.print.settings.clone();
+    let unit = app.print.units;
+    let mut selected = app.print.selected;
+    let mut new_cell = app.print.new_cell;
     egui::ScrollArea::vertical().id_salt("print-settings").show(ui, |ui| {
         let s = &mut app.print.settings;
         heading(ui, "Layout Style");
@@ -1081,6 +1422,30 @@ fn settings_panels(ui: &mut egui::Ui, app: &mut LccApp) {
                         }
                     }
                 });
+                let mut remove = None;
+                for (i, c) in spec.cells.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        if let Some(v) = len_field(ui, &format!("print:cellW:{i}"), c.w, unit) {
+                            c.w = v;
+                        }
+                        ui.label("×");
+                        if let Some(v) = len_field(ui, &format!("print:cellH:{i}"), c.h, unit) {
+                            c.h = v;
+                        }
+                        ui.label(unit.label());
+                        let r = ui.small_button("✕").on_hover_text(crate::i18n::tr("Remove Cell"));
+                        register(&ctx, format!("print:removeCell:{i}"), r.rect);
+                        if r.clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove.filter(|i| *i < spec.cells.len()) {
+                    spec.cells.remove(i);
+                }
+                if new_cell_row(ui, &ctx, &mut new_cell, unit) && spec.cells.len() < MAX_CELLS {
+                    spec.cells.push(lcc_layout::Size::new(new_cell.0, new_cell.1));
+                }
                 if ui.button(crate::i18n::tr("Clear Layout")).clicked() {
                     spec.cells.clear();
                 }
@@ -1089,6 +1454,7 @@ fn settings_panels(ui: &mut egui::Ui, app: &mut LccApp) {
             LayoutStyle::CustomPackage { pages } => {
                 heading(ui, "Cells");
                 ui.label(crate::i18n::tr("Drag cells on the page to move them."));
+                ui.label(crate::i18n::tr("Click a cell, then drag its corner to resize it."));
                 ui.horizontal_wrapped(|ui| {
                     for (w, h) in [(2.5, 3.5), (4.0, 6.0), (5.0, 7.0), (8.0, 10.0)] {
                         if ui.button(format!("{w}×{h}")).clicked()
@@ -1100,10 +1466,57 @@ fn settings_panels(ui: &mut egui::Ui, app: &mut LccApp) {
                         }
                     }
                 });
+                if new_cell_row(ui, &ctx, &mut new_cell, unit)
+                    && let Some(pg) = pages.first_mut()
+                    && pg.cells.len() < MAX_CELLS
+                {
+                    let c = s.page.content();
+                    pg.cells.push(lcc_layout::Cell::photo(lcc_layout::Rect::new(c.x, c.y, new_cell.0.min(c.w), new_cell.1.min(c.h))));
+                    selected = Some(pg.cells.len() - 1);
+                }
+                let size = s.page.size;
+                if let Some(pg) = pages.first_mut()
+                    && let Some(i) = selected.filter(|i| *i < pg.cells.len())
+                {
+                    ui.label(crate::i18n::tr_format!("Selected cell {n}", n = i + 1));
+                    let mut remove = false;
+                    if let Some(c) = pg.cells.get_mut(i) {
+                        let r = &mut c.rect;
+                        egui::Grid::new("print-selected-cell").num_columns(4).show(ui, |ui| {
+                            ui.label(crate::i18n::tr("W"));
+                            if let Some(v) = len_field(ui, "print:selW", r.w, unit) {
+                                r.w = v.min(size.w);
+                            }
+                            ui.label(crate::i18n::tr("H"));
+                            if let Some(v) = len_field(ui, "print:selH", r.h, unit) {
+                                r.h = v.min(size.h);
+                            }
+                            ui.end_row();
+                            // positions may be 0: parsed without the cell-size limits
+                            ui.label(crate::i18n::tr("X"));
+                            if let Some(v) = pos_field(ui, "print:selX", r.x, unit) {
+                                r.x = v.clamp(0.0, (size.w - r.w).max(0.0));
+                            }
+                            ui.label(crate::i18n::tr("Y"));
+                            if let Some(v) = pos_field(ui, "print:selY", r.y, unit) {
+                                r.y = v.clamp(0.0, (size.h - r.h).max(0.0));
+                            }
+                            ui.end_row();
+                        });
+                        let b = ui.button(crate::i18n::tr("Remove Cell"));
+                        register(&ctx, "print:removeSelected", b.rect);
+                        remove = b.clicked();
+                    }
+                    if remove {
+                        pg.cells.remove(i);
+                        selected = None;
+                    }
+                }
                 if ui.button(crate::i18n::tr("Clear Layout")).clicked()
                     && let Some(pg) = pages.first_mut()
                 {
                     pg.cells.clear();
+                    selected = None;
                 }
             }
         }
@@ -1242,6 +1655,8 @@ fn settings_panels(ui: &mut egui::Ui, app: &mut LccApp) {
             }
         });
     });
+    app.print.selected = selected;
+    app.print.new_cell = new_cell;
     // keep only valid edits (sliders can't produce invalid ones, but stay safe)
     if app.print.settings != before && app.print.settings.validate().is_err() {
         app.print.settings = before;
@@ -1442,6 +1857,11 @@ fn page_setup_bar(ui: &mut egui::Ui, app: &mut LccApp, r: Rect) {
         }
     });
     register(&ctx, "print:paper", resp.response.rect);
+    // File ▸ Page Setup…: the paper choice, open
+    if std::mem::take(&mut app.print.open_paper) {
+        egui::Popup::open_id(&ctx, resp.response.id.with("popup"));
+        ctx.request_repaint();
+    }
     for (label, land) in [("Portrait", false), ("Landscape", true)] {
         let r = child.selectable_label(landscape == land, crate::i18n::tr(label));
         register(&ctx, format!("print:{}", label.to_lowercase()), r.rect);
@@ -1486,14 +1906,15 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
     let bg = page.background;
     p.rect_filled(sheet, 0.0, Color32::from_rgb(bg[0], bg[1], bg[2]));
     let guide = Color32::from_rgb(70, 140, 220);
-    if app.print.margins {
+    if app.print.show && app.print.margins {
         let c = rect(&page.content());
         p.rect_stroke(c, 0.0, Stroke::new(1.0, guide.gamma_multiply(0.8)), StrokeKind::Inside);
     }
     let infos: Vec<Option<PhotoInfo>> =
         layout.cells.iter().map(|c| c.as_photo().and_then(|ph| ph.photo.as_deref()).map(|id| info_of(app, id))).collect();
-    let dimensions = app.print.dimensions;
-    let show_cells = app.print.cells;
+    let dimensions = app.print.show && app.print.dimensions;
+    let units = app.print.units;
+    let show_cells = app.print.show && app.print.cells;
     let pi = app.print.page;
     for (i, cell) in layout.cells.iter().enumerate() {
         let r = rect(&cell.rect);
@@ -1509,7 +1930,7 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
                     p.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Inside);
                 }
                 if dimensions {
-                    let txt = format!("{:.2} × {:.2} in", cell.rect.w / 72.0, cell.rect.h / 72.0);
+                    let txt = format!("{} × {}", fmt_num(cell.rect.w, units), fmt_len(cell.rect.h, units));
                     let g = p.layout_no_wrap(txt, t.font(10.0), Color32::WHITE);
                     let br = Rect::from_min_size(r.min + vec2(3.0, 3.0), g.size() + vec2(6.0, 2.0));
                     p.rect_filled(br, 2.0, Color32::from_black_alpha(160));
@@ -1557,7 +1978,7 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
             }
         }
     }
-    if app.print.bleed && page.bleed > 0.0 {
+    if app.print.show && app.print.bleed && page.bleed > 0.0 {
         p.rect_stroke(rect(&page.bleed_box()), 0.0, Stroke::new(1.0, Color32::from_rgb(220, 60, 60)), StrokeKind::Outside);
     }
     for g in &layout.guides {
@@ -1567,7 +1988,7 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
         };
     }
     if rulers {
-        draw_rulers(&p, &t, sheet, k, page.size);
+        draw_rulers(&p, &t, sheet, k, page.size, app.print.units);
     }
     if matches!(app.print.settings.layout, LayoutStyle::CustomPackage { .. }) {
         custom_drag(ui, app, sheet, k);
@@ -1580,6 +2001,39 @@ fn canvas(ui: &mut egui::Ui, app: &mut LccApp, area: Rect) {
         t.font(11.0),
         t.text_dim,
     );
+    if app.print.info_overlay {
+        let rows = info_rows(&app.print, page.size, pi, n);
+        if let Some(r) = crate::overlay::paint(&ui.painter_at(area), &t, area, crate::overlay::Corner::BottomLeft, vec2(0.0, 0.0), &rows) {
+            register(ui.ctx(), "print:info", r);
+        }
+    }
+}
+
+/// The paper's name when it is one of Page Setup's, else its size in the ruler unit.
+fn paper_text(size: lcc_layout::Size, unit: Unit) -> String {
+    let near = |a: f32, b: f32| (a - b).abs() < 0.6;
+    if let Some(p) = PAPERS.iter().find(|p| (near(p.size.w, size.w) && near(p.size.h, size.h)) || (near(p.size.w, size.h) && near(p.size.h, size.w)))
+    {
+        return crate::i18n::tr(p.label).to_string();
+    }
+    let per = unit.per_inch() as f32 / 72.0;
+    format!("{:.2} × {:.2} {}", size.w * per, size.h * per, unit.label())
+}
+
+/// The info overlay's rows: paper, printer, page `page` (0-based) of `pages`, and the resolution.
+pub fn info_rows(pu: &PrintUi, size: lcc_layout::Size, page: usize, pages: usize) -> Vec<crate::overlay::Row> {
+    use crate::overlay::Row;
+    let printer = if pu.printer_uri.trim().is_empty() {
+        crate::i18n::tr("Print to PDF").to_string()
+    } else {
+        pu.printers.iter().find(|p| p.uri == pu.printer_uri).map_or_else(|| pu.printer_uri.clone(), |p| p.name.clone())
+    };
+    vec![
+        Row::text(format!("{}: {}", crate::i18n::tr("Paper"), paper_text(size, pu.units))),
+        Row::text(format!("{}: {printer}", crate::i18n::tr("Printer"))),
+        Row::text(crate::i18n::tr_format!("Page {page} of {pages}", page = page + 1, pages = pages)),
+        Row::text(format!("{:.0} ppi", pu.settings.job.dpi)),
+    ]
 }
 
 /// The photo's thumbnail placed in its cell as the print will place it.
@@ -1633,63 +2087,74 @@ fn draw_photo(p: &egui::Painter, app: &LccApp, id: PhotoId, r: Rect, ph: &lcc_la
     let _ = Fit::Fit;
 }
 
-fn draw_rulers(p: &egui::Painter, t: &Tokens, sheet: Rect, k: f32, size: lcc_layout::Size) {
+fn draw_rulers(p: &egui::Painter, t: &Tokens, sheet: Rect, k: f32, size: lcc_layout::Size, unit: Unit) {
     let top = Rect::from_min_max(pos2(sheet.left(), sheet.top() - RULER - 6.0), pos2(sheet.right(), sheet.top() - 6.0));
     let left = Rect::from_min_max(pos2(sheet.left() - RULER - 6.0, sheet.top()), pos2(sheet.left() - 6.0, sheet.bottom()));
     for r in [top, left] {
         p.rect_filled(r, 0.0, t.chrome);
     }
     let col = t.text_dim;
-    let quarter = 18.0 * k;
-    if quarter < 2.0 {
+    // (labelled step in points, ticks per step, label value per step)
+    let (major, subs, per) = match unit {
+        Unit::Inches | Unit::Points => (72.0, 4u32, 1u32),
+        Unit::Centimeters => (pt_per(Unit::Centimeters), 2, 1),
+        Unit::Millimeters => (pt_per(Unit::Centimeters), 2, 10),
+    };
+    let tick = major / subs as f32;
+    if tick * k < 2.0 {
         return;
     }
-    let mut i = 0u32;
-    while (i as f32) * 18.0 <= size.w + 0.01 && i < 4000 {
-        let x = sheet.left() + i as f32 * quarter;
-        let len = if i.is_multiple_of(4) {
+    let len = |i: u32| {
+        if i.is_multiple_of(subs) {
             RULER * 0.7
-        } else if i.is_multiple_of(2) {
+        } else if subs == 4 && i.is_multiple_of(2) {
             RULER * 0.4
         } else {
             RULER * 0.25
-        };
-        p.line_segment([pos2(x, top.bottom()), pos2(x, top.bottom() - len)], Stroke::new(1.0, col));
-        if i.is_multiple_of(4) && i > 0 {
-            p.text(pos2(x + 2.0, top.top() + 1.0), Align2::LEFT_TOP, format!("{}", i / 4), t.font(9.0), col);
+        }
+    };
+    let mut i = 0u32;
+    while (i as f32) * tick <= size.w + 0.01 && i < 4000 {
+        let x = sheet.left() + i as f32 * tick * k;
+        p.line_segment([pos2(x, top.bottom()), pos2(x, top.bottom() - len(i))], Stroke::new(1.0, col));
+        if i.is_multiple_of(subs) && i > 0 {
+            p.text(pos2(x + 2.0, top.top() + 1.0), Align2::LEFT_TOP, format!("{}", i / subs * per), t.font(9.0), col);
         }
         i += 1;
     }
     let mut j = 0u32;
-    while (j as f32) * 18.0 <= size.h + 0.01 && j < 4000 {
-        let y = sheet.top() + j as f32 * quarter;
-        let len = if j.is_multiple_of(4) {
-            RULER * 0.7
-        } else if j.is_multiple_of(2) {
-            RULER * 0.4
-        } else {
-            RULER * 0.25
-        };
-        p.line_segment([pos2(left.right(), y), pos2(left.right() - len, y)], Stroke::new(1.0, col));
-        if j.is_multiple_of(4) && j > 0 {
-            p.text(pos2(left.left() + 1.0, y + 2.0), Align2::LEFT_TOP, format!("{}", j / 4), t.font(9.0), col);
+    while (j as f32) * tick <= size.h + 0.01 && j < 4000 {
+        let y = sheet.top() + j as f32 * tick * k;
+        p.line_segment([pos2(left.right(), y), pos2(left.right() - len(j), y)], Stroke::new(1.0, col));
+        if j.is_multiple_of(subs) && j > 0 {
+            p.text(pos2(left.left() + 1.0, y + 2.0), Align2::LEFT_TOP, format!("{}", j / subs * per), t.font(9.0), col);
         }
         j += 1;
     }
 }
 
-/// Custom Package: drag a cell to move it (snapped to page, margins and other cells).
+/// Custom Package: click a cell to select it, drag it to move it and drag its bottom-right
+/// corner to resize it (both snapped to page, margins and other cells).
 fn custom_drag(ui: &mut egui::Ui, app: &mut LccApp, sheet: Rect, k: f32) {
     let page = app.print.settings.page.clone();
+    let mut selected = app.print.selected;
     let LayoutStyle::CustomPackage { pages } = &mut app.print.settings.layout else { return };
     let Some(pg) = pages.first_mut() else { return };
     let n = pg.cells.len();
+    if selected.is_some_and(|i| i >= n) {
+        selected = None;
+    }
+    let screen = |r: &lcc_layout::Rect| Rect::from_min_size(pos2(sheet.left() + r.x * k, sheet.top() + r.y * k), vec2(r.w * k, r.h * k));
+    let tol = 6.0 / k.max(0.01);
     for i in 0..n {
         let Some(c) = pg.cells.get(i) else { continue };
-        let r = Rect::from_min_size(pos2(sheet.left() + c.rect.x * k, sheet.top() + c.rect.y * k), vec2(c.rect.w * k, c.rect.h * k));
-        let resp = ui.interact(r, egui::Id::new(("print-cell", i)), Sense::drag());
+        let r = screen(&c.rect);
+        let resp = ui.interact(r, egui::Id::new(("print-cell", i)), Sense::click_and_drag());
         register(ui.ctx(), format!("print:cell:{i}"), r);
         let raw_id = egui::Id::new(("print-cell-raw", i));
+        if resp.clicked() || resp.drag_started() {
+            selected = Some(i);
+        }
         if resp.drag_started() {
             ui.data_mut(|d| d.insert_temp(raw_id, [c.rect.x, c.rect.y]));
         }
@@ -1702,18 +2167,66 @@ fn custom_drag(ui: &mut egui::Ui, app: &mut LccApp, sheet: Rect, k: f32) {
             let targets = lcc_layout::snap::SnapTargets::for_page(&page, pg, Some(i));
             if let Some(c) = pg.cells.get_mut(i) {
                 let moved = lcc_layout::Rect::new(raw[0], raw[1], c.rect.w, c.rect.h);
-                c.rect = lcc_layout::snap::snap_move(moved, &targets, 6.0 / k.max(0.01)).0;
+                c.rect = lcc_layout::snap::snap_move(moved, &targets, tol).0;
             }
         }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
         }
     }
+    // the selected cell: outline and a corner handle, on top of every cell
+    if let Some(i) = selected
+        && let Some(c) = pg.cells.get(i)
+    {
+        let r = screen(&c.rect);
+        let p = ui.painter();
+        p.rect_stroke(r, 0.0, Stroke::new(2.0, Color32::from_rgb(70, 140, 220)), StrokeKind::Outside);
+        let handle = Rect::from_center_size(r.right_bottom(), vec2(RESIZE_HANDLE, RESIZE_HANDLE));
+        p.rect_filled(handle, 1.0, Color32::from_rgb(70, 140, 220));
+        let resp = ui.interact(handle, egui::Id::new(("print-cell-resize", i)), Sense::drag());
+        register(ui.ctx(), format!("print:resize:{i}"), handle);
+        let raw_id = egui::Id::new(("print-cell-raw-size", i));
+        if resp.drag_started() {
+            ui.data_mut(|d| d.insert_temp(raw_id, [c.rect.w, c.rect.h]));
+        }
+        if resp.dragged() {
+            let d = resp.drag_delta() / k;
+            let mut raw: [f32; 2] = ui.data_mut(|m| m.get_temp(raw_id)).unwrap_or([c.rect.w, c.rect.h]);
+            raw[0] += d.x;
+            raw[1] += d.y;
+            ui.data_mut(|m| m.insert_temp(raw_id, raw));
+            let targets = lcc_layout::snap::SnapTargets::for_page(&page, pg, Some(i));
+            if let Some(c) = pg.cells.get_mut(i) {
+                let w = raw[0].clamp(MIN_CELL_PT, (page.size.w - c.rect.x).max(MIN_CELL_PT));
+                let h = raw[1].clamp(MIN_CELL_PT, (page.size.h - c.rect.y).max(MIN_CELL_PT));
+                let sized = lcc_layout::snap::snap_resize(lcc_layout::Rect::new(c.rect.x, c.rect.y, w, h), &targets, tol);
+                c.rect.w = sized.w.max(MIN_CELL_PT);
+                c.rect.h = sized.h.max(MIN_CELL_PT);
+            }
+        }
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+        }
+    }
+    app.print.selected = selected;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_lengths_follow_the_unit_or_their_own() {
+        let near = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() < 0.01);
+        assert!(near(parse_len("2.54", Unit::Centimeters), 72.0));
+        assert!(near(parse_len("2,54", Unit::Centimeters), 72.0));
+        assert!(near(parse_len("1 in", Unit::Centimeters), 72.0));
+        assert!(near(parse_len("25.4mm", Unit::Inches), 72.0));
+        for bad in ["", "abc", "-1", "0", "1 furlong", "NaN", "inf", "1e40"] {
+            assert_eq!(parse_len(bad, Unit::Inches), None, "{bad}");
+        }
+        assert_eq!(fmt_len(72.0 * 5.0 / 2.54, Unit::Centimeters), "5 cm");
+    }
 
     #[test]
     fn merge_patches_nested_settings() {
@@ -1722,9 +2235,80 @@ mod tests {
         assert_eq!(a, json!({"page": {"size": {"w": 5, "h": 2}}, "job": {"dpi": 300}}));
     }
 
+    /// The Print module's own templates: folders (empty ones too) are made through the menu's
+    /// prompt, templates move in and out, everything survives a new session, and deleting a folder
+    /// keeps its templates.
+    #[test]
+    fn template_folders_group_user_templates_and_persist() {
+        let dir = lcc_testkit::TempDir::new("lcc-print-folders");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = || {
+            let mut s = lcc_engine::Session::with_demo();
+            s.remote.connections_path = Some(dir.join("connections.json"));
+            LccApp::new(s, crate::Services::default())
+        };
+        let mut app = open();
+        // New Template Folder asks for a name first
+        app.run(
+            "ui.prompt",
+            json!({"title": "New Template Folder", "hint": "Folder name", "command": "printui.createTemplateFolder", "key": "name"}),
+        )
+        .unwrap();
+        let Some(crate::state::Dialog::TextPrompt { command, key, .. }) = &app.ui.dialog else { panic!("{:?}", app.ui.dialog) };
+        assert_eq!((command.as_str(), key.as_str()), ("printui.createTemplateFolder", "name"));
+        let r = app.run("printui.createTemplateFolder", json!({"name": " Weddings "})).unwrap();
+        assert_eq!(r["folders"][1], json!({"name": "Weddings", "default": false, "templates": 0}));
+        app.run("printui.createTemplateFolder", json!({"name": "Proofs"})).unwrap();
+        app.run("printui.saveTemplate", json!({"name": "Sheet", "folder": "weddings"})).unwrap();
+        app.run("printui.saveTemplate", json!({"name": "Plain"})).unwrap();
+        // saving over a name keeps its folder; a move changes only the folder
+        app.run("printui.saveTemplate", json!({"name": "Sheet"})).unwrap();
+        assert_eq!(app.print.user_templates.iter().find(|t| t.name == "Sheet").and_then(|t| t.folder.clone()).as_deref(), Some("Weddings"));
+        let r = app.run("printui.moveTemplate", json!({"name": "Plain", "folder": "Proofs"})).unwrap();
+        assert_eq!(r["moved"], true);
+        for (id, p) in [
+            ("printui.moveTemplate", json!({"name": "Plain", "folder": "Nope"})),
+            ("printui.moveTemplate", json!({"name": "Nope", "folder": "Proofs"})),
+            ("printui.createTemplateFolder", json!({"name": "PROOFS"})),
+            ("printui.renameTemplateFolder", json!({"name": "User Templates", "to": "X"})),
+            ("printui.deleteTemplateFolder", json!({"name": "Nope"})),
+            ("printui.saveTemplate", json!({"name": "New", "folder": "Nope"})),
+        ] {
+            assert!(app.run(id, p.clone()).is_err(), "{id} {p}");
+        }
+        // a new session finds the folders and where each template is
+        let mut again = open();
+        let st = again.run("printui.state", json!({})).unwrap();
+        assert_eq!(st["templateFolders"]["folders"].as_array().unwrap().len(), 3, "{st}");
+        let places: Vec<(String, String)> = st["templateFolders"]["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| (t["name"].as_str().unwrap().into(), t["folder"].as_str().unwrap().into()))
+            .collect();
+        assert!(places.contains(&("Sheet".into(), "Weddings".into())) && places.contains(&("Plain".into(), "Proofs".into())), "{places:?}");
+        // a folder's rename follows its templates; its deletion keeps them
+        let r = again.run("printui.renameTemplateFolder", json!({"name": "proofs", "to": "Contact Sheets"})).unwrap();
+        assert!(r["templates"].as_array().unwrap().iter().any(|t| t["name"] == "Plain" && t["folder"] == "Contact Sheets"));
+        let r = again.run("printui.deleteTemplateFolder", json!({"name": "Contact Sheets"})).unwrap();
+        assert!(r["templates"].as_array().unwrap().iter().any(|t| t["name"] == "Plain" && t["folder"] == "User Templates"));
+        assert_eq!(r["moved"], 1);
+        // a damaged print.json is ignored, and a stored template in an unlisted or hostile folder is tidied
+        let hostile = json!({"userTemplates": [
+            {"name": "Odd", "folder": "a\nb", "settings": serde_json::to_value(PrintSettings::default()).unwrap()},
+            {"name": "Kept", "folder": " family ", "settings": serde_json::to_value(PrintSettings::default()).unwrap()},
+        ], "templateFolders": ["Family", "", "family", "User Templates"]});
+        let mut pu = open().print;
+        apply_stored(&mut pu, &hostile);
+        assert_eq!(pu.template_folders, ["Family"]);
+        assert_eq!(pu.user_templates.iter().map(|t| t.folder.clone()).collect::<Vec<_>>(), [None, Some("Family".to_string())]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn user_templates_settings_and_printer_paper_persist() {
-        let dir = std::env::temp_dir().join(format!("lcc-print-persist-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lcc-print-persist");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let open = || {
@@ -1761,8 +2345,35 @@ mod tests {
     }
 
     #[test]
+    fn info_overlay_toggles_persists_and_describes_the_page() {
+        let dir = lcc_testkit::TempDir::new("lcc-print-info");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = || {
+            let mut s = lcc_engine::Session::with_demo();
+            s.remote.connections_path = Some(dir.join("connections.json"));
+            LccApp::new(s, crate::Services::default())
+        };
+        let mut app = open();
+        assert_eq!(crate::menubar::checked(&app, "printui.infoOverlay"), Some(false));
+        app.run("printui.infoOverlay", json!({})).unwrap();
+        assert_eq!(crate::menubar::checked(&app, "printui.infoOverlay"), Some(true));
+        assert_eq!(app.run("printui.state", json!({})).unwrap()["infoOverlay"], true);
+        app.run("printui.set", json!({"settings": {"job": {"dpi": 200}}})).unwrap();
+        let mut again = open();
+        assert_eq!(again.run("printui.state", json!({})).unwrap()["infoOverlay"], true, "kept in print.json for the next session");
+        let rows: Vec<String> = info_rows(&app.print, lcc_layout::Size::new(612.0, 792.0), 1, 3).into_iter().map(|r| r.text).collect();
+        assert!(rows.iter().any(|t| t.contains('2') && t.contains('3')), "page 2 of 3: {rows:?}");
+        assert!(rows.iter().any(|t| t.contains("US Letter")), "{rows:?}");
+        assert!(rows.iter().any(|t| t.ends_with("ppi")), "{rows:?}");
+        app.run("printui.infoOverlay", json!({"on": false})).unwrap();
+        assert!(!app.print.info_overlay);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_failed_print_json_write_is_reported_and_retried() {
-        let dir = std::env::temp_dir().join(format!("lcc-print-retry-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lcc-print-retry");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // the config "directory" is a file, so print.json cannot be written
@@ -1828,6 +2439,7 @@ mod tests {
     #[test]
     fn printer_profile_is_checked_and_a_colour_managed_16_bit_pdf_prints() {
         use std::sync::{Arc, Mutex};
+        let dir = lcc_testkit::TempDir::new("print-profile");
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let written = bytes.clone();
         let services = crate::Services {
@@ -1841,7 +2453,6 @@ mod tests {
         app.run("module.print", json!({})).unwrap();
         assert!(app.run("printui.profile", json!({"path": "/nonexistent/printer.icc"})).is_err());
         assert!(app.print.settings.job.color.profile.is_none());
-        let dir = std::env::temp_dir().join(format!("print-profile-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let icc = dir.join("printer.icc");
         std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::space::NamedSpace::AdobeRgb)).unwrap();

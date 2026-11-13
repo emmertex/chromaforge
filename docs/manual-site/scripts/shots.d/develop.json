@@ -1,0 +1,546 @@
+[
+ {
+  "name": "crop-tool",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.develop"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "tool.done"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.crop"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "crop.aspect",
+     "params": {
+      "aspect": "16x9"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "crop-angle",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "crop.angle": 5
+      }
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "heal",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.remove"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "spot.add",
+     "params": {
+      "points": [
+       [
+        0.5,
+        0.55
+       ]
+      ],
+      "size": 0.06,
+      "mode": "heal"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "redeye",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.redeye"
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "lens-corrections",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "tool.done"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.soloSections",
+     "params": {
+      "on": true
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.optics"
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "modern:group:optics"
+    },
+    "only": [
+     "modern"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "transform",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.geometry"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "geometry.vertical": -20
+      }
+     }
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "detail-section",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.detail"
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "modern:group:detail"
+    },
+    "only": [
+     "modern"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "effects-section",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.effects"
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "modern:group:effects"
+    },
+    "only": [
+     "modern"
+    ]
+   }
+  ]
+ },
+ {
+  "name": "calibration-section",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.calibration"
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "hdr-controls",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.hdr",
+     "params": {
+      "on": true
+     }
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "before-after",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.hdr",
+     "params": {
+      "on": false
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "light.highlights": -55,
+       "light.shadows": 35
+      }
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.beforeAfterSplit"
+    }
+   }
+  ]
+ },
+ {
+  "name": "before-after-side",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.beforeAfterSplit"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.beforeAfter"
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "scopes",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.beforeAfter"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.histogram.mode",
+     "params": {
+      "mode": "parade"
+     }
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "history-panel",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "view.softProof",
+     "params": {
+      "space": null
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "light.exposure": 0.4
+      }
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "color.vibrance": 30
+      }
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "version.create",
+     "params": {
+      "name": "Warm"
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.set",
+     "params": {
+      "values": {
+       "effects.clarity": 20
+      }
+     }
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
+  "name": "dodge-burn",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "tool.done"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.reset"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "panel.masking"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "mask.add",
+     "params": {
+      "kind": "brush",
+      "name": "Dodge"
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "mask.adjust",
+     "params": {
+      "values": {
+       "exposure": 0.35
+      }
+     }
+    }
+   }
+  ]
+ }
+]

@@ -33,6 +33,39 @@ pub fn photo_summary(p: &Photo) -> Value {
     })
 }
 
+/// Current catalog values, which can differ from embedded file metadata until explicitly written.
+fn catalog_metadata(photo: &Photo) -> Vec<Value> {
+    let m = &photo.meta;
+    let mut rows: Vec<Value> = [
+        ("Title", &m.title),
+        ("Caption", &m.caption),
+        ("Alt Text", &m.alt_text),
+        ("Extended Description", &m.extended_description),
+        ("Creator", &m.creator),
+        ("Copyright", &m.copyright),
+        ("Rights Usage Terms", &m.usage_terms),
+        ("Copyright Info URL", &m.copyright_url),
+        ("Location", &m.location),
+        ("City", &m.city),
+        ("State / Province", &m.state),
+        ("Country", &m.country),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(name, value)| json!({"name": name, "value": value}))
+    .collect();
+    if let Some((lat, lon)) = m.gps {
+        rows.push(json!({"name": "GPS", "value": format!("{lat:.6}, {lon:.6}")}));
+    }
+    if m.copyright_status != lcc_catalog::CopyrightStatus::Unknown {
+        rows.push(json!({"name": "Copyright Status", "value": m.copyright_status.label()}));
+    }
+    if !m.keywords.is_empty() {
+        rows.push(json!({"name": "Keywords", "value": m.keywords.join("; ")}));
+    }
+    rows
+}
+
 /// How deep [`album_json`] lists folders inside folders: a catalog that loops (an album inside
 /// itself, which [`lcc_catalog::Catalog::repair`] puts right on load) lists no further
 /// instead of overflowing the stack.
@@ -79,7 +112,7 @@ fn pagination_usize(value: u64) -> usize {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "catalog.query", "Query Photos", [], None, "{filter?: Filter, sort?: Sort, offset?, limit?} — omit filter to list the current view", always, |s, p| {
+        cmd!(query "catalog.query", "Query Photos", [], None, "{filter?: Filter, sort?: Sort, offset?, limit?}: omit filter to list the current view", always, |s, p| {
             let off = pagination_usize(p.get("offset").and_then(Value::as_u64).unwrap_or(0));
             let lim = pagination_usize(p.get("limit").and_then(Value::as_u64).unwrap_or(200));
             let (total, ids) = if p.get("filter").is_some() || p.get("sort").is_some() {
@@ -128,17 +161,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 "clipboard": s.clipboard.is_some(),
             }))
         }),
-        cmd!(query "photo.allMetadata", "All Metadata", [], None, "{id?} → {exif: [{group, tag, name, value}], xmp: [{name, value}]} — every EXIF / TIFF / GPS tag of the file and its XMP properties", always, |s, p| {
+        cmd!(query "photo.allMetadata", "All Metadata", [], None, "{id?} → {catalog: [{name, value}], exif: [{group, tag, name, value}], xmp: [{name, value}], note?}: the values saved in the catalog, every EXIF / TIFF / GPS tag of the file and its XMP properties; a file that can't be read gives the catalog values and a note", always, |s, p| {
             let id = photo_arg(s, p, "photo.allMetadata")?;
             let ph = s.catalog.photo(id).ok_or_else(|| super::bad("photo.allMetadata", "no such photo"))?.clone();
+            let catalog = catalog_metadata(&ph);
             let lcc_catalog::Source::File { path } = &ph.source else {
-                return Ok(json!({"exif": [], "xmp": [], "note": "a generated demo photo has no file"}));
+                return Ok(json!({"catalog": catalog, "exif": [], "xmp": [], "note": "a generated demo photo has no file"}));
             };
-            let bytes = match &s.media.file_bytes {
+            let read = match &s.media.file_bytes {
                 Some(r) => r(path),
                 None => std::fs::read(path).map_err(|e| format!("{path}: {e}")),
-            }
-            .map_err(|e| super::bad("photo.allMetadata", e))?;
+            };
+            let bytes = match read {
+                Ok(bytes) => bytes,
+                // what was saved in the catalog is still worth showing when the original is offline or gone
+                Err(e) => return Ok(json!({"catalog": catalog, "exif": [], "xmp": [], "note": format!("the file can't be read: {e}")})),
+            };
             let exif: Vec<Value> = lcc_meta::file_tag_rows(&bytes)
                 .into_iter()
                 .map(|r| json!({"group": r.group, "tag": r.tag, "name": r.name, "value": r.value}))
@@ -160,9 +198,9 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             let xmp: Vec<Value> =
                 properties.into_iter().filter(|(k, _)| !k.starts_with("lc:")).map(|(k, v)| json!({"name": k, "value": v.join("; ")})).collect();
-            Ok(json!({"exif": exif, "xmp": xmp}))
+            Ok(json!({"catalog": catalog, "exif": exif, "xmp": xmp}))
         }),
-        cmd!(query "photo.fujiRecipe", "Fujifilm Recipe", [], None, "{id?} → {present, text, lines: [{tag, label, value}]} — in-camera film settings from a Fujifilm MakerNote, or present: false", always, |s, p| {
+        cmd!(query "photo.fujiRecipe", "Fujifilm Recipe", [], None, "{id?} → {present, text, lines: [{tag, label, value}]}: in-camera film settings from a Fujifilm MakerNote, or present: false", always, |s, p| {
             let id = photo_arg(s, p, "photo.fujiRecipe")?;
             let ph = s.catalog.photo(id).ok_or_else(|| super::bad("photo.fujiRecipe", "no such photo"))?.clone();
             let lcc_catalog::Source::File { path } = &ph.source else {
@@ -213,7 +251,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
                 .unwrap_or(Value::Null))
         }),
-        cmd!(query "develop.controls", "List Develop Controls", [], None, "{section?} — every slider with range, default and current value", always, |s, p| {
+        cmd!(query "develop.controls", "List Develop Controls", [], None, "{section?}: every slider with range, default and current value", always, |s, p| {
             let d = s.active().and_then(|id| s.develop_of(id)).unwrap_or_default();
             let sec = p.get("section").and_then(|v| serde_json::from_value::<lcc_develop::Section>(v.clone()).ok());
             Ok(Value::Array(
@@ -238,7 +276,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "presets.list", "List Presets", [], None, "{}", always, |s, _| {
             Ok(Value::Array(s.presets.iter().map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": p.favorite, "builtin": p.builtin, "atImport": s.preset_at_import.contains(&p.id), "hidden": s.preset_hidden.contains(&p.id)})).collect()))
         }),
-        cmd!(query "presets.folders", "List Preset Folders", [], None, "{} — all preset folders (user, built-in, and empty folders)", always, |s, _| {
+        cmd!(query "presets.folders", "List Preset Folders", [], None, "{}: all preset folders (user, built-in, and empty folders)", always, |s, _| {
             let mut set = std::collections::BTreeSet::new();
             for f in &s.preset_folders {
                 set.insert(f.clone());
@@ -258,7 +296,7 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(Value::Array(set.into_iter().map(Value::String).collect()))
         }),
-        cmd!(query "profiles.list", "List Profiles", [], None, "{all?: bool (also the profiles the Profile Manager hides)} — every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, p| {
+        cmd!(query "profiles.list", "List Profiles", [], None, "{all?: bool (also the profiles the Profile Manager hides)}: every profile (built-in, then imported LUTs marked `imported`) with its group and favourite flag", always, |s, p| {
             let favorite = |id: &str| s.profile_favorites.iter().any(|f| f == id);
             let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
             // the user's names, groups and order; imported LUT profiles marked as in `profiles.menu` (#618)
@@ -276,8 +314,8 @@ pub fn specs() -> Vec<CommandSpec> {
                     .collect(),
             ))
         }),
-        cmd!(query "profiles.menu", "Profile Menu", [], None, "{} — favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),
-        cmd!(query "history.list", "List History", [], None, "{id?} — returns {history: labels oldest first, batches: per step the id of the edit of several photos it belongs to (null: this photo's own edit), cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
+        cmd!(query "profiles.menu", "Profile Menu", [], None, "{}: favourites, recent (newest first) and groups", always, |s, _| Ok(s.profile_menu())),
+        cmd!(query "history.list", "List History", [], None, "{id?}: returns {history: labels oldest first, batches: per step the id of the edit of several photos it belongs to (null: this photo's own edit), cursor: index of the step the settings are at (later steps can be returned to), versions}", has_active, |s, p| {
             let id = photo_arg(s, p, "history.list")?;
             let ph = s.catalog.photo(id).ok_or_else(|| bad("history.list", "no such photo"))?;
             Ok(json!({
@@ -287,7 +325,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 "versions": ph.versions.iter().map(|v| json!({"name": v.name, "created": v.created})).collect::<Vec<_>>(),
             }))
         }),
-        cmd!(query "history.groups", "List History Groups", [], None, "{id?} — returns {groups: [{section (null = several sections: a preset, paste, sync…; replays but can't be edited inside), start, end, steps: [{index, label}]}] oldest first, cursor, latest}", has_active, |s, p| {
+        cmd!(query "history.groups", "List History Groups", [], None, "{id?}: returns {groups: [{section (null = several sections: a preset, paste, sync…; replays but can't be edited inside), start, end, steps: [{index, label}]}] oldest first, cursor, latest}", has_active, |s, p| {
             let id = photo_arg(s, p, "history.groups")?;
             let ph = s.catalog.photo(id).ok_or_else(|| bad("history.groups", "no such photo"))?;
             let groups: Vec<Value> = crate::history_groups::groups(&ph.history)
@@ -301,7 +339,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 .collect();
             Ok(json!({"groups": groups, "cursor": ph.history_index(), "latest": ph.history_cursor.is_none()}))
         }),
-        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string} — allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs, pauses, pausedMs (running batch renders that paused for the interface), cards (cards taking batch work now), rate {editing, helper} (each card's measured batch speed, bytes/s, null before any), renders {editingInteractive, editingBatch, helperInteractive, helperBatch} (GPU renders so far by card), interfaceBusy} (exports' and preview builds' turns at the cards), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
+        cmd!(query "app.gpu", "GPU Rendering", [], None, "{enabled?: bool, card?: string, helper?: string}: allow/forbid GPU rendering (CPU fallback; `{ENV_PREFIX}_GPU=0` forbids it for the process); returns {enabled, available, adapter, reason (why the GPU is off), lastFallback (latest render redone on the CPU, and why), recoveries (lost devices replaced), events [{seq, kind: lost|recovered|gaveUp, text}] (what happened to the graphics card, in plain words), batch {jobs, bytes, waiting, limitBytes, limitJobs, waits, waitedMs, pauses, pausedMs (running batch renders that paused for the interface), cards (cards taking batch work now), rate {editing, helper} (each card's measured batch speed, bytes/s, null before any), renders {editingInteractive, editingBatch, helperInteractive, helperBatch} (GPU renders so far by card), interfaceBusy} (exports' and preview builds' turns at the cards), card {choice, inUse, switching} (the graphics card for editing: `card` takes a card's key or \"\" for Automatic), helper {state: off|starting|ready|failed|lost, detail, jobs, bytes, waiting} (the second graphics card: `helper` takes \"\" Automatic, \"off\" or a key), adapters [{key, name, kind, memory, backend, drivesScreen, usable, whyNot}]}", always, |_, p| {
             if let Some(on) = p.get("enabled").and_then(Value::as_bool) {
                 lcc_gpu::set_enabled(on);
             }
@@ -341,10 +379,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 "adapters": gpu_adapters(),
             }))
         }),
-        cmd!(query "library.memory", "Memory Usage", [], None, "{} — bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
+        cmd!(query "library.memory", "Memory Usage", [], None, "{}: bytes held by each cache (decoded sources, rendered previews, GPU buffers; heap when instrumented)", always, |s, _| {
             Ok(serde_json::to_value(s.memory_report()).unwrap_or_default())
         }),
-        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number (0 = automatic)} — set the memory budget shared by the caches (automatic: a quarter of the computer's memory, at most 16 GB; by hand at most three quarters of it, `maxBudget`); returns the report", always, |s, p| {
+        cmd!(query "app.memoryBudget", "Memory Budget", [], None, "{mb?: number (0 = automatic)}: set the memory budget shared by the caches (automatic: a quarter of the computer's memory, at most 16 GB; by hand at most three quarters of it, `maxBudget`); returns the report", always, |s, p| {
             // missing or null: the report only; anything else must be a number in range (upstream #3706)
             if let Some(v) = p.get("mb").filter(|v| !v.is_null()) {
                 let Some(mb) = v.as_f64() else {
@@ -480,27 +518,27 @@ mod memory_budget_tests {
 
     use crate::{EngineError, Session};
 
-    /// Upstream issue #3706: an `mb` that is there but isn't a number is refused, not taken as "report only".
     #[test]
-    fn a_memory_budget_that_is_not_a_number_is_refused() {
-        let mut s = Session::new();
-        let before = crate::memory::budget();
-        for mb in [json!("512"), json!(true), json!([512]), json!({"mb": 512})] {
-            let r = s.execute("app.memoryBudget", &json!({ "mb": mb }));
-            assert!(matches!(&r, Err(EngineError::BadParams { cmd, .. }) if cmd == "app.memoryBudget"), "{mb}: {r:?}");
+    fn a_memory_budget_that_is_not_a_number_is_refused_and_a_missing_one_changes_nothing() {
+        // Upstream issue #3706: an `mb` that is there but isn't a number is refused, not taken as "report only".
+        {
+            let mut s = Session::new();
+            let before = crate::memory::budget();
+            for mb in [json!("512"), json!(true), json!([512]), json!({"mb": 512})] {
+                let r = s.execute("app.memoryBudget", &json!({ "mb": mb }));
+                assert!(matches!(&r, Err(EngineError::BadParams { cmd, .. }) if cmd == "app.memoryBudget"), "{mb}: {r:?}");
+            }
+            assert_eq!(crate::memory::budget(), before, "a refused call changes nothing");
         }
-        assert_eq!(crate::memory::budget(), before, "a refused call changes nothing");
-    }
-
-    /// Missing or null `mb`: the report only.
-    #[test]
-    fn a_missing_or_null_memory_budget_changes_nothing() {
-        let mut s = Session::new();
-        let before = crate::memory::budget();
-        for p in [json!({}), json!({"mb": null})] {
-            let r = s.execute("app.memoryBudget", &p).unwrap();
-            assert_eq!(r["budget"].as_u64(), Some(before as u64), "{p}: {r}");
+        // Missing or null `mb`: the report only.
+        {
+            let mut s = Session::new();
+            let before = crate::memory::budget();
+            for p in [json!({}), json!({"mb": null})] {
+                let r = s.execute("app.memoryBudget", &p).unwrap();
+                assert_eq!(r["budget"].as_u64(), Some(before as u64), "{p}: {r}");
+            }
+            assert_eq!(crate::memory::budget(), before, "nothing changed");
         }
-        assert_eq!(crate::memory::budget(), before, "nothing changed");
     }
 }

@@ -8,10 +8,9 @@ use serde_json::json;
 
 use crate::Session;
 
-fn temp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-engine-store-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-engine-store-{tag}"))
 }
 
 fn with_store(store: &Path, lib: &Path) -> Session {
@@ -48,6 +47,7 @@ fn presets_and_export_presets_made_in_one_library_are_in_the_next() {
     let mut s = with_store(&store, &a);
     s.presets.push(user_preset("user.warm", "Warm"));
     s.export_presets.push(export_preset("Web", 80));
+    s.sort = lcc_catalog::Sort { key: lcc_catalog::SortKey::FileName, ascending: false, ..s.sort };
     s.save_prefs().unwrap();
     s.persist().unwrap();
     drop(s);
@@ -56,6 +56,8 @@ fn presets_and_export_presets_made_in_one_library_are_in_the_next() {
     let s = with_store(&store, &b);
     assert!(s.presets.iter().any(|p| p.id == "user.warm"));
     assert!(s.export_presets.iter().any(|p| p.name == "Web"));
+    // LR-PREF-HABITS: the grid's sort follows the user into another library
+    assert_eq!((s.sort.key, s.sort.ascending), (lcc_catalog::SortKey::FileName, false));
     drop(s);
     // without the store a library has its own (nothing of the store's)
     let s = own(&b);
@@ -200,6 +202,18 @@ fn use_library_keeps_a_copy_and_gather_reads_backups() {
     assert!(s.export_presets.iter().any(|p| p.name == "Archive"));
     let r = s.execute("store.gatherPresets", &json!({"paths": [old.to_string_lossy()]})).unwrap();
     assert_eq!(r["count"], 0);
+    // LR-PREF-SHARED: a library whose backups go to another folder (another drive), one per
+    // library name: an export preset kept only there is gathered
+    let (old2, far) = (root.join("old2"), root.join("far"));
+    drop(own(&old2));
+    let settings = lcc_catalog::library::CatalogSettings { backup_dir: Some(far.clone()), ..lcc_catalog::library::CatalogSettings::load(&old2) };
+    settings.save(&old2).unwrap();
+    let backup = far.join("old2").join("2026-02-01");
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::write(backup.join("prefs.json"), serde_json::to_vec(&json!({"exportPresets": [{"name": "Far Away", "params": {}}]})).unwrap()).unwrap();
+    let r = s.execute("store.gatherPresets", &json!({"paths": [old2.to_string_lossy()]})).unwrap();
+    assert_eq!(r["count"], 1, "{r}");
+    assert!(s.export_presets.iter().any(|p| p.name == "Far Away"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -255,34 +269,6 @@ fn per_setting_picks_update_with_undo_and_remembered_choices() {
     let mut s = Session::new().with_app_store(&store);
     assert!(s.take_library_warnings().is_empty());
     assert!(s.dialogs.is_default());
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// LR-PREF-HABITS / LR-PREF-SHARED: the grid's sort follows the user into another library, and an
-/// export preset kept only in a backup in a separate backup folder (another drive) is gathered.
-#[test]
-fn grid_sort_is_a_habit_and_backups_elsewhere_are_gathered() {
-    let root = temp("sort-backup");
-    let (store, a, b, old, far) = (root.join("store"), root.join("a"), root.join("b"), root.join("old"), root.join("far"));
-    let mut s = with_store(&store, &a);
-    s.sort = lcc_catalog::Sort { key: lcc_catalog::SortKey::FileName, ascending: false, ..s.sort };
-    s.save_prefs().unwrap();
-    s.persist().unwrap();
-    drop(s);
-    let s = with_store(&store, &b);
-    assert_eq!((s.sort.key, s.sort.ascending), (lcc_catalog::SortKey::FileName, false));
-    drop(s);
-    // a library whose backups go to another folder, one per library name
-    drop(own(&old));
-    let settings = lcc_catalog::library::CatalogSettings { backup_dir: Some(far.clone()), ..lcc_catalog::library::CatalogSettings::load(&old) };
-    settings.save(&old).unwrap();
-    let backup = far.join("old").join("2026-02-01");
-    std::fs::create_dir_all(&backup).unwrap();
-    std::fs::write(backup.join("prefs.json"), serde_json::to_vec(&json!({"exportPresets": [{"name": "Far Away", "params": {}}]})).unwrap()).unwrap();
-    let mut s = Session::new().with_app_store(&store);
-    let r = s.execute("store.gatherPresets", &json!({"paths": [old.to_string_lossy()]})).unwrap();
-    assert_eq!(r["count"], 1, "{r}");
-    assert!(s.export_presets.iter().any(|p| p.name == "Far Away"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -387,5 +373,228 @@ fn a_damaged_older_install_store_is_reported_never_a_panic() {
         assert!(!m["problems"].as_array().unwrap().is_empty(), "each says what was wrong: {m}");
     }
     assert!(s.presets.iter().any(|p| p.id == "user.keep"), "the store keeps its own");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// --- an older install's camera profiles (OLDER-PROFILES) ---------------------------------------
+
+/// A matrix-only camera profile, made here (no real profile is kept in the repository).
+fn tiny_dcp(model: &str, name: &str, k: f64) -> Vec<u8> {
+    let m = lcc_raw::Mat3([[0.7 + k, -0.1, -0.05], [-0.5, 1.3, 0.2], [-0.1, 0.25, 0.65]]);
+    let dcp = lcc_raw::dcp::Dcp {
+        model: model.into(),
+        name: name.into(),
+        copyright: String::new(),
+        color: lcc_raw::ColorData { illuminant: [21, 0], color_matrix: [Some(m), None], ..Default::default() },
+    };
+    lcc_raw::dcp::write(&dcp).unwrap()
+}
+
+/// An older install's store with camera profiles `files` (`(file name, bytes)`) in its `Profiles/`
+/// and `entries` as its `shared.json` lists them.
+fn older_camera_store(dir: &Path, files: &[(&str, Vec<u8>)], entries: serde_json::Value) {
+    let profiles = dir.join(crate::app_store::PROFILES_DIR);
+    std::fs::create_dir_all(&profiles).unwrap();
+    for (name, bytes) in files {
+        std::fs::write(profiles.join(name), bytes).unwrap();
+    }
+    std::fs::write(dir.join("shared.json"), serde_json::to_vec(&json!({"version": 2, "dcpProfiles": entries})).unwrap()).unwrap();
+}
+
+/// Holds the decoder's profile lists for one test and puts them back after it.
+struct Registries {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    library: Vec<(String, lcc_raw::dcp::Dcp)>,
+    active: Vec<lcc_raw::dcp::Dcp>,
+}
+
+impl Registries {
+    fn hold() -> Registries {
+        let lock = crate::camera_profiles::test_library_lock();
+        Registries {
+            _lock: lock,
+            library: lcc_raw::dcp::library().into_iter().map(|(i, d)| (i, (*d).clone())).collect(),
+            active: lcc_raw::dcp::installed().iter().map(|d| (**d).clone()).collect(),
+        }
+    }
+}
+
+impl Drop for Registries {
+    fn drop(&mut self) {
+        lcc_raw::dcp::install_library(std::mem::take(&mut self.library));
+        lcc_raw::dcp::install(std::mem::take(&mut self.active));
+    }
+}
+
+/// The camera-profiles folder and its library for a test, under `root`.
+fn camera_dirs(root: &Path) -> (PathBuf, PathBuf) {
+    let active = root.join("camera-profiles");
+    (active.clone(), active.join("dcp"))
+}
+
+fn dcps_in(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    v.retain(|p| p.is_file() && p.extension().is_some_and(|x| x == "dcp"));
+    v.sort();
+    v
+}
+
+/// Older-install camera profiles come in through the Import Profiles & Presets install path: into
+/// the camera-profile library, a lone one for a camera with none as its default, available at once,
+/// counted in the report; the older folder is only read.
+#[test]
+fn an_older_installs_camera_profiles_are_installed() {
+    let _reg = Registries::hold();
+    let root = temp("older-dcp");
+    let (store, older) = (root.join("store"), root.join("Earlier").join(crate::app_store::DIR_NAME));
+    let (active, library) = camera_dirs(&root);
+    let sony = tiny_dcp("Sony ILCE-9", "Older Sony", 0.0);
+    let canon = tiny_dcp("Canon EOS R6", "Older Canon", 0.01);
+    older_camera_store(
+        &older,
+        &[("older-sony.dcp", sony), ("older-canon.dcp", canon)],
+        json!([{"id": "dcp:older-sony", "name": "Older Sony", "cameraModel": "Sony ILCE-9", "file": "C:/gone/Library Store/Profiles/older-sony.dcp", "bodies": ["55"]}]),
+    );
+    let before: Vec<(PathBuf, Vec<u8>)> = dcps_in(&older.join("Profiles")).into_iter().map(|p| (p.clone(), std::fs::read(&p).unwrap())).collect();
+    let mut s = Session::new().with_app_store(&store);
+    let r = s.merge_older_installs_in(std::slice::from_ref(&older), false, Some((&active, &library))).unwrap();
+    assert_eq!(r[0].camera_profiles, 2, "{r:?}");
+    assert!(r[0].camera_already.is_empty(), "{r:?}");
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v[0]["cameraProfiles"], 2, "the report counts them: {v}");
+    let installed = dcps_in(&library);
+    assert_eq!(installed.len(), 2, "{installed:?}");
+    for p in &installed {
+        let id = format!("dcp:{}", p.file_stem().unwrap().to_string_lossy());
+        assert!(lcc_raw::dcp::library_get(&id).is_some(), "{id} can be chosen now");
+    }
+    // a lone profile for a camera with none: that camera's default, at once
+    assert!(active.join(crate::camera_profiles::dcp_file_name("Canon EOS R6")).is_file());
+    assert_eq!(lcc_raw::dcp::resolve_camera("", "Canon EOS R6").map(|d| d.name.clone()).as_deref(), Some("Older Canon"));
+    for (p, b) in before {
+        assert_eq!(std::fs::read(&p).unwrap(), b, "{} in the older install is unchanged", p.display());
+    }
+    assert_eq!(dcps_in(&older.join("Profiles")).len(), 2, "nothing added to the older install");
+    // once: asking again skips the folder
+    let r = s.merge_older_installs_in(std::slice::from_ref(&older), false, Some((&active, &library))).unwrap();
+    assert!(r[0].skipped, "{r:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A camera body the older install started with a profile it brought over: its raws, browsed in
+/// Import, render with it with no step of the user's (the photo isn't edited).
+#[test]
+fn an_older_installs_camera_profile_binds_when_its_raws_are_browsed() {
+    let _reg = Registries::hold();
+    let root = temp("older-dcp-bind");
+    let (store, older) = (root.join("store"), root.join("Earlier").join(crate::app_store::DIR_NAME));
+    let (active, library) = camera_dirs(&root);
+    older_camera_store(
+        &older,
+        &[("body-55.dcp", tiny_dcp("Sony ILCE-9", "Body 55", 0.02))],
+        json!([{"id": "dcp:body-55", "name": "Body 55", "cameraModel": "Sony ILCE-9", "file": "body-55.dcp", "bodyDefaults": ["55"]}]),
+    );
+    let mut s = Session::new().with_app_store(&store);
+    let r = s.merge_older_installs_in(&[older], false, Some((&active, &library))).unwrap();
+    assert_eq!((r[0].camera_profiles, r[0].camera_bodies), (1, 1), "{r:?}");
+    let id = format!("dcp:{}", dcps_in(&library)[0].file_stem().unwrap().to_string_lossy());
+    // browsed in Import: a Sony body 55 raw (Exif model ILCE-9), never imported
+    let pid = s.catalog.alloc_photo_id();
+    let mut p = lcc_catalog::Photo::new(
+        pid,
+        lcc_catalog::Source::File { path: "/nonexistent/DSC00001.ARW".into() },
+        "DSC00001.ARW",
+        "ARW",
+        100,
+        100,
+        "2026-01-01",
+    );
+    p.kind = lcc_catalog::MediaKind::Raw;
+    p.meta.camera = "Sony ILCE-9".into();
+    p.meta.camera_model = "ILCE-9".into();
+    p.meta.camera_serial = "55".into();
+    p.local = true;
+    p.set_local_baseline();
+    s.commit("Add", lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    assert_eq!(s.render_job(pid, 64, 64, false, true).unwrap().settings.profile.camera, id, "the body's profile, on browse");
+    let photo = s.catalog.photo(pid).unwrap();
+    assert!(photo.edited.is_none() && photo.develop.profile.camera.is_empty(), "nothing stored on the photo");
+    // another body of the camera keeps the camera's default
+    let other = s.catalog.alloc_photo_id();
+    let mut q = (**s.catalog.photo(pid).unwrap()).clone();
+    (q.id, q.meta.camera_serial, q.source) = (other, "77".into(), lcc_catalog::Source::File { path: "/nonexistent/DSC00002.ARW".into() });
+    s.commit("Add", lcc_catalog::Op::AddPhoto { photo: Box::new(q) }).unwrap();
+    assert_eq!(s.render_job(other, 64, 64, false, true).unwrap().settings.profile.camera, "");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A camera profile the library has already (the same file, or the same camera and ProfileName) is
+/// left out and reported as there already; the body binding goes to the one there is.
+#[test]
+fn an_older_installs_camera_profile_already_there_is_skipped() {
+    let _reg = Registries::hold();
+    let root = temp("older-dcp-dup");
+    let store = root.join("store");
+    let (active, library) = camera_dirs(&root);
+    std::fs::create_dir_all(&library).unwrap();
+    let mine = tiny_dcp("Nikon Z 6_2", "Portrait", 0.0);
+    std::fs::write(library.join("nikon-z-6-2-portrait.dcp"), &mine).unwrap();
+    std::fs::write(library.join("nikon-z-6-2-landscape.dcp"), tiny_dcp("Nikon Z 6_2", "Landscape", 0.03)).unwrap();
+    let older = root.join("Earlier").join(crate::app_store::DIR_NAME);
+    older_camera_store(
+        &older,
+        &[
+            // the same bytes under another name
+            ("copy-of-portrait.dcp", mine.clone()),
+            // the same camera and ProfileName, other content
+            ("landscape-v2.dcp", tiny_dcp("NIKON Z 6_2", "landscape", 0.04)),
+            // new
+            ("night.dcp", tiny_dcp("Nikon Z 6_2", "Night", 0.05)),
+        ],
+        json!([{"file": "copy-of-portrait.dcp", "cameraModel": "Nikon Z 6_2", "bodies": ["3001"]}]),
+    );
+    let mut s = Session::new().with_app_store(&store);
+    let r = s.merge_older_installs_in(&[older], false, Some((&active, &library))).unwrap();
+    assert_eq!(r[0].camera_profiles, 1, "only the new one: {r:?}");
+    let mut already = r[0].camera_already.clone();
+    already.sort();
+    assert_eq!(already, vec!["copy-of-portrait.dcp".to_string(), "landscape-v2.dcp".to_string()], "{r:?}");
+    assert_eq!(dcps_in(&library).len(), 3, "the library gained one file");
+    assert_eq!(std::fs::read(library.join("nikon-z-6-2-portrait.dcp")).unwrap(), mine, "the library's own is kept");
+    assert_eq!(s.body_profiles.values().collect::<Vec<_>>(), vec!["dcp:nikon-z-6-2-portrait"], "the body binds to the one there is");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A damaged or unreadable camera profile in an older install is left out and named; the others
+/// still come, and nothing panics.
+#[test]
+fn a_damaged_older_install_camera_profile_is_reported() {
+    let _reg = Registries::hold();
+    let root = temp("older-dcp-bad");
+    let store = root.join("store");
+    let (active, library) = camera_dirs(&root);
+    let good = tiny_dcp("Fujifilm X-T4", "Good", 0.0);
+    let older = root.join("Earlier").join(crate::app_store::DIR_NAME);
+    older_camera_store(
+        &older,
+        &[
+            ("garbage.dcp", b"not a camera profile".to_vec()),
+            ("truncated.dcp", good[..good.len() / 3].to_vec()),
+            ("empty.dcp", Vec::new()),
+            ("good.dcp", good.clone()),
+        ],
+        json!([{"file": "missing.dcp", "bodies": ["1"]}, 5, {"file": "good.dcp", "bodies": ["x".repeat(300)]}]),
+    );
+    // a folder named like a profile can't be read
+    std::fs::create_dir_all(older.join("Profiles").join("folder.dcp")).unwrap();
+    let mut s = Session::new().with_app_store(&store);
+    let r = s.merge_older_installs_in(&[older], false, Some((&active, &library))).unwrap();
+    assert_eq!(r[0].camera_profiles, 1, "{r:?}");
+    let problems = r[0].problems.join("\n");
+    for name in ["garbage.dcp", "truncated.dcp", "empty.dcp", "folder.dcp", "missing.dcp", "dcpProfiles"] {
+        assert!(problems.contains(name), "{name} is named: {problems}");
+    }
+    assert_eq!(dcps_in(&library).len(), 1);
+    assert!(s.body_profiles.is_empty(), "an over-long body isn't kept");
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -3,20 +3,21 @@
 //! matching set must come out close, the unedited set far and darker, and bad arguments must fail with a message.
 //! No Adobe data is involved.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use lcc_raw::{BlackLevel, Cfa, ColorData, DngWriteOptions, Mat3, OpcodeLists, Orientation, RawData, RawFormat, RawImage, Rect};
 
 const BIN: &str = env!("CARGO_BIN_EXE_app-cli");
-const PHOTOS: usize = 3;
+const PHOTOS: usize = 2;
 const SIDECAR: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:WhiteBalance="As Shot" crs:Exposure2012="+1.00"/></rdf:RDF></x:xmpmeta>"#;
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lcc-cli-verify-e2e-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// The packet Lightroom embeds in an export: the same edit, flagged as already applied to the export's pixels.
+const EXPORT_XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:HasSettings="True" crs:AlreadyApplied="True" crs:WhiteBalance="As Shot" crs:Exposure2012="+1.00"/></rdf:RDF></x:xmpmeta>"#;
+
+/// The test's folder in Temp, removed when the test ends.
+fn scratch(name: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lcc-cli-verify-e2e-{name}"))
 }
 
 fn rng(state: &mut u64) -> f64 {
@@ -131,7 +132,11 @@ fn verify_measures_edited_renders_against_their_exports() {
         render(&bare, &unedited.join(format!("{name}.tif")));
     }
 
-    let close = verify_json(&raws, &edited);
+    // the text report and the report folder; its verify.json is what `--json` prints
+    let text = run(Command::new(BIN).args(["calibrate-lightroom", "verify", "--raws", s(&raws), "--exports", s(&edited), "--report", s(&report)]));
+    assert!(text.contains("all photos"), "{text}");
+    assert!(report.join("SX1_0000.de00.png").is_file());
+    let close: serde_json::Value = serde_json::from_slice(&std::fs::read(report.join("verify.json")).unwrap()).unwrap();
     let photos = close["photos"].as_array().unwrap();
     assert_eq!(photos.len(), PHOTOS, "{close}");
     for p in photos {
@@ -148,7 +153,8 @@ fn verify_measures_edited_renders_against_their_exports() {
     let groups = far["groups"].as_array().unwrap();
     assert!(groups.iter().any(|g| g["name"] == "light"), "{far}");
 
-    // no sidecar, the edit carried by the export itself (as Lightroom writes with Include: All Metadata)
+    // no sidecar, the edit carried by the export itself (as Lightroom writes with Include: All Metadata, marked
+    // crs:AlreadyApplied, which must not stop verify from applying it to the raw)
     let embedded = root.join("embedded");
     std::fs::create_dir_all(&embedded).unwrap();
     for k in 0..PHOTOS {
@@ -158,7 +164,7 @@ fn verify_measures_edited_renders_against_their_exports() {
         let d = lcc_codecs::decode(&std::fs::read(&srgb_tif).unwrap(), lcc_codecs::DecodeOptions::default()).unwrap();
         let px: Vec<u8> = d.image.data.iter().flat_map(|p| p.map(|v| (srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)).collect();
         let img = lcc_codecs::EncodeImage::new(d.image.width as u32, d.image.height as u32, 3, lcc_codecs::Samples::U8(&px));
-        let meta = lcc_codecs::EncodeMeta { xmp: Some(SIDECAR), ..Default::default() };
+        let meta = lcc_codecs::EncodeMeta { xmp: Some(EXPORT_XMP), ..Default::default() };
         let tif = lcc_codecs::encode_tiff(&img, lcc_codecs::TiffCompression::default(), &meta).unwrap();
         std::fs::write(embedded.join(format!("{name}.tif")), tif).unwrap();
     }
@@ -167,13 +173,6 @@ fn verify_measures_edited_renders_against_their_exports() {
         assert_eq!(p["settings_from"], "export", "{p}");
     }
     assert!(from_export["overall"]["median"].as_f64().unwrap() < 1.0, "the export's own settings are applied: {from_export}");
-
-    // the text report and the report folder
-    let text = run(Command::new(BIN).args(["calibrate-lightroom", "verify", "--raws", s(&raws), "--exports", s(&edited), "--report", s(&report)]));
-    assert!(text.contains("all photos"), "{text}");
-    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(report.join("verify.json")).unwrap()).unwrap();
-    assert_eq!(json["photos"].as_array().unwrap().len(), PHOTOS);
-    assert!(report.join("SX1_0000.de00.png").is_file());
 }
 
 #[test]

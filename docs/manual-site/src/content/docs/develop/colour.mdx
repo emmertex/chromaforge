@@ -1,0 +1,65 @@
+---
+title: Colour, grading and profiles
+sidebar:
+  order: 2
+description: The colour tools beyond the basic sliders.
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## Two grading modes
+
+Both edit the same recipe, so presets, history and XMP are shared. Switch in **Edit ▸ Settings ▸ General ▸ Grading Mode** or **Window ▸ Grading Mode**.
+
+### Witchcraft (default)
+Resolve-style grading: the Edit panel runs Basic, **Primaries**, **HSL Curves**.
+
+<Shot name="grading-witchcraft" alt="Witchcraft Primaries wheels" />
+
+- **Primaries, Colour tab**: Lift, Gamma, Gain, Offset wheels.
+- **Primaries, Log tab**: Shadows, Midtones, Highlights, Offset wheels, plus Low Range and High Range.
+- Wheel drags: Shift keeps hue, Cmd/Ctrl keeps saturation, Alt is fine, double-click resets.
+
+<Shot name="grading-hsl" alt="HSL Curves" />
+
+- **HSL Curves**: Hue vs Hue, Hue vs Sat, Hue vs Lum, with a picker to plant a point from the photo.
+
+### Eboda (Lightroom-style)
+<Shot name="grading-eboda" alt="Color Grading wheels" />
+
+- **Color Grading**: 3-way, Shadows, Midtones, Highlights, Global; Blending and Balance.
+
+## Other colour tools
+- **Tone Curve**: point (RGB or per channel) and parametric, presets, import and export.
+- **Color Mixer**: eight-band HSL and B&W mix.
+- **Point Color**: pick a colour, shift its hue, saturation and luminance, with range and variance.
+- **Calibration**: shadows tint, primary hue and saturation.
+- **White balance**: presets and eyedropper.
+- **Local colour**: Color Mixer, Point Color, curves and Colour Range inside masks.
+
+## Profiles and looks
+<Shot name="profiles" alt="The Profile Browser" menu="Window ▸ Edit Panels ▸ Profile Browser" />
+
+- **Profile Browser** and **Profile Manager**: hide, rename, group, reorder.
+- Built-in raw and creative looks, with an Amount slider.
+- **Import** `.cube` LUT profiles; **export** a look as a LUT.
+- **Camera profiles**: import, use, export DCP profiles; per-camera-body defaults.
+- **Create a camera profile** from a colour chart photo: **ColorChecker 24** or **SpyderCHECKR 24**. Uneven light across the chart (falloff, glare) is evened out before fitting by default.
+- **Camera colour**: Auto or Colorimetric calibration. Some cameras have a built-in calibration fitted to Lightroom's exports; the Pentax K-3 and Sony ILCE-7M5 are the newest. Colour for other models is estimated (partial; see [Raw support](../raw-support/)).
+
+## Presets
+<Shot name="presets" alt="The Presets panel" />
+
+- Apply with an Amount slider; create, manage, import (`.lcpreset`, XMP, `.lrtemplate`).
+
+## Colour spaces and display
+- **Soft proofing** (`S`).
+- Export in sRGB, Display P3, Adobe RGB, ProPhoto or Rec. 2020.
+- **Monitor ICC** profile in Settings ▸ Display.
+- Print colour management.
+
+<Aside type="note" title="Modern layout">
+  **Colour** in the dock holds the basic sliders; its **more** buttons open Color Mixer, Color Grading and Calibration, and the grading card follows the chosen mode.
+  Profile Browser: **Window ▸ Edit Panels**. Copy, paste and manage presets and camera profiles: **Photo ▸ Develop Settings**. Grading Mode: **Window ▸ Grading Mode**.
+</Aside>

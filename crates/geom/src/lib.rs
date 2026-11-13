@@ -342,6 +342,12 @@ impl Orientation {
         // flipH ∘ rot(t) = rot(-t) ∘ flipH
         Orientation::from_parts(!f, (4 - t) % 4)
     }
+    /// This orientation, then `next` applied to the image it gives (`a.then(b).map(p) == b.map(a.map(p))`).
+    pub fn then(self, next: Orientation) -> Orientation {
+        let (flip, turns) = next.to_parts();
+        let flipped = if flip { self.flipped_h() } else { self };
+        (0..turns).fold(flipped, |o, _| o.rotated(true))
+    }
     /// The orientation that undoes this one (`o.inverse().map(o.map(p)) == p`). Flips and half turns
     /// are their own inverses; quarter turns swap.
     pub fn inverse(self) -> Orientation {
@@ -430,6 +436,25 @@ mod tests {
         assert_eq!(Orientation::Normal.rotated(false), Orientation::Rotate270);
         assert_eq!(Orientation::Normal.flipped_h(), Orientation::FlipH);
         assert_eq!(Orientation::Rotate90.flipped_h().flipped_h(), Orientation::Rotate90);
+    }
+
+    #[test]
+    fn orientation_then_applies_one_after_the_other() {
+        let (w, h) = (4.0, 3.0);
+        for a in 1..=8 {
+            for b in 1..=8 {
+                let (a, b) = (Orientation::from_exif(a), Orientation::from_exif(b));
+                let (aw, ah) = if a.swaps_axes() { (h, w) } else { (w, h) };
+                for (x, y) in [(0.5, 0.5), (3.5, 0.5), (1.5, 2.5)] {
+                    let (x1, y1) = a.map(x, y, w, h);
+                    assert_eq!(a.then(b).map(x, y, w, h), b.map(x1, y1, aw, ah), "{a:?} then {b:?}");
+                }
+            }
+        }
+        // what a sidecar's whole orientation adds to the file's: a half turn on an upright file, nothing when they agree
+        assert_eq!(Orientation::Normal.inverse().then(Orientation::Rotate180), Orientation::Rotate180);
+        assert_eq!(Orientation::Rotate90.inverse().then(Orientation::Rotate90), Orientation::Normal);
+        assert_eq!(Orientation::Rotate90.inverse().then(Orientation::Rotate270), Orientation::Rotate180);
     }
 
     #[test]

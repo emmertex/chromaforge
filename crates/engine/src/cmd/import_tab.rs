@@ -188,7 +188,7 @@ fn import_browsed(s: &mut Session, p: &Value) -> Result<Value> {
             match take {
                 Take::Picks => "no picks to import: flag photos as picks (P) first",
                 Take::Selected => "no browsed photos selected",
-                Take::All => "nothing to import: every photo here is in the library already",
+                Take::All => "nothing to import: every photo here is in the catalog already",
             },
         ));
     }
@@ -248,7 +248,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Targets",
             [],
             None,
-            "{what?: picks|selected|all} — the browsed (not yet imported) photos of the folder view an import would take, counted: {picks, selected, all, paths? (of `what`)}",
+            "{what?: picks|selected|all}: the browsed (not yet imported) photos of the folder view an import would take, counted: {picks, selected, all, paths? (of `what`)}",
             always,
             targets
         ),
@@ -257,7 +257,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Browsed Photos",
             [],
             None,
-            "{what?: picks|selected|all (default all), previews?: none|standard|full, …library.import settings (mode, destination, organize, rename, preset, presets, keywords, metadataPreset, album…)} — import the browsed folder's picks, selection or all its photos not in the library yet (their culling and edits go along; copied or moved, each record follows its file), then build their previews in the background (library.finishImport) → the library.import report + {finishing}",
+            "{what?: picks|selected|all (default all), previews?: none|standard|full, …library.import settings (mode, destination, organize, rename, preset, presets, keywords, metadataPreset, album…)}: import the browsed folder's picks, selection or all its photos not in the library yet (their culling and edits go along; copied or moved, each record follows its file), then build their previews in the background (library.finishImport) → the library.import report + {finishing}",
             always,
             import_browsed
         ),
@@ -267,7 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Import Preset",
             [],
             None,
-            "{name, settings: {mode, destination, organize, rename, presets, keywords, metadataPreset, previews…}} — keep the Import tab's settings under a name (replaces one of that name; saved with the library)",
+            "{name, settings: {mode, destination, organize, rename, presets, keywords, metadataPreset, previews…}}: keep the Import tab's settings under a name (replaces one of that name; saved with the library)",
             always,
             save_preset
         ),
@@ -277,7 +277,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Finish Import",
             [],
             None,
-            "{ids? (default: the selection), previews?: none|standard (default)|full} — get photos ready unattended, from the photo on screen outward, each stage in the background with its own activity row: the AI masks their settings bring (on the AI worker), their Smooth Skin analysis, then their previews built once each (library.buildPreviews) → {total, done, failed, running, aiMasks, skin, notes?}",
+            "{ids? (default: the selection), previews?: none|standard (default)|full}: get photos ready unattended, from the photo on screen outward, each stage in the background with its own activity row: the AI masks their settings bring (on the AI worker), their Smooth Skin analysis, then their previews built once each (library.buildPreviews) → {total, done, failed, running, aiMasks, skin, notes?}",
             always,
             finish
         ),

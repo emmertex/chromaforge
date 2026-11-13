@@ -145,6 +145,64 @@ fn ml_status_before_any_job_starts_nothing() {
 }
 
 #[test]
+fn ml_status_sets_device_reports_available_devices_and_refuses_junk() {
+    let mut s = session();
+    let st = s.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st["deviceChoice"], "auto");
+    assert!(st["availableDevices"].is_array());
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "auto"));
+    assert!(st["availableDevices"].as_array().unwrap().iter().any(|d| d["id"] == "cpu"));
+
+    let st = s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    assert_eq!(st["deviceChoice"], "cpu");
+    assert_eq!(st["preference"], "cpu");
+
+    // a device that is not a string, or not one there is, is refused and changes nothing
+    for bad in [json!({"device": 123}), json!({"device": true}), json!({"device": []}), json!({"device": {}})] {
+        assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
+    }
+    for bad in [json!({"device": "potato"}), json!({"device": "vulkan:10de:9999:Fake#1"})] {
+        assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
+    }
+    assert_eq!(s.execute("ml.status", &json!({})).unwrap()["preference"], "cpu");
+
+    // "auto", and an empty device, go back to the automatic choice
+    for auto in ["auto", ""] {
+        s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+        let st = s.execute("ml.status", &json!({"device": auto})).unwrap();
+        assert_eq!(st["deviceChoice"], "auto", "{auto:?}");
+        assert_eq!(st["preference"], "auto", "{auto:?}");
+    }
+}
+
+#[test]
+fn ml_status_preference_is_session_only_while_device_persists() {
+    let temp = temp_dir("device-stick");
+    let mut s = session();
+    s.ml_models_dir = Some(temp.clone());
+    // `preference` is session-only and does not write settings.json
+    let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();
+    assert_eq!(st["preference"], "cpu");
+    assert_eq!(st["deviceChoice"], "cpu");
+
+    let mut s_check = session();
+    s_check.ml_models_dir = Some(temp.clone());
+    let st_check = s_check.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st_check["deviceChoice"], "auto", "session-only preference does not persist across sessions");
+    assert_eq!(st_check["preference"], "auto");
+
+    // `device` persists to settings.json across sessions
+    s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+    let mut s2 = session();
+    s2.ml_models_dir = Some(temp.clone());
+    let st2 = s2.execute("ml.status", &json!({})).unwrap();
+    assert_eq!(st2["deviceChoice"], "cpu");
+    assert_eq!(st2["preference"], "cpu");
+
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
 fn ml_status_sets_the_preference_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({"preference": "cpu"})).unwrap();
@@ -403,4 +461,46 @@ fn semantic_search_filters_grid_composes_with_ratings_and_updates_as_photos_inde
     assert_eq!(s.visible().len(), 3);
 
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// AI search runs CLIP's blocks on the GPU through wgpu (any OS) and gives what the CPU gives.
+#[test]
+fn clip_on_the_gpu_matches_the_cpu() {
+    use lcc_ml::{Encoder, Priority, Queue, RgbImage, cosine};
+    if let Err(e) = lcc_gpu::clip::adapter() {
+        lcc_testkit::skip!(Gpu, "no GPU for the CLIP kernels: {e}");
+        return;
+    }
+    let dir = temp_dir("clip-gpu");
+    lcc_ml::Clip::write_synthetic_dir(&dir, "test-clip").unwrap();
+    let cpu = Arc::new(lcc_ml::Clip::load_lazy(&dir).unwrap());
+    let gpu = Arc::new(lcc_ml::Clip::load_lazy(&dir).unwrap().with_accelerator(crate::ml::clip_accelerator()));
+    let img = RgbImage::new(16, 16, (0..16 * 16 * 3).map(|i| (i * 7 % 256) as u8).collect()).unwrap();
+    let run = |clip: Arc<lcc_ml::Clip>, gpu: bool| {
+        let probe: lcc_ml::Probe = if gpu { Box::new(lcc_gpu::clip::adapter) } else { Box::new(|| Err("cpu".into())) };
+        let pref = if gpu { Preference::Auto } else { Preference::Cpu };
+        let q: Queue<(Vec<Vec<f32>>, Vec<f32>)> = Queue::new(Config { preference: pref, ..Config::default() }, probe, None);
+        let im = img.clone();
+        q.submit(
+            Job::new("both", move |ctx| Ok((clip.encode_images(&[im.clone(), im.clone()], ctx)?, clip.encode_text("sunset", ctx)?)))
+                .priority(Priority::Interactive),
+        )
+        .unwrap();
+        let mut out = None;
+        wait_for(|| {
+            for f in q.drain() {
+                if let Outcome::Done(v) = f.outcome {
+                    out = Some(v);
+                }
+            }
+            out.is_some()
+        });
+        (out.unwrap(), q.status().device.unwrap())
+    };
+    let ((ci, ct), _) = run(cpu, false);
+    let ((gi, gt), device) = run(gpu, true);
+    assert!(device.is_gpu(), "fell back to the CPU: {:?}", device.why_cpu);
+    assert!(cosine(&ci[0], &gi[0]) > 0.999 && cosine(&ci[1], &gi[1]) > 0.999);
+    assert!(cosine(&ct, &gt) > 0.999);
+    let _ = std::fs::remove_dir_all(&dir);
 }

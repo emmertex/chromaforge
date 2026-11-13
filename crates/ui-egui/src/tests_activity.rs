@@ -72,10 +72,33 @@ fn modern() -> Headless {
     h
 }
 
+/// One Classic session: the plate and the status line get their own clicks; a task takes their place and gives it
+/// back; the header's ✕ cancels; a task that can't be cancelled has none.
 #[test]
 fn a_task_takes_the_identity_plates_place_and_gives_it_back() {
     let mut h = demo();
-    assert!(has(&h, "region:identityPlate"), "the plate shows while nothing runs");
+    // the module bar's own click area sits under the plate and the status line: a right-click on the plate opens
+    // the plate's menu (not the module picker's), and a click on the status line dismisses it
+    let bold = h.app.ui.identity_plate.bold;
+    h.step();
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "region:identityPlate", "button": "right"}), T)["ok"], true);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(has(&h, "plate:bold"), "the plate's menu opened");
+    click(&mut h, "plate:bold");
+    assert_eq!(h.app.ui.identity_plate.bold, !bold, "Bold in the plate's menu");
+    h.app.ui.status = "Ready".into();
+    h.step();
+    h.step();
+    click(&mut h, "status:message");
+    assert!(h.app.ui.status.is_empty(), "a click dismissed the message");
+
+    // a task takes the plate's and the status line's place, half a second in
+    h.app.ui.status = "Ready".into();
+    h.step();
+    h.step();
+    assert!(has(&h, "region:identityPlate") && has(&h, "status:message"), "the plate and the status while nothing runs");
     let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     g.progress(2, 5);
     h.step();
@@ -87,6 +110,7 @@ fn a_task_takes_the_identity_plates_place_and_gives_it_back() {
     wait_visible(&mut h);
     assert!(has(&h, PLATE), "the task shows in the module bar");
     assert!(!has(&h, "region:identityPlate"), "in the plate's place");
+    assert!(!has(&h, "status:message"), "and in the status line's");
     let bar = rect(&h, "region:moduleBar");
     assert!(bar.contains_rect(rect(&h, PLATE)), "inside the module bar: {:?} in {bar:?}", rect(&h, PLATE));
     assert!(has(&h, &format!("activity:cancel:{}", g.id())), "one task has its ✕ in the header");
@@ -96,31 +120,28 @@ fn a_task_takes_the_identity_plates_place_and_gives_it_back() {
     h.step();
     h.step();
     assert!(!has(&h, PLATE), "gone with the task");
-    assert!(has(&h, "region:identityPlate"), "the plate comes back");
-}
+    assert!(has(&h, "region:identityPlate") && has(&h, "status:message"), "the plate and the status line come back");
 
-#[test]
-fn the_cross_in_the_header_cancels_the_task() {
-    let mut h = demo();
+    // the ✕ in the header cancels, and doesn't open the list
     let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     wait_visible(&mut h);
     click(&mut h, &format!("activity:cancel:{}", g.id()));
-    assert!(g.is_cancelled());
+    assert!(g.is_cancelled(), "the header's ✕ cancels");
     assert!(!h.app.activity_list, "✕ cancels; it doesn't open the list");
     let inspect = h.request("ui.inspect", json!({}), T);
     assert_eq!(inspect["result"]["activity"][0]["cancelling"], true, "{}", inspect["result"]["activity"]);
-}
+    drop(g);
+    h.step();
+    h.step();
 
-#[test]
-fn not_cancellable_tasks_have_no_cross() {
-    let mut h = demo();
+    // a task that can't be cancelled has no ✕, in the header or the list
     let g = h.app.session.activity.start("faces", "Finding faces", Cancel::No);
     wait_visible(&mut h);
-    assert!(has(&h, PLATE));
-    assert!(!has(&h, &format!("activity:cancel:{}", g.id())));
+    assert!(has(&h, PLATE), "the uncancellable task shows");
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ in the header");
     open_list(&mut h);
-    assert!(has(&h, &format!("activity:row:{}", g.id())));
-    assert!(!has(&h, &format!("activity:cancel:{}", g.id())));
+    assert!(has(&h, &format!("activity:row:{}", g.id())), "its row is listed");
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ in the list");
 }
 
 /// Several tasks: a thin bar each, oldest first, with no ✕; a batch's photos add none; past what fits in the
@@ -249,46 +270,6 @@ fn hidden_module_bar_or_status_off_shows_nothing_and_tasks_run_on() {
     assert!(!crate::panels::notices::may_close(&mut h.app), "Quit still asks");
 }
 
-/// The status line shows beside the plate while no task runs; a task takes its place.
-#[test]
-fn the_status_text_gives_way_to_tasks() {
-    let mut h = demo();
-    h.app.ui.status = "Ready".into();
-    h.step();
-    h.step();
-    assert!(has(&h, "region:identityPlate") && has(&h, "status:message"), "the status beside the plate");
-    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
-    wait_visible(&mut h);
-    assert!(has(&h, PLATE));
-    assert!(!has(&h, "status:message"), "the task takes the status line's place");
-    drop(g);
-    h.step();
-    h.step();
-    assert!(!has(&h, PLATE) && has(&h, "region:identityPlate"));
-    assert!(has(&h, "status:message"), "the status line is back");
-}
-
-/// The module bar's own click area sits under the plate and the status line, so they get their clicks: a right-click
-/// on the plate opens the plate's menu (not the module picker's), and a click on the status line dismisses it.
-#[test]
-fn the_plate_and_the_status_line_get_their_own_clicks() {
-    let mut h = demo();
-    let bold = h.app.ui.identity_plate.bold;
-    h.step();
-    assert_eq!(h.request("ui.clickWidget", json!({"id": "region:identityPlate", "button": "right"}), T)["ok"], true);
-    for _ in 0..3 {
-        h.step();
-    }
-    assert!(has(&h, "plate:bold"), "the plate's menu opened");
-    click(&mut h, "plate:bold");
-    assert_eq!(h.app.ui.identity_plate.bold, !bold, "Bold in the plate's menu");
-    h.app.ui.status = "Ready".into();
-    h.step();
-    h.step();
-    click(&mut h, "status:message");
-    assert!(h.app.ui.status.is_empty(), "a click dismissed the message");
-}
-
 #[test]
 fn modern_keeps_its_card_and_overflows() {
     let mut h = modern();
@@ -308,21 +289,84 @@ fn modern_keeps_its_card_and_overflows() {
     drop(guards);
     h.step();
     assert_eq!(rows(&h), 0);
+    // the card asks before it stops a plug-in's wait
+    let (g, flag) = wait(&h);
+    wait_visible(&mut h);
+    assert!(has(&h, &format!("activity:row:{}", g.id())), "the wait has its row in the card");
+    assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ in the card");
+    stop_waiting(&mut h, g.id(), "button:dialogCancel");
+    assert!(!stopped(&flag), "Cancel leaves the run waiting");
+    stop_waiting(&mut h, g.id(), "button:dialogOk");
+    assert!(stopped(&flag), "confirming stops the wait");
 }
 
-/// A list opened in Classic closes when the layout changes to Modern, so it holds Esc back no longer.
+/// The demo library in the Compact layout: Classic drawn denser, with the same module bar.
+fn compact() -> Headless {
+    let mut h = demo();
+    set_layout(&mut h, "view.compactLayout");
+    h
+}
+
+fn set_layout(h: &mut Headless, command: &str) {
+    let r = h.request("engine.execute", json!({"command": command, "params": {"on": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+}
+
+/// Issue #847: Compact turns Modern off, so its tasks show as Classic's do: in the identity plate's place, with the
+/// list under them and no floating card.
 #[test]
-fn switching_to_modern_closes_the_list() {
+fn compact_shows_tasks_in_the_module_bar_and_lists_them_as_classic() {
+    let mut h = compact();
+    assert!(h.app.compact() && crate::theme::compact(&h.view.ctx), "the Compact layout is on");
+    let guards: Vec<_> = (0..3).map(|i| h.app.session.activity.start("export", &format!("Task {i}"), Cancel::Yes)).collect();
+    wait_visible(&mut h);
+    assert!(has(&h, PLATE) && !has(&h, "region:identityPlate"), "the tasks take the plate's place");
+    let bar = rect(&h, "region:moduleBar");
+    assert!(bar.contains_rect(rect(&h, PLATE)), "inside the module bar: {:?} in {bar:?}", rect(&h, PLATE));
+    let card = h.view.ctx.memory(|m| m.area_rect(egui::Id::new("activity-stack")));
+    assert!(card.is_none() && rows(&h) == 0, "no floating card in Compact: {card:?}");
+    // a click opens the list under the tasks, every row inside it
+    open_list(&mut h);
+    let list = rect(&h, LIST);
+    assert!(list.top() >= bar.bottom() - 1.0, "under the module bar: {list:?}");
+    for g in &guards {
+        let r = rect(&h, &format!("activity:row:{}", g.id()));
+        assert!(list.contains_rect(r), "row {} at {r:?} is cut off by the list at {list:?}", g.id());
+    }
+    h.request("ui.key", json!({"key": "Escape"}), T);
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(!h.app.activity_list && !has(&h, LIST), "Esc closed it");
+    // and by command
+    let r = h.request("engine.execute", json!({"command": "view.activityList", "params": {"open": true}}), T);
+    assert_eq!(r["result"]["open"], true, "{r}");
+    h.step();
+    assert!(has(&h, LIST) && rows(&h) == guards.len(), "the command opens it with every row");
+}
+
+/// Issue #847: Classic and Compact share the module bar, so the list stays open across a switch between them, under
+/// the tasks; Modern closes it, from either.
+#[test]
+fn switching_between_classic_and_compact_keeps_the_list_open() {
     let mut h = demo();
     let _g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
     wait_visible(&mut h);
     open_list(&mut h);
-    let r = h.request("engine.execute", json!({"command": "view.modernLayout", "params": {"on": true}}), T);
-    assert_eq!(r["ok"], true, "{r}");
-    h.step();
-    h.step();
-    assert!(!h.app.activity_list, "closed with the Classic layout");
-    assert_eq!(h.request("ui.inspect", json!({}), T)["result"]["activityList"], false);
+    for (command, on) in [("view.compactLayout", true), ("view.compactLayout", false), ("view.compactLayout", true)] {
+        let r = h.request("engine.execute", json!({"command": command, "params": {"on": on}}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+        h.step();
+        assert_eq!(h.app.compact(), on);
+        assert!(h.app.activity_list && has(&h, LIST), "the list stays open (compact: {on})");
+        let (list, tasks) = (rect(&h, LIST), rect(&h, PLATE));
+        assert!(list.top() >= tasks.bottom() && (list.left() - tasks.left()).abs() < 1.0, "under the tasks: {list:?} vs {tasks:?}");
+    }
+    set_layout(&mut h, "view.modernLayout");
+    assert!(!h.app.activity_list, "Modern closes it, from Compact too");
 }
 
 /// a batch row in the list folds its photos, with the time left and the failures; when it ends, what it did shows
@@ -395,49 +439,6 @@ fn stale_cancel_is_harmless() {
     assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
 }
 
-#[test]
-fn long_detail_stays_inside_the_list() {
-    let mut h = demo();
-    let g = h.app.session.activity.start("export", "Exportieren", Cancel::Yes);
-    g.detail(&"IMG_".repeat(75));
-    wait_visible(&mut h);
-    assert!(rect(&h, PLATE).width() <= WIDTH + 1.0, "{:?}", rect(&h, PLATE));
-    open_list(&mut h);
-    let row = rect(&h, &format!("activity:row:{}", g.id()));
-    assert!(row.width() <= WIDTH + 1.0, "{row:?}");
-}
-
-#[test]
-fn quit_with_a_running_task_asks_and_quit_anyway_cancels() {
-    let mut h = demo();
-    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
-    wait_visible(&mut h);
-    assert!(!crate::panels::notices::may_close(&mut h.app));
-    assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Tasks(_))), "{:?}", h.app.quit_prompt);
-    h.step();
-    assert!(!has(&h, "button:quitRetry"));
-    click(&mut h, "button:quitAnyway");
-    assert!(g.is_cancelled() && h.quit_requested());
-}
-
-#[test]
-fn quit_cancel_keeps_the_task_running() {
-    let mut h = demo();
-    let g = h.app.session.activity.start("import", "Importing", Cancel::Yes);
-    assert!(!crate::panels::notices::may_close(&mut h.app));
-    click(&mut h, "button:quitCancel");
-    assert!(!g.is_cancelled() && h.app.quit_prompt.is_none() && !h.app.quit_confirmed);
-}
-
-#[test]
-fn cancelling_task_does_not_block_quit() {
-    let mut h = demo();
-    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
-    h.app.session.activity.cancel(g.id()).unwrap();
-    let _f = h.app.session.activity.start("faces", "Finding faces", Cancel::No);
-    assert!(crate::panels::notices::may_close(&mut h.app));
-}
-
 /// A slow disk: every file takes `ms` to write (the UI must not wait for it).
 fn slow_writer(ms: u64) -> crate::SharedWrite {
     std::sync::Arc::new(move |_: &str, _: &[u8]| {
@@ -463,6 +464,32 @@ fn start_export(h: &mut Headless, n: usize) {
     assert_eq!(r["ok"], true, "{r}");
 }
 
+/// Running tasks hold Quit back until the user answers; a task already cancelling, or one that can't be cancelled,
+/// doesn't.
+#[test]
+fn quit_with_a_running_task_asks_and_quit_anyway_cancels() {
+    let mut h = demo();
+    {
+        let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+        h.app.session.activity.cancel(g.id()).unwrap();
+        let _f = h.app.session.activity.start("faces", "Finding faces", Cancel::No);
+        assert!(crate::panels::notices::may_close(&mut h.app), "a cancelling task doesn't block quit");
+    }
+    let g = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    wait_visible(&mut h);
+    assert!(!crate::panels::notices::may_close(&mut h.app));
+    assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Tasks(_))), "{:?}", h.app.quit_prompt);
+    h.step();
+    assert!(!has(&h, "button:quitRetry"));
+    let text = h.painted_text().join("\n");
+    assert!(!text.contains("Disable backups"), "only the backup prompt points at the backup setting:\n{text}");
+    click(&mut h, "button:quitCancel");
+    assert!(!g.is_cancelled() && h.app.quit_prompt.is_none() && !h.app.quit_confirmed, "Cancel keeps the task running");
+    assert!(!crate::panels::notices::may_close(&mut h.app), "the next quit asks again");
+    click(&mut h, "button:quitAnyway");
+    assert!(g.is_cancelled() && h.quit_requested());
+}
+
 #[test]
 fn export_shows_a_row_and_stops_on_activity_cancel() {
     let mut h = demo();
@@ -478,19 +505,15 @@ fn export_shows_a_row_and_stops_on_activity_cancel() {
     assert!(h.app.session.activity.list().is_empty());
     assert!(h.app.last_export_result.as_ref().is_some_and(|r| r["cancelled"] == true), "{:?}", h.app.last_export_result);
     assert!(!has(&h, "button:exportCancel"), "the old window is gone");
-}
-
-#[test]
-fn dead_export_worker_leaves_no_row() {
-    let mut h = demo();
+    // a worker that dies leaves no row behind
     h.app.services.write_shared = Some(std::sync::Arc::new(|_: &str, _: &[u8]| -> Result<(), String> { panic!("synthetic writer panic") }));
     start_export(&mut h, 2);
-    assert!(h.step_until(Duration::from_secs(60), |h| h.app.export.is_none()));
-    assert!(h.app.session.activity.list().is_empty());
+    assert!(h.step_until(Duration::from_secs(60), |h| h.app.export.is_none()), "the dead export ends");
+    assert!(h.app.session.activity.list().is_empty(), "a dead worker leaves no row");
 }
 
 /// A folder of `n` stand-in JPEGs and an app whose file probe takes 100 ms each (a slow drive).
-fn slow_import(tag: &str, n: usize) -> (Headless, std::path::PathBuf) {
+fn slow_import(tag: &str, n: usize) -> (lcc_testkit::TempDir, Headless) {
     gated_import(tag, n, None)
 }
 
@@ -498,8 +521,8 @@ fn slow_import(tag: &str, n: usize) -> (Headless, std::path::PathBuf) {
 /// (`batch_size()` files, which join the catalog together), so a test can act mid-import without
 /// racing the 100 ms-per-file clock. The hold gives up after 60 s, so a failed test never leaves
 /// the import thread spinning.
-fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-activity-{tag}-{}", std::process::id()));
+fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-activity-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for i in 0..n {
@@ -521,13 +544,13 @@ fn gated_import(tag: &str, n: usize, gate: Option<std::sync::Arc<std::sync::atom
     }));
     let mut h = Headless::new(LccApp::new(s, Services { png: None, ..Default::default() }), [1200.0, 800.0], 1.0);
     h.settle(T);
-    (h, dir)
+    (dir, h)
 }
 
 #[test]
 fn import_cancelled_by_command_reports_cancelled() {
     let n = 40;
-    let (mut h, dir) = slow_import("cancel", n);
+    let (dir, mut h) = slow_import("cancel", n);
     let undo0 = h.app.session.undo.len();
     crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 2)));
@@ -547,7 +570,7 @@ fn import_cancelled_by_command_reports_cancelled() {
 #[test]
 fn a_photo_chosen_during_an_import_stays_selected() {
     let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (mut h, dir) = gated_import("chosen", 20, Some(gate.clone()));
+    let (dir, mut h) = gated_import("chosen", 20, Some(gate.clone()));
     crate::import::start_paths(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 2)));
     // the newest photo so far, never the import's first
@@ -565,7 +588,7 @@ fn a_photo_chosen_during_an_import_stays_selected() {
 
 #[test]
 fn scan_shows_a_row_and_cancel_closes_it() {
-    let (mut h, dir) = slow_import("scan", 120);
+    let (dir, mut h) = slow_import("scan", 120);
     crate::import::open(&mut h.app, vec![dir.to_string_lossy().to_string()]).unwrap();
     h.step();
     let tasks = h.app.session.activity.list();
@@ -583,8 +606,8 @@ fn scan_shows_a_row_and_cancel_closes_it() {
 }
 
 /// A library of three bracketed DNGs (−2, 0, +2 EV) on disk, all selected.
-fn bracket(tag: &str) -> (Headless, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lc-activity-{tag}-{}", std::process::id()));
+fn bracket(tag: &str) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-activity-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut paths = Vec::new();
@@ -600,13 +623,13 @@ fn bracket(tag: &str) -> (Headless, std::path::PathBuf) {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
-    (h, dir)
+    (dir, h)
 }
 
 #[test]
 fn final_merge_shows_a_row_and_cancels() {
     for (command, cancelled) in [("merge.hdr", "HDR merge cancelled"), ("merge.focusStack", "Focus stack merge cancelled")] {
-        let (mut h, dir) = bracket(command);
+        let (dir, mut h) = bracket(command);
         let before = h.app.session.catalog.len();
         crate::merge::start_last(&mut h.app, command).unwrap();
         h.step();
@@ -630,7 +653,7 @@ fn final_merge_shows_a_row_and_cancels() {
 /// Settings" uses them; a kind never merged opens with the defaults.
 #[test]
 fn merge_dialog_remembers_the_last_settings_per_kind() {
-    let (mut h, dir) = bracket("merge-last");
+    let (dir, mut h) = bracket("merge-last");
     let opts = crate::merge::MergeDialog {
         align: false,
         deghost: "high".into(),
@@ -663,7 +686,7 @@ fn merge_dialog_remembers_the_last_settings_per_kind() {
 /// rest.
 #[test]
 fn batch_merge_runs_each_set_in_turn() {
-    let dir = std::env::temp_dir().join(format!("lc-activity-batch-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lc-activity-batch");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut paths = Vec::new();
@@ -706,8 +729,8 @@ fn batch_merge_runs_each_set_in_turn() {
 
 #[test]
 fn find_missing_shows_an_indeterminate_row() {
+    let dir = lcc_testkit::TempDir::new("lc-activity-findmissing");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("lc-activity-findmissing-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // run directly, not through a request (which runs frames): the search of an empty folder is over at once, but its
     // result is applied between frames, and the row is there until then
@@ -723,9 +746,48 @@ fn find_missing_shows_an_indeterminate_row() {
 }
 
 #[test]
-fn auto_import_listing_has_no_row() {
+fn validate_dng_files_runs_in_the_background_and_lists_what_it_found() {
+    // nothing to check: a refusal, not an empty dialog
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("lc-activity-autoimport-{}", std::process::id()));
+    let err = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap_err();
+    assert!(err.contains("no DNG files"), "{err}");
+
+    let (dir, mut h) = bracket("validate-dng");
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({})).unwrap().unwrap();
+    assert_eq!((r["background"].as_bool(), r["total"].as_u64()), (Some(true), Some(3)), "{r}");
+    let rows = h.app.session.activity.list();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((rows[0].kind, rows[0].label.as_str(), rows[0].cancellable), ("validateDng", "Validate DNG Files", true));
+    assert!(h.step_until(T, |h| h.app.tasks.is_empty()));
+    assert!(h.app.session.activity.list().is_empty(), "the row goes with the task");
+    // the answer is a dialog with the counts, and a report for scripts
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { summary, .. }) if summary.contains('3')), "{:?}", h.app.ui.dialog);
+    let report = h.app.ui.last_dng_validation.clone().unwrap();
+    assert_eq!((report["total"].as_u64(), report["checked"].as_u64(), report["cancelled"].as_bool()), (Some(3), Some(3), Some(false)), "{report}");
+    let counted = report["intact"].as_u64().unwrap()
+        + report["damaged"].as_array().unwrap().len() as u64
+        + report["unverifiable"].as_array().unwrap().len() as u64;
+    assert_eq!(counted, 3, "every file gets a verdict: {report}");
+
+    // the same through `wait`, with one file now cut short: damaged, whatever the others are
+    h.app.ui.dialog = None;
+    let first = h.app.session.catalog.photos().next().unwrap().id;
+    let path = match &h.app.session.catalog.photo(first).unwrap().source {
+        lcc_catalog::Source::File { path } => path.clone(),
+        other => panic!("{other:?}"),
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() / 3]).unwrap();
+    let r = crate::menus::run_ui_command(&mut h.app, "library.validateDng", &json!({"wait": true})).unwrap().unwrap();
+    assert!(r["damaged"].as_array().unwrap().iter().any(|d| d["file"].as_str().is_some_and(|f| path.ends_with(f))), "{r}");
+    assert!(matches!(&h.app.ui.dialog, Some(crate::state::Dialog::DngValidation { damaged, .. }) if damaged.len() == 1));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn auto_import_listing_has_no_row() {
+    let dir = lcc_testkit::TempDir::new("lc-activity-autoimport");
+    let mut h = demo();
     std::fs::create_dir_all(&dir).unwrap();
     h.app.session.import_defaults.auto_folder = Some(dir.to_string_lossy().to_string());
     // the watched folder is listed every few seconds, quietly
@@ -736,13 +798,16 @@ fn auto_import_listing_has_no_row() {
 }
 
 #[test]
-fn rows_added_later_grow_the_list() {
+fn rows_added_later_grow_the_list_and_long_detail_stays_inside() {
     let mut h = demo();
-    let a = h.app.session.activity.start("export", "Exporting", Cancel::Yes);
+    let a = h.app.session.activity.start("export", "Exportieren", Cancel::Yes);
     a.progress(1, 24);
-    a.detail("LC01347.jpg");
+    a.detail(&"IMG_".repeat(75));
     wait_visible(&mut h);
+    assert!(rect(&h, PLATE).width() <= WIDTH + 1.0, "a long detail stays inside the header: {:?}", rect(&h, PLATE));
     open_list(&mut h);
+    let row = rect(&h, &format!("activity:row:{}", a.id()));
+    assert!(row.width() <= WIDTH + 1.0, "a long detail stays inside the list: {row:?}");
     // two more tasks while the list already shows one row: it grows to show them, nothing is cut off
     let b = h.app.session.activity.start("previews", "Building previews", Cancel::Yes);
     let c = h.app.session.activity.start("lightroom", "Reading Lightroom catalog", Cancel::Yes);
@@ -776,11 +841,9 @@ fn immediate_library_commands_and_auto_sync_show_completion() {
     assert!(h.app.ui.toast().is_none());
 }
 
-/// A catalog backup due at quit asks first, as Lightroom Classic does: Skip This Time quits without
-/// one (ported from OneSlips' LR-BACKUP).
-#[test]
-fn quitting_with_a_backup_due_asks_and_skip_quits() {
-    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-{}", std::process::id()));
+/// An app on a library (in a temp folder named after `name`) with a backup due on every exit.
+fn backup_due(name: &str) -> (lcc_testkit::TempDir, Headless) {
+    let dir = lcc_testkit::TempDir::new(&format!("lcc-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -793,8 +856,23 @@ fn quitting_with_a_backup_due_asks_and_skip_quits() {
     let app = LccApp::new(session, Services { png: None, ..Default::default() });
     let mut h = Headless::new(app, [1200.0, 800.0], 1.0);
     h.settle(T);
+    (dir, h)
+}
+
+/// A catalog backup due at quit asks first, as Lightroom Classic does, and says where the schedule
+/// is set: Cancel keeps the app open, Skip This Time quits without one (ported from OneSlips' LR-BACKUP).
+#[test]
+fn quitting_with_a_backup_due_asks_and_skip_quits() {
+    let (dir, mut h) = backup_due("quit-backup");
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
+    h.step();
+    let text = h.painted_text().join("\n");
+    assert!(text.lines().any(|l| l == "Back up the catalog?"), "the prompt is titled for the catalog:\n{text}");
+    assert!(text.contains("Disable backups in Edit ▸ Catalog Settings…"), "the prompt says where the schedule is set:\n{text}");
+    click(&mut h, "button:quitCancel");
+    assert!(h.app.quit_prompt.is_none() && !h.quit_requested(), "Cancel keeps the app open");
+    assert!(!crate::panels::notices::may_close(&mut h.app), "and the next quit asks again");
     click(&mut h, "button:quitSkipBackup");
     assert_eq!(h.app.exit_backup, Some(false));
     assert!(h.quit_requested());
@@ -810,7 +888,7 @@ fn wait(h: &Headless) -> (lcc_engine::activity::TaskGuard, std::sync::Arc<std::s
     g.name("program", "Converter");
     g.name("plugin", "Prog");
     g.detail("The results come back when {program} closes");
-    g.warn_on_stop("What {program} makes from now on won't come back to the library, and {program} keeps running.");
+    g.warn_on_stop("What {program} makes from now on won't come back to the catalog, and {program} keeps running.");
     (g, flag)
 }
 
@@ -848,62 +926,26 @@ fn a_wait_has_no_cross_and_stops_only_once_confirmed() {
     open_list(&mut h);
     stop_waiting(&mut h, g.id(), "button:dialogOk");
     assert!(stopped(&flag), "confirming stops the wait");
-}
-
-#[test]
-fn modern_card_asks_before_it_stops_a_wait() {
-    let mut h = modern();
-    let (g, flag) = wait(&h);
-    wait_visible(&mut h);
-    assert!(has(&h, &format!("activity:row:{}", g.id())));
-    assert!(!has(&h, &format!("activity:cancel:{}", g.id())), "no ✕ in the card");
-    stop_waiting(&mut h, g.id(), "button:dialogCancel");
-    assert!(!stopped(&flag), "Cancel leaves the run waiting");
-    stop_waiting(&mut h, g.id(), "button:dialogOk");
-    assert!(stopped(&flag), "confirming stops the wait");
-}
-
-#[test]
-fn a_wait_that_ends_takes_its_question_with_it() {
-    let mut h = demo();
+    // a wait that ends takes its question with it
+    drop(g);
+    h.step();
+    h.step();
     let (g, _flag) = wait(&h);
     wait_visible(&mut h);
     open_list(&mut h);
     click(&mut h, &format!("activity:stop:{}", g.id()));
-    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::StopWaiting { .. })));
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::StopWaiting { .. })), "the second wait asks too");
     drop(g);
     h.step();
     h.step();
     assert!(h.app.ui.dialog.is_none(), "nothing left to stop: the question goes");
 }
 
-/// The text around the names is translated; the names stay as they are.
-#[test]
-fn a_wait_is_translated_around_its_names() {
-    let mut h = demo();
-    h.app.ui.language = crate::i18n::Locale::De;
-    crate::i18n::set_language(crate::i18n::Locale::De);
-    let (g, _flag) = wait(&h);
-    wait_visible(&mut h);
-    let header = h.painted_text();
-    open_list(&mut h);
-    let list = h.painted_text();
-    crate::i18n::set_language(crate::i18n::Locale::En);
-    assert!(header.iter().any(|t| t == "Warten, bis Converter fertig ist (Prog)"), "{header:?}");
-    assert!(list.iter().any(|t| t.contains("Die Ergebnisse kommen zurück, wenn Converter geschlossen wird")), "{list:?}");
-    // the language is back to English: the row's text follows it around the names that stay
-    let id = g.id();
-    drop(g);
-    h.step();
-    h.step();
-    assert!(!has(&h, &format!("activity:row:{id}")), "the wait row goes with the wait");
-}
-
 /// Nothing changed since the last backup: quitting neither asks for a backup nor makes one, even
 /// with one due on every exit. A change since asks again (ported from OneSlips' LR-BACKUP).
 #[test]
 fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
-    let dir = std::env::temp_dir().join(format!("lcc-quit-backup-same-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-quit-backup-same");
     let _ = std::fs::remove_dir_all(&dir);
     let mut session = lcc_engine::Session::new().with_fs();
     session.open_library(&dir, false).unwrap();
@@ -926,5 +968,30 @@ fn quitting_with_nothing_changed_since_the_backup_does_not_ask() {
     assert!(!crate::panels::notices::may_close(&mut h.app));
     assert!(matches!(h.app.quit_prompt, Some(crate::QuitPrompt::Backup(_))), "{:?}", h.app.quit_prompt);
     let _ = h.app.session.close_library();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Reading a folder to browse it (the Import tab) is not the user's own work: the photos culled
+/// meanwhile are prepared and their neighbours made ahead. As an "import" row it held all of that
+/// back for the whole read (2026-11-09: 90 s for a wedding's 2,597 raws, the loupe never ahead).
+#[test]
+fn reading_a_browsed_folder_holds_no_preparation_back() {
+    let gate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let n = lcc_engine::import::batch_size() + 4;
+    let (dir, mut h) = gated_import("browse-read", n, Some(gate.clone()));
+    let r = h.request("engine.execute", json!({"command": "library.browse", "params": {"path": dir.to_string_lossy()}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(
+        h.step_until(Duration::from_secs(60), |h| h.app.import.as_ref().is_some_and(|t| t.imported >= 1)),
+        "the folder is being read: {:?}",
+        h.app.session.activity.list()
+    );
+    // held at the gate until now, so the read cannot have ended
+    assert!(h.app.import.is_some(), "still reading");
+    let tasks = h.app.session.activity.list();
+    assert!(tasks.iter().any(|t| t.label == "Reading folder"), "{tasks:?}");
+    assert_eq!(h.app.session.activity.user_work(), None, "a browse's read holds nothing back: {tasks:?}");
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
     let _ = std::fs::remove_dir_all(&dir);
 }

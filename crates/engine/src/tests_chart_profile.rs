@@ -74,6 +74,29 @@ fn a_chart_photo_becomes_a_camera_profile_the_photo_develops_with() {
     assert_ne!(both["id"], first["id"]);
     let replaced = cp::install(&mut s, &lib, &out.dcp, &[], OnExists::Replace, &[]).unwrap();
     assert_eq!((replaced["id"].as_str(), replaced["replaced"].as_bool()), (Some(pid.as_str()), Some(true)));
+
+    // Replace keeps the old profile beside the new one, and undo puts it back
+    let req = cp::Request { illuminant: "D55".into(), ..Default::default() };
+    let photo = |natural| lcc_camprof::BuildOptions { name: "Swap Test".into(), natural, ..Default::default() };
+    let swap_a = cp::build((&prep, &req), None, &photo(true)).unwrap().dcp;
+    let swap_b = cp::build((&prep, &req), None, &photo(false)).unwrap().dcp;
+    let lib = dir.join("dcp-swap");
+    let r = cp::install(&mut s, &lib, &swap_a, &[], OnExists::Fail, &[]).unwrap();
+    let file = PathBuf::from(r["file"].as_str().unwrap());
+    let old = std::fs::read(&file).unwrap();
+    let r2 = cp::install(&mut s, &lib, &swap_b, &[], OnExists::Replace, &[]).unwrap();
+    assert_eq!(r2["replaced"], true);
+    let new = std::fs::read(&file).unwrap();
+    assert_ne!(old, new, "written over");
+    // the old one is kept beside it
+    let kept: Vec<_> = std::fs::read_dir(lib.join(".replaced")).unwrap().flatten().map(|e| std::fs::read(e.path()).unwrap()).collect();
+    assert_eq!(kept, std::slice::from_ref(&old));
+    // undo puts it back, redo the new one again
+    assert_eq!(s.undo_step().unwrap(), "Replace Camera Profile");
+    assert_eq!(std::fs::read(&file).unwrap(), old);
+    s.redo_step().unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), new);
+    assert!(!lib.join(format!("{}.tmp", file.file_name().unwrap().to_string_lossy())).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -118,6 +141,7 @@ fn hostile_chart_requests_are_errors() {
         ("profile.createFromChart", json!({"path": p, "second": {}})),
         ("profile.createFromChart", json!({"path": p, "second": {"path": p}})),
         ("profile.createFromChart", json!({"path": p, "name": "x".repeat(500)})),
+        ("profile.createFromChart", json!({"path": p, "chart": "x".repeat(500)})),
         ("profile.createFromChart", json!({"path": dir.join("missing.dng").to_string_lossy()})),
         ("profile.createFromChart", json!({"path": junk.to_string_lossy()})),
         ("profile.createFromChart", json!({})),
@@ -134,37 +158,6 @@ fn hostile_chart_requests_are_errors() {
 }
 
 #[test]
-fn replace_keeps_the_old_profile_and_undo_puts_it_back() {
-    let dir = temp_dir("replace");
-    let path = dir.join("CHART.dng");
-    std::fs::write(&path, lit_dng("D55", false)).unwrap();
-    let mut s = Session::new();
-    let prep = cp::prepare_path(&path.to_string_lossy()).unwrap();
-    let req = cp::Request { illuminant: "D55".into(), ..Default::default() };
-    let photo = |natural| lcc_camprof::BuildOptions { name: "Swap Test".into(), natural, ..Default::default() };
-    let first = cp::build((&prep, &req), None, &photo(true)).unwrap().dcp;
-    let second = cp::build((&prep, &req), None, &photo(false)).unwrap().dcp;
-    let lib = dir.join("dcp");
-    let r = cp::install(&mut s, &lib, &first, &[], OnExists::Fail, &[]).unwrap();
-    let file = PathBuf::from(r["file"].as_str().unwrap());
-    let old = std::fs::read(&file).unwrap();
-    let r2 = cp::install(&mut s, &lib, &second, &[], OnExists::Replace, &[]).unwrap();
-    assert_eq!(r2["replaced"], true);
-    let new = std::fs::read(&file).unwrap();
-    assert_ne!(old, new, "written over");
-    // the old one is kept beside it
-    let kept: Vec<_> = std::fs::read_dir(lib.join(".replaced")).unwrap().flatten().map(|e| std::fs::read(e.path()).unwrap()).collect();
-    assert_eq!(kept, std::slice::from_ref(&old));
-    // undo puts it back, redo the new one again
-    assert_eq!(s.undo_step().unwrap(), "Replace Camera Profile");
-    assert_eq!(std::fs::read(&file).unwrap(), old);
-    s.redo_step().unwrap();
-    assert_eq!(std::fs::read(&file).unwrap(), new);
-    assert!(!lib.join(format!("{}.tmp", file.file_name().unwrap().to_string_lossy())).exists());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn a_full_disk_mid_write_leaves_the_old_profile_intact() {
     let dir = temp_dir("fulldisk");
     let file = dir.join("p.dcp");
@@ -177,4 +170,29 @@ fn a_full_disk_mid_write_leaves_the_old_profile_intact() {
     assert_eq!(std::fs::read(&file).unwrap(), b"the old profile");
     assert!(!file.with_extension("dcp.tmp").exists(), "no half-written file is left behind");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A real SpyderCHECKR 24 shot on a Panasonic DMC-G7, read straight from its RW2: the chart is found as a
+/// SpyderCHECKR and a profile is fitted. The photo is the user's, so it is not in the repository: set
+/// `<PREFIX>_TEST_SPYDER_RW2` to the file (any RW2 of a SpyderCHECKR 24 lit by daylight).
+#[test]
+fn a_spydercheckr_rw2_is_found_and_profiled() {
+    let Some(path) = lcc_brand::env_os("TEST_SPYDER_RW2").filter(|p| !p.is_empty()).map(PathBuf::from) else {
+        lcc_testkit::skip!(Corpus, "set <PREFIX>_TEST_SPYDER_RW2 to an RW2 of a SpyderCHECKR 24");
+        return;
+    };
+    let prep = cp::prepare_path(&path.to_string_lossy()).unwrap();
+    let located = prep.located.expect("the chart is found by its colours");
+    assert_eq!(located.chart.key, "spyder24");
+    let req = cp::Request { illuminant: "D55".into(), ..Default::default() };
+    let out = cp::build((&prep, &req), None, &Default::default()).unwrap();
+    let built = &out.calibrations[0].built;
+    // Measured on the user's DMC-G7 frame: the light on that card is uneven. Evened out, the matrix
+    // fits to 3.7 and the profile to 1.4 (5.2 and 2.7 without).
+    assert!(built.notes.iter().any(|n| n.contains("correction kept")), "{:?}", built.notes);
+    assert!(built.matrix_mean_delta_e < 4.2, "{}", built.matrix_mean_delta_e);
+    assert!(built.mean_delta_e < 2.0, "{}", built.mean_delta_e);
+    let uneven = lcc_camprof::BuildOptions { even_light: false, ..Default::default() };
+    let raw = cp::build((&prep, &req), None, &uneven).unwrap();
+    assert!(raw.calibrations[0].built.matrix_mean_delta_e > built.matrix_mean_delta_e + 0.5);
 }

@@ -128,31 +128,32 @@ mod tests {
     }
 
     #[test]
-    fn round_trips() {
-        assert_eq!(Beacon::from_txt(&sample().txt(), 4000), Some(sample()));
-    }
-
-    #[test]
-    fn service_names_follow_rfc_6335() {
-        for (prefix, want) in
-            [("ALPHA_BETA_GAMMA_DELTA", "alpha-beta-gamm"), ("APP", "app"), ("__A__B__", "a-b"), ("123", "app-peer"), ("", "app-peer")]
+    fn adverts_round_trip_and_service_names_follow_rfc_6335() {
+        // round trips
         {
-            assert_eq!(service_name(prefix), want, "{prefix}");
+            assert_eq!(Beacon::from_txt(&sample().txt(), 4000), Some(sample()));
         }
-        for prefix in [lcc_brand::ENV_PREFIX, "X_Y_Z_LONG_LONG_LONG_NAME", "A-_-B", "ÄÖÜ_é", "ABCDEFGHIJKLMN_O"] {
-            let s = service_name(prefix);
-            assert!((1..=15).contains(&s.len()), "{s}");
-            assert!(s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{s}");
-            assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains("--"), "{s}");
+        // service names follow rfc 6335
+        {
+            for (prefix, want) in
+                [("ALPHA_BETA_GAMMA_DELTA", "alpha-beta-gamm"), ("APP", "app"), ("__A__B__", "a-b"), ("123", "app-peer"), ("", "app-peer")]
+            {
+                assert_eq!(service_name(prefix), want, "{prefix}");
+            }
+            for prefix in [lcc_brand::ENV_PREFIX, "X_Y_Z_LONG_LONG_LONG_NAME", "A-_-B", "ÄÖÜ_é", "ABCDEFGHIJKLMN_O"] {
+                let s = service_name(prefix);
+                assert!((1..=15).contains(&s.len()), "{s}");
+                assert!(s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{s}");
+                assert!(!s.starts_with('-') && !s.ends_with('-') && !s.contains("--"), "{s}");
+            }
         }
-    }
-
-    #[test]
-    fn the_service_follows_the_android_package() {
-        assert_eq!(service_name(package_segment("com.example.SomeApp")), "someapp");
-        assert_eq!(service_name(package_segment("Plain")), "plain");
-        let t = service_type();
-        assert!(t.starts_with('_') && t.ends_with("._tcp.local"), "{t}");
+        // the service follows the android package
+        {
+            assert_eq!(service_name(package_segment("com.example.SomeApp")), "someapp");
+            assert_eq!(service_name(package_segment("Plain")), "plain");
+            let t = service_type();
+            assert!(t.starts_with('_') && t.ends_with("._tcp.local"), "{t}");
+        }
     }
 
     #[test]

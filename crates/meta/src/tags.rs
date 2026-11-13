@@ -143,7 +143,7 @@ fn name(group: &str, tag: u16) -> String {
 
 fn rational(n: f64, d: f64) -> String {
     if d == 0.0 {
-        return "—".into();
+        return String::new();
     }
     let v = n / d;
     if (v - v.round()).abs() < 1e-9 {
@@ -505,6 +505,11 @@ mod tests {
     fn raw_compression_is_the_sensor_images_not_the_thumbnails() {
         let b = synthetic_raw(None);
         assert_eq!(compression(&file_tag_rows(&b)), ["Nikon NEF Compressed"]);
+        // plain tiff keeps its own compression
+        {
+            let b = [b"II*    ".to_vec(), ifd(&[entry(0x0103, 3, 1, 8)])].concat();
+            assert_eq!(compression(&file_tag_rows(&b)), ["Deflate"]);
+        }
     }
 
     #[test]
@@ -526,12 +531,6 @@ mod tests {
         assert_eq!(compression(&file_tag_rows(&dng)), ["Lossless JPEG"]);
         let plain = [b"II*    ".to_vec(), ifd(&[entry(0x0103, 3, 1, 7)])].concat();
         assert_eq!(compression(&file_tag_rows(&plain)), ["JPEG"]);
-    }
-
-    #[test]
-    fn plain_tiff_keeps_its_own_compression() {
-        let b = [b"II*    ".to_vec(), ifd(&[entry(0x0103, 3, 1, 8)])].concat();
-        assert_eq!(compression(&file_tag_rows(&b)), ["Deflate"]);
     }
 
     #[test]

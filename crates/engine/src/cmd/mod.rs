@@ -24,6 +24,7 @@ pub mod curves;
 pub mod dcp_profiles;
 pub(crate) mod denoise;
 pub(crate) mod develop;
+pub mod duplicates;
 mod edit;
 pub mod edit_in;
 mod enhance;
@@ -65,7 +66,11 @@ pub mod profile_manager;
 pub(crate) mod retouch;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod plugin_develop;
 pub(crate) mod plugin_filters;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_jobs;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod plugin_library;
 #[cfg(not(target_arch = "wasm32"))]
@@ -213,7 +218,7 @@ pub fn has_library_selection(s: &Session) -> std::result::Result<(), String> {
     if s.selected().iter().any(|id| s.catalog.photo(*id).is_none_or(|p| !p.local)) { Ok(()) } else { Err(LOCAL_ONLY.into()) }
 }
 /// Why an album command refused a Local-only selection.
-pub const LOCAL_ONLY: &str = "only Local photos: albums hold library photos (Add to My Photos first)";
+pub const LOCAL_ONLY: &str = "only Local photos: albums hold catalog photos (Add to My Photos first)";
 pub fn can_undo(s: &Session) -> std::result::Result<(), String> {
     if s.undo.is_empty() { Err("nothing to undo".into()) } else { Ok(()) }
 }
@@ -293,6 +298,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(import_tab::specs());
         v.extend(folders::specs());
         v.extend(missing::specs());
+        v.extend(duplicates::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
         v.extend(store::specs());

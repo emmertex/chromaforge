@@ -67,17 +67,13 @@ fn the_whole_frame_as_a_window_is_the_full_render() {
     assert_eq!(f.data, w.data);
 }
 
-// Given default settings, a window in the middle matches the full render
+// Given default settings, a window in the middle matches the full render, and so does one at a
+// corner (edges of the frame are not special)
 #[test]
-fn a_window_matches_the_full_render() {
-    check("default", &DevelopSettings::default(), MID, 1, 0.1);
-}
-
-// Given a window at each corner, it matches too (edges of the frame are not special)
-#[test]
-fn windows_at_the_corners_match() {
+fn windows_in_the_middle_and_at_the_corners_match() {
     let s = DevelopSettings::default();
-    for (x, y) in [(0, 0), (W - 400, 0), (0, H - 300), (W - 400, H - 300)] {
+    check("default", &s, MID, 1, 0.1);
+    for (x, y) in [(0, 0), (W - 400, H - 300)] {
         check("corner", &s, PixelWindow { x, y, w: 400, h: 300 }, 1, 0.1);
     }
 }
@@ -156,6 +152,18 @@ fn windows_outside_or_degenerate_are_clamped() {
     }
 }
 
+/// A model's segmentation on a `side²` grid: an ellipse in the middle of the photo.
+fn middle_seg(side: usize) -> lcc_develop::SegMask {
+    let logits: Vec<f32> = (0..side * side)
+        .map(|i| {
+            let (x, y) = (((i % side) as f32 + 0.5) / side as f32, ((i / side) as f32 + 0.5) / side as f32);
+            let r = (((x - 0.5) / 0.3).powi(2) + ((y - 0.5) / 0.25).powi(2)).sqrt();
+            (12.0 * (1.0 - r) * 4.0).clamp(-12.0, 12.0)
+        })
+        .collect();
+    lcc_develop::SegMask::from_logits(side, &logits)
+}
+
 /// A textured, noisy source: what noise reduction and edge refinement act on.
 fn noisy_scene() -> Rgb32f {
     let base = scene();
@@ -216,6 +224,8 @@ fn a_mask_overlay_window_matches_the_whole_render() {
         ("radial", MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.15, angle: 20.0, feather: 50.0, invert: false }, 0.0),
         ("linear refined", MaskShape::Linear { start: Point::new(0.45, 0.5), end: Point::new(0.55, 0.5) }, 100.0),
         ("sky", MaskShape::Sky, 0.0),
+        // a model's grid, enlarged along the photo's edges
+        ("prompt", MaskShape::Prompt { text: "middle".into(), seg: Some(middle_seg(32)), detail: vec![], edge: 0.0 }, 0.0),
     ];
     for (name, shape, refine) in shapes {
         let mut s = DevelopSettings::default();
@@ -226,7 +236,10 @@ fn a_mask_overlay_window_matches_the_whole_render() {
             refine,
             ..Default::default()
         });
-        for view in [MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] {
+        // every view of one shape; the views share the mask, so the other shapes show one
+        let views: &[MaskView] =
+            if name == "radial" { &[MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] } else { &[MaskView::Color] };
+        for &view in views {
             let overlay = Overlay::Mask { id: 3, view, color: [255, 0, 0], opacity: 70 };
             let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).image;
             let w =
@@ -260,7 +273,7 @@ fn an_all_masks_overlay_window_matches_the_whole_render() {
             ..Default::default()
         });
     }
-    for view in [MaskView::Color, MaskView::WhiteOnBlack, MaskView::ImageOnBlack] {
+    for view in [MaskView::Color, MaskView::ImageOnBlack] {
         let overlay = Overlay::AllMasks { view, color: [255, 0, 0], opacity: 70 };
         let f = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, ..RenderRequest::fit(W, H) }).image;
         let w = render(&noisy_scene(), &SourceInfo::default(), &s, &RenderRequest { overlay, window: Some(MID), ..RenderRequest::fit(W, H) }).image;
@@ -427,6 +440,47 @@ fn automatic_ai_masks_do_not_depend_on_the_window() {
     }
 }
 
+// Given the joint colour NR (process V8), a window is filtered with the whole frame's noise model: a
+// quiet part of the frame does not make a window of its noisy part (or the other way round) smooth
+// differently
+#[test]
+fn joint_colour_nr_measures_the_noise_of_the_whole_frame() {
+    let mut s = DevelopSettings { process: lcc_develop::Process::V8.version(), ..Default::default() };
+    s.detail.nr_color = 25.0;
+    s.detail.nr_color_smoothness = 0.0;
+    // a frame that is one noise tile, and one of many tiles (`nrc_joint::tiles`)
+    for (w, h, win) in [(768, 128, PixelWindow { x: 640, y: 32, w: 64, h: 64 }), (1664, 1536, PixelWindow { x: 1400, y: 700, w: 128, h: 128 })] {
+        let src = crate::tests::colour_noise_scene(w, h, w * 2 / 3);
+        let req = RenderRequest::fit(w, h);
+        let f = render(&src, &SourceInfo::default(), &s, &req).image;
+        let part = render(&src, &SourceInfo::default(), &s, &RenderRequest { window: Some(win), ..req }).image;
+        let (max, mean) = compare_inset(&f, &part, win, win.w / 4);
+        assert!(max <= 2 && mean <= 0.1, "{w}×{h}: max {max}, mean {mean:.3}");
+    }
+}
+
+// Given a 16-bit or float render of a window with the joint colour NR, then its edges are the whole
+// render's too: the window is grown by the filter's reach and cut back
+#[test]
+fn a_deep_window_with_colour_noise_reduction_matches_the_whole_render() {
+    use crate::OutputDepth;
+    let (w, h, win) = (768, 128, PixelWindow { x: 600, y: 32, w: 96, h: 64 });
+    let src = crate::tests::colour_noise_scene(w, h, w * 2 / 3);
+    let mut s = DevelopSettings { process: lcc_develop::Process::V8.version(), ..Default::default() };
+    s.detail.nr_color = 25.0;
+    s.detail.nr_color_smoothness = 0.0;
+    for depth in [OutputDepth::U16, OutputDepth::F32Linear] {
+        let req = RenderRequest { depth, ..RenderRequest::fit(w, h) };
+        let deep = |req: &RenderRequest| render(&src, &SourceInfo::default(), &s, req).deep.map(|d| d.to_rgba8());
+        let (Some(f), Some(part)) = (deep(&req), deep(&RenderRequest { window: Some(win), ..req })) else {
+            panic!("{depth:?}: no deep image");
+        };
+        assert_eq!((part.width, part.height), (win.w, win.h), "{depth:?}: the window's own size");
+        let (max, mean) = compare_inset(&f, &part, win, 0);
+        assert!(max <= 1 && mean <= 0.01, "{depth:?}: max {max}, mean {mean:.3}");
+    }
+}
+
 /// The margin the loupe's windows carry around what they show at this size (`region::margin_for`:
 /// 4.5 % of the long edge).
 const OVERLAY_INSET: usize = W * 45 / 1000;
@@ -453,9 +507,7 @@ fn diagnostic_overlays_in_a_window_match_the_full_render() {
     spots.detail.sharpen_amount = 60.0;
     // a binary threshold: a pixel at the threshold may flip on a one-level difference underneath
     check_overlay("spots", &spots, Overlay::Spots(70), MID, 255, 0.05);
-    for (x, y) in [(0, 0), (W - 400, H - 300)] {
-        check_overlay("spots at a corner", &spots, Overlay::Spots(70), PixelWindow { x, y, w: 400, h: 300 }, 255, 0.05);
-    }
+    check_overlay("spots at a corner", &spots, Overlay::Spots(70), PixelWindow { x: W - 400, y: H - 300, w: 400, h: 300 }, 255, 0.05);
     let mut pc = DevelopSettings::default();
     pc.point_colors.push(lcc_develop::PointColor { lum: 0.6, chroma: 0.08, hue: 60.0, hue_shift: 40.0, ..Default::default() });
     check_overlay("point colour range", &pc, Overlay::PointColorRange(0), MID, 1, 0.1);

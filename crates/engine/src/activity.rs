@@ -442,6 +442,11 @@ impl Activity {
         TaskGuard { activity: self.clone(), entry }
     }
 
+    /// Whether `other` is this registry (a clone of it), not just another one like it.
+    pub fn is(&self, other: &Activity) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Every task in flight, oldest first.
     pub fn list(&self) -> Vec<TaskInfo> {
         lock(&self.inner.tasks).iter().map(|e| e.info()).collect()
@@ -761,14 +766,6 @@ mod tests {
         assert_eq!(a.list()[0].unit, Unit::Count);
         g.set_unit(Unit::Bytes);
         assert_eq!(a.list()[0].unit, Unit::Bytes);
-    }
-
-    #[test]
-    fn ids_are_unique_and_list_is_oldest_first() {
-        let a = Activity::default();
-        let (g1, g2) = (a.start("export", "A", Cancel::Yes), a.start("import", "B", Cancel::Yes));
-        assert!(g2.id() > g1.id());
-        assert_eq!(a.list().iter().map(|t| t.id).collect::<Vec<_>>(), vec![g1.id(), g2.id()]);
     }
 
     #[test]

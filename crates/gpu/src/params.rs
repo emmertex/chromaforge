@@ -3,7 +3,7 @@
 
 use lcc_color::spline::Lut1;
 use lcc_develop::VignetteStyle;
-use lcc_pipeline::colorops::{MIXER_WORDS, POINT_WORDS};
+use lcc_pipeline::colorops::{HSL_WORDS, MIXER_WORDS, POINT_WORDS};
 use lcc_pipeline::finish::{CURVE_LUT_N, FinishParams, MASK_TERMS, srgb_lut};
 
 use crate::ctx::{FailKind, fail};
@@ -45,6 +45,8 @@ const FIELDS: &[(&str, usize)] = &[
     ("SHARPEN_V4", 1),
     // process V5: over-range colours keep hue and saturation (`lcc_pipeline::finish::hue_clip`)
     ("HUE_CLIP", 1),
+    // process V8: 8-bit output is ordered-dithered (`lcc_pipeline::finish::bayer_dither_offset`)
+    ("DITHER", 1),
     ("SHARPEN", 1),
     ("SHARPEN_MASK", 1),
     ("SHARPEN_LIMIT", 1),
@@ -72,6 +74,22 @@ const FIELDS: &[(&str, usize)] = &[
     ("BALANCE", 1),
     ("SKIN", 1),
     ("BANDH", 8),
+    // the colourist primaries (`PrimariesK`): the Color wheels then the Log wheels (rgb + master
+    // each), the Log wheels' range boundaries
+    ("PRIMARIES", 1),
+    ("PRIM_LIFT", 4),
+    ("PRIM_GAMMA", 4),
+    ("PRIM_GAIN", 4),
+    ("PRIM_OFFSET", 4),
+    ("PRIM_SHADOW", 4),
+    ("PRIM_MIDTONE", 4),
+    ("PRIM_HIGHLIGHT", 4),
+    ("PRIM_LOG_OFFSET", 4),
+    ("PRIM_LOW", 1),
+    ("PRIM_HIGH", 1),
+    // the HSL curves (`HslK`): the hue, saturation and luminance LUTs over the hue circle
+    ("HSL", 1),
+    ("HSL_LUT", HSL_WORDS),
     ("VIG", 1),
     ("VIG_AMOUNT", 1),
     ("VIG_START", 1),
@@ -154,6 +172,10 @@ const FIELDS: &[(&str, usize)] = &[
     ("RGB_CONTRAST_ZERO", 1),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
+    // the mask planes' stride (0: the whole image's, `w × h`) and the band's first pixel in them
+    // (planes too big for one buffer reach the kernel band by band, see `render`)
+    ("MASK_N", 1),
+    ("MASK_I0", 1),
 ];
 
 /// `(name, index)` of every field (for the WGSL constants).
@@ -325,6 +347,7 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     p.b("DEHAZE_V3", fp.dehaze_v3);
     p.b("SHARPEN_V4", fp.sharpen_v4);
     p.b("HUE_CLIP", fp.hue_clip);
+    p.b("DITHER", fp.dither);
     p.f("SHARPEN", fp.sharpen);
     p.f("SHARPEN_MASK", fp.sharpen_mask);
     p.f("SHARPEN_LIMIT", fp.sharpen_limit);
@@ -356,9 +379,32 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.f("BLENDING", *blending);
         p.f("BALANCE", *balance);
     }
+    if let Some(pr) = &ops.primaries {
+        p.b("PRIMARIES", true);
+        for (name, w) in [
+            ("PRIM_LIFT", &pr.lift),
+            ("PRIM_GAMMA", &pr.gamma),
+            ("PRIM_GAIN", &pr.gain),
+            ("PRIM_OFFSET", &pr.offset),
+            ("PRIM_SHADOW", &pr.shadow),
+            ("PRIM_MIDTONE", &pr.midtone),
+            ("PRIM_HIGHLIGHT", &pr.highlight),
+            ("PRIM_LOG_OFFSET", &pr.log_offset),
+        ] {
+            p.fs(name, &[w.rgb[0], w.rgb[1], w.rgb[2], w.master]);
+        }
+        p.f("PRIM_LOW", pr.low);
+        p.f("PRIM_HIGH", pr.high);
+    }
+    if let Some(hsl) = &ops.hsl {
+        p.b("HSL", true);
+        p.fs("HSL_LUT", &hsl.words());
+    }
     p.f("SKIN", ops.skin);
     p.fs("BANDH", lcc_pipeline::colorops::band_hues());
 
+    // also the dither's place in the whole output
+    p.fs("VIG_VIEW", &fp.view);
     if let Some(v) = &fp.vig {
         p.b("VIG", true);
         p.f("VIG_AMOUNT", v.amount);
@@ -367,7 +413,6 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.f("VIG_ASPECT_MIX", v.aspect_mix);
         p.f("VIG_POWER", v.power);
         p.f("VIG_HL", v.highlights);
-        p.fs("VIG_VIEW", &fp.view);
         p.u(
             "VIG_STYLE",
             match v.style {

@@ -58,6 +58,10 @@ fn type_into(h: &mut Headless, field: &str, text: &str) {
     h.step();
 }
 
+fn toast(h: &Headless) -> String {
+    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+}
+
 fn custom_names(h: &Headless) -> Vec<String> {
     h.app.session.crop_aspects.custom.iter().map(|a| a.name.clone()).collect()
 }
@@ -71,28 +75,38 @@ fn the_aspect_button_names_a_saved_ratio() {
     assert_eq!(label(Some((100, 100))), "1 × 1");
     assert_eq!(label(Some((300, 200))), "Original");
     assert_eq!(label(None), "Free");
+    // CodeRabbit on #3762: the saved ratio whose rounded value is the lock, not the first one within the label's
+    // tolerance
+    let custom = [
+        lcc_engine::cmd::crop_aspects::CustomAspect { name: "Close".into(), aspect: [3.01, 2.0] },
+        lcc_engine::cmd::crop_aspects::CustomAspect { name: "Exact".into(), aspect: [1.5, 1.0] },
+    ];
+    assert_eq!(crate::panels::right::aspect_label(Some((150, 100)), None, &custom), "Exact");
+    assert_eq!(crate::panels::right::aspect_label(Some((100, 150)), None, &custom), "Exact", "either orientation");
 }
 
+/// One session, several steps; each step was a test of its own and says what it checks.
 #[test]
-fn a_saved_ratio_is_in_the_menu_and_locks_the_crop() {
+fn a_saved_ratio_is_in_the_menu_and_a_hidden_built_in_leaves_it() {
     let mut h = crop_panel();
-    exec(&mut h, "crop.saveAspect", json!({"name": "Instagram Portrait", "aspect": [4, 5]}));
-    open_menu(&mut h);
-    assert_eq!(widgets(&mut h, "cropAspectSaved:"), ["cropAspectSaved:0"]);
-    click(&mut h, "cropAspectSaved:0");
-    assert_eq!(h.app.crop_tool_aspect(), Some((400, 500)));
-    assert!(widgets(&mut h, "cropAspectSaved:").is_empty(), "picking a ratio closes the menu");
-}
-
-#[test]
-fn a_hidden_built_in_ratio_leaves_the_menu() {
-    let mut h = crop_panel();
-    exec(&mut h, "crop.hideAspect", json!({"aspect": "16x9"}));
-    open_menu(&mut h);
-    let shown = widgets(&mut h, "cropAspectPreset:");
-    assert!(shown.iter().any(|w| w == "cropAspectPreset:1x1"), "{shown:?}");
-    assert!(shown.iter().any(|w| w == "cropAspectPreset:free"), "{shown:?}");
-    assert!(!shown.iter().any(|w| w == "cropAspectPreset:16x9"), "{shown:?}");
+    // a saved ratio is in the menu and locks the crop
+    {
+        exec(&mut h, "crop.saveAspect", json!({"name": "Instagram Portrait", "aspect": [4, 5]}));
+        open_menu(&mut h);
+        assert_eq!(widgets(&mut h, "cropAspectSaved:"), ["cropAspectSaved:0"]);
+        click(&mut h, "cropAspectSaved:0");
+        assert_eq!(h.app.crop_tool_aspect(), Some((400, 500)));
+        assert!(widgets(&mut h, "cropAspectSaved:").is_empty(), "picking a ratio closes the menu");
+    }
+    // a hidden built in ratio leaves the menu
+    {
+        exec(&mut h, "crop.hideAspect", json!({"aspect": "16x9"}));
+        open_menu(&mut h);
+        let shown = widgets(&mut h, "cropAspectPreset:");
+        assert!(shown.iter().any(|w| w == "cropAspectPreset:1x1"), "{shown:?}");
+        assert!(shown.iter().any(|w| w == "cropAspectPreset:free"), "{shown:?}");
+        assert!(!shown.iter().any(|w| w == "cropAspectPreset:16x9"), "{shown:?}");
+    }
 }
 
 #[test]
@@ -112,6 +126,31 @@ fn the_custom_row_saves_a_named_ratio_and_uses_it() {
     type_into(&mut h, "field:cropCustomName", "");
     click(&mut h, "button:cropCustomSave");
     assert_eq!(custom_names(&h), ["Instagram"]);
+}
+
+/// A Save that can't be done says why and leaves the menu open, rather than closing as if it
+/// had worked: a ratio too small to apply, a built-in name (#1856 review).
+#[test]
+fn a_custom_save_that_fails_says_why_and_keeps_the_menu_open() {
+    let mut h = crop_panel();
+    let before = h.app.crop_tool_aspect();
+    open_menu(&mut h);
+    type_into(&mut h, "field:cropCustomW", "0.001");
+    type_into(&mut h, "field:cropCustomH", "0.001");
+    type_into(&mut h, "field:cropCustomName", "Tiny");
+    click(&mut h, "button:cropCustomSave");
+    assert!(custom_names(&h).is_empty(), "nothing saved");
+    assert_eq!(h.app.crop_tool_aspect(), before, "nor applied");
+    assert!(toast(&h).contains("aspect"), "the reason is shown: {:?}", toast(&h));
+    assert!(!widgets(&mut h, "cropAspectPreset:").is_empty(), "the menu stays open");
+    h.app.ui.toasts.clear();
+    type_into(&mut h, "field:cropCustomW", "3");
+    type_into(&mut h, "field:cropCustomH", "2");
+    type_into(&mut h, "field:cropCustomName", "Free");
+    click(&mut h, "button:cropCustomSave");
+    assert!(custom_names(&h).is_empty());
+    assert!(toast(&h).contains("built-in"), "{:?}", toast(&h));
+    assert!(!widgets(&mut h, "cropAspectPreset:").is_empty(), "the menu stays open");
 }
 
 #[test]

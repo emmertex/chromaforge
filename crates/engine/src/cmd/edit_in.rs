@@ -379,7 +379,7 @@ pub(crate) fn stack_edit(s: &mut Session, new: PhotoId, on: PhotoId) -> Result<(
 fn add_and_stack(s: &mut Session, path: &Path, on: PhotoId, stack: bool, cmd: &str) -> Result<u64> {
     let r = s.execute("library.import", &json!({"paths": [path.to_string_lossy()]}))?;
     let new =
-        r["imported"].get(0).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("{} could not be added to the library", path.display())))?;
+        r["imported"].get(0).and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("{} could not be added to the catalog", path.display())))?;
     // the round trip keeps the catalog's metadata (rating, label, title, keywords, camera…),
     // whatever the file format could carry
     if let Some(from) = s.catalog.photo(on).cloned() {
@@ -799,13 +799,13 @@ pub fn control_open(_: &Control, _: &Path) -> std::result::Result<Value, String>
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "editIn.presets", "Edit In Presets", [], None, "{} — external editor presets → {builtin: [preset], user: [preset]}; a preset is {name, app, args, format: tiff|psd, colorSpace, bitDepth: 8|16, mode: copyWithAdjustments|copy|original, naming, stack, control?: {port, tokenFile, root}}", always, presets),
+        cmd!(query "editIn.presets", "Edit In Presets", [], None, "{}: external editor presets → {builtin: [preset], user: [preset]}; a preset is {name, app, args, format: tiff|psd, colorSpace, bitDepth: 8|16, mode: copyWithAdjustments|copy|original, naming, stack, control?: {port, tokenFile, root}}", always, presets),
         cmd!(
             "editIn.savePreset",
             "Save Edit In Preset",
             [],
             None,
-            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}} — add or replace an external editor preset (kept in editors.json in the settings folder); app, args and control choose a program, so over MCP, the control channel or in an action they can't be set or changed → the preset",
+            "{name, app?, args?: [..., \"{file}\"?], format?: tiff|psd, colorSpace?: srgb|adobeRgb|displayP3|proPhoto, bitDepth?: 8|16, mode?: copyWithAdjustments|copy|original, naming?: \"{name}-Edit\", stack?: true, control?: {port, tokenFile, root}}: add or replace an external editor preset (kept in editors.json in the settings folder); app, args and control choose a program, so over MCP, the control channel or in an action they can't be set or changed → the preset",
             always,
             save_preset
         ),
@@ -814,7 +814,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Delete Edit In Preset",
             [],
             None,
-            "{name} — delete a saved external editor preset → {deleted}",
+            "{name}: delete a saved external editor preset → {deleted}",
             always,
             delete_preset
         ),
@@ -825,7 +825,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
                 "Edit In…",
                 ["Photo", "Edit In"],
                 None,
-                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false} — Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); app and args (and a preset's control) choose a program, so they're for the command line and the Edit In Presets dialog only: over MCP, the control channel or in an action, name a saved preset instead; wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
+                "{id?, preset?: name (default \"External Editor\"), mode?, format?, colorSpace?, bitDepth?, app?, args?, naming?, stack?, dir?, launch?: false, wait?: false}: Edit In with Lightroom's options: copyWithAdjustments renders the photo with its edits (TIFF, or a layered PSD), copy copies the original file, original edits the file itself (copy/original: JPEG, TIFF, PNG, PSD, WebP only). A new file is added to the library, stacked directly above the photo it was made from (inside that photo's stack when it has one) and selected; TIFF and PSD copies carry an xmpMM:DerivedFrom link to it, so a re-import stacks them again. launch opens it in the preset's application (or over PhotoCraft's control channel); app and args (and a preset's control) choose a program, so they're for the command line and the Edit In Presets dialog only: over MCP, the control channel or in an action, name a saved preset instead; wait (with launch) starts the application with --wait, returns when it exits and reloads the photo → {path, id, original, mode, openWith: {path, app, args, reload, preset, control}, opened}",
                 has_active,
                 edit_in
             )
@@ -835,7 +835,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
             "Open as Layers in PhotoCraft…",
             ["Photo", "Edit In"],
             None,
-            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} (app, args and control choose a program: command line only, never over MCP, the control channel or in an action) — one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
+            "{ids?, preset?: \"PhotoCraft\", colorSpace?, bitDepth?: 8|16, name?, dir?, stack?: true, launch?: false} (app, args and control choose a program: command line only, never over MCP, the control channel or in an action): one layered PSD (16-bit unless the preset or bitDepth says 8) from the selected photos (2–64), each rendered with its edits as a layer named after it (the first selected on top), added to the library and stacked on the active photo → {path, id, layers, openWith, opened}",
             has_selection,
             open_as_layers
         ),
@@ -847,24 +847,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_line_places_the_file() {
-        let p = Path::new("/x/a b.psd");
-        let l = command_line("/opt/pc/photocraft", &["--new-window".into()], p);
-        assert_eq!(l, vec!["/opt/pc/photocraft", "--new-window", "/x/a b.psd"]);
-        let l = command_line("/usr/bin/ed", &["--open={file}".into(), "-v".into()], p);
-        assert_eq!(l, vec!["/usr/bin/ed", "--open=/x/a b.psd", "-v"]);
-    }
-
-    /// The system default opener gets the file as one argument, never through a shell, so a name
-    /// holding `&` opens that file and starts nothing else.
-    #[test]
-    fn the_default_opener_takes_the_file_without_a_shell() {
-        let p = Path::new("C:/x/a&calc.jpg");
-        assert_eq!(command_line_on(Os::Windows, "", &[], p), vec!["explorer.exe", "C:\\x\\a&calc.jpg"]);
-        assert_eq!(command_line_on(Os::Mac, "", &[], p), vec!["open", "C:/x/a&calc.jpg"]);
-        assert_eq!(command_line_on(Os::Other, "", &[], p), vec!["xdg-open", "C:/x/a&calc.jpg"]);
-        // a program the user chose gets the path as written
-        assert_eq!(command_line_on(Os::Windows, "C:/ed.exe", &[], p), vec!["C:/ed.exe", "C:/x/a&calc.jpg"]);
+    fn command_line_places_the_file_and_the_default_opener_takes_it_without_a_shell() {
+        // the command line places the file
+        {
+            let p = Path::new("/x/a b.psd");
+            let l = command_line("/opt/pc/photocraft", &["--new-window".into()], p);
+            assert_eq!(l, vec!["/opt/pc/photocraft", "--new-window", "/x/a b.psd"]);
+            let l = command_line("/usr/bin/ed", &["--open={file}".into(), "-v".into()], p);
+            assert_eq!(l, vec!["/usr/bin/ed", "--open=/x/a b.psd", "-v"]);
+        }
+        // The system default opener gets the file as one argument, never through a shell, so a name
+        // holding `&` opens that file and starts nothing else.
+        {
+            let p = Path::new("C:/x/a&calc.jpg");
+            assert_eq!(command_line_on(Os::Windows, "", &[], p), vec!["explorer.exe", "C:\\x\\a&calc.jpg"]);
+            assert_eq!(command_line_on(Os::Mac, "", &[], p), vec!["open", "C:/x/a&calc.jpg"]);
+            assert_eq!(command_line_on(Os::Other, "", &[], p), vec!["xdg-open", "C:/x/a&calc.jpg"]);
+            // a program the user chose gets the path as written
+            assert_eq!(command_line_on(Os::Windows, "C:/ed.exe", &[], p), vec!["C:/ed.exe", "C:/x/a&calc.jpg"]);
+        }
     }
 
     #[test]
@@ -885,39 +886,40 @@ mod tests {
     }
 
     #[test]
-    fn hostile_presets_are_refused() {
-        let mut p = EditorPreset { name: "x".into(), ..Default::default() };
-        p.bit_depth = 12;
-        assert!(p.validate().is_err());
-        let p = EditorPreset { name: "x".into(), naming: "../evil".into(), ..Default::default() };
-        assert!(p.validate().is_err());
-        let p = EditorPreset { name: "x".into(), color_space: "lab".into(), ..Default::default() };
-        assert!(p.validate().is_err());
-        assert!(decode_tiff16(b"II*\0garbage").is_err());
-    }
-
-    /// P6.2: a hand-edited or damaged `editors.json` never panics: every entry either fails to
-    /// parse or is checked like a preset saved through `editIn.savePreset`.
-    #[test]
-    fn hostile_editors_json_never_panics() {
-        let values = [r#""""#, r#""../x""#, r#""{file}{file}""#, r#""\u0000""#, "1e308", "-1", "null", "[]", "{}", r#""a\nb""#, "255", "65536"];
-        let keys = ["name", "app", "args", "format", "colorSpace", "bitDepth", "mode", "naming", "stack", "control"];
-        let extras = ["", r#","args":["{file}","-x"]"#, r#","control":{"port":99999,"tokenFile":"","root":"/"}"#];
-        let mut n = 0;
-        for (i, k) in keys.iter().enumerate() {
-            for v in values {
-                for extra in extras {
-                    let doc = format!(r#"[{{"name":"p{i}","{k}":{v}{extra}}}]"#);
-                    let Ok(list) = serde_json::from_str::<Vec<EditorPreset>>(&doc) else { continue };
-                    for p in list {
-                        n += 1;
-                        if p.validate().is_ok() {
-                            let _ = command_line(&p.app, &p.args, std::path::Path::new("/tmp/x y.tif"));
+    fn hostile_presets_are_refused_and_hostile_editors_json_never_panics() {
+        // hostile presets are refused
+        {
+            let mut p = EditorPreset { name: "x".into(), ..Default::default() };
+            p.bit_depth = 12;
+            assert!(p.validate().is_err());
+            let p = EditorPreset { name: "x".into(), naming: "../evil".into(), ..Default::default() };
+            assert!(p.validate().is_err());
+            let p = EditorPreset { name: "x".into(), color_space: "lab".into(), ..Default::default() };
+            assert!(p.validate().is_err());
+            assert!(decode_tiff16(b"II*\0garbage").is_err());
+        }
+        // P6.2: a hand-edited or damaged `editors.json` never panics: every entry either fails to
+        // parse or is checked like a preset saved through `editIn.savePreset`.
+        {
+            let values = [r#""""#, r#""../x""#, r#""{file}{file}""#, r#""\u0000""#, "1e308", "-1", "null", "[]", "{}", r#""a\nb""#, "255", "65536"];
+            let keys = ["name", "app", "args", "format", "colorSpace", "bitDepth", "mode", "naming", "stack", "control"];
+            let extras = ["", r#","args":["{file}","-x"]"#, r#","control":{"port":99999,"tokenFile":"","root":"/"}"#];
+            let mut n = 0;
+            for (i, k) in keys.iter().enumerate() {
+                for v in values {
+                    for extra in extras {
+                        let doc = format!(r#"[{{"name":"p{i}","{k}":{v}{extra}}}]"#);
+                        let Ok(list) = serde_json::from_str::<Vec<EditorPreset>>(&doc) else { continue };
+                        for p in list {
+                            n += 1;
+                            if p.validate().is_ok() {
+                                let _ = command_line(&p.app, &p.args, std::path::Path::new("/tmp/x y.tif"));
+                            }
                         }
                     }
                 }
             }
+            assert!(n > 20, "{n}");
         }
-        assert!(n > 20, "{n}");
     }
 }

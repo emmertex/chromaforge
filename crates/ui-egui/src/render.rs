@@ -86,6 +86,8 @@ pub enum Slot {
     Hover,
     /// An import candidate's thumbnail in the import review dialog (by index).
     Import(u32),
+    /// A duplicate group member's thumbnail in the Find Duplicates window (by index).
+    Duplicates(u32),
     /// The second window's view of the active photo.
     Second,
     /// A tile of a zoomed view (see [`crate::region::TileCache`]): the pane it is shown in
@@ -532,6 +534,15 @@ pub struct Renderer {
     /// re-logged at every cell it appears in. A changed file (or edit) renders under another job
     /// key, which this never held, and so is tried again.
     thumb_failures: HashMap<(PhotoId, bool), (u64, String)>,
+    /// Photos whose grid cell showed a failure or the photo's kept thumbnail while their original
+    /// was known to be missing ([`Self::note_missing_original`]): the cell asks again once the
+    /// original is back.
+    missing_originals: std::collections::HashSet<PhotoId>,
+    /// The availability generation ([`lcc_engine::availability::Availability::gone_generation`]) at
+    /// which each photo's cell last asked again for an original found back
+    /// ([`Self::retry_found_original`]): once per generation, so a file that keeps failing is not
+    /// read on every frame.
+    found_back: HashMap<PhotoId, u64>,
     /// The catalog revision seen at the last poll: a failure is retried once the catalog changes
     /// (a relinked or re-imported file).
     catalog_rev: u64,
@@ -542,6 +553,14 @@ pub struct Renderer {
     ready_views: HashMap<Slot, (RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
     /// Adopted prefetches, collected as finished loupe renders by the next [`Self::collect`].
     adopted: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// Finished stand-ins made ahead ([`Slot::QuickAhead`]) held for a later frame: at most one big
+    /// picture made ahead is uploaded per frame ([`BIG_UPLOAD_BYTES`]), so that a set of 1:1
+    /// previews landing together never stalls the frame of a drag or a zoom.
+    held: Vec<(Slot, RenderResult, Option<Arc<egui::ColorImage>>, f64)>,
+    /// The frame a big picture made ahead was last uploaded in.
+    big_upload_frame: Option<u64>,
+    /// [`BIG_UPLOAD_BYTES`] (smaller in tests, whose context takes no texture over 2048 px).
+    big_upload_bytes: usize,
     /// Variant key → frame it was last asked for (LRU of [`Slot::Variant`] textures).
     variant_used: HashMap<u64, u64>,
     /// How many variants the last frame's views showed at once (see [`Self::want_variants`]).
@@ -569,6 +588,9 @@ pub struct Renderer {
     /// Since when nothing has been pending, and whether the GPU pool was trimmed since.
     #[cfg(not(target_arch = "wasm32"))]
     idle: Option<(std::time::Instant, bool)>,
+    /// Bytes still pooled after the last idle trim ([`Self::trim_when_idle`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pooled_after_trim: u64,
     /// Surface is extended linear sRGB (macOS EDR / Windows scRGB): skip monitor profile
     /// conversion, let the compositor do it (P2-3).
     surface_is_extended_linear: bool,
@@ -584,9 +606,25 @@ pub struct Renderer {
 /// How many [`Slot::QuickAhead`] stand-ins the loupe keeps ready.
 pub const AHEAD_SLOTS: u8 = 6;
 
+/// A picture made ahead bigger than this (a 1:1 preview of a 45 MP photo is 180 MB) waits for a
+/// frame without another such upload: each takes the UI thread some 50 ms to copy to the GPU.
+pub const BIG_UPLOAD_BYTES: usize = 32 << 20;
+
+/// The [`Slot::Prefetch`] of the open photo's full-resolution source, decoded ahead of a zoom to 1:1.
+pub const FULL_SOURCE_PREFETCH: u8 = 2;
+
 /// After this long without renders the GPU renderer's pool of recycled buffers is freed.
 #[cfg(not(target_arch = "wasm32"))]
 const IDLE_TRIM: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What [`Renderer::trim_when_idle`] reads and does on the GPU: batch renders running, bytes of
+/// recycled buffers pooled (both cards), and the trim itself.
+#[cfg(not(target_arch = "wasm32"))]
+struct IdleGpu<'a> {
+    batch_jobs: &'a dyn Fn() -> usize,
+    pooled: &'a dyn Fn() -> u64,
+    trim: &'a dyn Fn(),
+}
 
 impl Slot {
     /// An interactive view of the open photo: slider drags redo only the stages they feed, and a
@@ -608,6 +646,16 @@ impl Default for Renderer {
 /// others render raws for seconds ("Rendering…" in the loupe and empty grid cells while every
 /// worker decoded a 45 MP CR3).
 const STAND_IN_WORKERS: usize = 2;
+
+/// Renders that go to the second graphics card when there is one (`lcc_gpu::prefer_helper`): the
+/// full-quality tiles of a 1:1 view. They come back as pixels for the screen either way, and on the
+/// window's card their work held the window's frames up: presenting waited behind it, 100–1,100 ms
+/// between frames while sliders dragged at 100 % (CF-ZOOM-FREEZE 2026-11-10; with the tiles on the
+/// second card the slowest frames were 22–145 ms). The drag's drafts stay on the window's card.
+/// With one card this changes nothing.
+pub(crate) fn on_second_card(slot: Slot) -> bool {
+    matches!(slot, Slot::Tile { .. })
+}
 
 /// Jobs below this priority are background work (the real thumbnails rendered behind the
 /// stand-ins, [`crate::panels::grid::BACKGROUND_THUMB_PRIORITY`]): at most [`BACKGROUND_AT_ONCE`]
@@ -683,10 +731,15 @@ impl Renderer {
             quick_tried: HashMap::new(),
             failed: HashMap::new(),
             thumb_failures: HashMap::new(),
+            missing_originals: std::collections::HashSet::new(),
+            found_back: HashMap::new(),
             catalog_rev: 0,
             prefetched: HashMap::new(),
             ready_views: HashMap::new(),
             adopted: Vec::new(),
+            held: Vec::new(),
+            big_upload_frame: None,
+            big_upload_bytes: BIG_UPLOAD_BYTES,
             variant_used: HashMap::new(),
             variant_want: 0,
             frame: 0,
@@ -697,6 +750,8 @@ impl Renderer {
             display: None,
             #[cfg(not(target_arch = "wasm32"))]
             idle: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pooled_after_trim: 0,
             surface_is_extended_linear: false,
             screen: None,
             natives: HashMap::new(),
@@ -799,6 +854,44 @@ impl Renderer {
         }
         self.remember_thumb(photo, bucket, key, true);
         self.embedded_thumbs.insert(photo.id, (Arc::downgrade(photo), bucket, key));
+    }
+
+    /// The original of photo `id`, whose grid cell shows a failure or the photo's kept thumbnail, is known to be
+    /// missing: once it is back, [`Self::retry_found_original`] lets the cell ask again.
+    pub fn note_missing_original(&mut self, id: PhotoId) {
+        if self.missing_originals.len() >= THUMB_FAILURES_MAX && !self.missing_originals.contains(&id) {
+            self.missing_originals.clear();
+        }
+        self.missing_originals.insert(id);
+    }
+
+    /// The original of photo `id` is there (`generation`: the availability's gone generation): if its grid cell
+    /// shows the photo's kept thumbnail (`kept`), or a failure from while the original was missing, it asks again,
+    /// once per generation. Both stand for the thumbnail's key, so nothing else would until a restart, a relink or
+    /// an edit (issue #448). The kept picture stays on screen as a stand-in until the render replaces it.
+    pub fn retry_found_original(&mut self, id: PhotoId, kept: bool, generation: u64) {
+        if (!kept && !self.missing_originals.contains(&id)) || self.found_back.get(&id) == Some(&generation) {
+            return;
+        }
+        self.missing_originals.remove(&id);
+        if self.found_back.len() >= THUMB_FAILURES_MAX && !self.found_back.contains_key(&id) {
+            self.found_back.clear();
+        }
+        self.found_back.insert(id, generation);
+        for slot in [Slot::Thumb(id), Slot::ThumbQuick(id)] {
+            self.failed.remove(&slot);
+            self.quick_tried.remove(&slot);
+            self.thumb_failures.remove(&(id, matches!(slot, Slot::ThumbQuick(_))));
+        }
+        self.thumb_inputs.remove(&id);
+        self.embedded_thumbs.remove(&id);
+        // (a kept picture shown as the thumbnail itself becomes its stand-in: the grid then asks for the real one)
+        if self.textures.get(&Slot::Thumb(id)).is_some_and(|t| t.quick == Some(QuickSource::Kept)) {
+            self.release(Slot::ThumbQuick(id));
+            if let Some(t) = self.textures.remove(&Slot::Thumb(id)) {
+                self.textures.insert(Slot::ThumbQuick(id), t);
+            }
+        }
     }
 
     pub fn remember_thumb(&mut self, photo: &Arc<lcc_catalog::Photo>, bucket: usize, key: u64, quick: bool) {
@@ -1304,6 +1397,7 @@ impl Renderer {
             let run = || match (background, prefetch) {
                 (true, true) => lcc_engine::memory::in_background(|| lcc_engine::gpu::as_batch(|| job.run())),
                 (true, false) => lcc_engine::memory::in_background(|| job.run()),
+                _ if on_second_card(slot) => lcc_engine::gpu::prefer_helper(|| job.run()),
                 _ => job.run(),
             };
             Self::run_for(slot, run, &display, headroom)
@@ -1371,6 +1465,12 @@ impl Renderer {
                 Self::run_for(slot, run, &display, None)
             }),
         );
+    }
+
+    /// Whether a [`Slot::QuickAhead`] stand-in of `photo` for `key` is made (or being made).
+    pub fn made_ahead(&self, photo: PhotoId, key: u64) -> bool {
+        self.textures.iter().any(|(s, t)| matches!(s, Slot::QuickAhead(_)) && t.photo == photo && t.key == key)
+            || self.quick_tried.iter().any(|(s, k)| matches!(s, Slot::QuickAhead(_)) && *k == key)
     }
 
     /// Move a [`Slot::QuickAhead`] texture of `photo` made for `key` into [`Slot::Preview`].
@@ -1479,9 +1579,12 @@ impl Renderer {
         );
     }
 
-    /// Prepared-ahead jobs ([`Slot::Prefetch`]) queued or running.
+    /// Prepared-ahead jobs of the photos around the one on screen ([`Slot::Prefetch`]) queued or
+    /// running. Not the open photo's full-resolution source ([`FULL_SOURCE_PREFETCH`]): a slow
+    /// decode for a zoom that may never come, which must neither take a neighbour's turn nor hold
+    /// the background preparation back (it held it for 20 s while a wedding folder was read).
     pub fn prefetches_pending(&self) -> usize {
-        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(_))).count()
+        self.pending.keys().filter(|s| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).count()
     }
 
     /// Slots of photos prepared around the one on screen asked for since the renderer last forgot
@@ -1493,7 +1596,7 @@ impl Renderer {
     /// The jobs asked for in the slots of photos prepared around the one on screen (queued,
     /// running or made).
     pub fn prefetch_keys(&self) -> Vec<u64> {
-        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != 2)).map(|(_, k)| *k).collect()
+        self.prefetched.iter().filter(|(s, _)| matches!(s, Slot::Prefetch(n) if *n != FULL_SOURCE_PREFETCH)).map(|(_, k)| *k).collect()
     }
 
     /// Whether `slot` was last asked for the job of `key` (queued, running or done).
@@ -1536,9 +1639,12 @@ impl Renderer {
         self.quick_tried.clear();
         self.failed.clear();
         self.thumb_failures.clear();
+        self.missing_originals.clear();
+        self.found_back.clear();
         self.prefetched.clear();
         self.ready_views.clear();
         self.adopted.clear();
+        self.held.clear();
         self.pending.clear();
         self.queue.clear();
         self.tiles.clear();
@@ -1921,6 +2027,7 @@ impl Renderer {
     /// Turn finished jobs into textures. Returns true if anything changed.
     fn collect(&mut self, ctx: &egui::Context, session: &mut Session, inline_ms: f64) -> bool {
         let mut finished: Vec<_> = std::mem::take(&mut self.adopted).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)).collect();
+        finished.extend(std::mem::take(&mut self.held).into_iter().map(|(slot, r, color, ms)| (slot, r, color, None, ms)));
         while let Some(done) = self.pool.try_recv() {
             finished.push((done.slot, done.result.result, done.result.color, done.result.texels, if done.ms > 0.0 { done.ms } else { inline_ms }));
         }
@@ -1930,6 +2037,17 @@ impl Renderer {
         self.dispatch();
         let mut changed = false;
         for (mut slot, mut r, mut color, texels, ms) in finished {
+            // (not when the loupe waits for that very photo: it is shown at once)
+            if matches!(slot, Slot::QuickAhead(_))
+                && r.rendered.as_ref().is_ok_and(|x| x.image.width.saturating_mul(x.image.height).saturating_mul(4) > self.big_upload_bytes)
+                && !self.pending.get(&Slot::Preview).is_some_and(|p| p.0 == r.key)
+            {
+                if self.big_upload_frame == Some(self.frame) {
+                    self.held.push((slot, r, color, ms));
+                    continue;
+                }
+                self.big_upload_frame = Some(self.frame);
+            }
             self.completed += 1;
             let main_draft = slot == Slot::Main && self.main_drafts.remove(&r.request_id);
             // made for another display profile than the one in use: obsolete
@@ -2196,25 +2314,54 @@ impl Renderer {
     }
 
     /// Free the GPU renderer's recycled buffers once nothing has rendered for [`IDLE_TRIM`] (they
-    /// are reallocated by the next render; while working, renders reuse them).
+    /// are reallocated by the next render; while working, renders reuse them). Batch work (an
+    /// export, Build Previews) renders on other threads and fills the pools again after a trim:
+    /// once it has finished, the pools are trimmed again (they kept up to the pool limit per card,
+    /// 2 GB each with a 16 GB budget, for the rest of the session).
     #[cfg(not(target_arch = "wasm32"))]
     fn trim_when_idle(&mut self, ctx: &egui::Context) {
+        let gpu = IdleGpu {
+            batch_jobs: &|| lcc_engine::gpu::batch_usage().jobs + lcc_engine::gpu::helper_usage().0,
+            pooled: &|| lcc_engine::gpu::memory().pooled,
+            trim: &|| {
+                lcc_engine::gpu::trim_pool(0);
+                lcc_engine::memory::release();
+            },
+        };
+        if let Some(wait) = self.idle_trim_step(std::time::Instant::now(), &gpu) {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    /// One frame of [`Self::trim_when_idle`] at `now`, against `gpu` (the GPU's counters, or a test's):
+    /// whether to look again after a while.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn idle_trim_step(&mut self, now: std::time::Instant, gpu: &IdleGpu<'_>) -> Option<std::time::Duration> {
         if !self.pending.is_empty() {
             self.idle = None;
-            return;
+            return None;
         }
-        let now = std::time::Instant::now();
         let (since, trimmed) = *self.idle.get_or_insert((now, false));
         if trimmed {
-            return;
+            if (gpu.batch_jobs)() > 0 {
+                // (looked at again once it has had time to finish)
+                return Some(IDLE_TRIM);
+            }
+            if (gpu.pooled)() > self.pooled_after_trim {
+                self.idle = Some((now, false));
+                return Some(IDLE_TRIM);
+            }
+            return None;
         }
-        let waited = now.duration_since(since);
+        let waited = now.saturating_duration_since(since);
         if waited >= IDLE_TRIM {
-            lcc_engine::gpu::trim_pool(0);
-            lcc_engine::memory::release();
+            (gpu.trim)();
+            // (what a trim cannot free does not start another one)
+            self.pooled_after_trim = (gpu.pooled)();
             self.idle = Some((since, true));
+            None
         } else {
-            ctx.request_repaint_after(IDLE_TRIM - waited);
+            Some(IDLE_TRIM - waited)
         }
     }
 
@@ -2279,6 +2426,16 @@ impl Renderer {
         self.quick_tried.retain(|s, _| !matches!(s, Slot::Import(_)));
     }
 
+    /// Drop the Find Duplicates window's thumbnails (the window closed).
+    pub fn forget_duplicates(&mut self) {
+        self.pool.reprioritize(|s, p| if matches!(s, Slot::Duplicates(_)) { None } else { Some(p) });
+        self.queue.retain(|q| !matches!(q.slot, Slot::Duplicates(_)));
+        self.pending.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.requests.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.textures.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+        self.quick_tried.retain(|s, _| !matches!(s, Slot::Duplicates(_)));
+    }
+
     /// Drop thumbnails that aren't in `keep` (bounded memory for huge libraries), and queued
     /// thumbnail jobs for photos that scrolled out of `keep`.
     pub fn evict_thumbs(&mut self, keep: &std::collections::HashSet<PhotoId>, max: usize) {
@@ -2318,6 +2475,19 @@ fn render_failure_message(slot: Slot, photo: PhotoId, source: Option<&lcc_catalo
         Some(lcc_catalog::Source::File { path }) => format!("render {slot:?}, {photo:?}, file {path:?}: {error}"),
         Some(lcc_catalog::Source::Demo { scene }) => format!("render {slot:?}, {photo:?}, demo scene {scene}: {error}"),
         None => format!("render {slot:?}, {photo:?}, source unavailable: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod second_card_tests {
+    use super::*;
+
+    #[test]
+    fn the_tiles_of_a_one_to_one_view_render_on_the_second_card_and_the_view_on_the_window_card() {
+        assert!(on_second_card(Slot::Tile { pane: PANE_AFTER, col: 2, row: 3 }));
+        for slot in [Slot::Main, Slot::Window(PANE_AFTER), Slot::Preview, Slot::Before, Slot::Compare(0), Slot::Hover] {
+            assert!(!on_second_card(slot), "{slot:?} draws on the window's card");
+        }
     }
 }
 
@@ -2633,6 +2803,64 @@ mod thumbnail_tests {
             std::mem::take(&mut self.0.borrow_mut().finished)
         }
     }
+    /// The open photo's full-resolution source decoded ahead of a zoom is no neighbour: while it
+    /// decodes, the neighbours still get both their turns and the background preparation is not
+    /// held back (2026-11-09: it was pending for 20 s while a wedding folder was read, and every
+    /// photo ahead waited behind it).
+    #[test]
+    fn the_full_resolution_warm_up_is_not_a_neighbour_render() {
+        let (mut app, _work, _ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        let id = PhotoId(1);
+        let job = app.session.loupe_job(id, 64, 64, true).expect("a loupe job");
+        app.renderer.prefetch(Slot::Prefetch(FULL_SOURCE_PREFETCH), job.clone(), 10);
+        assert!(app.renderer.is_pending(Slot::Prefetch(FULL_SOURCE_PREFETCH)), "queued");
+        assert_eq!(app.renderer.prefetches_pending(), 0, "not counted as a neighbour");
+        app.renderer.prefetch(Slot::Prefetch(0), job, 10);
+        assert_eq!(app.renderer.prefetches_pending(), 1, "the neighbour is");
+    }
+
+    /// 1:1 previews made ahead for the neighbours (180 MB each for a 45 MP photo) that finish
+    /// together are uploaded one per frame, never all in the frame of a drag or a zoom; the photo
+    /// the loupe waits for is never held back (2026-11-10: two landing in one frame made a 106 ms
+    /// paint).
+    #[test]
+    fn big_pictures_made_ahead_are_uploaded_one_per_frame() {
+        let (mut app, _work, ctx) = fixture();
+        app.renderer.pool = JobPool::new(0);
+        app.renderer.big_upload_bytes = 4 << 20;
+        let side = 1200; // 5.8 MB, over that
+        let big = |app: &mut crate::LccApp, slot: Slot, key: u64| {
+            let mut out = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap().run();
+            let r = &mut app.renderer;
+            let id = lcc_preview::next_tick();
+            r.requests.insert(slot, Requested { id, source: None });
+            r.pending.insert(slot, (key, 1));
+            out.request_id = id;
+            out.key = key;
+            if let Ok(x) = out.rendered.as_mut() {
+                x.image = lcc_raster::Rgba8::new(side, side);
+            }
+            r.adopted.push((slot, out, None, 1.0));
+        };
+        big(&mut app, Slot::QuickAhead(0), 11);
+        big(&mut app, Slot::QuickAhead(1), 12);
+        app.renderer.poll(&ctx, &mut app.session);
+        let has = |r: &Renderer, s: Slot| r.textures.get(&s).is_some_and(|t| t.size[0] == side);
+        assert!(has(&app.renderer, Slot::QuickAhead(0)), "the first is uploaded at once");
+        assert!(!has(&app.renderer, Slot::QuickAhead(1)), "the second waits for the next frame");
+        assert!(app.renderer.is_pending(Slot::QuickAhead(1)), "still on its way, so the next frame is asked for");
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(1)), "uploaded in the next frame");
+        // the photo the loupe waits for: shown at once, even after a big upload in this frame
+        big(&mut app, Slot::QuickAhead(2), 13);
+        big(&mut app, Slot::QuickAhead(3), 14);
+        app.renderer.pending.insert(Slot::Preview, (14, 110));
+        app.renderer.poll(&ctx, &mut app.session);
+        assert!(has(&app.renderer, Slot::QuickAhead(2)));
+        assert!(has(&app.renderer, Slot::Preview), "the loupe's stand-in is never held back");
+    }
+
     fn fixture() -> (crate::LccApp, std::rc::Rc<std::cell::RefCell<Work>>, egui::Context) {
         fixture_with(Session::new(), (*photo()).clone())
     }
@@ -2748,7 +2976,7 @@ mod thumbnail_tests {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
             desc.backend_options = lcc_engine::gpu::backend::backend_options();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("test window"), ..Default::default() })).ok()
         })();
@@ -2817,7 +3045,7 @@ mod thumbnail_tests {
         let device = (|| {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = lcc_engine::gpu::backend::window_backends();
-            let instance = wgpu::Instance::new(desc);
+            let instance = lcc_engine::gpu::new_instance(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
         })();
@@ -2879,8 +3107,8 @@ mod thumbnail_tests {
         assert!(!app.renderer.job_for(Slot::Thumb(PhotoId(1)), thumb).on_screen);
     }
 
-    fn relink_destination() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("lc-render-relinked-{}-{}.nef", std::process::id(), lcc_preview::next_tick()));
+    fn relink_destination() -> lcc_testkit::TempFile {
+        let path = lcc_testkit::TempFile::new(&format!("lc-render-relinked-{}", lcc_preview::next_tick()), "replacement.nef");
         std::fs::write(&path, b"replacement source").unwrap();
         path
     }
@@ -2897,7 +3125,7 @@ mod thumbnail_tests {
             assert_eq!(submitted, slot);
             let result = job.run();
             assert!(result.rendered.is_err(), "the old request has already failed");
-            app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": replacement})).unwrap();
+            app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": replacement.path()})).unwrap();
             assert!(
                 matches!(&app.session.catalog.photo(PhotoId(1)).unwrap().source, Source::File { path } if path.ends_with(replacement.file_name().unwrap().to_str().unwrap()))
             );
@@ -2922,7 +3150,7 @@ mod thumbnail_tests {
         app.renderer.request(slot, old_job, 100);
         let (_, old_job) = take_job(&work);
         let old_result = old_job.run();
-        app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": replacement})).unwrap();
+        app.session.execute("photo.relink", &serde_json::json!({"id": 1, "path": replacement.path()})).unwrap();
         let new_job = app.session.render_job(PhotoId(1), 64, 64, false, true).unwrap();
         app.renderer.request(slot, new_job, 100);
         let (_, new_job) = take_job(&work);
@@ -3093,7 +3321,7 @@ mod thumbnail_tests {
 
     #[test]
     fn resizing_the_disk_cache_keeps_textures_and_skips_rebuilds() {
-        let lib = std::env::temp_dir().join(format!("lc-ui-thumb-resize-{}", std::process::id()));
+        let lib = lcc_testkit::TempDir::new("lc-ui-thumb-resize");
         let _ = std::fs::remove_dir_all(&lib);
         let mut s = Session::new().with_fs();
         s.open_library(&lib, false).unwrap();
@@ -3807,6 +4035,7 @@ mod thumbnail_tests {
             fit: None,
             draft: None,
             want: None,
+            kept: None,
         };
 
         r.request_quick(Slot::ThumbQuick(id), job(), 5);
@@ -3823,6 +4052,88 @@ mod thumbnail_tests {
         // another key (a new look or size) is on its way, so the cell is loading again
         r.pending.insert(Slot::ThumbQuick(id), (43, 6));
         assert_eq!(r.thumb_failure(id), None);
+    }
+
+    /// A missing photo's cell asks for its thumbnail again once the original is back (a drive mounted while the
+    /// app runs), whether it showed the photo's kept thumbnail or an error: both stand for the thumbnail's key, so
+    /// nothing else would until a restart, a relink or an edit. The kept picture stays on screen meanwhile; while
+    /// the original is still missing, nothing is asked again.
+    #[test]
+    fn a_missing_photos_cell_asks_again_once_its_original_is_back() {
+        let id = PhotoId(1);
+        let there = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut app, work, ctx) = fixture();
+        let probe = there.clone();
+        app.session.media.availability.set_probe(Arc::new(move |_| probe.load(std::sync::atomic::Ordering::Relaxed)));
+        let back = |app: &mut crate::LccApp, on: bool| {
+            there.store(on, std::sync::atomic::Ordering::Relaxed);
+            // (what the availability worker does when it finds a file back)
+            let probe = there.clone();
+            app.session.media.availability.set_probe(Arc::new(move |_| probe.load(std::sync::atomic::Ordering::Relaxed)));
+        };
+
+        // the kept thumbnail is on screen
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let mut kept = job.run();
+        kept.quick = Some(QuickSource::Kept);
+        finish(&mut app, &work, &ctx, slot, kept);
+        assert_eq!(app.renderer.thumb(id).and_then(|t| t.quick), Some(QuickSource::Kept));
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "the original is still missing: nothing is asked again");
+        back(&mut app, true);
+        request(&mut app);
+        assert_eq!(work.borrow().jobs.len(), 1, "the original is back: its thumbnail is asked for again");
+        assert!(app.renderer.thumb(id).is_some(), "the kept picture stays on screen until the render arrives");
+        let (slot, job) = take_job(&work);
+        let fresh = job.run();
+        finish(&mut app, &work, &ctx, slot, fresh);
+        assert_eq!(app.renderer.thumb(id).map(|t| t.quick), Some(None), "the fresh render replaced it");
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "nothing more to ask");
+
+        // an error shown while the original was missing: asked again once it is back
+        let mut settings = (*app.session.catalog.photo(id).unwrap().develop).clone();
+        settings.light.exposure += 0.5;
+        app.session.catalog.apply(Op::SetDevelop { id, settings: Arc::new(settings), label: "test".into(), edited: None }).unwrap();
+        back(&mut app, false);
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let failed = RenderResult { rendered: Err("No such file or directory".into()), ..job.run() };
+        finish(&mut app, &work, &ctx, slot, failed);
+        assert!(app.renderer.thumb_failure(id).is_some());
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "still missing: the failure stands");
+        back(&mut app, true);
+        request(&mut app);
+        assert_eq!(work.borrow().jobs.len(), 1, "the original is back: asked again");
+
+        // gone again before the render read it: the kept thumbnail comes back, and is not asked for again on every
+        // frame while the availability hasn't seen the file go
+        let (slot, job) = take_job(&work);
+        let mut kept = job.run();
+        kept.quick = Some(QuickSource::Kept);
+        finish(&mut app, &work, &ctx, slot, kept);
+        request(&mut app);
+        request(&mut app);
+        assert!(work.borrow().jobs.is_empty(), "asked again once per availability generation, not on every frame");
+    }
+
+    /// A file that is there but can't be read keeps its failure: only an original found back is asked for again.
+    #[test]
+    fn an_unreadable_file_that_is_there_is_not_asked_for_again() {
+        let id = PhotoId(1);
+        let (mut app, work, ctx) = fixture();
+        app.session.media.availability.set_probe(Arc::new(|_| true));
+        request(&mut app);
+        let (slot, job) = take_job(&work);
+        let failed = RenderResult { rendered: Err("unsupported raw".into()), ..job.run() };
+        finish(&mut app, &work, &ctx, slot, failed);
+        for _ in 0..3 {
+            request(&mut app);
+        }
+        assert!(work.borrow().jobs.is_empty(), "the unreadable file is not read again");
+        assert_eq!(app.renderer.thumb_failure(id), Some("unsupported raw"));
     }
 
     #[test]
@@ -3983,6 +4294,50 @@ mod stage_budget_tests {
         assert_eq!(stage_trim_order(&[(Slot::Hover, 0), (Slot::Second, 900 * MB)], 100 * MB), vec![Slot::Second]);
     }
 
+    /// Batch work that pools GPU buffers after the idle trim (an export, Build Previews: renders on
+    /// other threads) gets them trimmed again once it is done: before, the trim ran once per idle
+    /// spell of the view and the pools kept up to their limit for the rest of the session. (A fake
+    /// GPU: the process-wide pool is shared with the tests running beside this one; the trim of
+    /// both cards' real pools is `lcc-gpu`'s `tests/helper_trim.rs`, a process of its own.)
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn buffers_pooled_by_batch_work_after_the_idle_trim_are_trimmed_again() {
+        use std::cell::Cell;
+        let (jobs, pooled, trims) = (Cell::new(0usize), Cell::new(0u64), Cell::new(0u32));
+        let gpu = IdleGpu {
+            batch_jobs: &|| jobs.get(),
+            pooled: &|| pooled.get(),
+            trim: &|| {
+                trims.set(trims.get() + 1);
+                pooled.set(0);
+            },
+        };
+        let mut r = Renderer::default();
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| t0 + std::time::Duration::from_secs(s);
+        // the view's idle trim
+        pooled.set(100);
+        assert_eq!(r.idle_trim_step(at(0), &gpu), Some(IDLE_TRIM));
+        assert_eq!(r.idle_trim_step(at(4), &gpu), None);
+        assert_eq!((trims.get(), pooled.get()), (1, 0));
+        // an export renders on other threads: looked at again, not trimmed under it
+        jobs.set(2);
+        pooled.set(500);
+        assert_eq!(r.idle_trim_step(at(5), &gpu), Some(IDLE_TRIM));
+        assert_eq!(trims.get(), 1);
+        // it ends: its buffers are trimmed after the idle delay
+        jobs.set(0);
+        assert_eq!(r.idle_trim_step(at(8), &gpu), Some(IDLE_TRIM), "a new idle spell starts");
+        assert_eq!(r.idle_trim_step(at(12), &gpu), None);
+        assert_eq!((trims.get(), pooled.get()), (2, 0), "trimmed again");
+        // what a trim could not free starts no further trims (no repaint every few seconds)
+        let stuck = IdleGpu { batch_jobs: &|| 0, pooled: &|| 7, trim: &|| {} };
+        r.idle = Some((at(12), false));
+        assert_eq!(r.idle_trim_step(at(16), &stuck), None);
+        assert_eq!(r.idle_trim_step(at(30), &stuck), None);
+        assert_eq!(r.idle.map(|(_, trimmed)| trimmed), Some(true));
+    }
+
     // Given real stage caches over the budget, the renderer clears them (the open photo's last)
     #[test]
     fn the_renderer_trims_real_stage_caches() {
@@ -4082,11 +4437,13 @@ mod extended_linear_tests {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,
                 max_h: 100,
+                exact_size: false,
                 quality: Default::default(),
                 apply_crop: false,
                 overlay: Default::default(),

@@ -363,7 +363,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Playback Settings",
             [],
             None,
-            "{slideDuration?: seconds (0.5–120), fadeDuration?: seconds (0 = cut; at most 10 and the slide duration), fadeColor?: \"#rrggbb\"|[r,g,b]|null (fade through a colour instead of crossfading), randomOrder?: bool, repeat?: bool, preparePreviews?: bool (render the next slides before they are due), manual?: bool (manual slideshow: a slide stays up until ← or → changes it)} — omitted keys keep their value, {} reads them; saved with the library → {slideDuration, fadeDuration, fadeColor, randomOrder, repeat, preparePreviews, manual}",
+            "{slideDuration?: seconds (0.5–120), fadeDuration?: seconds (0 = cut; at most 10 and the slide duration), fadeColor?: \"#rrggbb\"|[r,g,b]|null (fade through a colour instead of crossfading), randomOrder?: bool, repeat?: bool, preparePreviews?: bool (render the next slides before they are due), manual?: bool (manual slideshow: a slide stays up until ← or → changes it)}: omitted keys keep their value, {} reads them; saved with the library → {slideDuration, fadeDuration, fadeColor, randomOrder, repeat, preparePreviews, manual}",
             always,
             playback
         ),
@@ -372,7 +372,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Layout Settings",
             [],
             None,
-            "{margins?: all four, marginLeft?, marginRight?, marginTop?, marginBottom?: fractions of the slide's shorter side (0–0.45; with linkMargins one sets all four), linkMargins?: bool, showGuides?: bool (margin guides in the slide editor), aspect?: \"screen\"|\"16:9\"|\"4:3\" (aspect preview), zoomToFill?: bool (crop the photo to fill its cell), strokeBorder?: bool, strokeColor?: \"#rrggbb\"|[r,g,b], strokeWidth?: fraction of the shorter side (0–0.05), castShadow?: bool, shadowOpacity?: 0–1, shadowOffset?: 0–0.1, shadowRadius?: 0–0.1 (fractions of the shorter side), shadowAngle?: degrees counter-clockwise from the right (−45 = down right), backdropColor?: colour, colorWash?: bool, washColor?: colour, washOpacity?: 0–1, washAngle?: degrees (the side the wash colour is full at), backgroundImage?: photo id|null, backgroundOpacity?: 0–1} — omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library → the settings",
+            "{margins?: all four, marginLeft?, marginRight?, marginTop?, marginBottom?: fractions of the slide's shorter side (0–0.45; with linkMargins one sets all four), linkMargins?: bool, showGuides?: bool (margin guides in the slide editor), aspect?: \"screen\"|\"16:9\"|\"4:3\" (aspect preview), zoomToFill?: bool (crop the photo to fill its cell), strokeBorder?: bool, strokeColor?: \"#rrggbb\"|[r,g,b], strokeWidth?: fraction of the shorter side (0–0.05), castShadow?: bool, shadowOpacity?: 0–1, shadowOffset?: 0–0.1, shadowRadius?: 0–0.1 (fractions of the shorter side), shadowAngle?: degrees counter-clockwise from the right (−45 = down right), backdropColor?: colour, colorWash?: bool, washColor?: colour, washOpacity?: 0–1, washAngle?: degrees (the side the wash colour is full at), backgroundImage?: photo id|null, backgroundOpacity?: 0–1}: omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library → the settings",
             always,
             layout
         ),
@@ -381,7 +381,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Overlay Settings",
             [],
             None,
-            "{identityPlate?: {enabled?, text?, image?: PNG/JPEG file (drawn instead of the text; \"\" = the text), size?: height as a fraction of the slide's shorter side (0.005–0.5), color?: \"#rrggbb\"|[r,g,b], opacity?: 0–1, …placement, behind?: bool (render behind the photo)}, ratingStars?: {enabled?, color?, size?: a star's height (0.005–0.15), …placement}, texts?: [text overlay] (replaces the list, at most 16; each entry merged onto the one at its index), addText?: text overlay ({} = the default \"{file}\"), removeText?: index, showWatermark?: bool, watermark?: text | the export watermark object {text, vertical, size, opacity, anchor, inset, color, shadow, image, imageWidth} (merged; sizes relative to the photo)} where a text overlay is {text?: template with tokens ({file}, {name}, {title}, {caption}, {date} (YYYY-MM-DD) / {date:%d.%m.%Y}, {exposure}, {shutter}, {aperture}, {focal}, {iso}, {camera}, {lens}, {rating}, {creator}, {copyright}, {folder}, {ext}; unknown tags show as typed), size?: line height (0.005–0.3), color?, opacity?, …placement, shadow?: bool, shadowOpacity?: 0–1, shadowOffset?, shadowRadius?: 0–0.05 (fractions of the shorter side), shadowAngle?: degrees counter-clockwise from the right} and the placement keys are anchor?: topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight, offsetX?, offsetY?: fractions of the slide's shorter side (x right, y down; −1–1), relativeTo?: \"slide\"|\"photo\" (the overlay is kept on the slide) — omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library; slideshow playback and slideshow.preview draw them → the settings and warnings (an unreadable identity plate image, unknown tokens)",
+            "{identityPlate?: {enabled?, text?, image?: PNG/JPEG file (drawn instead of the text; \"\" = the text), size?: height as a fraction of the slide's shorter side (0.005–0.5), color?: \"#rrggbb\"|[r,g,b], opacity?: 0–1, …placement, behind?: bool (render behind the photo)}, ratingStars?: {enabled?, color?, size?: a star's height (0.005–0.15), …placement}, texts?: [text overlay] (replaces the list, at most 16; each entry merged onto the one at its index), addText?: text overlay ({} = the default \"{file}\"), removeText?: index, showWatermark?: bool, watermark?: text | the export watermark object {text, vertical, size, opacity, anchor, inset, color, shadow, image, imageWidth} (merged; sizes relative to the photo)} where a text overlay is {text?: template with tokens ({file}, {name}, {title}, {caption}, {date} (YYYY-MM-DD) / {date:%d.%m.%Y}, {exposure}, {shutter}, {aperture}, {focal}, {iso}, {camera}, {lens}, {rating}, {creator}, {copyright}, {folder}, {ext}; unknown tags show as typed), size?: line height (0.005–0.3), color?, opacity?, …placement, shadow?: bool, shadowOpacity?: 0–1, shadowOffset?, shadowRadius?: 0–0.05 (fractions of the shorter side), shadowAngle?: degrees counter-clockwise from the right} and the placement keys are anchor?: topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight, offsetX?, offsetY?: fractions of the slide's shorter side (x right, y down; −1–1), relativeTo?: \"slide\"|\"photo\" (the overlay is kept on the slide): omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library; slideshow playback and slideshow.preview draw them → the settings and warnings (an unreadable identity plate image, unknown tokens)",
             always,
             overlays
         ),
@@ -390,7 +390,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Title Settings",
             [],
             None,
-            "{intro?: screen, ending?: screen} where a screen is {enabled?: bool, color?: background \"#rrggbb\"|[r,g,b], content?: \"none\"|\"identityPlate\" (the Overlays identity plate, its text or image)|\"text\", text?: the text shown with content \"text\", overrideColor?: bool (draw the plate or text in textColor instead of the identity plate's colour; an image plate keeps its colours), textColor?: colour, scale?: height of the plate or text line as a fraction of the slide's shorter side (0.005–0.5; text wider than the slide shrinks to fit), duration?: seconds (0.5–120) | null (the slide duration)} — the intro plays once before the first slide, the ending after the last one when repeat is off; both fade with the playback fade; random order never moves them. Omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library → the settings and warnings (an unreadable identity plate image, a screen with nothing to show)",
+            "{intro?: screen, ending?: screen} where a screen is {enabled?: bool, color?: background \"#rrggbb\"|[r,g,b], content?: \"none\"|\"identityPlate\" (the Overlays identity plate, its text or image)|\"text\", text?: the text shown with content \"text\", overrideColor?: bool (draw the plate or text in textColor instead of the identity plate's colour; an image plate keeps its colours), textColor?: colour, scale?: height of the plate or text line as a fraction of the slide's shorter side (0.005–0.5; text wider than the slide shrinks to fit), duration?: seconds (0.5–120) | null (the slide duration)}: the intro plays once before the first slide, the ending after the last one when repeat is off; both fade with the playback fade; random order never moves them. Omitted keys keep their value, {} reads them; out-of-range numbers are clamped, wrong types refused; saved with the library → the settings and warnings (an unreadable identity plate image, a screen with nothing to show)",
             always,
             titles
         ),
@@ -399,7 +399,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Templates",
             [],
             None,
-            "{} → {templates: [{id: \"builtin:…\"|\"user:…\", name, builtin, group: \"builtin\"|\"user\", description?, path? (a user template's file)}], previous: bool (the settings before the last apply can be restored with apply {id: \"previous\"}), folder: the user templates folder | null, problems: [\"file: why it was skipped\"]} — built-ins first, then user templates by name (files in <settings>/slideshow-templates, at most 1000)",
+            "{} → {templates: [{id: \"builtin:…\"|\"user:…\", name, builtin, group: \"builtin\"|\"user\", description?, path? (a user template's file)}], previous: bool (the settings before the last apply can be restored with apply {id: \"previous\"}), folder: the user templates folder | null, problems: [\"file: why it was skipped\"]}: built-ins first, then user templates by name (files in <settings>/slideshow-templates, at most 1000)",
             always,
             tpl_list
         ),
@@ -408,7 +408,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Slideshow Template",
             [],
             None,
-            "{id: template id | \"previous\" (the settings before the last apply) | name: template name (case-insensitive)} — replaces the playback (prepare previews kept), layout, overlays and titles settings with the template's and saves them with the library; there is no undo: the replaced settings are kept as \"previous\" for this session → {applied, name, warnings: [a background photo not in this library, an unreadable identity plate / watermark image…], previous, settings: {playback, layout, overlays, titles}}",
+            "{id: template id | \"previous\" (the settings before the last apply) | name: template name (case-insensitive)}: replaces the playback (prepare previews kept), layout, overlays and titles settings with the template's and saves them with the library; there is no undo: the replaced settings are kept as \"previous\" for this session → {applied, name, warnings: [a background photo not in this library, an unreadable identity plate / watermark image…], previous, settings: {playback, layout, overlays, titles}}",
             always,
             tpl_apply
         ),
@@ -417,7 +417,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Slideshow Template",
             [],
             None,
-            "{name: 1–80 characters, replace?: bool (over a user template of that name)} — the current playback, layout, overlays and titles settings as a user template, <settings>/slideshow-templates/<name>.json (path separators and other reserved characters become _); a name taken (case-insensitive) or a built-in's is refused unless replace → {id, name, builtin, group, path}",
+            "{name: 1–80 characters, replace?: bool (over a user template of that name)}: the current playback, layout, overlays and titles settings as a user template, <settings>/slideshow-templates/<name>.json (path separators and other reserved characters become _); a name taken (case-insensitive) or a built-in's is refused unless replace → {id, name, builtin, group, path}",
             always,
             tpl_save
         ),
@@ -426,7 +426,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Slideshow Template",
             [],
             None,
-            "{id: user template} — replace its settings with the current ones (name kept); built-ins can't change → {id, name, builtin, group, path}",
+            "{id: user template}: replace its settings with the current ones (name kept); built-ins can't change → {id, name, builtin, group, path}",
             always,
             tpl_update
         ),
@@ -435,7 +435,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Slideshow Template",
             [],
             None,
-            "{id: user template, name} — its file follows the name; a name taken is refused → {id (the new one), name, builtin, group, path}",
+            "{id: user template, name}: its file follows the name; a name taken is refused → {id (the new one), name, builtin, group, path}",
             always,
             tpl_rename
         ),
@@ -444,7 +444,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Slideshow Template",
             [],
             None,
-            "{id: user template} — deletes its file → {deleted, name}",
+            "{id: user template}: deletes its file → {deleted, name}",
             always,
             tpl_delete
         ),
@@ -453,7 +453,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Slideshow Template",
             [],
             None,
-            "{path: a template .json file (at most 256 KB)} — checked like a saved one (format, version, every setting) and saved as a user template under its name (else the file's); a name taken gets \" (2)\"… → {id, name, builtin, group, path, renamed, warnings}",
+            "{path: a template .json file (at most 256 KB)}: checked like a saved one (format, version, every setting) and saved as a user template under its name (else the file's); a name taken gets \" (2)\"… → {id, name, builtin, group, path, renamed, warnings}",
             always,
             tpl_import
         ),
@@ -471,7 +471,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Slideshow Slide Preview",
             [],
             None,
-            "{id?: photo (default: the active one) | title?: \"intro\"|\"ending\", template?: a template id (slideshow.templates.list): compose with its settings instead of the library's, which don't change (the Template Browser's hover preview), width?, height?: pixels (16–4096; one given: the other from the aspect preview; neither: 1280 wide), path?: write the PNG here} — the photo's slide composed with the slideshow layout and overlays → {id, width, height, cell: [x0,y0,x1,y1], photo: [x0,y0,x1,y1] (the visible photo, slide pixels), overlays: [{kind: identityPlate|ratingStars|textN|watermark, box: [x0,y0,x1,y1]}], path | png (base64 PNG)}; with `title`, that title screen (`slideshow.titles`; drawn even while it is off) → {title, enabled, width, height, plate: [x0,y0,x1,y1] | null (the plate or text), path | png}",
+            "{id?: photo (default: the active one) | title?: \"intro\"|\"ending\", template?: a template id (slideshow.templates.list): compose with its settings instead of the library's, which don't change (the Template Browser's hover preview), width?, height?: pixels (16–4096; one given: the other from the aspect preview; neither: 1280 wide), path?: write the PNG here}: the photo's slide composed with the slideshow layout and overlays → {id, width, height, cell: [x0,y0,x1,y1], photo: [x0,y0,x1,y1] (the visible photo, slide pixels), overlays: [{kind: identityPlate|ratingStars|textN|watermark, box: [x0,y0,x1,y1]}], path | png (base64 PNG)}; with `title`, that title screen (`slideshow.titles`; drawn even while it is off) → {title, enabled, width, height, plate: [x0,y0,x1,y1] | null (the plate or text), path | png}",
             always,
             preview
         ),
@@ -480,7 +480,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Slideshow",
             [],
             None,
-            "{format: \"pdf\"|\"jpeg\"|\"video\", path: the .pdf / .mp4 / .webm file, or for jpeg the folder (created if missing), size?: pdf/jpeg the long side in pixels (64–8192, default 1920), video the frame height (64–2160 or \"720p\"/\"1080p\", default 720), quality?: 1–100 (JPEG quality, default 90; video default 75), fps?: 24|25|30|60 (video, default 30), container?: \"mp4\"|\"webm\" (video, default mp4), fullScreen?: bool (pdf: open in the viewer's full screen mode, default true), speed?: 1–10 (video encoder speed, default 10 = fastest), name?: jpeg file name prefix (default the folder's name: <name>-001.jpg…), ids?: photo ids (default the photos in view, in view order), wait?: bool (run here and reply with the result)} — the photos' slides with the slideshow layout, overlays and the intro/ending screens that are on; video is AV1 (no audio), each slide held for its duration and fades rendered as frames, at most 2 hours. Runs in the background with a row in the activity stack (activity.cancel {id: taskId} stops it; nothing is left behind: files are written as .part and renamed when complete); a photo that can't be rendered is skipped with a warning → {taskId, background, format, path, slides, seconds, total, width, height, warnings}; with wait: the result (slideshow.exportStatus)",
+            "{format: \"pdf\"|\"jpeg\"|\"video\", path: the .pdf / .mp4 / .webm file, or for jpeg the folder (created if missing), size?: pdf/jpeg the long side in pixels (64–8192, default 1920), video the frame height (64–2160 or \"720p\"/\"1080p\", default 720), quality?: 1–100 (JPEG quality, default 90; video default 75), fps?: 24|25|30|60 (video, default 30), container?: \"mp4\"|\"webm\" (video, default mp4), fullScreen?: bool (pdf: open in the viewer's full screen mode, default true), speed?: 1–10 (video encoder speed, default 10 = fastest), name?: jpeg file name prefix (default the folder's name: <name>-001.jpg…), ids?: photo ids (default the photos in view, in view order), wait?: bool (run here and reply with the result)}: the photos' slides with the slideshow layout, overlays and the intro/ending screens that are on; video is AV1 (no audio), each slide held for its duration and fades rendered as frames, at most 2 hours. Runs in the background with a row in the activity stack (activity.cancel {id: taskId} stops it; nothing is left behind: files are written as .part and renamed when complete); a photo that can't be rendered is skipped with a warning → {taskId, background, format, path, slides, seconds, total, width, height, warnings}; with wait: the result (slideshow.exportStatus)",
             always,
             export
         ),

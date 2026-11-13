@@ -68,21 +68,41 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "only photos from files can be relinked"));
     }
     let abs = abs.to_string_lossy().to_string();
-    // the file may differ from the one imported (another export, a raw that decodes now or not):
-    // its size, dimensions and preview-only state follow it
-    let mut ops = vec![relink_op(id, &abs)];
-    if s.media.file_probe.is_some()
-        && let (Some(Ok(info)), Some(ph)) = (crate::import::probe_paths(s, std::slice::from_ref(&abs)).pop(), s.catalog.photo(id))
-    {
-        ops.extend(crate::cmd::convert::content_op(id, ph, info));
-    }
+    let mut changed = Vec::new();
+    let ops = relink_ops(s, id, &abs, &mut changed);
     let op = match <[Op; 1]>::try_from(ops) {
         Ok([op]) => op,
         Err(ops) => Op::Batch { ops },
     };
     s.commit("Relink Photo", op)?;
     s.media.forget(id);
+    for c in changed {
+        s.media.forget(c);
+    }
     Ok(json!({"id": id.0, "path": abs}))
+}
+
+/// The ops that point photo `id` at `path` and bring its record up to date with the file there
+/// (when the session has a file probe): the file may differ from the one imported (another export,
+/// a raw that decodes now or not), so its size, dimensions and preview-only state follow it; a
+/// record made without its file (a Lightroom catalog import whose original wasn't there) gets the
+/// camera and exposure fields it never had, and the lens data and as-shot white balance the file
+/// carries (adapted from upstream #3969). `changed` gets the photos whose records change.
+pub(crate) fn relink_ops(s: &Session, id: PhotoId, path: &str, changed: &mut Vec<PhotoId>) -> Vec<Op> {
+    let mut ops = vec![relink_op(id, path)];
+    if s.media.file_probe.is_some()
+        && let Some(Ok(info)) = crate::import::probe_paths(s, std::slice::from_ref(&path.to_string())).pop()
+    {
+        crate::cmd::convert::reload_ops(&s.catalog, id, &info, &mut ops, changed);
+    }
+    ops
+}
+
+/// A record whose file was never read: no camera and no exposure information (a Lightroom catalog
+/// import lists an original that isn't there without reading anything).
+fn never_read(p: &Photo) -> bool {
+    let m = &p.meta;
+    m.camera.is_empty() && m.shutter.is_empty() && m.aperture.is_none() && m.iso.is_none() && m.focal_mm.is_none()
 }
 
 /// The stored content hash of a photo, without the `:dupN` suffix duplicates get.
@@ -92,7 +112,7 @@ fn stored_hash(p: &Photo) -> Option<&str> {
 
 /// The content hash of the file at `path` (as import computes it), if it can be read. Read in
 /// pieces: the file is whatever is on the disk, of any size.
-fn file_hash(path: &str) -> Option<String> {
+pub(crate) fn file_hash(path: &str) -> Option<String> {
     use std::io::Read;
     // the opened file must be regular (a FIFO or device would never end), and no more than its size at open is read
     let file = std::fs::File::open(path).ok()?;
@@ -137,13 +157,26 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_read_in_pieces_is_the_hash_of_the_whole() {
-        // longer than one piece, so the read loop runs more than once
-        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
-        let whole = lcc_preview::hash_bytes(&bytes).to_string();
-        assert_eq!(hash_reader(bytes.as_slice()).as_deref(), Some(whole.as_str()));
-        assert_eq!(hash_reader(Trickle(&bytes[..1000], false)).as_deref(), Some(lcc_preview::hash_bytes(&bytes[..1000]).to_string().as_str()));
-        assert_eq!(hash_reader(std::io::empty()).as_deref(), Some(lcc_preview::hash_bytes(&[]).to_string().as_str()));
+    fn a_hash_read_in_pieces_is_the_hash_of_the_whole_and_a_file_hash_is_the_import_hash() {
+        // a hash read in pieces is the hash of the whole
+        {
+            // longer than one piece, so the read loop runs more than once
+            let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+            let whole = lcc_preview::hash_bytes(&bytes).to_string();
+            assert_eq!(hash_reader(bytes.as_slice()).as_deref(), Some(whole.as_str()));
+            assert_eq!(hash_reader(Trickle(&bytes[..1000], false)).as_deref(), Some(lcc_preview::hash_bytes(&bytes[..1000]).to_string().as_str()));
+            assert_eq!(hash_reader(std::io::empty()).as_deref(), Some(lcc_preview::hash_bytes(&[]).to_string().as_str()));
+        }
+        // a file hash is the import hash and a missing file has none
+        {
+            let dir = Scratch(std::env::temp_dir().join(format!("lc-file-hash-{}", std::process::id())));
+            let _ = std::fs::remove_dir_all(&dir.0);
+            std::fs::create_dir_all(&dir.0).unwrap();
+            let f = dir.0.join("a.bin");
+            std::fs::write(&f, b"pixels").unwrap();
+            assert_eq!(file_hash(f.to_str().unwrap()), Some(lcc_preview::hash_bytes(b"pixels").to_string()));
+            assert_eq!(file_hash(dir.0.join("nope").to_str().unwrap()), None);
+        }
     }
 
     /// A scratch folder that goes away with the test, however it ends.
@@ -153,17 +186,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
-    }
-
-    #[test]
-    fn a_file_hash_is_the_import_hash_and_a_missing_file_has_none() {
-        let dir = Scratch(std::env::temp_dir().join(format!("lc-file-hash-{}", std::process::id())));
-        let _ = std::fs::remove_dir_all(&dir.0);
-        std::fs::create_dir_all(&dir.0).unwrap();
-        let f = dir.0.join("a.bin");
-        std::fs::write(&f, b"pixels").unwrap();
-        assert_eq!(file_hash(f.to_str().unwrap()), Some(lcc_preview::hash_bytes(b"pixels").to_string()));
-        assert_eq!(file_hash(dir.0.join("nope").to_str().unwrap()), None);
     }
 }
 
@@ -219,7 +241,7 @@ fn free_for(owners: &FileOwners, file: &str, original: PhotoId) -> bool {
 pub enum MatchBy {
     /// Same name and size (and content, when the library knows its hash).
     Name,
-    /// Renamed: same size and content hash.
+    /// Renamed: same content hash (and size, when the library knows it).
     Content,
 }
 
@@ -313,8 +335,8 @@ fn name_key(path: &str) -> String {
 /// Matching, per photo:
 /// 1. a file with the same name ([`name_key`]: any letter case), the same size and the same
 ///    content hash;
-/// 2. renamed: a file of the same size with the same content hash (only same-size files are
-///    read, so this stays cheap);
+/// 2. renamed: a file with the same content hash (and the same size, when one is on record; with
+///    no size on record every file is read, but the hash alone confirms identity);
 /// 3. without a hash to confirm (or the file was edited in place): the one file with the same
 ///    name and size. Several such files are ambiguous: the photo is skipped and reported in
 ///    `ambiguous`, never guessed (two cameras' `IMG_0001.CR3` of one size are different photos).
@@ -359,24 +381,30 @@ pub fn plan_find_missing(candidates: &[FindCandidate], folder: &str) -> std::res
         // 1. same name and size, confirmed by the content hash
         let mut hit: Option<(String, MatchBy)> =
             hash.and_then(|h| named.iter().find(|f| hash_of(f).as_deref() == Some(h))).map(|f| (f.to_string(), MatchBy::Name));
-        // 2. renamed: same size and content
+        // 2. renamed: same content, and same size when one is on record
         if hit.is_none()
             && let Some(h) = hash
-            && size > 0
         {
-            let sizes = by_size.get_or_insert_with(|| {
-                let mut m: HashMap<u64, Vec<String>> = HashMap::new();
-                for f in &files {
-                    if let Some(n) = size_of(f) {
-                        m.entry(n).or_default().push(f.clone());
+            if size > 0 {
+                let sizes = by_size.get_or_insert_with(|| {
+                    let mut m: HashMap<u64, Vec<String>> = HashMap::new();
+                    for f in &files {
+                        if let Some(n) = size_of(f) {
+                            m.entry(n).or_default().push(f.clone());
+                        }
                     }
-                }
-                m
-            });
-            hit = sizes
-                .get(&size)
-                .and_then(|v| v.iter().find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h)))
-                .map(|f| (f.clone(), MatchBy::Content));
+                    m
+                });
+                hit = sizes
+                    .get(&size)
+                    .and_then(|v| v.iter().find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h)))
+                    .map(|f| (f.clone(), MatchBy::Content));
+            } else {
+                hit = files
+                    .iter()
+                    .find(|f| free_for(&owners, f, c.original) && hash_of(f).as_deref() == Some(h))
+                    .map(|f| (f.clone(), MatchBy::Content));
+            }
         }
         // 3. same name and size only (no hash, or the file was edited in place): one candidate
         //    is taken, several are ambiguous and skipped rather than guessed
@@ -427,9 +455,19 @@ fn commit_find(s: &mut Session, plan: FindPlan) -> Result<Value> {
     // ambiguous photos relinked meanwhile aren't missing any more
     missing = missing.saturating_sub(planned - ambiguous.len());
     if !found.is_empty() {
-        s.commit("Find Missing Photos", Op::Batch { ops: found.iter().map(|f| relink_op(f.id, &f.to)).collect() })?;
-        for f in &found {
-            s.media.forget(f.id);
+        // a record that was never read gets what its file says; the rest, imported from their
+        // files, need only the new path (reading every found file would hash them all)
+        let mut changed = Vec::new();
+        let ops = found
+            .iter()
+            .flat_map(|f| match s.catalog.photo(f.id) {
+                Some(p) if never_read(p) => relink_ops(s, f.id, &f.to, &mut changed),
+                _ => vec![relink_op(f.id, &f.to)],
+            })
+            .collect();
+        s.commit("Find Missing Photos", Op::Batch { ops })?;
+        for id in found.iter().map(|f| f.id).chain(changed) {
+            s.media.forget(id);
         }
     }
     Ok(FindPlan { found, missing, ambiguous }.to_json())
@@ -450,7 +488,20 @@ fn find_missing(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "library.missing", "Missing Photos", [], None, "{} → [{id, path}] — photos whose original file isn't where the library expects it", always, |s, _| {
+        cmd!(
+            query "dng.validate",
+            "Validate DNG Files",
+            [],
+            None,
+            "{ids?}: recompute the raw-image digest (NewRawImageDigest, else RawImageDigest) of the selected photos' DNG files and compare it with the stored one; runs here on the calling thread (the app's Library ▸ Validate DNG Files does it in the background with a cancel) → {total, checked, intact, damaged: [{file, why}] (digest mismatch, unreadable raw data or file), unverifiable: [{file, why}] (no digest in the file, or a layout the check does not cover), cancelled}",
+            super::has_selection,
+            |s, p| {
+                let ids = s.targets(p)?;
+                let targets = crate::dng_validate::dng_targets(s, &ids);
+                Ok(crate::dng_validate::validate(&targets, &std::sync::atomic::AtomicBool::new(false), &|_| {}).to_json())
+            }
+        ),
+        cmd!(query "library.missing", "Missing Photos", [], None, "{} → [{id, path}]: photos whose original file isn't where the library expects it", always, |s, _| {
             Ok(Value::Array(missing(s).into_iter().map(|(id, path)| json!({"id": id.0, "path": path})).collect()))
         }),
         cmd!(
@@ -458,7 +509,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Locate Photo",
             [],
             None,
-            "{id?, path} — point a photo at its file's new location (undo never moves files)",
+            "{id?, path}: point a photo at its file's new location (undo never moves files)",
             always,
             relink
         ),
@@ -467,7 +518,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Find Missing Photos",
             [],
             None,
-            "{folder} — relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or — renamed — same size and content; or {found, missing, ambiguous} — relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
+            "{folder}: relink every missing photo whose file is somewhere in the folder: same name and size (and content, when the library knows its hash), or, if renamed, same content (and size, when the library knows it); or {found, missing, ambiguous}: relink what a search already found (the app searches on a worker thread; photos relinked meanwhile and files now in use are skipped) → {found: [{id, from, to, by: name|content}], missing, ambiguous: [{id, from, candidates}] (several same-name candidates and no hash to tell them apart: skipped)}",
             always,
             find_missing
         ),

@@ -74,9 +74,7 @@ fn set(h: &mut Headless, id: &str, key: &str, value: &str) {
 
 /// Selecting a mode or a scale sets it and names it back; with no parameter the command steps to
 /// the next one, wrapping; anything else is refused with the values it does take.
-#[test]
-fn the_mode_and_scale_commands_select_step_and_reject_junk() {
-    let mut h = edit_panel();
+fn the_mode_and_scale_commands_select_step_and_reject_junk(h: &mut Headless) {
     assert_eq!(h.app.ui.histogram_mode, "rgb", "the panel opens on the target app's own overlay");
     assert_eq!(h.app.ui.histogram_scale, "linear");
 
@@ -96,7 +94,7 @@ fn the_mode_and_scale_commands_select_step_and_reject_junk() {
         ("waveform", "parade"),
         ("parade", "rgb"),
     ] {
-        set(&mut h, "view.histogram.mode", "mode", from);
+        set(h, "view.histogram.mode", "mode", from);
         let out = h.app.run("view.histogram.mode", json!({})).expect("a step");
         assert_eq!(out["mode"], to, "stepping from {from}");
         assert_eq!(h.app.ui.histogram_mode, to);
@@ -106,7 +104,7 @@ fn the_mode_and_scale_commands_select_step_and_reject_junk() {
         assert_eq!(out["scale"], scale);
         assert_eq!(h.app.ui.histogram_scale, scale);
     }
-    set(&mut h, "view.histogram.scale", "scale", "linear");
+    set(h, "view.histogram.scale", "scale", "linear");
     assert_eq!(h.app.run("view.histogram.scale", json!({})).expect("a step")["scale"], "logarithmic");
     assert_eq!(h.app.run("view.histogram.scale", json!({})).expect("a step")["scale"], "linear");
 
@@ -129,7 +127,7 @@ fn the_mode_and_scale_commands_select_step_and_reject_junk() {
     h.step();
 
     // …and a key the user gives one fires it, the way any other command's does
-    set(&mut h, "view.histogram.mode", "mode", "rgb");
+    set(h, "view.histogram.mode", "mode", "rgb");
     let r = h.app.run("app.setShortcut", json!({"id": "view.histogram.mode", "shortcut": "Shift+U"})).expect("a free key");
     assert_eq!(r["shortcut"], "Shift+U", "{r}");
     let r = h.request("ui.key", json!({"key": "U", "shift": true}), T);
@@ -302,11 +300,9 @@ fn the_panels_own_selector_lists_the_modes_and_scales() {
 
 /// The chosen mode and scale are saved with the UI state; a settings file from before them, or one
 /// naming something else, opens on the defaults.
-#[test]
-fn the_mode_and_scale_survive_the_settings() {
-    let mut h = edit_panel();
-    set(&mut h, "view.histogram.mode", "mode", "channels");
-    set(&mut h, "view.histogram.scale", "scale", "logarithmic");
+fn the_mode_and_scale_survive_the_settings(h: &mut Headless) {
+    set(h, "view.histogram.mode", "mode", "channels");
+    set(h, "view.histogram.scale", "scale", "logarithmic");
     let saved = serde_json::to_string(&h.app.ui).expect("the UI state");
     let back = serde_json::from_str::<crate::UiState>(&saved).expect("read back").sanitized();
     assert_eq!((back.histogram_mode.as_str(), back.histogram_scale.as_str()), ("channels", "logarithmic"));
@@ -319,7 +315,14 @@ fn the_mode_and_scale_survive_the_settings() {
     // …and the panel draws the default rather than failing on it
     h.app.ui.histogram_mode = "vector".into();
     h.step();
-    assert!(!plot_colors(&h).is_empty());
+    assert!(!plot_colors(h).is_empty());
+}
+
+#[test]
+fn the_mode_and_scale_commands_select_step_reject_junk_and_survive_the_settings() {
+    let mut h = edit_panel();
+    the_mode_and_scale_commands_select_step_and_reject_junk(&mut h);
+    the_mode_and_scale_survive_the_settings(&mut h);
 }
 
 /// The clipping triangles show which channels reach each end, and resting the pointer on one
@@ -343,6 +346,9 @@ fn a_clipping_indicator_previews_the_overlay_it_stands_for() {
 
     let r = h.request("ui.hoverWidget", json!({"id": "histogram:highlights", "fx": 0.5, "fy": 0.5}), T);
     assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    // the pointer rests there a moment first
+    h.time += crate::panels::edit::CLIPPING_PREVIEW_REST_S;
     h.step();
     assert!(h.app.clipping_preview, "the hovered indicator previews its mask");
     assert!(!h.app.ui.show_clipping, "and does not turn the persistent overlay on");
@@ -606,4 +612,50 @@ fn the_modern_histogram_follows_an_hdr_drag_and_holds_on_release() {
         set(&mut h, "view.histogram.mode", "mode", "luminance");
         drag_and_release(&mut h, hdr_display, &["modern:histogram"], &format!("Modern, HDR display {hdr_display}"));
     }
+}
+
+/// Gliding the pointer across the histogram passes over its clipping triangles: that must not
+/// preview the clipping overlay (each preview re-rendered the photo, every tile at 100 %: the
+/// interface stuttered and the graphics card filled up, CF-ZOOM-FREEZE 2026-11-10). Only a pointer
+/// resting on a triangle previews it.
+#[test]
+fn gliding_over_the_histogram_never_previews_clipping() {
+    let mut h = edit_panel();
+    let id = h.app.session.active().expect("an active photo");
+    h.step();
+    let d = (*h.app.session.develop_of(id).unwrap_or_default()).clone();
+    let rect = |h: &Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).expect("the widget");
+    let plot = rect(&h, "histogram:plot");
+    let (lo, hi) = (rect(&h, "histogram:shadows"), rect(&h, "histogram:highlights"));
+    // back and forth along the top of the plot, through both triangles, one point a frame
+    for pass in 0..2 {
+        for i in 0..=24 {
+            let f = if pass % 2 == 0 { i as f32 / 24.0 } else { 1.0 - i as f32 / 24.0 };
+            let x = plot.left() + f * plot.width();
+            let r = h.request("ui.move", json!({"x": x, "y": lo.center().y.min(hi.center().y)}), T);
+            assert_eq!(r["ok"], true, "{r}");
+            h.step();
+            assert!(!h.app.clipping_preview, "a pointer passing over a triangle previews nothing (x {x})");
+            assert_eq!(crate::panels::detail::view_overlay(&h.app, &d, false), lcc_pipeline::Overlay::None);
+        }
+    }
+    // resting on one: it previews, and stops as the pointer leaves
+    let r = h.request("ui.move", json!({"x": hi.center().x, "y": hi.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(!h.app.clipping_preview, "not at once");
+    h.time += crate::panels::edit::CLIPPING_PREVIEW_REST_S;
+    h.step();
+    assert!(h.app.clipping_preview, "resting on the triangle previews it");
+    let r = h.request("ui.move", json!({"x": plot.center().x, "y": plot.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(!h.app.clipping_preview);
+    // coming back after a while starts the rest over
+    h.time += 5.0;
+    let r = h.request("ui.move", json!({"x": lo.center().x, "y": lo.center().y}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(!h.app.clipping_preview, "an old hover doesn't count as a rest");
 }

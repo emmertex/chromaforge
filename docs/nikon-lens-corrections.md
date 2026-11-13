@@ -7,8 +7,9 @@ handling and DNG export as the other embedded corrections. Other bodies are left
 same tag, because I've only checked files from these three.
 
 This is distortion only. The vignetting block (`0x0006`) and what looks like lateral CA (`0x0007`) aren't applied
-yet. Like the Sony, Fujifilm and Panasonic corrections it's on by default and can be turned off under Lens
-Corrections.
+yet. Like the Sony correction, it starts off on a new photo, as in Lightroom Classic, and is turned on under Lens
+Corrections (or by the photo's own XMP or a preset). Only DNG, Panasonic / Leica RW2 / RWL and Fujifilm RAF corrections
+start on (`Photo::lens_correction_built_in`).
 
 ## Where the data comes from
 

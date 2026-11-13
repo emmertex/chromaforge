@@ -136,6 +136,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["geom", "color", "raster"],
     &["tiff", "raster"],
     &["denoise-core", "denoise"],
+    // the MediaPipe models run on the face models' device program and accelerator (the GPU)
+    &["faces", "tflite"],
     &["meta", "raw"],
     &["meta", "codecs"],
     &["meta", "develop"],
@@ -350,19 +352,12 @@ mod tests {
     }
 
     #[test]
-    fn upward_dependency_flagged() {
+    fn upward_and_sideways_dependencies_are_flagged() {
         let v = check(&[c("lcc-develop", &[("lcc-engine", Normal, true)])]);
         assert!(matches!(v[..], [Violation::Upward { from: 1, to: 4, .. }]));
-    }
-
-    #[test]
-    fn sideways_dependency_flagged() {
         let v = check(&[c("lcc-catalog", &[("lcc-preview", Normal, true)])]);
         assert!(matches!(v[..], [Violation::Upward { from: 3, to: 3, .. }]));
-    }
-
-    #[test]
-    fn l0_chain_allowed_one_way() {
+        // the L0 chain is allowed one way only
         assert!(check(&[c("lcc-raster", &[("lcc-color", Normal, true)])]).is_empty());
         assert!(!check(&[c("lcc-color", &[("lcc-raster", Normal, true)])]).is_empty());
     }

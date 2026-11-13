@@ -7,6 +7,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod access;
+pub mod advanced_search;
 pub mod album_picker;
 pub mod book;
 pub mod brush_live;
@@ -21,20 +22,48 @@ pub mod catalog_ui;
 pub mod chart_profile;
 pub mod color_readout;
 mod command_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod comments_ui;
+/// Review Comments needs the publish services, which the browser build doesn't have.
+#[cfg(target_arch = "wasm32")]
+pub mod comments_ui {
+    use serde_json::Value;
+
+    pub const OPEN: &str = "dialog.reviewComments";
+    pub const COMMANDS: &[crate::menus::UiCommand] = &[(OPEN, "Review Comments", None, "")];
+
+    #[derive(Default)]
+    pub struct View;
+
+    pub fn enabled(_: &crate::LccApp, id: &str) -> Option<bool> {
+        (id == OPEN).then_some(false)
+    }
+
+    pub fn run(_: &mut crate::LccApp, id: &str, _: &Value) -> Option<Result<Value, String>> {
+        (id == OPEN).then(|| Err("publish services are not available in the browser".to_string()))
+    }
+
+    pub fn show(_: &mut crate::LccApp, _: &egui::Context) {}
+}
 pub mod control;
 pub mod creations_ui;
 pub mod credits;
+pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
+pub mod dng_update_task;
 pub mod docking;
 mod drop_overlay;
+pub mod duplicates_ui;
 mod edit_in;
+pub mod email_photo;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_module;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
+pub mod face_menu;
 mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
@@ -53,9 +82,11 @@ pub mod lightroom_destination;
 pub mod lightroom_import;
 pub mod links;
 pub mod loupe_timing;
+pub mod lrc_menus;
 pub mod machine_test;
 pub mod map;
 mod mask_thumbs;
+mod menu_choices;
 pub mod menu_level;
 pub mod menubar;
 pub mod menus;
@@ -67,6 +98,8 @@ mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
 pub mod module;
+pub mod motion;
+pub mod overlay;
 pub mod panels;
 pub mod pick;
 pub mod plate;
@@ -96,16 +129,21 @@ pub mod surface_icons;
 pub mod surface_plugin;
 pub mod sync;
 pub mod tasks;
+pub mod template_browser;
 pub mod text_field;
 pub mod theme;
 pub mod timelapse_ui;
 pub mod titlebar;
 pub mod video_ui;
 pub mod video_view;
+pub mod view_state;
 pub mod web_module;
+pub mod web_templates;
 pub mod widgets;
 pub mod window_place;
 
+#[cfg(test)]
+mod i18n_scan;
 #[cfg(test)]
 mod tests_access;
 #[cfg(test)]
@@ -193,6 +231,8 @@ mod tests_dialogs;
 #[cfg(test)]
 mod tests_drop_import;
 #[cfg(test)]
+mod tests_duplicates_ui;
+#[cfg(test)]
 mod tests_edit_layout;
 #[cfg(test)]
 mod tests_empty_library;
@@ -217,6 +257,8 @@ mod tests_folder_poll;
 #[cfg(test)]
 mod tests_grading;
 #[cfg(test)]
+mod tests_grading_mode;
+#[cfg(test)]
 mod tests_grid;
 #[cfg(test)]
 mod tests_grid_style;
@@ -229,13 +271,19 @@ mod tests_histogram_drag;
 #[cfg(test)]
 mod tests_histogram_modes;
 #[cfg(test)]
+mod tests_hover_pointer;
+#[cfg(test)]
 mod tests_i18n_coverage;
+#[cfg(test)]
+mod tests_i18n_sweep;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_immich_ui;
 #[cfg(test)]
 mod tests_import_body_profiles;
 #[cfg(test)]
 mod tests_import_drives;
+#[cfg(test)]
+mod tests_import_loupe;
 #[cfg(test)]
 mod tests_import_metadata_preset;
 #[cfg(test)]
@@ -281,6 +329,8 @@ mod tests_lightroom_destination;
 #[cfg(test)]
 mod tests_loading_cell;
 #[cfg(test)]
+mod tests_lrc_menus;
+#[cfg(test)]
 mod tests_mask_effects;
 #[cfg(test)]
 mod tests_mask_landing;
@@ -296,6 +346,8 @@ mod tests_mask_tree;
 mod tests_masking;
 #[cfg(test)]
 mod tests_masking_layout;
+#[cfg(test)]
+mod tests_menu_toggles;
 #[cfg(test)]
 mod tests_menubar;
 #[cfg(test)]
@@ -322,6 +374,8 @@ mod tests_panel_restore;
 mod tests_panels;
 #[cfg(test)]
 mod tests_pickers;
+#[cfg(test)]
+mod tests_plugin_jobs;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
@@ -409,9 +463,13 @@ mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
 #[cfg(test)]
+mod tests_view_state;
+#[cfg(test)]
 mod tests_viewperf;
 #[cfg(test)]
 mod tests_wb_selector;
+#[cfg(test)]
+mod tests_witchcraft;
 #[cfg(test)]
 mod tests_zoom;
 #[cfg(test)]
@@ -433,6 +491,9 @@ pub(crate) const TOAST_SECONDS: f64 = 1.4;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
+/// How long a picked mask peeks its overlay when it has settings (ms, issue #1109): the user sees
+/// which mask is on before judging by its effect takes over.
+const MASK_SELECT_PEEK_MS: u64 = 2000;
 /// The `path` of a display profile read from the screen rather than chosen as a file.
 pub const SCREEN_PROFILE: &str = "screen";
 
@@ -681,6 +742,15 @@ pub struct Perf {
     /// the host reports it (eframe's `cpu_usage`); `None` without a host report (headless).
     pub host_frame_ms: Option<f64>,
     pub fps: f64,
+    /// Wall time from the previous frame to this one, measured only after a frame that had work to
+    /// show (renders in flight, input): a freeze in painting or presenting shows here.
+    pub gap_ms: f64,
+    /// The longest [`Self::gap_ms`] since start, and the host's time for the frame before it (its
+    /// painting included): a long gap with a short host frame waited outside this thread's work.
+    pub max_gap_ms: f64,
+    pub max_gap_host_ms: Option<f64>,
+    /// The last frame had work to show.
+    pub was_busy: bool,
 }
 
 /// Why quitting stopped to ask first (`panels::notices`).
@@ -690,7 +760,7 @@ pub enum QuitPrompt {
     Unsaved(String),
     /// Tasks that quitting would cut short are running: an import, an export… (issue #345).
     Tasks(String),
-    /// A catalog backup is due (Settings ▸ Catalog ▸ Back up catalog): Back Up and Quit, or Skip This Time.
+    /// A library backup is due (Library Settings ▸ Back up library): Back Up and Quit, or Skip This Time.
     Backup(String),
 }
 
@@ -761,6 +831,12 @@ pub struct LccApp {
     headless_screenshotting: bool,
     /// Synthetic input events (from the control channel) injected one step per frame.
     pub synthetic: Vec<egui::Event>,
+    /// This frame's input carries synthetic events (an agent's or a script's, [`Self::synthetic`]):
+    /// what only the user may do (allow a plug-in's permission) ignores a click in it.
+    pub(crate) synthetic_frame: bool,
+    /// Input the test harness gives as the user's ([`headless::Headless::click_as_user`]): one
+    /// event per frame, never marked synthetic. Nothing outside the harness fills it.
+    pub(crate) user_events: Vec<egui::Event>,
     /// Until when (frame time, s) the photographer counts as painting on the loupe: a brush stroke in progress and a
     /// short while after it, as strokes follow one another. Meanwhile only the photo on screen renders; the other
     /// photos a stroke reached (Auto Sync) keep their thumbnails, and the neighbours aren't prepared (ported from
@@ -784,6 +860,11 @@ pub struct LccApp {
     pub(crate) pending_picks: Vec<pick::Pending>,
     /// The camera roll being listed for `file.addCameraRoll` (`camera_roll::poll`).
     pub(crate) pending_camera_roll: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// The watched camera roll's listing in flight (`camera_roll::watch_tick`), apart from
+    /// [`Self::pending_camera_roll`] so the watch and the review never fight over one.
+    pub(crate) pending_camera_roll_watch: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    /// When the watch last listed the roll, and for which library: a new library lists at once.
+    pub(crate) camera_roll_watch_at: Option<(web_time::Instant, std::sync::Arc<()>)>,
     /// Modifiers announced for synthetic input (held from a button down to its release).
     synthetic_mods: egui::Modifiers,
     /// Clear `synthetic_mods` on the next frame.
@@ -809,12 +890,18 @@ pub struct LccApp {
     /// Scroll offsets (points) of the photo grid (vertical) and the filmstrip (horizontal) as
     /// drawn last (`ui.inspect` → `scroll`).
     pub grid_scroll: Option<f32>,
+    /// Per-photo zoom memory and the mirror mode's pointer rects ([`view_state`]).
+    pub view_state: view_state::ViewState,
     pub film_scroll: Option<f32>,
     /// Widget registry from the last frame (automation ids → rects).
     pub widgets: Vec<(String, egui::Rect)>,
     /// A histogram clipping indicator is hovered this frame: the clipping overlay is previewed on
     /// the photo without turning the persistent one on ([`Self::hover_preview`]'s pattern).
     pub clipping_preview: bool,
+    /// Since when (egui time) and up to which pass a clipping indicator has been hovered: the
+    /// preview waits for the pointer to rest there ([`panels::edit::CLIPPING_PREVIEW_REST_S`]), so a
+    /// pointer gliding across the histogram never re-renders the photo (every tile at 100 %).
+    pub clipping_hover: Option<(f64, u64)>,
     /// In-progress on-canvas gesture (brush stroke points, gradient drag…).
     pub gesture: Option<panels::detail::Gesture>,
     /// The crop tool's view held still while the crop is dragged, rotated or straightened (issue #60).
@@ -877,6 +964,10 @@ pub struct LccApp {
     pub import: Option<import::ImportTask>,
     /// The last import's XMP warnings (File ▸ More Imports ▸ Import Warnings…).
     pub import_report: Option<import_report::Report>,
+    /// The Find Duplicates window (Library ▸ Find Duplicates…).
+    pub duplicates: Option<duplicates_ui::Finder>,
+    /// Library ▸ Review Comments.
+    pub review_comments: comments_ui::View,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
     /// A Synchronize Folder scan in progress (feeds its dialog).
@@ -906,6 +997,8 @@ pub struct LccApp {
     /// A background Photo ▸ Render to DNG in progress, and the last one's result.
     pub render_dng: Option<render_dng_task::RenderDngTask>,
     pub last_render_dng: Option<serde_json::Value>,
+    pub dng_update: Option<dng_update_task::DngUpdateTask>,
+    pub last_dng_update: Option<serde_json::Value>,
     /// Background file-system work of other commands (Find Missing Photos, auto import…).
     pub tasks: tasks::Tasks,
     /// Create Camera Profile from Color Chart: its photos and last report.
@@ -928,6 +1021,7 @@ pub struct LccApp {
     gpu_applied: Option<bool>,
     /// The graphics cards (for editing, second) last handed to the renderer.
     gpu_cards_applied: Option<(String, String)>,
+    ml_device_applied: Option<String>,
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
@@ -965,6 +1059,8 @@ pub struct LccApp {
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
+    /// Files that waited for a library and wait for the running import or Synchronize Folder too.
+    pub waiting_import: Vec<String>,
     /// Immich: Connections settings, the Import dialog's Immich source, background pump state.
     #[cfg(not(target_arch = "wasm32"))]
     pub immich: panels::connections::ImmichUi,
@@ -1023,8 +1119,16 @@ impl LccApp {
         let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
         let at = if loupe { self.session.active() } else { None };
         self.session.prep_tick(mode, at, self.prep_backward);
-        if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
+        // (the build's render jobs are made a few photos a tick)
+        if self.session.prep_feeding() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        } else if self.session.preview_build.as_ref().is_some_and(|b| b.running()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        // an unfinished build is taken up again once the view has been still, also when nothing
+        // else draws a frame
+        if let Some(wait) = self.session.prep_wake_in() {
+            ctx.request_repaint_after(wait);
         }
     }
 
@@ -1040,6 +1144,18 @@ impl LccApp {
             .active()
             .and_then(|p| self.session.develop_of(p))
             .is_some_and(|d| d.masks.iter().any(|m| m.id == id && panels::detail::mask_has_settings(m)))
+    }
+
+    /// A mask was just picked (created, duplicated, selected, an AI click): with the overlay on
+    /// automatic it shows by itself while the mask has nothing to judge yet; one with settings
+    /// arms a short peek of its overlay instead ([`MASK_SELECT_PEEK_MS`], issue #1109), so the
+    /// user still sees which mask the program has selected before judging by its effect takes
+    /// over again. Never latches the overlay on: `mask_overlay` keeps the rule it had.
+    fn mask_pick_overlay(&mut self) {
+        let has_settings = self.active_mask_has_settings();
+        self.ui.mask_peek_until = (self.ui.mask_overlay_auto && !self.ui.mask_overlay_pinned && has_settings)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_millis(MASK_SELECT_PEEK_MS));
+        self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !has_settings);
     }
 
     /// How panel sliders are laid out: always pills in the Modern layout, else as Settings say.
@@ -1127,6 +1243,8 @@ impl LccApp {
             shadow: None,
             headless_screenshotting: false,
             synthetic: vec![],
+            synthetic_frame: false,
+            user_events: vec![],
             paint_hold_until: f64::NEG_INFINITY,
             paint_hold: false,
             mask_landing: Default::default(),
@@ -1136,6 +1254,8 @@ impl LccApp {
             copied: None,
             pending_picks: vec![],
             pending_camera_roll: None,
+            pending_camera_roll_watch: None,
+            camera_roll_watch_at: None,
             synthetic_mods: egui::Modifiers::NONE,
             synthetic_mods_release: false,
             nav_buttons: vec![],
@@ -1149,6 +1269,7 @@ impl LccApp {
             image_rect: None,
             right_panel_rect: None,
             grid_scroll: None,
+            view_state: Default::default(),
             film_scroll: None,
             widgets: vec![],
             gesture: None,
@@ -1179,6 +1300,8 @@ impl LccApp {
             enhance: enhance_ui::EnhanceUi::default(),
             import: None,
             import_report: None,
+            duplicates: None,
+            review_comments: comments_ui::View::default(),
             scan: None,
             sync: None,
             sync_owns_changes: false,
@@ -1194,6 +1317,8 @@ impl LccApp {
             export: None,
             render_dng: None,
             last_render_dng: None,
+            dng_update: None,
+            last_dng_update: None,
             tasks: Default::default(),
             chart_profile: Default::default(),
             last_export_result: None,
@@ -1201,10 +1326,12 @@ impl LccApp {
             slideshow_export_reported: true,
             hover_preview: None,
             clipping_preview: false,
+            clipping_hover: None,
             window_is_fullscreen: false,
             preview_window: None,
             gpu_applied: None,
             gpu_cards_applied: None,
+            ml_device_applied: None,
             gpu_notice: false,
             startup_update_check: false,
             hdr_display_sdr: false,
@@ -1220,6 +1347,7 @@ impl LccApp {
             screen_profile: None,
             screen_profile_read: None,
             library_problem: None,
+            waiting_import: Vec::new(),
             alt_asks_for_library: false,
             recent_checks: Default::default(),
             activity_expanded: false,
@@ -1361,6 +1489,17 @@ impl LccApp {
         if let Ok(v) = &r {
             edit_in::after_command(self, id, v);
         }
+        if let Ok(v) = &r
+            && id == "ml.status"
+            && (params.get("device").is_some() || params.get("preference").is_some())
+            && let Some(dev_choice) = v.get("deviceChoice").and_then(Value::as_str)
+        {
+            let choice = if dev_choice.eq_ignore_ascii_case("auto") { "" } else { dev_choice.trim() };
+            if self.ui.settings.ml_device != choice {
+                self.ui.settings.ml_device = choice.to_string();
+            }
+            self.ml_device_applied = Some(choice.to_string());
+        }
         if r.is_ok() && matches!(id, "crop.aspect" | "crop.rotateAspect") {
             self.ui.crop_default_aspect = if id == "crop.aspect" && params.get("aspect").and_then(Value::as_str) == Some("original") {
                 Some(serde_json::json!("original"))
@@ -1418,6 +1557,11 @@ impl LccApp {
                 self.ui.tool.clear();
             }
         }
+        if r.is_ok() && id == "mask.brushStroke" && self.ui.mask_overlay_auto {
+            // a released stroke leaves what the mask now covers on show, so the painted area can be judged
+            // (#1042); the next mask slider hides it again (`mask.adjust` below)
+            self.ui.mask_overlay = true;
+        }
         if r.is_ok() && id == "mask.adjust" {
             // Judge local adjustments on the photo: while a slider is at work nothing covers it, not even
             // an overlay switched on with O (it comes back when the slider rests); one that showed by
@@ -1428,15 +1572,23 @@ impl LccApp {
             self.ui.mask_overlay = self.ui.mask_overlay_pinned;
         }
         if r.is_ok() && matches!(id, "mask.add" | "mask.addComponent" | "mask.duplicate" | "mask.select") {
-            // A new or picked mask shows its overlay by itself only while it has no settings: one with
-            // settings is judged by its effect (O, the eye or hovering its row shows the overlay).
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
+            // A new or picked mask shows its overlay by itself while it has no settings; one with
+            // settings is judged by its effect (O, the eye or hovering its row shows the overlay),
+            // but still peeks it for a moment so the user sees which mask is on (issue #1109).
+            self.mask_pick_overlay();
         }
         if r.is_ok() {
             // These commands finish synchronously, so their completion would otherwise
             // be invisible once the activity stack is gone. Never show success on error.
             let completed = match id {
-                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Library"))),
+                "library.compact" => Some(format!("✓ {}", i18n::tr("Optimize Catalog"))),
+                // from File ▸ Libraries or Library Settings
+                "catalog.backup" => r.as_ref().ok().map(|v| format!("{} {}", i18n::tr("Catalog backed up to"), v["backup"].as_str().unwrap_or(""))),
+                "catalog.checkIntegrity" if r.as_ref().is_ok_and(|v| v["ok"] == true) => {
+                    Some(i18n::tr("The catalog passed the integrity test").to_string())
+                }
+                "catalog.checkIntegrity" => Some(i18n::tr("The catalog failed the integrity test: back it up and optimize it").to_string()),
+                "catalog.optimize" => Some(i18n::tr("Catalog optimized").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
                 _ => None,
@@ -1461,9 +1613,21 @@ impl LccApp {
                 }
                 None => i18n::tr("Color label cleared").into(),
             };
+            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
             // Native menu clicks can arrive before logic() updates last_time after an idle gap.
             let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
             self.ui.show_toast((text, now + TOAST_SECONDS, label));
+        }
+        if r.is_ok()
+            && cull_toast::confirms(id)
+            && !matches!(id, "photo.label" | "photo.clearLabel")
+            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
+        {
+            // every rating and flag change confirms, with the count when several photos changed
+            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
+                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
+                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+            }
         }
         match &r {
             Err(e) => {
@@ -1476,7 +1640,11 @@ impl LccApp {
             }
             Ok(v) if matches!(id, "faces.detect" | "faces.clearAndRescan") && v["done"] == false => {
                 let n = v["photos"].as_u64().unwrap_or(0);
-                self.ui.status = if n == 1 { "Detecting faces…".to_string() } else { format!("Detecting faces in {n} photos…") };
+                self.ui.status = if n == 1 {
+                    crate::i18n::tr("Detecting faces…").to_string()
+                } else {
+                    crate::i18n::tr_format!("Detecting faces in {n} photos…", n = n)
+                };
             }
             Ok(v) if id == "faces.detect" => self.ui.status = detect_summary(v),
             Ok(v) if id == "faces.renamePerson" => {
@@ -1600,7 +1768,7 @@ impl LccApp {
                 let t = ctx.input(|i| i.time);
                 self.ui.show_toast((
                     crate::i18n::tr_format!(
-                        "{n} change{} saved in memory but not written to disk: {e} — {app} will retry",
+                        "{n} change{} saved in memory but not written to disk: {e}. {app} will retry",
                         if n == 1 { "" } else { "s" },
                         n = n,
                         e = e
@@ -1611,7 +1779,7 @@ impl LccApp {
             }
             (None, true) => {
                 self.ui.unsaved_seen = false;
-                self.toast(ctx, crate::i18n::tr("Library saved"));
+                self.toast(ctx, crate::i18n::tr("Catalog saved"));
             }
             (Some(_), true) => ctx.request_repaint_after(std::time::Duration::from_secs(2)), // retry
             (None, false) => {}
@@ -1692,7 +1860,7 @@ impl LccApp {
         }
         if let Some(mask) = polled.refine {
             // a new selection from a click or a description: shown by the same rule as a new mask
-            self.ui.mask_overlay = self.ui.mask_overlay_pinned || (self.ui.mask_overlay_auto && !self.active_mask_has_settings());
+            self.mask_pick_overlay();
             self.ui.detail_due = Some((now + 0.3, mask));
         }
         if let Some(e) = polled.messages.into_iter().last() {
@@ -1740,7 +1908,12 @@ impl LccApp {
         if lcc_engine::segment::Segmenter::AVAILABLE && e.kind == ErrorKind::ModelMissing(AiModel::Sam3) {
             self.offer_sam_download(then);
         } else if lcc_engine::segment::Segmenter::AVAILABLE
-            && matches!(e.kind, ErrorKind::ModelMissing(AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector))
+            && matches!(
+                e.kind,
+                ErrorKind::ModelMissing(
+                    AiModel::Sam2 | AiModel::Describe | AiModel::People | AiModel::FaceDetector | AiModel::Scene | AiModel::Depth
+                )
+            )
         {
             // SAM 2.1 was chosen for Object masks, Describe needs the open models, or Retouch needs the MediaPipe models: their downloads are in the
             // AI Models dialog
@@ -2146,10 +2319,25 @@ impl LccApp {
             if dt > 0.0 {
                 self.perf.fps = self.perf.fps * 0.9 + (1.0 / dt).min(240.0) * 0.1;
             }
+            // the time between this frame and the last one while the window had work to show (a
+            // render on its way, input to answer): what a freeze outside `update` (painting,
+            // presenting behind GPU work) adds shows here and not in `update_ms`
+            let busy = self.renderer.in_flight() > 0 || self.renderer.queued() > 0 || ctx.input(|i| !i.events.is_empty());
+            if self.last_time > 0.0 && self.perf.was_busy && dt.is_finite() && dt > 0.0 {
+                self.perf.gap_ms = dt * 1000.0;
+                if self.perf.gap_ms > self.perf.max_gap_ms {
+                    self.perf.max_gap_ms = self.perf.gap_ms;
+                    self.perf.max_gap_host_ms = self.perf.host_frame_ms;
+                }
+            }
+            self.perf.was_busy = busy;
             self.last_time = now;
+            let mut lap = now_ms();
             self.drain_control(ctx);
+            self.lap(&mut lap, "logic.control");
             self.drain_midi(ctx);
             surface::tick(self, ctx);
+            view_state::track(self);
         }
         self.apply_settings(ctx);
         // input this frame: batch work leaves the editing card to the interface for a moment
@@ -2160,21 +2348,28 @@ impl LccApp {
         if !self.synthetic.is_empty() {
             ctx.request_repaint();
         }
+        // (lapped: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.renderer.poll(ctx, &mut self.session);
+        self.lap(&mut lap, "logic.renders");
         merge::poll(self, ctx);
         import::poll_scan(self, ctx);
+        self.lap(&mut lap, "logic.folderRead");
         sync::poll(self, ctx);
         sync::poll_run(self, ctx);
         import::tick(self, ctx);
         lightroom_import::tick(self, ctx);
         recheck::tick(self);
         tasks::poll(self, ctx);
+        self.lap(&mut lap, "logic.tasks");
         #[cfg(not(target_arch = "wasm32"))]
         panels::update::poll(self, ctx);
         self.preview_build_status(ctx);
         self.save_status(ctx);
         self.slideshow_tick(ctx);
+        self.lap(&mut lap, "logic.status");
         panels::faces::pump(self, ctx);
+        self.lap(&mut lap, "logic.faces");
         #[cfg(not(target_arch = "wasm32"))]
         panels::connections::pump(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2190,6 +2385,7 @@ impl LccApp {
             }
         }
         folder_poll::tick(self, ctx, focused && !self.ui.was_focused);
+        camera_roll::watch_tick(self, ctx, focused && !self.ui.was_focused);
         if let Some(url) = self.pending_link.take() {
             folder_poll::follow_link(self, ctx, &url);
         }
@@ -2197,11 +2393,11 @@ impl LccApp {
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
         // a folder that couldn't be read stops being one once another is watched (or none)
-        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_folder.as_ref() != Some(f)) {
+        if self.ui.auto_import_error.as_ref().is_some_and(|(f, _)| self.session.import_defaults.auto_active_folder() != Some(f)) {
             self.ui.auto_import_error = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(folder) = self.session.import_defaults.auto_folder.clone() {
+        if let Some(folder) = self.session.import_defaults.auto_active_folder().cloned() {
             const LABEL: &str = "Auto Import";
             let now = ctx.input(|i| i.time);
             if now - self.ui.auto_import_at >= 3.0
@@ -2211,11 +2407,14 @@ impl LccApp {
                 && !self.tasks.is_running(LABEL)
             {
                 self.ui.auto_import_at = now;
-                let listed = folder.clone();
-                let work = move || lcc_engine::cmd::library::list_auto_import_folder(&listed);
+                let scope = self.session.auto_import_scope();
+                let work = move || match scope {
+                    Some(scope) => scope.list(),
+                    None => Ok(Vec::new()),
+                };
                 let done = move |app: &mut LccApp, _ctx: &egui::Context, listing: Result<Vec<(String, u64)>, String>| {
                     // the watched folder changed while this one was listed: its result is for nothing on screen
-                    if app.session.import_defaults.auto_folder.as_ref() != Some(&folder) {
+                    if app.session.import_defaults.auto_active_folder() != Some(&folder) {
                         return;
                     }
                     let listing = match listing {
@@ -2357,7 +2556,7 @@ impl LccApp {
         if !drop.presets.is_empty() {
             // presets live in a library: with none open they would go with the session it replaces
             if panels::library_problem::holds_drops(self) {
-                self.toast(ctx, crate::i18n::tr("Open a library first, then drop the presets again"));
+                self.toast(ctx, crate::i18n::tr("Open a catalog first, then drop the presets again"));
             } else {
                 let _ = self.run("file.importPresets", serde_json::json!({"paths": drop.presets}));
             }
@@ -2410,6 +2609,34 @@ impl LccApp {
                 lcc_engine::gpu::set_helper(&cards.1);
             }
             self.gpu_cards_applied = Some(cards);
+        }
+        let ml_device = self.ui.settings.ml_device.clone();
+        if self.ml_device_applied.is_none() && ml_device.is_empty() {
+            if let Ok(st) = self.session.execute("ml.status", &serde_json::json!({})) {
+                let adopted = st
+                    .get("deviceChoice")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("")
+                    .to_string();
+                if !adopted.is_empty() {
+                    self.ui.settings.ml_device = adopted.clone();
+                }
+                self.ml_device_applied = Some(adopted);
+            }
+        } else if self.ml_device_applied.as_ref() != Some(&ml_device)
+            && self
+                .session
+                .execute(
+                    "ml.status",
+                    &serde_json::json!({
+                        "device": ml_device,
+                    }),
+                )
+                .is_ok()
+        {
+            self.ml_device_applied = Some(ml_device);
         }
         if self.gpu_applied != Some(self.ui.settings.gpu) {
             self.gpu_applied = Some(self.ui.settings.gpu);
@@ -2536,6 +2763,7 @@ impl LccApp {
         self.take_nav_buttons(raw);
         drop_space_repeats(raw);
         modern::after_input(self, raw);
+        view_state::mirror_input(self, raw);
     }
 
     /// Take the mouse's Back / Forward button events (`Extra1` / `Extra2`) out of `raw` and keep
@@ -2570,7 +2798,15 @@ impl LccApp {
         if !self.drop_hover.is_empty() {
             raw.hovered_files = self.drop_hover.iter().map(|p| egui::HoveredFile { path: file(p), ..Default::default() }).collect();
         }
+        self.synthetic_frame = !self.synthetic.is_empty();
         if self.synthetic.is_empty() {
+            if !self.user_events.is_empty() {
+                let e = self.user_events.remove(0);
+                if let egui::Event::PointerButton { pos, .. } = &e {
+                    raw.events.push(egui::Event::PointerMoved(*pos));
+                }
+                raw.events.push(e);
+            }
             shell::defer_tabs(self, raw);
             return;
         }
@@ -2715,16 +2951,27 @@ impl LccApp {
             Err(e) => log::warn!("store: {e}"),
         }
         if n > 0 {
-            let msg = crate::i18n::tr_format!("{n} presets from your other libraries were added.", n = n);
+            let msg = crate::i18n::tr_format!("{n} presets from your other catalogs were added.", n = n);
             self.toast(ctx, msg);
         }
         // an older install's presets (the app under an earlier name, on this computer) join too, once
         // each, with no step of the user's: File ▸ More Imports ▸ Import Presets from Older Installs
         // asks again
+        // (its camera profiles too, bound to the bodies the older install started with them).
+        // No older install on this computer: nothing to ask, and no error at startup (issue #965).
+        if lcc_engine::app_store::older_install_stores().is_empty() {
+            return;
+        }
         if let Ok(r) = self.run("store.importOlderInstalls", serde_json::json!({})) {
-            let n: u64 = r["merged"].as_array().into_iter().flatten().map(|m| m["presets"].as_u64().unwrap_or(0)).sum();
-            if n > 0 {
-                let msg = crate::i18n::tr_format!("{n} presets from an older install were added.", n = n);
+            let sum = |key: &str| -> u64 { r["merged"].as_array().into_iter().flatten().map(|m| m[key].as_u64().unwrap_or(0)).sum() };
+            let (n, m) = (sum("presets"), sum("cameraProfiles"));
+            let msg = match (n, m) {
+                (0, 0) => None,
+                (n, 0) => Some(crate::i18n::tr_format!("{n} presets from an older install were added.", n = n)),
+                (0, m) => Some(crate::i18n::tr_format!("{m} camera profiles from an older install were added.", m = m)),
+                (n, m) => Some(crate::i18n::tr_format!("{n} presets and {m} camera profiles from an older install were added.", n = n, m = m)),
+            };
+            if let Some(msg) = msg {
                 self.toast(ctx, msg);
             }
         }
@@ -2733,7 +2980,7 @@ impl LccApp {
     /// "<app> — <library name>" (just "<app>" for a library that isn't saved).
     pub fn window_title(&self) -> String {
         match panels::settings::open_library_name(self) {
-            Some(name) => format!("{} — {name}", lcc_brand::DISPLAY_NAME),
+            Some(name) => format!("{}: {name}", lcc_brand::DISPLAY_NAME),
             None => lcc_brand::DISPLAY_NAME.to_string(),
         }
     }
@@ -2745,7 +2992,7 @@ impl LccApp {
     pub fn page_title(&self, unsaved: bool) -> String {
         let dot = if unsaved { " •" } else { "" };
         match self.session.active().and_then(|id| self.session.catalog.photo(id)) {
-            Some(p) => format!("{}{dot} — {}", p.file_name, lcc_brand::DISPLAY_NAME),
+            Some(p) => format!("{}{dot}: {}", p.file_name, lcc_brand::DISPLAY_NAME),
             None => format!("{}{dot}", self.window_title()),
         }
     }
@@ -2756,6 +3003,7 @@ impl LccApp {
         let ctx = ui.ctx().clone();
         widgets::sync_section_folds(&ctx, &mut self.ui.section_open);
         shortcuts::set_active(self.ui.settings.keymap_set);
+        motion::set(&ctx, self.ui.settings.reduce_motion);
         if !self.fonts_ready {
             ctx.request_repaint();
             return;
@@ -2777,7 +3025,10 @@ impl LccApp {
         // …and the histogram sets this while the pointer rests on a clipping indicator
         self.clipping_preview = false;
         self.ai_mask_detail(&ctx);
+        // (lapped like the panels: a slow frame's log names what cost it)
+        let mut lap = now_ms();
         self.background_prep(&ctx);
+        self.lap(&mut lap, "prep.tick");
         crate::panels::genfill::frame(self, &ctx);
         self.place_names_outcome(&ctx);
         if self.ui.fullscreen {
@@ -2805,6 +3056,7 @@ impl LccApp {
         // the Import tab (Settings ▸ Import ▸ Import as a tab) takes the window under the top bar
         import_tab::keep_in_step(self);
         let importing = import_tab::showing(self);
+        let mut lap = now_ms();
         let m = if importing && !touch {
             panels::topbar::show(self, ui);
             if module::edge_visible(self, module::Edge::Top) {
@@ -2823,20 +3075,26 @@ impl LccApp {
         } else {
             t.grid_bg
         };
+        self.lap(&mut lap, "panel.edges");
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| {
             if importing {
-                import_tab::show(self, ui)
+                let mut lap = now_ms();
+                import_tab::show(self, ui);
+                self.lap(&mut lap, "panel.import");
             } else if touch {
                 modern::center(self, ui, m)
             } else {
                 m.center(ui, self)
             }
         });
+        let mut lap = now_ms();
         module::lights_out(self, &ctx);
         help_overlay::show(self, &ctx);
         panels::second::show(self, &ctx);
         panels::notices::show(self, &ctx);
         import_report::show(self, &ctx);
+        duplicates_ui::show(self, &ctx);
+        comments_ui::show(self, &ctx);
         panels::dialogs::show(self, &ctx);
         catalog_ui::show(self, &ctx);
         plate::show_setup(self, &ctx);
@@ -2848,6 +3106,7 @@ impl LccApp {
         #[cfg(not(target_arch = "wasm32"))]
         panels::plugins::poll(self, &ctx);
         render_dng_task::poll(self, &ctx);
+        dng_update_task::poll(self, &ctx);
         machine_test::poll(self, &ctx);
         slideshow_export::poll(self, &ctx);
         panels::activity::show(self, &ctx);
@@ -2862,6 +3121,7 @@ impl LccApp {
         panels::presets::picker_frame(self, &ctx);
         panels::toast(self, &ctx);
         drop_overlay::show(self, &ctx);
+        self.lap(&mut lap, "panel.overlays");
         self.widgets = widgets::take_registry(&ctx);
         self.text_focus = ctx.egui_wants_keyboard_input();
         self.end_frame(&ctx, t0);
@@ -3082,6 +3342,8 @@ pub struct Caches {
     folder_tree: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
     /// The catalog's part of the folder tree (before the disk folders are added), by catalog revision.
     folder_base: Option<(u64, std::sync::Arc<Vec<lcc_catalog::FolderNode>>)>,
+    /// Folders given a row of their own by Show Parent Folder (folder keys), for this session.
+    shown_folders: std::collections::BTreeSet<String>,
     people: Option<(u64, lcc_catalog::Filter, std::sync::Arc<Vec<lcc_catalog::Person>>)>,
     /// The ignored faces (`faces.ignore`) as `(photo, index)`, at a catalog revision.
     ignored_faces: Option<(u64, std::sync::Arc<Vec<(u64, usize)>>)>,
@@ -3138,6 +3400,9 @@ pub struct Caches {
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
     pub unnamed: Option<(u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
+    /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another
+    /// year, folder or album, they are asked for again.
+    pub faces_filter: Option<lcc_catalog::Filter>,
     /// The most photos the face scan has had left at once since it last finished (the progress bar's whole).
     pub faces_peak: u64,
     person_names: Option<(u64, std::sync::Arc<Vec<String>>)>,
@@ -3230,10 +3495,18 @@ impl Caches {
         }
         // the tree is made again only when a photo's file or presence changed
         let base = self.folder_base.take().filter(|(r, _)| still_right(cat, *r, READS_FILE)).map(|(_, b)| b);
-        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree())));
+        let base = base.unwrap_or_else(|| std::sync::Arc::new(crate::panels::left::sidebar_folders(cat.folder_tree(), &self.shown_folders)));
         self.folder_base = Some((cat.revision, base.clone()));
         self.folder_tree = Some((key, base.clone()));
         base
+    }
+    /// Gives `path` a row of its own in the Folders list (Show Parent Folder).
+    pub(crate) fn show_folder(&mut self, path: &str) {
+        let key = lcc_catalog::query::folder_key(path);
+        if !key.is_empty() && self.shown_folders.insert(key) {
+            self.folder_base = None;
+            self.folder_tree = None;
+        }
     }
     /// The folder tree as last built, when it still holds (a read-only check cannot rebuild it).
     pub(crate) fn folder_tree_if_fresh(&self, cat: &lcc_catalog::Catalog) -> Option<std::sync::Arc<Vec<lcc_catalog::FolderNode>>> {

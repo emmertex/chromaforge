@@ -9,7 +9,6 @@
 //!
 //! Sources: own design (the same hook as the Subject model's).
 
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use lcc_develop::DevelopSettings;
@@ -26,6 +25,9 @@ pub struct SceneSelection {
     pub vegetation: Plane,
     /// Every person in the photo.
     pub person: Plane,
+    /// The rest of Landscape ([`crate::auto_mask::LANDSCAPE_TERRAIN`] names): mountains,
+    /// architecture, natural and artificial ground.
+    pub terrain: Vec<(&'static str, Plane)>,
 }
 
 /// The model: `(rgb, w, h)` → its selection, or `None` when it can't (the analysis is used then).
@@ -60,13 +62,7 @@ fn usable(p: &Plane) -> bool {
 pub(crate) fn selection(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<Arc<SceneSelection>> {
     let model = MODEL.read().unwrap_or_else(PoisonError::into_inner).clone()?;
     let frame = crate::frame_for(src, info, s, false);
-    let mut hs = std::collections::hash_map::DefaultHasher::new();
-    (src.width, src.height, format!("{frame:?}")).hash(&mut hs);
-    let step = (src.data.len() / 4096).max(1);
-    for c in src.data.iter().step_by(step) {
-        c.map(f32::to_bits).hash(&mut hs);
-    }
-    let key = hs.finish();
+    let key = crate::auto_mask::photo_key(src, info, s, true, "scene", ());
     let cached = || CACHE.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key).map(|(_, p)| p.clone());
     if let Some(p) = cached() {
         return Some(p);
@@ -80,7 +76,7 @@ pub(crate) fn selection(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) ->
     let img = frame.sample(src, w, h);
     let rgb = crate::auto_mask::model_input(&img);
     let sel = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model(&rgb, w, h))).ok().flatten()?;
-    if ![&sel.sky, &sel.water, &sel.vegetation, &sel.person].into_iter().all(usable) {
+    if ![&sel.sky, &sel.water, &sel.vegetation, &sel.person].into_iter().chain(sel.terrain.iter().map(|(_, p)| p)).all(usable) {
         return None;
     }
     let sel = Arc::new(sel);
@@ -98,6 +94,7 @@ pub(crate) fn apply(a: &mut AutoMasks, sel: &SceneSelection) {
     a.water = sel.water.clone();
     a.vegetation = sel.vegetation.clone();
     a.person = Some(sel.person.clone());
+    a.terrain = sel.terrain.clone();
 }
 
 #[cfg(test)]
@@ -113,13 +110,23 @@ mod tests {
     fn the_model_replaces_sky_landscape_and_people_and_keeps_subject() {
         let mut a = crate::auto_mask::analyze(&Rgb32f::new(16, 12));
         let subject = a.subject.clone();
-        let sel = SceneSelection { sky: plane(4, 3, 0.9), water: plane(4, 3, 0.2), vegetation: plane(4, 3, 0.3), person: plane(4, 3, 0.7) };
+        let sel = SceneSelection {
+            sky: plane(4, 3, 0.9),
+            water: plane(4, 3, 0.2),
+            vegetation: plane(4, 3, 0.3),
+            person: plane(4, 3, 0.7),
+            terrain: vec![("mountains", plane(4, 3, 0.6))],
+        };
         apply(&mut a, &sel);
         assert_eq!(a.for_shape(&MaskShape::Sky), Some(&sel.sky));
         assert_eq!(a.for_shape(&MaskShape::Landscape { class: "Water".into() }), Some(&sel.water));
         assert_eq!(a.for_shape(&MaskShape::Landscape { class: "vegetation".into() }), Some(&sel.vegetation));
         assert_eq!(a.for_shape(&MaskShape::People { person: 0, parts: vec![], who: None, seg: None }), Some(&sel.person));
         assert_eq!(a.for_shape(&MaskShape::Subject), Some(&subject));
+        // the other Landscape classes by their loose names; none the model didn't compute
+        assert_eq!(a.for_shape(&MaskShape::Landscape { class: "Mountains".into() }), sel.terrain.first().map(|(_, p)| p));
+        assert_eq!(a.for_shape(&MaskShape::Landscape { class: "rock".into() }), sel.terrain.first().map(|(_, p)| p));
+        assert_eq!(a.for_shape(&MaskShape::Landscape { class: "road".into() }), None);
     }
 
     #[test]

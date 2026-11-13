@@ -57,7 +57,7 @@ pub fn write(dir: &Path, cal: &Calibration, photos: &[PhotoSamples], max_photos:
          .banner{{background:#a33;color:#fff;padding:12px;font-weight:bold}}\
          table{{border-collapse:collapse;margin:12px 0}}td,th{{border:1px solid #555;padding:4px 8px;text-align:right}}\
          .row{{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}}figure{{margin:0}}img{{max-width:{EDGE}px}}\
-         </style></head><body><div class=\"banner\">This report contains your photos — do not send it. \
+         </style></head><body><div class=\"banner\">This report contains your photos. Do not send it. \
          Only the calibration file is contributed.</div><h1>{} {}</h1>",
         escape(&cal.make),
         escape(&cal.model)

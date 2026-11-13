@@ -1,0 +1,25 @@
+---
+title: HDR editing and display
+description: HDR mode, headroom, SDR rendition, HDR displays and gain maps.
+sidebar:
+  order: 11
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="hdr-controls" alt="The HDR button on in the Edit panel with the histogram showing the SDR and HDR range" menu="The HDR button is in the Light card" />
+
+- **HDR** button next to **Auto** and **B&W** at the top of the Edit panel: edits the photo with highlights above SDR white.
+- **Headroom limit**: 0 to 5 stops, marked on the HDR histogram.
+- **SDR rendition**: its own Brightness, Contrast, Highlights, Shadows, Whites, Clarity and a Blend, for thumbnails and SDR exports. **View ▸ Loupe Info ▸ HDR Preview** shows it.
+- **Visualize HDR** (`⇧H`): grey below SDR white, coloured bands for each stop above it.
+- **HDR display**: on an HDR display the loupe shows above SDR white (macOS EDR, Windows HDR, Wayland compositors with colour management). Partial: SDR displays are unchanged; checked on a few machines.
+- **Export**: HDR JPEG with a gain map (ISO 21496-1, Adobe and Apple XMP), 10-bit AVIF (Rec. 2020 PQ). Partial. See [Export](../../output/export/).
+- **Apple gain maps**: a helper reconstructs the HDR picture from Apple's legacy gain map and its SDR base. It is not connected to import yet.
+- **HDR merge** makes a 32-bit DNG: [Photo merge](../merge/).
+
+<Aside type="note" title="Modern layout">
+  **HDR** is in the **Light** card. **View ▸ Loupe Info** holds Visualize HDR and HDR Preview.
+</Aside>

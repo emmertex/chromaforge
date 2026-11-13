@@ -1,5 +1,5 @@
-//! Catalog-level commands: settings, backup, integrity test, optimise, Export as Catalog and
-//! Import from Another Catalog (`docs/catalog.md`).
+//! Catalog-level commands: settings, backup, integrity test, optimise, Export as Library and
+//! Import from Another Library (`docs/catalog.md`).
 
 use std::path::{Path, PathBuf};
 
@@ -195,16 +195,16 @@ pub fn specs() -> Vec<CommandSpec> {
             on_disk,
             settings
         ),
-        cmd!(query "catalog.backup", "Back Up Catalog", [], None, "{dir?} — checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
-        cmd!(query "catalog.backupIfDue", "Back Up Catalog If Due", [], None, "{} — the exit-time backup: only when the schedule says so → {backup: path|null}", always, backup_if_due),
-        cmd!(query "catalog.checkIntegrity", "Test Library Integrity", ["File", "Libraries"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
-        cmd!(query "catalog.optimize", "Optimize Catalog", [], None, "{} — rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
+        cmd!(query "catalog.backup", "Back Up Catalog", ["File", "Libraries"], None, "{dir?}: checkpoint, copy the catalog into <dir or backup folder>/<time>/, test the copy; old backups pruned → {backup}", on_disk, backup),
+        cmd!(query "catalog.backupIfDue", "Back Up Catalog If Due", [], None, "{}: the exit-time backup: only when the schedule says so → {backup: path|null}", always, backup_if_due),
+        cmd!(query "catalog.checkIntegrity", "Test Catalog Integrity", ["File", "Libraries"], None, "{} → {ok, storeOk, storedPhotos, photos, danglingRefs}", on_disk, check),
+        cmd!(query "catalog.optimize", "Optimize Catalog Store", [], None, "{}: rewrite the store, rebuild indexes, compact → {bytesBefore, bytesAfter, ms}", on_disk, optimize),
         cmd!(
             query "catalog.export",
             "Export as Catalog",
             [],
             None,
-            "{parent, name, ids? | scope?: selected|visible|all, originals?: bool, previews?: bool} — a new catalog folder parent/name with these photos, their albums and stacks; originals copied into its Originals/ → {entry, photos, albums, stacks, originalsCopied, originalsFailed}",
+            "{parent, name, ids? | scope?: selected|visible|all, originals?: bool, previews?: bool}: a new catalog folder parent/name with these photos, their albums and stacks; originals copied into its Originals/ → {entry, photos, albums, stacks, originalsCopied, originalsFailed}",
             always,
             export
         ),
@@ -213,7 +213,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import from Another Catalog",
             [],
             None,
-            "{path, rule?: keep|replaceSettings|replaceMetadata|replaceSettingsAndMetadata, preview?: bool} — photos, albums and stacks from another catalog (read-only), one undo step; with preview only the change preview → {newPhotos, changed, unchanged, newAlbums, extendedAlbums, changedSettings, changedMetadata, imported}",
+            "{path, rule?: keep|replaceSettings|replaceMetadata|replaceSettingsAndMetadata, preview?: bool}: photos, albums and stacks from another catalog (read-only), one undo step; with preview only the change preview → {newPhotos, changed, unchanged, newAlbums, extendedAlbums, changedSettings, changedMetadata, imported}",
             always,
             import
         ),

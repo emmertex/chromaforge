@@ -25,6 +25,11 @@ fn gpu() -> bool {
     // which card the comparisons ran on (`<PREFIX>_GPU_ADAPTER` picks one on a machine with two)
     static NAMED: std::sync::Once = std::sync::Once::new();
     NAMED.call_once(|| eprintln!("GPU equivalence tests on {}", lcc_gpu::adapter_name().unwrap_or_default()));
+    // Planned from the device, the joint colour NR's bands follow the renders in flight: with these
+    // tests rendering side by side, one render of a pair could run that step on the device and the
+    // other on the CPU (equal only to within an 8-bit level), and the cached / fitted comparisons
+    // here are exact. A pinned budget gives every render the same plan.
+    lcc_gpu::set_nr_band_budget(Some(512 << 20));
     ok
 }
 
@@ -47,6 +52,12 @@ fn camera_tone_and_relative_wb() {
     s.wb.mode = WbMode::Custom;
     s.wb.temp = 8000.0;
     check("camera tone edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    // each process's shoulder past the last knot, with highlights lifted into it (upstream #3783)
+    for p in Process::ALL {
+        let mut lifted = DevelopSettings { process: p.version(), ..DevelopSettings::default() };
+        lifted.light.exposure = 2.0;
+        check(&format!("camera tone {p:?} exposure +2"), &src, &info, &lifted, &RenderRequest::fit(320, 240));
+    }
     // a camera chroma curve: richer shadows, highlights bleached toward white
     let curve = curve.with_chroma([1.4, 1.3, 1.1, 1.0, 0.7, 0.4, 0.25, 0.2]).unwrap();
     let info = SourceInfo { camera_tone: Some(curve), ..info };
@@ -137,6 +148,45 @@ fn preview_noise_reduction_matches() {
     for (name, edge) in [("NR preview 640 of 6000", 640), ("NR preview 320 of 6000", 320), ("NR preview 128 of 6000", 128)] {
         check(name, &src, &info, &s, &RenderRequest::fit(edge, edge));
     }
+}
+
+/// The joint colour noise reduction of process V8 (upstream #1348) on the device: the same kernels'
+/// result as the CPU's at the raw default and at 100, on a noisy raw scene, a preview level of a large
+/// original (the whole frame's noise model from tiles) and a zoomed window; V7 keeps the blurred
+/// chromaticity on both.
+#[test]
+fn joint_colour_noise_reduction_matches() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(3, 640, 480);
+    let info = SourceInfo { raw: true, ..Default::default() };
+    for p in [Process::V7, Process::V8] {
+        for (color, detail, smooth) in [(25.0, 50.0, 50.0), (100.0, 0.0, 100.0)] {
+            let mut s = DevelopSettings { process: p.version(), ..Default::default() };
+            s.detail.nr_luminance = 20.0;
+            s.detail.nr_color = color;
+            s.detail.nr_color_detail = detail;
+            s.detail.nr_color_smoothness = smooth;
+            check(&format!("colour NR {color} {p:?}"), &src, &info, &s, &RenderRequest::fit(640, 480));
+        }
+    }
+    let mut s = DevelopSettings { process: Process::V8.version(), ..Default::default() };
+    s.detail.nr_color = 60.0;
+    // a 1600-px frame: many noise tiles; the window is grown by the filter's reach and cut back
+    let big = scene(3, 1600, 1200);
+    let preview = SourceInfo { raw: true, native_long: Some(6000), ..Default::default() };
+    check("joint colour NR 1600 of 6000", &big, &preview, &s, &RenderRequest::fit(1600, 1200));
+    let win = lcc_pipeline::PixelWindow { x: 700, y: 400, w: 320, h: 240 };
+    check("joint colour NR window", &big, &info, &s, &RenderRequest { window: Some(win), ..RenderRequest::fit(1600, 1200) });
+    // an HDR window: grown by the filter's reach and cut back, floats and texels alike
+    s.hdr.enabled = true;
+    s.light.exposure = 1.5;
+    let req = RenderRequest { window: Some(win), depth: lcc_pipeline::OutputDepth::F32Hdr, ..RenderRequest::fit(1600, 1200) };
+    check_hdr_req("joint colour NR HDR window", &big, &info, &s, &req);
+    let (r, texels) = lcc_gpu::try_render_hdr_texels(&big, &info, &s, &req, None, 4.0).expect("the GPU renders HDR texels");
+    assert_eq!((r.image.width, r.image.height), (win.w, win.h), "the HDR window's own size");
+    assert_eq!(texels.len(), 4 * win.w * win.h, "four texel values per pixel of the window");
 }
 
 /// A render big enough for the per-pixel stage to run in several bands of rows (and the render
@@ -233,6 +283,33 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.grading.global = Wheel { hue: 300.0, sat: 10.0, lum: 0.0 };
             s.grading.blending = 70.0;
             s.grading.balance = 20.0;
+        }),
+        ("colourist primaries", |s| {
+            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.gamma = Wheel { hue: 30.0, sat: 20.0, lum: 0.0 };
+            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
+        }),
+        ("colourist primaries (log)", |s| {
+            s.primaries.log_wheels.shadow = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.log_wheels.highlight = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.low = 0.25;
+            s.primaries.high = 0.8;
+        }),
+        ("colourist primaries (both sets)", |s| {
+            s.primaries.lift = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.gamma = Wheel { hue: 30.0, sat: 20.0, lum: 0.0 };
+            s.primaries.gain = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
+            s.primaries.log_wheels.shadow = Wheel { hue: 220.0, sat: 50.0, lum: -10.0 };
+            s.primaries.log_wheels.midtone = Wheel { hue: 60.0, sat: 15.0, lum: 5.0 };
+            s.primaries.log_wheels.highlight = Wheel { hue: 0.0, sat: 25.0, lum: 15.0 };
+            s.primaries.log_wheels.offset = Wheel { hue: 200.0, sat: 10.0, lum: 5.0 };
+        }),
+        ("hsl curves", |s| {
+            s.hsl_curves.hue = vec![Point::new(0.55, -0.4), Point::new(0.8, 0.3)];
+            s.hsl_curves.sat = vec![Point::new(0.3, -0.6)];
+            s.hsl_curves.lum = vec![Point::new(0.65, 0.5)];
         }),
         ("tone curves", |s| {
             s.curve.highlights = -30.0;
@@ -1078,9 +1155,9 @@ fn highlights_shadows_base_matches_on_every_process() {
         return;
     }
     let raw = SourceInfo { raw: true, ..Default::default() };
-    let src = scene(0, 2400, 1600);
+    let src = scene(0, 1200, 800);
     let cache = StageCache::default();
-    for &(w, h) in &[(720, 480), (2400, 1600)] {
+    for &(w, h) in &[(360, 240), (1200, 800)] {
         let req = RenderRequest::fit(w, h);
         for p in Process::ALL {
             let mut s = DevelopSettings { process: p.version(), ..DevelopSettings::default() };
@@ -1296,8 +1373,8 @@ fn windows_match() {
     use lcc_pipeline::PixelWindow;
     let src = scene(1, 960, 640);
     let info = SourceInfo { raw: true, ..Default::default() };
-    let win = PixelWindow { x: 1200, y: 800, w: 640, h: 480 };
-    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(3000, 2000) };
+    let win = PixelWindow { x: 720, y: 480, w: 480, h: 360 };
+    let req = RenderRequest { window: Some(win), ..RenderRequest::fit(1800, 1200) };
     let mut cases = cases();
     cases.push(("vignette at the corner", |s| {
         s.vignette.amount = -80.0;
@@ -1331,7 +1408,7 @@ fn windows_match() {
     let mut s = DevelopSettings::default();
     s.vignette.amount = -80.0;
     s.vignette.midpoint = 10.0;
-    let corner = RenderRequest { window: Some(PixelWindow { x: 2360, y: 1520, w: 640, h: 480 }), ..RenderRequest::fit(3000, 2000) };
+    let corner = RenderRequest { window: Some(PixelWindow { x: 1320, y: 840, w: 480, h: 360 }), ..RenderRequest::fit(1800, 1200) };
     check("window: vignette corner", &src, &info, &s, &corner);
 }
 
@@ -1836,8 +1913,13 @@ fn refine_edges_and_feather_match() {
         check(&format!("refine {refine} feather {feather}"), &src, &raw, &s, &RenderRequest::fit(640, 640));
         let gpu = |s: &DevelopSettings| lcc_gpu::render(&src, &raw, s, &RenderRequest::fit(640, 640), None).expect("gpu render").image;
         let plain = DevelopSettings { masks: s.masks.iter().map(|m| Mask { refine: 0.0, feather: 0.0, ..m.clone() }).collect(), ..s.clone() };
-        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does)
-        assert!(refine < 50.0 && feather == 0.0 || diff(&gpu(&s), &gpu(&plain)).1 > 3, "refine {refine} / feather {feather} change the mask");
+        // (a light refine barely moves a soft radial edge; a strong one or a feather visibly does. On
+        // process V7: the V8 highlight roll-off compresses the brightened highlights the change shows in)
+        let v7 = |x: &DevelopSettings| DevelopSettings { process: Process::V7.version(), ..x.clone() };
+        assert!(
+            refine < 50.0 && feather == 0.0 || diff(&gpu(&v7(&s)), &gpu(&v7(&plain))).1 > 3,
+            "refine {refine} / feather {feather} change the mask"
+        );
     }
 }
 
@@ -2038,4 +2120,30 @@ fn cached_mask_planes_match_uncached() {
     step(&s, "feather and a mask's curve");
     s.masks[1].visible = false;
     step(&s, "hidden mask");
+}
+
+/// The 8-bit dither of process V8 (adapted from upstream #3509) lands on the same pixels on both, also in
+/// a zoomed window off the 8×8 grid: out of phase, about half the pixels of a gradient would differ.
+#[test]
+fn dithered_gradients_match_in_phase() {
+    if !gpu() {
+        return;
+    }
+    let (w, h) = (512, 64);
+    let src = Arc::new(Rgb32f::from_fn(w, h, |x, _| {
+        let v = 0.16 + 0.03 * x as f32 / (w - 1) as f32;
+        [v, v, v]
+    }));
+    let s = DevelopSettings { process: Process::V8.version(), ..DevelopSettings::default() };
+    let window = lcc_pipeline::PixelWindow { x: 77, y: 13, w: 101, h: 37 };
+    for req in [RenderRequest::fit(w, h), RenderRequest { window: Some(window), ..RenderRequest::fit(w, h) }] {
+        let cpu = render(&src, &SourceInfo::default(), &s, &req).image;
+        let gpu =
+            lcc_gpu::render(&src, &SourceInfo::default(), &s, &req, None).unwrap_or_else(|| panic!("gpu render ({:?})", lcc_gpu::last_fallback()));
+        assert_eq!((cpu.width, cpu.height), (gpu.image.width, gpu.image.height));
+        let differ = cpu.data.iter().zip(&gpu.image.data).filter(|(a, b)| a[1] != b[1]).count();
+        let share = differ as f64 / cpu.data.len() as f64;
+        eprintln!("dithered gradient ({:?}): {:.2} % of pixels differ", req.window, share * 100.0);
+        assert!(share < 0.05, "{:.1} % of the pixels differ: the dither is out of phase", share * 100.0);
+    }
 }

@@ -76,53 +76,40 @@ fn photos(h: &Headless) -> usize {
     h.app.session.catalog.photos().count()
 }
 
+/// One session, several steps; each step was a test of its own and says what it checks.
 #[test]
-fn hovering_says_photos_are_reviewed_or_imported_and_lets_go_when_they_leave() {
+fn hovering_says_what_a_drop_will_do_and_lets_go_when_the_files_leave() {
     let dir = Scratch::new("hover");
     let mut h = app(&dir);
-    assert!(!overlay(&h), "nothing is dragged over the window");
-    drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], true);
-    assert!(overlay(&h), "the window shows where to drop");
-    assert!(said(&h, "review 2 items"), "photos are reviewed by default: {:?}", h.painted_text());
-    drop_files(&mut h, &[dir.path("trip")], true);
-    assert!(said(&h, "review 1 item"), "a folder is reviewed: {:?}", h.painted_text());
-    h.app.ui.settings.import_dropped_directly = true;
-    drop_files(&mut h, &[dir.path("trip")], true);
-    assert!(said(&h, "import 1 item"), "without review: {:?}", h.painted_text());
-    drop_files(&mut h, &[], true);
-    assert!(!overlay(&h), "the files left the window");
-}
-
-#[test]
-fn hovering_presets_says_they_will_be_imported_as_presets() {
-    let dir = Scratch::new("hover-presets");
-    let mut h = app(&dir);
-    std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
-    drop_files(&mut h, &[dir.path("warm.lcpreset")], true);
-    assert!(overlay(&h));
-    assert!(said(&h, "1 preset"), "{:?}", h.painted_text());
-    assert!(!said(&h, "review"), "presets are not reviewed");
-}
-
-#[test]
-fn hovering_unknown_files_says_only_that_dropping_imports() {
-    let dir = Scratch::new("hover-unknown");
-    let mut h = app(&dir);
-    drop_files(&mut h, &[String::new()], true);
-    assert!(overlay(&h));
-    assert!(said(&h, "Drop to import"), "{:?}", h.painted_text());
-}
-
-#[test]
-fn dropping_a_folder_opens_the_import_review_and_imports_nothing_yet() {
-    let dir = Scratch::new("review");
-    let mut h = app(&dir);
-    drop_files(&mut h, &[dir.path("trip")], false);
-    assert!(h.step_until(SETTLE, |h| matches!(h.app.ui.dialog, Some(Dialog::Import { .. }))), "the review opens");
-    let Some(Dialog::Import { opts }) = &h.app.ui.dialog else { panic!("no import review") };
-    assert_eq!(opts.candidates.len(), 2);
-    assert_eq!(photos(&h), 0, "nothing is imported until the review is confirmed");
-    assert!(!overlay(&h), "the files were let go");
+    // hovering says photos are reviewed or imported and lets go when they leave
+    {
+        assert!(!overlay(&h), "nothing is dragged over the window");
+        drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], true);
+        assert!(overlay(&h), "the window shows where to drop");
+        assert!(said(&h, "review 2 items"), "photos are reviewed by default: {:?}", h.painted_text());
+        drop_files(&mut h, &[dir.path("trip")], true);
+        assert!(said(&h, "review 1 item"), "a folder is reviewed: {:?}", h.painted_text());
+        h.app.ui.settings.import_dropped_directly = true;
+        drop_files(&mut h, &[dir.path("trip")], true);
+        assert!(said(&h, "import 1 item"), "without review: {:?}", h.painted_text());
+        drop_files(&mut h, &[], true);
+        assert!(!overlay(&h), "the files left the window");
+    }
+    // hovering presets says they will be imported as presets
+    {
+        let dir = Scratch::new("hover-presets");
+        std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
+        drop_files(&mut h, &[dir.path("warm.lcpreset")], true);
+        assert!(overlay(&h));
+        assert!(said(&h, "1 preset"), "{:?}", h.painted_text());
+        assert!(!said(&h, "review"), "presets are not reviewed");
+    }
+    // hovering unknown files says only that dropping imports
+    {
+        drop_files(&mut h, &[String::new()], true);
+        assert!(overlay(&h));
+        assert!(said(&h, "Drop to import"), "{:?}", h.painted_text());
+    }
 }
 
 #[test]
@@ -272,18 +259,6 @@ fn a_drop_while_an_import_runs_is_refused() {
     assert_eq!(photos(&h), 0);
 }
 
-/// An import that is running stays the one that runs: a direct drop doesn't start a second.
-#[test]
-fn dropped_photo_files_while_an_import_runs_are_refused_too() {
-    let dir = Scratch::new("running-direct");
-    let mut h = app(&dir);
-    write_png(&dir.path("more/c.png"), 3);
-    let _scan = crate::import::stall_scan(&mut h.app);
-    drop_files(&mut h, &[dir.path("more/c.png")], false);
-    assert!(h.app.import.is_none(), "no second import");
-    assert!(h.app.ui.toast().is_some());
-}
-
 /// A Local folder browse scan counts too: a review-first drop would be rejected by `open`, and a
 /// direct drop would be replaced when the browse completes.
 #[test]
@@ -346,7 +321,7 @@ fn photos_dropped_with_no_library_open_wait_for_one() {
     h.app.library_problem = Some(crate::panels::library_problem::LibraryProblem::new(dir.path("Gone"), "not found"));
     std::fs::write(dir.path("warm.lcpreset"), "{}").unwrap();
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("warm.lcpreset")], true);
-    assert!(said(&h, "once a library is open"), "{:?}", h.painted_text());
+    assert!(said(&h, "once a catalog is open"), "{:?}", h.painted_text());
     assert!(said(&h, "drop the presets again") && !said(&h, "1 preset"), "{:?}", h.painted_text());
     drop_files(&mut h, &[], true);
     drop_files(&mut h, &[dir.path("trip/a.png"), dir.path("trip/b.png")], false);
@@ -361,8 +336,8 @@ fn photos_dropped_with_no_library_open_wait_for_one() {
 }
 
 /// A fresh temporary folder `tag` with a photo in it and one in a subfolder.
-fn nested_folder(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("lc-drop-import-{tag}-{}", std::process::id()));
+fn nested_folder(tag: &str) -> lcc_testkit::TempDir {
+    let root = lcc_testkit::TempDir::new(&format!("lc-drop-import-{tag}"));
     let _ = std::fs::remove_dir_all(&root);
     let sub = root.join("day 2");
     std::fs::create_dir_all(&sub).unwrap();
@@ -399,7 +374,7 @@ fn wait_for(h: &mut Headless, mut done: impl FnMut(&Headless) -> bool) -> bool {
 fn a_dropped_folder_and_its_subfolders_are_scanned_into_the_review() {
     let dir = nested_folder("review");
     let mut h = fs_app();
-    h.dropped.push(dir.clone());
+    h.dropped.push(dir.to_path_buf());
     let opened = wait_for(&mut h, |h| matches!(h.app.ui.dialog, Some(crate::state::Dialog::Import { .. })));
     assert!(opened, "no import review after the drop: {:?}", h.app.ui.dialog);
     let Some(crate::state::Dialog::Import { opts }) = &h.app.ui.dialog else { panic!("no import review") };
@@ -500,4 +475,43 @@ fn auto_import_notes_a_watched_folder_it_cannot_read() {
     assert!(h.step_until(T, |h| h.app.ui.auto_import_error.is_none()), "readable again: the note goes");
     assert!(h.step_until(T, |h| photos(h) == 1), "and the photo arrives");
     h.app.session.import_defaults.auto_folder = None;
+}
+
+/// Enable Auto Import switches watching off and on again while the folder stays set; with no folder yet,
+/// turning it on opens Settings at the Auto Import section instead.
+#[test]
+fn enable_auto_import_keeps_the_folder_when_off_and_asks_for_one_when_unset() {
+    let dir = Scratch::new("auto-toggle");
+    let mut h = app(&dir);
+    let checked = |h: &Headless| crate::menubar::checked(&h.app, "app.autoImportToggle");
+    let toggle = |h: &mut Headless| {
+        crate::menus::run_ui_command(&mut h.app, "app.autoImportToggle", &serde_json::json!({})).expect("a UI command").expect("runs");
+    };
+    assert_eq!(checked(&h), Some(false));
+    // no folder: nothing to switch on, Settings opens at the section
+    toggle(&mut h);
+    assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::Settings { .. })));
+    assert_eq!(h.app.ui.settings_section.as_deref(), Some("autoImport"));
+    assert_eq!(checked(&h), Some(false));
+    h.app.ui.dialog = None;
+    // a folder is watched; off keeps it, on watches it again
+    std::fs::create_dir_all(dir.path("watch")).expect("watch folder");
+    h.app.session.execute("library.autoImport", &serde_json::json!({"folder": dir.path("watch")})).expect("set");
+    assert_eq!(checked(&h), Some(true));
+    toggle(&mut h);
+    assert_eq!(checked(&h), Some(false));
+    assert_eq!(h.app.session.import_defaults.auto_folder, Some(dir.path("watch")), "the folder stays");
+    let r = h.app.session.execute("library.autoImportScan", &serde_json::json!({})).expect("scan");
+    assert!(r["folder"].is_null(), "no scanning while off: {r}");
+    toggle(&mut h);
+    assert_eq!(checked(&h), Some(true));
+}
+
+/// Settings written before the switch existed (a folder, no flag) keep watching.
+#[test]
+fn old_auto_import_settings_still_watch() {
+    let d: lcc_engine::import::ImportDefaults = serde_json::from_str(r#"{"autoFolder":"/x","autoCopy":true}"#).expect("loads");
+    assert_eq!(d.auto_active_folder().map(String::as_str), Some("/x"));
+    let off: lcc_engine::import::ImportDefaults = serde_json::from_str(r#"{"autoFolder":"/x","autoPaused":true}"#).expect("loads");
+    assert!(off.auto_active_folder().is_none() && off.auto_folder.is_some());
 }

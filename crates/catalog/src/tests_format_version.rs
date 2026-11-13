@@ -28,63 +28,27 @@ fn snapshot_version(m: &MemStore) -> u64 {
     v["version"].as_u64().unwrap()
 }
 
+/// Libraries of older formats (1: the first; 2: before albums could be ordered by hand; 3: before keywords could be
+/// listed on their own; 5: before saved locations and creations) open as they were and are rewritten in the current
+/// format before anything is appended.
 #[test]
-fn v1_library_loads_and_is_upgraded() {
-    let (base, log, full) = legacy_parts();
-    let m = MemStore::new();
-    m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":1,\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
-    m.set(LOG, log.into_bytes());
-    let (mut j, c, r) = Journal::open(Box::new(m.clone())).unwrap();
-    assert_eq!(c.to_snapshot(), full.to_snapshot());
-    assert_eq!((r.replayed, r.upgraded_from), (1, Some(1)));
-    // rewritten in this format before anything is appended
-    assert_eq!(snapshot_version(&m), u64::from(VERSION));
-    assert!(m.get(LOG).unwrap().is_empty());
-    assert_eq!(j.seq(), 3);
-    j.append(&[Op::SetLabelName { label: ColorLabel::ALL[0], name: Some("x".into()) }]).unwrap();
-    drop(j);
-    let (_, _, r) = Journal::open(Box::new(m)).unwrap();
-    assert_eq!((r.replayed, r.upgraded_from), (1, None));
-}
-
-/// A library saved before albums could be ordered by hand opens as it was and is rewritten in the current format.
-#[test]
-fn v2_library_loads_and_is_upgraded() {
-    let (base, log, full) = legacy_parts();
-    let m = MemStore::new();
-    m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":2,\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
-    m.set(LOG, log.into_bytes());
-    let (_, c, r) = Journal::open(Box::new(m.clone())).unwrap();
-    assert_eq!(c.to_snapshot(), full.to_snapshot());
-    assert_eq!((r.replayed, r.upgraded_from), (1, Some(2)));
-    assert_eq!(snapshot_version(&m), u64::from(VERSION));
-}
-
-/// A library saved before keywords could be listed on their own opens as it was and is rewritten
-/// in the current format.
-#[test]
-fn v3_library_loads_and_is_upgraded() {
-    let (base, log, full) = legacy_parts();
-    let m = MemStore::new();
-    m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":3,\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
-    m.set(LOG, log.into_bytes());
-    let (_, c, r) = Journal::open(Box::new(m.clone())).unwrap();
-    assert_eq!(c.to_snapshot(), full.to_snapshot());
-    assert_eq!((r.replayed, r.upgraded_from), (1, Some(3)));
-    assert_eq!(snapshot_version(&m), u64::from(VERSION));
-}
-
-/// A format-5 library (before saved locations and creations) opens as it was and is rewritten in the current format.
-#[test]
-fn v5_library_loads_and_is_upgraded() {
-    let (base, log, full) = legacy_parts();
-    let m = MemStore::new();
-    m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":5,\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
-    m.set(LOG, log.into_bytes());
-    let (_, c, r) = Journal::open(Box::new(m.clone())).unwrap();
-    assert_eq!(c.to_snapshot(), full.to_snapshot());
-    assert_eq!((r.replayed, r.upgraded_from), (1, Some(5)));
-    assert_eq!(snapshot_version(&m), u64::from(VERSION));
+fn older_libraries_load_and_are_upgraded() {
+    for version in [1u32, 2, 3, 5] {
+        let (base, log, full) = legacy_parts();
+        let m = MemStore::new();
+        m.set(SNAPSHOT, format!("{{\"format\":\"lcc-catalog\",\"version\":{version},\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes());
+        m.set(LOG, log.into_bytes());
+        let (mut j, c, r) = Journal::open(Box::new(m.clone())).unwrap();
+        assert_eq!(c.to_snapshot(), full.to_snapshot(), "v{version}");
+        assert_eq!((r.replayed, r.upgraded_from), (1, Some(version)));
+        assert_eq!(snapshot_version(&m), u64::from(VERSION), "v{version}");
+        assert!(m.get(LOG).unwrap().is_empty(), "v{version}");
+        assert_eq!(j.seq(), 3);
+        j.append(&[Op::SetLabelName { label: ColorLabel::ALL[0], name: Some("x".into()) }]).unwrap();
+        drop(j);
+        let (_, _, r) = Journal::open(Box::new(m)).unwrap();
+        assert_eq!((r.replayed, r.upgraded_from), (1, None), "v{version}");
+    }
 }
 
 /// A v11 library (before preview-only photos recorded which version decided it, upstream #662) opens
@@ -271,11 +235,12 @@ fn op_variants_are_versioned() {
             Op::SetVideoMeta { .. } | Op::SetVideoTrim { .. } | Op::SetVideoPoster { .. } => 10,
             Op::SetHistoryCursor { .. } => 11,
             Op::SetBefore { .. } => 16,
+            Op::SetExported { .. } => 17,
         }
     }
     /// v15: `Analysis.eyes_open` / `aesthetic` / `cull_score`.
     const NEWEST_FIELDS: u32 = 15;
-    let newest = since(&Op::SetBefore { id: crate::PhotoId(1), before: None });
+    let newest = since(&Op::SetExported { id: crate::PhotoId(1), exported: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
 
@@ -347,4 +312,98 @@ fn v14_analysis_json_gains_optional_score_fields() {
     let a: crate::Analysis = serde_json::from_str(r#"{"sharpness":50.0,"clipped":0.01,"group":null,"best":false}"#).unwrap();
     assert!(a.eyes_open.is_none() && a.aesthetic.is_none() && a.cull_score.is_none());
     assert_eq!(a.sharpness, 50.0);
+}
+
+/// Upstream #3962: `catalog.snap` at stamp `version` holding `base`, with `extra` spliced in as
+/// more top-level members (empty: an ordinary snapshot).
+fn snap_at(version: u32, base: &Catalog, extra: &str) -> Vec<u8> {
+    format!("{{\"format\":\"lcc-catalog\",\"version\":{version},{extra}\"seq\":2,\"catalog\":{}}}\n", base.to_snapshot()).into_bytes()
+}
+
+/// A snapshot at a readable stamp with a top-level key this format never writes, or with a
+/// `segments` folder beside it (or no snapshot at all), is refused untouched instead of loading
+/// part of the library and saving over the rest.
+#[test]
+fn unknown_layout_is_refused_untouched() {
+    let (base, log, _) = legacy_parts();
+    for version in [VERSION, VERSION - 1] {
+        let m = MemStore::new();
+        m.set(SNAPSHOT, snap_at(version, &base, r#""segments":["0001.seg"],"#));
+        m.set(LOG, log.clone().into_bytes());
+        let before = m.files.lock().unwrap().clone();
+        let e = Journal::open(Box::new(m.clone())).err().expect("refused");
+        assert!(matches!(e, CatalogError::Newer(_)), "{e:?}");
+        assert!(e.to_string().contains("layout isn't one this version reads"), "{e}");
+        assert_eq!(*m.files.lock().unwrap(), before);
+
+        let m = MemStore::new();
+        m.set(SNAPSHOT, snap_at(version, &base, ""));
+        m.set(LOG, log.clone().into_bytes());
+        m.set("segments/0001.seg", b"photos live here".to_vec());
+        let before = m.files.lock().unwrap().clone();
+        let e = Journal::open(Box::new(m.clone())).err().expect("refused");
+        assert!(matches!(e, CatalogError::Newer(_)), "{e:?}");
+        assert_eq!(*m.files.lock().unwrap(), before);
+    }
+    let m = MemStore::new();
+    m.set("segments/0001.seg", b"photos live here".to_vec());
+    let before = m.files.lock().unwrap().clone();
+    assert!(Journal::open(Box::new(m.clone())).is_err());
+    assert_eq!(*m.files.lock().unwrap(), before);
+}
+
+/// Controls: an ordinary library still opens (a `segments` file is no folder), and a malformed
+/// snapshot is an error, not a panic.
+#[test]
+fn ordinary_layout_still_opens_and_hostile_snapshots_do_not_panic() {
+    let (base, log, full) = legacy_parts();
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(VERSION, &base, ""));
+    m.set(LOG, log.into_bytes());
+    m.set("segments", b"not a folder".to_vec());
+    let (_, c, _) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(c.to_snapshot(), full.to_snapshot());
+    for bad in [&b"[]"[..], b"null", b"{\"format\":\"lcc-catalog\",\"version\":", b"\xff\xfe"] {
+        let m = MemStore::new();
+        m.set(SNAPSHOT, bad.to_vec());
+        assert!(Journal::open(Box::new(m)).is_err());
+    }
+}
+
+/// The native store reports a real directory as a folder, and a missing one as none.
+#[test]
+fn fs_store_reports_folders() {
+    let dir = std::env::temp_dir().join(format!("lcc-layout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("segments")).unwrap();
+    let mut s = FsStore::open(&dir).unwrap();
+    assert!(Store::has_folder(&mut s, "segments").unwrap());
+    assert!(!Store::has_folder(&mut s, "nothing").unwrap());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Export status (format 17): a library from the previous format opens with every photo never exported, setting and
+/// clearing it undoes, and an unset status is not written.
+#[test]
+fn exported_status_round_trips_and_old_libraries_load() {
+    let (base, _, _) = legacy_parts();
+    let id = base.photos().next().unwrap().id;
+    let mut c = base.clone();
+    assert!(!c.to_snapshot().contains("exported"), "unset, it is not written");
+    let undo_set = c.apply(Op::SetExported { id, exported: Some("2026-11-10T08:00:00Z".into()) }).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported.as_deref(), Some("2026-11-10T08:00:00Z"));
+    assert!(c.to_snapshot().contains("exported"));
+    let undo_clear = c.apply(Op::SetExported { id, exported: None }).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported, None);
+    c.apply(undo_clear).unwrap();
+    assert!(c.photo(id).unwrap().exported.is_some(), "undo of a reset brings the status back");
+    c.apply(undo_set).unwrap();
+    assert_eq!(c.photo(id).unwrap().exported, None);
+
+    // a format-16 snapshot (no such field) opens and is upgraded
+    let m = MemStore::new();
+    m.set(SNAPSHOT, snap_at(16, &base, ""));
+    let (_, loaded, r) = Journal::open(Box::new(m)).unwrap();
+    assert_eq!(loaded.photo(id).unwrap().exported, None);
+    assert_eq!(r.upgraded_from, Some(16));
 }

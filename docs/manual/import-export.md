@@ -14,14 +14,18 @@ File → Import Photos… (`Cmd+Shift+I`) or Import from Folder… (`library.imp
   each), optionally convert raws to DNG while copying.
 - Apply a develop preset, a metadata preset, keywords, and add the photos to a collection.
 - Duplicates are detected and reported; a file in Recently Deleted can be skipped, restored with its edits, or
-  imported fresh.
+  imported fresh. Library → Find Duplicates… later finds copies already in the library ([duplicates.md](../duplicates.md)).
+- Auto Import (Settings → Import) can watch subfolders, rename copies and apply a develop preset, metadata preset and
+  keywords to arriving photos (`library.autoImport`). On Android the camera roll is a watched source (Settings → Folders,
+  Watch for new photos).
+- File → Email Photo… exports the selection as small JPEGs and attaches them to a new message in the system mail program.
 
 Other sources: File → Import Lightroom Catalog… ([migration guide](migrating-from-lightroom.md)), File → Import
-from Immich… ([immich.md](../immich.md)), File → Import from Another Catalog… ([catalogs.md](catalogs.md)), and
+from Immich… ([immich.md](../immich.md)), File → More Imports → Import from Another Catalog… ([catalogs.md](catalogs.md)), and
 tethered capture ([tethering.md](tethering.md)). File → Import Profiles & Presets… reads presets (including
 Lightroom `.xmp` presets); Import Keywords… reads keyword lists.
 
-Supported files: JPEG, PNG, TIFF, WebP, AVIF/HEIF, PSD, DNG and the common raw formats (Sony ARW, Nikon NEF, Canon
+Supported files: JPEG, PNG, TIFF, WebP, AVIF/HEIF (also on Android), PSD, DNG and the common raw formats (Sony ARW, Nikon NEF, Canon
 CR2/CR3, Fujifilm RAF, Panasonic RW2, Olympus ORF, Pentax PEF, Samsung SRW and more). Per-model status is in the
 [parity tracker](../parity-checklist.md) (`LR-IMP-CAMERA-COVERAGE`).
 
@@ -39,7 +43,7 @@ File → Export… opens the export dialog; File → Export with Previous (`Cmd+
 - Save the settings as an export preset (`export.savePreset`); plug-ins can post-process exported files.
 - File → Contact Sheet PDF… writes a quick contact sheet; the Print module does full layouts.
 
-Export never overwrites an original or its sidecar (`export.checkTarget`).
+Export never overwrites an original or its sidecar (`export.checkTarget`). A subfolder or destination that escapes with `..`, or uses a Windows-reserved name, is refused. The Export preview of one photo shows the loupe's own render, and entering Export or Print from Develop selects the photo on screen. Print takes the single selected photo; only an empty selection prints the whole filmstrip.
 
 ## From the command line
 

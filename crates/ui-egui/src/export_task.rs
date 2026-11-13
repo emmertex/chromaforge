@@ -52,7 +52,24 @@ impl ExportTask {
 
 /// Start exporting `items` in the background, then do `after` with the files written (Add to Apple
 /// Photos). Errors per photo are collected, not fatal.
-pub fn start(app: &mut LccApp, mut items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: AfterExport) -> Result<Value, String> {
+pub fn start(app: &mut LccApp, items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: AfterExport) -> Result<Value, String> {
+    start_then(app, items, opts, to, after, None)
+}
+
+/// What a worker does with the files once the batch has written them (File ▸ Email Photo… hands
+/// them to the mail program): its result is added to the batch's results as one more entry, and it
+/// is not run for a cancelled batch.
+pub type Then = Box<dyn FnOnce(&[Value]) -> Option<Value> + Send>;
+
+/// [`start`] with a step to run on the worker when the files are written ([`Then`]).
+pub fn start_then(
+    app: &mut LccApp,
+    mut items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: AfterExport,
+    then: Option<Then>,
+) -> Result<Value, String> {
     if app.export.is_some() {
         return Err("an export is already running".into());
     }
@@ -106,6 +123,10 @@ pub fn start(app: &mut LccApp, mut items: Vec<PreparedExport>, opts: ExportOptio
             }
             let cancelled = c.load(Ordering::Relaxed);
             let photos = after.run(&files, cancelled);
+            let mut files = files;
+            if !cancelled && let Some(then) = then {
+                files.extend(then(&files));
+            }
             (files, photos, cancelled)
         });
         let _ = tx.send(r);
@@ -283,8 +304,11 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             #[cfg(not(target_arch = "wasm32"))]
             let destination = task.plugin_destination.clone();
             app.export = None;
+            if let Ok((files, _, _)) = &r {
+                lcc_engine::export::mark_exported(&mut app.session, files);
+            }
             // Photos refused (permission, not installed…): leave the way out on screen longer
-            let photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
+            let mut photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
             let msg = match r {
                 Ok((files, photos, _)) => {
                     let sheet = files.first().filter(|f| f["contactSheet"] == true);
@@ -318,6 +342,15 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                         files.iter().flat_map(|f| f["warnings"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect();
                     if let Some(first) = warnings.first() {
                         m += &format!(" · {} warning{}: {first}", warnings.len(), if warnings.len() == 1 { "" } else { "s" });
+                    }
+                    // File ▸ Email Photo…: how the hand-off to the mail program went (the photos are left
+                    // in their folder, shown, when it did not)
+                    if let Some(e) = files.iter().rev().find_map(|f| f.get("email")) {
+                        m = crate::email_photo::note(e);
+                        if let Some(first) = failed.first() {
+                            m += &crate::i18n::tr_format!(" · {} failed: {}", failed.len(), first["error"].as_str().unwrap_or("error"));
+                        }
+                        photos_failed |= e.get("folder").is_some();
                     }
                     if cancelled {
                         m += " · cancelled";

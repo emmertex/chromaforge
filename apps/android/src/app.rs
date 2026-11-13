@@ -95,7 +95,7 @@ fn open_session(dir: Option<PathBuf>) -> (Session, Option<LibraryProblem>) {
         s
     };
     let Some(dir) = dir else {
-        return (fresh(), Some(LibraryProblem::new("", "There is no folder to keep the library in.")));
+        return (fresh(), Some(LibraryProblem::new("", "There is no folder to keep the catalog in.")));
     };
     let mut s = fresh();
     match s.open_library(&dir, false) {
@@ -105,7 +105,7 @@ fn open_session(dir: Option<PathBuf>) -> (Session, Option<LibraryProblem>) {
             (s, None)
         }
         Err(e) => {
-            log::error!("can't open library {}: {e}", dir.display());
+            log::error!("can't open catalog {}: {e}", dir.display());
             (fresh(), Some(LibraryProblem::new(dir.to_string_lossy(), e.to_string())))
         }
     }
@@ -333,7 +333,7 @@ impl eframe::App for App {
             log::error!("{e}");
         }
         if let Err(e) = self.app.session.close_library() {
-            log::error!("saving the library failed: {e}");
+            log::error!("saving the catalog failed: {e}");
         }
         if !self.app.shutdown(EXIT_WAIT) {
             log::warn!("close: background work was still running after {EXIT_WAIT:?}");

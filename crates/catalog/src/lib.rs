@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod advanced_search;
 pub mod dates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;
@@ -52,6 +53,8 @@ use std::sync::Arc;
 pub use dates::{DateRun, GroupBy};
 pub use facets::FacetPick;
 pub use folders::{FolderNode, FolderRecord};
+use index::file_path;
+pub use index::{file_name_index_key, folder_index_key, photo_folder_index_key};
 pub use journal::{Journal, LoadReport, PersistStats, SnapshotPolicy, SnapshotTiming};
 pub use keywords::KeywordNode;
 use lcc_develop::DevelopSettings;
@@ -84,7 +87,7 @@ pub enum CatalogError {
     Io(String),
     /// The library was written by a newer version of the app (a newer catalog format, or a change this
     /// version doesn't know). Nothing was read into the session and nothing was modified.
-    #[error("this library was written by a newer version of the app ({0}); update the app to open it. The library was left unchanged.")]
+    #[error("this catalog was written by a newer version of the app ({0}); update the app to open it. The catalog was left unchanged.")]
     Newer(String),
     /// The folder holds a catalog of another app (e.g. the upstream app this one was forked from):
     /// a format this app doesn't read. Nothing was read and nothing was modified.
@@ -158,6 +161,13 @@ pub enum Op {
         id: PhotoId,
         #[serde(default)]
         before: Option<Arc<DevelopSettings>>,
+    },
+    /// When the photo was last exported (see [`Photo::exported`]; `None`: never, or reset). Format
+    /// version 17.
+    SetExported {
+        id: PhotoId,
+        #[serde(default)]
+        exported: Option<String>,
     },
     /// Move the History cursor (see [`Photo::history_cursor`]) without changing the steps.
     SetHistoryCursor {
@@ -917,7 +927,7 @@ impl Catalog {
             Op::SetLabel { .. } => self.changes.now = Aspects::LABEL,
             Op::SetMeta { .. } | Op::SetXmpStamp { .. } => self.changes.now = Aspects::META,
             Op::SetCaptured { .. } => self.changes.now = Aspects::CAPTURED,
-            Op::SetFile { .. } | Op::Relink { .. } | Op::SetSha1 { .. } => self.changes.now = Aspects::FILE,
+            Op::SetFile { .. } | Op::Relink { .. } | Op::SetSha1 { .. } | Op::SetExported { .. } => self.changes.now = Aspects::FILE,
             Op::SetAnalysis { .. } => self.changes.now = Aspects::ANALYSIS,
             Op::SetDevelop { .. }
             | Op::SetVersions { .. }
@@ -976,11 +986,13 @@ impl Catalog {
                 // the largest id would leave no next one (a damaged log or a hostile op)
                 let next = id.0.checked_add(1).ok_or_else(|| CatalogError::Invalid(format!("photo id {} is out of range", id.0)))?;
                 self.next_photo = self.next_photo.max(next);
+                self.index.file_changed(id, None, file_path(&photo.source));
                 self.photos.insert(id, Arc::new(*photo));
                 Op::RemovePhoto { id }
             }
             Op::RemovePhoto { id } => {
                 let p = self.photos.remove(&id).ok_or(CatalogError::NoPhoto(id))?;
+                self.index.file_changed(id, file_path(&p.source), None);
                 // album membership is restored by the batch the engine builds (see `delete_permanently`)
                 Op::AddPhoto { photo: Box::new((*p).clone()) }
             }
@@ -1069,6 +1081,10 @@ impl Catalog {
             Op::SetBefore { id, before } => {
                 let p = self.photo_mut(id)?;
                 Op::SetBefore { id, before: std::mem::replace(&mut p.before, before) }
+            }
+            Op::SetExported { id, exported } => {
+                let p = self.photo_mut(id)?;
+                Op::SetExported { id, exported: std::mem::replace(&mut p.exported, exported) }
             }
             Op::SetHistoryCursor { id, cursor } => {
                 let p = self.photo_mut(id)?;
@@ -1244,6 +1260,9 @@ impl Catalog {
                 Op::SetCaptured { id, captured: std::mem::replace(&mut p.captured, captured) }
             }
             Op::Relink { id, file_name, source, format } => {
+                if let Some(p) = self.photos.get(&id) {
+                    self.index.file_changed(id, file_path(&p.source), file_path(&source));
+                }
                 let p = self.photo_mut(id)?;
                 let old_name = std::mem::replace(&mut p.file_name, file_name);
                 let old_format = format.map(|f| std::mem::replace(&mut p.format, f));
@@ -1294,6 +1313,9 @@ impl Catalog {
             Op::SetFile { id, file_name, source } => {
                 if file_name.trim().is_empty() {
                     return Err(CatalogError::Invalid("empty file name".into()));
+                }
+                if let Some(p) = self.photos.get(&id) {
+                    self.index.file_changed(id, file_path(&p.source), file_path(&source));
                 }
                 let p = self.photo_mut(id)?;
                 let old_name = std::mem::replace(&mut p.file_name, file_name);
@@ -1662,6 +1684,7 @@ fn changes_what_albums_test(op: &Op) -> bool {
         | Op::PushHistory { .. }
         | Op::SetHistoryCursor { .. }
         | Op::SetBefore { .. }
+        | Op::SetExported { .. }
         | Op::RenameAlbum { .. }
         | Op::MoveAlbum { .. }
         | Op::SetAlbumOrder { .. }
@@ -1809,6 +1832,8 @@ mod tests_album_order;
 mod tests_background;
 #[cfg(test)]
 mod tests_custom_order;
+#[cfg(test)]
+mod tests_folder_index;
 #[cfg(test)]
 mod tests_folder_records;
 #[cfg(test)]

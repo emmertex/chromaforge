@@ -6,7 +6,13 @@
 
 Release builds are an AppImage, `.deb`, `.rpm` and `.tar.gz` for Linux, a `.dmg` for macOS, an `.msi` for Windows,
 a FreeBSD package and a static web build. [packaging.md](../packaging.md) lists what each contains and its status.
-From source:
+
+**macOS builds are not signed with an Apple developer certificate or notarized**, so macOS warns the first time you
+open the app ("unknown app" / "may be malware"). Open System Settings ▸ Privacy & Security and choose **Open Anyway**;
+if macOS still refuses, run `xattr -c` on the downloaded `.dmg` and open it again. The checksums in `SHA256SUMS.txt`
+let you verify the download.
+
+From source (details in [build-and-contribute.md](build-and-contribute.md)):
 
 ```sh
 cargo xtask run                       # build and start the desktop app under its brand name

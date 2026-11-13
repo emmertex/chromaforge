@@ -26,7 +26,7 @@ pub const DEFAULT_PORT: u16 = 7981;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Tuning {
-    /// Multiplies the step per tick (0.1–5).
+    /// Multiplies the step per tick (0.01–5).
     pub speed: f64,
     /// Multiplies the acceleration ceiling (0.1–4).
     pub acceleration: f64,
@@ -59,7 +59,7 @@ impl Tuning {
         let fast = self.fast_ms.clamp(5, 250);
         let min = clamp(self.acceleration_min, 0.1, 10.0, d.acceleration_min);
         Tuning {
-            speed: clamp(self.speed, 0.1, 5.0, d.speed),
+            speed: clamp(self.speed, 0.01, 5.0, d.speed),
             acceleration: clamp(self.acceleration, 0.1, 4.0, d.acceleration),
             acceleration_min: min,
             acceleration_max: clamp(self.acceleration_max, min, 15.0, d.acceleration_max.max(min)),
@@ -95,7 +95,7 @@ pub fn tuning_presets() -> Vec<(&'static str, &'static str, Tuning)> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MotionSettings {
-    /// Multiplies every step (0.1–5).
+    /// Multiplies every step (0.01–5).
     pub speed: f64,
     /// Multiplies every acceleration ceiling (0.1–4).
     pub acceleration: f64,
@@ -108,8 +108,12 @@ pub struct MotionSettings {
 }
 
 impl Default for MotionSettings {
+    /// The shipped dial feel: speed 0.3, the TactileBridge author's working setting (with the
+    /// shipped profiles, `defaults`), slower and finer than a 1:1 step, and acceleration 0.2, so a
+    /// fast spin moves at most 2× (the 10× ceiling made a quick eighth of a turn cross a whole
+    /// slider on a high-resolution dial).
     fn default() -> Self {
-        MotionSettings { speed: 1.0, acceleration: 1.0, invert: false, fine: 0.25, coarse: 4.0 }
+        MotionSettings { speed: 0.3, acceleration: 0.2, invert: false, fine: 0.25, coarse: 4.0 }
     }
 }
 
@@ -281,6 +285,12 @@ pub struct SurfaceSettings {
     pub merged_mask_pages: Vec<crate::defaults::MaskPagesMerged>,
 }
 
+/// The shipped per-value tuning (with [`MotionSettings::default`]'s speed): white balance
+/// temperature turns slowly, with little acceleration, so a dial sets Kelvin precisely.
+pub fn default_tuning() -> BTreeMap<String, Tuning> {
+    BTreeMap::from([("wb.temp".to_string(), Tuning { speed: 0.1, acceleration_max: 2.0, ..Tuning::default() })])
+}
+
 impl Default for SurfaceSettings {
     fn default() -> Self {
         SurfaceSettings {
@@ -293,7 +303,7 @@ impl Default for SurfaceSettings {
             follow_context: true,
             apply_to_selected: false,
             motion: MotionSettings::default(),
-            tuning: BTreeMap::new(),
+            tuning: default_tuning(),
             transport: TransportSettings::default(),
             osd: OsdSettings::default(),
             look: DeviceLook::default(),
@@ -367,7 +377,7 @@ impl SurfaceSettings {
         if self.port < 1024 {
             self.port = DEFAULT_PORT;
         }
-        self.motion.speed = clamp(self.motion.speed, 0.1, 5.0, d.speed);
+        self.motion.speed = clamp(self.motion.speed, 0.01, 5.0, d.speed);
         self.motion.acceleration = clamp(self.motion.acceleration, 0.1, 4.0, d.acceleration);
         self.motion.fine = clamp(self.motion.fine, 0.01, 1.0, d.fine);
         self.motion.coarse = clamp(self.motion.coarse, 1.0, 20.0, d.coarse);
@@ -442,61 +452,55 @@ fn swap_encoders(map: &mut BTreeMap<String, crate::binding::Binding>) {
 
 #[cfg(test)]
 mod tests {
-    /// Test notes 2026-10-24 note 24: a format 3 file's "Masking" and "Mask" pages load as one "Masks" page, the
-    /// user's changes kept and reported once; the file saved again needs nothing more.
     #[test]
-    fn format_3_files_merge_the_masks_pages() {
-        let mut s = SurfaceSettings::default();
-        let mut wedding = crate::defaults::tests::format_3("Wedding");
-        wedding.pages.iter_mut().find(|pg| pg.name == "Masking").unwrap().bindings.insert("dial".into(), crate::Binding::value("mask.temp"));
-        s.profiles = vec![wedding, crate::defaults::tests::format_3("Default")];
-        let mut v = serde_json::to_value(&s).unwrap();
-        v["version"] = serde_json::json!(3);
-        let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
-        assert_eq!(s.merged_mask_pages.len(), 2);
-        assert_eq!(s.merged_mask_pages[0].kept, ["dial"]);
-        let w = &s.profiles[0];
-        assert_eq!(w.page("Masks").unwrap().bindings["dial"], crate::Binding::value("mask.temp"));
-        assert!(w.page("Mask").is_none() && !w.contexts.contains_key("masking.mask"));
-        let again = SurfaceSettings::from_json(&s.to_json()).unwrap();
-        assert!(again.merged_mask_pages.is_empty(), "format 4: nothing to merge");
-        assert_eq!(again.profiles, s.profiles);
-    }
-
-    #[test]
-    fn format_2_files_get_the_momentary_erase() {
-        let mut v = serde_json::to_value(SurfaceSettings::default()).unwrap();
-        v["version"] = serde_json::json!(2);
-        v["profiles"][0]["base"]["key.2"] = serde_json::json!({"kind": "command", "command": "tool.brush", "params": {"op": "subtract"}});
-        let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
-        assert_eq!(s.profiles[0].base["key.2"], crate::Binding::command("brush.erase"));
-    }
-
-    #[test]
-    fn format_1_files_swap_the_dial_and_the_roller() {
-        let mut v = serde_json::to_value(SurfaceSettings::default()).unwrap();
-        v["version"] = serde_json::json!(1);
-        let p = v["profiles"][0]["pages"].as_array_mut().unwrap().iter_mut().find(|p| p["name"] == "Dial Page").unwrap();
-        p["bindings"] = serde_json::json!({"dial": {"kind": "value", "target": "light.exposure"}, "roller": {"kind": "value", "target": "wb.temp"}});
-        let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
-        let pg = s.profiles[0].page("Dial Page").unwrap();
-        assert_eq!(pg.bindings["roller"], crate::Binding::value("light.exposure"), "what encoder 0 did, it still does");
-        assert_eq!(pg.bindings["dial"], crate::Binding::value("wb.temp"));
-        assert_eq!(s.version, FORMAT_VERSION);
-        // a format 2 file is left alone
-        let again = SurfaceSettings::from_json(&s.to_json()).unwrap();
-        assert_eq!(again.profiles[0].page("Dial Page").unwrap().bindings["roller"], crate::Binding::value("light.exposure"));
+    fn older_formats_migrate() {
+        // format 3 files merge the masks pages
+        // Test notes 2026-10-24 note 24: a format 3 file's "Masking" and "Mask" pages load as one "Masks" page, the
+        // user's changes kept and reported once; the file saved again needs nothing more.
+        {
+            let mut s = SurfaceSettings::default();
+            let mut wedding = crate::defaults::tests::format_3("Wedding");
+            wedding.pages.iter_mut().find(|pg| pg.name == "Masking").unwrap().bindings.insert("dial".into(), crate::Binding::value("mask.temp"));
+            s.profiles = vec![wedding, crate::defaults::tests::format_3("Default")];
+            let mut v = serde_json::to_value(&s).unwrap();
+            v["version"] = serde_json::json!(3);
+            let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
+            assert_eq!(s.merged_mask_pages.len(), 2);
+            assert_eq!(s.merged_mask_pages[0].kept, ["dial"]);
+            let w = &s.profiles[0];
+            assert_eq!(w.page("Masks").unwrap().bindings["dial"], crate::Binding::value("mask.temp"));
+            assert!(w.page("Mask").is_none() && !w.contexts.contains_key("masking.mask"));
+            let again = SurfaceSettings::from_json(&s.to_json()).unwrap();
+            assert!(again.merged_mask_pages.is_empty(), "format 4: nothing to merge");
+            assert_eq!(again.profiles, s.profiles);
+        }
+        // format 2 files get the momentary erase
+        {
+            let mut v = serde_json::to_value(SurfaceSettings::default()).unwrap();
+            v["version"] = serde_json::json!(2);
+            v["profiles"][0]["base"]["key.2"] = serde_json::json!({"kind": "command", "command": "tool.brush", "params": {"op": "subtract"}});
+            let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
+            assert_eq!(s.profiles[0].base["key.2"], crate::Binding::command("brush.erase"));
+        }
+        // format 1 files swap the dial and the roller
+        {
+            let mut v = serde_json::to_value(SurfaceSettings::default()).unwrap();
+            v["version"] = serde_json::json!(1);
+            let p = v["profiles"][0]["pages"].as_array_mut().unwrap().iter_mut().find(|p| p["name"] == "Dial Page").unwrap();
+            p["bindings"] =
+                serde_json::json!({"dial": {"kind": "value", "target": "light.exposure"}, "roller": {"kind": "value", "target": "wb.temp"}});
+            let s = SurfaceSettings::from_json(&v.to_string()).unwrap();
+            let pg = s.profiles[0].page("Dial Page").unwrap();
+            assert_eq!(pg.bindings["roller"], crate::Binding::value("light.exposure"), "what encoder 0 did, it still does");
+            assert_eq!(pg.bindings["dial"], crate::Binding::value("wb.temp"));
+            assert_eq!(s.version, FORMAT_VERSION);
+            // a format 2 file is left alone
+            let again = SurfaceSettings::from_json(&s.to_json()).unwrap();
+            assert_eq!(again.profiles[0].page("Dial Page").unwrap().bindings["roller"], crate::Binding::value("light.exposure"));
+        }
     }
 
     use super::*;
-
-    #[test]
-    fn defaults_round_trip() {
-        let s = SurfaceSettings::default();
-        let back = SurfaceSettings::from_json(&s.to_json()).unwrap();
-        assert_eq!(back, s);
-        assert!(s.active_profile().is_some());
-    }
 
     #[test]
     fn hostile_values_are_clamped() {

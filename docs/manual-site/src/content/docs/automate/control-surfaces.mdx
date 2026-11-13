@@ -1,0 +1,28 @@
+---
+title: Control surfaces and MIDI
+description: Hardware dials and keys that drive Develop.
+sidebar:
+  order: 8
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Enable**: **Edit ▸ Settings ▸ Controls ▸ Use control surfaces**. Off by default; it listens on a local port (7981 by default).
+- **Logitech MX Creative Console** (Keypad and Dialpad): install the plug-in from Settings ▸ Controls (**Install the plugin**, needs Logi Options+). The plug-in asks to pair; match the six-digit code and **Approve**. Source in `packaging/logi`.
+- **Loupedeck+**: set up in the same page; Loupedeck's own profiles found on the computer can be imported. Loupedeck Live / CT and Tangent panels are not built yet.
+- **Profiles**: Default, Wedding, Portrait, Fashion, Landscape, Real Estate, or your own; import and export `.lcsurface`.
+- **Dials** move Develop values; one turn is **one undo step**. **Keys** run any command. Pages follow the tool you use (crop, masking, remove).
+- **On-screen readout**: shows the value being turned or the command a key ran. **Settings ▸ Interface ▸ On-Screen Overlay** sets size, position and when it shows.
+- **MIDI** (Windows and macOS): off until you give the app a `midi.toml` map in the settings folder. Bind pitch bend, CC or notes to Develop controls (absolute or relative) or commands. `midi.reload` re-reads the file.
+
+<Shot name="controls-settings" alt="Settings, Controls: the MX Creative Keypad page" menu="Edit ▸ Settings ▸ Controls" />
+
+<NeedsImage what="The MX Creative Keypad and Dialpad on a desk beside the app" />
+
+<Aside type="note" title="Modern layout">
+Open **☰ ▸ Edit ▸ Settings…** and choose **Controls**.
+</Aside>
+
+- Details: `docs/control-surfaces.md` and `docs/midi.md` in the repository.

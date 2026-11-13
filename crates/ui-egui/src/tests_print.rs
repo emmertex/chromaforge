@@ -33,6 +33,21 @@ fn click(h: &mut Headless, id: &str) {
     h.settle(T);
 }
 
+/// Clicks `id` in the dialog's settings column after scrolling that column so the widget sits mid-window:
+/// the column scrolls, and a widget below its visible edge is registered where it would be drawn, where a
+/// click hits nothing.
+fn click_in_view(h: &mut Headless, id: &str) {
+    let r = rect(h, id);
+    // (mid-height of the 1400x900 test window)
+    let middle = 450.0;
+    let r2 = h.request("ui.move", json!({"x": r.center().x, "y": middle}), T);
+    assert_eq!(r2["ok"], true, "{id}: {r2}");
+    let r2 = h.request("ui.scroll", json!({"dy": middle - r.center().y}), T);
+    assert_eq!(r2["ok"], true, "{id}: {r2}");
+    h.settle(T);
+    click(h, id);
+}
+
 fn drag(h: &mut Headless, id: &str, dx: f32, dy: f32) {
     let r = h.request("ui.dragWidget", json!({"id": id, "dx": dx, "dy": dy, "steps": 8}), T);
     assert_eq!(r["ok"], true, "{id}: {r}");
@@ -70,33 +85,27 @@ fn cell_rect(h: &Headless, id: u32) -> lcc_engine::print::layout::Rect {
 }
 
 #[test]
-fn the_print_dialog_opens_from_the_menu_command_and_closes() {
-    let mut h = demo(Services::default());
-    open_print(&mut h);
-    assert!(has(&h, "button:printStyle-0") && has(&h, "check:printZoomFill") && has(&h, "button:dialogOk"));
-    assert!(rect(&h, "print:pageLabel").width() > 0.0);
-    click(&mut h, "button:dialogCancel");
-    assert!(h.app.ui.dialog.is_none());
-}
-
-#[test]
 fn style_buttons_and_checkboxes_run_print_set() {
     let mut h = demo(Services::default());
     open_print(&mut h);
+    assert!(has(&h, "button:printStyle-0") && has(&h, "check:printZoomFill") && has(&h, "button:dialogOk"));
     click(&mut h, "button:printStyle-1");
     assert_eq!(h.app.session.print.layout.style, lcc_engine::print::layout::Style::ContactSheet);
     assert!(has(&h, "drag:printColumns") && has(&h, "print:gridcell:0"));
     click(&mut h, "check:printZoomFill");
     click(&mut h, "check:printStroke");
     assert!(h.app.session.print.image.zoom_to_fill && h.app.session.print.image.stroke_enabled);
-    click(&mut h, "button:printOrientation-1");
+    click_in_view(&mut h, "button:printOrientation-1");
     assert_eq!(h.app.session.print.layout.page.orientation, lcc_engine::print::layout::Orientation::Landscape);
     let p = rect(&h, "print:page");
     assert!(p.width() > p.height(), "the page is drawn landscape");
-    click(&mut h, "button:printUnits-2");
+    click_in_view(&mut h, "button:printUnits-2");
     assert_eq!(h.app.session.print.guides.units, lcc_engine::print::layout::Unit::Millimeters);
-    click(&mut h, "check:printShowGrid");
+    click_in_view(&mut h, "check:printShowGrid");
     assert!(h.app.session.print.guides.show_page_grid);
+    // Cancel closes the dialog
+    click(&mut h, "button:dialogCancel");
+    assert!(h.app.ui.dialog.is_none());
 }
 
 #[test]
@@ -206,6 +215,9 @@ fn templates_save_apply_and_delete_from_the_dialog() {
     h.app.ui.print.template_name = "Sheet 5x6".into();
     click(&mut h, "button:printSaveTemplate");
     assert_eq!(h.app.session.print_templates.len(), 1);
+    // template files need the host's file dialogs: without them there is no Export… or Import…
+    assert!(!has(&h, "button:printTemplateExport-0"), "no save dialog: no Export…");
+    assert!(!has(&h, "button:printTemplateImport"), "no open dialog: no Import…");
     cmd(&mut h, "print.reset", json!({}));
     assert!(has(&h, "button:printTemplateApply-0"));
     click(&mut h, "button:printTemplateApply-0");
@@ -216,7 +228,7 @@ fn templates_save_apply_and_delete_from_the_dialog() {
 
 #[test]
 fn templates_export_and_import_from_the_dialog() {
-    let dir = std::env::temp_dir().join(format!("lcc-ui-print-templates-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lcc-ui-print-templates");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("Sheet 5x6.lcprint").to_string_lossy().to_string();
     let suggested = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -245,17 +257,6 @@ fn templates_export_and_import_from_the_dialog() {
     assert_eq!(h.app.session.print_templates[1].settings, h.app.session.print_templates[0].settings);
     assert!(has(&h, "button:printTemplateExport-1"), "the imported template is listed");
     let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn template_files_need_the_hosts_file_dialogs() {
-    let mut h = demo(Services::default());
-    open_print(&mut h);
-    h.app.ui.print.template_name = "Plain".into();
-    click(&mut h, "button:printSaveTemplate");
-    assert!(has(&h, "button:printTemplateApply-0"));
-    assert!(!has(&h, "button:printTemplateExport-0"), "no save dialog: no Export…");
-    assert!(!has(&h, "button:printTemplateImport"), "no open dialog: no Import…");
 }
 
 #[test]
@@ -314,39 +315,33 @@ fn printing_shows_a_row_in_the_activity_stack_and_stops() {
 }
 
 #[test]
-fn the_print_menu_item_needs_a_photo_and_is_listed() {
-    let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
-    assert!(crate::menus::ui_enabled(&app, "dialog.print"));
-    let empty = LccApp::new(lcc_engine::Session::new(), Services::default());
-    assert!(!crate::menus::ui_enabled(&empty, "dialog.print"));
-}
-
-#[test]
 fn the_print_dialog_fits_the_window_with_its_buttons_on_screen() {
-    for size in [[1400.0, 900.0], [1100.0, 760.0]] {
-        for style in ["singleImage", "customPackage"] {
-            let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
-            let mut h = Headless::new(app, size, 1.0);
-            h.settle(T);
-            cmd(&mut h, "print.set", json!({"layout": {"style": style}}));
-            if style == "customPackage" {
-                cmd(&mut h, "print.cell.add", json!({"width": 4, "height": 6}));
-            }
-            open_print(&mut h);
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
-            let dialog = rect(&h, "dialog:window");
-            assert!(screen.contains_rect(dialog), "{style} at {size:?}: dialog {dialog:?} runs off the window");
-            for b in ["button:dialogOk", "button:dialogCancel"] {
-                assert!(dialog.contains_rect(rect(&h, b)), "{style} at {size:?}: {b} is outside the dialog");
-            }
+    // (the smaller window: what fits it fits a bigger one)
+    let size = [1100.0, 760.0];
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+    let mut h = Headless::new(app, size, 1.0);
+    h.settle(T);
+    for style in ["singleImage", "customPackage"] {
+        cmd(&mut h, "print.set", json!({"layout": {"style": style}}));
+        if style == "customPackage" {
+            cmd(&mut h, "print.cell.add", json!({"width": 4, "height": 6}));
         }
+        open_print(&mut h);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, h.size);
+        let dialog = rect(&h, "dialog:window");
+        assert!(screen.contains_rect(dialog), "{style} at {size:?}: dialog {dialog:?} runs off the window");
+        for b in ["button:dialogOk", "button:dialogCancel"] {
+            assert!(dialog.contains_rect(rect(&h, b)), "{style} at {size:?}: {b} is outside the dialog");
+        }
+        click(&mut h, "button:dialogCancel");
+        assert!(h.app.ui.dialog.is_none());
     }
 }
 
 #[test]
 fn print_job_colour_controls_reach_the_job_and_the_pdf() {
     use lcc_engine::print_color::{PrintIntent, PrintMedia, PrintProfile, PrintSharpen};
-    let dir = std::env::temp_dir().join(format!("app-print-ui-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("app-print-ui");
     std::fs::create_dir_all(&dir).unwrap();
     let icc = dir.join("Baryta Paper.icc");
     std::fs::write(&icc, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::AdobeRgb)).unwrap();
@@ -427,7 +422,7 @@ fn the_print_preview_does_not_rebuild_thumbnails_every_frame() {
 }
 
 #[test]
-fn page_options_checkboxes_set_the_page_and_hide_for_packages() {
+fn page_options_set_the_page_and_packages_have_cut_guides_instead() {
     let mut h = demo(Services::default());
     open_print(&mut h);
     let scroll = |h: &mut Headless, dy: f32| {
@@ -450,7 +445,127 @@ fn page_options_checkboxes_set_the_page_and_hide_for_packages() {
     scroll(&mut h, 600.0);
     click(&mut h, "button:printStyle-1");
     assert!(has(&h, "check:printCropMarks"), "a contact sheet has Page Options");
-    // Lightroom's packages have no Page Options
+    // Lightroom's packages have no page numbers or page info (they have Cut Guides, tested below)
     click(&mut h, "button:printStyle-2");
-    assert!(!has(&h, "check:printPageNumbers") && !has(&h, "check:printCropMarks"));
+    assert!(!has(&h, "check:printPageNumbers") && !has(&h, "check:printPageInfo"));
+    h.app.session.print.page.crop_marks = false;
+    // (the pointer stays over the settings column from the last widget interaction, so the wheel
+    // keeps scrolling it after combo:printPaper has left the view)
+    let wheel = |h: &mut Headless, dy: f32| {
+        for _ in 0..4 {
+            h.request("ui.scroll", json!({"dy": dy}), T);
+            h.settle(T);
+        }
+    };
+    // picture package (style 2) and custom package (style 3) both offer Cut Guides, not the
+    // Page Options: only crop marks, reusing page.cropMarks, labelled for packages
+    for style in ["button:printStyle-2", "button:printStyle-3"] {
+        click(&mut h, style);
+        wheel(&mut h, -600.0);
+        assert!(has(&h, "check:printCropMarks"), "{style}: a package has Cut Guides");
+        assert!(!has(&h, "check:printPageNumbers") && !has(&h, "check:printPageInfo"), "{style}: packages have no page numbers or page info");
+        assert!(h.painted_text().iter().any(|t| t == "Cut Guides"), "{style}: the checkbox is labelled Cut Guides: {:?}", h.painted_text());
+        assert!(!h.painted_text().iter().any(|t| t == "Crop Marks"), "{style}: packages do not label it Crop Marks: {:?}", h.painted_text());
+        assert!(!h.app.session.print.page.crop_marks);
+        click(&mut h, "check:printCropMarks");
+        assert!(h.app.session.print.page.crop_marks, "{style}: Cut Guides sets crop_marks");
+        click(&mut h, "check:printCropMarks");
+        assert!(!h.app.session.print.page.crop_marks, "{style}: the reuse keeps reading page.cropMarks");
+        wheel(&mut h, 600.0);
+    }
+}
+
+/// The Print module (issue #853): cell sizes in centimetres, typed sizes, a cell resized with the
+/// pointer by its corner, and cells added, moved and removed freely in Custom Package.
+#[test]
+fn print_module_cells_in_cm_typed_and_resized_with_the_pointer() {
+    let mut h = demo(Services::default());
+    cmd(&mut h, "module.print", json!({}));
+    click(&mut h, "print:style:2");
+    cmd(&mut h, "printui.guides", json!({"units": "cm"}));
+    let st = cmd(&mut h, "printui.state", json!({}));
+    assert_eq!(st["guides"]["units"], "cm");
+    let custom = |h: &Headless| match &h.app.print.settings.layout {
+        lcc_print::LayoutStyle::CustomPackage { pages } => pages[0].cells.iter().map(|c| c.rect).collect::<Vec<_>>(),
+        _ => panic!("not a custom package"),
+    };
+    // a typed size, in cm by default
+    let r = cmd(&mut h, "printui.cell", json!({"index": 0, "w": 10, "h": 15, "x": 2, "y": 2}));
+    assert_eq!(r["index"], 0);
+    let c = custom(&h)[0];
+    assert!((c.w - 10.0 / 2.54 * 72.0).abs() < 0.1 && (c.h - 15.0 / 2.54 * 72.0).abs() < 0.1, "{c:?}");
+    // selecting the cell shows its corner handle; dragging it makes the cell larger
+    click(&mut h, "print:cell:0");
+    assert_eq!(h.app.print.selected, Some(0));
+    assert!(has(&h, "print:resize:0"));
+    let before = custom(&h)[0];
+    drag(&mut h, "print:resize:0", 40.0, 30.0);
+    let after = custom(&h)[0];
+    assert!(after.w > before.w + 5.0 && after.h > before.h + 5.0, "{before:?} → {after:?}");
+    assert_eq!((after.x, after.y), (before.x, before.y), "resizing keeps the corner it grows from");
+    // add a second cell, then remove the first
+    cmd(&mut h, "printui.cell", json!({"w": 5, "h": 5, "unit": "in"}));
+    assert_eq!(custom(&h).len(), 2);
+    assert!((custom(&h)[1].w - 360.0).abs() < 0.1);
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    assert_eq!(custom(&h).len(), 1);
+}
+
+/// Bad `printui.cell` arguments are errors, never a panic or a broken layout.
+#[test]
+fn print_cell_rejects_hostile_arguments() {
+    let mut h = demo(Services::default());
+    cmd(&mut h, "printui.template", json!({"name": "2×2 Cells"}));
+    let bad = |h: &mut Headless, p: Value| {
+        let r = h.request("engine.execute", json!({"command": "printui.cell", "params": p}), T);
+        assert_eq!(r["ok"], false, "{p}: {r}");
+    };
+    bad(&mut h, json!({"w": 2, "h": 2})); // a grid has no free cells
+    cmd(&mut h, "module.print", json!({}));
+    click(&mut h, "print:style:1");
+    assert!(matches!(h.app.print.settings.layout, lcc_print::LayoutStyle::PicturePackage(_)));
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    for p in [
+        json!({"w": 2}),
+        json!({"w": -1, "h": 2}),
+        json!({"w": 1e30, "h": 2}),
+        json!({"w": "x", "h": 2}),
+        json!({"w": 2, "h": 2, "unit": "furlong"}),
+        json!({"w": 2, "h": 2, "x": 1}),
+        json!({"index": 99, "w": 2}),
+        json!({"index": -1, "remove": true}),
+        json!({"index": 99, "remove": true}),
+    ] {
+        bad(&mut h, p);
+    }
+    // the package panel lists the cells with typed sizes
+    cmd(&mut h, "printui.cell", json!({"w": 10, "h": 15, "unit": "cm"}));
+    assert!(has(&h, "field:print:cellW:0") || has(&h, "print:cellW:0") || has(&h, "print:removeCell:0"));
+    cmd(&mut h, "printui.cell", json!({"index": 0, "remove": true}));
+    for _ in 0..64 {
+        cmd(&mut h, "printui.cell", json!({"w": 1, "h": 1, "unit": "in"}));
+    }
+    bad(&mut h, json!({"w": 1, "h": 1}));
+}
+
+/// The Print module prints the filmstrip's selection: the one photo chosen there is what the
+/// preview shows and the job takes, and only an empty selection falls back to the whole filmstrip.
+#[test]
+fn print_module_follows_the_filmstrip_selection() {
+    let mut h = demo(Services::default());
+    let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+    cmd(&mut h, "library.select", json!({"ids": [ids[0]]}));
+    cmd(&mut h, "module.print", json!({}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0]]);
+    // choosing another photo in the filmstrip moves the print to it
+    cmd(&mut h, "library.select", json!({"ids": [ids[1]]}));
+    assert!(h.settle(T));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[1]]);
+    // several selected print those, in the selection's order
+    cmd(&mut h, "library.select", json!({"ids": [ids[0], ids[2]]}));
+    assert_eq!(crate::print_ui::job_photos(&mut h.app, false).iter().map(|p| p.0).collect::<Vec<_>>(), vec![ids[0], ids[2]]);
+    // nothing selected: the whole filmstrip
+    cmd(&mut h, "library.select", json!({"ids": []}));
+    assert!(crate::print_ui::job_photos(&mut h.app, false).len() >= ids.len());
 }

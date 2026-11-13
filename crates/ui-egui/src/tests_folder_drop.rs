@@ -13,8 +13,8 @@ use crate::headless::Headless;
 use crate::{LccApp, Services};
 
 /// Folders `trip` and `home` in a fresh temporary folder, with a photo file in each.
-fn folders(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let root = std::env::temp_dir().join(format!("lc-folder-drop-{tag}-{}", std::process::id()));
+fn folders(tag: &str) -> (lcc_testkit::TempDir, PathBuf, PathBuf) {
+    let root = lcc_testkit::TempDir::new(&format!("lc-folder-drop-{tag}"));
     let _ = std::fs::remove_dir_all(&root);
     let (trip, home) = (root.join("trip"), root.join("home"));
     for (dir, file) in [(&trip, "beach.png"), (&home, "garden.png")] {
@@ -428,7 +428,7 @@ fn a_question_left_open_while_another_library_opens_moves_nothing() {
     h.app.session.open_library(other.join("lib"), false).unwrap();
     let r = h.request("ui.dialog.confirm", json!({}), std::time::Duration::from_secs(10));
     assert_eq!(r["ok"], false, "{r}");
-    assert!(r["error"].as_str().unwrap_or_default().contains("Another library was opened"), "{r}");
+    assert!(r["error"].as_str().unwrap_or_default().contains("Another catalog was opened"), "{r}");
     assert!(trip.join("beach.png").is_file() && !home.join("beach.png").exists(), "nothing moved");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -587,7 +587,7 @@ fn import_to_this_folder_does_nothing_when_the_picker_is_cancelled_and_needs_a_p
 }
 
 /// A Local folder's Add to My Photos… opens the review for the folder, adding in place: the
-/// photos the folder was browsed with are offered (checked) instead of "In library", and
+/// photos the folder was browsed with are offered (checked) instead of "In catalog", and
 /// confirming brings them into the library without moving a file.
 #[test]
 fn add_to_my_photos_reviews_a_local_folders_browsed_photos() {

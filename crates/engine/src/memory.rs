@@ -144,7 +144,13 @@ fn apply(b: usize) {
         g.set_limit(export_share(b));
     }
     lcc_gpu::set_pool_limit((b / 8) as u64);
+    // (a 45 MP photo's 1:1 renders need more pooled than that: freeing their buffers stalled the
+    // window on NVIDIA's Vulkan driver)
+    lcc_gpu::set_pool_vram_share(GPU_POOL_VRAM_SHARE);
 }
+
+/// Each card's GPU buffer pool may hold up to 1/n of the card's memory while it works.
+const GPU_POOL_VRAM_SHARE: u64 = 3;
 
 /// Share of the budget for the engine's caches.
 pub fn cache_share(budget: usize) -> usize {
@@ -366,8 +372,9 @@ static RELEASE: OnceLock<fn()> = OnceLock::new();
 
 /// Install a hook that hands memory the allocator keeps after frees back to the system (first
 /// call wins). The macOS allocator keeps freed large blocks resident (reusable, but counted in
-/// the resident size) until the system runs short; the apps install
-/// `malloc_zone_pressure_relief` so the resident size follows what is actually held.
+/// the resident size) until the system runs short, and glibc keeps the free pages of each thread's
+/// arena; the apps install `lcc_sysmem::release_free_memory` (`malloc_zone_pressure_relief`,
+/// `malloc_trim`) so the resident size follows what is actually held.
 pub fn set_release_hook(f: fn()) {
     let _ = RELEASE.set(f);
 }
@@ -427,14 +434,13 @@ impl crate::Session {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
     /// Inside a container or a systemd scope with `MemoryMax`, the budget is sized from the limit,
     /// not the machine's RAM (#3072).
     #[test]
-    #[cfg(target_os = "linux")]
     fn total_ram_honours_the_cgroup_limit() {
         let ram = total_ram().unwrap();
         let info = std::fs::read_to_string("/proc/meminfo").unwrap();
@@ -445,13 +451,6 @@ mod tests {
             return;
         };
         assert!(ram as u64 <= limit, "total_ram {ram} above the cgroup limit {limit}");
-    }
-
-    /// Prints what the budget is sized from; run by hand inside and outside a limited scope.
-    #[test]
-    #[ignore = "diagnostic: prints the RAM and default budget this process sees"]
-    fn prints_the_default_budget() {
-        println!("total_ram {:?} MiB, default_budget {} MiB", total_ram().map(|b| b >> 20), default_budget() >> 20);
     }
 }
 

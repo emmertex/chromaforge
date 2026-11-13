@@ -21,6 +21,8 @@ pub struct UnnamedFace {
     pub index: usize,
     pub view: lcc_geom::Rect,
     pub suggestion: Option<String>,
+    /// Its look-alike group (#259), once recognition has compared it: faces sharing one can be selected at once.
+    pub group: Option<usize>,
 }
 
 /// What `faces.unnamed` said.
@@ -45,6 +47,7 @@ fn face_of(v: &Value) -> Option<UnnamedFace> {
         index: usize::try_from(v["index"].as_u64()?).ok()?,
         view: rect_of(&v["view"]).or_else(|| rect_of(&v["rect"]))?,
         suggestion: v["suggestion"]["name"].as_str().map(str::to_string),
+        group: v["group"].as_u64().and_then(|g| usize::try_from(g).ok()),
     })
 }
 
@@ -61,6 +64,7 @@ pub fn parse(v: &Value) -> Unnamed {
 /// The unnamed faces, asked for again only when the catalog changed, or (while the scan runs and learns more faces) at
 /// most every few seconds, since putting look-alikes together looks at every pair.
 pub fn faces(app: &mut LccApp, now: f64) -> Arc<Unnamed> {
+    super::person::follow_filter(app);
     let (rev, indexed) = (app.session.catalog.revision, app.caches.faces_indexed);
     if let Some((r, i, at, list)) = &app.caches.unnamed
         && *r == rev
@@ -68,7 +72,7 @@ pub fn faces(app: &mut LccApp, now: f64) -> Arc<Unnamed> {
     {
         return list.clone();
     }
-    let v = app.session.execute("faces.unnamed", &json!({})).unwrap_or(Value::Null);
+    let v = app.session.execute("faces.unnamed", &json!({"scope": "filter"})).unwrap_or(Value::Null);
     let list = Arc::new(parse(&v));
     // what was selected and has since been named (or removed) is no longer selected
     let present: std::collections::HashSet<(u64, usize)> = list.faces.iter().map(|f| (f.photo, f.index)).collect();
@@ -272,7 +276,7 @@ pub fn tile(app: &mut LccApp, ui: &mut egui::Ui, list: &Unnamed, i: usize, r: Re
         p.text(pos2(r.left() + 5.0, strip.center().y), Align2::LEFT_CENTER, format!("{label}?"), t.font(11.5), Color32::from_gray(225));
     }
     if let (Some(a), Some(who)) = (&accept, &f.suggestion)
-        && a.clone().on_hover_text(format!("Name this face {who}")).clicked()
+        && a.clone().on_hover_text(crate::i18n::tr_format!("Name this face {who}", who = who)).clicked()
     {
         name(app, &[key], who);
         return;
@@ -287,11 +291,53 @@ pub fn tile(app: &mut LccApp, ui: &mut egui::Ui, list: &Unnamed, i: usize, r: Re
         let shift = ui.input(|i| i.modifiers.shift);
         click(app, list, i, shift);
     }
+    // its look-alikes, selected at once to be named or ignored together (#259); or this face, ignored
+    let alikes = look_alikes(list, f);
+    crate::widgets::context_menu(&resp, |ui| {
+        let n = alikes.len();
+        let label = crate::i18n::tr_format!("Select {n} look-alikes", n = n);
+        let b = ui.add_enabled(n > 1, egui::Button::new(label));
+        register(ui.ctx(), "unnamedMenu:selectGroup", b.rect);
+        if b.clicked() {
+            app.ui.unnamed_selected.extend(alikes.iter().copied());
+            app.ui.unnamed_focus = true;
+            ui.close();
+        }
+        let b = ui.button(crate::i18n::tr("Ignore this face"));
+        register(ui.ctx(), "unnamedMenu:ignore", b.rect);
+        if b.clicked() {
+            let _ = app.run("faces.ignore", json!({"faces": [{"photo": f.photo, "index": f.index}]}));
+            app.ui.unnamed_selected.remove(&key);
+            ui.close();
+        }
+    });
+}
+
+/// The faces in `f`'s look-alike group (`f` among them), or just `f` when it has none yet.
+fn look_alikes(list: &Unnamed, f: &UnnamedFace) -> Vec<(u64, usize)> {
+    match f.group {
+        Some(g) => list.faces.iter().filter(|o| o.group == Some(g)).map(|o| (o.photo, o.index)).collect(),
+        None => vec![(f.photo, f.index)],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_faces_look_alikes_are_its_group() {
+        let v = json!({"total": 4, "faces": [
+            {"photo": 1, "index": 0, "rect": {"x0": 0.1, "y0": 0.1, "x1": 0.3, "y1": 0.4}, "group": 0},
+            {"photo": 2, "index": 0, "rect": {"x0": 0.1, "y0": 0.1, "x1": 0.3, "y1": 0.4}, "group": 0},
+            {"photo": 3, "index": 0, "rect": {"x0": 0.1, "y0": 0.1, "x1": 0.3, "y1": 0.4}, "group": 1},
+            {"photo": 4, "index": 0, "rect": {"x0": 0.1, "y0": 0.1, "x1": 0.3, "y1": 0.4}},
+        ]});
+        let list = parse(&v);
+        assert_eq!(look_alikes(&list, &list.faces[0]), vec![(1, 0), (2, 0)]);
+        assert_eq!(look_alikes(&list, &list.faces[2]), vec![(3, 0)]);
+        assert_eq!(look_alikes(&list, &list.faces[3]), vec![(4, 0)], "no group yet: the face alone");
+    }
 
     #[test]
     fn the_engines_answer_becomes_a_list_and_odd_entries_are_left_out() {
@@ -309,6 +355,7 @@ mod tests {
         assert_eq!(list.faces[0].suggestion.as_deref(), Some("Jane Doe"));
         assert_eq!(list.faces[0].view.x0, 0.12, "the view box is used when there is one");
         assert_eq!((list.faces[1].view.x0, list.faces[1].suggestion.clone()), (0.1, None), "else the face's own box");
+        assert_eq!(list.faces[0].group, None);
         for bad in [Value::Null, json!([]), json!({"faces": 5, "total": -1})] {
             assert_eq!(parse(&bad), Unnamed::default(), "{bad}");
         }

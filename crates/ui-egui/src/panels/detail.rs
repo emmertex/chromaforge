@@ -14,6 +14,14 @@ use crate::state::{BeforeAfter, RightPanel, ToolOverlay, Zoom};
 use crate::theme::Tokens;
 use crate::widgets::register;
 
+/// Whether the preview or thumbnail may stand in for `slot` until its own render arrives. They show
+/// the photo's current settings, so for the Before view only while those are its before settings:
+/// an edited photo would otherwise flash its edits before the Before render replaces them
+/// (upstream #2248).
+pub(crate) fn stand_in_shows(app: &LccApp, id: PhotoId, slot: Slot) -> bool {
+    slot != Slot::Before || app.session.catalog.photo(id).is_some_and(|ph| *ph.develop == app.session.before_settings(ph))
+}
+
 /// A clip's whole decoded frame drawn into `r` through the loupe's [`Frame`]: the crop, its
 /// straighten angle and the flips pick the part of the texture that shows (the uncropped frame
 /// while the Crop tool is open).
@@ -181,6 +189,14 @@ impl CanvasMap {
             None => n,
         };
         Some(self.place(n))
+    }
+    /// Screen points per unit of the oriented photo's long edge: the unit of brush and spot sizes.
+    /// The render measures them on the uncropped photo (`Frame::px_per_long`), so a cursor sized from
+    /// the cropped frame on screen would draw smaller than the stroke it paints.
+    pub(crate) fn per_long(&self) -> f32 {
+        let o = self.place(Point::new(0.0, 0.0));
+        let (sx, sy) = (self.place(Point::new(1.0, 0.0)).distance(o), self.place(Point::new(0.0, 1.0)).distance(o));
+        sx.max(sy).max(1e-3)
     }
     /// A point on the displayed frame (normalized) on screen.
     fn place(&self, n: Point) -> Pos2 {
@@ -415,6 +431,10 @@ fn trackpad_scroll_delta(events: &[egui::Event]) -> egui::Vec2 {
 }
 
 /// Native pinch (also modifier-wheel zoom) and two-finger scroll, scoped to this image view.
+/// Brush resize per wheel notch (or [`crate::theme::WHEEL_LINE_POINTS`] of trackpad scroll), as
+/// a log-scale step: about +25 % per notch.
+const BRUSH_PER_NOTCH: f32 = 0.22;
+
 pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, area: Rect, img: Rect, native: [usize; 2]) -> bool {
     // While the White Balance Selector is armed, a wheel notch steps its sample size instead of zooming
     // (OneSlips, test notes 2026-10-25 note 13); Ctrl/Cmd+wheel still zooms.
@@ -453,17 +473,21 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     // Ctrl/Cmd+wheel still zooms.
     if app.ui.settings.wheel_resizes_brush && is_brush && !cmd_or_ctrl && !space_held {
         if notches != 0.0 {
-            crate::menus::adjust_brush(app, 1.0 + (notches * 0.1).clamp(-0.5, 0.5), 0.0);
+            crate::menus::adjust_brush(app, (notches * BRUSH_PER_NOTCH).exp().clamp(0.25, 4.0), 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            // Not a view change: the frame still draws the tool overlay, so the brush ring stays
+            // shown instead of flickering to the pointer while it resizes (#867).
+            return false;
         }
         if trackpad_delta.y != 0.0 {
-            let k = (trackpad_delta.y * (0.1 / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.5, 2.0);
+            // Scales with the scroll distance, so a trackpad's many small deltas and a wheel's line
+            // add up to the same growth per distance scrolled (#867).
+            let k = (trackpad_delta.y * (BRUSH_PER_NOTCH / crate::theme::WHEEL_LINE_POINTS)).exp().clamp(0.25, 4.0);
             crate::menus::adjust_brush(app, k, 0.0);
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
             ui.ctx().request_repaint();
-            return true;
+            return false;
         }
         if factor == 1.0 && delta != egui::Vec2::ZERO {
             ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
@@ -615,7 +639,7 @@ pub(crate) fn draw_focus_point(p: &egui::Painter, img: Rect, photo: &lcc_catalog
 
 /// Ease the loupe rect toward `target` while a click-zoom animation runs; otherwise follow it exactly.
 fn animated_rect(ctx: &egui::Context, anim: &mut bool, target: Rect) -> Rect {
-    let t = if *anim { 0.22 } else { 0.0 };
+    let t = if *anim && !crate::motion::reduced(ctx) { 0.22 } else { 0.0 };
     let id = egui::Id::new("loupe_anim");
     let v = |k: &str, x: f32| ctx.animate_value_with_time(id.with(k), x, t);
     let (c, s) = (target.center(), target.size());
@@ -977,8 +1001,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let Some(photo) = app.session.catalog.photo(id).cloned() else { return };
     brief_info(app, ui.ctx(), id);
     let d = (*photo.develop).clone();
-    // the full-screen preview shows the photo only: no tool overlays
-    let right = if fullscreen { RightPanel::None } else { app.ui.right };
+    // the full-screen preview shows the photo only: no tool overlays; nor does the Import tab's loupe, which has no
+    // Develop panel (a tool left open there drew its overlays and notes over a browsed photo)
+    let browsing = crate::import_tab::showing(app);
+    let right = if fullscreen || browsing { RightPanel::None } else { app.ui.right };
     let crop_tool = right == RightPanel::Crop;
     let frame = Frame::with_lens(photo.width.max(1) as usize, photo.height.max(1) as usize, &d, !crop_tool, photo.embedded_lens.as_deref());
     let aspect = frame.aspect() as f32;
@@ -1092,6 +1118,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if let Some(left) = app.ui.mask_adjusting_until.map(|t| t.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero()) {
         ui.ctx().request_repaint_after(left);
     }
+    // a picked mask's peek overlay goes again when its moment is up (issue #1109)
+    if let Some(left) = app.ui.mask_peek_until.map(|t| t.saturating_duration_since(std::time::Instant::now())).filter(|d| !d.is_zero()) {
+        ui.ctx().request_repaint_after(left);
+    }
     // a drag drafts at full size where the GPU draws the view (by the GPU's own rule, `handles`;
     // `ready` first: `available` would wait for a device still being created)
     let gpu = draft_drag
@@ -1190,7 +1220,22 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::loupe_timing::SETTLE_SECS / 2.0));
     }
-    let main_job = if settling {
+    // the background preparation is making this very photo's preview: the loupe waits for it (it
+    // lands in the view cache, which the render below then finds) rather than decoding the same raw a
+    // second time beside it, at most PREP_WAIT_MAX_S (a build held up elsewhere doesn't keep the photo
+    // unrendered)
+    let wait_for_prep = !settling
+        && !interacting
+        && !drafting
+        && plan.window_edge.is_none()
+        && app.renderer.textures.get(&Slot::Main).is_none_or(|t| t.photo != id)
+        && app.loupe_timing.on_screen_secs(id, now) < PREP_WAIT_MAX_S
+        && app.session.being_prepared(id);
+    if wait_for_prep {
+        app.renderer.drop_queued(Slot::Main);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    let main_job = if settling || wait_for_prep {
         None
     } else if drafting {
         app.session.loupe_job(id, rw.max(8), rh.max(8), !crop_tool).map(|job| {
@@ -1279,6 +1324,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     break;
                 }
                 let Some(at) = ids.iter().position(|p| *p == nid) else { continue };
+                // (one the background preparation is making already is not decoded a second time)
+                if !develop && app.session.being_prepared(nid) {
+                    continue;
+                }
                 // the nearest one each way in slots 0 (ahead) and 1 (behind), kept to be adopted at
                 // the step; the others by their place in the view, so a step keeps them where they are
                 let side = usize::from((at < i) != app.prep_backward);
@@ -1351,7 +1400,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             && let Some(job) =
                 app.session.region_job(id, native[0], native[1], lcc_engine::pipeline::PixelWindow { x: 0, y: 0, w: 1, h: 1 }, !crop_tool)
         {
-            app.renderer.prefetch(Slot::Prefetch(2), job, PREFETCH_PRIORITY - 1);
+            app.renderer.prefetch(Slot::Prefetch(crate::render::FULL_SOURCE_PREFETCH), job, PREFETCH_PRIORITY - 1);
         } else if now - since < WARM_FULL_AFTER_S {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((WARM_FULL_AFTER_S - (now - since)).max(0.05)));
         }
@@ -1360,6 +1409,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     if app.renderer.textures.get(&Slot::Main).is_none_or(|t| t.photo != id)
         && let Some(q) = app.session.quick_view_job(id, want.max(8), !crop_tool)
     {
+        let q = cheapest_first(app, id, q, want.max(8), !crop_tool, settling);
         app.renderer.request_quick(Slot::Preview, q, 110);
     }
     if !interacting && let Some(i) = here {
@@ -1450,10 +1500,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         } else {
             app.region_view = shown;
         }
-        // a side no longer shown zoomed frees its tiles
+        // a side no longer shown zoomed frees the tiles of other photos; the photo on screen keeps
+        // its own (the cache's budget bounds them), so a return to 100 % with the same look draws
+        // at once instead of rendering every tile again (about 5 s on a 45 MP raw)
         if shown.is_none() {
             let pane = if before { crate::render::PANE_BEFORE } else { crate::render::PANE_AFTER };
-            app.renderer.tiles.retain(|k| k.pane != pane);
+            app.renderer.tiles.retain(|k| k.pane != pane || k.photo == id);
             app.renderer.release(Slot::Window(pane));
         }
     }
@@ -1497,10 +1549,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
             return "hdr";
         }
         let mine = |s: Slot| app.renderer.textures.get(&s).filter(|t| t.photo == id);
+        // (the Before view takes no stand-in that shows the edits: upstream #2248)
+        let stand_in = stand_in_shows(app, id, slot);
         let candidates = [
             mine(slot).map(|t| (t, "render")),
-            mine(Slot::Preview).filter(truthful).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
-            app.renderer.thumb(id).filter(truthful).map(|t| (t, "thumb")),
+            mine(Slot::Preview).filter(truthful).filter(|_| stand_in).map(|t| (t, t.quick.map(quick_name).unwrap_or("preview"))),
+            app.renderer.thumb(id).filter(truthful).filter(|_| stand_in).map(|t| (t, "thumb")),
         ];
         // each picture's corners on the view, when it says where it lies (`Some(None)`: drawn as it
         // is; `None`: it can't be drawn for this view)
@@ -1688,8 +1742,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     }
     // …and the window renders go over the whole-frame ones, all of them, where they belong in the
     // frame (clipped to their pane, or their side of the line)
-    let window_drawn =
-        app.renderer.tiles.has_render_of(id) || app.renderer.window_texture(crate::render::PANE_AFTER).is_some_and(|(_, g)| g.photo == id);
+    let window_drawn = app.region_view.is_some_and(|v| v.photo == id && app.renderer.tiles.has_render_of_look(id, v.settings))
+        || app.renderer.window_texture(crate::render::PANE_AFTER).is_some_and(|(_, g)| g.photo == id);
     if camera_full_drawn && !window_drawn {
         app.loupe_shown = Some((id, "embedded"));
         camera_preview_badge(ui, canvas, img_rect.intersect(canvas));
@@ -1752,6 +1806,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
         // while the name box is open and recognition is not set up, the box offers the next step
         let setup = if app.ui.name_edit.is_some() { super::faces::setup(app, ui.ctx()) } else { super::faces::Setup::Running };
         match region_overlay(ui, &p, &map, &photo, d.orientation, hints.as_deref(), &people, &mut app.ui.name_edit, setup) {
+            Some(RegionEdit::Focus(index)) => app.ui.face_focus = Some((id.0, index)),
             Some(RegionEdit::SetUp) => {
                 app.ui.name_edit = None;
                 super::faces::take_step(app, ui.ctx(), setup);
@@ -1810,7 +1865,14 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     (true, Some(before), Some(q)) if before.contains(q) => (CanvasMap::new(&frame, before_img), before_img, *before),
                     _ => (map, img_rect, main_area),
                 };
-                general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                if app.ui.draw_faces && !browsing {
+                    draw_face_overlay(app, ui, &p, &resp, &map, d.orientation, id);
+                } else if browsing {
+                    // no Develop picker works on a browsed photo: a click only zooms, as in Library
+                    click_zoom_and_pan(app, &resp, img, pane);
+                } else {
+                    general_interaction(app, ui, &resp, &map, img, pane, native, aspect)
+                }
             }
         }
     }
@@ -2046,6 +2108,64 @@ fn overlay_badges(p: &egui::Painter, t: &Tokens, at: Pos2, photo: &lcc_catalog::
     at.y + OVERLAY_BADGES_H
 }
 
+/// Photo > People > Draw Face Regions: a drag over the photo draws a box; on release it becomes an unnamed face
+/// region (`photo.addRegion`, one undo step) and its name box opens. Esc, or the menu item again, leaves the mode.
+fn draw_face_overlay(
+    app: &mut LccApp,
+    ui: &egui::Ui,
+    p: &egui::Painter,
+    resp: &egui::Response,
+    map: &CanvasMap,
+    orient: lcc_geom::Orientation,
+    id: lcc_catalog::PhotoId,
+) {
+    let key = egui::Id::new("face-draw");
+    if app.ui.name_edit.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.ui.draw_faces = false;
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        return;
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos())
+    {
+        ui.data_mut(|d| d.insert_temp(key, (q, q)));
+    }
+    let Some((start, _)) = ui.data(|d| d.get_temp::<(Pos2, Pos2)>(key)) else { return };
+    let now = resp.interact_pointer_pos().or(resp.hover_pos()).unwrap_or(start);
+    let (a, b) = (map.norm(start), map.norm(now));
+    let shown = lcc_geom::Rect {
+        x0: a.x.min(b.x).clamp(0.0, 1.0),
+        y0: a.y.min(b.y).clamp(0.0, 1.0),
+        x1: a.x.max(b.x).clamp(0.0, 1.0),
+        y1: a.y.max(b.y).clamp(0.0, 1.0),
+    };
+    if resp.dragged() {
+        ui.data_mut(|d| d.insert_temp(key, (start, now)));
+        let rect = Rect::from_two_pos(map.screen(Point::new(shown.x0, shown.y0)), map.screen(Point::new(shown.x1, shown.y1)));
+        p.rect_stroke(rect.expand(1.0), 0.0, Stroke::new(1.0, Color32::from_black_alpha(190)), StrokeKind::Outside);
+        p.rect_stroke(rect, 0.0, Stroke::new(1.0, Color32::WHITE), StrokeKind::Outside);
+        ui.ctx().request_repaint();
+    }
+    if resp.drag_stopped() {
+        ui.data_mut(|d| d.remove_temp::<(Pos2, Pos2)>(key));
+        // a click or a slip of the mouse is not a face
+        let moved = now - start;
+        if moved.x.abs().max(moved.y.abs()) < 8.0 {
+            return;
+        }
+        let upright = orient.inverse().map_norm_rect(shown);
+        if let Ok(v) =
+            app.run("photo.addRegion", json!({"id": id.0, "rect": {"x0": upright.x0, "y0": upright.y0, "x1": upright.x1, "y1": upright.y1}}))
+            && let Some(index) = v["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+        {
+            app.ui.name_edit = Some(crate::state::NameEdit { photo: id.0, index, text: String::new(), fresh: true });
+        }
+    }
+}
+
 /// What the user did to a face box this frame.
 enum RegionEdit {
     /// The × was clicked.
@@ -2056,6 +2176,8 @@ enum RegionEdit {
     Name(usize, String),
     /// The name box's offer to set up face recognition was pressed.
     SetUp,
+    /// The pointer rests on this box: the loupe's chosen face.
+    Focus(usize),
 }
 
 /// Handles of a box: (x, y) as fractions of its width and height, and the cursor they show.
@@ -2093,6 +2215,7 @@ fn region_overlay(
     let drag_key = egui::Id::new("region-drag");
     let live: Option<(usize, lcc_geom::Rect)> = ui.data(|d| d.get_temp(drag_key));
     let mut edit = None;
+    let mut focus = None;
     for (index, r) in photo.meta.regions.iter().enumerate() {
         let dragging = live.filter(|(i, _)| *i == index);
         let norm = orient.map_norm_rect(dragging.map_or(r.rect, |(_, n)| n));
@@ -2166,6 +2289,9 @@ fn region_overlay(
         let is_face = r.kind == lcc_meta::RegionKind::Face;
         let hint = hints.and_then(|h| h.by_index.get(&index));
         let hovered = pointer.is_some_and(|h| rect.expand(3.0).contains(h));
+        if hovered && is_face && live.is_none() {
+            focus = Some(index);
+        }
         let editing_this = editing.as_ref().is_some_and(|e| e.photo == photo.id.0 && e.index == index);
         let (text, text_color, fill_alpha, invitation) = match (&r.name, hint.and_then(|h| h.suggestion.as_ref())) {
             (Some(n), _) => (n.clone(), Color32::from_gray(225), 235, false),
@@ -2216,7 +2342,7 @@ fn region_overlay(
             }
         }
     }
-    edit
+    edit.or(focus.map(RegionEdit::Focus))
 }
 
 /// The filter pill's inset from the canvas' top-left corner and its height (the same inset from
@@ -2289,7 +2415,7 @@ fn all_masks_pill(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, over: Rect)
 fn preview_only_pill(ui: &mut egui::Ui, canvas: Rect, reason: &str, top: f32) {
     let t = Tokens::get(ui.ctx());
     let p = ui.painter_at(canvas);
-    let text = crate::i18n::tr_format!("Preview only — editing the camera's embedded JPEG ({})", crate::widgets::preview_only_variant(reason));
+    let text = crate::i18n::tr_format!("Preview only: editing the camera's embedded JPEG ({})", crate::widgets::preview_only_variant(reason));
     let g = p.layout_no_wrap(text, t.font(12.0), Color32::WHITE);
     let size = vec2(g.size().x + 40.0, 26.0);
     let r = Rect::from_min_size(pos2(canvas.center().x - size.x / 2.0, canvas.top().max(ui.ctx().content_rect().top()) + top), size);
@@ -2392,6 +2518,9 @@ fn navigator(app: &mut LccApp, ui: &mut egui::Ui, canvas: Rect, img: Rect, id: P
 /// How many photos ahead (in the direction of travel) the loupe makes its stand-in for, and how
 /// many behind (a step back is common when culling).
 const AHEAD: usize = 5;
+/// The thumbnails made ahead while a step key is held ([`crate::loupe_timing::LoupeTiming::holding`]):
+/// about a second of a held key.
+pub(crate) const AHEAD_WHILE_HOLDING: usize = 30;
 const BEHIND: usize = 1;
 /// The look-ahead's priority: below the loupe's own render (100), above everything else.
 const AHEAD_PRIORITY: u32 = 96;
@@ -2411,6 +2540,45 @@ pub(crate) fn ahead_and_behind(ids: &[PhotoId], i: usize, backward: bool, ahead:
     let ahead = (1..=cap(ahead)).filter_map(|k| at(dir * k));
     let behind = (1..=cap(behind)).filter_map(|k| at(-dir * k));
     ahead.chain(behind).collect()
+}
+
+/// The long edge of the loupe's first stand-in of a photo shown from its camera JPEG: the size of the
+/// small JPEG most raws keep beside the full-size one (Canon CR3 1620 px, Sony ARW 1616 px), which
+/// decodes in a few ms. The full-size JPEG of a 45 MP raw takes 0.3-1.2 s, and stepping at 0.4 s
+/// showed nothing at all for half of the photos while it decoded (2026-11-10 culling sweep).
+pub(crate) const FIRST_PICTURE_EDGE: usize = 1600;
+
+/// Told apart from the photo's full-size stand-in (whose key doesn't depend on the size).
+const FIRST_PICTURE_SALT: u64 = 0x5f1e_57ad_c0de_0001;
+
+/// The photo's quick stand-in at [`FIRST_PICTURE_EDGE`] (`None`: none of that kind), keyed apart.
+fn first_picture_job(app: &mut LccApp, id: PhotoId, crop: bool) -> Option<lcc_engine::media::QuickJob> {
+    let mut q = app.session.quick_view_job(id, FIRST_PICTURE_EDGE, crop)?;
+    q.embedded.as_ref()?;
+    q.key ^= FIRST_PICTURE_SALT;
+    Some(q)
+}
+
+/// The cheapest picture first, then the next (the user's rule, PERF-CULL-TIERS): while the loupe
+/// shows nothing of this photo as big as [`FIRST_PICTURE_EDGE`], its camera JPEG at that size; once
+/// that is up and the photo stays (not `settling`), `full` (the camera JPEG at the loupe's size, or a
+/// cached render). A photo whose stand-in at full size was made ahead takes that one at once.
+fn cheapest_first(
+    app: &mut LccApp,
+    id: PhotoId,
+    full: lcc_engine::media::QuickJob,
+    want: usize,
+    crop: bool,
+    settling: bool,
+) -> lcc_engine::media::QuickJob {
+    if want <= FIRST_PICTURE_EDGE || full.embedded.is_none() || app.renderer.made_ahead(id, full.key) {
+        return full;
+    }
+    let shown = app.renderer.textures.get(&Slot::Preview).filter(|t| t.photo == id).map_or(0, |t| t.size[0].max(t.size[1]));
+    if shown >= FIRST_PICTURE_EDGE * 9 / 10 && !settling {
+        return full;
+    }
+    first_picture_job(app, id, crop).unwrap_or(full)
 }
 
 /// Culling: make the loupe's stand-ins (the camera JPEG of a raw as shot, or a cached render) of
@@ -2433,15 +2601,29 @@ fn look_ahead(app: &mut LccApp, ids: &[PhotoId], i: usize, edge: usize, crop: bo
     }
     // their thumbnails first (a small embedded JPEG each, a few ms): something to show at once
     // even when a step outruns the full-size previews, and in full screen, where no filmstrip
-    // asks for them
-    for &nid in &targets {
+    // asks for them. A held key steps about 30 photos a second and outran the five ahead within a
+    // fifth of a second: a quarter of the steps showed nothing at all (2026-11-10 culling sweep);
+    // while it is held, the thumbnails go further ahead.
+    let thumbs_ahead = if app.loupe_timing.holding() { AHEAD_WHILE_HOLDING } else { AHEAD };
+    for nid in ahead_and_behind(ids, i, app.prep_backward, thumbs_ahead, BEHIND) {
         super::grid::request_thumb(app, nid, AHEAD_THUMB_EDGE, AHEAD_PRIORITY + 2);
     }
     // (an edited photo's stand-in made ahead is its last render, if any: never a raw decode for a
     // thumbnail ahead, which would take the cores from the render the user waits for)
+    // (a raw as shot: its camera JPEG at the first picture's size, which the step shows at once and
+    // replaces with the full-size one once the photo stays; see `cheapest_first`)
     let jobs = targets
         .into_iter()
-        .filter_map(|nid| app.session.quick_view_job(nid, edge, crop))
+        .filter_map(|nid| {
+            let q = app.session.quick_view_job(nid, edge, crop)?;
+            if edge > FIRST_PICTURE_EDGE
+                && q.embedded.is_some()
+                && let Some(first) = first_picture_job(app, nid, crop)
+            {
+                return Some(first);
+            }
+            Some(q)
+        })
         .map(|mut q| {
             if !q.latest.is_empty() {
                 q.small = None;
@@ -2451,6 +2633,12 @@ fn look_ahead(app: &mut LccApp, ids: &[PhotoId], i: usize, edge: usize, crop: bo
         .collect();
     app.renderer.look_ahead(jobs, AHEAD_PRIORITY);
 }
+
+/// The longest the loupe waits for the background preparation's preview of the photo on screen
+/// (s) before rendering it itself. Short: the preparation runs at the lowest priority, and on a busy
+/// machine (a build beside the app) its render crawled while the photo on screen waited for it
+/// (4 s at first: 0 of 15 photos sharp at 1.5 s steps, 2026-11-10).
+pub(crate) const PREP_WAIT_MAX_S: f64 = 1.0;
 
 /// Neighbour prefetch: below on-screen thumbnails, above background thumbnail refreshes.
 const PREFETCH_PRIORITY: u32 = 4;
@@ -2646,6 +2834,7 @@ fn quick_name(q: lcc_engine::media::QuickSource) -> &'static str {
         QuickSource::Small => "small",
         QuickSource::Last => "last",
         QuickSource::Draft => "draft",
+        QuickSource::Kept => "kept",
     }
 }
 
@@ -3007,9 +3196,12 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
+    // a picked mask with settings peeks its overlay for a moment (issue #1109), so the user sees
+    // which mask is on; the Show Overlay checkbox stays as the auto rule left it (not latched on)
+    let peeking = app.ui.mask_peek_until.is_some_and(|t| std::time::Instant::now() < t);
     if shown
         && app.ui.right == RightPanel::Masking
-        && app.ui.mask_overlay
+        && (app.ui.mask_overlay || peeking)
         && let Some(m) = app.session.active_mask.and_then(|id| d.masks.iter().find(|m| m.id == id))
         && !m.components.is_empty()
         && ai_computing(app, m).is_none()
@@ -3059,7 +3251,7 @@ fn general_cursor(app: &LccApp, ui: &egui::Ui, resp: &egui::Response, img: Rect,
     }
     let cursor = match app.ui.tool.as_str() {
         // the colour pickers: an eyedropper, its tip on the pixel picked
-        "wbPicker" | "colorRange" | "pointColor" => {
+        "wbPicker" | "fringe" | "colorRange" | "pointColor" | "hslPick" => {
             if let Some(q) = resp.hover_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())) {
                 crate::eyedropper::show(ui.ctx(), q);
             }
@@ -3123,6 +3315,35 @@ fn general_interaction(
             if let Ok(r) = app.run("pointColor.pick", json!({"x": n.x, "y": n.y})) {
                 app.ui.point_color = r["index"].as_u64().unwrap_or(0) as usize;
             }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    if app.ui.tool == "fringe" {
+        // the Fringe Color Selector: a click points Defringe at the colour under it; a spot with no
+        // colour says so and the selector stays armed
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            match app.run("develop.fringePick", json!({"x": n.x, "y": n.y})) {
+                Ok(r) if r["applied"] == false => {
+                    let message = r["message"].as_str().unwrap_or("This spot can't be read").to_string();
+                    app.toast(ui.ctx(), crate::i18n::tr(&message));
+                }
+                _ => app.ui.tool.clear(),
+            }
+        }
+        return;
+    }
+    if app.ui.tool == "hslPick" {
+        // the Witchcraft HSL curves' picker: the hue under the pointer becomes a point on the
+        // shown curve
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            let _ = app.run("develop.hslPick", json!({"channel": app.ui.hsl_curve, "x": n.x, "y": n.y}));
             app.ui.tool.clear();
         }
         return;
@@ -3201,6 +3422,17 @@ fn wb_loupe(app: &LccApp, ui: &egui::Ui, q: Pos2, img: Rect, canvas: Rect) {
     p.rect_stroke(sq, 0.0, Stroke::new(2.0, Color32::BLACK), egui::StrokeKind::Outside);
     p.rect_stroke(sq, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
     register(ui.ctx(), "canvas:wbLoupe", at);
+    // the colour under the pointer right under the loupe, as under the histogram, so it can be read
+    // without looking away from the photo (#1094); above the loupe when there's no room below
+    if let Some(rgb) = tex.pixels.as_deref().and_then(|px| crate::color_readout::srgb_at(px, u, v, app.renderer.display().map(|d| d.as_ref()))) {
+        let text = app.ui.settings.color_readout.format(rgb);
+        let h = 20.0;
+        let y = if at.bottom() + 2.0 + h <= canvas.bottom() { at.bottom() + 2.0 } else { at.top() - 2.0 - h };
+        let band = Rect::from_min_size(pos2(at.left() - 2.0, y), vec2(side + 4.0, h));
+        p.rect_filled(band, 3.0, Color32::from_black_alpha(200));
+        p.text(band.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), Color32::from_gray(230));
+        register(ui.ctx(), "canvas:wbLoupeReadout", band);
+    }
 }
 
 /// The photo `img` reaches past its pane `canvas`: a drag pans it.
@@ -3267,7 +3499,7 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     if pts.len() == 4 {
         let uv_to_norm = frame.out_to_norm(1, 1);
         let photo = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(u, v)| map.screen(uv_to_norm.apply(Point::new(u, v))));
-        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(150)));
+        p.add(outside_crop_mesh(&photo, &quad, Color32::from_black_alpha(crate::state::crop_mask_alpha(app.ui.crop_mask_opacity))));
     }
     // the box's centre: what a rotation turns the photo about (it stays put on screen)
     let box_centre = pos2(pts.iter().map(|q| q.x).sum::<f32>() / 4.0, pts.iter().map(|q| q.y).sum::<f32>() / 4.0);
@@ -4210,7 +4442,8 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         }
         return;
     }
-    let long = (map.rect.width().max(map.rect.height())) as f64;
+    // sizes are in units of the uncropped photo's long edge, as the render reads them
+    let long = f64::from(map.per_long());
     let active = app.session.active_mask;
     // no tool armed as this frame starts (a click that makes a mask puts its tool away: that click doesn't zoom)
     let idle = app.ui.tool.is_empty();
@@ -5378,7 +5611,8 @@ fn draw_tinted_outline(p: &egui::Painter, loops: &[Vec<Pos2>], offset: egui::Vec
 /// The Tool Overlay mode (Shift+H) says which spots show; a hidden spot can't be grabbed, so a
 /// click there adds a new one.
 fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map: &CanvasMap, d: &DevelopSettings) {
-    let long = (map.rect.width().max(map.rect.height())) as f64;
+    // sizes are in units of the uncropped photo's long edge, as the render reads them
+    let long = f64::from(map.per_long());
     let active = app.session.active_spot.filter(|i| *i < d.spots.len());
     let (mode, live) = (app.ui.tool_overlay, pins_live(app, resp, map));
     // Auto also hides them while a new spot is painted
@@ -5614,6 +5848,14 @@ fn remove_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, ma
             _ => "remove",
         };
         let pts: Vec<[f64; 2]> = points.iter().map(|q| [q.x, q.y]).collect();
+        // Remove Options ▸ Detect Objects: the stroke picks the object under it instead of being the area
+        if app.ui.remove_detect_objects && matches!(mode, "remove" | "generate") {
+            let mode = if mode == "generate" { "generate" } else { "fill" };
+            if let Err(e) = app.run_typed("spot.detectObject", json!({"points": pts, "mode": mode})) {
+                app.ai_error(ui.ctx(), e, None);
+            }
+            return;
+        }
         let _ = app.run(
             "spot.add",
             json!({"mode": mode, "points": pts, "size": app.ui.remove_size, "feather": app.ui.remove_feather, "opacity": app.ui.remove_opacity}),
@@ -5657,7 +5899,7 @@ fn spot_keys(app: &mut LccApp, ui: &mut egui::Ui, map: &CanvasMap, d: &DevelopSe
         ui.data_mut(|m| m.insert_temp(key, moved));
     }
     if crate::canvas_keys::has_focus(ui.ctx()) && ui.memory(|m| m.has_focus(crate::canvas_keys::id("spot:new"))) {
-        let r = (app.ui.remove_size as f64 * (map.rect.width().max(map.rect.height())) as f64) as f32;
+        let r = app.ui.remove_size * map.per_long();
         ui.painter().circle_stroke(q, r, Stroke::new(1.0, Color32::WHITE));
     }
     if keys.activated {
@@ -6016,6 +6258,23 @@ pub(crate) fn film_thumb_px(cell_w: f32, ppp: f32) -> usize {
     (px.round() as usize).clamp(128, 512)
 }
 
+/// The filmstrip's scroll offset after its cells change from `old_w` to `new_w` points wide: the
+/// photo at index `at` (the active one) stays where it was on screen; with none, the first photo
+/// in view does.
+pub(crate) fn film_rescroll(old_off: f32, old_w: f32, new_w: f32, at: Option<usize>) -> f32 {
+    if !(old_off.is_finite() && old_w.is_finite() && new_w.is_finite()) || old_w <= 0.0 {
+        return 0.0;
+    }
+    let off = match at {
+        Some(i) => {
+            let centre = (i as f32 + 0.5) * old_w;
+            (i as f32 + 0.5) * new_w - (centre - old_off)
+        }
+        None => old_off * new_w / old_w,
+    };
+    off.max(0.0)
+}
+
 /// The filmstrip's top edge: dragged up or down, it resizes the strip (and its thumbnails) within
 /// [`crate::state::FILM_HEIGHT`]; a double click puts it back. The height is kept with the UI
 /// settings (widget `filmstrip:resize`; `film:` ids are the photos).
@@ -6046,6 +6305,10 @@ fn film_label(name: &str) -> String {
 }
 
 pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
+    crate::view_state::around(app, ui, r, |app, ui| filmstrip_strip(app, ui, r));
+}
+
+fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     let t = Tokens::get(ui.ctx());
     ui.painter().rect_filled(r, 0.0, t.canvas);
     ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width(), 4.0)), 0.0, Color32::from_gray(0x20));
@@ -6091,11 +6354,24 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     );
     // a bar that can be seen and grabbed, as in the grid, its handle always there
     super::grid::visible_scroll_bar(&mut child);
-    egui::ScrollArea::horizontal()
-        .id_salt("filmstrip")
-        .auto_shrink([false, false])
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-        .show_viewport(&mut child, |ui, vp| {
+    // a resized strip keeps the active photo where it was on screen (#1082)
+    let width_id = egui::Id::new("film-cell-width");
+    let last_w = child.data(|d| d.get_temp::<f32>(width_id));
+    child.data_mut(|d| d.insert_temp(width_id, cell_w));
+    let rescroll = match (last_w, app.film_scroll) {
+        (Some(old_w), Some(old_off)) if (old_w - cell_w).abs() > 0.01 && old_w > 0.0 => {
+            let at = active.and_then(|a| ids.iter().position(|id| *id == a));
+            Some(film_rescroll(old_off, old_w, cell_w, at))
+        }
+        _ => None,
+    };
+    let mut area = egui::ScrollArea::horizontal();
+    if let Some(off) = rescroll {
+        area = area.horizontal_scroll_offset(off);
+    }
+    area.id_salt("filmstrip").auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_viewport(
+        &mut child,
+        |ui, vp| {
             if wheel != egui::Vec2::ZERO {
                 ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
             }
@@ -6211,9 +6487,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         let br = Rect::from_min_size(fr.min + vec2(3.0, 3.0), vec2(g.size().x + 22.0, 15.0));
                         // like the grid's badge: a click expands / collapses the stack
                         let badge = ui.interact(br, egui::Id::new(("film-stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-                            "Stack — click to expand"
+                            "Stack (click to expand)"
                         } else {
-                            "Stack — click to collapse"
+                            "Stack (click to collapse)"
                         });
                         crate::widgets::announce(&badge, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
                         register(ui.ctx(), format!("filmstack:{}", id.0), br);
@@ -6241,6 +6517,9 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     } else if compare {
                         // ⌘/Ctrl- and Shift-clicks change the selection; the pair on screen stays (#187)
                         super::compare::select_with_modifier(app, *id, !m.command)
+                    } else if app.ui.view == crate::state::ViewMode::Survey && !m.command && !m.shift {
+                        // Survey: keep the surveyed group; a thumbnail outside it joins, one inside only becomes active
+                        app.run("library.select", json!({"ids": [id.0], "mode": "add"}))
                     } else {
                         // on the picture: the active photo changes, the set stays; on the frame: this photo alone
                         let on_picture = resp.interact_pointer_pos().is_none_or(|at| picture.contains(at));
@@ -6256,9 +6535,11 @@ pub(crate) fn filmstrip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let _ = app.run("map.reveal", json!({"force": true}));
                 }
                 // the same photo actions as the grid and loupe (Restore / Delete Permanently in Recently Deleted)
+                super::compare::activate_on_right_click(app, &resp, *id);
                 crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
             }
-        });
+        },
+    );
 }
 
 /// What a screen reader says for a filmstrip thumbnail: the file, and why there is no picture
@@ -6761,11 +7042,13 @@ mod tests {
             hdr_texels: None,
             superseded: None,
             latest: None,
+            kept: None,
             placement: None,
             settings: Default::default(),
             request: lcc_pipeline::RenderRequest {
                 max_w: 100,
                 max_h: 100,
+                exact_size: false,
                 quality: Default::default(),
                 apply_crop: false,
                 overlay: Default::default(),
@@ -7190,6 +7473,23 @@ mod mask_guide_tests {
         d.optics.distortion = 50.0;
         let frame = Frame::new(400, 300, &d, true);
         CanvasMap::new(&frame, Rect::from_min_size(pos2(100.0, 50.0), vec2(400.0, 300.0))).for_mask(true)
+    }
+
+    /// Brush and spot sizes are measured on the uncropped photo's long edge: on a photo cropped to
+    /// half its width the cursor is as large as the stroke the render paints (upstream #3958).
+    #[test]
+    fn a_brush_cursor_on_a_cropped_photo_is_the_size_the_render_paints() {
+        let size = 0.05f32;
+        let painted = |frame: &Frame, out_w: usize| size * frame.px_per_long(out_w) as f32 * 2.0;
+        let mut d = DevelopSettings::default();
+        d.crop.geometry.rect = lcc_geom::Rect::new(0.25, 0.0, 0.75, 1.0);
+        let cropped = Frame::new(400, 300, &d, true);
+        let m = CanvasMap::new(&cropped, Rect::from_min_size(pos2(10.0, 20.0), vec2(400.0, 600.0)));
+        let want = painted(&cropped, 200);
+        assert!((size * m.per_long() - want).abs() < 1e-3, "cursor {} vs painted {want}", size * m.per_long());
+        let full = Frame::new(400, 300, &DevelopSettings::default(), true);
+        let m = CanvasMap::new(&full, Rect::from_min_size(pos2(10.0, 20.0), vec2(800.0, 600.0)));
+        assert!((size * m.per_long() - painted(&full, 400)).abs() < 1e-3);
     }
 
     /// A linear gradient's guides on a warped photo follow its bands through the warp: every

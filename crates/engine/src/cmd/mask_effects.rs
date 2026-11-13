@@ -654,7 +654,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Mask Effect",
             [],
             None,
-            "{name, id? | ids?: [maskId] | all?: bool, photos?: \"selected\" (also the masks of the same names on the other selected photos, one undo step), remember?: bool (true: new masks of this kind start with it)} — sets the effect's sliders (all, or the ones it keeps; Amount only if it carries it) → {name, masks, photos, brush}",
+            "{name, id? | ids?: [maskId] | all?: bool, photos?: \"selected\" (also the masks of the same names on the other selected photos, one undo step), remember?: bool (true: new masks of this kind start with it)}: sets the effect's sliders (all, or the ones it keeps; Amount only if it carries it) → {name, masks, photos, brush}",
             has_active,
             apply_effect
         ),
@@ -663,7 +663,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Mask Effect",
             [],
             None,
-            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask, auto_range?}} — the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
+            "{name, id?, group?, fields?: \"all\" (default) | \"changed\" | [slider], amount?: bool (carry Amount), brush?: {size, feather, flow, density, auto_mask, auto_range?}}: the selected mask's sliders as an effect preset (replaces one of that name), saved with the library",
             has_active,
             save_effect
         ),
@@ -672,7 +672,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Mask Effect",
             [],
             None,
-            "{name, id?, fields?, amount?, brush?} — overwrite the effect with the selected mask's sliders (keeps its group, star and which sliders it carries unless given)",
+            "{name, id?, fields?, amount?, brush?}: overwrite the effect with the selected mask's sliders (keeps its group, star and which sliders it carries unless given)",
             has_active,
             update_effect
         ),
@@ -686,7 +686,7 @@ pub fn specs() -> Vec<CommandSpec> {
             always,
             duplicate_effect
         ),
-        cmd!("mask.deleteEffect", "Delete Mask Effect", [], None, "{name | names: [name]} — removes effect presets", always, delete_effect),
+        cmd!("mask.deleteEffect", "Delete Mask Effect", [], None, "{name | names: [name]}: removes effect presets", always, delete_effect),
         cmd!("mask.favoriteEffect", "Favorite Mask Effect", [], None, "{name | names, favorite?: bool (default: toggle)}", always, favorite_effect),
         cmd!("mask.setEffectGroup", "Move Mask Effect to Group", [], None, "{name | names, group: name (\"\" = none)}", always, set_group),
         cmd!(
@@ -703,7 +703,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Effect for New Masks",
             [],
             None,
-            "{tool: brush|linear|radial|subject|…, name?} — the effect new masks of that kind start with (no name: none)",
+            "{tool: brush|linear|radial|subject|…, name?}: the effect new masks of that kind start with (no name: none)",
             always,
             tool_effect
         ),
@@ -712,7 +712,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Mask Effects",
             [],
             None,
-            "{path | paths: [file or folder], group?, dryRun?} — Lightroom Classic local adjustment presets (.lrtemplate), Camera Raw local correction presets (.xmp), .lceffect files and .zip bundles of these; folders and Lightroom's divider presets (\"10 ----- DETAIL ----- 10\") become groups; same-named effects are replaced → {imported: [{name, group, file, unmapped}], dividers: [{name, group, file}], failed: [[file, error]]}",
+            "{path | paths: [file or folder], group?, dryRun?}: Lightroom Classic local adjustment presets (.lrtemplate), Camera Raw local correction presets (.xmp), .lceffect files and .zip bundles of these; folders and Lightroom's divider presets (\"10 ----- DETAIL ----- 10\") become groups; same-named effects are replaced → {imported: [{name, group, file, unmapped}], dividers: [{name, group, file}], failed: [[file, error]]}",
             always,
             files::import_effects
         ),
@@ -721,7 +721,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Mask Effects",
             [],
             None,
-            "{path, names?: [name], group?: name (default: all)} — writes an .lceffect JSON file (groups, stars and kept Lightroom settings included) → {path, count}",
+            "{path, names?: [name], group?: name (default: all)}: writes an .lceffect JSON file (groups, stars and kept Lightroom settings included) → {path, count}",
             always,
             files::export_effects
         ),
@@ -732,55 +732,42 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
 
-    /// Point Color samples saved with an effect stay in range and within the limit, whatever a
-    /// file says.
     #[test]
-    fn effect_point_colors_are_clamped_and_capped() {
-        let wild = PointColor { lum: f64::NAN, hue: -30.0, hue_shift: 500.0, range: f64::INFINITY, ..Default::default() };
-        let e = MaskEffect { name: "x".into(), point_colors: vec![wild; MAX_POINT_COLORS + 3], ..Default::default() }.normalized();
-        assert_eq!(e.point_colors.len(), MAX_POINT_COLORS);
-        let p = e.point_colors[0];
-        assert!(p.lum.is_finite() && p.range.is_finite() && (0.0..360.0).contains(&p.hue) && p.hue_shift <= 100.0);
-        assert!(!e.is_empty(), "an effect with only Point Color sets something");
-        let back: MaskEffect = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
-        assert_eq!(back.point_colors, e.point_colors, ".lceffect carries the samples");
-    }
-
-    #[test]
-    fn apply_keeps_amount_and_matches_ignore_it() {
-        let e = MaskEffect { name: "E".into(), adjust: LocalAdjustments { exposure: 1.0, ..Default::default() }, ..Default::default() };
-        let current = LocalAdjustments { shadows: 40.0, amount: 60.0, ..Default::default() };
-        let out = e.apply(&current);
-        assert_eq!((out.exposure, out.shadows, out.amount), (1.0, 0.0, 60.0));
-        assert!(e.matches(&out));
-        assert!(!e.matches(&current));
-    }
-
-    #[test]
-    fn partial_effects_leave_other_sliders_and_can_carry_amount() {
-        let e = MaskEffect {
-            name: "Lift".into(),
-            adjust: LocalAdjustments { shadows: 30.0, clarity: 99.0, amount: 70.0, ..Default::default() },
-            fields: vec!["shadows".into()],
-            with_amount: true,
-            ..Default::default()
-        };
-        let current = LocalAdjustments { exposure: 0.5, clarity: 10.0, ..Default::default() };
-        let out = e.apply(&current);
-        assert_eq!((out.exposure, out.shadows, out.clarity, out.amount), (0.5, 30.0, 10.0, 70.0));
-        assert!(e.matches(&out));
-        assert!(!e.matches(&LocalAdjustments { amount: 100.0, ..out }), "Amount counts when carried");
-    }
-
-    #[test]
-    fn hue_without_saturation_still_matches() {
-        let e = MaskEffect {
-            name: "E".into(),
-            adjust: LocalAdjustments { color_hue: 240.0, exposure: 0.25, ..Default::default() },
-            ..Default::default()
-        };
-        assert!(e.matches(&LocalAdjustments { exposure: 0.25, ..Default::default() }));
-        assert!(!e.matches(&LocalAdjustments { exposure: 0.25, color_sat: 10.0, ..Default::default() }));
+    fn apply_keeps_amount_partial_effects_leave_other_sliders_and_hue_alone_still_matches() {
+        // apply keeps amount and matches ignore it
+        {
+            let e = MaskEffect { name: "E".into(), adjust: LocalAdjustments { exposure: 1.0, ..Default::default() }, ..Default::default() };
+            let current = LocalAdjustments { shadows: 40.0, amount: 60.0, ..Default::default() };
+            let out = e.apply(&current);
+            assert_eq!((out.exposure, out.shadows, out.amount), (1.0, 0.0, 60.0));
+            assert!(e.matches(&out));
+            assert!(!e.matches(&current));
+        }
+        // partial effects leave other sliders and can carry amount
+        {
+            let e = MaskEffect {
+                name: "Lift".into(),
+                adjust: LocalAdjustments { shadows: 30.0, clarity: 99.0, amount: 70.0, ..Default::default() },
+                fields: vec!["shadows".into()],
+                with_amount: true,
+                ..Default::default()
+            };
+            let current = LocalAdjustments { exposure: 0.5, clarity: 10.0, ..Default::default() };
+            let out = e.apply(&current);
+            assert_eq!((out.exposure, out.shadows, out.clarity, out.amount), (0.5, 30.0, 10.0, 70.0));
+            assert!(e.matches(&out));
+            assert!(!e.matches(&LocalAdjustments { amount: 100.0, ..out }), "Amount counts when carried");
+        }
+        // hue without saturation still matches
+        {
+            let e = MaskEffect {
+                name: "E".into(),
+                adjust: LocalAdjustments { color_hue: 240.0, exposure: 0.25, ..Default::default() },
+                ..Default::default()
+            };
+            assert!(e.matches(&LocalAdjustments { exposure: 0.25, ..Default::default() }));
+            assert!(!e.matches(&LocalAdjustments { exposure: 0.25, color_sat: 10.0, ..Default::default() }));
+        }
     }
 
     #[test]
@@ -799,20 +786,35 @@ mod tests {
     }
 
     #[test]
-    fn normalized_clamps_and_tidies_fields() {
-        let e = MaskEffect {
-            name: "  X ".into(),
-            adjust: LocalAdjustments { exposure: 99.0, amount: 150.0, ..Default::default() },
-            fields: vec!["color_sat".into(), "bogus".into(), "exposure".into()],
-            brush: Some(BrushSettings { size: f64::NAN, flow: 0.0, ..Default::default() }),
-            ..Default::default()
+    fn normalized_clamps_tidies_fields_and_caps_point_colors() {
+        // normalized clamps and tidies fields
+        {
+            let e = MaskEffect {
+                name: "  X ".into(),
+                adjust: LocalAdjustments { exposure: 99.0, amount: 150.0, ..Default::default() },
+                fields: vec!["color_sat".into(), "bogus".into(), "exposure".into()],
+                brush: Some(BrushSettings { size: f64::NAN, flow: 0.0, ..Default::default() }),
+                ..Default::default()
+            }
+            .normalized();
+            assert_eq!(e.name, "X");
+            assert_eq!(e.adjust.exposure, 4.0);
+            assert_eq!(e.adjust.amount, 100.0, "Amount isn't carried");
+            assert_eq!(e.fields, vec!["exposure", "color_hue", "color_sat"]);
+            let b = e.brush.unwrap();
+            assert_eq!((b.size, b.flow), (0.04, 1.0));
         }
-        .normalized();
-        assert_eq!(e.name, "X");
-        assert_eq!(e.adjust.exposure, 4.0);
-        assert_eq!(e.adjust.amount, 100.0, "Amount isn't carried");
-        assert_eq!(e.fields, vec!["exposure", "color_hue", "color_sat"]);
-        let b = e.brush.unwrap();
-        assert_eq!((b.size, b.flow), (0.04, 1.0));
+        // Point Color samples saved with an effect stay in range and within the limit, whatever a
+        // file says.
+        {
+            let wild = PointColor { lum: f64::NAN, hue: -30.0, hue_shift: 500.0, range: f64::INFINITY, ..Default::default() };
+            let e = MaskEffect { name: "x".into(), point_colors: vec![wild; MAX_POINT_COLORS + 3], ..Default::default() }.normalized();
+            assert_eq!(e.point_colors.len(), MAX_POINT_COLORS);
+            let p = e.point_colors[0];
+            assert!(p.lum.is_finite() && p.range.is_finite() && (0.0..360.0).contains(&p.hue) && p.hue_shift <= 100.0);
+            assert!(!e.is_empty(), "an effect with only Point Color sets something");
+            let back: MaskEffect = serde_json::from_value(serde_json::to_value(&e).unwrap()).unwrap();
+            assert_eq!(back.point_colors, e.point_colors, ".lceffect carries the samples");
+        }
     }
 }

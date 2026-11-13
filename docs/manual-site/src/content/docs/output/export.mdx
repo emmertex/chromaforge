@@ -1,0 +1,33 @@
+---
+title: Export
+description: "The Export sheet: sections, shortcuts and where each setting lives."
+sidebar:
+  order: 1
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **File ▸ Export…** (⇧⌘E), the **Export** button in the module bar. It exports the selected photos (or the open one).
+- The preview of a single photo shows the loupe's own render (the thumbnail stands in until it arrives). Entering Export from Develop selects the photo on screen.
+- One encoder serves the app, CLI, MCP and the web build; the file matches the preview at any size.
+- Sections, in order, each folds and shows a one-line summary:
+  - **Export Location**: [folder, subfolder, conflicts](../export-location/)
+  - **File Naming**: [templates and tokens](../export-location/)
+  - **File Settings**: [format, quality, colour space, HDR](../export-formats/)
+  - **Image Sizing**: [dimensions, resolution](../export-size-sharpen/)
+  - **Output Sharpening**: [screen, matte, glossy](../export-size-sharpen/)
+  - **Metadata**: [what travels with the file](../export-metadata-watermark/)
+  - **Watermarking**: [text or graphic](../export-metadata-watermark/)
+  - **Post-Processing / After Export**: [Apple Photos](../export-formats/#after-export)
+- The left column has the section jump list and the [preset column](../export-presets/).
+- The bottom line summarises the result, for example "JPEG (90%) / sRGB / 8-bit · Long Edge 2048 px".
+- **Ask / Folder / Next to Originals** (top right) switches the destination quickly.
+- Export runs in the background and shows in the activity stack; ✕ cancels it.
+
+<Shot name="export-dialog" alt="The Export sheet with every section" />
+
+<Aside type="note" title="Modern layout">
+  **☰ ▸ Shortcuts ▸ Export…**, or **File ▸ Export…** (⇧⌘E); the sheet is the same in every layout.
+</Aside>

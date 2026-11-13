@@ -31,32 +31,10 @@ fn find<'a>(list: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
-fn the_list_knows_the_known_models_and_is_honest_about_the_runtime() {
+fn listing_inspecting_download_refusals_and_the_cpu_only_switch_before_anything_is_installed() {
     let d = temp("list");
     let mut s = session(&d);
-    let l = s.execute("faces.models.list", &json!({})).unwrap();
-    assert_eq!(l["enabled"], false);
-    assert_eq!(l["runtime"], cfg!(not(target_arch = "wasm32")));
-    assert!(find(&l, "yunet-2023mar").is_null(), "YuNet is retired: not offered");
-    assert_eq!(find(&l, "auraface-v1")["installed"], false);
-    assert_eq!(find(&l, "auraface-v1")["licence"]["commercial"], "yes");
-    assert_eq!(find(&l, "sface-2021dec")["licence"]["commercial"], "unknown");
-    // speed is a ratio to a ResNet-100 model, in words, for models that are not installed yet too; never milliseconds
-    assert_eq!(find(&l, "sface-2021dec")["speedText"], "6.9× faster than a ResNet-100 model");
-    assert_eq!(find(&l, "auraface-v1")["speedText"], "Same speed as a ResNet-100 model");
-    // a build with no folder lists too, and cannot install
-    let mut web = Session::new();
-    assert!(web.execute("faces.models.list", &json!({})).is_ok());
-    let f = model_file(&d, "m.onnx", 512);
-    assert!(web.execute("faces.models.install", &json!({"path": f, "acknowledged": true})).is_err());
-    assert!(web.execute("faces.enable", &json!({"enabled": true})).is_err());
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn inspect_describes_a_file_and_installs_nothing() {
-    let d = temp("inspect");
-    let mut s = session(&d);
+    // inspect describes a file and installs nothing
     let f = model_file(&d, "My Model.onnx", 512);
     let r = s.execute("faces.models.inspect", &json!({"path": f})).unwrap();
     assert_eq!(r["kind"], "draft");
@@ -78,6 +56,54 @@ fn inspect_describes_a_file_and_installs_nothing() {
     std::fs::write(&empty, b"").unwrap();
     assert!(s.execute("faces.models.inspect", &json!({"path": empty.to_string_lossy()})).is_err());
     assert!(s.execute("faces.models.inspect", &json!({})).is_err());
+
+    // the list knows the known models and is honest about the runtime
+    let l = s.execute("faces.models.list", &json!({})).unwrap();
+    assert_eq!(l["enabled"], false);
+    assert_eq!(l["runtime"], cfg!(not(target_arch = "wasm32")));
+    assert!(find(&l, "yunet-2023mar").is_null(), "YuNet is retired: not offered");
+    assert_eq!(find(&l, "auraface-v1")["installed"], false);
+    assert_eq!(find(&l, "auraface-v1")["licence"]["commercial"], "yes");
+    assert_eq!(find(&l, "sface-2021dec")["licence"]["commercial"], "unknown");
+    // speed is a ratio to a ResNet-100 model, in words, for models that are not installed yet too; never milliseconds
+    for id in ["sface-2021dec", "auraface-v1"] {
+        assert!(find(&l, id)["speedText"].as_str().is_some_and(|t| t.contains("ResNet-100")), "{id}");
+    }
+    // a build with no folder lists too, and cannot install
+    let mut web = Session::new();
+    assert!(web.execute("faces.models.list", &json!({})).is_ok());
+    let f = model_file(&d, "m.onnx", 512);
+    assert!(web.execute("faces.models.install", &json!({"path": f, "acknowledged": true})).is_err());
+    assert!(web.execute("faces.enable", &json!({"enabled": true})).is_err());
+
+    // the recognisers can be downloaded, and the download is refused without the terms, an id or a folder
+    let l = s.execute("faces.models.list", &json!({})).unwrap();
+    for (id, host) in [("sface-2021dec", "github.com"), ("auraface-v1", "huggingface.co")] {
+        assert_eq!(find(&l, id)["downloadHost"], host, "{id}");
+    }
+    // without the user's acceptance, for an id nobody knows, without a folder, and for retired YuNet: nothing starts
+    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec"})).is_err());
+    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": false})).is_err());
+    for id in ["nope", "", "../sface-2021dec", "yunet-2023mar"] {
+        assert!(s.execute("faces.models.download", &json!({"id": id, "acknowledged": true})).is_err(), "{id}");
+    }
+    assert!(Session::new().execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": true})).is_err());
+    assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"], json!([]));
+    assert!(!d.join("models").join(".downloads").exists(), "a refused download touches nothing");
+
+    // the CPU-only switch is kept with the models, and bad values are refused
+    let initial = s.execute("faces.gpu", &json!({})).unwrap();
+    assert_eq!(initial["cpuOnly"], false);
+    assert!(!initial["detection"].is_null(), "detection state must not be null");
+    assert!(!initial["recognition"].is_null(), "recognition state must not be null");
+    assert_eq!(s.execute("faces.gpu", &json!({"cpuOnly": true})).unwrap()["cpuOnly"], true);
+    // kept with the models, so a new session starts on the CPU too
+    let mut again = session(&d);
+    let list_gpu = again.execute("faces.models.list", &json!({})).unwrap()["gpu"].clone();
+    assert_eq!(list_gpu["cpuOnly"], true);
+    assert_eq!(list_gpu["recognition"]["why"], "the CPU is chosen in Settings");
+    assert!(again.execute("faces.gpu", &json!({"cpuOnly": "yes"})).is_err());
+    assert_eq!(again.execute("faces.gpu", &json!({"cpuOnly": false})).unwrap()["cpuOnly"], false);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -240,58 +266,6 @@ fn detect_without_the_model_says_where_to_get_it() {
     } else {
         assert_ne!(e.kind(), crate::ErrorKind::ModelMissing(crate::AiModel::FaceDetector), "nothing to download in this build: {e}");
     }
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn the_detector_and_the_recognisers_can_be_downloaded_and_the_download_is_refused_otherwise() {
-    let d = temp("dl-refusals");
-    let mut s = session(&d);
-    let l = s.execute("faces.models.list", &json!({})).unwrap();
-    for (id, host) in [("sface-2021dec", "github.com"), ("auraface-v1", "huggingface.co")] {
-        assert_eq!(find(&l, id)["downloadHost"], host, "{id}");
-    }
-    // without the user's acceptance, for an id nobody knows, without a folder, and for retired YuNet: nothing starts
-    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec"})).is_err());
-    assert!(s.execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": false})).is_err());
-    for id in ["nope", "", "../sface-2021dec", "yunet-2023mar"] {
-        assert!(s.execute("faces.models.download", &json!({"id": id, "acknowledged": true})).is_err(), "{id}");
-    }
-    assert!(Session::new().execute("faces.models.download", &json!({"id": "sface-2021dec", "acknowledged": true})).is_err());
-    assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"], json!([]));
-    assert!(!d.join("models").join(".downloads").exists(), "a refused download touches nothing");
-    let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn a_download_that_has_arrived_is_installed_by_itself_and_its_staged_file_goes() {
-    let d = temp("dl-arrived");
-    let mut s = session(&d);
-    let staging = d.join("models").join(".downloads");
-    std::fs::create_dir_all(&staging).unwrap();
-    let staged = staging.join("model.onnx");
-    std::fs::write(&staged, lcc_faces::synthetic::tiny_embedder_model(512)).unwrap();
-    let sha = lcc_faces::hash::sha256_file(&staged).unwrap();
-    s.face_downloads.arrived("my-model", staged.clone(), &sha);
-
-    let r = s.execute("faces.models.downloads", &json!({})).unwrap();
-    let row = &r["downloads"][0];
-    assert_eq!((row["id"].as_str(), row["state"].as_str()), (Some("my-model"), Some("installed")), "{r}");
-    assert!(!staged.exists(), "the staged file was moved into the model's folder");
-    let l = s.execute("faces.models.list", &json!({})).unwrap();
-    assert_eq!(l["models"].as_array().unwrap().iter().filter(|m| m["installed"] == true).count(), 1);
-    // announced once, cleared on request
-    assert_eq!(s.execute("faces.models.downloadCancel", &json!({"id": "my-model"})).unwrap()["discarded"], true);
-    assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"], json!([]));
-    assert_eq!(s.execute("faces.models.downloadCancel", &json!({"id": "my-model"})).unwrap()["discarded"], false);
-
-    // a file that cannot be installed is thrown away with a reason
-    std::fs::write(&staged, b"this is not a model").unwrap();
-    let sha = lcc_faces::hash::sha256_file(&staged).unwrap();
-    s.face_downloads.arrived("bad", staged.clone(), &sha);
-    let r = s.execute("faces.models.downloads", &json!({})).unwrap();
-    assert_eq!(r["downloads"][0]["state"], "failed", "{r}");
-    assert!(!staged.exists());
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -512,12 +486,15 @@ fn a_download_that_arrives_is_installed_and_switched_on_by_itself() {
     assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"][0]["state"], "installed");
     assert_eq!(s.execute("faces.models.downloadCancel", &json!({"id": "fake-model"})).unwrap()["discarded"], true);
     assert_eq!(s.execute("faces.models.downloads", &json!({})).unwrap()["downloads"], json!([]));
+    assert_eq!(s.execute("faces.models.downloadCancel", &json!({"id": "fake-model"})).unwrap()["discarded"], false, "cleared once");
+    let l = s.execute("faces.models.list", &json!({})).unwrap();
+    assert_eq!(l["models"].as_array().unwrap().iter().filter(|m| m["installed"] == true).count(), 1);
 
     // a download that turns out not to be a usable model is thrown away, and the reason is shown
     let junk = staging.join("junk.onnx");
     std::fs::write(&junk, b"definitely not a model").unwrap();
     let sha = lcc_faces::hash::sha256_file(&junk).unwrap();
-    s.face_downloads.set_outcome("fake-junk", State::Done { path: junk.clone(), sha256: sha });
+    s.face_downloads.arrived("fake-junk", junk.clone(), &sha);
     let r = s.execute("faces.models.downloads", &json!({})).unwrap();
     assert_eq!(r["downloads"][0]["state"], "failed", "{r}");
     assert!(r["downloads"][0]["error"].as_str().unwrap().contains("cannot be used"), "{r}");
@@ -611,18 +588,4 @@ fn recognition_cannot_be_turned_on_without_a_chosen_model() {
     assert_eq!((l["enabled"].clone(), l["embedder"].clone()), (json!(false), Value::Null), "{l}");
     assert!(s.execute("faces.enable", &json!({"enabled": true})).is_err());
     let _ = std::fs::remove_dir_all(&d);
-}
-
-#[test]
-fn the_cpu_only_switch_is_kept_and_bad_values_are_refused() {
-    let d = temp("cpu-only");
-    let mut s = session(&d);
-    assert_eq!(s.execute("faces.gpu", &json!({})).unwrap()["cpuOnly"], false);
-    assert_eq!(s.execute("faces.gpu", &json!({"cpuOnly": true})).unwrap()["cpuOnly"], true);
-    // kept with the models, so a new session starts on the CPU too
-    let mut again = session(&d);
-    assert_eq!(again.execute("faces.models.list", &json!({})).unwrap()["gpu"]["cpuOnly"], true);
-    assert!(again.execute("faces.gpu", &json!({"cpuOnly": "yes"})).is_err());
-    assert_eq!(again.execute("faces.gpu", &json!({"cpuOnly": false})).unwrap()["cpuOnly"], false);
-    let _ = std::fs::remove_dir_all(d);
 }

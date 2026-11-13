@@ -443,7 +443,7 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
     let chips = lcc_engine::filter_chips(&app.session.filter, &app.session.catalog);
     let total = app.session.source_total();
     let counted = super::chips::count_text(ids.len(), total, !chips.is_empty());
-    let cnt = if sel_n > 1 { crate::i18n::tr_format!("{sel_n} selected · {counted}", counted = counted, sel_n = sel_n) } else { counted };
+    let cnt = if sel_n > 0 { crate::i18n::tr_format!("{sel_n} selected · {counted}", counted = counted, sel_n = sel_n) } else { counted };
     match app.session.browse.clone().filter(|_| app.session.source == lcc_engine::LibrarySource::Folder) {
         Some(b) => {
             let local = app.caches.grid.local(&app.session.catalog, &ids, generation);
@@ -453,7 +453,11 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
             let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
             ui.painter().rect_filled(hr, 0.0, t.canvas);
             let full = crate::i18n::source_title(&app.session);
-            let mut count_w = ui.painter().layout_no_wrap(cnt.clone(), t.font(12.5), t.text_dim).size().x;
+            // a count wider than all but the title's ellipsis (a narrow centre pane) is cut, as a Local folder's is,
+            // and reads in full on hover
+            let mut bw_taken = 0.0f32;
+            let mut count_w =
+                ui.painter().layout_no_wrap(cnt.clone(), t.font(12.5), t.text_dim).size().x.ceil().min((hr.width() - 96.0).max(0.0).floor());
             // Recently Deleted: an Empty button left of the count (it asks first)
             if app.session.source == lcc_engine::LibrarySource::RecentlyDeleted && !ids.is_empty() {
                 let label = crate::i18n::tr("Empty Recently Deleted");
@@ -464,13 +468,24 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
                     let _ = crate::menubar::run_item(app, "library.emptyRecentlyDeleted", serde_json::json!({}));
                 }
                 count_w += bw + 10.0;
+                bw_taken = bw + 10.0;
             }
             // the title gives way to the count: a long album or folder name is trimmed, in full on hover
             let room = (hr.width() - 20.0 - count_w - 36.0).max(0.0);
             let font = t.semibold(17.0);
             let title = crate::widgets::elide_head(&full, room, |s| ui.painter().layout_no_wrap(s.to_string(), font.clone(), t.text).size().x);
             let title_rect = ui.painter().text(pos2(hr.left() + 20.0, hr.center().y), Align2::LEFT_CENTER, &title, font, t.text);
-            let count_rect = ui.painter().text(pos2(hr.right() - 20.0, hr.center().y), Align2::RIGHT_CENTER, cnt, t.font(12.5), t.text_dim);
+            let count_x = hr.right() - 20.0;
+            let count_box = Rect::from_min_max(pos2(count_x - (count_w - bw_taken).max(0.0), hr.top()), pos2(count_x, hr.bottom()));
+            let label =
+                egui::Label::new(egui::RichText::new(cnt.as_str()).font(t.font(12.5)).color(t.text_dim)).truncate().show_tooltip_when_elided(false);
+            let count = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(count_box).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+                    ui.add(label)
+                })
+                .inner;
+            let count_rect = count.rect;
+            count.on_hover_text(cnt.as_str());
             crate::widgets::register(ui.ctx(), "grid:title", title_rect);
             crate::widgets::register(ui.ctx(), "grid:count", count_rect);
             if title != full {
@@ -565,6 +580,9 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
     register(ui.ctx(), "gridArea", scroll_rect);
     crate::widgets::register(ui.ctx(), "grid:scroll", scroll_rect);
     let wheel = wheel_step(ui, egui::Id::new("grid-wheel"), scroll_rect, scroll_rect.height(), false, app.ui.settings.wheel_scroll_speed);
+    // (one notch is `step` points of wheel, positive = up; Scroll By Row counts notches, not points)
+    let by_row = app.ui.settings.scroll_by_row;
+    let step = (scroll_rect.height() * crate::theme::WHEEL_STRIP_SHARE * app.ui.settings.wheel_scroll_speed.clamp(0.25, 3.0)).max(1.0);
     // keep a photo where it is on screen when the layout reflows (a side panel or the window
     // resized, the thumbnail size or the filter changed): the pixel offset alone would land elsewhere
     let anchor_id = egui::Id::new("grid-anchor");
@@ -594,6 +612,11 @@ fn show_inner(app: &mut LccApp, ui: &mut egui::Ui) {
             }
         });
         if wheel != egui::Vec2::ZERO {
+            // Scroll By Row: the notches become whole rows, ending on a row's top
+            let wheel = match (by_row, crate::view_state::row_scroll(&lay.rows, viewport.top(), -wheel.y / step)) {
+                (true, Some(to)) => egui::vec2(0.0, viewport.top() - to),
+                _ => wheel,
+            };
             ui.scroll_with_delta_animation(wheel, egui::style::ScrollAnimation::none());
         }
         let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), total_h), Sense::hover());
@@ -945,6 +968,7 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
     }
     // never less than the photo has or is getting: a smaller ask (the filmstrip beside a larger view) moving the
     // job up would otherwise swap it for a smaller one, and the larger view swap it back
+    retry_found_original(app, id);
     let size = app.session.catalog.photo(id).and_then(|p| app.renderer.thumb_bucket_kept(p)).map_or(size, |kept| kept.max(size));
     let bucket = lcc_engine::media::thumb_bucket(size);
     if let Some(photo) = app.session.catalog.photo(id)
@@ -997,6 +1021,24 @@ pub fn request_thumb(app: &mut LccApp, id: PhotoId, size: usize, priority: u32) 
             }
         }
         None => app.renderer.request(Slot::Thumb(id), job, priority),
+    }
+}
+
+/// A cell that shows photo `id`'s kept thumbnail ([`lcc_engine::media::QuickSource::Kept`]) or a failure asks
+/// whether its original is there (a cached answer, checked off the UI thread), and asks for its thumbnail again
+/// once the original is back: a drive mounted while the app runs ([`crate::render::Renderer::retry_found_original`]).
+/// Other cells ask nothing.
+fn retry_found_original(app: &mut LccApp, id: PhotoId) {
+    let kept = app.renderer.thumb(id).is_some_and(|t| t.quick == Some(lcc_engine::media::QuickSource::Kept));
+    if !kept && app.renderer.thumb_failure(id).is_none() {
+        return;
+    }
+    let Some(lcc_catalog::Source::File { path }) = app.session.catalog.photo(id).map(|p| &p.source) else { return };
+    let availability = &app.session.media.availability;
+    match availability.exists(path) {
+        Some(false) => app.renderer.note_missing_original(id),
+        Some(true) => app.renderer.retry_found_original(id, kept, availability.gone_generation()),
+        None => {}
     }
 }
 
@@ -1234,7 +1276,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
     } else if square && app.ui.show_filenames {
         let m = &photo.meta;
         let name = match app.ui.grid_info.as_str() {
-            "exposure" => exposure_line(m).unwrap_or_else(|| "—".to_string()),
+            "exposure" => exposure_line(m).unwrap_or_default(),
             "date" => photo.captured.as_deref().map(crate::i18n::display_time).unwrap_or_else(|| crate::i18n::tr("No date").into()),
             _ => photo.file_name.rsplit_once('.').map(|(n, _)| n.to_string()).unwrap_or(photo.file_name.clone()),
         };
@@ -1296,6 +1338,10 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
             paint(p, Rect::from_min_size(pos2(right - 20.0, bar.center().y - 7.0), vec2(14.0, 14.0)), Icon::Sliders, t.text_label);
             right -= 20.0;
         }
+        if photo.exported.is_some() {
+            paint(p, Rect::from_min_size(pos2(right - 20.0, bar.center().y - 7.0), vec2(14.0, 14.0)), Icon::Share, t.text_label);
+            right -= 20.0;
+        }
         if let Some(l) = photo.label {
             p.circle(pos2(right - 12.0, bar.center().y), 5.0, label_color(l), Stroke::new(1.0, Color32::from_black_alpha(120)));
         }
@@ -1328,7 +1374,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         p.galley(pos2(br.left() + 17.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
         register(ui.ctx(), format!("badge:previewOnly:{}", id.0), br);
         ui.interact(br, egui::Id::new(("preview-only-badge", id.0)), Sense::hover())
-            .on_hover_text(crate::i18n::tr_format!("Preview only — {}", crate::widgets::preview_only_explanation(why)));
+            .on_hover_text(crate::i18n::tr_format!("Preview only: {}", crate::widgets::preview_only_explanation(why)));
     }
     #[cfg(not(target_arch = "wasm32"))]
     super::connections::grid_badge(app, ui, id, img_rect);
@@ -1501,6 +1547,12 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
         let s = (h * 0.5).round();
         let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
         paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Sliders, colour);
+        right -= s + 4.0;
+    }
+    if photo.exported.is_some() {
+        let s = (h * 0.5).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Share, colour);
     }
 }
 
@@ -1718,7 +1770,7 @@ pub fn local_only(app: &LccApp, ids: &[PhotoId]) -> bool {
 
 /// Why an album action is off for Local photos.
 pub fn albums_hint() -> String {
-    crate::i18n::tr("Albums hold library photos: Add to My Photos first").to_string()
+    crate::i18n::tr("Albums hold catalog photos: Add to My Photos first").to_string()
 }
 
 /// Tell the user when an album command skipped Local photos of the selection (`skipped` in its
@@ -1728,7 +1780,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
         app.toast(
             ctx,
             crate::i18n::tr_format!(
-                "{n} Local photo{} skipped: collections hold library photos (Add to My Photos first)",
+                "{n} Local photo{} skipped: collections hold catalog photos (Add to My Photos first)",
                 if n == 1 { "" } else { "s" },
                 n = n
             ),
@@ -1740,9 +1792,7 @@ pub fn toast_skipped(app: &mut LccApp, ctx: &egui::Context, r: &serde_json::Valu
 pub fn label_menu(app: &mut LccApp, ui: &mut egui::Ui) {
     let current = app.session.active().and_then(|id| app.session.catalog.photo(id)).and_then(|p| p.label);
     if let Some(l) = label_items(app, ui, current, "photoLabel") {
-        let mut params = json!({"label": label_param(l)});
-        crate::panels::compare::target_active(app, &mut params);
-        let _ = app.run("photo.label", params);
+        let _ = crate::menubar::run_item(app, "photo.label", json!({"label": label_param(l)}));
         ui.close();
     }
 }
@@ -1794,9 +1844,9 @@ pub fn stack_badge(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, sid: lcc_ca
     let origin = if square { r.min + vec2(10.0, 26.0) } else { r.min + vec2(5.0, 5.0) };
     let br = Rect::from_min_size(origin, vec2(g.size().x + 30.0, 20.0));
     let resp = ui.interact(br, egui::Id::new(("stack-badge", id.0)), Sense::click()).on_hover_text(if collapsed {
-        "Stack — click to expand (S)"
+        "Stack: click to expand (S)"
     } else {
-        "Stack — click to collapse (S)"
+        "Stack: click to collapse (S)"
     });
     crate::widgets::announce(&resp, crate::i18n::tr(if collapsed { "Expand Stack" } else { "Collapse Stack" }));
     register(ui.ctx(), format!("stack:{}", id.0), br);
@@ -1862,14 +1912,14 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Flag"), |ui| {
         for (l, f) in [("Pick", "pick"), ("Reject", "reject"), ("Unflagged", "none")] {
             if ui.button(crate::i18n::tr(l)).clicked() {
-                let _ = app.run("photo.flag", json!({"flag": f}));
+                let _ = crate::menubar::run_item(app, "photo.flag", json!({"flag": f}));
             }
         }
     });
     crate::widgets::menu_button(ui, crate::i18n::tr("Set Rating"), |ui| {
         for r in 0..=5 {
             if ui.button(if r == 0 { crate::i18n::tr("No Stars").to_string() } else { "★".repeat(r) }).clicked() {
-                let _ = app.run("photo.rate", json!({"rating": r}));
+                let _ = crate::menubar::run_item(app, "photo.rate", json!({"rating": r}));
             }
         }
     });

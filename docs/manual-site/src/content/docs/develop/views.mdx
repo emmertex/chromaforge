@@ -1,0 +1,35 @@
+---
+title: Views, histogram and zoom
+description: Before and after, navigator, zoom, histogram and scopes, clipping, soft proof.
+sidebar:
+  order: 14
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="before-after" alt="Split before and after view of the sky edit" />
+
+- **Show Before** (Backslash): the photo without its edit while held. It and the **Original Photo** box are momentary view modes and are not saved with the photo. On the Touch layout, holding the Before button shows the original until the finger lifts.
+- **Before / After** (`Y`): four layouts: side by side, split, top and bottom, split top and bottom (**View ▸ Before/After**). **Before** can be the import state, a history step, a version or the current settings; **copy After to Before** and **swap**.
+
+<Shot name="before-after-side" alt="Before and after side by side" menu="View ▸ Before/After" />
+
+- **Navigator**: small map at the top of the left panel; click or drag to pan. Fit, Fill, 1:1 and 3:1 buttons.
+- **Zoom**: `⌘0` fit, click to 1:1, **View ▸ Zoom**. Zoom works while cropping. Compare (`⇧C`) and Survey: [Browse](../../library/browse/).
+- **Camera focus point** overlay: zoom to where the camera focused (beyond Lightroom). Partial.
+- **Info overlay**: **View ▸ Loupe Info**. **Show Clipping** (`J`): blue shadows, red highlights. The histogram's clipping triangles preview the clipped areas once the pointer rests on one for about 0.3 s.
+
+<Shot name="scopes" alt="The histogram panel showing an RGB parade" menu="Window ▸ Panels ▸ Histogram" />
+
+- **Histogram** modes: RGB, Luminance, Separated, Chroma; scopes **Vectorscope**, **Waveform**, **RGB Parade**; linear or log scale. Colour readout in RGB, HSL or Lab.
+- **Drag on the histogram** to change Blacks, Shadows, Exposure, Highlights, Whites.
+- **Soft Proofing** (`S`): preview the output colour space or a CMYK/ICC profile with intent and paper-and-ink simulation. <NeedsImage what="the loupe with soft proofing on and its destination-gamut warning" />
+- **Second window** (**Window ▸ Second Window**) shows the photo on another display.
+- **High quality adjustment previews**: **Settings ▸ Performance**. Keeps the preview at full quality while a slider is dragged. Off by default.
+- **GPU**: **Settings ▸ Performance** turns the GPU on or off and sets preview size; a crash building the GPU device turns it off.
+
+<Aside type="note" title="Modern layout">
+  Before/After, zoom and scopes: **View** menu. The histogram is the small card at the top right.
+</Aside>

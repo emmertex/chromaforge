@@ -109,6 +109,10 @@ pub struct BookUi {
     pub type_target: TypeTarget,
     /// The name typed in the Saved Books box.
     pub save_name: String,
+    /// View ▸ Show Header Bar: a strip over the pages naming the book and its page count.
+    pub header_bar: bool,
+    /// View ▸ Show Info Overlay: size, type, page count and current page in a corner box.
+    pub info_overlay: bool,
     /// The saved creation (catalog collection) this book was saved to or opened from.
     pub creation: Option<u64>,
     /// The text cursor in the last focused text box (which text, character index), for the
@@ -120,6 +124,40 @@ pub struct BookUi {
     pub undo: Vec<Book>,
     #[serde(skip)]
     pub redo: Vec<Book>,
+}
+
+/// Book ▸ Book Preferences…: what `book.new` starts a book with (kept in `ui.json`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BookPrefs {
+    /// New photo cells zoom to fill the cell (true) or fit the whole photo (false).
+    pub zoom_to_fill: bool,
+    /// A new book is laid out at once with the selected photos (else it starts empty).
+    pub autofill: bool,
+    /// Empty text cells show placeholder text in the editor.
+    pub filler_text: bool,
+    /// The caption safe area (the text-safe margin from the trim) is drawn.
+    pub caption_safe_area: bool,
+}
+
+impl Default for BookPrefs {
+    fn default() -> Self {
+        BookPrefs { zoom_to_fill: true, autofill: false, filler_text: true, caption_safe_area: true }
+    }
+}
+
+impl BookPrefs {
+    /// Applies the preferences to a freshly started book (its photo cells and guides).
+    fn apply(self, book: &mut Book) {
+        book.guides.filler_text = self.filler_text;
+        book.guides.text_safe = self.caption_safe_area;
+        let pages = [&mut book.front, &mut book.back].into_iter().chain(book.pages.iter_mut());
+        for cell in pages.flat_map(|p| p.cells.iter_mut()) {
+            if let CellContent::Photo { fill, .. } = &mut cell.content {
+                *fill = self.zoom_to_fill;
+            }
+        }
+    }
 }
 
 /// Most book edits kept for undo.
@@ -136,6 +174,8 @@ impl Default for BookUi {
             thumb: 150.0,
             type_target: TypeTarget::Cell,
             save_name: String::new(),
+            header_bar: false,
+            info_overlay: false,
             creation: None,
             kern_caret: None,
             undo: Vec::new(),
@@ -234,13 +274,37 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             st.view = BookView::ALL.into_iter().find(|v| v.key().eq_ignore_ascii_case(m)).ok_or_else(|| format!("unknown view: {m}"))?;
             Ok(json!({"view": st.view}))
         }
+        "book.headerBar" | "book.infoOverlay" => {
+            let flag = if id == "book.headerBar" { &mut st.header_bar } else { &mut st.info_overlay };
+            *flag = p.get("on").and_then(Value::as_bool).unwrap_or(!*flag);
+            Ok(json!({"headerBar": st.header_bar, "infoOverlay": st.info_overlay}))
+        }
         "book.go" => {
-            let v = p.get("page").ok_or("missing page")?;
-            let r = PageRef::parse(v).ok_or_else(|| format!("invalid page: {v}"))?;
+            // {page} or {delta}: that many pages on from the current one, stopping at the book's ends
+            let r = match (p.get("page"), p.get("delta").and_then(Value::as_i64)) {
+                (Some(v), _) => PageRef::parse(v).ok_or_else(|| format!("invalid page: {v}"))?,
+                (None, Some(d)) => {
+                    let all = st.book.all_pages();
+                    let at = all.iter().position(|r| *r == st.current).unwrap_or(0);
+                    let last = i64::try_from(all.len()).unwrap_or(1).saturating_sub(1);
+                    let to = i64::try_from(at).unwrap_or(0).saturating_add(d).clamp(0, last.max(0));
+                    usize::try_from(to).ok().and_then(|i| all.get(i).copied()).ok_or("the book has no pages")?
+                }
+                (None, None) => return Err("missing page (or delta)".into()),
+            };
             st.book.page(r).ok_or_else(|| format!("no {}", r.label()))?;
             st.current = r;
             st.cell = None;
             Ok(json!({"page": page_json(r)}))
+        }
+        "book.toggleGuides" => {
+            let show = !st.book.guides.show;
+            run_op(app, "book.guides", &json!({"show": show}))
+        }
+        "book.refreshCaptions" => {
+            // captions built from photo metadata are drawn from cached text textures: drop them so the next frame re-reads
+            let n = with_text(|c| std::mem::take(&mut c.tex).len());
+            Ok(json!({"cleared": n}))
         }
         "book.select" => {
             if let Some(v) = p.get("page") {
@@ -273,6 +337,27 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         }
         "book.exportStatus" => Ok(serde_json::to_value(with_status(|s| s.clone())).unwrap_or(Value::Null)),
         "book.save" | "book.open" | "book.saved" | "book.deleteSaved" => saved(app, id, p),
+        // {zoomToFill?, autofill?, fillerText?, captionSafeArea?}: Book Preferences (what book.new starts with)
+        "book.preferences" => {
+            let prefs = &mut app.ui.book_prefs;
+            let flag = |k: &str, cur: bool| p.get(k).and_then(Value::as_bool).unwrap_or(cur);
+            prefs.zoom_to_fill = flag("zoomToFill", prefs.zoom_to_fill);
+            prefs.autofill = flag("autofill", prefs.autofill);
+            prefs.filler_text = flag("fillerText", prefs.filler_text);
+            prefs.caption_safe_area = flag("captionSafeArea", prefs.caption_safe_area);
+            Ok(serde_json::to_value(*prefs).unwrap_or(Value::Null))
+        }
+        // a new book starts as the preferences say
+        "book.new" => {
+            let prefs = app.ui.book_prefs;
+            let r = run_op(app, id, p)?;
+            // (nothing to lay out without photos: the book stays as it started)
+            if prefs.autofill && !app.session.visible_cloned().is_empty() {
+                run(app, "book.autoLayout", &json!({}))?;
+            }
+            prefs.apply(&mut app.ui.book.book);
+            Ok(r)
+        }
         "book.autoLayout" if p.get("photos").is_none() => {
             let mut ids = app.session.selected();
             if ids.len() < 2 {
@@ -1095,18 +1180,68 @@ fn center(ui: &mut egui::Ui, app: &mut LccApp) {
         area.max.y = film.top();
         filmstrip(ui, app, film);
     }
-    if app.ui.right_edge {
+    if crate::module::module_edge(app, Edge::Right) {
         let right = crate::panels::split_side(ui, &mut area, false, "book:right", &mut app.ui.right_width, crate::state::RIGHT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(right), |ui| right_panels(ui, app, right));
     }
-    if app.ui.left_panel {
+    if crate::module::module_edge(app, Edge::Left) {
         let left = crate::panels::split_side(ui, &mut area, true, "book:left", &mut app.ui.left_width, crate::state::LEFT_WIDTH);
         ui.scope_builder(UiBuilder::new().max_rect(left), |ui| left_panels(ui, app, left));
     }
     let bar = Rect::from_min_max(pos2(area.left(), area.bottom() - 34.0), area.max);
     area.max.y = bar.top();
+    if app.ui.book.header_bar {
+        let strip = Rect::from_min_max(area.min, pos2(area.right(), (area.top() + HEADER_H).min(area.bottom())));
+        area.min.y = strip.bottom();
+        header_bar(ui, app, strip);
+    }
     canvas(ui, app, area);
+    if app.ui.book.info_overlay {
+        let t = Tokens::get(ui.ctx());
+        let rows = info_rows(&app.ui.book);
+        if let Some(r) = crate::overlay::paint(&ui.painter_at(area), &t, area, crate::overlay::Corner::BottomLeft, egui::Vec2::ZERO, &rows) {
+            register(ui.ctx(), "book:info", r);
+        }
+    }
     toolbar(ui, app, bar);
+}
+
+/// Height of the header bar (View ▸ Show Header Bar).
+const HEADER_H: f32 = 26.0;
+
+/// The header bar's text: the book's name (or "Unsaved Book" before it is saved) and its pages.
+pub fn header_text(b: &BookUi) -> String {
+    let name = if b.creation.is_some() { b.book.name.clone() } else { crate::i18n::tr("Unsaved Book").to_string() };
+    format!("{name}  ·  {}: {}", crate::i18n::tr("Pages"), b.book.pages.len())
+}
+
+/// The info overlay's rows: size, type, page count and the current page.
+pub fn info_rows(b: &BookUi) -> Vec<crate::overlay::Row> {
+    use crate::overlay::Row;
+    let s = &b.book.settings;
+    let kind = match s.kind {
+        lcc_book::BookKind::Pdf => "PDF",
+        lcc_book::BookKind::Jpeg => "JPEG",
+    };
+    let current = match b.current {
+        PageRef::Page(i) => crate::i18n::tr_format!("Page {page} of {pages}", page = i + 1, pages = b.book.pages.len()),
+        cover => crate::i18n::tr(&cover.label()).to_string(),
+    };
+    vec![
+        Row::text(format!("{}: {}", crate::i18n::tr("Size"), crate::i18n::tr(&s.size.label()))),
+        Row::text(format!("{}: {kind}", crate::i18n::tr("Type"))),
+        Row::text(format!("{}: {}", crate::i18n::tr("Pages"), b.book.pages.len())),
+        Row::text(current),
+    ]
+}
+
+fn header_bar(ui: &mut egui::Ui, app: &LccApp, r: Rect) {
+    let t = Tokens::get(ui.ctx());
+    let p = ui.painter_at(r);
+    p.rect_filled(r, 0.0, t.chrome);
+    p.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.divider));
+    p.text(r.center(), Align2::CENTER_CENTER, header_text(&app.ui.book), t.font(12.0), t.text);
+    register(ui.ctx(), "book:header", r);
 }
 
 // ------------------------------------------------------------------ panels
@@ -1651,7 +1786,7 @@ fn type_panel(ui: &mut egui::Ui, app: &mut LccApp) {
         }
     });
     let mut tr = s.tracking;
-    if ui.add(egui::Slider::new(&mut tr, -200.0..=1000.0).text(crate::i18n::tr("Tracking"))).changed() {
+    if ui.add(egui::Slider::new(&mut tr, -200.0..=1000.0).text(crate::i18n::tr("book text|Tracking"))).changed() {
         set(app, json!({"tracking": tr}));
     }
     let mut bl = s.baseline;
@@ -1770,7 +1905,9 @@ fn background_panel(ui: &mut egui::Ui, app: &mut LccApp) {
     if ui.add(egui::Slider::new(&mut po, 0.0..=100.0).suffix(" %").text(crate::i18n::tr("Photo Opacity"))).changed() {
         set(app, json!({"photoOpacity": po / 100.0}));
     }
-    if let Some(g) = combo(ui, "book-graphic", "Graphic", bg.graphic, &lcc_book::Graphic::ALL, |g| g.label().into()) {
+    // (`Frame` here is a border, not a video frame: its own context)
+    let graphic_label = |g: lcc_book::Graphic| if g == lcc_book::Graphic::Frame { "book graphic|Frame".into() } else { g.label().into() };
+    if let Some(g) = combo(ui, "book-graphic", "Graphic", bg.graphic, &lcc_book::Graphic::ALL, graphic_label) {
         set(app, json!({"graphic": enum_key(g)}));
     }
     let mut gc = bg.graphic_color;
@@ -1817,11 +1954,45 @@ mod tests {
         r["result"].clone()
     }
 
+    /// The export renders every page before it writes (and before it checks the path), so the tests that
+    /// export use the smallest book at the lowest resolution: at the default 240 ppi they took minutes.
+    fn small_book(h: &mut Headless) {
+        run(h, "book.settings", json!({"size": "smallSquare", "resolution": 72}));
+    }
+
+    /// Book Preferences are applied by `book.new`: fit instead of fill, guides off, and Auto-fill lays the
+    /// selected photos out at once.
     #[test]
-    fn book_module_lays_out_edits_and_exports() {
+    fn book_preferences_shape_a_new_book() {
         let _turn = exports_one_at_a_time();
         let mut h = demo();
         run(&mut h, "module.book", json!({}));
+        run(&mut h, "book.preferences", json!({"zoomToFill": false, "fillerText": false, "captionSafeArea": false, "autofill": true}));
+        run(&mut h, "book.new", json!({}));
+        let b = &h.app.ui.book.book;
+        assert!(!b.pages.is_empty(), "auto-fill laid the photos out");
+        assert!(!b.guides.filler_text && !b.guides.text_safe);
+        let fills: Vec<bool> = b
+            .pages
+            .iter()
+            .flat_map(|p| p.cells.iter())
+            .filter_map(|c| if let CellContent::Photo { fill, .. } = &c.content { Some(*fill) } else { None })
+            .collect();
+        assert!(!fills.is_empty() && fills.iter().all(|f| !f));
+        // back to the defaults: an empty, filling book
+        run(&mut h, "book.preferences", json!({"zoomToFill": true, "fillerText": true, "captionSafeArea": true, "autofill": false}));
+        run(&mut h, "book.new", json!({}));
+        assert!(h.app.ui.book.book.pages.is_empty());
+        assert!(h.app.ui.book.book.guides.filler_text && h.app.ui.book.book.guides.text_safe);
+    }
+
+    #[test]
+    fn book_module_lays_out_edits_and_exports() {
+        let dir = lcc_testkit::TempDir::new("book-ui-test");
+        let _turn = exports_one_at_a_time();
+        let mut h = demo();
+        run(&mut h, "module.book", json!({}));
+        small_book(&mut h);
         let r = run(&mut h, "book.autoLayout", json!({"preset": "Two Per Page"}));
         assert!(r["pages"].as_u64().unwrap() >= 1, "{r}");
         h.settle(Duration::from_secs(60));
@@ -1849,13 +2020,11 @@ mod tests {
         assert_eq!(r["pages"].as_u64().unwrap() as usize, pages, "{r}");
         for v in BookView::ALL {
             run(&mut h, "book.view", json!({"mode": v.key()}));
-            let img = h.snapshot(T);
-            assert!(img.width() > 0);
+            h.step();
         }
         // swap by command, bad input is an error
         let bad = h.request("engine.execute", json!({"command": "book.cell", "params": {"page": 1, "cell": 0, "zoom": "x"}}), T);
         assert_eq!(bad["ok"], false);
-        let dir = std::env::temp_dir().join(format!("book-ui-test-{}", std::process::id()));
         let pdf = dir.join("b.pdf");
         let r = run(&mut h, "book.export", json!({"path": pdf.to_string_lossy(), "wait": true}));
         let f = r["files"][0].as_str().unwrap().to_string();
@@ -1883,11 +2052,12 @@ mod tests {
     /// from MCP or the control channel); the files are left as they were.
     #[test]
     fn book_export_refuses_to_overwrite_an_original() {
+        let dir = lcc_testkit::TempDir::new("book-guard");
         let _turn = exports_one_at_a_time();
         let mut h = demo();
         run(&mut h, "module.book", json!({}));
+        small_book(&mut h);
         run(&mut h, "book.autoLayout", json!({"preset": "Two Per Page"}));
-        let dir = std::env::temp_dir().join(format!("book-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let orig = dir.join("scan.pdf");
         std::fs::write(&orig, b"original").unwrap();
@@ -1905,6 +2075,42 @@ mod tests {
         assert_eq!(std::fs::read(&orig).unwrap(), b"original");
         assert_eq!(std::fs::read(dir.join("scan.xmp")).unwrap(), b"<x/>");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn header_bar_and_info_overlay_follow_their_menu_toggles() {
+        let mut h = demo();
+        run(&mut h, "module.book", json!({}));
+        run(&mut h, "book.autoLayout", json!({"preset": "Two Per Page"}));
+        h.settle(Duration::from_secs(60));
+        let on = |h: &Headless, id: &str| h.app.widgets.iter().any(|(w, _)| w == id);
+        assert!(!on(&h, "book:header") && !on(&h, "book:info"), "both start hidden");
+        assert_eq!(crate::menubar::checked(&h.app, "book.headerBar"), Some(false));
+
+        run(&mut h, "book.headerBar", json!({}));
+        run(&mut h, "book.infoOverlay", json!({}));
+        h.settle(Duration::from_secs(60));
+        assert_eq!(crate::menubar::checked(&h.app, "book.headerBar"), Some(true));
+        assert!(on(&h, "book:header") && on(&h, "book:info"));
+        // the strip says "Unsaved Book" until the book is saved, then its name; the pages are counted
+        let b = &h.app.ui.book;
+        assert!(header_text(b).starts_with(crate::i18n::tr("Unsaved Book")), "{}", header_text(b));
+        assert!(header_text(b).ends_with(&b.book.pages.len().to_string()));
+        let mut named = b.clone();
+        named.creation = Some(7);
+        named.book.name = "Holiday".into();
+        assert!(header_text(&named).starts_with("Holiday"));
+        let rows = info_rows(b);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().any(|r| r.text.contains("PDF")));
+        // both are part of the saved book state, off unless asked for
+        let back: BookUi = serde_json::from_str(&serde_json::to_string(b).unwrap()).unwrap();
+        assert!(back.header_bar && back.info_overlay);
+        assert!(!serde_json::from_str::<BookUi>("{}").unwrap().header_bar);
+
+        run(&mut h, "book.headerBar", json!({"on": false}));
+        h.settle(Duration::from_secs(60));
+        assert!(!on(&h, "book:header") && on(&h, "book:info"));
     }
 
     #[test]

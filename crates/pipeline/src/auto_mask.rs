@@ -53,6 +53,35 @@ pub struct AutoMasks {
     /// Every person, when a scene model ([`crate::scene_model`]) saw them; People masks use
     /// [`AutoMasks::subject`] otherwise.
     pub person: Option<Plane>,
+    /// The scene model's other Landscape classes ([`LANDSCAPE_TERRAIN`]: mountains, architecture,
+    /// natural and artificial ground), by class name; empty without a scene model (the photo
+    /// analysis can't tell them apart).
+    pub terrain: Vec<(&'static str, Plane)>,
+    /// Distance (0 = nearest, 1 = farthest) from the depth model ([`crate::depth_model`]), for
+    /// photos with a Depth Range mask; `None` without the model (a Depth Range selects nothing).
+    pub depth: Option<Plane>,
+}
+
+/// The Landscape classes only the scene model can select (the photo analysis has Sky, Water and
+/// Vegetation), as `MaskShape::Landscape { class }` names them.
+pub const LANDSCAPE_TERRAIN: [&str; 4] = ["mountains", "architecture", "natural ground", "artificial ground"];
+
+/// Which of [`LANDSCAPE_TERRAIN`] a Landscape `class` names, matching loosely (`Mountain`,
+/// `building`, `sand`, `road`…).
+pub fn terrain_class(class: &str) -> Option<&'static str> {
+    let c = class.to_ascii_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| c.contains(w));
+    if has(&["artificial", "road", "pavement", "asphalt", "street"]) {
+        Some("artificial ground")
+    } else if has(&["natural", "ground", "sand", "snow", "dirt", "gravel", "soil", "earth"]) {
+        Some("natural ground")
+    } else if has(&["mountain", "rock", "hill", "cliff"]) {
+        Some("mountains")
+    } else if has(&["architect", "building", "house", "structure", "wall", "bridge"]) {
+        Some("architecture")
+    } else {
+        None
+    }
 }
 
 impl AutoMasks {
@@ -62,6 +91,7 @@ impl AutoMasks {
             MaskShape::Sky => Some(&self.sky),
             MaskShape::People { .. } => Some(self.person.as_ref().unwrap_or(&self.subject)),
             MaskShape::Subject | MaskShape::Object { .. } => Some(&self.subject),
+            MaskShape::DepthRange { .. } => self.depth.as_ref(),
             MaskShape::Landscape { class } => {
                 let c = class.to_ascii_lowercase();
                 if c.contains("sky") {
@@ -70,6 +100,8 @@ impl AutoMasks {
                     Some(&self.water)
                 } else if c.contains("vegetation") || c.contains("plant") || c.contains("tree") {
                     Some(&self.vegetation)
+                } else if let Some(t) = terrain_class(&c) {
+                    self.terrain.iter().find(|(k, _)| *k == t).map(|(_, p)| p)
                 } else {
                     None
                 }
@@ -82,7 +114,12 @@ impl AutoMasks {
 /// Whether `shape` would use an automatic selection (no stored segmentation of its own).
 pub fn wants(shape: &MaskShape) -> bool {
     match shape {
-        MaskShape::Sky | MaskShape::Subject | MaskShape::Background | MaskShape::People { .. } | MaskShape::Landscape { .. } => true,
+        MaskShape::Sky
+        | MaskShape::Subject
+        | MaskShape::Background
+        | MaskShape::People { .. }
+        | MaskShape::Landscape { .. }
+        | MaskShape::DepthRange { .. } => true,
         MaskShape::Object { seg, detail, hint, .. } => seg.is_none() && detail.is_empty() && !hint.is_empty(),
         _ => false,
     }
@@ -91,6 +128,22 @@ pub fn wants(shape: &MaskShape) -> bool {
 /// Whether any mask (or component) of `s` uses an automatic selection.
 pub fn needed(s: &DevelopSettings) -> bool {
     s.masks.iter().any(|m| m.components.iter().any(|c| wants(&c.shape)))
+}
+
+/// Whether `shape` would use the Subject selection (Subject, Background, People without a person
+/// grid, an Object found by its hint), the one the Subject model gives.
+pub fn wants_subject(shape: &MaskShape) -> bool {
+    match shape {
+        MaskShape::Subject | MaskShape::Background | MaskShape::People { .. } => true,
+        MaskShape::Object { .. } => wants(shape),
+        _ => false,
+    }
+}
+
+/// Whether any mask (or component) of `s` uses the Subject selection: only then does the Subject
+/// model run (a Sky or Landscape mask never waits for it, #969).
+pub fn subject_needed(s: &DevelopSettings) -> bool {
+    s.masks.iter().any(|m| m.components.iter().any(|c| wants_subject(&c.shape)))
 }
 
 /// The selection grid sampled at output pixel `(x, y)` of a `w × h` render of `frame`.
@@ -142,29 +195,79 @@ pub fn proxy(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Rgb32f {
 
 /// Recently analysed photos (a key per source pixels, framing and white balance).
 static CACHE: Mutex<Vec<(u64, Arc<AutoMasks>)>> = Mutex::new(Vec::new());
-const CACHE_LEN: usize = 8;
+/// (16: going back to a photo edited a few photos ago doesn't run its models again; the
+/// automatic grids are small, a model's selection a few MB)
+const CACHE_LEN: usize = 16;
 
-/// [`analyze`] of `src` under `s`, cached: a slider drag or a zoomed window reuses it.
-pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<AutoMasks> {
-    let frame = analysis_frame(src, info, s);
-    let (t, tint) = crate::local::effective_wb(info, s);
+/// Long edge of the frame [`photo_key`] describes a photo's framing with.
+const KEY_EDGE: f64 = 1024.0;
+
+/// Key of a per-photo analysis of `src` under `s` (`flips`: whether the framing's flips count;
+/// `extra`: what else the analysis depends on). With the source's [`SourceInfo::identity`] it is
+/// the same at every size the photo is decoded at: the framing is described on a frame of a fixed
+/// size with the source's aspect, so the loupe's preview-size source, a 1:1 window's and an
+/// export's full-size one share the analysis (the Subject model took 18–160 s on the processor,
+/// and ran again for each). Without an identity, or when a Source filter changes the pixels the
+/// analysis sees: the size, framing and (strided) pixels.
+pub(crate) fn photo_key(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, flips: bool, what: &str, extra: impl Hash) -> u64 {
     let mut hs = std::collections::hash_map::DefaultHasher::new();
-    (src.width, src.height, format!("{frame:?}"), t.to_bits(), tint.to_bits()).hash(&mut hs);
-    // the pixels themselves (strided: ~4096 samples)
-    let step = (src.data.len() / 4096).max(1);
-    for c in src.data.iter().step_by(step) {
-        c.map(f32::to_bits).hash(&mut hs);
+    (what, extra).hash(&mut hs);
+    let filtered = s.active_plugin_filters(lcc_develop::FilterStage::Source).next().is_some();
+    match info.identity.filter(|_| !filtered) {
+        Some(id) => {
+            // the original's shape, turned like the source (a decode's own size rounds)
+            let [a, b] = id.size;
+            let (long, short) = (a.max(b), a.min(b));
+            let (w, h) = match short > 0 {
+                true if src.width >= src.height => (long as f64, short as f64),
+                true => (short as f64, long as f64),
+                false => (src.width.max(1) as f64, src.height.max(1) as f64),
+            };
+            let k = KEY_EDGE / w.max(h);
+            let (kw, kh) = (((w * k).round() as usize).max(1), ((h * k).round() as usize).max(1));
+            let mut frame = Frame::with_lens(kw, kh, s, false, info.lens.as_ref());
+            if !flips {
+                frame.flip_h = false;
+                frame.flip_v = false;
+            }
+            (id.key, format!("{frame:?}")).hash(&mut hs);
+        }
+        None => {
+            let mut frame = crate::frame_for(src, info, s, false);
+            if !flips {
+                frame.flip_h = false;
+                frame.flip_v = false;
+            }
+            (src.width, src.height, format!("{frame:?}")).hash(&mut hs);
+            // the pixels themselves (strided: ~4096 samples)
+            let step = (src.data.len() / 4096).max(1);
+            for c in src.data.iter().step_by(step) {
+                c.map(f32::to_bits).hash(&mut hs);
+            }
+        }
     }
-    let key = hs.finish();
+    hs.finish()
+}
+
+/// [`analyze`] of `src` under `s`, cached: a slider drag, a zoomed window or an export of the
+/// same photo reuses it ([`photo_key`]).
+pub fn for_source(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Arc<AutoMasks> {
+    let (t, tint) = crate::local::effective_wb(info, s);
+    let want_depth = crate::depth_model::wanted(s);
+    let want_subject = subject_needed(s) && has_subject_model();
+    let key = photo_key(src, info, s, false, "auto", (t.to_bits(), tint.to_bits(), want_depth, want_subject));
     if let Some((_, a)) = CACHE.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
         return a.clone();
     }
     let mut analysed = analyze(&proxy(src, info, s));
-    if let Some(subject) = model_subject(src, info, s) {
+    if want_subject && let Some(subject) = model_subject(src, info, s) {
         analysed.subject = subject;
     }
     if let Some(scene) = crate::scene_model::selection(src, info, s) {
         crate::scene_model::apply(&mut analysed, &scene);
+    }
+    if want_depth {
+        analysed.depth = crate::depth_model::depth(src, info, s);
     }
     let a = Arc::new(analysed);
     let mut c = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -246,13 +349,7 @@ pub fn model_input(img: &Rgb32f) -> Vec<u8> {
 fn model_subject(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings) -> Option<Plane> {
     let model = SUBJECT_MODEL.read().unwrap_or_else(PoisonError::into_inner).clone()?;
     let frame = crate::frame_for(src, info, s, false);
-    let mut hs = std::collections::hash_map::DefaultHasher::new();
-    (src.width, src.height, format!("{frame:?}")).hash(&mut hs);
-    let step = (src.data.len() / 4096).max(1);
-    for c in src.data.iter().step_by(step) {
-        c.map(f32::to_bits).hash(&mut hs);
-    }
-    let key = hs.finish();
+    let key = photo_key(src, info, s, true, "subject", ());
     let cached = || SUBJECT_CACHE.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key).map(|(_, p)| p.clone());
     if let Some(p) = cached() {
         return Some(p);
@@ -325,7 +422,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let (w, h) = (img.width, img.height);
     let empty = || Plane::new(w, h);
     if w < 4 || h < 4 {
-        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None };
+        return AutoMasks { sky: empty(), subject: empty(), water: empty(), vegetation: empty(), person: None, terrain: Vec::new(), depth: None };
     }
     // exposure-normalize to the photo's median brightness, then a display-like curve
     let mut ys: Vec<f32> = img.data.iter().map(|c| 0.2627 * c[0] + 0.678 * c[1] + 0.0593 * c[2]).collect();
@@ -344,7 +441,7 @@ pub fn analyze(img: &Rgb32f) -> AutoMasks {
     let sky = sky(&lab, &smoothness, w, h);
     let subject = subject(&lab, &tex, w, h);
     let (water, vegetation) = landscape(&lab, &smoothness, &sky, w, h);
-    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None }
+    AutoMasks { sky: sky.alpha, subject, water, vegetation, person: None, terrain: Vec::new(), depth: None }
 }
 
 struct Sky {
@@ -620,6 +717,50 @@ mod tests {
         grid.data.iter_mut().enumerate().for_each(|(i, v)| *v = if i % 8 < 4 { 1.0 } else { 0.0 });
         let out = sample(&grid, &Frame::new(8, 8, &s, true), 8, 8);
         assert!(out.get(7, 1) > 0.9 && out.get(0, 1) < 0.1);
+    }
+
+    /// A photo's automatic selections are analysed once whatever size it is decoded at: the
+    /// loupe's preview-size source and an export's (or a 1:1 window's) full-size one share them
+    /// when the source says which photo it is. Before, the key held the size and the pixels, so
+    /// an export of a photo with a Subject mask ran the Subject model again (18–160 s on the
+    /// processor). Another photo, another framing, or a source without identity: analysed anew.
+    #[test]
+    fn a_photo_is_analysed_once_at_every_size() {
+        let scene = |w: usize, h: usize, seed: f32| {
+            Rgb32f::from_fn(w, h, |x, y| {
+                let (u, v) = (x as f32 / w as f32, y as f32 / h as f32);
+                let person = ((u - 0.5).powi(2) + (v - 0.6).powi(2)) < 0.04;
+                if person {
+                    [0.6 + seed, 0.3, 0.2]
+                } else if v < 0.4 {
+                    [0.3, 0.5, 0.9]
+                } else {
+                    [0.2, 0.4 + seed, 0.2]
+                }
+            })
+        };
+        let s = DevelopSettings::default();
+        let id = |key| Some(crate::SourceIdentity { key, size: [6000, 4000] });
+        let photo = SourceInfo { identity: id(0x5eed_0001), ..Default::default() };
+        let small = scene(300, 200, 0.01);
+        let large = scene(900, 600, 0.01);
+        let a = for_source(&small, &photo, &s);
+        let b = for_source(&large, &photo, &s);
+        assert!(Arc::ptr_eq(&a, &b), "the full-size source analysed the photo again");
+        // a decode whose size rounded the other way (301 × 200): still the same photo
+        assert!(Arc::ptr_eq(&a, &for_source(&scene(301, 200, 0.01), &photo, &s)), "a rounding of the size analysed it again");
+        // another photo of the same size: its own analysis
+        let other = SourceInfo { identity: id(0x5eed_0002), ..Default::default() };
+        assert!(!Arc::ptr_eq(&a, &for_source(&large, &other, &s)));
+        // the photo turned: framed anew
+        let mut turned = s.clone();
+        turned.orientation = lcc_geom::Orientation::Rotate90;
+        assert!(!Arc::ptr_eq(&a, &for_source(&small, &photo, &turned)));
+        // no identity: kept by the pixels, as before
+        let anon = SourceInfo::default();
+        let c = for_source(&scene(300, 200, 0.02), &anon, &s);
+        assert!(!Arc::ptr_eq(&c, &for_source(&scene(900, 600, 0.02), &anon, &s)));
+        assert!(Arc::ptr_eq(&c, &for_source(&scene(300, 200, 0.02), &anon, &s)));
     }
 
     /// Degenerate and hostile proxies (tiny, flat, NaN / infinite pixels) give empty or finite

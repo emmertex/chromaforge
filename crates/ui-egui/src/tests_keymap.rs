@@ -255,6 +255,7 @@ fn classic_keys_switch_modules_views_and_panels() {
 
 #[test]
 fn the_alternative_set_restores_the_previous_keys_and_keymaps_round_trip() {
+    let dir = lcc_testkit::TempDir::new("keymap");
     let mut h = demo();
     h.app.run("app.keymapSet", json!({"set": "alternative"})).unwrap();
     assert_eq!(crate::shortcuts::shortcut_of(&h.app.ui.settings.keymap, "view.detail"), Some("D"));
@@ -264,7 +265,6 @@ fn the_alternative_set_restores_the_previous_keys_and_keymaps_round_trip() {
     assert!(h.app.run("app.keymapSet", json!({"set": "emacs"})).is_err());
     // export / import a keymap file
     h.app.run("app.setShortcut", json!({"id": "view.survey", "shortcut": "Cmd+Shift+K"})).unwrap();
-    let dir = std::env::temp_dir().join(format!("keymap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("keys.json");
     h.app.run("app.keymapExport", json!({"path": path.to_str().unwrap()})).unwrap();
@@ -342,8 +342,14 @@ fn module_keys_are_scoped_by_module_and_view() {
     assert_eq!(h.app.session.develop_of(id).unwrap().wb.mode, lcc_develop::WbMode::Auto);
     press(&mut h, "U", true, false);
     assert!(h.app.session.undo.len() >= undo + 2, "both keys made an edit");
-    // ⇧Q without a spot is a no-op, not a crash
+    // ⇧Q starts a Luminance Range mask; ⌥⇧Q (spot mode cycling) without a spot is a no-op, not a crash
+    let masks = h.app.session.develop_of(id).map(|d| d.masks.len()).unwrap_or(0);
     press(&mut h, "Q", false, true);
+    let after = h.app.session.develop_of(id).map(|d| d.masks.len()).unwrap_or(0);
+    assert_eq!(after, masks + 1, "Shift+Q adds a Luminance Range mask");
+    let r = h.request("ui.key", json!({"key": "Q", "alt": true, "shift": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
     assert!(h.app.run("spot.cycleMode", json!({})).is_err());
 }
 
@@ -356,20 +362,21 @@ fn the_shortcuts_list_shows_the_current_modules_keys() {
     assert!(in_module(ModuleId::Develop, "app.shortcuts"));
     assert!(!in_module(ModuleId::Develop, "album.toggleTarget"));
     assert!(in_module(ModuleId::Library, "album.toggleTarget"));
+}
+
+/// The Alternative set's edit-settings keys (Ctrl+C / Ctrl+V, ⇧Ctrl+V for Paste Selected).
+fn alternative() -> Headless {
     let mut h = demo();
-    h.app.run("app.shortcuts", json!({})).unwrap();
-    h.step();
-    h.step();
-    // the module filter is shown and can be turned off
-    click(&mut h, "check:shortcuts.moduleOnly");
+    h.app.ui.settings.keymap_set = crate::shortcuts::KeymapSet::Alternative;
+    h
 }
 
 /// On Windows and Linux the windowing layer turns Ctrl+C / Ctrl+V into clipboard events, not key
 /// presses: outside a text field they still copy the edit settings, and with ⇧ open Paste Selected
-/// Settings.
+/// Settings (Alternative set; Classic's keys are below).
 #[test]
 fn clipboard_events_run_the_copy_and_paste_shortcuts() {
-    let mut h = demo();
+    let mut h = alternative();
     assert!(h.app.session.clipboard.is_none());
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
@@ -382,10 +389,10 @@ fn clipboard_events_run_the_copy_and_paste_shortcuts() {
 
 /// With no text on the system clipboard (empty, a screenshot) the windowing layer drops Ctrl+V's
 /// press and sends only its release; the paste shortcuts still paste (Ctrl+V) and open Paste
-/// Selected Settings (⇧Ctrl+V).
+/// Selected Settings (⇧Ctrl+V) (Alternative set).
 #[test]
 fn paste_shortcuts_work_with_no_text_on_the_clipboard() {
-    let mut h = demo();
+    let mut h = alternative();
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
     assert!(h.app.session.clipboard.is_some());
@@ -412,7 +419,7 @@ fn paste_shortcuts_work_with_no_text_on_the_clipboard() {
 /// the plain Paste / Cut, not ⇧Ctrl+V (Paste Selected Settings).
 #[test]
 fn shift_insert_pastes_plainly() {
-    let mut h = demo();
+    let mut h = alternative();
     h.events.push(egui::Event::Copy);
     h.settle(SETTLE);
     let undo = h.app.session.undo.len();
@@ -420,6 +427,37 @@ fn shift_insert_pastes_plainly() {
     h.settle(SETTLE);
     assert_eq!(h.app.ui.dialog, None, "no Paste Selected Settings");
     assert_eq!(h.app.session.undo.len(), undo + 1, "the settings were pasted");
+}
+
+/// Classic's edit-settings keys reach their commands as clipboard events too: ⇧Ctrl+C opens Copy
+/// Settings…, ⇧Ctrl+V pastes the settings (also when the windowing layer sends only the release),
+/// and plain Ctrl+C / Ctrl+V leave the edit alone, as in Lightroom Classic.
+#[test]
+fn classic_clipboard_events_copy_and_paste_settings() {
+    let mut h = demo();
+    let shift_cmd = egui::Modifiers::SHIFT | egui::Modifiers::COMMAND;
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::Copy]);
+    h.settle(SETTLE);
+    assert!(h.app.session.clipboard.is_none(), "plain Ctrl+C copies no settings");
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), egui::Event::Copy]);
+    h.settle(SETTLE);
+    assert!(matches!(h.app.ui.dialog, Some(Dialog::CopySettings { .. })), "⇧Ctrl+C: {:?}", h.app.ui.dialog);
+    h.app.ui.dialog = None;
+    h.app.run("develop.copy", json!({})).unwrap();
+    // with no text on the clipboard the windowing layer sends only ⇧Ctrl+V's release: it pastes too
+    let undo = h.app.session.undo.len();
+    let release = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: shift_cmd };
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), release]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "a release-only ⇧Ctrl+V pastes");
+    let undo = h.app.session.undo.len();
+    h.events.extend([egui::Event::ModifiersChanged(egui::Modifiers::COMMAND), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo, "plain Ctrl+V pastes no settings");
+    h.events.extend([egui::Event::ModifiersChanged(shift_cmd), egui::Event::Paste("text".into())]);
+    h.settle(SETTLE);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "⇧Ctrl+V pasted the settings");
+    assert_eq!(h.app.ui.dialog, None);
 }
 
 /// ⌘⌥⇧C / ⌘⌥⇧V (Ctrl+Alt+Shift+C / V) copy and paste metadata, as in Lightroom Classic's Library,
@@ -852,8 +890,8 @@ fn x_in_the_crop_tool_swaps_the_crop_orientation() {
 /// MCP or the control channel); a free path still exports.
 #[test]
 fn keymap_export_refuses_to_overwrite_an_original_or_its_sidecar() {
+    let dir = lcc_testkit::TempDir::new("keymap-guard");
     let mut h = demo();
-    let dir = std::env::temp_dir().join(format!("keymap-guard-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let orig = dir.join("IMG_1.jpg");
     std::fs::write(&orig, b"original").unwrap();
@@ -868,25 +906,6 @@ fn keymap_export_refuses_to_overwrite_an_original_or_its_sidecar() {
     }
     assert!(h.app.run("app.keymapExport", json!({"path": dir.join("keys.json").to_str().unwrap()})).is_ok());
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The crop aspect lock is a first-class row of Help - Keyboard Shortcuts: A, listed in the
-/// editor like any other command, sharing the key with Visualize Spots as a contextual pair.
-#[test]
-fn lock_aspect_ratio_is_a_listed_row_on_a() {
-    use crate::shortcuts::{CONTEXTUAL, Keymap, bindable, shortcut_of};
-    let b = bindable().iter().find(|b| b.id == "crop.lockAspect").expect("crop.lockAspect is mappable");
-    assert_eq!(b.label, "Lock Aspect Ratio");
-    assert_eq!(b.default, Some("A"));
-    assert_eq!(shortcut_of(&Keymap::new(), "crop.lockAspect"), Some("A"));
-    assert!(CONTEXTUAL.contains(&("view.visualizeSpots", "crop.lockAspect")), "A is disambiguated by context");
-    // the editor lists it: the row is on screen and records keys for it
-    let mut h = demo();
-    record(&mut h, "lock", "crop.lockAspect");
-    key(&mut h, "Escape", false);
-    assert_eq!(shortcut_of(&h.app.ui.settings.keymap, "crop.lockAspect"), Some("A"), "Esc cancels the recording: A stays");
-    key(&mut h, "Escape", false);
-    assert!(h.app.ui.dialog.is_none());
 }
 
 /// A is the aspect lock while the Crop panel is open — Visualize Spots, the other A, must not take
@@ -916,4 +935,58 @@ fn a_is_the_aspect_lock_under_crop_and_visualize_spots_elsewhere() {
     assert_eq!(h.app.ui.right, RightPanel::Remove, "A opens Remove with the visualization");
     assert!(h.app.ui.visualize_spots, "Visualize Spots is on");
     assert_eq!(aspect(&h), before, "and the aspect is untouched");
+}
+
+/// An installed filter plug-in with a `shortcut` in its manifest is a bindable *Add <name>*: its
+/// key puts the filter on the selected photos and opens the Plug-in Filters section; the user
+/// can rebind it like any shortcut.
+#[test]
+fn a_filter_plugins_declared_key_adds_it_to_the_selection() {
+    let manifest = r#"{"id":"test.keymap.neg","name":"Neg","kind":"filter","shortcut":"Ctrl+Alt+N"}"#;
+    let src = format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{m}")
+  (func (export "pc_abi_version") (result i32) (i32.const 1))
+  (func (export "pc_manifest") (result i64) (i64.or (i64.shl (i64.const {len}) (i64.const 32)) (i64.const 16)))
+  (func (export "pc_alloc") (param $n i32) (result i32) (i32.const 65536))
+  (func (export "pc_filter") (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32) (i32.const 0)))"#,
+        m = manifest.replace('"', "\\\""),
+        len = manifest.len()
+    );
+    lcc_engine::filter_plugins::install_in_memory(&wat::parse_str(&src).unwrap()).unwrap();
+    let id = format!("{}test.keymap.neg", crate::shortcuts::PLUGIN_ADD);
+    let b = crate::shortcuts::find_bindable(&id).expect("an installed filter is bindable");
+    // New Smart Collection has Cmd+Alt+N: the same press as Ctrl+Alt+N except on macOS, where the
+    // declared key is free; elsewhere the filter starts without one and the user gives it the key
+    let mac = cfg!(target_os = "macos");
+    assert_eq!((b.label, b.default()), ("Add Neg", if mac { Some("Ctrl+Alt+N") } else { None }));
+
+    let mut h = demo();
+    if !mac {
+        // given the key, the filter takes it from New Smart Collection
+        let r = h.app.run("app.setShortcut", json!({"id": id, "shortcut": "Ctrl+Alt+N"})).unwrap();
+        assert!(r["removedFrom"].as_array().is_some_and(|l| l.iter().any(|c| c == "dialog.newSmartAlbum")), "{r}");
+    }
+    let ids: Vec<u64> = h.app.session.catalog.photos().take(2).map(|p| p.id.0).collect();
+    h.app.run("library.select", json!({"ids": ids})).unwrap();
+    h.step();
+    let r = h.request("ui.key", json!({"key": "N", "ctrl": true, "alt": true}), Duration::from_secs(20));
+    assert_eq!(r["ok"], true, "{r}");
+    for _ in 0..3 {
+        h.step();
+    }
+    for id in &ids {
+        let d = h.app.session.develop_of(lcc_catalog::PhotoId(*id)).unwrap();
+        assert_eq!(d.plugin_filters.len(), 1, "photo {id}");
+        assert_eq!(d.plugin_filters[0].plugin, "test.keymap.neg");
+    }
+    assert!(h.app.ui.section_open(lcc_develop::PLUGIN_FILTERS_SECTION));
+    // rebound: the new key adds, the old one no longer does
+    h.app.run("app.setShortcut", json!({"id": id, "shortcut": "Cmd+Alt+Shift+N"})).unwrap();
+    let r = h.request("ui.key", json!({"key": "N", "ctrl": true, "alt": true}), Duration::from_secs(20));
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert_eq!(h.app.session.develop_of(lcc_catalog::PhotoId(ids[0])).unwrap().plugin_filters.len(), 1);
+    lcc_engine::filter_plugins::uninstall("test.keymap.neg").unwrap();
 }

@@ -26,6 +26,26 @@ fn raw_in_develop(h: &mut crate::headless::Headless, lens: &str) -> lcc_catalog:
     id
 }
 
+/// Scrolls the right panel until widget `id` lies wholly above the panel's bottom bar (Previous / Reset),
+/// the last thing the panel's scroll area shows.
+fn scroll_right_panel_to(h: &mut crate::headless::Headless, id: &str) {
+    let rect = |h: &crate::headless::Headless, id: &str| h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r);
+    let panel = rect(h, "panel:right_panel").expect("the right panel is drawn");
+    h.request("ui.move", json!({"x": panel.center().x, "y": panel.center().y}), T);
+    for _ in 0..20 {
+        let target = rect(h, id).unwrap_or_else(|| panic!("{id} is laid out"));
+        let floor = rect(h, "button:previousBar").map_or(panel.bottom(), |r| r.top());
+        if target.bottom() <= floor && target.top() >= panel.top() {
+            return;
+        }
+        assert_eq!(h.request("ui.scroll", json!({"dy": -120.0}), T)["ok"], true);
+        for _ in 0..10 {
+            h.step();
+        }
+    }
+    panic!("{id} never scrolled above the panel's bottom bar: {:?}", rect(h, id));
+}
+
 #[test]
 fn optics_link_opens_settings_at_lens_profiles() {
     if lcc_brand::env_os(lcc_engine::lens_profiles::ENV).is_some_and(|v| !v.is_empty()) {
@@ -56,7 +76,7 @@ fn optics_names_the_lens_the_database_lacks() {
         return;
     }
     let before = lcc_engine::lens_profiles::configured_dir();
-    let dir = std::env::temp_dir().join(format!("lens-ui-db-{}", std::process::id()));
+    let dir = lcc_testkit::TempDir::new("lens-ui-db");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -115,7 +135,10 @@ fn optics_can_become_the_default_for_new_photos() {
     let photo_before = (*h.app.session.develop_of(id).expect("the photo has settings")).clone();
     assert!(has(&h, "button:opticsNewPhotoDefault"), "the Optics panel offers the action");
 
-    // the action opens the naming dialog; nothing is saved yet
+    // the action opens the naming dialog; nothing is saved yet. The row sits under the lens controls,
+    // so with the Develop sections above it the panel is scrolled until it clears the bottom bar, as a
+    // person would (a click on a row laid out under the bar lands on the bar).
+    scroll_right_panel_to(&mut h, "button:opticsNewPhotoDefault");
     click(&mut h, "button:opticsNewPhotoDefault");
     let Some(crate::state::Dialog::NewPhotoDefault { name }) = h.app.ui.dialog.clone() else {
         panic!("the naming dialog did not open: {:?}", h.app.ui.dialog);

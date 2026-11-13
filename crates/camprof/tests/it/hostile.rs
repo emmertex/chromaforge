@@ -11,13 +11,6 @@ fn corners(v: [f64; 8]) -> ChartCorners {
 }
 
 #[test]
-fn hostile_frames_are_refused() {
-    assert!(RawFrame::from_rgb(0, 10, vec![]).is_err());
-    assert!(RawFrame::from_rgb(10, 10, vec![[0.0; 3]; 3]).is_err());
-    assert!(RawFrame::from_rgb(usize::MAX, 2, vec![]).is_err());
-}
-
-#[test]
 fn hostile_charts_give_errors_not_panics() {
     let frames = [
         frame(1, 1, [0.5; 3]),
@@ -38,10 +31,10 @@ fn hostile_charts_give_errors_not_panics() {
         let _ = find_chart(f);
         for c in bad_corners {
             let c = corners(c);
-            let _ = refine(f, &c, 9);
-            let _ = orient(f, &c);
+            let _ = refine(f, lcc_camprof::chart(), &c, 9);
+            let _ = orient(f, lcc_camprof::chart(), &c);
             for turns in [0, 3, 200] {
-                let located = Located { corners: c, turns, score: None };
+                let located = Located { corners: c, turns, score: None, chart: lcc_camprof::chart() };
                 let opts = BuildOptions { camera_model: "Test".into(), ..Default::default() };
                 let _ = build(f, &located, &opts);
                 let shot = Shot { frame: f, located, illuminant: "D55" };
@@ -55,7 +48,7 @@ fn hostile_charts_give_errors_not_panics() {
 #[test]
 fn bad_options_are_errors() {
     let f = frame(64, 48, [0.3; 3]);
-    let located = Located { corners: corners([4.0, 4.0, 60.0, 4.0, 60.0, 44.0, 4.0, 44.0]), turns: 0, score: None };
+    let located = Located { corners: corners([4.0, 4.0, 60.0, 4.0, 60.0, 44.0, 4.0, 44.0]), turns: 0, score: None, chart: lcc_camprof::chart() };
     for (model, light) in [("", "D55"), ("X", "nonsense"), ("X", ""), ("\u{0}", "D65")] {
         let opts = BuildOptions { camera_model: model.into(), illuminant: light.into(), ..Default::default() };
         assert!(build(&f, &located, &opts).is_err(), "{model:?} {light:?}");

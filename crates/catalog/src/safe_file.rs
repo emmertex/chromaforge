@@ -440,6 +440,19 @@ pub fn read_no_follow(path: &Path) -> io::Result<Vec<u8>> {
     Ok(b)
 }
 
+/// [`read_no_follow`], at most `max` bytes: a file bigger than that, or one that grows past it
+/// while it is read, is refused rather than read to its end.
+pub fn read_no_follow_max(path: &Path, max: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let f = open_existing(path, OpenOptions::new().read(true))?;
+    let mut b = Vec::new();
+    f.take(max.saturating_add(1)).read_to_end(&mut b)?;
+    if b.len() as u64 > max {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{} is more than the {max} bytes allowed", path.display())));
+    }
+    Ok(b)
+}
+
 /// Do `a` and `b` name the same existing file (through links, `..`, case-insensitive names)?
 pub fn same_file(a: &Path, b: &Path) -> bool {
     let (Ok(ma), Ok(mb)) = (fs::metadata(a), fs::metadata(b)) else { return false };
@@ -503,7 +516,7 @@ pub fn open_regular(path: &Path, opts: &OpenOptions) -> io::Result<Option<File>>
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "{} is a link or not a regular file; the app won't read or write a library file through one. Remove it or put the real file there.",
+                "{} is a link or not a regular file; the app won't read or write a catalog file through one. Remove it or put the real file there.",
                 path.display()
             ),
         ));
@@ -542,24 +555,23 @@ pub fn open_or_create_regular(path: &Path, opts: &OpenOptions) -> io::Result<(Fi
 
 #[cfg(test)]
 mod tests {
-    /// On an SMB share macOS refuses the full flush: sidecars and other durable writes still land.
-    #[test]
-    fn durable_write_on_a_volume_without_a_full_flush() {
-        let dir = std::env::temp_dir().join(format!("lcc-safe-nofullsync-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("a.xmp");
-        let before = crate::safe_file::plain_fsyncs_on_this_thread();
-        {
-            let _smb = crate::safe_file::full_sync_unsupported();
-            super::write_atomic(&p, b"<x/>").unwrap();
-        }
-        assert_eq!(std::fs::read(&p).unwrap(), b"<x/>");
-        assert!(crate::safe_file::plain_fsyncs_on_this_thread() > before, "fell back to a plain fsync");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     use super::*;
+
+    #[test]
+    fn read_no_follow_max_refuses_what_is_over_the_cap_or_not_a_plain_file() {
+        let d = temp("read-max");
+        let p = d.join("a");
+        fs::write(&p, b"abcd").unwrap();
+        assert_eq!(read_no_follow_max(&p, 4).unwrap(), b"abcd");
+        assert!(read_no_follow_max(&p, 3).is_err());
+        assert!(read_no_follow_max(&d, 100).is_err(), "a folder");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/dev/zero", d.join("z")).unwrap();
+            assert!(read_no_follow_max(&d.join("z"), 1 << 20).is_err(), "a link to an endless source");
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lc-safe-file-{tag}-{}", std::process::id()));

@@ -143,6 +143,12 @@ pub struct FolderMoved {
     pub id: u64,
     pub from: String,
     pub to: String,
+    /// The content hash the scan read at `to`. Synchronizing relinks only while the file there
+    /// still has it: a scan of a big folder is confirmed minutes later, and a file put in its
+    /// place by then is not the photo. `None` when the scan had no file probe, and then there is
+    /// nothing to compare. Not part of the command's reply.
+    #[serde(skip)]
+    pub hash: Option<String>,
 }
 
 /// What [`synchronize`] does with the changes found.
@@ -196,7 +202,7 @@ impl SyncInput {
         let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
         let ids = s.catalog.query(&f, &Sort::default());
         if ids.is_empty() {
-            return Err(invalid(format!("{path}: no photo in the library was imported from it")));
+            return Err(invalid(format!("{path}: no photo in the catalog was imported from it")));
         }
         if !disk && (lcc_catalog::folders::is_disk_root(path) || crate::cmd::library::covers_other_disks(s, path, &ids)) {
             return Err(invalid(format!("{path} is a whole disk or holds disks: pass `disk: true` to synchronize it")));
@@ -300,7 +306,10 @@ pub fn scan_with(input: SyncInput, progress: &SyncProgress) -> FolderChanges {
     let missing = std::mem::take(&mut changes.missing);
     for m in missing {
         match moved_from.get(&m.path) {
-            Some(to) => changes.moved.push(FolderMoved { id: m.id, from: m.path, to: to.clone() }),
+            Some(to) => {
+                let hash = out.probes.get(to).and_then(|p| p.content_hash.clone());
+                changes.moved.push(FolderMoved { id: m.id, from: m.path, to: to.clone(), hash });
+            }
             None => changes.missing.push(m),
         }
     }
@@ -308,9 +317,18 @@ pub fn scan_with(input: SyncInput, progress: &SyncProgress) -> FolderChanges {
     changes
 }
 
-/// Whether a photo is the same as far as synchronizing goes: its file, its place in the library
-/// and what a sidecar is compared with. Face and pet regions found in the background meanwhile
-/// don't make a scan stale.
+/// Whether a photo is the same file in the same place in the library: what decides whether it
+/// is missing or moved, and which files beside it are new. Its rating, keywords and edits are
+/// the person's work, not the folder's state.
+fn same_file(a: &Arc<Photo>, b: &Arc<Photo>) -> bool {
+    Arc::ptr_eq(a, b)
+        || (&a.source, a.deleted, a.local, a.copy_of, &a.content_hash, a.file_size)
+            == (&b.source, b.deleted, b.local, b.copy_of, &b.content_hash, b.file_size)
+}
+
+/// Whether a photo is the same as far as reading its sidecar goes: its file, its place in the
+/// library and what a sidecar is compared with. Face and pet regions found in the background
+/// meanwhile don't make a scan stale.
 fn same_for_sync(a: &Arc<Photo>, b: &Arc<Photo>) -> bool {
     if Arc::ptr_eq(a, b) {
         return true;
@@ -460,7 +478,7 @@ struct Listed {
 
 /// Whether the disk is asked about `name` whatever the listing holds: a name Windows takes for
 /// a device (`NUL`, `aux.jpg`: there in every folder, or not openable where it is listed).
-fn asks_the_disk(name: &str) -> bool {
+pub(crate) fn asks_the_disk(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_lowercase();
     // (`COM` and `LPT` with any one digit, the superscript ones Windows also takes among them)
     let numbered = ["com", "lpt"].iter().any(|port| {
@@ -473,7 +491,7 @@ fn asks_the_disk(name: &str) -> bool {
 /// Whether `name` can only be found under itself in some case: ASCII, and nothing in it that a
 /// file system resolves another way (a short name with `~`, a stream after `:`, dots or spaces
 /// at its end, which Windows drops).
-fn plain_name(name: &str) -> bool {
+pub(crate) fn plain_name(name: &str) -> bool {
     name.is_ascii() && !name.contains(['~', ':']) && !name.ends_with(['.', ' ']) && !name.is_empty()
 }
 
@@ -613,19 +631,34 @@ fn not_there(path: &str) -> EngineError {
 
 impl Session {
     /// The last scan ([`Session::folder_changes`]) if it is of folder `path` and still current:
-    /// the folder holds the same photos, none of them changed. What the person was shown is what
-    /// gets done. Used once. (Changes elsewhere in the library don't matter.)
+    /// the folder holds the same photos (virtual copies aside), each the same file in the same
+    /// place ([`same_file`]). What the person was shown is what gets done. Used once.
+    ///
+    /// Work on the folder's photos since (ratings, labels, keywords, edits) leaves the scan
+    /// current: none of it changes which files are new, missing or moved, and a scan of a big
+    /// folder on a slow disk takes minutes in which the person is told to go on working. The one
+    /// thing such work does matter to is a sidecar the scan found news in: reading it would go
+    /// over that work, so for those photos nothing may have changed ([`same_for_sync`]).
+    /// (Changes elsewhere in the library don't matter.)
     pub fn take_folder_changes(&mut self, path: &str) -> Option<FolderChanges> {
         let c = self.folder_changes.take()?;
         if lcc_catalog::query::folder_key(&c.path) != lcc_catalog::query::folder_key(path) {
             return None;
         }
         let f = Filter { library_folder: Some(path.to_string()), ..Default::default() };
-        let mut now: Vec<PhotoId> = self.catalog.query(&f, &Sort::default());
-        let mut then: Vec<PhotoId> = c.seen.iter().map(|p| p.id).collect();
+        // (virtual copies made or deleted meanwhile are not files: the folder holds what it held,
+        // except for copies of photos the scan relinks or removes, which are acted on by id and
+        // would be left behind)
+        let acted: std::collections::HashSet<u64> = c.moved.iter().map(|m| m.id).chain(c.missing.iter().map(|m| m.id)).collect();
+        let counts = |p: &Photo| p.copy_of.is_none_or(|o| acted.contains(&o.0));
+        let mut now: Vec<PhotoId> =
+            self.catalog.query(&f, &Sort::default()).into_iter().filter(|id| self.catalog.photo(*id).is_some_and(|p| counts(p))).collect();
+        let mut then: Vec<PhotoId> = c.seen.iter().filter(|p| counts(p)).map(|p| p.id).collect();
         now.sort();
         then.sort();
-        let unchanged = now == then && c.seen.iter().all(|p| self.catalog.photo(p.id).is_some_and(|q| same_for_sync(p, q)));
+        let read: std::collections::HashSet<u64> = c.metadata.iter().map(|m| m.id).collect();
+        let same = |p: &Arc<Photo>, q: &Arc<Photo>| if read.contains(&p.id.0) { same_for_sync(p, q) } else { same_file(p, q) };
+        let unchanged = now == then && c.seen.iter().filter(|p| p.copy_of.is_none()).all(|p| self.catalog.photo(p.id).is_some_and(|q| same(p, q)));
         unchanged.then_some(c)
     }
 }
@@ -700,12 +733,17 @@ pub struct SyncCommit {
     /// The library the run was readied for: steps never land in another one (File › Open
     /// Library while the work runs), whose photo ids name other photos.
     library: Arc<()>,
-    /// The run's own undo steps so far, and the history's length after the last of them: they
-    /// are merged only while nothing else came in between (an Undo or an edit made meanwhile
-    /// stays its own step, and the run's parts stay theirs).
+    /// The run's own undo steps so far, and the history's length and the session's commit count
+    /// after the last of them: they are merged only while nothing else came in between (an Undo
+    /// or an edit made meanwhile stays its own step, and the run's parts stay theirs). The count
+    /// sees an edit that left the length as it was (the history was full and dropped its oldest).
     own: usize,
-    after_last: Option<usize>,
+    after_last: Option<(usize, u64)>,
     interleaved: bool,
+    /// Keeps the history from dropping the run's first steps before [`SyncCommit::finish`] folds
+    /// them (a big folder makes more steps than it holds). Let go once the steps can't be folded
+    /// (another library, an edit in between) and at the end.
+    hold: Option<Arc<()>>,
     report: SyncReport,
 }
 
@@ -774,6 +812,7 @@ impl SyncJob {
             own: 0,
             after_last: None,
             interleaved: false,
+            hold: Some(s.hold_undo()),
             report: SyncReport::default(),
         };
         Ok((work, commit))
@@ -800,7 +839,12 @@ impl SyncWork {
                     return;
                 }
                 let prepared = job.prepare_files(chunk.to_vec(), cancel);
-                step(chunk.len());
+                // (a batch Cancel cut short left files undone: it is not counted, so the count
+                // says whether everything was done; its files that were ready are still sent. A
+                // Cancel after its last file was prepared cut nothing: the batch says so itself)
+                if !prepared.cut_short {
+                    step(chunk.len());
+                }
                 // (the files are added in place: a batch nobody takes leaves nothing behind on disk)
                 if !send(SyncStep::Import(prepared)) {
                     return;
@@ -810,11 +854,22 @@ impl SyncWork {
         if cancel.load(Relaxed) {
             return;
         }
-        // still where the scan found it, and still gone from where the photo says
-        let checked = moved.len();
-        let relink: Vec<(PhotoId, String)> =
-            moved.into_iter().filter(|m| Path::new(&m.to).is_file() && !Path::new(&m.from).exists()).map(|m| (PhotoId(m.id), m.to)).collect();
-        step(checked);
+        // still where the scan found it (the same content, when the scan read it), and still gone
+        // from where the photo says
+        let mut relink: Vec<(PhotoId, String)> = Vec::with_capacity(moved.len());
+        for m in moved {
+            // each file is read again when the scan hashed it: this can take a while on a share
+            if cancel.load(Relaxed) {
+                return;
+            }
+            let still_the_file = Path::new(&m.to).is_file()
+                && !Path::new(&m.from).exists()
+                && m.hash.as_deref().is_none_or(|h| crate::cmd::missing::file_hash(&m.to).is_some_and(|now| base_hash(&now) == base_hash(h)));
+            if still_the_file {
+                relink.push((PhotoId(m.id), m.to));
+            }
+            step(1);
+        }
         if !relink.is_empty() && !send(SyncStep::Relink(relink)) {
             return;
         }
@@ -856,17 +911,27 @@ impl SyncCommit {
     /// end, and the rest is still done.
     pub fn apply(&mut self, s: &mut Session, step: SyncStep) {
         if !Arc::ptr_eq(&self.library, &s.library_identity) {
-            self.report.failed.push((String::new(), "another library was opened: the rest of the synchronize was dropped".into()));
+            self.hold = None;
+            self.report.failed.push((String::new(), "another catalog was opened: the rest of the synchronize was dropped".into()));
             return;
         }
         let commits = s.commits();
-        if self.after_last.is_some_and(|n| n != s.undo.len()) {
+        if self.after_last.is_none() {
+            // not stepped yet: an edit that ended the hold this run shared with one that had stepped
+            // (that one can't fold around it) is not an edit between this run's own steps
+            if self.hold.is_some() {
+                self.hold = Some(s.hold_undo());
+            }
+        } else if self.after_last != Some((s.undo.len(), commits)) {
             self.interleaved = true;
+            self.hold = None;
+            // (a step that commits nothing, a failed batch, would leave the history uncut)
+            s.trim_undo();
         }
-        self.apply_step(s, step);
+        s.run_step(|s| self.apply_step(s, step));
         if s.commits() != commits {
             self.own += usize::try_from(s.commits().wrapping_sub(commits)).unwrap_or(0);
-            self.after_last = Some(s.undo.len());
+            self.after_last = Some((s.undo.len(), s.commits()));
         }
     }
 
@@ -934,9 +999,11 @@ impl SyncCommit {
     pub fn finish(mut self, s: &mut Session) -> SyncReport {
         // a report line once, however many steps came after a library switch
         self.report.failed.dedup();
-        let ours = Arc::ptr_eq(&self.library, &s.library_identity) && !self.interleaved && self.after_last == Some(s.undo.len());
+        self.hold = None;
+        let ours = Arc::ptr_eq(&self.library, &s.library_identity) && !self.interleaved && self.after_last == Some((s.undo.len(), s.commits()));
         let steps = if ours { self.own.min(s.undo.len()) } else { 0 };
         s.merge_undo(steps, "Synchronize Folder");
+        s.trim_undo();
         if let Some(last) = s.undo.last_mut().filter(|_| steps == 1) {
             last.label = "Synchronize Folder".into();
         }

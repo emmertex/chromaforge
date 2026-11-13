@@ -1,0 +1,8 @@
+# Changes here need a review from one of these people (main's ruleset requires code-owner review).
+# Workflows, and the scripts and tooling the release jobs hand signing secrets to.
+# See docs/releasing.md, "Who can start a release".
+/.github/workflows/ @emmertex @clydecbrown @OneSlips
+/.github/scripts/ @emmertex @clydecbrown @OneSlips
+/.github/CODEOWNERS @emmertex @clydecbrown @OneSlips
+/packaging/ @emmertex @clydecbrown @OneSlips
+/xtask/ @emmertex @clydecbrown @OneSlips

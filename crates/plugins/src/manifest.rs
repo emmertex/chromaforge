@@ -2,8 +2,9 @@
 //! the plug-in contributes (commands with declarative dialogs, hooks, a publish service, settings).
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
+use crate::about::About;
 use crate::permissions::Permissions;
 use crate::{Error, Result};
 
@@ -41,6 +42,19 @@ pub const HOST_FEATURES: &[&str] = &[
     // `libraryAdd` in the permissions and the `library.add` host call; `source` in the `command`
     // and `command.prepare` requests
     "libraryAdd",
+    // `job` on a command and the `job.*` host calls (progress, cancel, `{continue: state}`)
+    "jobs",
+    // `pixels` in the permissions and the `photo.pixels` host call
+    "pixels",
+    // `crop` in the permissions and the `develop.setCrop` host call
+    "crop",
+    // `virtualCopy` in the permissions and the `photo.virtualCopy` host call
+    "virtualCopy",
+    // `icon` and `header` in the manifest, shown by the Plug-in Manager (`plugin.picture`)
+    "pictures",
+    // `homepage`, `repository`, `changelog` and `license` in the manifest, shown on the About tab
+    // (`plugin.list` → `about`)
+    "about",
 ];
 
 /// The manifest a plug-in returns from `lcc_manifest`.
@@ -84,6 +98,65 @@ pub struct Manifest {
     /// with `prepare` has its options filled by the `settings.prepare` hook.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<Field>,
+    /// Fields of the manifest JSON the host doesn't know, by path ([`ignored_fields`]): a typo, or
+    /// a field from a newer host. Set by [`Manifest::parse`].
+    #[serde(skip)]
+    pub unknown_fields: Vec<String>,
+    /// A square icon the host may show for the plug-in (`"icon": "<svg…>"`, drawn on the host's
+    /// own background, so it suits dark and light themes), as a pixel filter's. Read by
+    /// [`Manifest::parse`]; a picture that isn't an SVG document of at most [`MAX_PICTURE_BYTES`]
+    /// is dropped (the host draws its own icon).
+    #[serde(skip)]
+    pub icon: Option<String>,
+    /// A header picture the host may show in place of the plug-in's name (`"header": "<svg…>"`, or
+    /// `{"dark": "<svg…>", "light": "<svg…>"}` for dark and light interface themes), as a pixel
+    /// filter's. Read by [`Manifest::parse`]; a picture that isn't an SVG document of at most
+    /// [`MAX_PICTURE_BYTES`] is dropped (no header).
+    #[serde(skip)]
+    pub header: Option<Header>,
+    /// Where the plug-in comes from (`homepage`, `repository`, `changelog`, `license`). Read by
+    /// [`Manifest::parse`]; a value the host can't use is dropped and named in [`Manifest::dropped`].
+    #[serde(skip)]
+    pub about: About,
+    /// Manifest values [`Manifest::parse`] dropped, each with why (`"homepage: not an https://
+    /// link"`): the install puts them in the plug-in's log.
+    #[serde(skip)]
+    pub dropped: Vec<String>,
+}
+
+/// The largest picture (`icon`, each `header` theme) a manifest may carry: a logo drawn as paths
+/// is a few kilobytes. The manifest as a whole stays within [`MAX_MANIFEST_BYTES`].
+pub const MAX_PICTURE_BYTES: usize = 24 * 1024;
+
+/// A plug-in's header picture (see [`Manifest::header`]): SVG documents for dark and light
+/// interface themes, at least one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    pub dark: Option<String>,
+    pub light: Option<String>,
+}
+
+/// `v` as an SVG document of at most [`MAX_PICTURE_BYTES`], or `None`.
+fn svg_document(v: Option<&serde_json::Value>) -> Option<String> {
+    let t = v?.as_str()?.trim();
+    (t.len() <= MAX_PICTURE_BYTES && (t.starts_with("<svg") || t.starts_with("<?xml")) && t.contains("</svg>")).then(|| t.to_string())
+}
+
+impl Header {
+    fn parse(v: &serde_json::Value) -> Option<Header> {
+        let h = match v {
+            serde_json::Value::String(_) => Header { dark: svg_document(Some(v)), light: None },
+            _ => Header { dark: svg_document(v.get("dark")), light: svg_document(v.get("light")) },
+        };
+        (h.dark.is_some() || h.light.is_some()).then_some(h)
+    }
+
+    /// The picture for a dark (`true`) or light interface theme, or the other one when the
+    /// plug-in gives only one.
+    pub fn for_theme(&self, dark: bool) -> &str {
+        let (want, other) = if dark { (&self.dark, &self.light) } else { (&self.light, &self.dark) };
+        want.as_deref().or(other.as_deref()).unwrap_or_default()
+    }
 }
 
 /// An export destination ("Upload to my server").
@@ -136,6 +209,10 @@ pub struct CommandDecl {
     /// and defaults of its own, runs the command without it, or explains why it can't run.
     #[serde(default, skip_serializing_if = "is_false")]
     pub prepare: bool,
+    /// Runs as a job (host feature `jobs`): on a worker, with a row in the activity stack, its
+    /// progress reported through the `job.*` host calls, and continued with `{continue: state}`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub job: bool,
 }
 
 /// Which hooks the plug-in implements.
@@ -232,9 +309,116 @@ fn short(s: &str) -> String {
     s.chars().take(64).collect()
 }
 
+/// Most fields [`ignored_fields`] reports, most it tests (known fields left out of the
+/// serialised manifest at their defaults are candidates too, so it looks past 32), and how deep.
+const MAX_IGNORED: usize = 32;
+const MAX_CANDIDATES: usize = 256;
+const MAX_IGNORED_DEPTH: usize = 16;
+
+/// A step of a path into JSON.
+#[derive(Clone)]
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// The fields of manifest JSON `raw` that `parse` ignores, by path (`commands[2].lable`), at most
+/// 32. A field is ignored when the manifest parsed from `raw` doesn't serialise it, and setting it
+/// to a value no field takes (`[[[]]]`) still parses to the same manifest; so a known field at its
+/// default isn't reported. `lenient`: paths (`*` for any key) of fields that drop a value they
+/// can't use instead of failing, which that test can't tell from unknown ones; never reported.
+/// Plug-in and pixel-filter manifests both use it (`serde(deny_unknown_fields)` doesn't work with
+/// their `serde(flatten)`ed fields).
+pub fn ignored_fields<T: Serialize + PartialEq>(raw: &Value, lenient: &[&str], parse: impl Fn(&Value) -> Option<T>) -> Vec<String> {
+    let Some(base) = parse(raw) else { return Vec::new() };
+    let Ok(ser) = serde_json::to_value(&base) else { return Vec::new() };
+    let mut candidates = Vec::new();
+    unserialised(raw, &ser, &mut Vec::new(), &mut candidates);
+    candidates
+        .into_iter()
+        .filter(|path| !lenient.iter().any(|l| path_matches(l, path)))
+        .filter(|path| {
+            let mut probe = raw.clone();
+            match value_at(&mut probe, path) {
+                Some(slot) => *slot = json!([[[]]]),
+                None => return false,
+            }
+            parse(&probe).is_some_and(|m| m == base)
+        })
+        .take(MAX_IGNORED)
+        .map(|path| show_path(&path))
+        .collect()
+}
+
+/// Paths of `raw`'s object keys that `ser` (the parsed manifest, serialised) lacks.
+fn unserialised(raw: &Value, ser: &Value, path: &mut Vec<Step>, out: &mut Vec<Vec<Step>>) {
+    if path.len() >= MAX_IGNORED_DEPTH {
+        return;
+    }
+    match (raw, ser) {
+        (Value::Object(r), Value::Object(s)) => {
+            for (k, v) in r {
+                if out.len() >= MAX_CANDIDATES {
+                    return;
+                }
+                path.push(Step::Key(k.clone()));
+                match s.get(k) {
+                    Some(sv) => unserialised(v, sv, path, out),
+                    None => out.push(path.clone()),
+                }
+                path.pop();
+            }
+        }
+        (Value::Array(r), Value::Array(s)) if r.len() == s.len() => {
+            for (i, (rv, sv)) in r.iter().zip(s).enumerate() {
+                path.push(Step::Index(i));
+                unserialised(rv, sv, path, out);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn value_at<'a>(v: &'a mut Value, path: &[Step]) -> Option<&'a mut Value> {
+    path.iter().try_fold(v, |v, step| match step {
+        Step::Key(k) => v.get_mut(k.as_str()),
+        Step::Index(i) => v.get_mut(*i),
+    })
+}
+
+/// Whether `pattern` (`params.*.label`; `*` is any key or index) names `path`.
+fn path_matches(pattern: &str, path: &[Step]) -> bool {
+    let parts: Vec<&str> = pattern.split('.').collect();
+    parts.len() == path.len()
+        && parts.iter().zip(path).all(|(p, step)| match step {
+            Step::Key(k) => *p == "*" || p == k,
+            Step::Index(_) => *p == "*",
+        })
+}
+
+fn show_path(path: &[Step]) -> String {
+    let mut s = String::new();
+    for step in path {
+        match step {
+            Step::Key(k) if s.is_empty() => s.push_str(&short(k)),
+            Step::Key(k) => {
+                s.push('.');
+                s.push_str(&short(k));
+            }
+            Step::Index(i) => s.push_str(&format!("[{i}]")),
+        }
+    }
+    s
+}
+
 pub(crate) fn valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
+
+/// Plug-in manifest fields read leniently (a picture the host can't use is dropped, not an
+/// error): never reported as unknown.
+const LENIENT: &[&str] = &["icon", "header", "homepage", "repository", "changelog", "license"];
 
 impl Manifest {
     /// Parses and validates a manifest.
@@ -242,8 +426,15 @@ impl Manifest {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(Error::Manifest(format!("{} bytes (limit {MAX_MANIFEST_BYTES})", bytes.len())));
         }
-        let m: Manifest = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        // the struct first: it refuses a key given twice, which a `Value` would keep the last of
+        let mut m: Manifest = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        let raw: Value = serde_json::from_slice(bytes).map_err(|e| Error::Manifest(e.to_string()))?;
+        // pictures are optional: one the host can't use is dropped, never an error
+        m.icon = svg_document(raw.get("icon"));
+        m.header = raw.get("header").and_then(Header::parse);
+        (m.about, m.dropped) = About::parse(&raw);
         m.validate()?;
+        m.unknown_fields = ignored_fields(&raw, LENIENT, |v| serde_json::from_value::<Manifest>(v.clone()).ok());
         Ok(m)
     }
 
@@ -278,6 +469,9 @@ impl Manifest {
             }
             if c.dialog.len() > MAX_FIELDS {
                 return bad(format!("command {:?}: at most {MAX_FIELDS} dialog fields", c.id));
+            }
+            if c.job && !self.requires.iter().any(|r| r == "jobs") {
+                return bad(format!("command {:?}: a job needs \"jobs\" in `requires`", c.id));
             }
             for f in &c.dialog {
                 f.validate(c.prepare).map_err(|e| Error::Manifest(format!("command {:?}: {e}", c.id)))?;
@@ -506,27 +700,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// An icon and a header (one picture, or one per interface theme) are kept; a picture that
+    /// isn't an SVG document, or is too large, is dropped without failing the manifest.
     #[test]
-    fn parses_a_full_manifest() {
-        let m = Manifest::parse(
-            json!({
-                "id": "org.example.geo", "name": "Geo", "version": "1.0.0",
-                "permissions": {"catalog": true, "network": ["api.example.com"]},
-                "commands": [{"id": "lookup", "label": "Look Up Places", "menu": "Metadata",
-                    "dialog": [{"key": "radius", "label": "Radius", "type": "number", "min": 0, "max": 10, "default": 1},
-                               {"key": "lang", "label": "Language", "type": "choice", "options": ["en", "de"]}]}],
-                "hooks": {"metadata": true},
-                "publish": {"id": "webdav", "name": "WebDAV"}
-            })
-            .to_string()
-            .as_bytes(),
-        )
-        .unwrap();
-        assert!(m.permissions.catalog && m.hooks.metadata && !m.hooks.export);
-        let c = m.command("lookup").unwrap();
-        let a = dialog_args(&c.dialog, &json!({"radius": 50})).unwrap();
-        assert_eq!(a, json!({"radius": 10.0, "lang": "en"}));
-        assert!(dialog_args(&c.dialog, &json!({"lang": "fr"})).is_err());
+    fn pictures_are_kept_or_dropped() {
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg'><rect width='1' height='1'/></svg>";
+        let with = |extra: serde_json::Value| {
+            let mut m = json!({"id": "org.example.pic", "name": "Pic", "version": "1.0.0"});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            Manifest::parse(m.to_string().as_bytes()).unwrap()
+        };
+        let none = with(json!({}));
+        assert!(none.icon.is_none() && none.header.is_none());
+        let m = with(json!({"icon": svg, "header": svg}));
+        assert_eq!(m.icon.as_deref(), Some(svg));
+        let h = m.header.unwrap();
+        assert_eq!((h.for_theme(true), h.for_theme(false)), (svg, svg), "one picture serves both themes");
+        let m = with(json!({"header": {"light": svg}}));
+        assert_eq!(m.header.as_ref().map(|h| h.for_theme(true)), Some(svg));
+        for bad in [json!({"icon": "<html></html>"}), json!({"icon": 7}), json!({"header": {"dark": "png bytes"}}), json!({"header": [svg]})] {
+            let m = with(bad.clone());
+            assert!(m.icon.is_none() && m.header.is_none(), "{bad}");
+        }
+        let huge = format!("<svg>{}</svg>", "x".repeat(MAX_PICTURE_BYTES));
+        assert!(with(json!({"icon": huge})).icon.is_none());
     }
 
     #[test]

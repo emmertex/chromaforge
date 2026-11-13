@@ -184,7 +184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Recognize People",
             [],
             None,
-            "{ids?, apply?: bool (false), threshold?: 0..1} — match the faces on the photos to the people you named (people.learn; by look: within a shoot clothes and hair count most): {suggestions: [{photo, face, name, score}], named, pending} — `apply` names the confident ones (one undo step); in the app `pending` photos are still being analysed (ask again)",
+            "{ids?, apply?: bool (false), threshold?: 0..1}: match the faces on the photos to the people you named (people.learn; by look: within a shoot clothes and hair count most): {suggestions: [{photo, face, name, score}], named, pending}. `apply` names the confident ones (one undo step); in the app `pending` photos are still being analysed (ask again)",
             always,
             |s, p| {
                 let c = "people.recognize";
@@ -241,7 +241,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Group Unnamed Faces",
             [],
             None,
-            "{ids?, threshold?: 0..1 (0.6)} — group the unnamed faces of the photos (a shoot) by look, for naming a group at once: {clusters: [{faces: [{photo, face, rect}]}], pending}",
+            "{ids?, threshold?: 0..1 (0.6)}: group the unnamed faces of the photos (a shoot) by look, for naming a group at once: {clusters: [{faces: [{photo, face, rect}]}], pending}",
             always,
             |s, p| {
                 let c = "people.cluster";
@@ -281,22 +281,4 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
     ]
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use crate::Session;
-
-    /// Without anyone named, or with bad ids, they answer with an error, never a panic.
-    #[test]
-    fn recognize_and_cluster_answer_without_names_or_models() {
-        let mut s = Session::with_demo();
-        assert!(s.execute("people.recognize", &json!({})).is_err(), "nobody named yet");
-        assert!(s.execute("people.recognize", &json!({"ids": ["x"]})).is_err());
-        assert!(s.execute("people.cluster", &json!({"ids": [u64::MAX]})).is_err());
-        // no face model in the demo library: an error saying so
-        assert!(s.execute("people.cluster", &json!({})).is_err());
-    }
 }

@@ -15,7 +15,6 @@ const ROOT: &str = "/tmp/lcc-gallery";
 const MANIFEST: &str = r#"{
   "id": "org.example.publish-folder",
   "name": "Local Gallery (example)",
-  "version": "0.1.0",
   "description": "Publishes photos into a gallery folder with an index",
   "author": "the app's authors",
   "permissions": {"fs": [{"path": "/tmp/lcc-gallery", "write": true}]},
@@ -79,7 +78,7 @@ fn safe_name(s: &str) -> String {
     if n.trim_matches('.').is_empty() || n == "index.json" { String::new() } else { n }
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {

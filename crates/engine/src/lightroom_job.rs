@@ -30,13 +30,29 @@ fn cancelled() -> crate::EngineError {
     crate::EngineError::Cancelled(error("Lightroom import cancelled").to_string())
 }
 
+/// Save the recovery archive. It is best-effort: nothing reads it back during import, so an archive
+/// that can't be saved (a drive that refuses the write, #3114) costs the archive, with a warning
+/// naming the folder, not the import. A folder the import index can't be written to is refused
+/// first, before anything changes. The warning goes first: the result window lists only the first
+/// few, and catalog warnings (one per unreadable record) can be many.
 fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate::Result<Option<PathBuf>> {
     use crate::lightroom_archive::{Kept, MAX_ARCHIVE_BYTES};
     let Some(dir) = archive_dir else { return Ok(None) };
+    // The import index, unlike the archive, is required, and it is written only after the photos
+    // are imported: refuse a folder it can't be written to here, rather than import and then fail
+    // (a retry could duplicate virtual copies).
+    require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this catalog: {e}")))?;
     let limit = MAX_ARCHIVE_BYTES >> 20;
     // the warning names the program the catalog comes from
     let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
-    Ok(match crate::lightroom_archive::store_best_effort(dir, data).map_err(error)? {
+    let kept = match crate::lightroom_archive::store_best_effort(dir, data) {
+        Ok(kept) => kept,
+        Err(e) => {
+            data.warnings.insert(0, format!("{program} source archive not saved in {}: {e}; archive skipped", dir.display()));
+            return Ok(None);
+        }
+    };
+    Ok(match kept {
         Kept::All(path) => Some(path),
         Kept::WithoutSettings(path) => {
             data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
@@ -47,6 +63,33 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
             None
         }
     })
+}
+
+/// Check that `lightroom-index.json` can be written in `dir` (creating the folder, as the archive
+/// would): a real folder, not a link or a file, in which a file can be created and removed. The
+/// probe is a plain exclusive create, never a hard link, so volumes without them (exFAT) pass.
+fn require_index_folder(dir: &Path) -> Result<(), String> {
+    if let Err(e) = std::fs::symlink_metadata(dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("cannot read {}: {e}", dir.display()));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create the folder {}: {e}", dir.display()))?;
+    }
+    crate::lightroom_archive::require_real_directory(dir)?;
+    let unwritable = |e: std::io::Error| format!("the import index can't be written in {} ({e}); make the folder writable", dir.display());
+    let pid = std::process::id();
+    for slot in 0..64 {
+        let probe = dir.join(format!(".lightroom-index-probe-{pid}-{slot}.tmp"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return std::fs::remove_file(&probe).map_err(unwritable);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(unwritable(e)),
+        }
+    }
+    Err(format!("no free name to check that {} is writable", dir.display()))
 }
 
 /// Memory identity of the library which owns a prepared completion.
@@ -128,7 +171,13 @@ impl LightroomArchiveFinalization {
         if bytes.len() > MAX_INDEX_BYTES {
             return Err(error("Lightroom import index exceeds 16 MiB"));
         }
-        lcc_catalog::safe_file::write_atomic(&path, &bytes).map_err(|e| error(e.to_string()))
+        let failed = |e: &dyn std::fmt::Display| crate::EngineError::Other(format!("could not write the import index {}: {e}", path.display()));
+        // the archive refuses a linked folder; now that its failure no longer stops the import, the
+        // index must refuse it too, or it would be written outside the library
+        if let Some(dir) = path.parent() {
+            crate::lightroom_archive::require_real_directory(dir).map_err(|e| failed(&e))?;
+        }
+        lcc_catalog::safe_file::write_atomic(&path, &bytes).map_err(|e| failed(&e))
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -295,7 +344,7 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
     }
     if !prepared.token.matches(s) {
         prepared.normal.rollback();
-        return Err(error("Lightroom import belongs to a different open library"));
+        return Err(error("Lightroom import belongs to a different open catalog"));
     }
     // A command-scoped Lightroom import must never rewrite source XMP sidecars.  Direct depth-0
     // callers do not set this transient flag, so they cannot affect a later command.
@@ -307,8 +356,10 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
     prepared.normal.revalidate_add(s);
     let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
     let now = prepared.now.clone();
+    let before = s.before_step();
     let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
-    let applied = lightroom_catalog::apply_prepared(
+    let file_step = s.committed_step(before);
+    let applied = match lightroom_catalog::apply_prepared(
         s,
         prepared.data,
         lightroom_catalog::ApplyPrepared {
@@ -319,7 +370,20 @@ pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) 
             missing_sources: &prepared.missing_sources,
             undo0,
         },
-    )?;
+    ) {
+        Ok(applied) => applied,
+        // The file step has made the catalog's originals records, and photos browsed in Local the library's. A catalog
+        // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
+        // album id it can't give) must not leave them so, without the catalog's ratings, flags, edits or collections,
+        // while it reports only the error: take that step back. It is records only: Add moves and copies no file.
+        Err(e) => {
+            let Some(step) = file_step else { return Err(e) };
+            return Err(match s.take_back(step) {
+                Ok(()) => e,
+                Err(back) => crate::EngineError::Other(format!("{e}; the photos it added could not be taken back: {back}")),
+            });
+        }
+    };
     let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
     let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
     Ok(LightroomCompletion { report: applied.report, finalization: LightroomArchiveFinalization { path, bytes } })
@@ -407,6 +471,7 @@ mod tests {
                     history: Vec::new(),
                     snapshots: Vec::new(),
                     original: lightroom_catalog::Original::Local,
+                    as_shot_white: None,
                 }],
                 collections: Vec::new(),
                 members: Vec::new(),
@@ -556,6 +621,7 @@ mod tests {
                         )])],
                         snapshots: Vec::new(),
                         original: lightroom_catalog::Original::Local,
+                        as_shot_white: None,
                     }
                 })
                 .collect();
@@ -608,6 +674,7 @@ mod tests {
                 history: Vec::new(),
                 snapshots: Vec::new(),
                 original: lightroom_catalog::Original::NotHere,
+                as_shot_white: None,
             })
             .collect();
         let mut session = crate::Session::new();
@@ -638,6 +705,138 @@ mod tests {
             session.execute("photo.readMetadataFromFile", &serde_json::json!({ "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>() })).unwrap();
         assert_eq!(read["failed"].as_array().map(Vec::len), Some(20_000), "no file has a sidecar here");
         assert!(started.elapsed() < std::time::Duration::from_secs(90), "{:?}", started.elapsed());
+    }
+
+    /// The archive is best-effort: a folder it can't be written to costs the archive, not the import.
+    #[test]
+    fn an_archive_that_cannot_be_written_is_a_warning_naming_its_folder() {
+        let dir = std::env::temp_dir().join(format!("lcc-lr-archive-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let interop = dir.join("Interop");
+        std::fs::create_dir_all(&interop).unwrap();
+        // more entries than the archive scans, so storing it fails while the folder stays writable
+        for i in 0..=1024 {
+            std::fs::write(interop.join(format!("other-{i}")), b"").unwrap();
+        }
+        let mut data = empty_data();
+        data.warnings = (0..10).map(|i| format!("record {i}: unreadable XMP")).collect();
+        assert_eq!(stage_archive(Some(&interop), &mut data).unwrap(), None);
+        assert_eq!(data.warnings.len(), 11);
+        assert!(data.warnings[0].contains("source archive not saved in "), "{}", data.warnings[0]);
+        assert!(data.warnings[0].contains(&*interop.to_string_lossy()), "{}", data.warnings[0]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A failed index write is an error naming the file.
+    #[test]
+    fn an_index_write_failure_names_the_index_file() {
+        let path = std::env::temp_dir().join(format!("lcc-lr-index-missing-{}", std::process::id())).join("lightroom-index.json");
+        let e = LightroomArchiveFinalization { path: Some(path.clone()), bytes: Some(b"{}".to_vec()) }.finish().unwrap_err();
+        assert!(e.to_string().contains(&*path.to_string_lossy()), "{e}");
+    }
+
+    /// A linked folder must not receive the index, and the import is refused before it changes anything.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_write_refuses_a_linked_interop_folder() {
+        let root = std::env::temp_dir().join(format!("lcc-lr-index-linked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (library, outside) = (root.join("library"), root.join("outside"));
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("lightroom-index.json"), b"not ours").unwrap();
+        std::os::unix::fs::symlink(&outside, library.join("Interop")).unwrap();
+        let path = library.join("Interop/lightroom-index.json");
+        let e = LightroomArchiveFinalization { path: Some(path), bytes: Some(b"{}".to_vec()) }.finish().unwrap_err();
+        assert!(e.to_string().contains("is a link or a file, not a folder"), "{e}");
+        assert_eq!(std::fs::read(outside.join("lightroom-index.json")).unwrap(), b"not ours");
+        let mut data = empty_data();
+        let e = stage_archive(Some(&library.join("Interop")), &mut data).unwrap_err();
+        assert!(e.to_string().contains("is a link or a file, not a folder"), "{e}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn album_step(s: &mut crate::Session, name: &str) -> lcc_catalog::AlbumId {
+        let id = s.catalog.alloc_album_id();
+        s.commit(name, lcc_catalog::Op::AddAlbum { album: lcc_catalog::Album::new(id, name) }).unwrap();
+        id
+    }
+
+    fn undo_labels(s: &crate::Session) -> Vec<String> {
+        s.undo.iter().map(|e| e.label.clone()).collect()
+    }
+
+    /// The take-back a failed import uses reverses its own step and nothing older: a step committed, merged or undone
+    /// after it means the top of the undo stack may be someone else's, and it refuses.
+    #[test]
+    fn a_take_back_refuses_once_its_step_is_no_longer_the_last() {
+        type Change = fn(&mut crate::Session);
+        let changes: [(&str, Change); 3] = [
+            ("committed", |s| {
+                album_step(s, "later");
+            }),
+            ("merged", |s| s.merge_undo(2, "merged")),
+            ("undone", |s| {
+                s.undo_step().unwrap();
+            }),
+        ];
+        for (what, change) in changes {
+            let mut s = crate::Session::new();
+            album_step(&mut s, "mine");
+            let before = s.before_step();
+            album_step(&mut s, "import");
+            let step = s.committed_step(before).unwrap();
+            change(&mut s);
+            let (albums, undo) = (s.catalog.albums().count(), undo_labels(&s));
+            let e = s.take_back(step).unwrap_err();
+            assert!(e.to_string().contains("no longer the last one"), "{what}: {e}");
+            assert_eq!((s.catalog.albums().count(), undo_labels(&s)), (albums, undo), "{what}: nothing was taken back");
+        }
+        // no step, or two, since: nothing to take back
+        let mut s = crate::Session::new();
+        let before = s.before_step();
+        assert!(s.committed_step(before).is_none());
+        album_step(&mut s, "one");
+        album_step(&mut s, "two");
+        assert!(s.committed_step(before).is_none());
+    }
+
+    /// The step leaves the queue for the library's log when it hasn't been written, so neither it nor its reversal
+    /// reaches the disk; once written, its reversal is logged after it, as an undo's is.
+    #[test]
+    fn a_take_back_drops_an_unwritten_step_and_logs_the_reversal_of_a_written_one() {
+        for written in [false, true] {
+            let mut s = crate::Session::new();
+            album_step(&mut s, "mine");
+            let before = s.before_step();
+            let id = album_step(&mut s, "import");
+            let step = s.committed_step(before).unwrap();
+            let log = if written { s.drain_log() } else { Vec::new() };
+            s.take_back(step).unwrap();
+            assert!(s.catalog.album(id).is_none());
+            assert_eq!(undo_labels(&s), ["mine"], "written: {written}");
+            assert!(s.redo.is_empty(), "nothing to redo");
+            let queued = s.drain_log();
+            if written {
+                assert_eq!(log.len(), 2);
+                assert!(matches!(queued.as_slice(), [lcc_catalog::Op::RemoveAlbum { id: removed }] if *removed == id), "{queued:?}");
+            } else {
+                assert!(matches!(queued.as_slice(), [lcc_catalog::Op::AddAlbum { album }] if album.name == "mine"), "{queued:?}");
+            }
+        }
+    }
+
+    /// A step whose reversal the catalog refuses stays on the undo stack, and the error says why.
+    #[test]
+    fn a_step_that_cannot_be_taken_back_stays_on_the_undo_stack() {
+        let mut s = crate::Session::new();
+        let before = s.before_step();
+        let id = album_step(&mut s, "import");
+        let step = s.committed_step(before).unwrap();
+        // the album goes behind the step's back: its reversal (removing it) has nothing to remove
+        s.apply_system(lcc_catalog::Op::RemoveAlbum { id }).unwrap();
+        assert!(s.take_back(step).is_err());
+        assert_eq!(undo_labels(&s), ["import"]);
     }
 
     #[test]

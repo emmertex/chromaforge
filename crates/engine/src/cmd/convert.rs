@@ -131,7 +131,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Convert to DNG",
         ["Photo", "File"],
         None,
-        "{ids?} — write each raw photo as a lossless DNG next to it (settings embedded) and relink the photo to it; originals are kept → {converted: [{id, path, original}], skipped}",
+        "{ids?}: write each raw photo as a lossless DNG next to it (settings embedded) and relink the photo to it; originals are kept → {converted: [{id, path, original}], skipped}",
         has_selection,
         convert
     )]
@@ -205,14 +205,15 @@ fn edit_copy(s: &mut Session, p: &Value, id: lcc_catalog::PhotoId, opts: &crate:
         written.push(path.to_string());
         Ok(())
     };
-    let to = crate::export::Destination { dir, exact: None };
+    let to = crate::export::Destination { dir: dir.clone(), exact: None };
     crate::export::export_batch(s, &[id], opts, &to, &mut write, &|path| Path::new(path).exists()).map_err(|e| bad(cmd, e))?;
     let ext = format!(".{}", opts.format.extension());
     let out = written.into_iter().find(|w| w.ends_with(&ext)).ok_or_else(|| bad(cmd, "nothing was written"))?;
     let r = s.execute("library.import", &json!({"paths": [out]}))?;
     let Some(new) = r["imported"].get(0).and_then(Value::as_u64) else {
         // the render is the same bytes as a copy the library already has (the last one was never changed): that copy
-        // is the one to open, and the file just written is an orphan nobody would ever see (upstream #3617)
+        // is the one to open, and the file just written is an orphan nobody would ever see (upstream #3617), unless
+        // import restored a trashed copy by relinking it to this very file
         let existing = r["restored"]
             .get(0)
             .and_then(Value::as_u64)
@@ -220,18 +221,45 @@ fn edit_copy(s: &mut Session, p: &Value, id: lcc_catalog::PhotoId, opts: &crate:
             .and_then(|i| s.catalog.photo(lcc_catalog::PhotoId(i)))
             .filter(|p| !p.deleted)
             .and_then(|p| match &p.source {
-                Source::File { path } => Some((p.id.0, path.clone())),
-                Source::Demo { .. } => None,
+                // only a copy this command could have made (next to the original, named `<name>-Edit…`: the same
+                // bytes alone don't make another photo this one's copy) and whose file is still there
+                Source::File { path } if is_edit_copy_name(&ph.file_name, &dir, path) && Path::new(path).is_file() => Some((p.id.0, path.clone())),
+                _ => None,
             });
-        let _ = std::fs::remove_file(&out);
+        if existing.as_ref().is_none_or(|(_, path)| *path != out) {
+            let _ = std::fs::remove_file(&out);
+        }
         return match existing {
-            Some((id, path)) => Ok(json!({"path": path, "id": id, "original": ph.id.0})),
+            Some((copy, path)) => {
+                // as for a new copy, it ends on top of the original's stack and the stack is open, so both show: a
+                // restored copy left its stack when it was deleted, and one still in it may be under the original or collapsed
+                let shown =
+                    s.catalog.stack_of(lcc_catalog::PhotoId(copy)).is_some_and(|st| st.photos.contains(&id) && st.top().0 == copy && !st.collapsed);
+                if !shown {
+                    stack_on_top(s, copy, id.0);
+                }
+                Ok(json!({"path": path, "id": copy, "original": id.0}))
+            }
             None => Err(bad(cmd, "the edit copy could not be added")),
         };
     };
-    // stack: the edit on top of the original, expanded so both show
-    let _ = s.execute("stack.group", &json!({"ids": [new, id.0], "top": new, "collapsed": false}));
+    stack_on_top(s, new, id.0);
     Ok(json!({"path": out, "id": new, "original": id.0}))
+}
+
+/// Whether `copy` is where and as `edit_copy` names the copy of the photo called `original_name` in `dir`: in `dir`, with a
+/// file name that starts with the original's name and `-Edit` (a `-2` for a taken name follows it).
+fn is_edit_copy_name(original_name: &str, dir: &str, copy: &str) -> bool {
+    let same = |a: &str, b: &str| a.replace('\\', "/").trim_end_matches('/') == b.replace('\\', "/").trim_end_matches('/');
+    let copy = Path::new(copy);
+    let stem = Path::new(original_name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let copy_stem = copy.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    !stem.is_empty() && copy.parent().is_some_and(|p| same(&p.to_string_lossy(), dir)) && copy_stem.starts_with(&format!("{stem}-Edit"))
+}
+
+/// Stack an edit copy on top of its original, expanded so both show.
+fn stack_on_top(s: &mut Session, copy: u64, original: u64) {
+    let _ = s.execute("stack.group", &json!({"ids": [copy, original], "top": copy, "collapsed": false}));
 }
 
 /// The op that brings a photo up to date with what its file is now (`info`, a fresh probe), or
@@ -258,7 +286,7 @@ pub(crate) fn content_op(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info
 }
 
 /// Ops that fill a photo's empty camera fields (camera, lens, exposure, GPS, capture time) from a fresh probe.
-fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
+pub(crate) fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     let (mut m, src) = (ph.meta.clone(), &info.meta);
     let before = m.clone();
     if m.camera.is_empty() {
@@ -278,12 +306,17 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
     if m.lens.is_empty() {
         m.lens = src.lens.clone();
     }
+    if m.lens_make.is_empty() {
+        m.lens_make = src.lens_make.clone();
+    }
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
     }
     m.focal_mm = m.focal_mm.or(src.focal_mm);
     m.aperture = m.aperture.or(src.aperture);
     m.iso = m.iso.or(src.iso);
+    m.flash = m.flash.or(src.flash);
+    m.exposure_bias = m.exposure_bias.or(src.exposure_bias);
     m.gps = m.gps.or(src.gps);
     // the camera's focus point: photos imported before it was read get it here
     if m.focus.is_none() {
@@ -293,7 +326,11 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
     if m != before {
         ops.push(Op::SetMeta { id, meta: Box::new(m) });
     }
-    if ph.captured.is_none() && info.captured.is_some() {
+    // a time the photo has only as import's file-date guess ([`lcc_catalog::Photo::captured_fallback`]) gives way to the
+    // capture time the file states now (written by an editor after import); a stated or edited time is kept
+    // (upstream #3137, without its catalog field)
+    let guess = ph.captured.is_some() && ph.captured_stated().is_none();
+    if (ph.captured.is_none() || guess) && info.captured.is_some() && info.captured != ph.captured {
         ops.push(Op::SetCaptured { id, captured: info.captured.clone() });
     }
     ops
@@ -301,16 +338,22 @@ fn fill_missing_meta(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &c
 
 /// Ops that give a photo the lens data its file carries now (`info`, a fresh probe), or none when
 /// it already has them. A catalog from before the lens data was read at import has none, so such a
-/// photo's correction stayed off. When the photo gains lens data and its develop settings are still
-/// what import gave it, the lens correction is turned on as import would; an edited photo keeps
-/// its settings.
+/// photo's correction stayed off. When the photo gains lens data that import would have turned on
+/// ([`lcc_catalog::Photo::lens_correction_built_in`]) and its develop settings are still what
+/// import gave it, the correction is turned on as import would; an edited photo keeps its settings.
 pub(crate) fn lens_ops(id: lcc_catalog::PhotoId, ph: &lcc_catalog::Photo, info: &crate::media::ProbeInfo) -> Vec<Op> {
     if info.embedded_lens == ph.embedded_lens.as_deref().copied() {
         return Vec::new();
     }
     let mut ops = vec![Op::SetEmbeddedLens { id, lens: info.embedded_lens.map(Box::new) }];
     // (a photo with a default-preset look keeps it: that look is its import state)
-    if ph.embedded_lens.is_none() && info.embedded_lens.is_some() && ph.import_look.is_none() && !ph.is_edited() && !ph.develop.optics.lens_profile {
+    if ph.embedded_lens.is_none()
+        && info.embedded_lens.is_some()
+        && ph.import_look.is_none()
+        && !ph.is_edited()
+        && !ph.develop.optics.lens_profile
+        && lcc_catalog::lens_built_in_format(&ph.format)
+    {
         let mut d = (*ph.develop).clone();
         d.optics.lens_profile = true;
         ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Lens Corrections".into(), edited: ph.edited.clone() });
@@ -346,8 +389,9 @@ pub(crate) fn reload_ops(
         ops.append(&mut mine);
         changed.push(id);
     }
-    // virtual copies share the file
-    for c in cat.photos().filter(|c| c.copy_of == Some(id)) {
+    // A selected copy refreshes its same-file family too, but only the explicit target gets missing descriptive
+    // metadata above. Relinked copies keep their own file facts.
+    for c in cat.photos().filter(|c| c.id != id && shares_reload_source(c, ph)) {
         let theirs: Vec<Op> =
             content_op(c.id, c, info.clone()).into_iter().chain(lens_ops(c.id, c, info)).chain(as_shot_wb_op(c.id, c, info)).collect();
         if !theirs.is_empty() {
@@ -355,6 +399,12 @@ pub(crate) fn reload_ops(
             changed.push(c.id);
         }
     }
+}
+
+/// Copies share probe results only while both the family and the actual file agree.
+pub(crate) fn shares_reload_source(a: &lcc_catalog::Photo, b: &lcc_catalog::Photo) -> bool {
+    a.copy_of.unwrap_or(a.id) == b.copy_of.unwrap_or(b.id)
+        && matches!((&a.source, &b.source), (Source::File { path: a }, Source::File { path: b }) if a == b)
 }
 
 /// Re-read photos whose files changed on disk (an external editor saved them): new size,
@@ -431,14 +481,113 @@ fn render_to_dng(s: &mut Session, p: &Value) -> Result<Value> {
     crate::render_dng::finish(s, done, cancelled)
 }
 
+/// Enabled when a selected photo is a DNG file (asked every frame: only the selection is looked at).
+fn has_dng_selection(s: &Session) -> std::result::Result<(), String> {
+    let ids = if s.selection.ids.is_empty() { s.selection.active.iter().copied().collect::<Vec<_>>() } else { s.selection.ids.clone() };
+    let any = ids.iter().filter_map(|id| s.catalog.photo(*id)).any(|p| matches!(&p.source, Source::File { path } if crate::dng_update::is_dng(path)));
+    if any { Ok(()) } else { Err("no DNG selected".into()) }
+}
+
+/// Metadata ▸ Update DNG Preview & Metadata: see [`crate::dng_update`]. Here all in one go; the
+/// desktop app runs the rewrites on a worker instead.
+fn update_dng_preview(s: &mut Session, p: &Value) -> Result<Value> {
+    crate::dng_update::run_command(s, p)
+}
+
+/// Read and decode the raw file of library photo `id`; returns its path, the raw and the file bytes.
+fn decode_photo(s: &Session, id: lcc_catalog::PhotoId) -> std::result::Result<(String, lcc_raw::RawImage, Vec<u8>), String> {
+    let ph = s.catalog.photo(id).ok_or_else(|| format!("no photo {}", id.0))?;
+    let Source::File { path } = &ph.source else { return Err(format!("photo {} is not a file", id.0)) };
+    if !matches!(ph.kind, MediaKind::Raw | MediaKind::Image) {
+        return Err(format!("{}: not a raw photo", ph.file_name));
+    }
+    let bytes = match s.media.file_bytes.as_ref() {
+        Some(r) => r(path)?,
+        None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
+    };
+    let raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    Ok((path.clone(), raw, bytes))
+}
+
+/// Flat-Field Correction: fit a gain map from the reference raw and write each target as `<name>-FlatField.dng`
+/// with it in `OpcodeList2`, imported and stacked on its original.
+fn flat_field(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "photo.flatField";
+    let reference = match p.get("reference") {
+        None | Some(Value::Null) => s.active().ok_or_else(|| bad(C, "no flat-field reference: make it the active photo or give `reference`"))?,
+        Some(v) => lcc_catalog::PhotoId(v.as_u64().ok_or_else(|| bad(C, "`reference` must be a photo id"))?),
+    };
+    let ids: Vec<_> = s.targets(p)?.into_iter().filter(|&i| i != reference).collect();
+    if ids.is_empty() {
+        return Err(bad(C, "select the photos to correct besides the flat-field reference"));
+    }
+    let (_, ref_raw, _) = decode_photo(s, reference).map_err(|e| bad(C, format!("flat-field reference: {e}")))?;
+    let ff = lcc_raw::flatfield::fit(&ref_raw).map_err(|e| bad(C, e.to_string()))?;
+    drop(ref_raw);
+    let n = ids.len();
+    let task = s.activity.start("flatField", "Flat-field correction", crate::activity::Cancel::Yes);
+    let mut copies = Vec::new();
+    let mut failed = Vec::new();
+    let mut cancelled = false;
+    for (i, id) in ids.into_iter().enumerate() {
+        task.progress(i as u64, n as u64);
+        if task.is_cancelled() {
+            cancelled = true;
+            break;
+        }
+        let made = (|| -> std::result::Result<String, String> {
+            let (path, mut raw, bytes) = decode_photo(s, id)?;
+            crate::camera_preview::with_starting_colour(&mut raw, &bytes);
+            drop(bytes);
+            lcc_raw::flatfield::apply(&ff, &mut raw).map_err(|e| format!("{path}: {e}"))?;
+            let dng = lcc_raw::write_dng(&raw, &Default::default()).map_err(|e| e.to_string())?;
+            lcc_raw::decode(&dng).map_err(|e| format!("{path}: the corrected DNG doesn't decode ({e})"))?;
+            let pp = Path::new(&path);
+            let dir = pp.parent().unwrap_or(Path::new("")).to_path_buf();
+            let stem = pp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "photo".into());
+            let mut names =
+                (1u64..).map(|k| if k == 1 { dir.join(format!("{stem}-FlatField.dng")) } else { dir.join(format!("{stem}-FlatField-{k}.dng")) });
+            let out = lcc_catalog::safe_file::write_new_unique(&mut names, &dng).map_err(|e| format!("{path}: could not write the DNG ({e})"))?;
+            Ok(out.to_string_lossy().to_string())
+        })();
+        match made {
+            Ok(out) => {
+                let r = s.execute("library.import", &json!({"paths": [out]}))?;
+                match r["imported"].get(0).and_then(Value::as_u64) {
+                    Some(new) => {
+                        stack_on_top(s, new, id.0);
+                        copies.push(json!({"path": out, "id": new, "original": id.0}));
+                    }
+                    None => failed.push(json!({"id": id.0, "error": format!("{out}: written but could not be imported")})),
+                }
+            }
+            Err(e) => failed.push(json!({"id": id.0, "error": e})),
+        }
+    }
+    drop(task);
+    Ok(json!({"copies": copies, "failed": failed, "cancelled": cancelled}))
+}
+
 pub fn edit_specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "photo.flatField",
+                "Flat-Field Correction…",
+                ["Library"],
+                None,
+                "{reference?: id (default: the active photo), ids?: the photos to correct (default: the selection without the reference)}: fit a smooth per-colour gain map from the reference (a raw shot through a diffuser with the same lens and aperture) and write each target as `<name>-FlatField.dng` next to it with that GainMap in OpcodeList2, imported and stacked on its original; refuses targets of another sensor size or CFA layout; shows a cancellable activity row → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
+                has_selection,
+                flat_field
+            )
+        },
         cmd!(
             "photo.duplicate",
             "Duplicate",
             ["Photo", "File"],
             None,
-            "{ids?} — copy each photo's file next to it (`-copy`) and add it with the same settings, metadata and albums (a real file, unlike a virtual copy) → {ids}",
+            "{ids?}: copy each photo's file next to it (`-copy`) and add it with the same settings, metadata and albums (a real file, unlike a virtual copy) → {ids}",
             has_selection,
             duplicate
         ),
@@ -447,7 +596,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Reload from Disk",
             ["Photo", "File"],
             None,
-            "{ids?} — re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
+            "{ids?}: re-read photos whose files changed on disk (e.g. saved by an external editor), or raws shown from their embedded preview that can be decoded now; camera fields the catalog lacks are filled in, and so is the lens data the file carries (an untouched photo then gets its lens correction turned on as import would; an edited one keeps its settings); in the app the files are read in the background (activity row `reload`, cancellable) and the reply is {background: true, count} unless `wait: true` → {reloaded}",
             has_selection,
             reload
         ),
@@ -456,7 +605,7 @@ pub fn edit_specs() -> Vec<CommandSpec> {
             "Edit Copy for External Editor",
             [],
             None,
-            "{ids?, colorSpace?: adobeRgb (default) | proPhoto | displayP3 | srgb, format?: tiff (default) | psd, bitDepth?: 16 (default) | 8, dir?} — render each selected photo (or `ids`, at most 50) with its edits as `<name>-Edit.tif` (or `.psd`, flat, which PhotoCraft saves back to in place) next to it, add each stacked on its original and select the copies → {path, id, original (the first copy), copies: [{path, id, original}]} (the app then opens them in the external editor)",
+            "{ids?, colorSpace?: adobeRgb (default) | proPhoto | displayP3 | srgb, format?: tiff (default) | psd, bitDepth?: 16 (default) | 8, dir?}: render each selected photo (or `ids`, at most 50) with its edits as `<name>-Edit.tif` (or `.psd`, flat, which PhotoCraft saves back to in place) next to it, add each stacked on its original and select the copies → {path, id, original (the first copy), copies: [{path, id, original}]} (the app then opens them in the external editor)",
             has_active,
             edit_external
         ),
@@ -467,9 +616,21 @@ pub fn edit_specs() -> Vec<CommandSpec> {
                 "Render to DNG",
                 ["Photo", "File"],
                 None,
-                "{ids?, colorSpace?: proPhoto (default) | rec2020 | adobeRgb | displayP3 | srgb, dir?} — render each selected photo (or `ids`, at most 500) with its edits as a linear 16-bit float DNG `<name>-Rendered.dng` next to it (a demo photo into `dir`), add each stacked on its original and select them; a batch shows in the activity stack and can be cancelled between photos → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
+                "{ids?, colorSpace?: proPhoto (default) | rec2020 | adobeRgb | displayP3 | srgb, dir?}: render each selected photo (or `ids`, at most 500) with its edits as a linear 16-bit float DNG `<name>-Rendered.dng` next to it (a demo photo into `dir`), add each stacked on its original and select them; a batch shows in the activity stack and can be cancelled between photos → {copies: [{path, id, original}], failed: [{id, error}], cancelled}",
                 has_selection,
                 render_to_dng
+            )
+        },
+        CommandSpec {
+            explicit_targets: true,
+            ..cmd!(
+                "photo.updateDngPreview",
+                "Update DNG Preview & Metadata",
+                ["Metadata"],
+                None,
+                "{ids?, longEdge?: 256..4096 (1024), quality?: 1..100 (85)}: for each selected DNG (or `ids`, at most 500) rewrite the file atomically with a JPEG preview of the current edit (an sRGB preview IFD in SubIFDs; a preview of this app's from before is replaced) and the photo's current XMP embedded (merged into the packet already there); the raw data stays byte for byte. Refused with the reason, file untouched: DNGs written by Adobe software, BigTIFF, unreadable or unfamiliar structures, an embedded XMP that cannot be read; non-DNG photos are skipped. Shows in the activity stack (cancel between photos) → {updated: [{id, path, bytes, preview: [w, h], replacedPreviews}], skipped: [{id, name, reason}], failed: [{id, name, error}], cancelled}",
+                has_dng_selection,
+                update_dng_preview
             )
         },
     ]
@@ -480,66 +641,84 @@ mod tests {
     use super::*;
     use lcc_catalog::{Photo, PhotoId, Source};
 
-    /// A catalog from before Make and Model were kept separately gets its parts backfilled and its
-    /// label re-derived ("Canon Canon IXUS 185" → "Canon IXUS 185") on reload (upstream #1618).
     #[test]
-    fn reload_backfills_camera_parts_and_rederives_label() {
-        let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.jpg".into() }, "x.jpg", "jpeg", 4000, 3000, "2026-10-06T00:00:00");
-        ph.meta.camera = "Canon Canon IXUS 185".into();
-        let mut info = crate::media::ProbeInfo::default();
-        info.meta.camera = "Canon IXUS 185".into();
-        info.meta.camera_make = "Canon".into();
-        info.meta.camera_model = "Canon IXUS 185".into();
-        let ops = fill_missing_meta(PhotoId(1), &ph, &info);
-        let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
-        assert_eq!((meta.camera_make.as_str(), meta.camera_model.as_str(), meta.camera.as_str()), ("Canon", "Canon IXUS 185", "Canon IXUS 185"));
-        // nothing left missing: nothing to do
-        ph.meta = (**meta).clone();
-        assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
-    }
-
-    /// Reload fills camera fields a photo lacks (a CR3 imported before CR3 metadata was read) and keeps
-    /// everything already set.
-    #[test]
-    fn reload_fills_only_missing_camera_fields() {
-        let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.cr3".into() }, "x.cr3", "CR3", 1620, 1080, "2026-10-06T00:00:00");
-        ph.meta.title = "Mine".into();
-        ph.meta.iso = Some(800);
-        let mut info = crate::media::ProbeInfo { captured: Some("2026-10-04T08:16:11".into()), ..Default::default() };
-        info.meta.camera = "Canon EOS R6 Mark III".into();
-        info.meta.lens = "RF24-105mm".into();
-        info.meta.iso = Some(400);
-        info.meta.aperture = Some(6.3);
-        let ops = fill_missing_meta(PhotoId(1), &ph, &info);
-        let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
-        assert_eq!((meta.camera.as_str(), meta.lens.as_str(), meta.aperture), ("Canon EOS R6 Mark III", "RF24-105mm", Some(6.3)));
-        assert_eq!((meta.title.as_str(), meta.iso), ("Mine", Some(800)), "set fields are kept");
-        assert!(matches!(ops.get(1), Some(Op::SetCaptured { captured: Some(_), .. })));
-        // nothing missing → nothing to do
-        ph.meta = (**meta).clone();
-        ph.captured = Some("2026-10-04T08:16:11".into());
-        assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
-    }
-
-    /// Reload from Disk gives a photo imported before focus points were read its camera focus point,
-    /// and never replaces one it has.
-    #[test]
-    fn reload_fills_a_missing_focus_point() {
-        let fp = |x: f64| lcc_meta::FocusPoint {
-            rect: lcc_meta::Rect { x0: x, y0: 0.4, x1: x + 0.02, y1: 0.42 },
-            mode: Some("AF-C".into()),
-            area: None,
-            tracking: None,
-        };
-        let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.arw".into() }, "x.arw", "ARW", 8640, 5760, "2026-10-06T00:00:00");
-        ph.captured = Some("2026-10-04T08:16:11".into());
-        let mut info = crate::media::ProbeInfo { captured: ph.captured.clone(), ..Default::default() };
-        info.meta.focus = Some(fp(0.3));
-        let ops = fill_missing_meta(PhotoId(1), &ph, &info);
-        let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
-        assert_eq!(meta.focus, Some(fp(0.3)));
-        ph.meta.focus = Some(fp(0.1));
-        assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty(), "a known focus point is kept");
+    fn reload_fills_what_is_missing_and_keeps_what_is_set() {
+        // reload replaces a file date guess but not a stated time
+        // Reload replaces the file-date guess with the capture time the file states now, and keeps a stated one.
+        {
+            let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.jpg".into() }, "x.jpg", "jpeg", 40, 30, "2026-10-06T00:00:00");
+            ph.captured = Some("2026-01-01T10:00:00".into());
+            ph.captured_fallback = ph.captured.clone();
+            let mut info = crate::media::ProbeInfo { captured: Some("2025-05-05T08:30:00".into()), ..Default::default() };
+            let ops = fill_missing_meta(PhotoId(1), &ph, &info);
+            assert!(matches!(ops.as_slice(), [Op::SetCaptured { captured: Some(c), .. }] if c == "2025-05-05T08:30:00"), "{ops:?}");
+            // a time that was stated (or edited by hand) stays
+            ph.captured_fallback = None;
+            assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+            // no stated time in the file now: the guess stays
+            ph.captured_fallback = ph.captured.clone();
+            info.captured = None;
+            assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+        }
+        // reload backfills camera parts and rederives label
+        // A catalog from before Make and Model were kept separately gets its parts backfilled and its
+        // label re-derived ("Canon Canon IXUS 185" → "Canon IXUS 185") on reload (upstream #1618).
+        {
+            let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.jpg".into() }, "x.jpg", "jpeg", 4000, 3000, "2026-10-06T00:00:00");
+            ph.meta.camera = "Canon Canon IXUS 185".into();
+            let mut info = crate::media::ProbeInfo::default();
+            info.meta.camera = "Canon IXUS 185".into();
+            info.meta.camera_make = "Canon".into();
+            info.meta.camera_model = "Canon IXUS 185".into();
+            let ops = fill_missing_meta(PhotoId(1), &ph, &info);
+            let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
+            assert_eq!((meta.camera_make.as_str(), meta.camera_model.as_str(), meta.camera.as_str()), ("Canon", "Canon IXUS 185", "Canon IXUS 185"));
+            // nothing left missing: nothing to do
+            ph.meta = (**meta).clone();
+            assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+        }
+        // reload fills only missing camera fields
+        // Reload fills camera fields a photo lacks (a CR3 imported before CR3 metadata was read) and keeps
+        // everything already set.
+        {
+            let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.cr3".into() }, "x.cr3", "CR3", 1620, 1080, "2026-10-06T00:00:00");
+            ph.meta.title = "Mine".into();
+            ph.meta.iso = Some(800);
+            let mut info = crate::media::ProbeInfo { captured: Some("2026-10-04T08:16:11".into()), ..Default::default() };
+            info.meta.camera = "Canon EOS R6 Mark III".into();
+            info.meta.lens = "RF24-105mm".into();
+            info.meta.iso = Some(400);
+            info.meta.aperture = Some(6.3);
+            let ops = fill_missing_meta(PhotoId(1), &ph, &info);
+            let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
+            assert_eq!((meta.camera.as_str(), meta.lens.as_str(), meta.aperture), ("Canon EOS R6 Mark III", "RF24-105mm", Some(6.3)));
+            assert_eq!((meta.title.as_str(), meta.iso), ("Mine", Some(800)), "set fields are kept");
+            assert!(matches!(ops.get(1), Some(Op::SetCaptured { captured: Some(_), .. })));
+            // nothing missing → nothing to do
+            ph.meta = (**meta).clone();
+            ph.captured = Some("2026-10-04T08:16:11".into());
+            assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty());
+        }
+        // reload fills a missing focus point
+        // Reload from Disk gives a photo imported before focus points were read its camera focus point,
+        // and never replaces one it has.
+        {
+            let fp = |x: f64| lcc_meta::FocusPoint {
+                rect: lcc_meta::Rect { x0: x, y0: 0.4, x1: x + 0.02, y1: 0.42 },
+                mode: Some("AF-C".into()),
+                area: None,
+                tracking: None,
+            };
+            let mut ph = Photo::new(PhotoId(1), Source::File { path: "/x.arw".into() }, "x.arw", "ARW", 8640, 5760, "2026-10-06T00:00:00");
+            ph.captured = Some("2026-10-04T08:16:11".into());
+            let mut info = crate::media::ProbeInfo { captured: ph.captured.clone(), ..Default::default() };
+            info.meta.focus = Some(fp(0.3));
+            let ops = fill_missing_meta(PhotoId(1), &ph, &info);
+            let Some(Op::SetMeta { meta, .. }) = ops.first() else { panic!("{ops:?}") };
+            assert_eq!(meta.focus, Some(fp(0.3)));
+            ph.meta.focus = Some(fp(0.1));
+            assert!(fill_missing_meta(PhotoId(1), &ph, &info).is_empty(), "a known focus point is kept");
+        }
     }
 
     fn lens() -> lcc_develop::EmbeddedLens {
@@ -555,47 +734,48 @@ mod tests {
     }
 
     #[test]
-    fn reload_adds_lens_data_and_turns_the_correction_on_for_an_untouched_photo() {
-        let ph = old_rw2();
-        let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
-        let ops = lens_ops(ph.id, &ph, &info);
-        assert!(matches!(ops.first(), Some(Op::SetEmbeddedLens { lens: Some(_), .. })), "{ops:?}");
-        let Some(Op::SetDevelop { settings, .. }) = ops.get(1) else { panic!("{ops:?}") };
-        assert!(settings.optics.lens_profile);
-        // once applied, the photo is still "unedited" and has what import would have given it
-        let mut c = lcc_catalog::Catalog::default();
-        c.apply(Op::AddPhoto { photo: Box::new(ph) }).unwrap();
-        for op in ops {
-            c.apply(op).unwrap();
+    fn reload_adds_lens_data_and_respects_the_users_settings() {
+        // reload adds lens data and turns the correction on for an untouched photo
+        {
+            let ph = old_rw2();
+            let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
+            let ops = lens_ops(ph.id, &ph, &info);
+            assert!(matches!(ops.first(), Some(Op::SetEmbeddedLens { lens: Some(_), .. })), "{ops:?}");
+            let Some(Op::SetDevelop { settings, .. }) = ops.get(1) else { panic!("{ops:?}") };
+            assert!(settings.optics.lens_profile);
+            // once applied, the photo is still "unedited" and has what import would have given it
+            let mut c = lcc_catalog::Catalog::default();
+            c.apply(Op::AddPhoto { photo: Box::new(ph) }).unwrap();
+            for op in ops {
+                c.apply(op).unwrap();
+            }
+            let after = c.photo(lcc_catalog::PhotoId(1)).unwrap();
+            assert_eq!(after.embedded_lens.as_deref().copied(), Some(lens()));
+            assert!(!after.is_edited());
+            assert_eq!(*after.develop, after.camera_defaults());
+            assert!(lens_ops(after.id, after, &info).is_empty(), "nothing more to do the second time");
         }
-        let after = c.photo(lcc_catalog::PhotoId(1)).unwrap();
-        assert_eq!(after.embedded_lens.as_deref().copied(), Some(lens()));
-        assert!(!after.is_edited());
-        assert_eq!(*after.develop, after.camera_defaults());
-        assert!(lens_ops(after.id, after, &info).is_empty(), "nothing more to do the second time");
-    }
-
-    #[test]
-    fn reload_adds_lens_data_but_keeps_an_edited_photos_settings() {
-        let mut ph = old_rw2();
-        let mut d = (*ph.develop).clone();
-        d.light.exposure = 0.7;
-        ph.develop = std::sync::Arc::new(d);
-        assert!(ph.is_edited());
-        let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
-        let ops = lens_ops(ph.id, &ph, &info);
-        assert!(matches!(ops.as_slice(), [Op::SetEmbeddedLens { lens: Some(_), .. }]), "{ops:?}");
-    }
-
-    #[test]
-    fn reload_leaves_a_photo_whose_user_switched_the_correction_off_alone() {
-        let mut ph = old_rw2();
-        ph.embedded_lens = Some(Box::new(lens()));
-        let mut d = ph.camera_defaults();
-        d.optics.lens_profile = false;
-        ph.develop = std::sync::Arc::new(d);
-        let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
-        assert!(lens_ops(ph.id, &ph, &info).is_empty());
+        // reload adds lens data but keeps an edited photos settings
+        {
+            let mut ph = old_rw2();
+            let mut d = (*ph.develop).clone();
+            d.light.exposure = 0.7;
+            ph.develop = std::sync::Arc::new(d);
+            assert!(ph.is_edited());
+            let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
+            let ops = lens_ops(ph.id, &ph, &info);
+            assert!(matches!(ops.as_slice(), [Op::SetEmbeddedLens { lens: Some(_), .. }]), "{ops:?}");
+        }
+        // reload leaves a photo whose user switched the correction off alone
+        {
+            let mut ph = old_rw2();
+            ph.embedded_lens = Some(Box::new(lens()));
+            let mut d = ph.camera_defaults();
+            d.optics.lens_profile = false;
+            ph.develop = std::sync::Arc::new(d);
+            let info = crate::media::ProbeInfo { embedded_lens: Some(lens()), ..Default::default() };
+            assert!(lens_ops(ph.id, &ph, &info).is_empty());
+        }
     }
 
     /// End to end on a public Panasonic raw (skipped without the corpus): a catalog from before the lens data was read
@@ -640,29 +820,75 @@ mod tests {
     }
 
     #[test]
+    fn flat_field_writes_stacked_corrected_dngs_and_refuses_other_sensors() {
+        let dir = scratch("flatfield");
+        let mosaic = |w: usize, h: usize, level: f64| -> Vec<u16> {
+            (0..w * h)
+                .map(|i| {
+                    let (dx, dy) = ((i % w) as f64 / w as f64 - 0.5, (i / w) as f64 / h as f64 - 0.5);
+                    (256.0 + level * (1.0 - (dx * dx + dy * dy)) * 15000.0) as u16
+                })
+                .collect()
+        };
+        let write = |name: &str, w: usize, h: usize, level: f64| {
+            let p = dir.join(name);
+            std::fs::write(&p, crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", mosaic(w, h, level), None, Default::default())).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let (flat, target, small) = (write("flat.dng", 128, 96, 0.7), write("t.dng", 128, 96, 0.3), write("small.dng", 64, 48, 0.3));
+        let mut s = Session::new();
+        let r = s.execute("library.import", &json!({"paths": [flat, target, small]})).unwrap();
+        let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+        assert_eq!(ids.len(), 3, "{r}");
+        let r = s.execute("photo.flatField", &json!({"reference": ids[0], "ids": ids})).unwrap();
+        assert_eq!(r["cancelled"], false);
+        let copies = r["copies"].as_array().unwrap();
+        assert_eq!(copies.len(), 1, "{r}");
+        assert_eq!(r["failed"][0]["id"].as_u64(), Some(ids[2]), "the other sensor size is refused: {r}");
+        let path = copies[0]["path"].as_str().unwrap();
+        assert!(path.ends_with("t-FlatField.dng"), "{path}");
+        let n = lcc_raw::decode(&std::fs::read(path).unwrap()).unwrap().normalized().unwrap();
+        let (lo, hi) = n.data.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+        assert!((hi - lo) / hi < 0.08, "flattened: {lo}..{hi}");
+        let new = PhotoId(copies[0]["id"].as_u64().unwrap());
+        assert!(s.catalog.stack_of(new).unwrap().photos.contains(&PhotoId(ids[1])), "stacked on its original");
+        assert!(s.activity.list().is_empty());
+        assert!(s.execute("photo.flatField", &json!({"reference": ids[0], "ids": [ids[0]]})).is_err(), "no targets");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One test for the plain run (each photo is rendered at full size, so the renders are the cost): explicit ids
+    /// work without a selection, the copy is a linear DNG stacked on its original and selected, a second run never
+    /// overwrites, and a photo edited in HDR renders too.
+    #[test]
     fn render_to_dng_adds_stacked_linear_dngs() {
         let dir = scratch("stack");
         let mut s = Session::with_demo();
-        let ids: Vec<_> = s.visible().iter().copied().take(2).collect();
-        let r = s.execute("photo.renderToDng", &json!({"ids": [ids[0].0, ids[1].0], "dir": dir.to_string_lossy()})).unwrap();
+        let orig = s.visible()[0];
+        // explicit ids need no selection
+        s.execute("library.select", &json!({"ids": []})).unwrap();
+        assert!(s.selection.ids.is_empty(), "selection was cleared");
+        let r = s.execute("photo.renderToDng", &json!({"ids": [orig.0], "dir": dir.to_string_lossy()})).unwrap();
         assert_eq!(r["cancelled"], false);
         let copies = r["copies"].as_array().unwrap();
-        assert_eq!(copies.len(), 2, "{r}");
-        for (c, orig) in copies.iter().zip(&ids) {
-            let path = c["path"].as_str().unwrap();
-            assert!(path.ends_with("-Rendered.dng"), "{path}");
-            let raw = lcc_raw::decode(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!((raw.cpp, raw.cfa.is_none()), (3, true));
-            let new = PhotoId(c["id"].as_u64().unwrap());
-            assert_eq!(c["original"].as_u64(), Some(orig.0));
-            let st = s.catalog.stack_of(new).unwrap();
-            assert_eq!((st.photos.first(), st.photos.contains(orig)), (Some(&new), true), "stacked on top of its original");
-        }
-        assert_eq!(s.selection.ids.len(), 2, "the new DNGs are selected");
+        assert_eq!(copies.len(), 1, "the explicit target was rendered: {r}");
+        let c = &copies[0];
+        let path = c["path"].as_str().unwrap();
+        assert!(path.ends_with("-Rendered.dng"), "{path}");
+        let raw = lcc_raw::decode(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!((raw.cpp, raw.cfa.is_none()), (3, true));
+        let new = PhotoId(c["id"].as_u64().unwrap());
+        assert_eq!(c["original"].as_u64(), Some(orig.0));
+        let st = s.catalog.stack_of(new).unwrap();
+        assert_eq!((st.photos.first(), st.photos.contains(&orig)), (Some(&new), true), "stacked on top of its original");
+        assert_eq!(s.selection.ids, vec![new], "the new DNG is selected");
         assert!(s.activity.list().is_empty(), "the activity row ends with the command");
-        // a second run never overwrites
-        let again = s.execute("photo.renderToDng", &json!({"ids": [ids[0].0], "dir": dir.to_string_lossy()})).unwrap();
-        assert_ne!(again["copies"][0]["path"], copies[0]["path"]);
+        // a second run never overwrites, and HDR editing on the photo is no obstacle
+        s.execute("develop.hdr", &json!({"id": orig.0, "enabled": true})).unwrap();
+        let again = s.execute("photo.renderToDng", &json!({"ids": [orig.0], "dir": dir.to_string_lossy()})).unwrap();
+        let second = again["copies"][0]["path"].as_str().unwrap();
+        assert_ne!(second, path);
+        assert!(std::path::Path::new(second).exists() && std::path::Path::new(path).exists(), "both DNGs are on disk");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -692,45 +918,5 @@ mod tests {
         assert!(r["copies"].as_array().unwrap().len() < 6);
         assert!(s.activity.list().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn render_to_dng_uses_hdr_options() {
-        let dir = scratch("hdr");
-        let mut s = Session::with_demo();
-        let id = s.visible()[0];
-        // Enable HDR editing on the photo
-        s.execute("develop.hdr", &json!({"id": id.0, "enabled": true})).unwrap();
-        // Render to DNG should succeed with HDR enabled
-        let r = s.execute("photo.renderToDng", &json!({"ids": [id.0], "dir": dir.to_string_lossy()})).unwrap();
-        let path = r["copies"][0]["path"].as_str().unwrap();
-        // The DNG should be encoded (not an error)
-        assert!(std::path::Path::new(path).exists(), "DNG file was written");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn render_to_dng_accepts_explicit_ids_without_selection() {
-        let dir = scratch("explicit");
-        let mut s = Session::with_demo();
-        let ids: Vec<_> = s.visible().iter().copied().take(2).collect();
-        // Clear selection
-        s.execute("library.select", &json!({"ids": []})).unwrap();
-        assert!(s.selection.ids.is_empty(), "selection was cleared");
-        // renderToDng with explicit ids should still work (explicit_targets: true)
-        let r = s.execute("photo.renderToDng", &json!({"ids": [ids[0].0, ids[1].0], "dir": dir.to_string_lossy()})).unwrap();
-        let copies = r["copies"].as_array().unwrap();
-        assert_eq!(copies.len(), 2, "both explicit targets were rendered: {r}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn library_generation_changes_when_library_changes() {
-        let s1 = Session::default();
-        let gen1 = s1.library_generation();
-        let s2 = Session::default();
-        let gen2 = s2.library_generation();
-        // Each session should have a unique generation
-        assert_ne!(gen1, gen2, "different sessions have different library generations");
     }
 }

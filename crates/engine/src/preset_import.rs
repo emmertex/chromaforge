@@ -303,15 +303,7 @@ impl LuaParser<'_> {
                     self.skip_ws();
                     match self.s.get(self.i) {
                         Some(b'"' | b'\'' | b'{') => self.value(),
-                        Some(b'(') => {
-                            self.i += 1;
-                            let v = self.value()?;
-                            self.skip_ws();
-                            if self.s.get(self.i) == Some(&b')') {
-                                self.i += 1;
-                            }
-                            Ok(v)
-                        }
+                        Some(b'(') => self.call_args(),
                         _ => Ok(Lua::Nil),
                     }
                 }
@@ -367,6 +359,30 @@ impl LuaParser<'_> {
                 }
             }
         }
+    }
+    /// The arguments of a call such as `ZSTR( "…" )`, `AgColor( 0, 0, 0, 1 )` or
+    /// `AgMutableRect( x1, y1, x2, y2 )`, the cursor on its `(`: one argument is that value (as
+    /// before), none is `nil`, several are a table of them in order.
+    fn call_args(&mut self) -> Result<Lua, String> {
+        self.i += 1; // (
+        let mut args = Vec::new();
+        loop {
+            self.skip_ws();
+            match self.s.get(self.i) {
+                None => return self.err("unterminated call"),
+                Some(b')') => {
+                    self.i += 1;
+                    break;
+                }
+                Some(b',') if !args.is_empty() => self.i += 1,
+                _ => args.push(self.value()?),
+            }
+        }
+        Ok(match args.len() {
+            0 => Lua::Nil,
+            1 => args.pop().unwrap_or(Lua::Nil),
+            _ => Lua::Table(args, Vec::new()),
+        })
     }
     fn expect_eq(&mut self) -> Result<(), String> {
         self.skip_ws();
@@ -457,7 +473,8 @@ pub(crate) fn lua_settings_props(settings: &Lua) -> Result<(Props, crate::crs_ma
             }
             continue;
         }
-        if crate::crs_masks::CONTAINERS.contains(&key.as_str()) {
+        // local corrections and spot removal (a catalog's develop text carries both)
+        if crate::crs_masks::CONTAINERS.contains(&key.as_str()) || crate::crs_masks::SPOT_CONTAINERS.contains(&key.as_str()) {
             values.insert(key.clone(), crate::crs_masks::from_lua(v));
         }
         let vals: Vec<String> = match v {
@@ -574,7 +591,13 @@ pub(crate) fn build(props: &Props, values: &crate::crs_masks::Values, name: Stri
     if let Some(look) = crate::profile_refs::look_ref(props)
         && let Some(o) = settings.as_object_mut()
     {
-        o.insert("profile".into(), serde_json::json!({"look": look}));
+        // next to the profile settings the preset already sets (`camera_local_tone`), not in place of them (upstream #3752)
+        let profile = o.entry("profile").or_insert_with(|| serde_json::json!({}));
+        if let Some(p) = profile.as_object_mut() {
+            p.insert("look".into(), look);
+        } else {
+            *profile = serde_json::json!({"look": look});
+        }
     }
     if settings.as_object().is_none_or(Map::is_empty) {
         return None;
@@ -752,6 +775,24 @@ text]], z = ZSTR "loc" }"#,
         assert!(parse_lua("s = { a = ").is_err());
     }
 
+    /// Calls with several arguments (a saved print's `AgColor( r, g, b, a )`, `AgMutableRect( … )`) read as a table of
+    /// them; one argument stays that value, none is nil; an unterminated call is an error.
+    #[test]
+    fn lua_calls() {
+        let v =
+            parse_lua("s = { c = AgColor( 0, 0.5, 1, 1 ), r = AgMutableRect( 2.2737367544323e-13, -1, 3, 4 ), z = ZSTR( \"x\" ), n = F(), k = 1 }")
+                .unwrap();
+        assert_eq!(v.get("c"), Some(&Lua::Table(vec![Lua::Num(0.0), Lua::Num(0.5), Lua::Num(1.0), Lua::Num(1.0)], vec![])));
+        let Some(Lua::Table(r, _)) = v.get("r") else { panic!("{v:?}") };
+        assert_eq!(r[1..], [Lua::Num(-1.0), Lua::Num(3.0), Lua::Num(4.0)]);
+        assert_eq!(v.get("z"), Some(&Lua::Str("x".into())));
+        assert_eq!(v.get("n"), Some(&Lua::Nil));
+        assert_eq!(v.get("k"), Some(&Lua::Num(1.0)));
+        for bad in ["s = { c = AgColor( 0, 1 }", "s = { c = AgColor( 0, ", "s = F( ( ( ("] {
+            assert!(parse_lua(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn lrtemplate_maps_settings_and_reports_the_rest() {
         let v = read_presets("Warm Fade.lrtemplate", TEMPLATE.as_bytes(), None).unwrap();
@@ -770,6 +811,18 @@ text]], z = ZSTR "loc" }"#,
         // it parses into real develop settings
         let d = lcc_develop::DevelopSettings::default().merged(&p.settings).expect("valid develop settings");
         assert_eq!(d.light.exposure, 0.35);
+    }
+
+    /// A ProRAW preset keeps the camera local tone mapping its "Apple ProRaw" look turns on, next to the look it names.
+    #[test]
+    fn apple_proraw_preset_keeps_the_local_tone_mapping_with_its_look() {
+        let t = r#"s = { title = "ProRaw", value = { settings = { Exposure2012 = 0.2,
+            Look = { Name = "Apple ProRaw", Amount = 1, UUID = "D866CAE82BD24C3F896B6762BDDA6C50",
+                     Parameters = { Version = "18.5.1", ProfileGainTableMap = 100 } } } } }"#;
+        let v = read_presets("ProRaw.lrtemplate", t.as_bytes(), None).unwrap();
+        let profile = &v[0].preset.settings["profile"];
+        assert_eq!(profile["camera_local_tone"], true, "{profile}");
+        assert_eq!(profile["look"]["name"], "Apple ProRaw", "{profile}");
     }
 
     #[test]

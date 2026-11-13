@@ -12,7 +12,8 @@
 //!   standard-metadata write, network hosts, filesystem roots, programs) before doing anything.
 //!
 //! What a plug-in can contribute (declared in its [`Manifest`]): menu commands with an optional
-//! declarative dialog, export post-process hooks, metadata/keyword providers and publish services
+//! declarative dialog (a command may be a job, run on a worker that reports its progress through
+//! a [`JobReporter`] and continues with `{continue: state}`), export post-process hooks, metadata/keyword providers and publish services
 //! (through the [`publish::PublishProvider`] trait boundary), settings kept for the whole app
 //! ([`SettingsStore`]), and programs installed on the computer that it starts ([`programs`]: only
 //! the user grants one). The [`Manager`] keeps the installed plug-ins, their grants (given on
@@ -26,6 +27,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod about;
 mod b64;
 mod context;
 pub mod manager;
@@ -38,10 +40,13 @@ mod safe_io;
 pub mod settings;
 mod store;
 
-pub use context::{HostApi, NoHost};
-pub use manager::{Failed, Installed, Manager, PendingCall, Prepared, SettingsView};
-pub use manifest::{CommandDecl, DestinationDecl, Field, FieldKind, HOST_FEATURES, Hooks, Manifest, MetadataField, PublishDecl};
-pub use permissions::{FsRoot, Permissions};
+pub use about::About;
+pub use context::{HostApi, JobReporter, JobUnit, NoHost, PIXELS_DEFAULT_EDGE, PIXELS_MAX_EDGE, PIXELS_MIN_EDGE, Unwatched};
+pub use manager::{Begun, Denial, Failed, Installed, Manager, PendingCall, Prepared, RequestState, SettingsView, duplicate_error, read_module};
+pub use manifest::{
+    CommandDecl, DestinationDecl, Field, FieldKind, HOST_FEATURES, Header, Hooks, MAX_PICTURE_BYTES, Manifest, MetadataField, PublishDecl,
+};
+pub use permissions::{FsRoot, Group, Permissions, Request, refused_root};
 pub use programs::{EndStatus, Exit, Found, ProgramDecl, Reservation, RunDir, Running, StartRequest};
 pub use runtime::{ABI_VERSION, Limits, Outcome, Plugin};
 pub use settings::SettingsStore;
@@ -74,8 +79,12 @@ pub enum Error {
     NotFound(String),
     #[error("plug-in {0:?} is disabled")]
     Disabled(String),
-    #[error("plug-in {0:?} is busy (an export is still sending files to it)")]
-    Busy(String),
+    /// Plug-in `.0` is busy: `.1` says with what (an earlier call, a job).
+    #[error("plug-in {0:?} is busy: {1}")]
+    Busy(String, String),
+    /// A job stopped because it was cancelled.
+    #[error("cancelled")]
+    Cancelled,
     #[error("{0}")]
     Io(String),
 }

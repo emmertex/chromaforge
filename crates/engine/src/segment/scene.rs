@@ -51,6 +51,36 @@ fn is_water(l: &str) -> bool {
 fn is_vegetation(l: &str) -> bool {
     matches!(l, "tree-merged" | "grass-merged" | "flower" | "pottedplant")
 }
+#[cfg(feature = "sam")]
+fn is_mountains(l: &str) -> bool {
+    matches!(l, "mountain-merged" | "rock-merged")
+}
+#[cfg(feature = "sam")]
+fn is_architecture(l: &str) -> bool {
+    matches!(
+        l,
+        "building-other-merged"
+            | "house"
+            | "roof"
+            | "bridge"
+            | "tent"
+            | "fence-merged"
+            | "wall-brick"
+            | "wall-stone"
+            | "wall-tile"
+            | "wall-wood"
+            | "wall-other-merged"
+            | "window-other"
+    )
+}
+#[cfg(feature = "sam")]
+fn is_natural_ground(l: &str) -> bool {
+    matches!(l, "dirt-merged" | "sand" | "snow" | "gravel")
+}
+#[cfg(feature = "sam")]
+fn is_artificial_ground(l: &str) -> bool {
+    matches!(l, "road" | "pavement-merged" | "railroad" | "platform" | "playingfield" | "stairs")
+}
 
 /// A scene segmentation as the pipeline's selections.
 #[cfg(feature = "sam")]
@@ -62,6 +92,12 @@ pub(crate) fn selection(s: &lcc_segment::scene::Scene) -> lcc_pipeline::scene_mo
         water: plane(is_water),
         vegetation: plane(is_vegetation),
         person: plane(|l| l == "person"),
+        terrain: vec![
+            ("mountains", plane(is_mountains)),
+            ("architecture", plane(is_architecture)),
+            ("natural ground", plane(is_natural_ground)),
+            ("artificial ground", plane(is_artificial_ground)),
+        ],
     }
 }
 
@@ -129,6 +165,8 @@ mod tests {
         assert!((sel.water.data[1] - 0.8).abs() < 1e-6);
         assert!(sel.vegetation.data[1] > 0.39 && sel.vegetation.data[0] < 0.01);
         assert!(sel.person.data[1] > 0.79);
+        // the rest of Landscape is there, as empty planes where the photo has none
+        assert_eq!(sel.terrain.iter().map(|(k, _)| *k).collect::<Vec<_>>(), lcc_pipeline::auto_mask::LANDSCAPE_TERRAIN);
     }
 
     #[test]

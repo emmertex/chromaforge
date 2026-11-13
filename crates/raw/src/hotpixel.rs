@@ -169,7 +169,8 @@ impl RawImage {
             let mut buf = Vec::with_capacity(8);
             let n_cand = candidates.len();
             let kept: Vec<_> = candidates.into_iter().filter(|&(x, y, _)| !lit_around(&v, x, y, black, noise, &mut buf)).collect();
-            if lcc_brand::env_is_set("PROFILE") {
+            // (full-image passes for tuning, seconds a photo: on their own switch, not with every profile)
+            if lcc_brand::env_is_set("PROFILE_HOT_PIXELS") {
                 eprintln!(
                     "  hot pixels: noise σ² = {:.3}·L + {:.1} (σ at 0: {:.1}, at 1 %: {:.1}), {n_cand} candidates, {} real light",
                     noise.a,
@@ -457,15 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn an_adjacent_hot_pair_is_replaced() {
-        let mut r = mosaic(256, 256);
-        set(&mut r, 80, 80, 9000);
-        set(&mut r, 80, 81, 8000);
-        assert_eq!(r.suppress_hot_pixels(), 2);
-        assert!(get(&r, 80, 80) < 2700 && get(&r, 80, 81) < 2700);
-    }
-
-    #[test]
     fn a_small_star_is_kept() {
         let mut r = mosaic(256, 256);
         // a point of light over a 3 × 3 block: brightest in the middle, its neighbours lit too
@@ -492,6 +484,14 @@ mod tests {
         set(&mut r, 64, 64, 1500);
         assert_eq!(r.suppress_hot_pixels(), 1);
         assert!(get(&r, 64, 64) < 600);
+        // an adjacent hot pair is replaced
+        {
+            let mut r = mosaic(256, 256);
+            set(&mut r, 80, 80, 9000);
+            set(&mut r, 80, 81, 8000);
+            assert_eq!(r.suppress_hot_pixels(), 2);
+            assert!(get(&r, 80, 80) < 2700 && get(&r, 80, 81) < 2700);
+        }
     }
 
     #[test]

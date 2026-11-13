@@ -60,7 +60,7 @@ fn run(bytes: &[u8], limits: Limits) -> (lcc_plugins::Result<Value>, Duration) {
     let mut m = Manager::in_memory();
     m.set_limits(limits.clone());
     let r = Plugin::load(bytes, limits).and_then(|_| {
-        m.install_bytes(bytes, Some(all()), false)?;
+        m.install_bytes_by_user(bytes, Some(all()), false)?;
         m.run_command("test.plugin", "go", &json!({}), &[], &mut NoHost)
     });
     (r, t.elapsed())
@@ -84,15 +84,15 @@ fn host_calls_follow_the_grant() {
     }
     let bytes = forward(r#"{"method":"catalog.stats","params":{}}"#);
     let mut m = Manager::in_memory();
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     // the plug-in returns the host's reply envelope as its own
     assert_eq!(m.run_command("test.plugin", "go", &json!({}), &[], &mut Cat).unwrap(), json!({"photos": 3}));
     m.set_grant("test.plugin", Permissions::default()).unwrap();
     let e = m.run_command("test.plugin", "go", &json!({}), &[], &mut Cat).unwrap_err();
-    assert!(e.to_string().contains("permission `catalog`"), "{e}");
+    assert!(e.to_string().contains("`catalog`"), "{e}");
     // a grant beyond the request is cut back to it
     let g = m
-        .set_grant(
+        .set_grant_by_user(
             "test.plugin",
             Permissions { catalog: true, metadata_write: true, network: vec!["x.com".into()], fs: vec![], programs: vec![], ..Default::default() },
         )
@@ -109,6 +109,9 @@ fn unrequested_capabilities_are_refused() {
     for (req, needle) in [
         (r#"{"method":"metadata.setStandard","params":{}}"#, "metadataWrite"),
         (r#"{"method":"library.add","params":{"path":"/x/a.tif","from":"1"}}"#, "libraryAdd"),
+        (r#"{"method":"photo.pixels","params":{"photo":"1"}}"#, "`pixels`"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"1","rect":[0.1,0.1,0.9,0.9]}}"#, "`crop`"),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"1"}}"#, "`virtualCopy`"),
         (r#"{"method":"http.request","params":{"url":"https://example.com/"}}"#, "network"),
         (read.as_str(), "not inside a folder"),
         (write.as_str(), "not inside a folder"),
@@ -159,7 +162,7 @@ fn dialog_arguments_are_checked() {
     let manifest = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","commands":[{"id":"go","label":"Go","dialog":[{"key":"n","label":"N","type":"number","min":0,"max":1,"default":0.5}]}]}"#;
     let bytes = module(manifest, 1, "(i64.or (i64.shl (i64.const 2) (i64.const 32)) (i64.const 8192))", "", "{}");
     let mut m = Manager::in_memory();
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     assert!(m.run_command("test.plugin", "go", &json!({"n": "x"}), &[], &mut NoHost).is_err());
     assert!(m.run_command("test.plugin", "nope", &json!({}), &[], &mut NoHost).is_err());
     assert!(m.run_command("test.plugin", "go", &json!({"n": 7}), &[], &mut NoHost).is_ok());
@@ -174,7 +177,7 @@ fn install_grants_only_what_was_approved_and_updates_gain_nothing() {
     let bytes = forward(r#"{"method":"catalog.stats","params":{}}"#);
     let mut m = Manager::in_memory();
     assert!(m.install_bytes(&bytes, None, false).unwrap().effective().is_empty(), "nothing approved, nothing granted");
-    m.set_grant("test.plugin", all()).unwrap();
+    m.set_grant_by_user("test.plugin", all()).unwrap();
     // an update without a new approval keeps the old grant, never more
     let v2 = module(&MANIFEST.replace(r#""catalog":true"#, r#""catalog":true,"metadataWrite":true"#), 1, "(i64.const 0)", "", "");
     let g = m.install_bytes(&v2, None, false).unwrap().effective();
@@ -250,7 +253,7 @@ fn programs_are_granted_only_by_the_user() {
     let e = m.install_bytes(&bytes, Some(programs_grant(&["conv"])), false).unwrap_err().to_string();
     assert!(e.contains("Plug-in Manager"), "an install that grants a program points to the Plug-in Manager: {e}");
     assert!(m.get("test.plugin").is_none(), "nothing is installed");
-    m.install_bytes(&bytes, Some(all()), false).unwrap();
+    m.install_bytes_by_user(&bytes, Some(all()), false).unwrap();
     let e = m.set_grant("test.plugin", programs_grant(&["conv"])).unwrap_err().to_string();
     assert!(e.contains("Plug-in Manager"), "{e}");
     assert_eq!(m.get("test.plugin").unwrap().effective(), Permissions { catalog: true, ..Default::default() }, "the other permissions are unchanged");
@@ -367,7 +370,7 @@ fn program_start_refuses_bad_requests_and_starts_nothing() {
     let many: serde_json::Map<String, Value> = (0..65).map(|i| (format!("f{i}.txt"), json!(""))).collect();
     for (params, needle) in [
         (json!({"program": "nope"}), "not one of this plug-in's programs"),
-        (json!({"program": "other"}), "permission `programs`"),
+        (json!({"program": "other"}), "`programs other`"),
         (json!({"program": "conv", "files": {"../escape.txt": "x"}}), "plain file name"),
         (json!({"program": "conv", "files": {"a/b.txt": "x"}}), "plain file name"),
         (json!({"program": "conv", "files": {"..": "x"}}), "plain file name"),
@@ -398,7 +401,7 @@ fn program_start_refuses_bad_requests_and_starts_nothing() {
     m.install_bytes(&bytes, None, false).unwrap();
     let mut host = Programs { installed: true, ..Default::default() };
     let e = m.run_command("test.plugin", "go", &json!({}), &[], &mut host).unwrap_err().to_string();
-    assert!(e.contains("permission `programs`"), "{e}");
+    assert!(e.contains("`programs conv`"), "{e}");
     assert!(host.started.is_empty());
 }
 
@@ -594,7 +597,7 @@ impl lcc_plugins::HostApi for Seen {
 fn commands_and_prepare_steps_get_their_source() {
     let manifest = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","requires":["libraryAdd"],"permissions":{"catalog":true},"commands":[{"id":"go","label":"Go"},{"id":"ask","label":"Ask","prepare":true}]}"#;
     let mut m = Manager::in_memory();
-    m.install_bytes(&request_echo(manifest), Some(all()), false).unwrap();
+    m.install_bytes_by_user(&request_echo(manifest), Some(all()), false).unwrap();
     let album = json!({"kind": "album", "id": "7", "name": "Trip"});
     let mut host = Seen::default();
     m.run_command_from("test.plugin", "go", &json!({}), &["1".into()], &album, &mut host).unwrap();
@@ -604,4 +607,131 @@ fn commands_and_prepare_steps_get_their_source() {
     assert_eq!((host.0[1]["hook"].as_str(), &host.0[1]["source"]), (Some("command.prepare"), &album), "the prepare step gets it too");
     m.run_command("test.plugin", "go", &json!({}), &[], &mut host).unwrap();
     assert!(host.0[2].get("source").is_none(), "no source given, none sent: {}", host.0[2]);
+}
+
+const LOOKS: &str = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","requires":["pixels","crop"],"permissions":{"pixels":true,"crop":true},"commands":[{"id":"go","label":"Go"}]}"#;
+
+/// The app's side of `photo.pixels` and `develop.setCrop`: what reached it.
+#[derive(Default)]
+struct Looks(Vec<Value>);
+
+impl lcc_plugins::HostApi for Looks {
+    fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
+        self.0.push(json!({"photo": photo, "longEdge": long_edge}));
+        Ok(json!({"width": 1, "height": 1, "channels": 3, "encoding": "srgb8", "data": "AAAA"}))
+    }
+
+    fn set_crop(&mut self, photo: &str, rect: [f64; 4], angle: Option<f64>) -> Result<Value, String> {
+        self.0.push(json!({"photo": photo, "rect": rect, "angle": angle}));
+        Ok(json!({"rect": rect, "angle": angle.unwrap_or(0.0)}))
+    }
+}
+
+/// `photo.pixels` and `develop.setCrop` reach the host only with their permission and well-formed
+/// arguments: the long edge clamped, the rect four ordered numbers in 0..1, the angle a number.
+#[test]
+fn pixels_and_crop_requests_are_checked_before_the_host_sees_them() {
+    let call = |req: &str, grant: Permissions| -> (lcc_plugins::Result<Value>, Vec<Value>) {
+        let handle = format!(
+            "(local.set $n (call $call (i32.const 8192) (i32.const {len})))
+             (call $response (i32.const 16384))
+             (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 16384))",
+            len = req.len()
+        );
+        let mut m = Manager::in_memory();
+        m.install_bytes_by_user(&module(LOOKS, 1, &handle, "", req), Some(grant), false).unwrap();
+        let mut host = Looks::default();
+        let r = m.run_command("test.plugin", "go", &json!({}), &[], &mut host);
+        (r, host.0)
+    };
+    let both = Permissions { pixels: true, crop: true, ..Default::default() };
+    for (req, edge) in [
+        (r#"{"method":"photo.pixels","params":{"photo":"7"}}"#, 1024),
+        (r#"{"method":"photo.pixels","params":{"photo":"7","longEdge":99999}}"#, 1536),
+        (r#"{"method":"photo.pixels","params":{"photo":"7","longEdge":3}}"#, 64),
+        (r#"{"method":"photo.pixels","params":{"photo":"7","longEdge":500.4}}"#, 500),
+    ] {
+        let (r, seen) = call(req, both.clone());
+        assert_eq!(r.unwrap()["encoding"], "srgb8", "{req}");
+        assert_eq!(seen, vec![json!({"photo": "7", "longEdge": edge})], "{req}");
+    }
+    let (r, seen) = call(r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.1,0.2,0.9,0.8],"angle":1.5}}"#, both.clone());
+    assert_eq!(r.unwrap()["angle"], 1.5);
+    assert_eq!(seen, vec![json!({"photo": "7", "rect": [0.1, 0.2, 0.9, 0.8], "angle": 1.5})]);
+    for (req, needle) in [
+        (r#"{"method":"photo.pixels","params":{}}"#, "photo"),
+        (r#"{"method":"photo.pixels","params":{"photo":"7","longEdge":"big"}}"#, "longEdge"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"7"}}"#, "rect"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.1,0.2,0.9]}}"#, "rect"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.9,0.2,0.1,0.8]}}"#, "x0 < x1"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.1,0.2,1.5,0.8]}}"#, "0..1"),
+        (r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.1,0.2,0.9,0.8],"angle":"x"}}"#, "angle"),
+    ] {
+        let (r, seen) = call(req, both.clone());
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(needle), "{req}: {e}");
+        assert!(seen.is_empty(), "{req}: never reached the host");
+    }
+    // each permission on its own
+    let (r, _) =
+        call(r#"{"method":"develop.setCrop","params":{"photo":"7","rect":[0.1,0.2,0.9,0.8]}}"#, Permissions { pixels: true, ..Default::default() });
+    assert!(r.unwrap_err().to_string().contains("`crop`"));
+    let (r, _) = call(r#"{"method":"photo.pixels","params":{"photo":"7"}}"#, Permissions { crop: true, ..Default::default() });
+    assert!(r.unwrap_err().to_string().contains("`pixels`"));
+}
+
+const COPIES: &str = r#"{"id":"test.plugin","name":"Test","version":"1.0.0","requires":["virtualCopy"],"permissions":{"virtualCopy":true},"commands":[{"id":"go","label":"Go"}]}"#;
+
+/// The app's side of `photo.virtualCopy`: what reached it.
+#[derive(Default)]
+struct Copies(Vec<Value>);
+
+impl lcc_plugins::HostApi for Copies {
+    fn virtual_copy(&mut self, photo: &str, name: Option<&str>) -> Result<Value, String> {
+        self.0.push(json!({"photo": photo, "name": name}));
+        Ok(json!({"photo": "8"}))
+    }
+}
+
+/// `photo.virtualCopy` reaches the host only with its permission and a photo; a name is trimmed,
+/// a blank one is none, and one that isn't text or is too long is refused.
+#[test]
+fn virtual_copy_requests_are_checked_before_the_host_sees_them() {
+    let call = |req: &str, grant: Permissions| -> (lcc_plugins::Result<Value>, Vec<Value>) {
+        let handle = format!(
+            "(local.set $n (call $call (i32.const 8192) (i32.const {len})))
+             (call $response (i32.const 16384))
+             (i64.or (i64.shl (i64.extend_i32_u (local.get $n)) (i64.const 32)) (i64.const 16384))",
+            len = req.len()
+        );
+        let mut m = Manager::in_memory();
+        m.install_bytes_by_user(&module(COPIES, 1, &handle, "", req), Some(grant), false).unwrap();
+        let mut host = Copies::default();
+        let r = m.run_command("test.plugin", "go", &json!({}), &[], &mut host);
+        (r, host.0)
+    };
+    let granted = Permissions { virtual_copy: true, ..Default::default() };
+    for (req, name) in [
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7"}}"#, Value::Null),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":"  Frame 2 "}}"#, json!("Frame 2")),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":"   "}}"#, Value::Null),
+    ] {
+        let (r, seen) = call(req, granted.clone());
+        assert_eq!(r.unwrap()["photo"], "8", "{req}");
+        assert_eq!(seen, vec![json!({"photo": "7", "name": name})], "{req}");
+    }
+    let long = format!(r#"{{"method":"photo.virtualCopy","params":{{"photo":"7","name":"{}"}}}}"#, "x".repeat(257));
+    for (req, needle) in [
+        (r#"{"method":"photo.virtualCopy","params":{}}"#, "photo"),
+        (r#"{"method":"photo.virtualCopy","params":{"photo":"7","name":3}}"#, "name"),
+        (long.as_str(), "name"),
+    ] {
+        let (r, seen) = call(req, granted.clone());
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(needle), "{req}: {e}");
+        assert!(seen.is_empty(), "{req}: never reached the host");
+    }
+    let (r, seen) = call(r#"{"method":"photo.virtualCopy","params":{"photo":"7"}}"#, Permissions::default());
+    assert!(r.unwrap_err().to_string().contains("virtualCopy"));
+    assert!(seen.is_empty());
 }

@@ -155,6 +155,34 @@ fn geotag(s: &mut crate::Session, p: &Value) -> Result<Value> {
     Ok(json!({"photos": ids.len(), "changed": changed, "gps": gps.map(|g| [g.0, g.1])}))
 }
 
+/// Delete All Location Metadata: the position and every place field, in one undo step.
+fn clear_location_metadata(s: &mut crate::Session, p: &Value) -> Result<Value> {
+    const C: &str = "map.clearLocationMetadata";
+    let ids = s.targets(p)?;
+    if ids.is_empty() {
+        return Err(bad(C, "no photos selected"));
+    }
+    let mut ops = Vec::new();
+    for id in &ids {
+        let Some(ph) = s.catalog.photo(*id) else { continue };
+        let m = &ph.meta;
+        if m.gps.is_none() && [&m.location, &m.city, &m.state, &m.country, &m.country_code].iter().all(|f| f.is_empty()) {
+            continue;
+        }
+        let mut meta = m.clone();
+        meta.gps = None;
+        for f in [&mut meta.location, &mut meta.city, &mut meta.state, &mut meta.country, &mut meta.country_code] {
+            f.clear();
+        }
+        ops.push(Op::SetMeta { id: *id, meta: Box::new(meta) });
+    }
+    let changed = ops.len();
+    if changed > 0 {
+        s.commit("Delete All Location Metadata", Op::Batch { ops })?;
+    }
+    Ok(json!({"photos": ids.len(), "changed": changed}))
+}
+
 fn save_location(s: &mut crate::Session, p: &Value) -> Result<Value> {
     const C: &str = "map.saveLocation";
     let name = str_param(p, "name").ok_or_else(|| bad(C, "missing `name`"))?;
@@ -333,7 +361,7 @@ mod geocoding {
         let mut lookup: Box<dyn FnMut(LatLon) -> Result<Option<Place>>> = match provider {
             "offline" => {
                 let dir = geonames_dir(p).ok_or_else(|| bad(C, "no settings folder: give `dataset`"))?;
-                let g = GeoNames::load(&dir).map_err(|e| bad(C, format!("{e} — run map.geonamesDownload first")))?;
+                let g = GeoNames::load(&dir).map_err(|e| bad(C, format!("{e}: run map.geonamesDownload first")))?;
                 Box::new(move |at| Ok(g.reverse(at)))
             }
             "online" => {
@@ -415,15 +443,24 @@ fn apply_given(s: &mut crate::Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = vec![
-        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|visible|tagged|untagged|location:<name> (visible: the same pins as tagged)} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}} — the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
+        cmd!(query "map.pins", "Map Pins", [], None, "{zoom?: 0–20 (3), cellPx?: cluster cell in screen px (48), filter?: all|visible|tagged|untagged|location:<name> (visible: the same pins as tagged)} → {tagged, untagged, clusters: [{lat, lon, count, ids}], fit: {lat, lon, zoom}}: the photos in view (current source and filter) as map pins, grid-clustered for the zoom", always, pins),
         cmd!(
             "map.geotag",
             "Geotag",
             [],
             None,
-            "{ids?, lat, lon} | {ids?, clear: true} — set (or remove) the GPS position of the photos; one undo step",
+            "{ids?, lat, lon} | {ids?, clear: true}: set (or remove) the GPS position of the photos; one undo step",
             has_selection,
             geotag
+        ),
+        cmd!(
+            "map.clearLocationMetadata",
+            "Delete All Location Metadata",
+            [],
+            None,
+            "{ids?} → {photos, changed}: clear the GPS position and the place fields (sublocation, city, state, country, country code) of the photos; one undo step",
+            has_selection,
+            clear_location_metadata
         ),
         cmd!(query "map.locations", "Saved Locations", [], None, "{} → {locations: [{name, lat, lon, radius (m), private, photos}]}", always, |s, _| Ok(locations_json(s))),
         cmd!(
@@ -431,19 +468,19 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Location",
             [],
             None,
-            "{name, lat, lon, radius?: metres (100), private?: bool — photos inside a private location are exported without GPS or location fields, rename?: old name} — create or change a saved location (undoable)",
+            "{name, lat, lon, radius?: metres (100), private?: bool (photos inside a private location are exported without GPS or location fields), rename?: old name}: create or change a saved location (undoable)",
             always,
             save_location
         ),
         cmd!("map.deleteLocation", "Delete Location", [], None, "{name}", always, delete_location),
-        cmd!(query "map.track", "Track Info", [], None, "{path: .gpx|.kml|.geojson file | text} → {name, points, segments, timed, start, end, fit} — read a track log (Auto-Tag: photo.autoTagTracklog)", always, track_info),
-        cmd!(query "map.trackOffset", "Track Time Offset", [], None, "{path | gpx, id?: photo (active), lat?, lon?: where it was taken (else its GPS)} → {offset: \"+HH:MM\", minutes, distance} — the camera clock's UTC offset from one photo at a known point of the track; pass it as photo.autoTagTracklog's offset", always, track_offset),
+        cmd!(query "map.track", "Track Info", [], None, "{path: .gpx|.kml|.geojson file | text} → {name, points, segments, timed, start, end, fit}: read a track log (Auto-Tag: photo.autoTagTracklog)", always, track_info),
+        cmd!(query "map.trackOffset", "Track Time Offset", [], None, "{path | gpx, id?: photo (active), lat?, lon?: where it was taken (else its GPS)} → {offset: \"+HH:MM\", minutes, distance}: the camera clock's UTC offset from one photo at a known point of the track; pass it as photo.autoTagTracklog's offset", always, track_offset),
     ];
     #[cfg(not(target_arch = "wasm32"))]
     v.extend([
         cmd!(query "map.geocodeStatus", "Reverse Geocoding Status", [], None, "{dataset?: folder} → {offline: {downloaded, bytes, path, attribution}, online: {endpoint, attribution, rateLimit}}", always, geocoding::status),
-        cmd!(query "map.geonamesDownload", "Download Place Names", [], None, "{consent: true — contacts download.geonames.org, dataset?: folder} → {places, path, attribution} — the offline GeoNames cities list (CC-BY 4.0) for reverse geocoding", always, geocoding::download),
-        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country, countryCode}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution} — fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
+        cmd!(query "map.geonamesDownload", "Download Place Names", [], None, "{consent: true (contacts download.geonames.org), dataset?: folder} → {places, path, attribution}: the offline GeoNames cities list (CC-BY 4.0) for reverse geocoding", always, geocoding::download),
+        cmd!("map.reverseGeocode", "Reverse Geocode", [], None, "{ids?, provider?: offline (default; needs map.geonamesDownload) | online (Nominatim-compatible, needs consent: true) | given (with places: [{id, sublocation, city, state, country, countryCode}]), endpoint?, overwrite?: bool (also photos that have location fields), dryRun?} → {looked, found, photos: [{id, place: {sublocation, city, state, country, iso}}], attribution}: fills Sublocation/City/State/Country from GPS; one undo step", has_selection, geocoding::reverse),
     ]);
     v
 }
@@ -461,39 +498,73 @@ mod tests {
     }
 
     #[test]
-    fn geotag_pins_locations_and_undo() {
-        let (mut s, ids) = session_with(4);
-        let r = s.execute("map.geotag", &json!({"ids": [ids[0].0, ids[1].0], "lat": 48.8566, "lon": 2.3522})).unwrap();
-        assert_eq!(r["changed"], 2);
-        s.execute("map.geotag", &json!({"ids": [ids[2].0], "lat": 51.5, "lon": -0.12})).unwrap();
-        let pins = s.execute("map.pins", &json!({"zoom": 4})).unwrap();
-        assert_eq!(pins["tagged"], 3);
-        assert_eq!(pins["clusters"].as_array().unwrap().len(), 2);
-        let near = s.execute("map.pins", &json!({"zoom": 4, "filter": "untagged"})).unwrap();
-        assert_eq!((near["tagged"].as_u64(), near["untagged"].as_u64()), (Some(0), Some(ids.len() as u64 - 3)));
+    fn geotag_pins_locations_clear_and_undo() {
+        // clear location metadata one undo and hostile input
+        {
+            let (mut s, ids) = session_with(3);
+            s.execute("map.geotag", &json!({"ids": [ids[0].0, ids[1].0], "lat": 48.8, "lon": 2.3})).unwrap();
+            let mut m = s.catalog.photo(ids[0]).unwrap().meta.clone();
+            m.city = "Paris".into();
+            m.country = "France".into();
+            m.country_code = "FR".into();
+            m.location = "Louvre".into();
+            m.state = "IDF".into();
+            s.commit("t", Op::SetMeta { id: ids[0], meta: Box::new(m) }).unwrap();
+            let r = s.execute("map.clearLocationMetadata", &json!({"ids": [ids[0].0, ids[1].0, ids[2].0]})).unwrap();
+            assert!(r["changed"].as_u64() >= Some(2), "{r}");
+            let m = &s.catalog.photo(ids[0]).unwrap().meta;
+            assert!(
+                m.gps.is_none()
+                    && m.city.is_empty()
+                    && m.country.is_empty()
+                    && m.country_code.is_empty()
+                    && m.location.is_empty()
+                    && m.state.is_empty()
+            );
+            s.undo_step().unwrap();
+            let m = &s.catalog.photo(ids[0]).unwrap().meta;
+            assert!(m.gps.is_some() && m.city == "Paris" && m.country_code == "FR");
+            assert!(s.catalog.photo(ids[1]).unwrap().meta.gps.is_some(), "one undo restores both photos");
+            // hostile input: errors, never panics
+            assert!(s.execute("map.clearLocationMetadata", &json!({"ids": []})).is_err());
+            let _ = s.execute("map.clearLocationMetadata", &json!({"ids": [999_999, "x", null, -1]}));
+            let _ = s.execute("map.clearLocationMetadata", &json!({"ids": 5}));
+        }
+        // geotag pins locations and undo
+        {
+            let (mut s, ids) = session_with(4);
+            let r = s.execute("map.geotag", &json!({"ids": [ids[0].0, ids[1].0], "lat": 48.8566, "lon": 2.3522})).unwrap();
+            assert_eq!(r["changed"], 2);
+            s.execute("map.geotag", &json!({"ids": [ids[2].0], "lat": 51.5, "lon": -0.12})).unwrap();
+            let pins = s.execute("map.pins", &json!({"zoom": 4})).unwrap();
+            assert_eq!(pins["tagged"], 3);
+            assert_eq!(pins["clusters"].as_array().unwrap().len(), 2);
+            let near = s.execute("map.pins", &json!({"zoom": 4, "filter": "untagged"})).unwrap();
+            assert_eq!((near["tagged"].as_u64(), near["untagged"].as_u64()), (Some(0), Some(ids.len() as u64 - 3)));
 
-        s.execute("map.saveLocation", &json!({"name": "Paris", "lat": 48.8566, "lon": 2.3522, "radius": 2000, "private": true})).unwrap();
-        let l = s.execute("map.locations", &json!({})).unwrap();
-        assert_eq!(l["locations"][0]["photos"], 2);
-        let inside = s.execute("map.pins", &json!({"filter": "location:paris"})).unwrap();
-        assert_eq!(inside["tagged"], 2);
-        assert!(s.catalog.is_private_location((48.8566, 2.3522)));
-        // rename keeps it one location
-        s.execute("map.saveLocation", &json!({"name": "Home", "rename": "Paris"})).unwrap();
-        let l = s.execute("map.locations", &json!({})).unwrap();
-        assert_eq!((l["locations"].as_array().unwrap().len(), l["locations"][0]["name"].as_str()), (1, Some("Home")));
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert!(s.catalog.saved_location("Paris").is_some());
-        s.execute("map.deleteLocation", &json!({"name": "paris"})).unwrap();
-        assert!(s.execute("map.deleteLocation", &json!({"name": "paris"})).is_err());
+            s.execute("map.saveLocation", &json!({"name": "Paris", "lat": 48.8566, "lon": 2.3522, "radius": 2000, "private": true})).unwrap();
+            let l = s.execute("map.locations", &json!({})).unwrap();
+            assert_eq!(l["locations"][0]["photos"], 2);
+            let inside = s.execute("map.pins", &json!({"filter": "location:paris"})).unwrap();
+            assert_eq!(inside["tagged"], 2);
+            assert!(s.catalog.is_private_location((48.8566, 2.3522)));
+            // rename keeps it one location
+            s.execute("map.saveLocation", &json!({"name": "Home", "rename": "Paris"})).unwrap();
+            let l = s.execute("map.locations", &json!({})).unwrap();
+            assert_eq!((l["locations"].as_array().unwrap().len(), l["locations"][0]["name"].as_str()), (1, Some("Home")));
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(s.catalog.saved_location("Paris").is_some());
+            s.execute("map.deleteLocation", &json!({"name": "paris"})).unwrap();
+            assert!(s.execute("map.deleteLocation", &json!({"name": "paris"})).is_err());
 
-        // bad input is an error, never a panic
-        assert!(s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 91, "lon": 0})).is_err());
-        assert!(s.execute("map.geotag", &json!({"ids": [ids[0].0]})).is_err());
-        assert!(s.execute("map.saveLocation", &json!({"name": "x", "lat": 0, "lon": 0, "radius": -1})).is_err());
-        assert!(s.execute("map.pins", &json!({"filter": "bogus"})).is_err());
-        s.execute("map.geotag", &json!({"ids": [ids[0].0], "clear": true})).unwrap();
-        assert!(s.catalog.photo(ids[0]).unwrap().meta.gps.is_none());
+            // bad input is an error, never a panic
+            assert!(s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 91, "lon": 0})).is_err());
+            assert!(s.execute("map.geotag", &json!({"ids": [ids[0].0]})).is_err());
+            assert!(s.execute("map.saveLocation", &json!({"name": "x", "lat": 0, "lon": 0, "radius": -1})).is_err());
+            assert!(s.execute("map.pins", &json!({"filter": "bogus"})).is_err());
+            s.execute("map.geotag", &json!({"ids": [ids[0].0], "clear": true})).unwrap();
+            assert!(s.catalog.photo(ids[0]).unwrap().meta.gps.is_none());
+        }
     }
 
     /// Fork #783: the filmstrip's list follows the Location Filter; Visible on Map keeps the photos
@@ -536,100 +607,103 @@ mod tests {
     }
 
     #[test]
-    fn reverse_geocode_offline_and_consent() {
-        let (mut s, ids) = session_with(2);
-        s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
-        let dir = std::env::temp_dir().join(format!("lcc-engine-geonames-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("cities15000.txt"), "1\tParis\tParis\t\t48.85341\t2.3488\tP\tPPLC\tFR\t\t11\n").unwrap();
-        std::fs::write(dir.join("countryInfo.txt"), "FR\tFRA\t250\tFR\tFrance\n").unwrap();
-        let d = dir.to_string_lossy().to_string();
-        s.execute("map.geotag", &json!({"ids": [ids[1].0], "clear": true})).unwrap();
-        let r = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0, ids[1].0], "dataset": d, "overwrite": true})).unwrap();
-        assert_eq!(r["found"], 1);
-        let m = &s.catalog.photo(ids[0]).unwrap().meta;
-        assert_eq!((m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Paris", "France", "FR"));
-        // online without consent: refused before anything is sent
-        let e = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0], "provider": "online", "overwrite": true})).unwrap_err();
-        assert!(e.to_string().contains("consent"), "{e}");
-        assert!(s.execute("map.geonamesDownload", &json!({"dataset": d})).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The UI's background online lookups come back as `provider: "given"`; their ISO country code
-    /// lands in the catalog like the place names (issue #784).
-    #[test]
-    fn reverse_geocode_given_applies_country_code() {
-        let (mut s, ids) = session_with(1);
-        s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
-        let r = s
-            .execute(
-                "map.reverseGeocode",
-                &json!({"provider": "given", "places": [{"id": ids[0].0, "sublocation": "Louvre", "city": "Paris", "state": "Île-de-France", "country": "France", "countryCode": "FR"}]}),
-            )
-            .unwrap();
-        assert_eq!(r["changed"], 1);
-        let m = &s.catalog.photo(ids[0]).unwrap().meta;
-        assert_eq!((m.location.as_str(), m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Louvre", "Paris", "France", "FR"));
-    }
-
-    /// A photo inside a private saved location is exported without GPS or location fields; one
-    /// outside keeps them.
-    /// End to end: the JPEG file a rendered export writes carries GPS and place names for a photo
-    /// outside every private location, and none for one inside a private location.
-    #[test]
-    fn private_location_photo_exports_a_file_without_location() {
-        use crate::export::{ExportOptions, export_photo};
-        let (mut s, ids) = session_with(2);
-        s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.8566, "lon": 2.3522})).unwrap();
-        s.execute("map.geotag", &json!({"ids": [ids[1].0], "lat": 51.5, "lon": -0.12})).unwrap();
-        s.execute("map.saveLocation", &json!({"name": "Home", "lat": 48.8566, "lon": 2.3522, "radius": 500, "private": true})).unwrap();
-        let o = ExportOptions { resize: Some(crate::export::Resize::long_edge(256)), ..ExportOptions::default() };
-        let inside = export_photo(&mut s, ids[0], &o, 1).unwrap();
-        let outside = export_photo(&mut s, ids[1], &o, 2).unwrap();
-        assert!(lcc_meta::extract(&outside.bytes).gps.is_some(), "a public photo keeps its GPS");
-        let m = lcc_meta::extract(&inside.bytes);
-        assert!(m.gps.is_none(), "GPS stripped inside a private location");
-        assert!(!String::from_utf8_lossy(&inside.bytes).contains("48.85"), "no coordinates anywhere in the file");
-        // not private any more: the same photo exports with its location
-        s.execute("map.saveLocation", &json!({"name": "Home", "private": false})).unwrap();
-        assert!(lcc_meta::extract(&export_photo(&mut s, ids[0], &o, 3).unwrap().bytes).gps.is_some());
+    fn reverse_geocode_offline_given_and_consent() {
+        // reverse geocode offline and consent
+        {
+            let (mut s, ids) = session_with(2);
+            s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
+            let dir = lcc_testkit::TempDir::new("lcc-engine-geonames");
+            std::fs::write(dir.join("cities15000.txt"), "1\tParis\tParis\t\t48.85341\t2.3488\tP\tPPLC\tFR\t\t11\n").unwrap();
+            std::fs::write(dir.join("countryInfo.txt"), "FR\tFRA\t250\tFR\tFrance\n").unwrap();
+            let d = dir.to_string_lossy().to_string();
+            s.execute("map.geotag", &json!({"ids": [ids[1].0], "clear": true})).unwrap();
+            let r = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0, ids[1].0], "dataset": d, "overwrite": true})).unwrap();
+            assert_eq!(r["found"], 1);
+            let m = &s.catalog.photo(ids[0]).unwrap().meta;
+            assert_eq!((m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Paris", "France", "FR"));
+            // online without consent: refused before anything is sent
+            let e = s.execute("map.reverseGeocode", &json!({"ids": [ids[0].0], "provider": "online", "overwrite": true})).unwrap_err();
+            assert!(e.to_string().contains("consent"), "{e}");
+            assert!(s.execute("map.geonamesDownload", &json!({"dataset": d})).is_err());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // reverse geocode given applies country code
+        // The UI's background online lookups come back as `provider: "given"`; their ISO country code
+        // lands in the catalog like the place names (issue #784).
+        {
+            let (mut s, ids) = session_with(1);
+            s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.86, "lon": 2.34})).unwrap();
+            let r = s
+                .execute(
+                    "map.reverseGeocode",
+                    &json!({"provider": "given", "places": [{"id": ids[0].0, "sublocation": "Louvre", "city": "Paris", "state": "Île-de-France", "country": "France", "countryCode": "FR"}]}),
+                )
+                .unwrap();
+            assert_eq!(r["changed"], 1);
+            let m = &s.catalog.photo(ids[0]).unwrap().meta;
+            assert_eq!((m.location.as_str(), m.city.as_str(), m.country.as_str(), m.country_code.as_str()), ("Louvre", "Paris", "France", "FR"));
+        }
     }
 
     #[test]
     fn private_locations_strip_gps_on_export() {
-        use crate::export::{ExportOptions, export_metadata};
-        use lcc_catalog::{Catalog, Photo, Source};
-        let mut c = Catalog::new();
-        c.apply(Op::SetSavedLocation { name: "Home".into(), location: Some(SavedLocation::new("Home", 48.85, 2.35, 500.0, true).unwrap()) }).unwrap();
-        let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
-        p.meta.gps = Some((48.851, 2.351));
-        p.meta.city = "Paris".into();
-        let m = export_metadata(&p, &c, &ExportOptions::default()).unwrap();
-        assert!(m.gps.is_none() && m.city.is_none());
-        p.meta.gps = Some((45.0, 2.35));
-        let m = export_metadata(&p, &c, &ExportOptions::default()).unwrap();
-        assert!(m.gps.is_some() && m.city.as_deref() == Some("Paris"));
-    }
-
-    /// A private location also holds for Original (sidecar; an original embedding GPS is
-    /// refused) and DNG exports.
-    #[test]
-    fn private_locations_strip_gps_from_original_and_dng_exports() {
-        use crate::export::{ExportOptions, export_photo};
-        let dir = crate::tests_xmp::temp_dir("map-private-orig");
-        let raw = dir.join("Raw.dng");
-        std::fs::write(&raw, crate::tests_xmp::synthetic_dng_with(None, Default::default())).unwrap();
-        let mut s = Session::new().with_fs();
-        s.execute("library.import", &json!({"paths": [raw.to_string_lossy()]})).unwrap();
-        let id = s.catalog.photos().next().unwrap().id;
-        s.execute("photo.setMeta", &json!({"ids": [id.0], "gps": [48.851, 2.351]})).unwrap();
-        s.execute("map.saveLocation", &json!({"name": "Home", "lat": 48.85, "lon": 2.35, "radius": 500, "private": true})).unwrap();
-        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "original"})), 1).unwrap();
-        let side = lcc_meta::parse_xmp(std::str::from_utf8(&e.sidecars[0].1).unwrap()).unwrap().metadata;
-        assert!(side.gps.is_none(), "{side:?}");
-        let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "dng"})), 1).unwrap();
-        assert!(lcc_meta::extract(&e.bytes).gps.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
+        // private locations strip gps on export
+        {
+            use crate::export::{ExportOptions, export_metadata};
+            use lcc_catalog::{Catalog, Photo, Source};
+            let mut c = Catalog::new();
+            c.apply(Op::SetSavedLocation { name: "Home".into(), location: Some(SavedLocation::new("Home", 48.85, 2.35, 500.0, true).unwrap()) })
+                .unwrap();
+            let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
+            p.meta.gps = Some((48.851, 2.351));
+            p.meta.city = "Paris".into();
+            let m = export_metadata(&p, &c, &ExportOptions::default()).unwrap();
+            assert!(m.gps.is_none() && m.city.is_none());
+            p.meta.gps = Some((45.0, 2.35));
+            let m = export_metadata(&p, &c, &ExportOptions::default()).unwrap();
+            assert!(m.gps.is_some() && m.city.as_deref() == Some("Paris"));
+        }
+        // private location photo exports a file without location
+        // A photo inside a private saved location is exported without GPS or location fields; one
+        // outside keeps them.
+        // End to end: the JPEG file a rendered export writes carries GPS and place names for a photo
+        // outside every private location, and none for one inside a private location.
+        {
+            use crate::export::{ExportOptions, export_photo};
+            let (mut s, ids) = session_with(2);
+            s.execute("map.geotag", &json!({"ids": [ids[0].0], "lat": 48.8566, "lon": 2.3522})).unwrap();
+            s.execute("map.geotag", &json!({"ids": [ids[1].0], "lat": 51.5, "lon": -0.12})).unwrap();
+            s.execute("map.saveLocation", &json!({"name": "Home", "lat": 48.8566, "lon": 2.3522, "radius": 500, "private": true})).unwrap();
+            let o = ExportOptions { resize: Some(crate::export::Resize::long_edge(256)), ..ExportOptions::default() };
+            let inside = export_photo(&mut s, ids[0], &o, 1).unwrap();
+            let outside = export_photo(&mut s, ids[1], &o, 2).unwrap();
+            assert!(lcc_meta::extract(&outside.bytes).gps.is_some(), "a public photo keeps its GPS");
+            let m = lcc_meta::extract(&inside.bytes);
+            assert!(m.gps.is_none(), "GPS stripped inside a private location");
+            assert!(!String::from_utf8_lossy(&inside.bytes).contains("48.85"), "no coordinates anywhere in the file");
+            // not private any more: the same photo exports with its location
+            s.execute("map.saveLocation", &json!({"name": "Home", "private": false})).unwrap();
+            assert!(lcc_meta::extract(&export_photo(&mut s, ids[0], &o, 3).unwrap().bytes).gps.is_some());
+        }
+        // private locations strip gps from original and dng exports
+        // A private location also holds for Original (sidecar; an original embedding GPS is
+        // refused) and DNG exports.
+        {
+            use crate::export::{ExportOptions, export_photo};
+            let dir = crate::tests_xmp::temp_dir("map-private-orig");
+            let raw = dir.join("Raw.dng");
+            std::fs::write(&raw, crate::tests_xmp::synthetic_dng_with(None, Default::default())).unwrap();
+            let mut s = Session::new().with_fs();
+            s.execute("library.import", &json!({"paths": [raw.to_string_lossy()]})).unwrap();
+            let id = s.catalog.photos().next().unwrap().id;
+            s.execute("photo.setMeta", &json!({"ids": [id.0], "gps": [48.851, 2.351]})).unwrap();
+            s.execute("map.saveLocation", &json!({"name": "Home", "lat": 48.85, "lon": 2.35, "radius": 500, "private": true})).unwrap();
+            let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "original"})), 1).unwrap();
+            let side = lcc_meta::parse_xmp(std::str::from_utf8(&e.sidecars[0].1).unwrap()).unwrap().metadata;
+            assert!(side.gps.is_none(), "{side:?}");
+            let e = export_photo(&mut s, id, &ExportOptions::from_json(&json!({"format": "dng"})), 1).unwrap();
+            assert!(lcc_meta::extract(&e.bytes).gps.is_none());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

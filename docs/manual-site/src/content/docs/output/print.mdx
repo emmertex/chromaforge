@@ -1,0 +1,29 @@
+---
+title: Print module
+description: Layout styles, templates, guides and saved prints.
+sidebar:
+  order: 9
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **Print** in the module bar, **File ▸ Print…** (⌘P) for the dialog.
+- **Page Setup** (top): paper size, **Portrait** / **Landscape**; after choosing a printer, its own paper sizes appear.
+- **Template Browser** (left): built-ins 1 Large with Stroke, Fine Art Mat, Maximize Size, 2×2 Cells, 4 Wide, 4×5 and 5×8 Contact Sheet, Triptych, (1) 4×6 (6) 2×3, (2) 5×7, Custom Centered. **+** saves your own; right-click to delete.
+- **Saved Prints**: **Create Saved Print** keeps the photos and settings as a collection.
+- **Guides**: Rulers, Margins and Gutters, Image Cells, Page Bleed, Dimensions; units in / cm / mm.
+- **Layout Style** (right): **Single Image / Contact Sheet**, **Picture Package**, **Custom Package** (cell sizes pack onto as many pages as needed).
+- **Image Settings**: Zoom to Fill, Rotate to Fit, Repeat One Photo per Page, Stroke Border (width, colour).
+- **Layout**: Rows, Columns, Vertical / Horizontal Gutter, Keep Square; **Margins** left / right / top / bottom.
+- **Page**: Page Background Color, Identity Plate (text, size, colour, opacity), Page Numbers, Page Info, Crop Marks, Photo Info (token, font size).
+- With one photo selected, the page and the print take that photo; only an empty selection prints the whole filmstrip. Entering Print from Develop selects the photo on screen.
+- Next page / previous page arrows under the preview.
+
+<Shot name="print-module" alt="Print module with the template browser and layout panels" menu="Window ▸ Modules ▸ Print"  />
+<Shot name="print-contact-sheet" alt="The 4x5 Contact Sheet template" menu="Window ▸ Modules ▸ Print"  />
+
+<Aside type="note" title="Modern layout">
+  Modern's Library / Develop switch has no Print. Open **Window ▸ Modules ▸ Print**; the print dialog is **File ▸ Print…**.
+</Aside>

@@ -77,6 +77,8 @@ pub struct Habits {
     /// Options of the last Photo Merge, per command.
     pub last_merge: BTreeMap<String, Value>,
     pub print_templates: Vec<crate::print::template::PrintTemplate>,
+    /// The Print Template Browser's folders (empty ones included).
+    pub print_template_folders: Vec<String>,
     pub metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
     pub filter_presets: Vec<crate::cmd::filters::FilterPreset>,
     pub curve_presets: Vec<crate::cmd::curves::CurvePreset>,
@@ -254,6 +256,10 @@ pub struct Merged {
     /// The remap was applied to the library's photos.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub remapped: bool,
+    /// An older install's camera profiles installed (`None`: not taken, merged by a build that
+    /// didn't take them: the next import takes them, once).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_profiles: Option<usize>,
 }
 
 /// `shared.json`.
@@ -334,10 +340,23 @@ pub struct MergeReport {
     pub presets: usize,
     pub profiles: usize,
     pub effects: usize,
+    /// Camera profiles (`.dcp`) installed (an older install's).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub camera_profiles: usize,
+    /// The file names of camera profiles that were there already.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub camera_already: Vec<String>,
+    /// Camera bodies that start with one of those camera profiles now.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub camera_bodies: usize,
     /// Problems (a profile file that couldn't be read…); nothing is lost: the library keeps its copy.
     pub problems: Vec<String>,
     /// Merged before: nothing done.
     pub skipped: bool,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The store on disk.
@@ -381,6 +400,11 @@ impl AppStore {
     /// `library` (a folder) was merged already.
     pub fn has_merged(&self, library: &Path) -> bool {
         self.merged.iter().any(|m| same_path(Path::new(&m.library), library))
+    }
+
+    /// Older install `store` was merged already, its camera profiles too.
+    fn has_merged_cameras(&self, store: &Path) -> bool {
+        self.merged.iter().any(|m| m.camera_profiles.is_some() && same_path(Path::new(&m.library), store))
     }
 
     /// A store file, parsed; `None` when missing or damaged. A damaged file is kept as
@@ -696,6 +720,11 @@ impl Habits {
     fn merge_named_presets(&mut self, other: Habits) -> usize {
         let mut n = merge_named(&mut self.export_presets, other.export_presets);
         n += merge_named(&mut self.print_templates, other.print_templates);
+        // folders of the other store come along (a template of theirs may sit in one)
+        for f in other.print_template_folders {
+            let _ = crate::template_folders::create_folder(&mut self.print_template_folders, &f);
+        }
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         n += merge_named(&mut self.metadata_presets, other.metadata_presets);
         n += merge_named(&mut self.filter_presets, other.filter_presets);
         n += merge_named(&mut self.curve_presets, other.curve_presets);
@@ -831,7 +860,14 @@ pub(crate) fn merge_content(
         mine.mask_tool_effects.entry(k).or_insert(v);
     }
     // import develop defaults: the library's when the store has none yet (auto import stays)
-    let plain = |d: &ImportDefaults| ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..d.clone() };
+    let plain = |d: &ImportDefaults| ImportDefaults {
+        auto_folder: None,
+        auto_copy: false,
+        auto_album: None,
+        auto_paused: false,
+        auto_options: Default::default(),
+        ..d.clone()
+    };
     if plain(&mine.import) == ImportDefaults::default() {
         mine.import = plain(&theirs.import);
     }
@@ -990,7 +1026,14 @@ impl Session {
 
     /// The import defaults the store keeps (auto import stays with each library).
     fn store_import_defaults(&self) -> ImportDefaults {
-        ImportDefaults { auto_folder: None, auto_copy: false, auto_album: None, ..self.import_defaults.clone() }
+        ImportDefaults {
+            auto_folder: None,
+            auto_copy: false,
+            auto_album: None,
+            auto_paused: false,
+            auto_options: Default::default(),
+            ..self.import_defaults.clone()
+        }
     }
 
     pub(crate) fn habits(&self) -> Habits {
@@ -999,6 +1042,7 @@ impl Session {
             last_export: self.last_export.clone(),
             last_merge: self.last_merge.clone(),
             print_templates: self.print_templates.clone(),
+            print_template_folders: self.print_template_folders.clone(),
             metadata_presets: self.metadata_presets.clone(),
             filter_presets: self.filter_presets.clone(),
             curve_presets: self.curve_presets.clone(),
@@ -1022,6 +1066,8 @@ impl Session {
         self.last_export = h.last_export;
         self.last_merge = h.last_merge;
         self.print_templates = h.print_templates;
+        self.print_template_folders = h.print_template_folders;
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         self.metadata_presets = h.metadata_presets;
         self.filter_presets = h.filter_presets;
         self.curve_presets = h.curve_presets;
@@ -1042,9 +1088,14 @@ impl Session {
         crate::cmd::lut_profiles::register_all(self, dir.as_deref());
         self.mask_effects = c.mask_effects;
         self.mask_tool_effects = c.mask_tool_effects;
-        let (auto_folder, auto_copy, auto_album) =
-            (self.import_defaults.auto_folder.take(), self.import_defaults.auto_copy, self.import_defaults.auto_album.take());
-        self.import_defaults = ImportDefaults { auto_folder, auto_copy, auto_album, ..c.import };
+        let (auto_folder, auto_copy, auto_album, auto_paused) = (
+            self.import_defaults.auto_folder.take(),
+            self.import_defaults.auto_copy,
+            self.import_defaults.auto_album.take(),
+            self.import_defaults.auto_paused,
+        );
+        let auto_options = std::mem::take(&mut self.import_defaults.auto_options);
+        self.import_defaults = ImportDefaults { auto_folder, auto_copy, auto_album, auto_paused, auto_options, ..c.import };
         let mut list = crate::presets::builtin();
         for p in &mut list {
             p.favorite = c.favorites.contains(&p.id);
@@ -1175,6 +1226,7 @@ impl Session {
             effects: r.effects,
             remap,
             remapped: false,
+            camera_profiles: None,
         });
         for p in &r.problems {
             log::warn!("store: merging {}: {p}", dir.display());
@@ -1193,7 +1245,7 @@ impl Session {
             if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
                 r.skipped = true;
             } else if !crate::library::is_library(dir) {
-                r.problems.push(format!("{} is not a library folder", dir.display()));
+                r.problems.push(format!("{} is not a catalog folder", dir.display()));
             } else {
                 match read_library(dir) {
                     Ok(theirs) => {
@@ -1217,9 +1269,16 @@ impl Session {
     /// `store.importOlderInstalls`: the presets of older installs' stores (`dirs`; none given: every one
     /// on this computer, [`older_install_stores`]) join the shared store, each folder once unless
     /// `force`: develop presets with their favourites and At Import / hidden marks, local adjustment
-    /// presets, LUT profiles, import defaults and habits. The same preset twice is kept once. Reads
-    /// the folders only; saves the store.
+    /// presets, LUT profiles, import defaults and habits, and the camera profiles (`.dcp`) of their
+    /// `Profiles/` with the bodies they were bound to ([`crate::cmd::dcp_profiles::import_older`]).
+    /// The same preset or camera profile twice is kept once. Reads the folders only; saves the store.
     pub fn merge_older_installs(&mut self, dirs: &[PathBuf], force: bool) -> Result<Vec<MergeReport>> {
+        self.merge_older_installs_in(dirs, force, None)
+    }
+
+    /// [`Self::merge_older_installs`] with the camera profiles going to `camera` (the camera-profiles
+    /// folder and its library; `None`: this computer's).
+    pub(crate) fn merge_older_installs_in(&mut self, dirs: &[PathBuf], force: bool, camera: Option<(&Path, &Path)>) -> Result<Vec<MergeReport>> {
         self.check_store()?;
         let dirs = if dirs.is_empty() { older_install_stores() } else { dirs.to_vec() };
         if dirs.is_empty() {
@@ -1230,12 +1289,21 @@ impl Session {
         let mut mine = self.content();
         let store_profiles = self.app_store.as_ref().map(AppStore::profiles_dir);
         let mut out = Vec::new();
+        let mut bound = 0usize;
         for dir in &dirs {
             let mut r = MergeReport { library: dir.display().to_string(), ..Default::default() };
             if own.as_deref().is_some_and(|o| same_path(o, dir)) {
                 r.problems.push(format!("{} is this app's own store", dir.display()));
-            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
+            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged_cameras(dir)) {
                 r.skipped = true;
+            } else if !force && self.app_store.as_ref().is_some_and(|s| s.has_merged(dir)) {
+                // merged by a build that left the camera profiles: those only, once
+                let cams = crate::cmd::dcp_profiles::import_older(self, dir, camera);
+                (r.camera_profiles, r.camera_already, r.camera_bodies, r.problems) = (cams.added, cams.already, cams.bound, cams.problems);
+                bound += cams.bound;
+                if let Some(m) = self.app_store.as_mut().and_then(|s| s.merged.iter_mut().find(|m| same_path(Path::new(&m.library), dir))) {
+                    m.camera_profiles = Some(cams.added);
+                }
             } else if !is_store_folder(dir) {
                 r.problems.push(format!("{} holds no presets ({PRESETS} or {SHARED})", dir.display()));
             } else {
@@ -1243,9 +1311,19 @@ impl Session {
                 let theirs = read_store_folder(dir, &mut problems);
                 let (mut rr, remap) = merge_content(&mut mine, theirs, Some(&dir.join(PROFILES_DIR)), store_profiles.as_deref());
                 problems.append(&mut rr.problems);
+                // the camera profiles: installed now, with their bodies
+                let cams = crate::cmd::dcp_profiles::import_older(self, dir, camera);
+                problems.extend(cams.problems);
                 rr.problems = problems;
+                rr.camera_profiles = cams.added;
+                rr.camera_already = cams.already;
+                rr.camera_bodies = cams.bound;
+                bound += cams.bound;
                 rr.library = r.library.clone();
                 self.record_merge(dir, &rr, remap);
+                if let Some(m) = self.app_store.as_mut().and_then(|s| s.merged.last_mut()) {
+                    m.camera_profiles = Some(rr.camera_profiles);
+                }
                 r = rr;
             }
             out.push(r);
@@ -1253,6 +1331,11 @@ impl Session {
         self.set_content(mine);
         crate::profile_refs::refresh(self);
         self.save_app_store()?;
+        if bound > 0
+            && let Err(e) = self.save_prefs()
+        {
+            log::error!("store: the camera bodies' profiles weren't saved: {e}");
+        }
         Ok(out)
     }
 
@@ -1262,7 +1345,7 @@ impl Session {
         }
         if !self.uses_app_store() {
             return Err(EngineError::Other(
-                "the open library keeps its own presets and profiles; run store.useLibrary {\"keep\": false} first".into(),
+                "the open catalog keeps its own presets and profiles; run store.useLibrary {\"keep\": false} first".into(),
             ));
         }
         Ok(())
@@ -1380,7 +1463,7 @@ impl Session {
         if self.app_store.is_none() {
             return Err(EngineError::Other("there is no shared store (the settings folder isn't available)".into()));
         }
-        let Some(lib) = self.library.as_ref() else { return Err(EngineError::Other("no library is open".into())) };
+        let Some(lib) = self.library.as_ref() else { return Err(EngineError::Other("no catalog is open".into())) };
         let (dir, on_disk, own) = (lib.dir.clone(), lib.on_disk, lib.own_store);
         if keep == own {
             return Ok(self.store_info());

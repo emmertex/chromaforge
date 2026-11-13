@@ -279,6 +279,24 @@ pub fn encode_tiff_associated(img: &EncodeImage, compression: TiffCompression, m
 /// The TIFF writer of [`encode_tiff`]: `extra_samples` is the `ExtraSamples` value of an alpha
 /// channel (1 associated, 2 unassociated). `img` is validated.
 fn write_tiff(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra_samples: u16) -> Result<Vec<u8>> {
+    let out = write_tiff_with(img, compression, meta, extra_samples)?;
+    // Noisy pixels can deflate or LZW to more than they started as; such a file is stored uncompressed instead, so a
+    // compressed export is never larger than an uncompressed one.
+    let payload = match img.samples {
+        Samples::U8(s) => s.len(),
+        Samples::U16(s) => s.len().saturating_mul(2),
+        Samples::F32(s) => s.len().saturating_mul(4),
+    };
+    if matches!(compression, TiffCompression::Deflate | TiffCompression::Lzw) && out.len() > payload {
+        let raw = write_tiff_with(img, TiffCompression::None, meta, extra_samples)?;
+        if raw.len() < out.len() {
+            return Ok(raw);
+        }
+    }
+    Ok(out)
+}
+
+fn write_tiff_with(img: &EncodeImage, compression: TiffCompression, meta: &EncodeMeta, extra_samples: u16) -> Result<Vec<u8>> {
     use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
     use tiff::tags::Predictor;
     let e = |e: tiff::TiffError| Error::Encode(e.to_string());
@@ -685,13 +703,6 @@ mod hlg_tests {
     use super::*;
 
     #[test]
-    fn dimensions_whose_sample_count_wraps_are_refused() {
-        // 2^31 x 2^31 x 4 is 2^64 samples: zero when wrapped, which an empty buffer would satisfy
-        let img = EncodeImage::new(1 << 31, 1 << 31, 4, Samples::U8(&[]));
-        assert!(img.validate().is_err());
-    }
-
-    #[test]
     fn hlg_reference_white_and_peak() {
         // BT.2408: SDR (HDR reference) white sits at 75 % HLG signal
         for v in hlg_signal([1.0; 3]) {
@@ -718,5 +729,11 @@ mod hlg_tests {
         let m = EncodeMeta::default();
         assert!(encode_avif_hdr(4, 4, &[0.5; 10], 80, 10, &m, HdrTransfer::Hlg).is_err());
         assert!(encode_avif_hdr(0, 4, &[], 80, 10, &m, HdrTransfer::Hlg).is_err());
+        // dimensions whose sample count wraps are refused
+        {
+            // 2^31 x 2^31 x 4 is 2^64 samples: zero when wrapped, which an empty buffer would satisfy
+            let img = EncodeImage::new(1 << 31, 1 << 31, 4, Samples::U8(&[]));
+            assert!(img.validate().is_err());
+        }
     }
 }

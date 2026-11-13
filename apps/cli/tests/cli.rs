@@ -478,8 +478,8 @@ fn contact_sheet_exports_pdf_and_protects_originals() {
     assert!(bytes.starts_with(b"%PDF-1.4"));
     assert!(String::from_utf8_lossy(&bytes).contains("/MediaBox [0 0 792.00 612.00]"));
     let before = std::fs::read(&input).unwrap();
-    for target in [input.clone(), input.with_extension("xmp")] {
-        if target != input {
+    for target in [input.to_path_buf(), input.with_extension("xmp")] {
+        if target != *input {
             std::fs::write(&target, b"existing sidecar").unwrap();
         }
         let (ok, _, _) = run_cli(&["--import", input.to_str().unwrap(), "export.contactSheet", &format!("path={}", target.display())], None);
@@ -535,10 +535,9 @@ fn print_commands_chain_into_a_picture_package_pdf() {
     assert_eq!(std::fs::read(&out).unwrap(), before);
 }
 
-fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("app-cli-test-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    d.join(name)
+/// The path of a file or folder `name` in a Temp folder of its own, removed when the test ends.
+fn tmp(name: &str) -> lcc_testkit::TempFile {
+    lcc_testkit::TempFile::new(&format!("app-cli-test-{name}"), name)
 }
 
 fn gradient_png(path: &std::path::Path) {
@@ -697,6 +696,30 @@ fn mcp_refuses_a_program_chosen_by_the_request() {
     assert!(!marker.exists(), "no program was started");
 }
 
+/// `render` of a file still being copied in says so (try again shortly), not that the file is unreadable.
+#[test]
+fn render_of_a_file_still_being_copied_says_to_try_again() {
+    let mut b = vec![0u8; 64];
+    b[0..4].copy_from_slice(b"II*\0");
+    b[4..8].copy_from_slice(&8u32.to_le_bytes());
+    b[8..10].copy_from_slice(&2u16.to_le_bytes());
+    for (at, tag, v) in [(10usize, 0x0111u16, 64u32), (22, 0x0117, 4000)] {
+        b[at..at + 2].copy_from_slice(&tag.to_le_bytes());
+        b[at + 2..at + 4].copy_from_slice(&4u16.to_le_bytes());
+        b[at + 4..at + 8].copy_from_slice(&1u32.to_le_bytes());
+        b[at + 8..at + 12].copy_from_slice(&v.to_le_bytes());
+    }
+    b.extend([0u8; 100]);
+    let input = tmp("copying-IMG_0001.NEF");
+    std::fs::write(&input, &b).unwrap();
+    let out = tmp("copying-out.jpg");
+    let o = Command::new(BIN).args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap()]).output().unwrap();
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("still being copied, try again shortly"), "{err}");
+    assert!(!err.contains("not a readable photo"), "{err}");
+}
+
 #[test]
 fn render_subcommand() {
     let input = tmp("r-in.png");
@@ -775,7 +798,7 @@ fn render_refuses_to_overwrite_its_input() {
     let dir = input.parent().unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     let other_spelling = dir.join("sub/../self-in.png");
-    for out in [&input, &other_spelling] {
+    for out in [input.path(), other_spelling.as_path()] {
         let o =
             Command::new(BIN).args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap(), "--set", "light.exposure=1"]).output().unwrap();
         assert!(!o.status.success());
@@ -867,23 +890,6 @@ fn snapshot_subcommand_renders_the_ui_headlessly() {
     assert_eq!((d.width, d.height), (640, 480));
 }
 
-/// `snapshot` sessions look for the SAM 3 model where the app does (`<PREFIX>_SAM3_DIR`), so a
-/// scripted Object / Describe mask works headlessly instead of failing with "no folder is set".
-#[test]
-fn snapshot_sessions_get_the_sam3_model_folder() {
-    let script = tmp("snap-sam3.jsonl");
-    let out = tmp("snap-sam3.png");
-    let dir = tmp("snap-sam3-model");
-    std::fs::write(&script, format!("{}\n", json!({"method": "engine.execute", "params": {"command": "segment.model.status"}}))).unwrap();
-    let o = Command::new(BIN)
-        .env(lcc_brand::env_var("SAM3_DIR"), &dir)
-        .args(["snapshot", "--demo", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", "320x200"])
-        .output()
-        .unwrap();
-    let reply: Value = serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().next().unwrap()).unwrap();
-    assert_eq!(reply["result"]["dir"].as_str(), dir.to_str(), "{reply}");
-}
-
 /// Issue #166: a scripted request that fails makes `snapshot` exit non-zero. The failed reply is
 /// still printed, the later lines still run, and the final `-o` screenshot is still written.
 #[test]
@@ -940,32 +946,42 @@ fn snapshot_ui_zoom_keeps_requested_pixel_dimensions() {
     let script = tmp("snap-ui-zoom.jsonl");
     std::fs::write(&script, format!("{}\n{}\n", json!({"method": "ui.zoomFactor", "params": {"factor": 1.1}}), json!({"method": "ui.inspect"})))
         .unwrap();
-    for (size, scale, expected) in [("400x240", "1", (400, 240)), ("345x200", "0.9", (311, 180))] {
-        let out = tmp(&format!("snap-ui-zoom-{scale}.png"));
-        let o = Command::new(BIN)
-            .args(["snapshot", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", size, "--scale", scale])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        let replies: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert!(replies.iter().all(|reply| reply["ok"] == true), "{replies:?}");
-        assert!(replies[1]["result"]["pixelsPerPoint"].as_f64().unwrap() > scale.parse::<f64>().unwrap());
-        let decoded = lcc_codecs::decode(&std::fs::read(out).unwrap(), Default::default()).unwrap();
-        assert_eq!((decoded.width, decoded.height), expected);
-    }
+    // a fractional scale as well: 345x200 points at 0.9 is 311x180 pixels (310.5 rounds up), zoomed or not
+    let (size, scale, expected) = ("345x200", "0.9", (311, 180));
+    let out = tmp("snap-ui-zoom.png");
+    let o = Command::new(BIN)
+        .env(lcc_brand::env_var("GPU"), "0")
+        .args(["snapshot", "--script", script.to_str().unwrap(), "-o", out.to_str().unwrap(), "--size", size, "--scale", scale])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let replies: Vec<Value> = String::from_utf8_lossy(&o.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(replies.iter().all(|reply| reply["ok"] == true), "{replies:?}");
+    assert!(replies[1]["result"]["pixelsPerPoint"].as_f64().unwrap() > scale.parse::<f64>().unwrap());
+    let decoded = lcc_codecs::decode(&std::fs::read(out).unwrap(), Default::default()).unwrap();
+    assert_eq!((decoded.width, decoded.height), expected);
 }
 
-/// Headless snapshots default to CPU photo rendering as well as CPU UI rasterization.
+/// Headless snapshots default to CPU photo rendering as well as CPU UI rasterization. The same
+/// session looks for the SAM 3 model where the app does (`<PREFIX>_SAM3_DIR`), so a scripted
+/// Object / Describe mask works headlessly instead of failing with "no folder is set".
 #[test]
 fn snapshot_defaults_to_cpu_without_gpu_environment_overrides() {
     let script = tmp("default-cpu.jsonl");
     std::fs::write(
         &script,
-        format!("{}\n{}\n", json!({"method": "engine.execute", "params": {"command": "app.gpu"}}), json!({"method": "ui.screenshot"})),
+        format!(
+            "{}\n{}\n{}\n",
+            json!({"method": "engine.execute", "params": {"command": "app.gpu"}}),
+            json!({"method": "ui.screenshot"}),
+            json!({"method": "engine.execute", "params": {"command": "segment.model.status"}}),
+        ),
     )
     .unwrap();
     let image = tmp("default-cpu.png");
+    let sam3 = tmp("snap-sam3-model");
     let output = Command::new(BIN)
+        .env(lcc_brand::env_var("SAM3_DIR"), &sam3)
         .env_remove(lcc_brand::env_var("GPU"))
         .env_remove(lcc_brand::env_var("GPU_BACKEND"))
         .env_remove("WGPU_BACKEND")
@@ -980,6 +996,7 @@ fn snapshot_defaults_to_cpu_without_gpu_environment_overrides() {
     assert_eq!(gpu["available"], false, "{gpu}");
     assert_eq!(gpu["adapter"], Value::Null, "no device is created: {gpu}");
     assert!(gpu["reason"].as_str().is_some_and(|reason| reason.contains("preference")), "{gpu}");
+    assert_eq!(replies[2]["result"]["dir"].as_str(), sam3.to_str(), "the SAM 3 folder from the environment: {}", replies[2]);
     let decoded = lcc_codecs::decode(&std::fs::read(image).unwrap(), Default::default()).unwrap();
     assert_eq!((decoded.width, decoded.height), (480, 320));
 }
@@ -1345,20 +1362,6 @@ fn snapshot_rejects_invalid_dimensions_before_creating_an_image() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("snapshot: bad --size/--scale"), "{}", String::from_utf8_lossy(&output.stderr));
         assert!(!image.exists());
     }
-}
-
-#[test]
-fn snapshot_preserves_fractional_scale_rounding() {
-    let image = tmp("fractional-scale-rounding.png");
-    let output = Command::new(BIN)
-        .env(lcc_brand::env_var("GPU"), "0")
-        .args(["snapshot", "--size", "345x200", "--scale", "0.9", "-o"])
-        .arg(&image)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let decoded = lcc_codecs::decode(&std::fs::read(image).unwrap(), Default::default()).unwrap();
-    assert_eq!((decoded.width, decoded.height), (311, 180));
 }
 
 /// Snapshot's CPU setting must never replace the desktop preference, including with --library.

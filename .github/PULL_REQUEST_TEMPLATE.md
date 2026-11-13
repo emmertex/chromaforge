@@ -52,9 +52,9 @@ Fixes #
   `LOOK_VERSION`, process version: the number this takes. If another pull request lands with it first, take one
   past main's when you merge main in. -->
 - **Where it came from:** <!-- for a decoder, camera or lens data, or fitted constants: the public spec, your own
-  measurements, or observed output, and the files measured. Never GPL / LGPL code (LibRaw, rawspeed, darktable,
-  RawTherapee, lensfun …), text derived from it, or Adobe profiles; dcraw only as AGENTS.md's dcraw reference policy
-  allows. -->
+  measurements, or observed output, and the files measured. Material that forbids derivation is out (Adobe
+  profiles/files, CC BY-NC/ND, no licence); anything permitting derivatives, sharing and commercial use is in —
+  AGENTS.md → "Third-party sources". Name the source on a `Sources:` line. -->
 - **New dependencies, `unsafe`, build scripts, network access, spawned processes, deleted files, CI or `xtask` gate
   changes:** <!-- each with its reason, or "none". Dependencies are pure Rust and use `workspace = true`; actions are
   pinned by SHA; downloads are checked against a sha256; nothing leaves the machine unless the person asked. -->
@@ -67,6 +67,8 @@ Fixes #
       free in `docs/library-shortcuts.md`
 - [ ] The feature's rows in `docs/parity-checklist.md` and its entry in `docs/gaps.md` are updated, honestly (🟡 when
       it is partial), in the same commit
+- [ ] User-visible change: the manual is updated in the same commit (`docs/manual-site/`, `docs/manual/`; pages: ______),
+      and screenshots it made stale are retaken or marked `<NeedsImage>` — or this changes nothing a user sees
 - [ ] New code has a caller: no command, module or setting that nothing reaches yet
 - [ ] Every new image, icon or other asset has its entry in `assets/ATTRIBUTION.md`; no font or media files added
 - [ ] Ready to merge (otherwise open it as a draft)

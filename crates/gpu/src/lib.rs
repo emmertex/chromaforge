@@ -43,6 +43,8 @@ mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cards;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod clip;
+#[cfg(not(target_arch = "wasm32"))]
 mod ctx;
 #[cfg(not(target_arch = "wasm32"))]
 mod exit;
@@ -54,6 +56,8 @@ mod gate;
 mod helper;
 #[cfg(not(target_arch = "wasm32"))]
 mod init;
+#[cfg(not(target_arch = "wasm32"))]
+mod instance;
 #[cfg(all(feature = "denoise", not(target_arch = "wasm32")))]
 pub mod nn;
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,6 +69,8 @@ mod slot;
 #[cfg(not(target_arch = "wasm32"))]
 mod strokes;
 #[cfg(not(target_arch = "wasm32"))]
+mod upload;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod video_lut;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -73,6 +79,9 @@ pub use render::{DisplayFrame, GpuStages};
 #[cfg(not(target_arch = "wasm32"))]
 pub use wgpu;
 
+/// Every wgpu instance comes from here: one at a time, with the Vulkan loader kept loaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub use instance::new_instance;
 #[cfg(not(target_arch = "wasm32"))]
 pub use slot::{EventKind, GpuEvent, MAX_RECOVERIES};
 
@@ -456,6 +465,20 @@ pub fn set_batch_limits(bytes: Option<u64>, jobs: Option<usize>) {
     gate::set_limits(bytes, jobs);
     #[cfg(target_arch = "wasm32")]
     let _ = (bytes, jobs);
+}
+
+/// Pin the bytes the joint colour noise reduction's bands may take on the device, for every render
+/// from now on (`None`: plan them from the device's memory and the renders on it again). Planned from
+/// the device, the plan follows the renders in flight, and when no band fits the step runs on the CPU,
+/// which agrees with the device only to within an 8-bit level; a pinned plan stays put, so two renders
+/// of one photo take the same path. For tests that compare renders bit for bit
+/// (`<PREFIX>_NR_GPU_BAND_MB` pins it from outside).
+#[doc(hidden)]
+pub fn set_nr_band_budget(bytes: Option<usize>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    render::NR_BAND_BUDGET.store(bytes.map_or(0, |b| b.max(1)), Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = bytes;
 }
 
 /// Batch work on the GPU now and so far.
@@ -904,7 +927,7 @@ fn editing_device(backends: wgpu::Backends, window: Option<WindowDevice>) -> Res
 
 /// The cards `adapters` are, as the settings list them (remembered for [`adapters`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
+pub(crate) fn remember_adapters(adapters: &[wgpu::Adapter]) -> Vec<cards::AdapterEntry> {
     let infos: Vec<_> =
         adapters.iter().map(|a| (a.get_info(), a.limits().max_storage_buffers_per_shader_stage, lcc_gpumem::adapter_memory(a))).collect();
     let entries = cards::entries_from(&infos, cards::screen().as_ref());
@@ -1128,6 +1151,7 @@ pub fn offer_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &w
     }
     let info = adapter.get_info();
     cards::set_screen(cards::ScreenCard::of(&info));
+    backend::note_window_backend(info.backend);
     let vram = lcc_gpumem::adapter_memory(adapter);
     *WINDOW_DEVICE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WindowDevice { device, queue, info, vram });
 }
@@ -1156,7 +1180,7 @@ pub fn adopt_window_device(device: wgpu::Device, queue: wgpu::Queue, adapter: &w
 
 /// The pixels of a texture on `device` (a [`DisplayFrame`]'s, or any `Rgba8Unorm` texture with
 /// `COPY_SRC`): for a headless screenshot of a view drawn straight from the GPU, and for tests. The
-/// app never needs them to draw. Waits for the GPU (at most a few seconds); `Err` when the copy or
+/// app never needs them to draw. Waits for the GPU (at most a minute); `Err` when the copy or
 /// the wait fails.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_texture(
@@ -1271,7 +1295,18 @@ pub fn memory() -> GpuMemory {
     }
 }
 
-/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now).
+/// Let each card's free pool hold up to `1/share` of the card's own memory while it works, when
+/// that is more than [`set_pool_limit`]'s bytes (`share` 0, the default: that limit alone). The
+/// idle trim ([`trim_pool`]) still empties it. See `ctx::pool_limit` for why.
+pub fn set_pool_vram_share(share: u64) {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx::POOL_VRAM_SHARE.store(share, Ordering::Relaxed);
+    #[cfg(target_arch = "wasm32")]
+    let _ = share;
+}
+
+/// Keep at most `bytes` of recycled buffers in the free pool from now on (trimming it now), or
+/// more while a card works when [`set_pool_vram_share`] allows it.
 pub fn set_pool_limit(bytes: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1282,17 +1317,23 @@ pub fn set_pool_limit(bytes: u64) {
     let _ = bytes;
 }
 
-/// Free recycled buffers until at most `keep` bytes stay pooled (e.g. when the app goes idle).
+/// Free recycled buffers until at most `keep` bytes stay pooled on each card (e.g. when the app
+/// goes idle): the editing card's and the second card's pools. (Only the editing card's was
+/// trimmed: after a two-card export or 1:1 build the second card kept its pool, up to the pool
+/// limit, for the rest of the session.)
 pub fn trim_pool(keep: u64) {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(g) = existing_device()
-        && let Some(_work) = exit::enter()
-    {
-        if keep == 0 {
-            render::release_shared_source();
-            strokes::clear();
+    if let Some(_work) = exit::enter() {
+        if let Some(g) = existing_device() {
+            if keep == 0 {
+                render::release_shared_source();
+                strokes::clear();
+            }
+            g.trim(keep);
         }
-        g.trim(keep);
+        if let Some(g) = helper::current() {
+            g.trim(keep);
+        }
     }
     #[cfg(target_arch = "wasm32")]
     let _ = keep;
@@ -1578,10 +1619,13 @@ fn try_render_inner(
         static BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         static HELPER_BUDGET: std::sync::OnceLock<budget::Budget> = std::sync::OnceLock::new();
         let budget = if on_helper { &HELPER_BUDGET } else { &BUDGET }.get_or_init(|| budget::Budget::new(budget::initial(gpu.max_buffer)));
-        let need = budget::footprint(src.width, src.height);
+        // (a window of a zoomed view works at the window's size from the one shared copy of the
+        // original: counted at the whole source's size, a 1:1 view's tiles of a 45 MP raw ran one
+        // at a time under the budget)
+        let need = budget::need(src.width, src.height, req.window.map(|w| (w.w, w.h)));
         let mut alone = false;
         let reason = loop {
-            let _permit = budget.admit(need, alone, shutting_down).ok_or(Fallback::NotTried)?;
+            let _permit = budget.admit(need, alone, gate::is_batch(), shutting_down).ok_or(Fallback::NotTried)?;
             let _ = ctx::take_failure(); // nothing left over from an earlier render on this thread
             let (r, scoped) = {
                 let _scope = ctx::RenderScope::new(&gpu);

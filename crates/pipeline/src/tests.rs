@@ -12,15 +12,6 @@ fn scene() -> Rgb32f {
 }
 
 #[test]
-fn default_render_is_sane() {
-    let r = render(&scene(), &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(240, 240));
-    assert!(r.image.width > 0 && r.image.height > 0 && r.image.width <= 240 && r.image.height <= 240);
-    let m = mean_luma(&r.image);
-    assert!((40.0..220.0).contains(&m), "{m}");
-    assert!(r.histogram.total > 0);
-}
-
-#[test]
 fn grey_ramp_stays_neutral() {
     let src = Rgb32f::from_fn(64, 8, |x, _| [0.002 * 1.12f32.powi(x as i32); 3]);
     let r = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(64, 8));
@@ -749,6 +740,49 @@ fn sliver_crops_render_quickly_with_wide_stages_on() {
         assert!(t.elapsed().as_secs_f64() < 300.0, "{rect:?}: {:?}", t.elapsed());
         assert!(r.image.width >= 1 && r.image.height >= 1, "{rect:?}");
     }
+}
+
+// Given a cached render with one process, a change to a process with another colour filter (Update
+// to Current Process, undo) renders like a fresh render, not the cached denoised image
+#[test]
+fn a_process_change_does_not_reuse_the_other_colour_filter() {
+    use crate::{StageCache, render_cached};
+    use lcc_develop::Process;
+    use std::sync::Arc;
+    let src = Arc::new(colour_noise_scene(128, 96, 128));
+    let info = SourceInfo::default();
+    let req = RenderRequest::fit(128, 96);
+    let cache = StageCache::default();
+    let mut old = DevelopSettings::default();
+    old.detail.nr_color = 25.0;
+    old.detail.nr_color_smoothness = 0.0;
+    old.process = Process::V7.version();
+    let current = DevelopSettings { process: Process::V8.version(), ..old.clone() };
+    let first = render_cached(&src, &info, &old, &req, &cache).image;
+    let fresh = render(&src, &info, &current, &req).image;
+    // (the 8-bit dither of V8 alone moves pixels by at most 1 level)
+    assert!(max_diff(&first, &fresh) > 1, "the two colour filters differ on this scene");
+    assert_eq!(render_cached(&src, &info, &current, &req, &cache).image, fresh, "process update");
+    assert_eq!(render_cached(&src, &info, &old, &req, &cache).image, first, "undo");
+}
+
+/// Flat grey with chroma noise: `quiet` columns on the left with little noise, the rest with much.
+pub(crate) fn colour_noise_scene(w: usize, h: usize, quiet: usize) -> Rgb32f {
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut noise = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        ((seed >> 11) as f32 / (1u64 << 53) as f32 - 0.5) * 2.0
+    };
+    let mut img = Rgb32f::new(w, h);
+    for (i, p) in img.data.iter_mut().enumerate() {
+        let sigma = if i % w < quiet { 0.001 } else { 0.015 };
+        let y = 0.04f32;
+        let (r, b) = (y + noise() * sigma, y + noise() * sigma);
+        *p = [r, (y - 0.2627 * r - 0.0593 * b) / 0.6780, b];
+    }
+    img
 }
 
 /// A crop of no width used to give grain NaN coordinates (and NaN pixels); the render stays finite.

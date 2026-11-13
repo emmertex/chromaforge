@@ -17,15 +17,11 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 web-time = { workspace = true }
 
-# native ML inference (candle CPU/Metal) and checkpoint downloads
+# native ML inference (candle on the CPU; the GPU runner comes from lcc-gpu through the engine) and checkpoint downloads
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 lcc-fetch = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { workspace = true, features = ["metal"] }
-candle-nn = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 lcc-testkit = { workspace = true }

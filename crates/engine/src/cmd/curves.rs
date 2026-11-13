@@ -106,7 +106,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reset Tone Curve",
             [],
             None,
-            "{channel?: all|point|parametric|master|red|green|blue (default all), mask?: id} — the active photo's tone curve (or one channel) back to linear; with `mask`, that mask's local Curve (no parametric part)",
+            "{channel?: all|point|parametric|master|red|green|blue (default all), mask?: id}: the active photo's tone curve (or one channel) back to linear; with `mask`, that mask's local Curve (no parametric part)",
             has_active,
             reset
         ),
@@ -124,7 +124,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Point Curve Preset",
             [],
             None,
-            "{name, mask?: id} — sets the active photo's point curves (all four channels; the parametric curve stays), or with `mask` that mask's local Curve",
+            "{name, mask?: id}: sets the active photo's point curves (all four channels; the parametric curve stays), or with `mask` that mask's local Curve",
             has_active,
             apply_preset
         ),
@@ -133,7 +133,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Point Curve Preset",
             [],
             None,
-            "{name, mask?: id} — the active photo's point curves (or that mask's local Curve) under a name (replaces a user preset of that name; built-in names are reserved), saved with the library",
+            "{name, mask?: id}: the active photo's point curves (or that mask's local Curve) under a name (replaces a user preset of that name; built-in names are reserved), saved with the library",
             has_active,
             save_preset
         ),
@@ -142,7 +142,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Point Curve Preset",
             [],
             None,
-            "{name} — a user preset (built-ins can't be deleted)",
+            "{name}: a user preset (built-ins can't be deleted)",
             always,
             delete_preset
         ),
@@ -151,7 +151,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Point Curve Presets",
             [],
             None,
-            "{path | paths: [file]} — .lccurve JSON files ({format, version, presets: [...]}, an array of presets, or one preset); same-named user presets are replaced → {imported: [name], failed: [[file, error]]}",
+            "{path | paths: [file]}: .lccurve JSON files ({format, version, presets: [...]}, an array of presets, or one preset); same-named user presets are replaced → {imported: [name], failed: [[file, error]]}",
             always,
             import_presets
         ),
@@ -160,7 +160,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Point Curve Presets",
             [],
             None,
-            "{path, names?: [name] (default: every user preset)} — writes a .lccurve JSON file → {path, count}",
+            "{path, names?: [name] (default: every user preset)}: writes a .lccurve JSON file → {path, count}",
             always,
             export_presets
         ),
@@ -399,6 +399,12 @@ fn import_presets(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(C, "missing `path` / `paths`"));
     }
     let (mut imported, mut failed) = (Vec::new(), Vec::new());
+    // the user presets by name, kept up to date, so a file of many presets replaces or adds each
+    // without a scan of the others (the first of two same-named presets, as `upsert` finds it)
+    let mut by_name: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, x) in s.curve_presets.iter().enumerate() {
+        by_name.entry(x.name.to_ascii_lowercase()).or_insert(i);
+    }
     for f in &paths {
         match std::fs::read(f).map_err(|e| e.to_string()).and_then(|b| parse_file(&b)) {
             Ok(list) => {
@@ -409,7 +415,13 @@ fn import_presets(s: &mut Session, p: &Value) -> Result<Value> {
                         preset.name = format!("{} (imported)", preset.name);
                     }
                     imported.push(preset.name.clone());
-                    upsert(s, preset);
+                    match by_name.get(&preset.name.to_ascii_lowercase()).and_then(|&i| s.curve_presets.get_mut(i)) {
+                        Some(x) => *x = preset,
+                        None => {
+                            by_name.insert(preset.name.to_ascii_lowercase(), s.curve_presets.len());
+                            s.curve_presets.push(preset);
+                        }
+                    }
                 }
             }
             Err(e) => failed.push(json!([f, e])),

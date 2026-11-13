@@ -279,7 +279,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Folder",
             [],
             None,
-            "{path, name} — rename a folder on disk (its files and sidecars go along) and relink the photos in it; one undo step (undo renames it back, refused if the old name is taken) → {path, relinked}",
+            "{path, name}: rename a folder on disk (its files and sidecars go along) and relink the photos in it; one undo step (undo renames it back, refused if the old name is taken) → {path, relinked}",
             always,
             |s, p| {
                 let from = str_param(p, "path").ok_or_else(|| bad("folder.rename", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
@@ -297,7 +297,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Folder",
             [],
             None,
-            "{path, into: destination folder} — move a folder on disk into another and relink the photos in it; one undo step (undo moves it back, refused if the old place is taken) → {path, relinked}",
+            "{path, into: destination folder}: move a folder on disk into another and relink the photos in it; one undo step (undo moves it back, refused if the old place is taken) → {path, relinked}",
             always,
             |s, p| {
                 let from = str_param(p, "path").ok_or_else(|| bad("folder.move", "missing path"))?.trim_end_matches(['/', '\\']).to_string();
@@ -313,7 +313,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Folder on Disk",
             [],
             None,
-            "{parent, name} — create a folder on disk inside `parent` (refused if the name is taken); one undo step (undo removes it again while it is empty) → {path}",
+            "{parent, name}: create a folder on disk inside `parent` (refused if the name is taken); one undo step (undo removes it again while it is empty) → {path}",
             always,
             create_folder
         ),
@@ -322,7 +322,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move to Folder",
             [],
             None,
-            "{folder, ids?} — move the photos' files (default: the selection) with their XMP sidecars into `folder` on disk and relink them; virtual copies follow their master; across volumes the file is copied, verified and only then removed; never overwrites (a name taken in `folder` refuses the whole move); missing/offline and Local photos are refused; one undo step (undo moves them back) → {moved, folder}",
+            "{folder, ids?}: move the photos' files (default: the selection) with their XMP sidecars into `folder` on disk and relink them; virtual copies follow their master; across volumes the file is copied, verified and only then removed; never overwrites (a name taken in `folder` refuses the whole move); missing/offline and Local photos are refused; one undo step (undo moves them back) → {moved, folder}",
             always,
             move_to_folder
         ),
@@ -331,7 +331,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Browse Folder",
             [],
             None,
-            "{path, subfolders?: bool, show?: all|notImported} — show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk — the default — or just the files an import would take) → {path, photos, new, notImported}",
+            "{path, subfolders?: bool, show?: all|notImported}: show a folder's photos without adding them to the library (they're read in place; edits go to XMP sidecars; `show` picks the quick filter: everything on disk (the default) or just the files an import would take) → {path, photos, new, notImported}",
             always,
             browse
         ),
@@ -340,7 +340,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Forget Unchanged Local Photos",
             [],
             None,
-            "{dryRun?: bool, days?: n (default: the library preference, 0 = never)} — remove Local (browsed, not added) photos nobody changed, of folders not browsed for `days`, from the catalog; files and sidecars stay, browsing the folder again brings them back; not an undo step → {local, forgotten, keptRecent, keptTouched, keptInUse, foldersStamped, days, dryRun}",
+            "{dryRun?: bool, days?: n (default: the library preference, 0 = never)}: remove Local (browsed, not added) photos nobody changed, of folders not browsed for `days`, from the catalog; files and sidecars stay, browsing the folder again brings them back; not an undo step → {local, forgotten, keptRecent, keptTouched, keptInUse, foldersStamped, days, dryRun}",
             always,
             forget_local
         ),
@@ -349,7 +349,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add to My Photos",
             ["Photo", "File"],
             None,
-            "{ids?} — browsed (Local) photos join the library",
+            "{ids?}: browsed (Local) photos join the library",
             always,
             add_to_library
         ),
@@ -485,7 +485,7 @@ fn move_to_folder(s: &mut Session, p: &Value) -> Result<Value> {
     for id in ids {
         let ph = s.catalog.photo(id).ok_or_else(|| bad(C, format!("no photo {}", id.0)))?;
         if ph.local {
-            return Err(bad(C, format!("{} is not in the library (Local): add it first", ph.file_name)));
+            return Err(bad(C, format!("{} is not in the catalog (Local): add it first", ph.file_name)));
         }
         let lcc_catalog::Source::File { path } = &ph.source else {
             return Err(bad(C, format!("{} has no file on disk", ph.file_name)));
@@ -533,8 +533,11 @@ pub(crate) fn follow_folder(s: &mut Session, from: &str, to: &str) {
     // a library folder chosen at or below it follows too, as a source or as a filter
     follow_library_folder(&mut s.library_folder, from, to);
     follow_library_folder(&mut s.filter.library_folder, from, to);
+    // and so does the filter's own folder criterion, or the photos that moved with it would stop matching
+    follow_library_folder(&mut s.filter.folder, from, to);
     if let Some(f) = s.shelved_filter.as_mut() {
         follow_library_folder(&mut f.library_folder, from, to);
+        follow_library_folder(&mut f.folder, from, to);
     }
     if let Some(b) = &mut s.browse
         && let Ok(rel) = Path::new(&b.path).strip_prefix(from)
@@ -578,7 +581,7 @@ pub(crate) fn move_folder(s: &mut Session, from: &str, to: &str) -> std::result:
         lib.starts_with(&chosen) || chosen.parent() == Some(lib.as_path()) || l.starts_with(src) || src.parent() == Some(l)
     };
     if s.library.as_ref().is_some_and(|l| protected(&l.dir)) {
-        return Err("the library's own folders can't be moved here".into());
+        return Err("the catalog's own folders can't be moved here".into());
     }
     // Repairs retain their exact old paths, including those on surviving history entries.
     // Complete them before the directory moves; an unavailable repair leaves it in place.

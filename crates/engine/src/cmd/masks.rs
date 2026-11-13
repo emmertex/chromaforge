@@ -46,6 +46,11 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             lo_feather: f64_or(p, "loFeather", 0.1),
             hi_feather: f64_or(p, "hiFeather", 0.1),
         },
+        "depthRange" => {
+            let lo = f64_or(p, "lo", 0.0).clamp(0.0, 1.0);
+            let hi = f64_or(p, "hi", 0.35).clamp(0.0, 1.0);
+            MaskShape::DepthRange { lo: lo.min(hi), hi: lo.max(hi), feather: f64_or(p, "feather", 0.1).clamp(0.0, 1.0) }
+        }
         "colorRange" => {
             let samples: Vec<[f64; 3]> = p
                 .get("samples")
@@ -79,6 +84,12 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             };
             MaskShape::People { person, parts, who, seg: seg_param(p) }
         }
+        "landscape" => {
+            let raw = str_param(p, "class").map(str::trim).unwrap_or_default();
+            let class =
+                landscape_class(raw).ok_or_else(|| bad(c, format!("landscape: `class` is one of {} (not `{raw}`)", LANDSCAPE_CLASSES.join(", "))))?;
+            MaskShape::Landscape { class: class.to_string() }
+        }
         "concept" => {
             let name = str_param(p, "name").map(str::trim).unwrap_or_default();
             if name.is_empty() || name.chars().count() > 200 {
@@ -90,11 +101,34 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             return Err(bad(
                 c,
                 format!(
-                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt|people|concept)"
+                    "unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|depthRange|object|prompt|people|landscape|concept)"
                 ),
             ));
         }
     })
+}
+
+/// The Landscape classes `mask.add {kind: "landscape"}` takes ("Select Landscape"): the first three the photo analysis
+/// finds, the rest need the EoMT scene model.
+pub const LANDSCAPE_CLASSES: &[&str] = &["sky", "water", "vegetation", "mountains", "architecture", "natural ground", "artificial ground"];
+
+/// The canonical Landscape class a name means (`Mountain`, `building`, `sand`, `road`…), `None` for anything else.
+fn landscape_class(raw: &str) -> Option<&'static str> {
+    let c = raw.to_ascii_lowercase();
+    if c.is_empty() || c.len() > 40 {
+        return None;
+    }
+    if c.contains("sky") {
+        Some("sky")
+    } else if c.contains("water") || c.contains("sea") || c.contains("river") || c.contains("lake") {
+        Some("water")
+    } else if let Some(t) = lcc_pipeline::auto_mask::terrain_class(&c) {
+        Some(t)
+    } else if c.contains("vegetation") || c.contains("plant") || c.contains("tree") || c.contains("grass") {
+        Some("vegetation")
+    } else {
+        None
+    }
 }
 
 /// The People parts `mask.add {kind: "people"}` takes (Lightroom's names; none: Entire Person).
@@ -165,6 +199,10 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
             let found = segment(s, |s| s.segment_text(id, text))?;
             *seg = Some(found.ok_or_else(|| ai_err(format!("nothing matching “{text}” was found in this photo")))?);
         }
+        // a depth range needs the depth model (its grid is computed when the photo renders)
+        MaskShape::DepthRange { .. } => {
+            s.segmenter.require_depth_model()?;
+        }
         // the people models when installed, else the heuristic (no model needed)
         MaskShape::People { seg: None, .. } if background => return Ok(Later::Recompute),
         MaskShape::Concept { name, seg: None } if background => {
@@ -224,6 +262,11 @@ fn segment_object<T>(s: &mut Session, f: impl FnOnce(&mut Session) -> std::resul
 
 pub(crate) fn clicks_of(include: &[Point], exclude: &[Point]) -> Vec<Click> {
     include.iter().map(|p| Click { at: *p, include: true }).chain(exclude.iter().map(|p| Click { at: *p, include: false })).collect()
+}
+
+/// A mask selects nothing when it has no components, or every component is a brush without a stroke.
+pub(crate) fn mask_is_empty(m: &Mask) -> bool {
+    m.components.iter().all(|c| matches!(&c.shape, MaskShape::Brush { strokes, .. } if strokes.is_empty()))
 }
 
 fn masks_edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut Vec<Mask>, &mut Option<u32>) -> Result<()>) -> Result<Value> {
@@ -483,11 +526,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "Create New Mask",
             [],
             None,
-            "{kind: brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt, ...shape params (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?} — AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
+            "{kind: brush|linear|radial|sky|subject|background|landscape|luminanceRange|colorRange|object|prompt, ...shape params (landscape: class sky|water|vegetation|mountains|architecture|natural ground|artificial ground, loose names like building, sand or road work; the last four need the EoMT scene model, else ModelMissing) (start/end, center/rx/ry/angle/feather, lo/hi…; object: points/exclude [[x,y],…]; prompt: text; concept: name (a remembered object, found on each photo); people: person? (0 everyone, n the n-th from the left), parts? [Entire Person|Face Skin|Body Skin|Eyebrows|Eye Sclera|Iris and Pupil|Eyes|Lips|Teeth|Hair|Clothes], who? {name}|{role}; object/prompt/people: seg? a stored segmentation, no model needed), name?}: AI kinds need the SAM 3 model; in the app a prompt returns {pending} and the mask appears when found",
             has_active,
             |s, p| {
                 let kind = str_param(p, "kind").unwrap_or("radial").to_string();
                 let mut shape = shape_from(&kind, p, "mask.add")?;
+                // Landscape beyond sky, water and vegetation is the scene model's alone (the photo analysis can't tell it apart)
+                if let MaskShape::Landscape { class } = &shape
+                    && !matches!(class.as_str(), "sky" | "water" | "vegetation")
+                {
+                    s.segmenter.require_scene_model()?;
+                }
                 let later = resolve_ai(s, &mut shape, "mask.add")?;
                 let name = str_param(p, "name").map(str::to_string);
                 if let Later::Text(text) = &later {
@@ -551,7 +600,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Brush Stroke",
             [],
             None,
-            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, autoRange?: -100 (tight) … 0 (default, Lightroom's limits) … 100 (wide), how different a pixel may be from the one under the dab and still take Auto Mask's paint (the limits scale by ½ … 2), kept with the stroke, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), runs?: [{points, erase?, size?, feather?, flow?, density?, pressure?}, …] (one gesture in parts painted with different modes, e.g. ⌥ / Alt pressed and let go during it: each run is a stroke, the values left out taken from the top level; instead of `points`), continue?: bool (the stroke being painted, sent again as it grows: it replaces the component's last `replace` strokes, so it shows live), replace?: n (with `continue`: how many strokes the gesture sent last time, 1), connect?: bool — start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these} → {activeMask, connected}",
+            "{id?: maskId, component?: index, points: [[x,y],…] normalized, size?: the solid core's radius, fraction of long edge (0.03), feather?: 0..100, the soft halo outside the core, flow?, density?, erase?: bool, model?: 1 Lightroom's brush (default) | 0 the brush of strokes saved before it (size = the whole dab, feather inward), autoMask?: bool, autoRange?: -100 (tight) … 0 (default, Lightroom's limits) … 100 (wide), how different a pixel may be from the one under the dab and still take Auto Mask's paint (the limits scale by ½ … 2), kept with the stroke, pressure?: [p,…] pen pressure 0..1 per point (scales each dab's size and flow; omitted: full), runs?: [{points, erase?, size?, feather?, flow?, density?, pressure?}, …] (one gesture in parts painted with different modes, e.g. ⌥ / Alt pressed and let go during it: each run is a stroke, the values left out taken from the top level; instead of `points`), continue?: bool (the stroke being painted, sent again as it grows: it replaces the component's last `replace` strokes, so it shows live), replace?: n (with `continue`: how many strokes the gesture sent last time, 1), connect?: bool (start from the last point of the mask's last stroke (⇧-click), size / feather / flow tapering from that stroke's to these)} → {activeMask, connected}",
             has_active,
             |s, p| {
                 // one stroke, or one per run of a gesture painted in parts (⌥ / Alt pressed and let go during it)
@@ -673,7 +722,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sample Mask Color",
             [],
             None,
-            "{x, y: normalized image point | rect: [x0, y0, x1, y1] (an area dragged: up to 3 of its colours), add?: bool (⇧: add to the samples, max 5), id?, component?} — the colour range of the selected mask (its first colour-range component) samples the colour there; each picked place gets a pin (mask.colorPin) → {samples, pins}",
+            "{x, y: normalized image point | rect: [x0, y0, x1, y1] (an area dragged: up to 3 of its colours), add?: bool (⇧: add to the samples, max 5), id?, component?}: the colour range of the selected mask (its first colour-range component) samples the colour there; each picked place gets a pin (mask.colorPin) → {samples, pins}",
             has_active,
             |s, p| {
                 let c = "mask.sampleColor";
@@ -721,7 +770,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Color Range Sample",
             [],
             None,
-            "{index: pin (0-based, in the order picked), remove?: bool (⌥-click), x?, y?: normalized point to move it to (the colours there are sampled again), id?, component?} — one picked place of the selected mask's colour range → {samples, pins}",
+            "{index: pin (0-based, in the order picked), remove?: bool (⌥-click), x?, y?: normalized point to move it to (the colours there are sampled again), id?, component?}: one picked place of the selected mask's colour range → {samples, pins}",
             has_active,
             |s, p| {
                 let c = "mask.colorPin";
@@ -768,7 +817,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Sample Mask Luminance",
             [],
             None,
-            "{x, y: normalized image point | rect: [x0, y0, x1, y1] (an area dragged), add?: bool (⇧: widen the current range to take it in), id?, component?} — the luminance range of the selected mask (its first luminance-range component) selects the tones there → {lo, hi}",
+            "{x, y: normalized image point | rect: [x0, y0, x1, y1] (an area dragged), add?: bool (⇧: widen the current range to take it in), id?, component?}: the luminance range of the selected mask (its first luminance-range component) selects the tones there → {lo, hi}",
             has_active,
             |s, p| {
                 let c = "mask.sampleLuminance";
@@ -813,7 +862,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Object Click",
             [],
             None,
-            "{x, y: normalized image point, component?: index, exclude?: bool (⌥-click: leave this part out), id?: maskId} — a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
+            "{x, y: normalized image point, component?: index, exclude?: bool (⌥-click: leave this part out), id?: maskId}: a click on the selected mask's Object selection (its last Object component); SAM 3 re-segments the object → {include, exclude}",
             has_active,
             |s, p| {
                 let c = "mask.objectPoint";
@@ -893,7 +942,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refine AI Mask Detail",
             [],
             None,
-            "{id?: maskId, component?} — a zoomed-in AI pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
+            "{id?: maskId, component?}: a zoomed-in AI pass over an Object/Describe selection (default: the mask's last one): the photo around it is analyzed again at a higher resolution, in the background; the mask updates when it's done → {started}",
             has_active,
             |s, p| {
                 let c = "mask.refineDetail";
@@ -921,7 +970,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Prepare AI Masks",
             [],
             None,
-            "{} — load SAM 3 and analyze the active photo in the background, so Object clicks are instant → {busy}",
+            "{}: load SAM 3 and analyze the active photo in the background, so Object clicks are instant → {busy}",
             has_active,
             |s, _| {
                 let c = "segment.prepare";
@@ -935,7 +984,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "AI Mask Model Status",
             [],
             None,
-            "{} — whether this build has AI masks, whether the SAM 3 model is installed (and where), loaded, busy, and the download's progress → {available, installed, dir, loaded, busy, analyzing, sizeBytes, license, licenseUrl, mirrors, download: {running, done, total, file, error, finished}}",
+            "{}: whether this build has AI masks, whether the SAM 3 model is installed (and where), loaded, busy, and the download's progress → {available, installed, dir, loaded, busy, analyzing, sizeBytes, license, licenseUrl, mirrors, download: {running, done, total, file, error, finished}}",
             super::always,
             |s, _| {
                 let g = &s.segmenter;
@@ -960,7 +1009,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download AI Mask Model",
             [],
             None,
-            "{acknowledged: true} — download the SAM 3 model (about 3.4 GB, Meta's SAM License, not the app's) in the background, from the configured mirrors; only after the user agreed to it. Watch segment.model.status; segment.model.cancel stops it (it resumes later) → {started, installed, downloading}",
+            "{acknowledged: true}: download the SAM 3 model (about 3.4 GB, Meta's SAM License, not the app's) in the background, from the configured mirrors; only after the user agreed to it. Watch segment.model.status; segment.model.cancel stops it (it resumes later) → {started, installed, downloading}",
             super::always,
             |s, p| {
                 let c = "segment.model.download";
@@ -984,7 +1033,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Cancel AI Mask Model Download",
             [],
             None,
-            "{} — stop the SAM 3 download (what has arrived is kept, and a new download resumes from it) → {cancelled}",
+            "{}: stop the SAM 3 download (what has arrived is kept, and a new download resumes from it) → {cancelled}",
             super::always,
             |s, _| Ok(json!({"cancelled": s.segmenter.cancel_download()}))
         ),
@@ -993,7 +1042,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Subject Mask Model Status",
             [],
             None,
-            "{} — the Subject / Background model (BiRefNet_lite, MIT): whether it is installed (and where), in use by masks, and its download's progress; a finished download is put to use here → {available, installed, active, dir, sizeBytes, license, licenseUrl, download: {running, done, total, file, error, finished}}",
+            "{}: the Subject / Background model (BiRefNet_lite, MIT): whether it is installed (and where), in use by masks, and its download's progress; a finished download is put to use here → {available, installed, active, dir, sizeBytes, license, licenseUrl, download: {running, done, total, file, error, finished}}",
             super::always,
             |s, _| {
                 s.segmenter.subject.sync(&s.activity);
@@ -1015,7 +1064,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download Subject Mask Model",
             [],
             None,
-            "{acknowledged: true} — download the Subject / Background model (BiRefNet_lite, about 178 MB, MIT) in the background from its author's Hugging Face repository (pinned revision, size and SHA-256); only after the user asked for it. Without it, Subject and Background use the photo analysis. Watch segment.subject.status → {started, installed, downloading}",
+            "{acknowledged: true}: download the Subject / Background model (BiRefNet_lite, about 178 MB, MIT) in the background from its author's Hugging Face repository (pinned revision, size and SHA-256); only after the user asked for it. Without it, Subject and Background use the photo analysis. Watch segment.subject.status → {started, installed, downloading}",
             super::always,
             |s, p| {
                 let c = "segment.subject.download";
@@ -1031,7 +1080,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Cancel Subject Mask Model Download",
             [],
             None,
-            "{} — stop the subject model download (it resumes later) → {cancelled}",
+            "{}: stop the subject model download (it resumes later) → {cancelled}",
             super::always,
             |s, _| Ok(json!({"cancelled": s.segmenter.subject.cancel_download()}))
         ),
@@ -1040,7 +1089,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "AI Models",
             [],
             None,
-            "{} — every AI mask model (SAM 3, the Subject model, SAM 2.1, the EoMT scene model, Depth Anything V2 Small): installed, folder, size, licence (and training-data credit), offered in the model dialog, download progress; which model computes Object clicks, and which computes Sky, Landscape and People → {available, objectModel: auto|sam3|sam2, objectModelInUse: sam3|sam2, sceneModel: analysis|eomt, sceneModelInUse: analysis|eomt, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, credit?, offered, download}]}",
+            "{}: every AI mask model (SAM 3, the Subject model, SAM 2.1, the EoMT scene model, Depth Anything V2 Small): installed, folder, size, licence (and training-data credit), offered in the model dialog, download progress; which model computes Object clicks, and which computes Sky, Landscape and People → {available, objectModel: auto|sam3|sam2, objectModelInUse: sam3|sam2, sceneModel: analysis|eomt, sceneModelInUse: analysis|eomt, models: [{id, title, purpose, installed, dir, sizeBytes, license, licenseUrl, credit?, offered, download}]}",
             super::always,
             |s, _| {
                 s.segmenter.subject.sync(&s.activity);
@@ -1062,7 +1111,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Download AI Model",
             [],
             None,
-            "{id: sam3|subject|sam2|scene|depth, acknowledged: true} — download that model in the background (pinned size and SHA-256), only after the user agreed to its size and licence (ai.models.status lists both). Watch ai.models.status; ai.models.cancel stops it (it resumes later) → {started, installed, downloading}",
+            "{id: sam3|subject|sam2|scene|depth, acknowledged: true}: download that model in the background (pinned size and SHA-256), only after the user agreed to its size and licence (ai.models.status lists both). Watch ai.models.status; ai.models.cancel stops it (it resumes later) → {started, installed, downloading}",
             super::always,
             |s, p| {
                 let c = "ai.models.download";
@@ -1091,7 +1140,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Cancel AI Model Download",
             [],
             None,
-            "{id} — stop that model's download (what has arrived is kept, and a new download resumes from it) → {cancelled}",
+            "{id}: stop that model's download (what has arrived is kept, and a new download resumes from it) → {cancelled}",
             super::always,
             |s, p| {
                 let id = p.get("id").and_then(Value::as_str).ok_or_else(|| bad("ai.models.cancel", "which model? `id`"))?;
@@ -1103,7 +1152,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Object Mask Model",
             [],
             None,
-            "{model: auto|sam3|sam2} — which model computes Object (click) masks: auto (SAM 3 when installed, else SAM 2.1), SAM 3, or SAM 2.1 (Apache-2.0). Describe uses SAM 3 when installed, else the OWLv2 object finder with SAM 2.1. Saved for next time → {objectModel, objectModelInUse}",
+            "{model: auto|sam3|sam2}: which model computes Object (click) masks: auto (SAM 3 when installed, else SAM 2.1), SAM 3, or SAM 2.1 (Apache-2.0). Describe uses SAM 3 when installed, else the OWLv2 object finder with SAM 2.1. Saved for next time → {objectModel, objectModelInUse}",
             super::always,
             |s, p| {
                 let c = "ai.models.setObjectModel";
@@ -1118,7 +1167,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Scene Mask Model",
             [],
             None,
-            "{model: analysis|eomt} — which model computes Sky, Landscape (water, vegetation) and People masks: the photo analysis (the default, no download) or the EoMT scene model (MIT, trained on COCO; ai.models.download {\"id\": \"scene\"}). EoMT chosen but not installed keeps the analysis. Masks re-render with it; saved for next time → {sceneModel, sceneModelInUse}",
+            "{model: analysis|eomt}: which model computes Sky, Landscape (water, vegetation) and People masks: the photo analysis (the default, no download) or the EoMT scene model (MIT, trained on COCO; ai.models.download {\"id\": \"scene\"}). EoMT chosen but not installed keeps the analysis. Masks re-render with it; saved for next time → {sceneModel, sceneModelInUse}",
             super::always,
             |s, p| {
                 let c = "ai.models.setSceneModel";
@@ -1135,7 +1184,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refine Mask Edges",
             [],
             None,
-            "{id?, value: 0..100} — the mask's edges snap to the photo's (guided filter; rendered on the CPU)",
+            "{id?, value: 0..100}: the mask's edges snap to the photo's (guided filter; rendered on the CPU)",
             has_active,
             |s, p| {
                 let v = f64_or(p, "value", 0.0).clamp(0.0, 100.0);
@@ -1152,7 +1201,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Feather Mask",
             [],
             None,
-            "{id?, value: 0..100} — soften the whole mask's edges (blur up to 2 % of the long edge; rendered on the CPU)",
+            "{id?, value: 0..100}: soften the whole mask's edges (blur up to 2 % of the long edge; rendered on the CPU)",
             has_active,
             |s, p| {
                 let v = f64_or(p, "value", 0.0).clamp(0.0, 100.0);
@@ -1199,7 +1248,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Mask Settings",
             [],
             None,
-            "{resetNew?: bool (Reset Settings on New Mask: once a new mask took the next-mask settings they go back to zero), clear?: bool (zero the settings set for the next mask)} — the settings the next new mask starts with (what was dialed in while no mask was selected: mask.adjust / mask.applyEffect with no mask selected) → {next, set, resetNew}",
+            "{resetNew?: bool (Reset Settings on New Mask: once a new mask took the next-mask settings they go back to zero), clear?: bool (zero the settings set for the next mask)}: the settings the next new mask starts with (what was dialed in while no mask was selected: mask.adjust / mask.applyEffect with no mask selected) → {next, set, resetNew}",
             super::always,
             |s, p| {
                 if let Some(on) = p.get("resetNew").and_then(Value::as_bool) {
@@ -1217,7 +1266,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Mask Point Color Sample",
             [],
             None,
-            "{id?, x, y} normalized image coords — samples the colour there into the mask's local Point Color (max 8); returns {index, lum, chroma, hue}",
+            "{id?, x, y} normalized image coords: samples the colour there into the mask's local Point Color (max 8); returns {index, lum, chroma, hue}",
             has_active,
             |s, p| {
                 let c = "mask.pointColorPick";
@@ -1244,7 +1293,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Mask Point Color",
             [],
             None,
-            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, range, hue_range, sat_range, lum_range}} — changes one of the mask's Point Color samples (shifts and variance −100..100, ranges 0..100)",
+            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, range, hue_range, sat_range, lum_range}}: changes one of the mask's Point Color samples (shifts and variance −100..100, ranges 0..100)",
             has_active,
             |s, p| {
                 let c = "mask.pointColorSet";
@@ -1277,7 +1326,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Mask Color Mixer",
             [],
             None,
-            "{id?, values?: {\"<band>.<hue|sat|lum>\": −100..100, …} (band: red, orange, yellow, green, aqua, blue, purple, magenta), reset?: bool} — the mask's local Color Mixer (applied within the mask after the photo's colour tools, before its Point Color, with the global mixer's maths); `reset` first sets every band back to 0 → {mixer}",
+            "{id?, values?: {\"<band>.<hue|sat|lum>\": −100..100, …} (band: red, orange, yellow, green, aqua, blue, purple, magenta), reset?: bool}: the mask's local Color Mixer (applied within the mask after the photo's colour tools, before its Point Color, with the global mixer's maths); `reset` first sets every band back to 0 → {mixer}",
             has_active,
             |s, p| {
                 let c = "mask.mixer";
@@ -1310,7 +1359,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Mask Color Mixer Targeted Adjustment",
             [],
             None,
-            "{id?, target: hue|sat|lum, x, y (normalized image coords), delta (slider units)} — moves the mask's Color Mixer bands of the colour under the point, as `develop.targeted` does the photo's mixer → {changed: {\"<band>.<attr>\": value}}",
+            "{id?, target: hue|sat|lum, x, y (normalized image coords), delta (slider units)}: moves the mask's Color Mixer bands of the colour under the point, as `develop.targeted` does the photo's mixer → {changed: {\"<band>.<attr>\": value}}",
             has_active,
             |s, p| {
                 let c = "mask.mixerTargeted";
@@ -1381,7 +1430,10 @@ pub fn specs() -> Vec<CommandSpec> {
             masks_edit(s, "mask.delete", "Delete Mask", |masks, active| {
                 let i = find(masks, mid, "mask.delete")?;
                 masks.remove(i);
-                *active = masks.last().map(|m| m.id);
+                // deleting another mask (by id) keeps the selection
+                if *active == Some(mid) {
+                    *active = masks.last().map(|m| m.id);
+                }
                 Ok(())
             })
         }),
@@ -1389,6 +1441,15 @@ pub fn specs() -> Vec<CommandSpec> {
             masks_edit(s, "mask.deleteAll", "Delete All Masks", |masks, active| {
                 masks.clear();
                 *active = None;
+                Ok(())
+            })
+        }),
+        cmd!("mask.deleteEmpty", "Delete All Empty Masks", [], None, "{}: drops the masks whose components select nothing", has_active, |s, _| {
+            masks_edit(s, "mask.deleteEmpty", "Delete All Empty Masks", |masks, active| {
+                masks.retain(|m| !mask_is_empty(m));
+                if active.is_some_and(|a| !masks.iter().any(|m| m.id == a)) {
+                    *active = masks.last().map(|m| m.id);
+                }
                 Ok(())
             })
         }),
@@ -1422,7 +1483,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Duplicate Mask",
             [],
             None,
-            "{id?, invert?: bool (Duplicate and Invert)} — the copy goes right after the original and is selected",
+            "{id?, invert?: bool (Duplicate and Invert)}: the copy goes right after the original and is selected",
             has_active,
             |s, p| {
                 let mid = mask_id(p, s.active_mask, "mask.duplicate")?;
@@ -1448,7 +1509,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Mask Component",
             [],
             None,
-            "{id?, component: index, action: invert|duplicate|delete|rename|op, name? (rename; empty clears), op?: add|subtract|intersect} — one component of a mask (deleting the last one deletes the mask)",
+            "{id?, component: index, action: invert|duplicate|delete|rename|op, name? (rename; empty clears), op?: add|subtract|intersect}: one component of a mask (deleting the last one deletes the mask)",
             has_active,
             |s, p| {
                 let c = "mask.component";
@@ -1483,7 +1544,10 @@ pub fn specs() -> Vec<CommandSpec> {
                             comps.remove(k);
                             if comps.is_empty() {
                                 masks.remove(i);
-                                *active = masks.last().map(|m| m.id);
+                                // emptying another mask (by id) keeps the selection
+                                if *active == Some(mid) {
+                                    *active = masks.last().map(|m| m.id);
+                                }
                             }
                         }
                     }
@@ -1491,7 +1555,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 })
             }
         ),
-        cmd!("mask.move", "Move Mask", [], None, "{id?, to?: index (0 = top), delta?: ±n} — reorder the masks list", has_active, |s, p| {
+        cmd!("mask.move", "Move Mask", [], None, "{id?, to?: index (0 = top), delta?: ±n}: reorder the masks list", has_active, |s, p| {
             let mid = mask_id(p, s.active_mask, "mask.move")?;
             let mut masks = s.active().and_then(|id| s.develop_of(id)).map(|d| d.masks.clone()).unwrap_or_default();
             let i = find(&mut masks, mid, "mask.move")?;
@@ -1518,7 +1582,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Remove Spot",
             [],
             None,
-            "{mode?: remove|heal|clone|fill (content-aware), points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby; a brushed Remove stroke has none and is rebuilt from its surroundings)} — selects the new spot; returns {index}",
+            "{mode?: remove|heal|clone|fill (content-aware), points: [[x,y],…], size?: fraction of long edge, feather?, opacity?, source?: [dx,dy] (default: the best match nearby; a brushed Remove stroke has none and is rebuilt from its surroundings)}: selects the new spot; returns {index}",
             has_active,
             |s, p| {
                 let mode: SpotMode =
@@ -1571,7 +1635,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Spot",
             [],
             None,
-            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat, repick?: bool (a Remove spot chooses its source again)} — moving or resizing a spot Remove Dust added makes it an ordinary spot",
+            "{index? (the selected spot), move?: [dx,dy] (the target, normalized), source?: [dx,dy] (offset from the target), moveSource?: [dx,dy], size?, feather?, opacity?, mode?: remove|heal|clone|fill|flat, repick?: bool (a Remove spot chooses its source again)}: moving or resizing a spot Remove Dust added makes it an ordinary spot",
             has_active,
             |s, p| {
                 let c = "spot.update";
@@ -1641,7 +1705,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Refresh Source",
             [],
             None,
-            "{index? (the selected spot)} — picks the next-best source away from the current one",
+            "{index? (the selected spot)}: picks the next-best source away from the current one",
             has_active,
             |s, p| {
                 let c = "spot.refreshSource";
@@ -1682,7 +1746,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Red Eye Correction",
             [],
             None,
-            "{center: [x,y] normalized, rx, ry: radii as fractions of the long edge, pet?: bool, pupilSize?: 0..100, darken?: 0..100} — the pupil inside is found automatically; returns {index}",
+            "{center: [x,y] normalized, rx, ry: radii as fractions of the long edge, pet?: bool, pupilSize?: 0..100, darken?: 0..100}: the pupil inside is found automatically; returns {index}",
             has_active,
             |s, p| {
                 let c = "redeye.add";

@@ -142,9 +142,13 @@ fn malformed_targets() -> Vec<serde_json::Value> {
     vec![json!(-1), json!(0.5), json!("1"), json!(true), json!([]), json!({}), json!(u64::MAX)]
 }
 
+/// Malformed mask ids, mask components, effect targets and spot indices (and ids past `u32`, which
+/// must not wrap to an existing mask) are refused by every command that takes one, with edits,
+/// selection and history left as they were.
 #[test]
-fn malformed_mask_ids_are_rejected_without_changes() {
+fn malformed_mask_and_spot_targets_are_rejected_without_changes() {
     let mut s = target_session();
+    // mask ids
     let commands = [
         ("mask.delete", json!({})),
         ("mask.rename", json!({"name": "Wrong mask"})),
@@ -167,25 +171,11 @@ fn malformed_mask_ids_are_rejected_without_changes() {
             rejects_target(&mut s, command, &params);
         }
     }
-}
-
-#[test]
-fn malformed_mask_selection_is_rejected_without_changes() {
-    let mut s = target_session();
+    // the mask selection
     for target in malformed_targets().into_iter().filter(|v| !v.is_null()).chain([json!(4_294_967_297_u64)]) {
         rejects_target(&mut s, "mask.select", &json!({"id": target}));
     }
-}
-
-#[test]
-fn overflowing_mask_id_does_not_wrap_to_an_existing_mask() {
-    let mut s = target_session();
-    rejects_target(&mut s, "mask.delete", &json!({"id": 4_294_967_297_u64}));
-}
-
-#[test]
-fn malformed_mask_effect_targets_are_rejected_without_changes() {
-    let mut s = target_session();
+    // mask effects
     for (command, mut params) in [
         ("mask.saveEffect", json!({"name": "Wrong effect"})),
         ("mask.updateEffect", json!({"name": "Existing"})),
@@ -198,6 +188,29 @@ fn malformed_mask_effect_targets_are_rejected_without_changes() {
     }
     for target in malformed_targets().into_iter().chain([json!([1, -1]), json!([1, null]), json!([1, 4_294_967_297_u64])]) {
         rejects_target(&mut s, "mask.applyEffect", &json!({"name": "Existing", "ids": target}));
+    }
+    // mask components
+    for (command, mut params) in [
+        ("mask.update", json!({"shape": {"kind": "brush", "strokes": []}})),
+        ("mask.component", json!({"action": "invert"})),
+        ("mask.sampleColor", json!({"x": 0.5, "y": 0.5})),
+        ("mask.refineDetail", json!({})),
+    ] {
+        for target in malformed_targets().into_iter().chain([json!(4_294_967_296_u64)]) {
+            params["component"] = target;
+            rejects_target(&mut s, command, &params);
+        }
+    }
+    // spot indices
+    for (command, mut params) in [("spot.delete", json!({})), ("spot.update", json!({"size": 0.1})), ("spot.refreshSource", json!({}))] {
+        for target in malformed_targets().into_iter().chain([json!(4_294_967_296_u64)]) {
+            params["index"] = target;
+            rejects_target(&mut s, command, &params);
+        }
+    }
+    // the spot selection
+    for target in malformed_targets().into_iter().filter(|v| !v.is_null()).chain([json!(4_294_967_296_u64)]) {
+        rejects_target(&mut s, "spot.select", &json!({"index": target}));
     }
 }
 
@@ -228,41 +241,6 @@ fn mask_effect_targets_preserve_explicit_defaults_and_lists() {
     s.execute("mask.applyEffect", &json!({"name": "Existing", "ids": [1, 2]})).unwrap();
     assert!(s.develop_of(s.active().unwrap()).unwrap().masks.iter().all(|m| m.adjust.exposure == 0.0));
     rejects_target(&mut s, "mask.applyEffect", &json!({"name": "Existing", "ids": []}));
-}
-
-#[test]
-fn malformed_mask_components_are_rejected_without_changes() {
-    let mut s = target_session();
-    for (command, mut params) in [
-        ("mask.update", json!({"shape": {"kind": "brush", "strokes": []}})),
-        ("mask.component", json!({"action": "invert"})),
-        ("mask.sampleColor", json!({"x": 0.5, "y": 0.5})),
-        ("mask.refineDetail", json!({})),
-    ] {
-        for target in malformed_targets().into_iter().chain([json!(4_294_967_296_u64)]) {
-            params["component"] = target;
-            rejects_target(&mut s, command, &params);
-        }
-    }
-}
-
-#[test]
-fn malformed_spot_indices_are_rejected_without_changes() {
-    let mut s = target_session();
-    for (command, mut params) in [("spot.delete", json!({})), ("spot.update", json!({"size": 0.1})), ("spot.refreshSource", json!({}))] {
-        for target in malformed_targets().into_iter().chain([json!(4_294_967_296_u64)]) {
-            params["index"] = target;
-            rejects_target(&mut s, command, &params);
-        }
-    }
-}
-
-#[test]
-fn malformed_spot_selection_is_rejected_without_changes() {
-    let mut s = target_session();
-    for target in malformed_targets().into_iter().filter(|v| !v.is_null()).chain([json!(4_294_967_296_u64)]) {
-        rejects_target(&mut s, "spot.select", &json!({"index": target}));
-    }
 }
 
 #[test]
@@ -321,4 +299,47 @@ fn mask_and_spot_targets_preserve_explicit_defaults_and_selection_clearing() {
     // An omitted mask still creates a brush mask when no mask is selected.
     s.execute("mask.brushStroke", &json!({"points": [[0.5, 0.5]]})).unwrap();
     assert_eq!(s.develop_of(s.active().unwrap()).unwrap().masks.len(), 3);
+}
+
+/// Deleting a mask other than the selected one (the Masks list's per-row Delete passes its id) moved the selection
+/// onto the last mask; only deleting the selected mask moves it (upstream #3863).
+#[test]
+fn deleting_another_mask_keeps_the_selection() {
+    let mut s = Session::with_demo();
+    for _ in 0..5 {
+        s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    }
+    let ids: Vec<u32> = s.develop_of(s.active().unwrap()).unwrap().masks.iter().map(|m| m.id).collect();
+    let &[a, b, c, d, e] = ids.as_slice() else { panic!("five masks: {ids:?}") };
+    assert_eq!(s.active_mask, Some(e));
+    s.execute("mask.delete", &json!({"id": a})).unwrap();
+    assert_eq!(s.active_mask, Some(e), "the selected last mask stays selected");
+    s.execute("mask.select", &json!({"id": b})).unwrap();
+    s.execute("mask.delete", &json!({"id": d})).unwrap();
+    assert_eq!(s.active_mask, Some(b), "the selected first mask stays selected");
+    s.execute("mask.select", &json!({"id": null})).unwrap();
+    s.execute("mask.delete", &json!({"id": c})).unwrap();
+    assert_eq!(s.active_mask, None, "no selection stays no selection");
+    // deleting the selected mask still selects the last one left
+    s.execute("mask.select", &json!({"id": b})).unwrap();
+    s.execute("mask.delete", &json!({})).unwrap();
+    assert_eq!(s.active_mask, Some(e));
+}
+
+/// Deleting the last component of another mask removes that mask but keeps the selection, like `mask.delete`.
+#[test]
+fn deleting_another_masks_last_component_keeps_the_selection() {
+    let mut s = Session::with_demo();
+    for _ in 0..3 {
+        s.execute("mask.add", &json!({"kind": "radial"})).unwrap();
+    }
+    let ids: Vec<u32> = s.develop_of(s.active().unwrap()).unwrap().masks.iter().map(|m| m.id).collect();
+    let &[a, b, c] = ids.as_slice() else { panic!("three masks: {ids:?}") };
+    s.execute("mask.select", &json!({"id": b})).unwrap();
+    s.execute("mask.component", &json!({"id": a, "component": 0, "action": "delete"})).unwrap();
+    let left: Vec<u32> = s.develop_of(s.active().unwrap()).unwrap().masks.iter().map(|m| m.id).collect();
+    assert_eq!(left, vec![b, c], "the emptied mask is removed");
+    assert_eq!(s.active_mask, Some(b), "the selected mask stays selected");
+    s.execute("mask.component", &json!({"component": 0, "action": "delete"})).unwrap();
+    assert_eq!(s.active_mask, Some(c), "emptying the selected mask selects the last one left");
 }

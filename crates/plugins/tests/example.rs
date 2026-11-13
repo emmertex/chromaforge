@@ -67,9 +67,15 @@ fn example_plugin_end_to_end() {
     let Some(wasm) = build_example() else { return };
     let dir = temp("example");
     let mut m = Manager::open(&dir).unwrap();
-    let info = m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap().info();
+    let info = m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap().info();
     assert_eq!(info["id"], "org.example.catalog-tools");
     assert_eq!(info["granted"]["catalog"], true);
+    // `export_plugin!(package: …)`: what the manifest JSON leaves out comes from the crate's Cargo.toml
+    let cargo = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/examples/catalog-tools/Cargo.toml")).unwrap();
+    let version = cargo.lines().find_map(|l| l.strip_prefix("version = \"")?.strip_suffix('"')).unwrap();
+    assert_eq!(info["version"], version, "the version is the crate's");
+    assert_eq!(info["about"]["license"], "MIT", "so is the licence");
+    assert_eq!(info["description"], "Example plug-in for the SDK", "the manifest's own description stays");
     let id = "org.example.catalog-tools";
     let mut host = FakeCatalog { calls: vec![] };
 
@@ -108,7 +114,7 @@ fn example_plugin_end_to_end() {
     // revoking the catalog permission takes effect on the next call
     m.set_grant(id, Permissions::default()).unwrap();
     let e = m.run_command(id, "count", &json!({}), &[], &mut host).unwrap_err();
-    assert!(e.to_string().contains("permission `catalog` not granted"), "{e}");
+    assert!(e.to_string().contains("needs `catalog`, not granted"), "{e}");
     drop(m);
     let mut m = Manager::open(&dir).unwrap();
     assert!(m.get(id).unwrap().enabled);
@@ -148,13 +154,13 @@ fn batch_metadata_example_end_to_end() {
     let mut m = Manager::open(&dir).unwrap();
     let id = "org.example.batch-metadata";
     // installed with read access only: the write is refused by the host
-    m.install_bytes(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
     let mut host = FakeLibrary { writes: vec![] };
     let sel: Vec<String> = vec!["7".into(), "8".into(), "9".into()];
     let e = m.run_command(id, "template", &json!({}), &sel, &mut host).unwrap_err();
     assert!(e.to_string().contains("metadataWrite"), "{e}");
     assert!(host.writes.is_empty());
-    m.set_grant(id, Permissions { catalog: true, metadata_write: true, ..Default::default() }).unwrap();
+    m.set_grant_by_user(id, Permissions { catalog: true, metadata_write: true, ..Default::default() }).unwrap();
 
     // titles from the dialog's default template; captions from a numbered one
     let r = m.run_command(id, "template", &json!({}), &sel, &mut host).unwrap();
@@ -217,7 +223,7 @@ fn publish_folder_example_publishes_and_removes() {
     let mut m = Manager::open(&dir).unwrap();
     let id = "org.example.publish-folder";
     let grant = Permissions { fs: vec![lcc_plugins::FsRoot { path: root.display().to_string(), write: true }], ..Default::default() };
-    m.install_bytes(&wasm, Some(grant), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(grant), false).unwrap();
     std::fs::create_dir_all(root).unwrap();
     let src = dir.join("render.jpg");
     std::fs::write(&src, [0u8, 1, 2, 255]).unwrap();
@@ -455,7 +461,7 @@ fn keyword_picker_example_settings_remember_and_prepare() {
     let dir = temp("keyword-picker");
     let mut m = Manager::open(&dir).unwrap();
     let grant = Permissions { catalog: true, metadata_write: true, ..Default::default() };
-    m.install_bytes(&wasm, Some(grant), false).unwrap();
+    m.install_bytes_by_user(&wasm, Some(grant), false).unwrap();
     let id = "org.example.keyword-picker";
     let mut host = Keywords { writes: vec![] };
     let sel = ["1".to_string(), "2".to_string()];
@@ -494,4 +500,67 @@ fn keyword_picker_example_settings_remember_and_prepare() {
 
     let mut m = Manager::open(&dir).unwrap();
     assert_eq!(m.settings(id, &mut lcc_plugins::NoHost).unwrap().values["minCount"], json!(100.0), "kept after a restart");
+}
+
+/// Counts what the job-tools example reports; cancelled once `cancel_after` photos were counted.
+#[derive(Default)]
+struct JobRow {
+    items: std::cell::Cell<u64>,
+    failed: std::cell::RefCell<Vec<String>>,
+    last: std::cell::Cell<(u64, u64)>,
+    cancel_after: Option<u64>,
+}
+
+impl lcc_plugins::JobReporter for JobRow {
+    fn progress(&self, done: u64, total: u64, _: lcc_plugins::JobUnit) {
+        self.last.set((done, total));
+    }
+    fn detail(&self, _: &str) {}
+    fn item_done(&self) {
+        self.items.set(self.items.get() + 1);
+    }
+    fn item_failed(&self, why: &str) {
+        self.items.set(self.items.get() + 1);
+        self.failed.borrow_mut().push(why.to_string());
+    }
+    fn cancelled(&self) -> bool {
+        self.cancel_after.is_some_and(|n| self.items.get() >= n)
+    }
+}
+
+/// A catalog that can't inspect photo 13.
+struct Inspect;
+impl HostApi for Inspect {
+    fn catalog(&mut self, method: &str, p: &Value) -> Result<Value, String> {
+        match p["id"].as_str() {
+            Some("13") => Err("the file is missing".into()),
+            _ => Ok(json!({"method": method})),
+        }
+    }
+}
+
+#[test]
+fn job_tools_example_works_through_the_photos_and_stops_when_asked() {
+    let Some(wasm) = build_sdk_example("job-tools") else { return };
+    let mut m = Manager::in_memory();
+    m.install_bytes_by_user(&wasm, Some(Permissions { catalog: true, ..Default::default() }), false).unwrap();
+    let id = "org.example.job-tools";
+    let photos: Vec<String> = (1..=25).map(|n| n.to_string()).collect();
+    let run = |m: &mut Manager, row: &JobRow| {
+        let lcc_plugins::Begun::Call(mut call) = m.begin_command(id, "check", &json!({}), &photos, &Value::Null, &mut Inspect).unwrap() else {
+            panic!("check runs")
+        };
+        assert!(call.is_job());
+        let outcome = call.run_with(&mut Inspect, row);
+        m.end(*call, Some(outcome))
+    };
+    let row = JobRow::default();
+    assert_eq!(run(&mut m, &row).unwrap(), json!({"message": "Checked 25 photos"}));
+    assert_eq!(row.items.get(), 25, "every photo counted, over three calls");
+    assert_eq!(row.last.get(), (25, 25));
+    assert_eq!(*row.failed.borrow(), vec!["13: the file is missing".to_string()]);
+
+    let row = JobRow { cancel_after: Some(12), ..JobRow::default() };
+    assert_eq!(run(&mut m, &row).unwrap(), json!({"message": "Stopped after 12 of 25 photos"}), "it stops cleanly and says how far it got");
+    assert_eq!(row.items.get(), 12);
 }

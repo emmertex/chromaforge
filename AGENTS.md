@@ -1,270 +1,212 @@
 # Instructions for agents
 
-Chromaforge (the app) is a clean-room, open-source, pure-Rust photo library + non-destructive raw developer targeting Adobe Lightroom parity (and beyond). Native on macOS, Windows, Linux; web via WASM. It is a fork of an upstream project (see `NOTICE`). Since 2026-10-25 Chromaforge no longer merges upstream: merging had become mostly conflicts and silently reintroduced upstream behaviour. Instead every upstream pull request and commit is reviewed on its own and the useful ones ported by hand. One intake round is one fork PR, and it merges only at a version release: [`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md) is the runbook; [`docs/upstream-merge.md`](docs/upstream-merge.md) has the commit lane and the cherry-pick mechanics.
+Chromaforge: clean-room, pure-Rust photo library + non-destructive raw developer, targeting Lightroom parity.
+Native macOS/Windows/Linux, web via WASM. Fork of an upstream project (`NOTICE`); "Lightroom" parity target only.
+Upstream is **not merged**: each upstream
+PR/commit is reviewed on its own and ported by hand; one intake round = one fork PR
+([`docs/upstream-pr-intake.md`](docs/upstream-pr-intake.md), mechanics: [`docs/upstream-merge.md`](docs/upstream-merge.md)).
 
-This file is the one set of instructions for agents and humans: `CLAUDE.md` only imports it (`@AGENTS.md`), so edit
-this file, never that one. How to claim an issue and open a PR: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Claiming issues / opening PRs:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## The name lives in `brand.toml` only
-- The product name, binary names, app id, settings folder, env-var prefix, MCP server id, URL scheme and file
-  extensions are defined once, in [`brand.toml`](brand.toml), and reach code through the `lcc-brand` crate. Never write
-  the product name (or a legacy upstream name) in code, UI strings or tests: use `{app}`
-  (display name), `{cli}` and `{env}` in i18n catalogs, and `lcc_brand::…` constants in code.
-- **Docs name the fork: Chromaforge.** Markdown files (docs, READMEs, plans) refer to this fork as "Chromaforge",
-  literally, never "this fork" / "the fork" (maintainer decision 2026-10-25). Only the display name is allowed there;
-  binary names, the env prefix and legacy names still go through templates or placeholders.
-- `cargo xtask brand check` (part of `cargo xtask ci`) fails if the name appears anywhere else (Markdown files and `.md.in` templates may use
-  the display name). Allowed exceptions:
-  `brand.toml`, `[legacy]` handling, `NOTICE`, `LICENSE`, `assets/ATTRIBUTION.md`, `docs/upstream-merge.md`.
-- Docs that need the binary names, env prefix or ids are written as `X.md.in` templates with `{{app}}`, `{{binary}}`, `{{cli_binary}}`,
-  `{{env_prefix}}`, `{{app_id}}`, `{{settings_dir}}`, rendered by `cargo xtask docs`; otherwise docs write `<app>`,
-  `<binary>`, `<cli>`, `<PREFIX>`, `<settings_dir>` for the `brand.toml` values.
-- Crates are `lcc-*`; the packages with binaries are `lcc-app` (desktop), `lcc-cli` and `lcc-web`. Inside `target/` the
-  binaries are always `app` and `app-cli`; `cargo xtask run`, `cargo xtask package` and `cargo xtask install` give them
-  the brand names.
-- Environment variables are `<PREFIX>_X`, where `PREFIX` is `env_prefix` from `brand.toml` (e.g. `<PREFIX>_LOG`,
-  `<PREFIX>_GPU`, `<PREFIX>_PROFILE`); the legacy upstream prefix in `[legacy]` is still read.
+## Brand: `brand.toml` only
+- Name, binary names, app id, settings dir, env prefix, MCP id, URL scheme, extensions live in [`brand.toml`](brand.toml)
+  → `lcc-brand`. Never write the product or legacy name in code/UI/tests: `{app}`/`{cli}`/`{env}` in i18n catalogs,
+  `lcc_brand::…` in code. Docs say "Chromaforge" (display name only, never "this fork").
+- `cargo xtask brand check` (in `ci`) enforces; exceptions: `brand.toml`, `[legacy]` handling, `NOTICE`, `LICENSE`,
+  `assets/ATTRIBUTION.md`, `docs/upstream-merge.md`, Markdown, `.md.in`.
+- Docs needing real names are `X.md.in` templates (`{{app}}`, `{{binary}}`, `{{cli_binary}}`, `{{env_prefix}}`,
+  `{{app_id}}`, `{{settings_dir}}`, rendered by `cargo xtask docs`); otherwise write `<app>` `<binary>` `<cli>`
+  `<PREFIX>` `<settings_dir>`.
+- Crates `lcc-*`; binaries `lcc-app`/`lcc-cli`/`lcc-web`; in `target/` always `app`/`app-cli` (brand names via
+  `cargo xtask run|package|install`). Env vars `<PREFIX>_X` (e.g. `<PREFIX>_PROFILE`); legacy prefix still read.
 
-## Start every session here
-1. Read `plan/STATUS.md` (current milestone, next unchecked task, blockers).
-2. Read the task in `plan/execution-plan.md` §3, the relevant section of `plan/architecture.md`, and the README/docs of the crate you touch. Behaviour/visual reference: `plan/lightroom/` (incl. `10-observed-ui.md` + screenshots).
-3. **Know where we stand:** read [`ROADMAP.md`](ROADMAP.md) (stage, headline numbers, every dimension) and, for
-   method and evidence, [`docs/target-app-parity.md`](docs/target-app-parity.md). The checklist counts features that
-   *exist*; the real gaps are quality and coverage: camera colour calibration, CR3 / compressed raws, per-model
-   verification, render fidelity against Lightroom, AI models, HDR / video / Classic modules (raw detail:
-   [`docs/raw-parity.md`](docs/raw-parity.md)). A ✅ row is not proof of parity — if you find a ✅ feature that is
-   wrong or incomplete, downgrade it to 🟡 with a note.
-4. **Pick work** from [`docs/gaps.md`](docs/gaps.md) (ranked by user impact; `B` marks beta blockers). The row-by-row
-   tracker is [`docs/parity-checklist.md`](docs/parity-checklist.md) (one row per feature, menu item and shortcut).
-   When you land a feature, update its row(s) and the gap entry in the same commit, and the numbers in `ROADMAP.md` /
-   `docs/target-app-parity.md` when a listed gap closes (bump each doc's *Last updated* line and revision history, per
-   craftrules `standards/progress-docs.md`, except `docs/parity-checklist.md`: never add, update or restore a
-   *Last updated* / *Change* line there); `cargo xtask parity` (part of `ci`) checks that every `cmd:`/`ctl:` id and
-   path the tracker cites still exists and that `docs/gaps.md` lists each gap once, and `cargo xtask parity --write`
-   refreshes its summary.
-5. Follow the autonomous operation protocol (`plan/execution-plan.md` §7). Don't stop to ask unless §7 lists the decision as the user's.
+## Session start
+1. `plan/STATUS.md` (milestone, next task, blockers) → `plan/execution-plan.md` §3 (task) + §7 (autonomy protocol:
+   don't ask unless §7 says it's the user's call) → relevant `plan/architecture.md` section + crate docs. Visual
+   reference: `plan/lightroom/` (gitignored; `10-observed-ui.md` + screenshots).
+2. `ROADMAP.md` + [`docs/target-app-parity.md`](docs/target-app-parity.md). The checklist counts existence; real gaps
+   are quality/coverage (camera colour, CR3/compressed raws, per-model verification, render fidelity, AI, HDR/video/
+   Classic; raw detail: [`docs/raw-parity.md`](docs/raw-parity.md)). A wrong ✅ row gets downgraded to 🟡.
+3. Pick work from [`docs/gaps.md`](docs/gaps.md) (impact-ranked, `B` = beta blocker); row tracker:
+   [`docs/parity-checklist.md`](docs/parity-checklist.md). Landing a feature updates its rows + gap entry + ROADMAP/
+   target-app-parity numbers + *Last updated* lines in the same commit — except parity-checklist.md, which never
+   carries a *Last updated*/*Change* line. `cargo xtask parity` (in `ci`) verifies cited ids/paths and gap uniqueness;
+   `--write` refreshes the summary.
+4. `plan/observations/` (Adobe notes) is gitignored, local-only.
 
-`plan/observations/` (Adobe-observation notes) is gitignored (local-only).
+**Branches:** PRs start from latest `main`; re-merge `origin/main` before pushing and whenever `main` moves
+(auto-merge doesn't update the branch; `gh pr update-branch N` does). Merge agent branches one at a time with
+`cargo xtask ci --fast` + targeted tests between (two green branches can still conflict). Resuming after a crash:
+check `git status` on main, `git worktree list`, `main..HEAD` per worktree; commit small and often.
 
-**PRs start from the latest main:** GitHub refuses to merge a PR whose branch is behind `main` (the ruleset requires
-branches to be up to date). Right before you push a PR branch, and again whenever `main` moves while it waits,
-`git fetch origin && git merge origin/main`, resolve conflicts, re-run `cargo xtask ci --fast`, and push. Auto-merge
-does not update the branch for you; `gh pr update-branch N --repo …` does it when there are no conflicts.
-
-**Merging agent branches:** merge one branch at a time and run the fast checks (`cargo xtask ci --fast`, plus the
-targeted tests of the crates involved) before the next; no full CI between merges. Two individually green branches can
-still break each other (e.g. a new struct field vs. a new constructor), which the fast checks' build and clippy catch.
-
-**Resuming after a crash / another session:** check `git status` on main, `git worktree list`, and each worktree's
-`git log main..HEAD` + `git status` for unmerged commits or uncommitted work before starting anything new. Commit small
-and often so a crash loses minutes, not hours.
-
-## Never crash (outranks feature work)
-People trust the app with their photo libraries and edits; a crash loses their work. A malformed raw/JPEG/XMP, a bad
-command, control or MCP argument, a corrupt catalog or settings file, or a full disk must produce an error the user (or
-agent) can act on, never a panic. Don't ship a feature by adding a panic path, and fix a crash before building on top
-of it. Full standard: `../craftrules/standards/never-crash.md`
-([storytold/craftrules](https://github.com/storytold/craftrules/blob/main/standards/never-crash.md)).
-- **Non-test code never panics:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`, `unimplemented!`, and
-  no `unsafe`. Return the crate's error type through `Result` and `?`; use `ok_or(..)?`, `let … else`, `if let`, or a
-  fallback (`unwrap_or…`) only where it can't silently corrupt a document. An unfinished feature returns an
-  "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
-  + `.expect("why it can't fail")`.
-- **`unsafe` lives only in `crates/sysmem`** (five FFI calls. On Windows: `GetCurrentThread` + `SetThreadPriority`, that run render workers below normal priority so the desktop stays responsive, and `GetDiskFreeSpaceExW`, the cache drive's free space for the automatic preview cache size. On macOS: `malloc_zone_pressure_relief`, that returns freed
-  allocator pages after raw decodes, and `fsync`, for volumes such as SMB shares that refuse std's `F_FULLFSYNC`. Elsewhere free space comes from POSIX `df`, no FFI) **and `crates/hdrmeta`** (wgpu-hal calls on Linux / BSD: open the
-  window's Vulkan device with `VK_EXT_hdr_metadata`, and `vkSetHdrMetadataEXT` on its swapchain, so the Wayland
-  compositor shows HDR; no-op elsewhere). **`crates/gpumem`** (wgpu-hal calls: read how much memory the window's GPU offers — Vulkan
-  device-local heaps, the DXGI budget, Metal's working set — so the HDR zoom cache is only offered where it fits;
-  `None` elsewhere). **`crates/android-host`** (JNI: adopt the Java VM and activity handles
-  android-activity gives the Android app, for its pickers and links) **`crates/winspool`** (Win32 GDI / winspool calls on Windows: list the system's printers and draw rendered pages on
-  one, for printing through the Windows print spooler; reports unsupported elsewhere) **`crates/winmsi`** (two msi.dll
-  calls, `MsiEnumClientsW` and `MsiGetComponentPathW`: ask Windows Installer where each product that has a component keeps
-  its key file, so the updater tells an MSI install from a copy unpacked from the portable zip; reports unsupported elsewhere) **and `apps/android`'s `android_main`** (the
-  `#[unsafe(no_mangle)]` entry point android-activity looks up; nothing else). Every other production crate root has `#![forbid(unsafe_code)]`. A new
-  unsafe need goes in an isolated, well-tested helper crate like it: `// SAFETY:` on every block, a safe API, a safe
-  fallback where possible, and a line here naming it.
-- **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or
-  arithmetic on them; checked/saturating math for lengths, offsets and counts; no division by zero, NaN/inf or negative
-  casts to `usize`; cap allocations sized by input; slice strings only at char boundaries.
-- **Bound recursion** (depth limits or seen-sets: IFD chains, nested metadata, collections). **Don't cascade:**
-  `lock().unwrap_or_else(PoisonError::into_inner)` or an error; worker-thread joins are `Result`s.
-- **Last-resort guard:** a panic hook plus `catch_unwind` around command dispatch and import/export turns an escaped
-  panic into an error dialog and keeps the document. It's a safety net, not a licence; keep `panic = "unwind"` on native.
-- **Prove it:** every crash fix lands with a hostile-input no-panic check (the malformed input must produce an error,
-  not a panic); fold it into the format's table-driven hostile-input test where one exists.
-- Enforced by clippy: root `clippy.toml` allows unwrap/expect/panic/indexing in tests only, and every production crate
-  root (`lib.rs`, each binary's `main.rs`) carries `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic,
-  clippy::unimplemented, clippy::todo, clippy::unreachable)]`. Not `[workspace.lints]`: those would also hit
-  integration tests, examples and benches. New crates start with the attribute.
+## Never crash (outranks features)
+Malformed raw/JPEG/XMP, bad command/control/MCP argument, corrupt catalog/settings, full disk → actionable error,
+never a panic. Never ship a panic path; fix crashes before building on them. This section is the full standard.
+- Non-test code: no `unwrap()`/`expect()`/`panic!`/`unreachable!`/`todo!`/`unimplemented!`, no `unsafe`. `Result`+`?`,
+  `ok_or(..)?`, `let…else`, `if let`; `unwrap_or…` only where it can't silently corrupt. Unfinished feature →
+  "unsupported" error or disabled. Sole exception: provably infallible literal with
+  `#[allow(clippy::expect_used)]` + `.expect("why")`.
+- `unsafe` lives only in: `crates/sysmem` (Win: `GetCurrentThread`+`SetThreadPriority` for render workers,
+  `GetDiskFreeSpaceExW` for cache sizing; macOS: `malloc_zone_pressure_relief` after raw decodes, `fsync` for SMB; glibc Linux: `malloc_trim` after raw
+  decodes and preview builds;
+  free space elsewhere = POSIX `df`), `crates/hdrmeta` (wgpu-hal: `VK_EXT_hdr_metadata` + `vkSetHdrMetadataEXT` on
+  Linux/BSD Wayland), `crates/gpumem` (wgpu-hal GPU memory budget for the HDR zoom cache), `crates/android-host`
+  (JNI VM/activity adoption), `crates/winspool` (Win32 print spooler), `crates/winmsi` (`MsiEnumClientsW` +
+  `MsiGetComponentPathW` for the updater), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
+  production crate root has `#![forbid(unsafe_code)]`. New unsafe need → isolated, well-tested helper crate:
+  `// SAFETY:` everywhere, safe API, safe fallback, and a line here naming it.
+- Input-derived numbers are hostile: `get()` not `[i]`/`[a..b]`; checked/saturating math; no division by zero,
+  NaN/inf, negative→`usize`; cap input-sized allocations; slice strings at char boundaries.
+- Bound recursion (depth limits/seen-sets: IFD chains, nested metadata). Poisoned locks:
+  `lock().unwrap_or_else(PoisonError::into_inner)` or error; thread joins are `Result`s.
+- Last-resort guard: panic hook + `catch_unwind` around command dispatch and import/export → error dialog, document
+  kept. Safety net, not a licence; keep `panic = "unwind"` on native.
+- Every crash fix lands with a hostile-input no-panic check, folded into the format's table-driven hostile-input test
+  where one exists.
+- Enforced by clippy: `clippy.toml` allows unwrap/expect/panic/indexing in tests only; every production crate root
+  (`lib.rs`, each `main.rs`) has `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic,
+  clippy::unimplemented, clippy::todo, clippy::unreachable)]` — deliberately not `[workspace.lints]` (that would hit
+  tests/examples/benches). New crates start with it.
 
 ## Non-negotiables
-- **Clean-room.** Never read/disassemble anything inside Adobe app bundles (names/listings only). Never copy Adobe icons, presets, profiles (DCP), lens profiles (LCP), camera matrices, fonts (one exception: dcraw's `adobe_coeff` matrices, below). Observation of the installed Lightroom is read-only (it syncs the user's personal library: never import/edit/rate/delete there). Third-party code and data follow the licence policy below (maintainer decision 2026-11-05): GPL, CC BY, public domain and MIT-style work may be used when its licence allows derivatives, sharing and commercial use, and it is credited in `LICENSE` / `NOTICE`.
-- **Pure Rust** in the product. No C/C++ dependencies.
-- **Layering** (`plan/architecture.md` §3, enforced by `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.
-- **Everything is a command** (`crates/engine`): id, label, menu path, shortcut, params, enabled(), run(). UI, CLI, control channel and MCP all dispatch by id. Every slider is a `develop` control spec.
-- **Long-running work shows in the activity stack** ([`docs/background-tasks.md`](docs/background-tasks.md)): anything
-  that runs off the UI thread and can take more than a moment holds a `TaskGuard` from `session.activity.start(kind,
-  label, cancel)` for its whole run. It adopts the cancel flag the job already checks (`Cancel::Flag`), or uses
-  `Cancel::No` when the job can't stop. No progress window, panel or progress toast of its own; its tests assert the row.
-- **Resolution independence:** settings use normalized image coordinates and relative radii; previews and exports must match.
-- **Time goes through `chrono`** (workspace dependency). Never hand-roll UTC/calendar conversion (days-to-date algorithms, leap-year math); a crate owns only its output format string. The one exception is range extension: past the years chrono can represent, shift the date by whole 400-year Gregorian cycles (146,097 days, after which the calendar repeats), let chrono compute the month and day, and add the cycles back to the year (splitting seconds into hours, minutes and seconds is plain arithmetic).
-- **Quality gates:** every commit/PR passes the fast checks, `cargo xtask ci --fast` (fmt, clippy -D warnings, build
-  incl. the wasm check, brand, layers, assets, parity, deny; the required PR check) plus the SIL suite and the targeted
-  tests of what you touched. The full `cargo xtask ci` (every test, all three OSes) runs before a release (a manual CI
-  dispatch on the commit that then goes to `release`). One `ci` runs at a time per machine; others wait their turn
-  (`xtask/src/ci_lock.rs`). See [`docs/ci.md`](docs/ci.md).
-- **Commits:** one task id per commit (`M2.3: local Laplacian highlights/shadows`). Only green states. End messages with the attribution line required by the environment.
-- **Release notes, one file per change:** a user-visible change adds `docs/whats-new/<YYYY-MM-DD>-<slug>.md` (one
-  `### Title` and its bullets, for Help ▸ What's New) and, when the release's changelog should mention it,
-  `docs/changelog/unreleased/<YYYY-MM-DD>-<slug>.md` (one `## Section` and its bullets); the READMEs there say how.
-  Never add to `docs/whats-new.md` (upstream's entries up to the last merge, now frozen) or to a released
-  `docs/changelog/<version>.md`. `cargo xtask notes --check` (part of `ci`) checks every entry and fails when
-  `docs/whats-new.md` changed outside an upstream merge.
+- **Third-party material** — see the licence/derivation policy below.
+- **Pure Rust** in the product, no C/C++ dependencies; covers our crates and anything we bundle. **Plug-ins are
+  exempt:** third-party WASM modules (ABI v1, `wasmi`-sandboxed, [`docs/plugins.md`](docs/plugins.md)), any language
+  that compiles to WASM, own licence, untrusted input to the host.
+- **Layering** (`plan/architecture.md` §3, `cargo xtask layers`): nothing below L5 depends on egui/eframe/winit/rfd.
+- **Everything is a command** (`crates/engine`): id, label, menu path, shortcut, params, `enabled()`, `run()`. UI,
+  CLI, control channel, MCP all dispatch by id. Every slider is a `develop` control spec.
+- **Activity stack** ([`docs/background-tasks.md`](docs/background-tasks.md)): off-UI-thread work longer than a moment
+  holds a `TaskGuard` from `session.activity.start(kind, label, cancel)`; adopts the job's `Cancel::Flag` or
+  `Cancel::No`. No own progress UI; tests assert the row.
+- **Resolution independence:** normalized image coordinates, relative radii; previews == exports.
+- **Time via `chrono`.** Never hand-roll calendar math. One exception: past chrono's range, shift by whole 400-year
+  Gregorian cycles (146,097 days), let chrono compute, add cycles back.
+- **Localized UI text:** `tr`/`tr_format!`; fork messages in `crates/ui-egui/locales/fork/`, complete in every
+  language (tests fail on gaps). [`docs/localization.md`](docs/localization.md).
+- **Release notes:** one file per change: `docs/whats-new/<YYYY-MM-DD>-<slug>.md` (one `### Title` + bullets) and,
+  if the changelog should mention it, `docs/changelog/unreleased/<YYYY-MM-DD>-<slug>.md` (one `## Section` + bullets);
+  READMEs there say how. Never touch `docs/whats-new.md` (frozen) or released `docs/changelog/<version>.md`;
+  `cargo xtask notes --check` (in `ci`) fails if `docs/whats-new.md` changes outside an upstream merge.
+- **The manual moves with the product:** any change a user can notice (new/changed/removed feature, command, menu item,
+  panel, slider, setting, shortcut, default, file format, platform or install step, or a screenshot that no longer
+  matches) updates the manual **in the same commit**. The manual has two parts: the page-per-feature site in
+  `docs/manual-site/src/content/docs/` (picture-first; rules and screenshot runner in
+  [`docs/manual-site/AUTHORING.md`](docs/manual-site/AUTHORING.md)) and the markdown guide in `docs/manual/`. Edit the
+  page that names the feature, or add one; fix every sentence the change makes false; retake affected shots
+  (`scripts/shots.d/<area>.json`) or mark them `<NeedsImage>`; add a row to `reference/` when it adds a menu item or
+  shortcut. Removing a feature removes its manual text. Mention "Manual: <pages>" (or "Manual: none, no user-visible
+  change") in the commit/PR. A release is not cut with a changelog entry that has no manual page behind it.
+- **Releases:** follow [`docs/release-process.md`](docs/release-process.md) (steps and known problems).
+- **Quality gates (2026-11-10):** *before pushing*, every commit passes `cargo xtask ci --fast` (fmt, clippy
+  -D warnings, build incl. wasm check, brand, layers, assets, parity, deny), targeted `cargo test -p <crate>`, and
+  `cargo xtask sil`. The full suite runs only in cloud CI on the PR; releases get a manual full-CI dispatch.
+  [`docs/ci.md`](docs/ci.md).
+- **Commits:** one task id per commit (`M2.3: local Laplacian highlights/shadows`); green states only; end messages
+  with the environment's attribution line.
 
-## Clean-room sources (in addition to the non-negotiables)
-- **Maintainer decision 2026-10-26:** anything legal to redistribute, universal and helpful may ship in releases; the
-  clean-room rules no longer limit bundling beyond what the law and licences require. Applied so far: dcraw's
-  `adobe_coeff` matrices (dcraw.c's non-Foveon code is "free for all uses") ship as `crates/camdb/data/cameras/dcraw.toml`
-  (`lcc_camdb::Source::Dcraw`, ranked below measured and spectral data), generated by `tools/dcraw_adobe_coeff.py`.
-  Still out: Adobe's own files (DCP/LCP, presets, assets).
-- **Licence policy (maintainer decision 2026-11-05, supersedes the older "no GPL" rules below).** Code, model weights
-  and data may be used, ported and shipped when their licence allows **derivatives, redistribution and commercial
-  use**: GPL (any version, incl. LGPL/AGPL), CC BY and CC BY-SA, CC0 / public domain, MIT, BSD, Apache-2.0, ISC and
-  the like. Out: anything that forbids one of the three (CC BY-NC, CC BY-ND, "research only", "non-commercial",
-  no licence at all) and Adobe's own files. Every such source is named, with its licence, in `NOTICE` (and its
-  licence text in `LICENSE` or next to it) in the same commit, and the commit's **Sources:** line names it. GPL code
-  that enters a distributed binary puts that binary under the GPL's terms; say so in `NOTICE`. Where the older rules
-  below still say "never" about GPL sources, this policy wins.
-- darktable and Ansel may be used **as running applications, manuals and prose design notes only**.
-- Their source trees in `../darktable` and `../ansel` are **off-limits to agents**: never open, grep, read or copy
-  them. The same goes for GPL data tables wherever they appear: `noiseprofiles.json`, `wb_presets.json`,
-  `colormatrices.c`, basecurves.
-- **dcraw reference policy** (2026-10-24). Dave Coffin's `dcraw.c` may be read, and its raw-decoding
-  functions translated, **except** the block between `/* RESTRICTED code starts here */` and `/* RESTRICTED code ends
-  here */` (the `foveon_*` functions). The file's header releases everything outside that block "free for all uses",
-  which fits the MIT workspace; the restricted block is GPL-only and stays off-limits, so X3F stays clean-room.
-  - Only dcraw's own file, from dcraw's site or a verbatim mirror of it; name its `$Revision`. Never LibRaw
-    (LGPL-2.1 / CDDL), RawTherapee's `dcraw.cc` (GPL), UFRaw or any other dcraw descendant, even where a function
-    looks the same.
-  - Decoding code, and one table of camera data: `adobe_coeff`'s matrices (most read from Adobe's converter) ship as
-    `crates/camdb/data/cameras/dcraw.toml`, generated by `tools/dcraw_adobe_coeff.py` and ranked below measured and
-    spectral data (maintainer decision 2026-10-26). Its levels and any other dcraw data stay out.
-  - Say what was done. The module docs and the commit's **Sources:** line name the dcraw revision and function(s)
-    and say "translated from" or "read as a reference"; never "no code copied" when the structure follows dcraw.
-    `NOTICE` credits dcraw. Check every layout on CC0 samples as for any other decoder.
-  - Every other decoder source stays unread: rawspeed, rawloader, rawler / dnglab, LibRaw, darktable, RawTherapee,
-    ART. dcraw's last revision (1.478, 2018) predates CR3, Nikon HE and ARQ; those stay clean-room.
-  - Upstream doesn't share this policy: decoders built on dcraw are Chromaforge-only and are never offered upstream.
-- Camera matrices are **never harvested from Adobe-converted DNGs**: check the DNG's `Software` tag (Adobe DNG
-  Converter, Lightroom, Camera Raw) and reject those. Camera-native DNGs (written by the camera itself) are fine.
-- **Black-box fits to Lightroom output images may ship** (maintainer decision 2026-10-25): a contributor runs
-  `<cli> calibrate-lightroom fit` on their own raws and Lightroom's exports of them, and the resulting aggregate
-  numbers (`crates/camdb/data/calibrations/*.json`, added with `<cli> calibrate-lightroom add`) may be committed and
-  bundled. Adobe DCP/LCP files, matrices from Adobe-converted DNGs and Adobe-rendered pixels never ship; no image,
-  file name, date, serial, location or lens enters a calibration (allow-listed fields only).
-- A person's **own** `.dcp` camera profiles and XMP looks may be imported at run time (`camera.importDcp`,
-  `profile.import`; maintainer decision 2026-10-18). None is ever committed, bundled or used as a test fixture: tests
-  build their bytes in code.
-- Every PR that adds an algorithm has a **"Sources:"** line naming what it was built from: a paper, a prose spec, or
-  "own design".
-- Dependencies follow the licence policy above; `cargo deny` enforces the licence allow-list (extend it in `deny.toml`
-  when a newly allowed licence is needed). It also checks
-  that every crate comes from crates.io or a git repository listed under `[sources] allow-git` in `deny.toml`.
-- Licence: the workspace is MIT (`LICENSE`, `license = "MIT"`); `crates/segment` and `crates/fetch` stay Apache-2.0
-  only, with their own `LICENSE-APACHE`. Keep the upstream notices in `LICENSE` and `NOTICE`.
+## Third-party sources: licence and derivation policy
+One rule (2026-11-10): **use only material you may legally derive from.**
+- **In:** licences allowing derivatives + sharing + commercial use — permissive (MIT, BSD, Apache-2.0, ISC, Zlib, …)
+  and share-alike (GPL, LGPL, AGPL, CC BY, CC BY-SA, CC0/public domain), open source or not. Read, port, bundle, ship.
+- **Out:** CC BY-NC, CC BY-ND, "research only"/"non-commercial", no licence, Adobe's own files (DCP/LCP, presets,
+  assets — proprietary).
+- Share-alike code in a distributed binary puts the binary under those terms; our dual licence already offers
+  GPL-3.0-or-later; `NOTICE` says what shipped.
+- **Provenance:** every port names its source — commit **Sources:** line, module docs saying "translated from"/"read
+  as a reference" (never "no code copied" when structure follows a source), `NOTICE` credit + licence text next to the
+  material.
+- **Adobe boundaries (absolute):** never open/disassemble Adobe app bundles (file/symbol names and listings are the
+  limit); observing installed Lightroom is read-only (it syncs the user's library — never write); imitating layout and
+  behaviour is allowed, Adobe assets never ship; no camera matrices from Adobe-converted DNGs (check `Software` tag;
+  camera-native DNGs fine); Adobe-rendered pixels never ship; black-box fits may ship only as aggregate calibration
+  numbers (`<cli> calibrate-lightroom add`, allow-listed fields only); users' own `.dcp`/XMP import at run time
+  (`camera.importDcp`, `profile.import`) but are never committed, bundled or used as fixtures (tests build bytes).
+- Now usable (with provenance): darktable/Ansel sources, all of dcraw incl. the GPL RESTRICTED (Foveon) block, LibRaw
+  and other dcraw descendants, rawspeed/rawloader/rawler/dnglab/RawTherapee/ART, GPL data tables (noiseprofiles,
+  wb_presets, colormatrices, basecurves). Quality habits stay: camera data ranks measured > spectral > dcraw tables
+  (`lcc_camdb::Source::Dcraw` via `tools/dcraw_adobe_coeff.py`); decoder layouts verified on CC0 samples; dcraw 1.478
+  (2018) predates CR3/Nikon HE/ARQ — no readable reference for those.
+- Ports built on share-alike sources are Chromaforge-only, never offered upstream (upstream doesn't share this
+  policy).
+- Dependencies follow the same rule; `cargo deny` enforces the `deny.toml` allow-list (extend it as licences open up)
+  and the `[sources] allow-git` list.
+- **Licence (2026-11-10):** workspace default `MIT OR GPL-3.0-or-later` (root `Cargo.toml`; text:
+  `LICENSE-GPL-3.0.txt`); share-alike contributions welcome. `crates/segment` + `crates/fetch`:
+  `Apache-2.0 OR GPL-3.0-or-later` (`LICENSE-APACHE` per crate). Keep upstream notices in `LICENSE`/`NOTICE`.
 
-## Assets: icons, images, fonts (ABSOLUTE RULE — never violate)
-- **Never use any iconography, image, artwork, font, sound or other asset from Adobe products** (no Lightroom/Creative Cloud icons, no screenshots, no presets/profiles/LUTs, no UI bitmaps — not even as a temporary placeholder or "reference copy"). Observing Adobe's UI to imitate *layout and behaviour* is allowed; copying or tracing its assets is not.
-- **This includes Adobe's open-licensed assets**: no Source Sans/Serif/Code or Source Han fonts, no Adobe Fonts, no
-  Adobe-published icon sets, sample photos, colour profiles or LUTs — even when OFL/MIT. The UI font is Inter (OFL);
-  Japanese and Chinese fonts come from craft-fonts (below). **One exception (maintainer decision, 2026-10-07): Noto
-  Sans/Serif CJK** (Google-branded, OFL, co-developed with Adobe as Source Han) is allowed via craft-fonts for Chinese
-  text, because nearly every OFL Chinese face derives from it. Use it unmodified under its OFL; this does not open the
-  door to Source Han under Adobe's name or to any other Adobe asset.
-- Every asset in the repository must be one of: **our own original work** (e.g. icons drawn in code as vectors, procedurally generated demo photos), **public domain / CC0**, **Creative Commons** (CC-BY / CC-BY-SA with attribution honoured), **OFL** (fonts), or **permissive open-source** (MIT/Apache-2.0/BSD/ISC) — or contributed by a person who created the asset and licenses it openly.
-- The placeholder brand art is `brand/icon.svg` and `brand/logo.svg` (original work, MIT); every generated icon is
-  derived from `icon_svg` in `brand.toml`.
-- **Every asset must have an entry in `assets/ATTRIBUTION.md`** (path, title, author/creator, source URL or "original work", licence, date added, modifications) and its licence text when required (e.g. `assets/fonts/OFL-*.txt`). Add the entry in the same commit as the asset. Assets without an attribution entry must not be committed.
-- **Fonts live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo.** Don't commit
-  font files here (Inter, already in `assets/fonts/`, is the one exception); add new fonts to craft-fonts. The app
-  uses it as the optional build input `CRAFT_FONTS_DIR`: `git clone https://github.com/storytold/craft-fonts ../craft-fonts`
-  then `CRAFT_FONTS_DIR=../craft-fonts cargo xtask run` (or any cargo/xtask command). `crates/engine/build.rs`
-  embeds the manifest's fonts as `lcc_engine::CRAFT_FONTS` (wasm32: BIZ UDPGothic Regular only); `cargo xtask web`
-  ships Noto Sans CJK SC Regular as a separate asset loaded by the UI before startup. The UI
-  (`theme::font_definitions`) and the export watermark renderer use CJK faces (picked by script) as fallbacks after Inter; the UI also falls back on the faces of other scripts (Thai, Arabic, …). Unset,
-  `CRAFT_FONTS` is empty: everything builds, tests and runs, but Chinese and Japanese text lack glyphs. Releases always build
-  with it (`release.yml`, `CRAFT_FONTS_REQUIRED=1`) and ship the fonts' OFL licences. Tests that need these fonts skip
-  without it; the FreeBSD CI job runs them with it. Rules: craftrules
-  [`standards/fonts.md`](https://github.com/storytold/craftrules/blob/main/standards/fonts.md).
-- Icons drawn in code (e.g. `crates/ui-egui/src/icons.rs`) are original work and are recorded in `assets/ATTRIBUTION.md` as such; do not trace them from Adobe icons.
-- Demo/test images: generated procedurally by `lcc-scenes`, or CC0 downloads kept in the gitignored `corpus/` with their source recorded. Screenshots of Adobe apps live only in the gitignored `plan/` and are never committed or published.
-- **Enforced:** `cargo xtask assets` (in `ci`) fails when an image/icon/font/sound/video/raw/ICC/XMP file is not matched
-  by a path pattern in the first column of `assets/ATTRIBUTION.md`, when a referenced licence file is missing, when a
-  file name suggests Adobe material, or when an Adobe profile/template format (`.dcp`, `.lcp`, `.lrtemplate`, …) appears.
-  Never weaken this check to make a commit pass — fix the attribution or remove the asset.
-- When in doubt about an asset's licence: don't use it.
+## Assets (absolute)
+- **No Adobe assets** — icons, screenshots, presets, profiles, LUTs, fonts, even open-licensed Adobe ones (Source
+  Sans/Serif/Code, Source Han, Adobe Fonts). Observing Adobe UI to imitate layout/behaviour is fine; copying/tracing
+  its assets is not. Sole exception: **Noto Sans/Serif CJK** (Google OFL) via craft-fonts, unmodified.
+- Allowed: own original work, CC0/public domain, CC BY/CC BY-SA (attribution honoured), OFL, or any licence permitting
+  derivatives + sharing + commercial use (MIT/Apache/BSD/ISC/share-alike).
+- **Every asset gets an `assets/ATTRIBUTION.md` entry** (path, title, author, source or "original work", licence,
+  date, modifications) in the same commit; `cargo xtask assets` (in `ci`) fails otherwise — never weaken the check.
+  Brand art: `brand/icon.svg`/`brand/logo.svg` (original, MIT); code-drawn icons (e.g. `crates/ui-egui/src/icons.rs`)
+  are original, recorded there too.
+- **Fonts live in [craft-fonts](https://github.com/storytold/craft-fonts), not here** (Inter in `assets/fonts/` is the
+  one exception). Build input: `git clone https://github.com/storytold/craft-fonts ../craft-fonts` +
+  `CRAFT_FONTS_DIR=../craft-fonts` on any cargo/xtask command; `crates/engine/build.rs` embeds them as
+  `lcc_engine::CRAFT_FONTS` (wasm32: BIZ UDPGothic only). Without it everything builds/runs but CJK glyphs are
+  missing; releases always build with it (`CRAFT_FONTS_REQUIRED=1`) and ship OFL licences; tests needing the fonts
+  skip without them. Ship fonts unmodified with their licence files, credited in `assets/ATTRIBUTION.md`.
+- Demo/test images: procedural (`lcc-scenes`) or CC0 in the gitignored `corpus/`. Adobe screenshots live only in
+  gitignored `plan/`. When in doubt about a licence: don't use it.
 
-## Running and looking at the app
-- `cargo xtask run -- --control 7980` (or `cargo run --release -p lcc-app -- --control 7980`) opens the desktop app with the JSON-lines control server (see `docs/control-protocol.md`).
-- **Never send OS-level synthetic input** (osascript/System Events keystrokes or clicks, `cliclick`, accessibility
-  automation): it goes to whatever window is frontmost — the user's terminal or other apps. Drive the app only
-  through its control channel (`ui.key`, `ui.pointer`, `ui.clickWidget`, `ui.menu.invoke`) or headless snapshots.
-- For UI work, **look at the result**: drive via the control channel and take `ui.screenshot`, compare with `plan/lightroom/screenshots/`.
-- **Unattended (display asleep/locked, CI, nightly runs): prefer headless snapshots** — no window needed:
-  `cargo run --release -p lcc-cli -- snapshot --demo --script tour.jsonl -o out.png --size 1600x1000` (control-protocol requests,
-  one per line; see `docs/control-protocol.md` → Headless rendering). In a running app use
-  `ui.screenshot {"path": …, "headless": true}`; windowed screenshots fall back to headless after 2 s.
-- MCP: `cargo run -p lcc-cli -- mcp` (headless, `--demo` for the procedural library) or `… mcp --connect` (drives
-  the running app). See `docs/mcp.md`. Quick non-UI checks: `cargo run -p lcc-cli -- render in.jpg -o out.jpg --set light.exposure=1`.
-- Export goes through `lcc_engine::export` (one encoder for app, CLI, MCP and web); UI-only commands live in
-  `crates/ui-egui/src/menus.rs`.
-- Text boxes use `crates/ui-egui/src/text_field.rs` (`TextField`), not `egui::TextEdit`: it gives every field the
-  Cut / Copy / Paste / Select All menu, Esc restoring the text, and reports how an edit ended. Give each a widget id
-  that is unique on screen. Older fields still on `TextEdit` move over as they are touched.
-- Shell gotcha: `mv`/`cp` are aliased interactive here — use `/bin/mv -f` / `/bin/cp -f`.
-- Parallel agents: separate git worktrees and `CARGO_TARGET_DIR=target/agent-<name>`; each agent uses its **own control port** (pick one in 18000–19999, never the default 7980) and its own scratch subfolder (`<scratch>/<agent-name>/`) — never `rm -rf` shared paths; delete your target dir when done (disk is shared); keep every `Cargo.toml` valid at all times (the `crates/*` glob means one broken manifest breaks everyone).
-- Test corpora: `cargo xtask corpus --download` into `corpus/` (gitignored, CC0 only). Never commit media.
-- Shared real-file test corpora (Photoshop-authored PSDs, etc.) live in [`storytold/photocraft-corpus`](https://github.com/storytold/photocraft-corpus), explained in [craftrules `standards/test-corpora.md`](https://github.com/storytold/craftrules/blob/main/standards/test-corpora.md). Never commit large binary fixtures to this repo; fetch them pinned by commit and sha256-verified, as PhotoCraft does with `cargo xtask corpus`.
+## Running the app
+- `cargo xtask run -- --control 7980` = desktop app + JSON-lines control server (`docs/control-protocol.md`).
+  Drive it only via the control channel (`ui.key`, `ui.pointer`, `ui.clickWidget`, `ui.menu.invoke`) or headless
+  snapshots — **never OS-level synthetic input** (osascript/cliclick/accessibility): it hits whatever window is
+  frontmost.
+- UI work: look at the result — control-channel script + `ui.screenshot`, compare with `plan/lightroom/screenshots/`.
+  Unattended/headless: `cargo run --release -p lcc-cli -- snapshot --demo --script tour.jsonl -o out.png --size
+  1600x1000`; `ui.screenshot {"path":…, "headless": true}`.
+- MCP: `cargo run -p lcc-cli -- mcp` (`--demo` for procedural library, `--connect` for the running app;
+  `docs/mcp.md`). Quick non-UI check: `cargo run -p lcc-cli -- render in.jpg -o out.jpg --set light.exposure=1`.
+- Export always goes through `lcc_engine::export`; UI-only commands live in `crates/ui-egui/src/menus.rs`.
+- Text boxes: `crates/ui-egui/src/text_field.rs` (`TextField`), not `egui::TextEdit` (context menu, Esc restore,
+  edit-end reporting); widget ids unique on screen.
+- Shell: `mv`/`cp` are interactive aliases here — use `/bin/mv -f`/`/bin/cp -f`.
+- Parallel agents: own git worktree + `CARGO_TARGET_DIR=target/agent-<name>`; own control port (18000–19999, never
+  7980); own scratch subfolder; never `rm -rf` shared paths; delete your target dir after; keep every `Cargo.toml`
+  valid (`crates/*` glob).
+- Corpora: `cargo xtask corpus --download` → gitignored `corpus/` (CC0 only). Shared real-file corpora:
+  [photocraft-corpus](https://github.com/storytold/photocraft-corpus), fetched pinned + sha256-verified. Never commit
+  media or large fixtures.
 
-## Testing & performance (do this often)
-- Unit/property tests next to the code; end-to-end tests drive real binaries (`crates/mcp/tests/it/e2e.rs`,
-  `apps/cli/tests/`). Tests check behaviour and invariants, not implementation details: no change-detector tests
-  (exact sizes, positions, frame counts, constants, labels) and no golden-output tests for image/decode quality. Crash
-  fixes need a hostile-input no-panic check. Prefer the SIL harness (`cargo xtask sil`, `docs/testing-sil.md`) and
-  targeted end-to-end tests.
-- **Run the app after every user-visible change**: launch with `--control 7980`, drive it with a JSON-lines script
-  (`docs/showcase/run.py file.jsonl`), take `ui.screenshot`, and look at it. Check `ui.inspect` → `perf`.
-- **Benchmarks:** `cargo xtask bench` (24 MP raw from corpus; CPU and GPU columns) appends to `target/bench/history.jsonl`
-  and flags CPU-time regressions > 20 % vs the previous run (`--strict` to fail). Run it before and after perf work.
-- **Measure, don't guess**: `<PREFIX>_PROFILE=1` (`PREFIX` = `env_prefix` from `brand.toml`) prints per-stage pipeline timings to stderr; time CLI renders
-  with `/usr/bin/time`. Record numbers in `plan/STATUS.md` → Metrics. Budgets: slider update ≤ 16 ms (draft) / loupe
-  ≤ 60 ms on ~2.5 MP; export ≤ 1 s per 24 MP JPEG.
-- Never commit media: test images are procedural (`lcc-scenes`) or CC0 downloads in the gitignored `corpus/`.
-- A test that can't run here (no GPU, corpus file, craft-fonts face, model) calls `lcc_testkit::skip!(Gpu, "why")`
-  before it returns, not a bare `eprintln!`. `cargo xtask ci` then lists the skips and the machine's GPU adapters and
-  data, and writes `target/ci/report.json` and `target/ci/summary.md` (Markdown for a PR).
+## Testing & performance
+- Tests check behaviour and invariants, not implementation: no change-detector tests (exact sizes/positions/counts/
+  labels), no *exact*-pixel goldens. Reference comparison with numeric tolerance (SSIM/mean ΔE) is allowed and
+  encouraged where stored references exist — not yet required anywhere (no reference images yet).
+- Pyramid: unit/property tests next to the code (every hostile-input path) → SIL harness (`cargo xtask sil`,
+  `docs/testing-sil.md`; pipeline/develop without a window) → e2e driving real binaries (`crates/mcp/tests/it/e2e.rs`,
+  `apps/cli/tests/`) → app smoke (control script + `ui.screenshot`). Land at the lowest level that catches the
+  regression, plus the level above when behaviour spans layers. Crash fixes always get the hostile-input check.
+- After every user-visible change: run the app, screenshot, look; `ui.inspect` → `perf`.
+- Measure, don't guess: `<PREFIX>_PROFILE=1` prints per-stage timings to stderr; `/usr/bin/time` for CLI renders;
+  record numbers in `plan/STATUS.md` → Metrics. Budgets: slider ≤ 16 ms (draft), loupe ≤ 60 ms @ ~2.5 MP, export
+  ≤ 1 s per 24 MP JPEG.
+- Perf workflow: measure before (`cargo xtask bench` or `<PREFIX>_PROFILE=1`), change one thing, measure again,
+  record both. Bench numbers compare only as same-machine, controlled-environment before/after pairs — never across
+  machines or unrelated runs; `cargo xtask bench` (24 MP raw, CPU+GPU columns) flags > 20 % CPU regressions
+  (`--strict` fails). No speed-up claims from single noisy runs; complexity must earn its cost.
+- Unrunnable tests (no GPU/corpus/fonts/model) call `lcc_testkit::skip!(Gpu, "why")`, not `eprintln!`; `ci` reports
+  skips in `target/ci/report.json` + `summary.md`.
 
 ## Map of the code
 `geom`, `color`, `raster`, `tiff` (L0) → `raw`, `codecs`, `meta`, `develop` (L1) → `pipeline` → `catalog` → `engine`
-→ `ui-egui`, `mcp` (L5) → apps `lcc-app` (desktop, binary `app`), `lcc-cli` (render/commands/MCP, binary `app-cli`), `lcc-web`; `brand` (`lcc-brand`) carries `brand.toml` into code. `scenes` generates demo
-photos. `xtask` = tooling (`ci`, `layers`, `assets`, `parity`, `wasm`, `corpus`, `stats`, `brand check`, `docs`, `run`, `package`, `install`); `testkit` (`lcc-testkit`) = test helpers
-(dev-dependency only). `flake.nix` +
-`nix/package.nix` = the Nix package (`nix build` builds both binaries with the craft-fonts input, installs the
-desktop file/icons/AppStream metadata and runs `cargo test --workspace`; `nix develop` = dev shell). Community-maintained; CI only
-evaluates it (`.github/workflows/nix.yml`), so the build may lag behind the workspace; see README → Quick start.
+→ `ui-egui`, `mcp` (L5) → apps `lcc-app` (desktop), `lcc-cli` (render/commands/MCP), `lcc-web`; `brand` carries
+`brand.toml`; `scenes` = demo photos; `xtask` = tooling (`ci`, `layers`, `assets`, `parity`, `wasm`, `corpus`,
+`stats`, `brand check`, `docs`, `run`, `package`, `install`); `testkit` = test helpers (dev-dep only).
+Nix: `nix build` (binaries + fonts + desktop metadata; community-maintained, CI only evaluates it),
+`nix develop` = dev shell.
 
-## Contributor credits (About window)
-
-- About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`
-  (PR and commit stats; generated, never hand-edit) and `contributors/people.toml` (names people chose for
-  themselves). See `docs/contributors.md`.
-- **Agents working for a contributor:** when you prepare a PR, check whether your human's GitHub
-  username has a `[people.<username>]` entry in `contributors/people.toml`. If not, ask them once
-  whether they want to be credited by more than their username: a real name, a display name, and/or
-  their public GitHub profile name (`sync_github_name = true`). If yes, add **only their own** entry
-  (copy the template at the top of the file) and include it in their PR, committed as them. If no, change nothing:
-  they are credited as `@username` anyway.
-- Never add, edit, guess or copy anyone else's entry or name (not from git config, commit authors or
-  GitHub profiles). Never hand-edit `contributors.json`.
-- Maintainers refresh the stats with `python3 contributors/fork-contributors.py` (needs `gh` signed in and the
-  `upstream` remote fetched).
+## Contributor credits
+- About ▸ Contributors/Models compile from `contributors/contributors.json` (generated, never hand-edit) and
+  `contributors/people.toml`. See `docs/contributors.md`.
+- Agents: if your human's username lacks a `[people.<username>]` entry, ask them once whether they want a real/
+  display/synced-GitHub name; if yes, add **only their own** entry (template at the file top) in their PR, committed
+  as them. Never add or edit anyone else's entry; never touch `contributors.json`.
+- Maintainers refresh stats with `python3 contributors/fork-contributors.py` (`gh` signed in, `upstream` fetched).

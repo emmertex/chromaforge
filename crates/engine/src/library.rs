@@ -65,7 +65,7 @@ pub fn resolve_dir(path: &Path) -> Result<PathBuf> {
         .and_then(|n| n.to_str())
         .is_some_and(|n| [lcc_catalog::journal::SNAPSHOT, lcc_catalog::journal::LOG, lcc_catalog::lock::LOCK].contains(&n));
     if !own {
-        return Err(EngineError::Other(format!("{} is a file; a library is a folder", path.display())));
+        return Err(EngineError::Other(format!("{} is a file; a catalog is a folder", path.display())));
     }
     Ok(match path.parent().filter(|p| !p.as_os_str().is_empty()) {
         Some(dir) => dir.to_path_buf(),
@@ -276,6 +276,14 @@ struct ViewFile {
     browse: Option<crate::Browse>,
     /// The folder a `libraryFolder` source shows.
     library_folder: Option<String>,
+    /// Show Photos in Subfolders turned off (`false` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    folder_direct: bool,
+    /// Lock Filters turned off (`true` is the default, so it is written only when off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lock_filters: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    remember_filters: bool,
     // No filter: a library opens unfiltered. A date, keyword or person left over from the last session
     // would silently hide photos, with only a small badge to say so.
     sort: lcc_catalog::Sort,
@@ -360,6 +368,8 @@ struct PrefsFile {
     export_presets: Vec<crate::export::ExportPreset>,
     /// Print templates.
     print_templates: Vec<crate::print::template::PrintTemplate>,
+    /// Print Template Browser folders, empty ones included.
+    print_template_folders: Vec<String>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
     /// Import presets (the Import tab's settings, by name).
@@ -396,6 +406,11 @@ struct PrefsFile {
     /// This library's own background preparation settings (`None`: the app-wide ones, [`crate::prep`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     prep: Option<crate::prep::PrepSettings>,
+    /// A background build of this library's previews was started and has not run to its end: the
+    /// preparation takes it up again, also after a restart. Set and cleared by
+    /// [`Session::prep_tick`] only; the rules are at [`crate::prep::PrepState::unfinished`].
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    prep_unfinished: bool,
     /// Folder for smart previews (default: `Smart Previews` in the library).
     smart_previews_dir: Option<String>,
     /// Days after which untouched Local records of unbrowsed folders are forgotten (missing =
@@ -571,7 +586,7 @@ impl Session {
         if !dir.is_dir() {
             return Err(EngineError::Other(format!("{} is not a folder", dir.display())));
         }
-        std::fs::read_dir(&dir).map_err(|e| EngineError::Other(format!("can't open library {}: {e}", dir.display())))?;
+        std::fs::read_dir(&dir).map_err(|e| EngineError::Other(format!("can't open catalog {}: {e}", dir.display())))?;
         // the library open in this session keeps its lock when reopened; any other must be free
         let current = self.library.as_ref().is_some_and(|l| l.on_disk && same_dir(&l.dir, &dir));
         if !current && is_library(&dir) {
@@ -597,7 +612,7 @@ impl Session {
             return Err(EngineError::LightroomCatalog { path: dir, catalog: place.catalog });
         }
         let dir = resolve_dir(&dir)?;
-        let open = || FsStore::open(&dir).map_err(|e| EngineError::Other(format!("can't open library {}: {e}", dir.display())));
+        let open = || FsStore::open(&dir).map_err(|e| EngineError::Other(format!("can't open catalog {}: {e}", dir.display())));
         let stores = LibraryStores { catalog: Box::new(open()?), files: Box::new(open()?), on_disk: true, dir: dir.clone() };
         // the library open in this session (same directory): hand its lock over
         let reused = self.library.as_mut().filter(|l| same_dir(&l.dir, &dir)).and_then(|l| l.lock.take());
@@ -669,6 +684,8 @@ impl Session {
             self.pending_sidecar_repairs.append(&mut entry.retry_sidecars);
         }
         self.undo.clear();
+        // a run of the old library no longer holds the new one's history
+        self.undo_hold = std::sync::Weak::new();
         self.redo.clear();
         self.interaction = None;
         self.pending_log.clear();
@@ -704,6 +721,8 @@ impl Session {
         self.last_merge = prefs.last_merge;
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
+        self.print_template_folders = prefs.print_template_folders;
+        crate::template_folders::tidy_folders(&mut self.print_template_folders, &mut self.print_templates);
         self.metadata_presets = prefs.metadata_presets;
         self.import_presets = prefs.import_presets;
         self.filter_presets = prefs.filter_presets;
@@ -726,7 +745,9 @@ impl Session {
         // photos with no camera-profile choice of their own start from these (issue #723)
         lcc_raw::dcp::install_user_defaults(self.camera_profile_defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         self.cache_mb = prefs.cache_mb;
+        self.prep.opened_library();
         self.prep.library = prefs.prep.map(crate::prep::PrepSettings::sanitized);
+        self.prep.unfinished = prefs.prep_unfinished;
         self.preview_prefs = prefs.previews;
         #[cfg(not(target_arch = "wasm32"))]
         if on_disk {
@@ -789,6 +810,9 @@ impl Session {
             self.source = v.source;
             self.browse = v.browse;
             self.library_folder = v.library_folder.filter(|f| !f.trim().is_empty());
+            self.folder_subfolders = !v.folder_direct;
+            self.lock_filters = v.lock_filters.unwrap_or(true);
+            self.remember_filters = v.remember_filters;
             if self.source == LibrarySource::LibraryFolder {
                 // a folder that is gone (or none): everything, not an empty grid
                 let f = lcc_catalog::Filter { library_folder: self.library_folder.clone(), ..Default::default() };
@@ -801,7 +825,9 @@ impl Session {
             self.sort = v.sort;
             self.previous_export = v.previous_export.into_iter().filter(|id| self.catalog.photo(*id).is_some()).collect();
             self.selection = v.selection;
-            self.selection.ids.retain(|id| self.catalog.photo(*id).is_some());
+            // each photo once: the file is plain JSON, and a selection never repeats one
+            let mut seen = std::collections::HashSet::new();
+            self.selection.ids.retain(|id| self.catalog.photo(*id).is_some() && seen.insert(*id));
             self.selection.active = self.selection.active.filter(|id| self.catalog.photo(*id).is_some());
         }
         // the saved view may name an album the library no longer has
@@ -1047,7 +1073,7 @@ impl Session {
         if !lib.journal.snapshot_running() {
             lib.compaction_row = None;
         } else if lib.compaction_row.is_none() {
-            lib.compaction_row = Some(self.activity.start("compaction", "Optimizing the library", crate::activity::Cancel::No));
+            lib.compaction_row = Some(self.activity.start("compaction", "Optimizing the catalog", crate::activity::Cancel::No));
         }
     }
 
@@ -1145,6 +1171,9 @@ impl Session {
             browse: self.browse.clone(),
             // only while it is shown: a leftover would be a stale choice nobody made
             library_folder: self.library_folder.clone().filter(|_| self.source == LibrarySource::LibraryFolder),
+            folder_direct: !self.folder_subfolders,
+            lock_filters: (!self.lock_filters).then_some(false),
+            remember_filters: self.remember_filters,
             sort: self.sort,
             selection: self.selection.clone(),
             previous_export: self.previous_export.clone(),
@@ -1186,6 +1215,7 @@ impl Session {
             last_merge: self.last_merge.clone(),
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
+            print_template_folders: self.print_template_folders.clone(),
             metadata_presets: self.metadata_presets.clone(),
             import_presets: self.import_presets.clone(),
             filter_presets: self.filter_presets.clone(),
@@ -1205,6 +1235,7 @@ impl Session {
             camera_profile_defaults: self.camera_profile_defaults.clone(),
             cache_mb: self.cache_mb,
             prep: self.prep.library,
+            prep_unfinished: self.prep.unfinished,
             smart_previews_dir: self.smart_previews_dir.as_ref().map(|d| d.to_string_lossy().to_string()),
             forget_local_days: Some(self.forget_local_days),
             // on disk they live in the catalog's settings (below)
@@ -1232,6 +1263,8 @@ impl Session {
                 if let serde_json::Value::Object(im) = &mut import {
                     im.insert("autoFolder".into(), serde_json::to_value(&self.import_defaults.auto_folder).unwrap_or_default());
                     im.insert("autoCopy".into(), serde_json::Value::Bool(self.import_defaults.auto_copy));
+                    im.insert("autoPaused".into(), serde_json::Value::Bool(self.import_defaults.auto_paused));
+                    im.insert("autoOptions".into(), serde_json::to_value(&self.import_defaults.auto_options).unwrap_or_default());
                     im.insert("autoAlbum".into(), serde_json::to_value(&self.import_defaults.auto_album).unwrap_or_default());
                 }
                 map.insert("import".into(), import);
@@ -1475,7 +1508,7 @@ impl Session {
 /// refusing would lock the user out — but the user must learn that a second program could open it.
 /// What an upgrade of the library's catalog did and how to go back (`None` when it wasn't
 /// upgraded, or no copy was kept: a new or in-memory library).
-pub const UPGRADE_NOTICE_START: &str = "This library's catalog was upgraded";
+pub const UPGRADE_NOTICE_START: &str = "This catalog was upgraded";
 
 /// See [`UPGRADE_NOTICE_START`]: the text always begins with it, so the UI can title it as news, not a problem.
 fn upgrade_notice(report: &LoadReport) -> Option<String> {

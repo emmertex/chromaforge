@@ -332,7 +332,8 @@ fn right_side(app: &mut LccApp, ui: &mut egui::Ui, full: Rect, compact_zoom: boo
         let _ = app.run("view.autoAdvance", json!({}));
     }
     if app.ui.view == ViewMode::Survey {
-        // no zoom or thumbnail size in Survey
+        // no zoom in Survey; the filmstrip size takes the thumbnail slider's place
+        survey_film_slider(app, &mut child, &t);
     } else if matches!(app.ui.view, ViewMode::Detail | ViewMode::Compare) {
         if icon_button(&mut child, "beforeAfter", Icon::BeforeAfter, vec2(30.0, 30.0), app.ui.before_after.is_layout(), true, "Before/After (Y)")
             .clicked()
@@ -434,6 +435,26 @@ fn auto_sync_switch(ui: &mut egui::Ui, t: &Tokens, on: bool, labelled: bool) -> 
     p.circle_filled(pos2(kx, track.center().y), 5.0, if on { Color32::WHITE } else { t.thumb });
     let tip = if on { "Auto Sync is on: edits change every selected photo" } else { "Auto Sync is off: edits change the active photo only" };
     resp.on_hover_text(crate::i18n::tr(tip))
+}
+
+/// Survey's filmstrip size slider (widget `slider:filmSize`): the filmstrip's height, the one its
+/// top edge drags and the loupe views share, offered between 100 and 240 points.
+fn survey_film_slider(app: &mut LccApp, child: &mut egui::Ui, t: &Tokens) {
+    const RANGE: (f32, f32) = (100.0, 240.0);
+    let (r, resp) = child.allocate_exact_size(vec2(110.0, 20.0), Sense::click_and_drag());
+    crate::widgets::announce(&resp, crate::i18n::tr("Filmstrip size"));
+    register(child.ctx(), "slider:filmSize", r);
+    let p = child.painter();
+    let y = r.center().y;
+    p.line_segment([pos2(r.left(), y), pos2(r.right(), y)], egui::Stroke::new(2.0, t.track));
+    let f = ((app.ui.film_height() - RANGE.0) / (RANGE.1 - RANGE.0)).clamp(0.0, 1.0);
+    p.rect_filled(Rect::from_center_size(pos2(r.left() + f * r.width(), y), vec2(3.0, 14.0)), 1.0, t.thumb_hover);
+    if let Some(pp) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked())
+    {
+        let f = ((pp.x - r.left()) / r.width()).clamp(0.0, 1.0);
+        app.ui.film_height = crate::state::FILM_HEIGHT.clamp(RANGE.0 + f * (RANGE.1 - RANGE.0));
+    }
 }
 
 /// The thumbnail size slider at the right end of a grid's toolbar.

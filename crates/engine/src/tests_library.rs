@@ -4,10 +4,9 @@ use serde_json::json;
 
 use crate::Session;
 
-fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-engine-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    d
+/// The test's folder in Temp, removed when the test ends.
+fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-engine-{tag}"))
 }
 
 fn open(dir: &std::path::Path, seed: bool) -> Session {
@@ -136,6 +135,7 @@ fn close_writes_snapshot_and_view_state() {
 /// loading the source; an edit changes the key.
 #[test]
 fn thumbnails_come_from_the_disk_cache_after_restart() {
+    let _keys = crate::sensor_maps::keep_generation();
     let dir = temp_dir("thumbs");
     let mut s = open(&dir, true);
     let ids: Vec<_> = s.visible_cloned().into_iter().take(3).collect();
@@ -158,7 +158,9 @@ fn thumbnails_come_from_the_disk_cache_after_restart() {
         assert_eq!(img.width.max(img.height), 256);
     }
     let info = s.execute("library.info", &json!({})).unwrap();
-    assert_eq!(info["cache"]["disk"]["hits"], 3, "{info}");
+    // (each thumbnail read from disk; the record of a photo's kept thumbnail is read too, so no exact count)
+    assert!(info["cache"]["disk"]["hits"].as_u64().is_some_and(|h| h >= 3), "every thumbnail read from disk: {info}");
+    assert_eq!(info["cache"]["disk"]["misses"], 0, "nothing looked for on disk was missing: {info}");
     // an edit is a new key: rendered (from the source), then cached
     s.execute("library.select", &json!({"ids": [ids[0].0]})).unwrap();
     s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
@@ -983,5 +985,25 @@ fn an_upgraded_library_says_where_its_older_copy_is() {
     assert!(note.contains(&kept) && note.contains("to go back"), "{note}");
     assert!(std::path::Path::new(&kept).join(lcc_catalog::db::DB_FILE).is_file());
     assert!(s.take_library_warnings().iter().all(|n| !n.contains("upgraded from")), "told once");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_selection_restored_from_view_json_names_each_photo_once() {
+    // `view.json` is a plain file a user, a sync tool or another version can leave with a photo listed twice;
+    // the selection never repeats one (a count or a batch would count it twice)
+    let dir = temp_dir("view-dup-selection");
+    let mut s = open(&dir, true);
+    let ids = s.visible_cloned();
+    s.execute("library.select", &json!({"ids": [ids[1].0, ids[2].0], "active": ids[1].0})).unwrap();
+    s.close_library().unwrap();
+    drop(s);
+    let path = dir.join("view.json");
+    let mut view: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    view["selection"]["ids"] = json!([ids[1].0, ids[1].0, ids[2].0, ids[1].0]);
+    std::fs::write(&path, serde_json::to_vec(&view).unwrap()).unwrap();
+    let s = open(&dir, false);
+    assert_eq!(s.selection.ids, [ids[1], ids[2]], "first mention kept, in order");
+    assert_eq!(s.selection.active, Some(ids[1]));
     let _ = std::fs::remove_dir_all(&dir);
 }

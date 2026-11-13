@@ -467,7 +467,7 @@ fn background_dialogs(h: &mut Headless) -> Answers {
     answers
 }
 
-/// Tick the welcome box, choose Open Catalog…, and cancel its folder dialog.
+/// Tick the welcome box, choose Open Library…, and cancel its folder dialog.
 fn tick_open_and_cancel(h: &mut Headless, answers: &Answers) {
     ask(h, "ui.clickWidget", json!({"id": "check:welcomeUpdates"}));
     h.step();
@@ -481,6 +481,26 @@ fn tick_open_and_cancel(h: &mut Headless, answers: &Answers) {
 
 fn welcome_is_up(h: &Headless) -> bool {
     matches!(h.app.catalog_ui.dialog, Some(crate::catalog_ui::CatalogDialog::Welcome { .. }))
+}
+
+// Scenario (issue #929): Help > Check for Updates over the welcome dialog is shown on its own, not
+// under the welcome card; closing it brings the welcome dialog back
+#[test]
+fn check_for_updates_over_the_welcome_dialog_is_usable() {
+    let (dir, root) = (Scratch::new("welcome-update"), Scratch::new("welcome-update-lib"));
+    let mut h = welcome(&dir, &root);
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    for _ in 0..3 {
+        h.step();
+    }
+    let has = |h: &Headless, id: &str| h.app.widgets.iter().any(|(w, _)| w == id);
+    assert!(!has(&h, "check:welcomeUpdates"), "the welcome dialog stands aside");
+    assert!(has(&h, "check:updateAtStartup"), "the update dialog is up");
+    h.app.ui.dialog = None;
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(welcome_is_up(&h) && has(&h, "check:welcomeUpdates"), "the welcome dialog is back");
 }
 
 #[test]
@@ -569,7 +589,7 @@ fn a_cancelled_open_forgets_the_box_before_a_later_open_catalog() {
     let mut h = welcome(&dir, &root);
     let answers = background_dialogs(&mut h);
     tick_open_and_cancel(&mut h, &answers);
-    // File ▸ Open Catalog…, answered with a catalog this time
+    // Open Library…, answered with a library this time
     ask(&mut h, "ui.menu.invoke", json!({"id": "catalog.open"}));
     h.step();
     assert_eq!(answers.lock().unwrap().len(), 2, "the folder dialog is up again");
@@ -580,7 +600,7 @@ fn a_cancelled_open_forgets_the_box_before_a_later_open_catalog() {
     h.app.session.close_library().unwrap();
 }
 
-/// The desktop app's file dialogs answer later, on another thread: Open Catalog… from the welcome
+/// The desktop app's file dialogs answer later, on another thread: Open Library… from the welcome
 /// dialog returns before a catalog is chosen, and the catalog opens when the dialog closes. The
 /// ticked box still counts then.
 #[test]

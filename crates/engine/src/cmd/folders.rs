@@ -120,7 +120,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let c = "folder.delete";
     let path = folder_param(p, c)?;
     if !photos_in(s, Path::new(&path)).is_empty() {
-        return Err(bad(c, "the folder holds library photos: remove them from the library first"));
+        return Err(bad(c, "the folder holds catalog photos: remove them from the catalog first"));
     }
     remove_empty(&path).map_err(|e| bad(c, e))?;
     let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -296,7 +296,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Empty Folder",
             [],
             None,
-            "{path} — remove an empty folder from disk (one holding anything, or library photos, is refused); one undo step (undo creates it again) → {path}",
+            "{path}: remove an empty folder from disk (one holding anything, or library photos, is refused); one undo step (undo creates it again) → {path}",
             always,
             delete
         ),
@@ -305,7 +305,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Update Folder Location",
             [],
             None,
-            "{path, to} — the folder was moved or renamed outside the app: point its library photos at `to` (nothing on disk changes); one undo step → {relinked, found, path}",
+            "{path, to}: the folder was moved or renamed outside the app: point its library photos at `to` (nothing on disk changes); one undo step → {relinked, found, path}",
             always,
             relocate
         ),
@@ -314,7 +314,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Synchronize Folder",
             [],
             None,
-            "{path, subfolders?: true, dryRun?: false, import?: true, removeMissing?: false, readMetadata?} — compare a folder with the library: files not in it are added (in place), photos whose file is gone are listed (moved to Recently Deleted with removeMissing), sidecars changed by another program are listed (read with readMetadata: true; left unset, the ones of photos unchanged here are read when library.xmpPreferences autoRead is on, conflicts listed) → {new, newFiles, missing, metadataChanged, imported?, removed?, read?, conflicts?}",
+            "{path, subfolders?: true, dryRun?: false, import?: true, removeMissing?: false, readMetadata?}: compare a folder with the library: files not in it are added (in place), photos whose file is gone are listed (moved to Recently Deleted with removeMissing), sidecars changed by another program are listed (read with readMetadata: true; left unset, the ones of photos unchanged here are read when library.xmpPreferences autoRead is on, conflicts listed) → {new, newFiles, missing, metadataChanged, imported?, removed?, read?, conflicts?}",
             always,
             sync
         ),

@@ -16,8 +16,8 @@ use crate::{LccApp, Services};
 const T: Duration = Duration::from_secs(20);
 
 /// A fresh scratch folder for one test.
-fn temp(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lc-ui-launch-{tag}-{}", std::process::id()));
+fn temp(tag: &str) -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new(&format!("lc-ui-launch-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -104,8 +104,8 @@ fn the_list_checks_each_library_and_selects_the_last_one() {
     assert!(why[0].unwrap().contains("Not found"), "{why:?}");
     assert_eq!(why[1], None, "a lock is not probed: {why:?}");
     assert_eq!(why[2], None);
-    assert!(why[3].unwrap().contains(&format!("no {} library", lcc_brand::DISPLAY_NAME)), "{why:?}");
-    assert!(why[4].unwrap().contains("not a library folder"), "{why:?}");
+    assert!(why[3].unwrap().contains(&format!("no {} catalog", lcc_brand::DISPLAY_NAME)), "{why:?}");
+    assert!(why[4].unwrap().contains("not a catalog folder"), "{why:?}");
     assert_eq!(why[5], None);
     assert_eq!(c.selected, Some(5), "the last library opened");
     assert_eq!(c.libraries[5].opened.as_deref(), Some("2026-10-20T08:30:00"));
@@ -392,9 +392,9 @@ fn open_recent(app: &LccApp) -> Vec<crate::menubar::MenuNode> {
     use crate::menubar::MenuNode;
     let bar = crate::menubar::menu_bar(app);
     let file = &bar.iter().find(|(t, _)| t == "File").unwrap().1;
-    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Libraries")) {
+    match file.iter().find(|n| matches!(n, MenuNode::Submenu { label, .. } if label == "Open Recent")) {
         Some(MenuNode::Submenu { children, .. }) => children.clone(),
-        _ => panic!("no Libraries submenu in {file:?}"),
+        _ => panic!("no Open Recent submenu in {file:?}"),
     }
 }
 
@@ -417,7 +417,7 @@ fn open_recent_library_and_the_command_remove_one_entry() {
     assert_eq!(children.len(), 3, "every entry, missing ones too");
     let MenuNode::Item { id, params, label, enabled, .. } = &children[1] else { panic!("{children:?}") };
     assert_eq!((id.as_str(), params, *enabled), ("app.recentLibraries", &json!({"remove": gone}), true));
-    assert!(label.starts_with("gone — "), "{label}");
+    assert!(label.starts_with("gone ("), "{label}");
     assert_eq!(crate::menubar::display_item_label(id, params, label), label, "a path is never translated");
     // what clicking it runs
     let list = app.run(id, params.clone()).unwrap();
@@ -430,7 +430,7 @@ fn open_recent_library_and_the_command_remove_one_entry() {
     assert_eq!(list, json!([{"path": "/elsewhere/third", "name": "third", "exists": null, "checking": false, "open": false, "lastOpened": null}]));
     assert!(app.session.library.is_some() && lcc_engine::library::is_library(&dir.join("first")));
     let e = app.run("app.recentLibraries", json!({"remove": first})).unwrap_err();
-    assert!(e.contains("not in the recent libraries"), "{e}");
+    assert!(e.contains("not in the recent catalogs"), "{e}");
     let e = app.run("app.recentLibraries", json!({"remove": 3})).unwrap_err();
     assert!(e.contains("remove must be"), "{e}");
     app.run("app.recentLibraries", json!({"remove": "/elsewhere/third"})).unwrap();
@@ -522,6 +522,7 @@ fn alt_held_as_the_window_appears_asks_once_over_the_last_library() {
     let c = h.app.library_problem.as_ref().and_then(|p| p.chooser.clone()).expect("the list shows");
     assert_eq!(c.selected, Some(0));
     assert!(c.over.is_some(), "over the library that opened");
+    assert!(h.app.catalog_ui.dialog.is_none(), "one window for Alt: no catalog chooser as well (issue #871)");
     assert!(c.libraries[0].unavailable.is_none(), "the open library itself can be chosen");
     assert!(has(&h, "button:libraryOpen"));
     // Esc keeps the library that opened
@@ -635,7 +636,7 @@ fn a_slow_check_never_holds_the_launch_window() {
     assert!(c.libraries.iter().all(|l| l.checking && l.unavailable.is_none()), "{c:?}");
     assert_eq!(c.selected, Some(0), "the last library opened, until the answers say otherwise");
     assert!(h.painted_text().iter().any(|t| t == "Checking…"), "{:?}", h.painted_text());
-    assert!(h.app.session.activity.list().iter().any(|t| t.label == "Checking recent libraries"), "the activity stack lists the check");
+    assert!(h.app.session.activity.list().iter().any(|t| t.label == "Checking recent catalogs"), "the activity stack lists the check");
 
     release(&gate);
     let done =
@@ -645,7 +646,7 @@ fn a_slow_check_never_holds_the_launch_window() {
     assert!(c.libraries[0].unavailable.as_deref().is_some_and(|w| w.contains("Not found")), "{c:?}");
     assert_eq!(c.libraries[1].unavailable, None);
     assert_eq!(c.selected, Some(1), "the first library that can be opened, once known");
-    assert!(h.app.session.activity.list().iter().all(|t| t.label != "Checking recent libraries"), "the row goes with the check");
+    assert!(h.app.session.activity.list().iter().all(|t| t.label != "Checking recent catalogs"), "the row goes with the check");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -863,7 +864,7 @@ fn photos_dropped_on_the_launch_list_go_into_the_library_chosen() {
     assert!(crate::panels::library_problem::holds_drops(&h.app));
     assert_eq!(crate::panels::library_problem::hold_dropped(&mut h.app, &ctx, photos.clone()), None, "held while no library is open");
     assert_eq!(h.app.library_problem.as_ref().map(|p| p.pending_import.clone()), Some(photos.clone()));
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("once a library is open")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("once a catalog is open")), "{:?}", h.app.ui.toasts);
     assert_eq!(h.app.session.catalog.len(), 0, "nothing goes into the session the library replaces");
     assert_eq!(h.request("ui.clickWidget", json!({"id": "button:libraryOpen"}), T)["ok"], true);
     settle(&mut h);
@@ -894,7 +895,7 @@ fn a_failed_lookup_doesnt_mark_a_recent_library_missing() {
     }
     let dir = temp("lookup");
     let locked = dir.join("Locked");
-    let _cleanup = Cleanup(dir.clone(), locked.clone());
+    let _cleanup = Cleanup(dir.to_path_buf(), locked.clone());
     let inside = make_library(&locked.join("Inside"));
     let gone = dir.join("Gone").to_string_lossy().into_owned();
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -911,7 +912,7 @@ fn a_failed_lookup_doesnt_mark_a_recent_library_missing() {
     assert_eq!(h.app.recent_checks.exists(&gone), Some(false), "a library that isn't there is missing");
     assert_eq!(h.app.recent_checks.exists(&inside), None, "one that couldn't be looked at isn't");
     let why = h.app.recent_checks.reason(&inside).map(|w| w.text()).unwrap_or_default();
-    assert!(why.starts_with("This library couldn't be checked:"), "{why}");
+    assert!(why.starts_with("This catalog couldn't be checked:"), "{why}");
     // nor is a folder that is there but refuses to be listed (permissions, macOS privacy)
     use crate::panels::library_problem::Unavailable;
     assert!(!Unavailable::Unreadable("denied".into()).is_missing() && !Unavailable::LookupFailed("timed out".into()).is_missing());

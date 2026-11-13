@@ -157,6 +157,12 @@ fn back_closes_dialog_menu_card_and_develop_then_leaves_the_root_to_the_system()
         assert_eq!(r["ok"], true, "{r}");
         r["result"].clone()
     };
+    // the Back key runs the same steps, one a press
+    exec(&mut h, "modern.group", json!({"group": "light"}));
+    ask(&mut h, "ui.key", json!({"key": "BrowserBack"}));
+    assert!(h.app.ui.modern.group.is_none(), "the Back key put the card away");
+    assert_eq!(h.app.ui.module, ModuleId::Develop, "one press, one step");
+
     exec(&mut h, "app.settings", json!({}));
     assert!(h.app.ui.dialog.is_some());
     assert_eq!(back(&mut h)["closed"], "dialog");
@@ -186,16 +192,7 @@ fn back_closes_dialog_menu_card_and_develop_then_leaves_the_root_to_the_system()
 }
 
 #[test]
-fn the_back_key_runs_the_same_steps() {
-    let mut h = develop([800.0, 1280.0]);
-    exec(&mut h, "modern.group", json!({"group": "light"}));
-    ask(&mut h, "ui.key", json!({"key": "BrowserBack"}));
-    assert!(h.app.ui.modern.group.is_none(), "the Back key put the card away");
-    assert_eq!(h.app.ui.module, ModuleId::Develop, "one press, one step");
-}
-
-#[test]
-fn the_ui_keeps_clear_of_the_cutout_and_the_system_bars() {
+fn the_ui_keeps_clear_of_the_insets_and_a_narrow_dock_scrolls_to_the_open_group() {
     // a folding phone's cover screen with the camera cutout at the top, and a gesture bar
     let (top, bottom) = (38.0, 18.0);
     let mut h = library([412.0, 960.0]);
@@ -217,11 +214,8 @@ fn the_ui_keeps_clear_of_the_cutout_and_the_system_bars() {
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.ui.modern.insets.top, 0.0);
     assert!(h.app.ui.modern.insets.left <= 400.0);
-}
-
-#[test]
-fn on_a_narrow_window_the_dock_scrolls_to_the_open_group() {
-    let mut h = develop([412.0, 960.0]);
+    // on this narrow window the dock scrolls to the open group
+    exec(&mut h, "modern.insets", json!({"top": 0.0, "left": 0.0, "bottom": 0.0}));
     let dock = rect(&h, "modern:dock").expect("the dock");
     assert!(dock.width() <= 412.0, "the dock fits the window ({dock:?})");
     for group in ["effects", "heal", "presets"] {
@@ -316,4 +310,40 @@ fn activity_cards_sit_below_the_top_buttons_inside_the_insets() {
     assert!(!menu.intersects(card), "the menu button stays visible: {menu:?} vs {card:?}");
     assert!(covered(&h, card).iter().all(|w| w == "modern:histogram"), "the card covers {:?}", covered(&h, card));
     drop(g);
+}
+
+/// Press `id` at `at`, keep the finger still for `frames` frames calling `during` after each, then
+/// let go.
+fn hold_at(h: &mut Headless, at: egui::Pos2, frames: usize, mut during: impl FnMut(&Headless, usize)) {
+    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.app.synthetic.push(egui::Event::PointerMoved(at));
+    h.app.synthetic.push(button(true));
+    for i in 0..frames {
+        h.step();
+        during(h, i);
+    }
+    h.app.synthetic.push(button(false));
+    h.settle(SETTLE);
+}
+
+/// #1035: a press and hold shows the original for as long as the finger stays down, on the photo
+/// (a phone) and on the Before button (a tablet), and the edit comes back on release.
+#[test]
+fn holding_shows_the_original_until_the_finger_lifts() {
+    use crate::state::BeforeAfter;
+    for (size, id) in [([400.0, 800.0], "modern:canvas"), ([1200.0, 900.0], "modern:before")] {
+        let mut h = develop(size);
+        let at = rect(&h, id).unwrap_or_else(|| panic!("{id} on screen")).center();
+        let mut shown_at = None;
+        hold_at(&mut h, at, 90, |h, i| {
+            let original = h.app.ui.before_after == BeforeAfter::Original;
+            match shown_at {
+                None if original => shown_at = Some(i),
+                Some(first) => assert!(original, "{id}: the original went away at frame {i} (shown at {first}) while still held"),
+                None => {}
+            }
+        });
+        assert!(shown_at.is_some(), "{id}: holding shows the original");
+        assert_eq!(h.app.ui.before_after, BeforeAfter::Off, "{id}: letting go shows the edit again");
+    }
 }

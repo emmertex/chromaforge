@@ -119,7 +119,7 @@ fn plan_bodies(s: &crate::Session, bodies: impl Iterator<Item = (String, String)
             r.photos += 1;
             continue;
         }
-        let auto = s.body_profiles.get(&body).filter(|id| known_profile(id)).cloned().unwrap_or_default();
+        let auto = body_profile(&s.body_profiles, &body, &camera).filter(|id| known_profile(id)).cloned().unwrap_or_default();
         let (profile, how) = match choice {
             ImportProfile::Auto => (auto, "auto"),
             ImportProfile::All(id) => (id.clone(), "all"),
@@ -208,6 +208,24 @@ impl ImportProfile {
     }
 }
 
+/// The camera profile body `key` (`model|body`, [`key`]) of a camera written `camera` starts with
+/// in `map`: its own entry, else one kept under the camera's whole name (`Sony ILCE-9|55` for an
+/// `ILCE-9|55` body: a profile brought over from an older install names its camera by its
+/// UniqueCameraModel when no photo of the body was in the library).
+pub fn body_profile<'a>(map: &'a std::collections::BTreeMap<String, String>, key: &str, camera: &str) -> Option<&'a String> {
+    if let Some(id) = map.get(key) {
+        return Some(id);
+    }
+    let (_, body) = key.rsplit_once('|')?;
+    let camera = camera.trim();
+    if camera.is_empty() {
+        return None;
+    }
+    map.iter()
+        .find(|(k, _)| k.rsplit_once('|').is_some_and(|(m, b)| b == body && !m.trim().is_empty() && lcc_raw::dcp::covers_model(m, camera)))
+        .map(|(_, id)| id)
+}
+
 /// Whether `id` names a camera profile `develop.cameraProfile` accepts (other than the default "").
 pub fn known_profile(id: &str) -> bool {
     id == "lc" || lcc_raw::dcp::library_get(id).is_some() || lcc_raw::dcp::calibrated_look_exists(id)
@@ -221,7 +239,7 @@ impl crate::Session {
 
     /// [`Self::body_default`], `wait` as [`Self::body_key`].
     pub fn body_default_of(&self, p: &Photo, wait: bool) -> Option<&str> {
-        let id = self.body_profiles.get(&self.body_key(p, wait)?)?;
+        let id = body_profile(&self.body_profiles, &self.body_key(p, wait)?, &p.meta.camera)?;
         known_profile(id).then_some(id.as_str())
     }
 

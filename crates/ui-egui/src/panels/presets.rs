@@ -24,10 +24,8 @@ const THUMB_EDGE: usize = 128;
 /// the panel takes in the left column.
 pub const HEADER_H: f32 = 28.0;
 
-/// The state the Presets panel of Develop's left column folds under. The presets column (Window ▸ Presets)
-/// is the same panel somewhere else and folds under the panel's usual `panel:presets`: a state of
-/// its own here means folding the panel in the column cannot leave that column open and empty (a
-/// dead end), and closing the column brings the panel back as it was.
+/// The state the Presets panel of Develop's left column folds under (its own key, kept from when
+/// the panel was also drawn elsewhere, so saved fold states still apply).
 pub const IN_COLUMN_KEY: &str = "panel:presets-inline";
 
 /// The preset amount slider may replace only the undo step it created.
@@ -94,18 +92,58 @@ impl AppliedByPhoto {
     }
 }
 
+/// Whether the presets are on screen: Develop's left column is shown with its Presets panel
+/// unfolded (the Modern layout: its Presets card is open). What Window ▸ Presets ticks.
+pub fn shown(app: &LccApp) -> bool {
+    if crate::modern::on(app) {
+        return app.ui.modern.group == Some(crate::modern_dock::Group::Presets);
+    }
+    app.ui.module == crate::module::ModuleId::Develop
+        && crate::module::edge_visible(app, crate::module::Edge::Left)
+        && !app.ui.hidden_panels.contains(&PanelId::Presets)
+        && super::classic::is_open_with_key(app, IN_COLUMN_KEY)
+}
+
+/// Bring the presets on screen where they live: Develop, its left column shown, the Presets panel
+/// in it and unfolded. They are never a column of their own on the right — upstream's layout put
+/// them in the Edit panels' place, which left Develop without its sliders. Fails when Develop has
+/// no photo to open.
+pub fn reveal(app: &mut LccApp) -> Result<(), String> {
+    if crate::modern::on(app) {
+        if !shown(app) {
+            crate::modern_dock::open(app, crate::modern_dock::Group::Presets)?;
+        }
+        return Ok(());
+    }
+    crate::module::switch(app, crate::module::ModuleId::Develop)?;
+    app.ui.left_panel = true;
+    app.ui.hidden_panels.retain(|p| *p != PanelId::Presets);
+    set_shown(app, true);
+    Ok(())
+}
+
+/// Fold or unfold the Presets panel of Develop's left column (the Modern layout: close its card).
+pub fn set_shown(app: &mut LccApp, open: bool) {
+    if crate::modern::on(app) {
+        if !open && shown(app) {
+            crate::modern_dock::close(app);
+        }
+        return;
+    }
+    super::classic::set_open_with_key(app, PanelId::Presets, IN_COLUMN_KEY, open);
+}
+
 /// `in_column`: drawn as the Presets panel of Develop's left column (which gives it a share of the
-/// column and lets it fold). The presets column (Window ▸ Presets) draws the same panel whole.
+/// column and lets it fold); otherwise whole, with a plain header (docking).
 pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bool) {
     let t = Tokens::get(ui.ctx());
     egui::Frame::NONE.fill(t.chrome).stroke(egui::Stroke::new(1.0, t.divider)).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         // The panel's own Classic header in the left column (issue #75): the chevron folds the
-        // list to give the panels below the room, folding under `IN_COLUMN_KEY` so folding there
-        // leaves the presets column (Window ▸ Presets) whole. The header keeps room for the Create and More
-        // buttons at the right (`header_inset`). Outside the left column (the presets column,
-        // Window ▸ Presets, or docking), the panel is drawn whole and does not fold, so it carries no
-        // collapse triangle (issue #238).
+        // list to give the panels below the room, folding under `IN_COLUMN_KEY`. The header keeps
+        // room for the Create and More buttons at the right (`header_inset`). Outside the left
+        // column (docking), the panel is drawn whole and does not fold, so it carries no collapse
+        // triangle (issue #238).
         let (hr, unfolded) = if in_column {
             super::classic::header_inset(app, ui, PanelId::Presets, side, IN_COLUMN_KEY, 62.0)
         } else {
@@ -190,7 +228,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         }
         let active = app.session.active();
         let marked = AppliedByPhoto::of(ui.ctx(), &app.session, active);
-        let current = active.and_then(|id| app.session.develop_of(id)).map(|d| (*d).clone());
         let thumbs = app.ui.preset_thumbs && active.is_some();
         let row_h = if thumbs { 54.0 } else { 26.0 };
         let groups = grouped(ui.ctx(), &app.session, app.ui.settings.user_presets_first);
@@ -202,7 +239,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
             ui.spacing_mut().item_spacing.y = 0.0;
             let visible = ui.clip_rect().expand(row_h);
             for node in groups.iter() {
-                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, &current, thumbs, amt_id);
+                show_folder_node(app, ui, node, &all_user_folders, row_h, visible, &last, &marked, thumbs, amt_id);
             }
             let (space_r, space_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
             // (the empty space under the folders: a drop target and the create menu)
@@ -265,11 +302,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, side: &[PanelId], in_column: bo
         let pointer_in_scroll = ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|pos| scroll.inner_rect.contains(pos));
         if pointer_in_scroll {
             if app.hover_preview.is_none()
-                && let (Some(id), Some(curr)) = (active, current.as_ref())
+                && let Some(id) = active
                 && let Some((saved_id, saved_preset, saved_label)) = ui.data(|d| d.get_temp::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id))
                 && saved_id == id
+                && let Some(settings) = app.session.preset_applied(id, &saved_preset, 1.0)
             {
-                app.hover_preview = Some(HoverPreview { label: saved_label, settings: saved_preset.apply(curr, 1.0) });
+                app.hover_preview = Some(HoverPreview { label: saved_label, settings });
             }
         } else {
             ui.data_mut(|d| d.remove::<(lcc_catalog::PhotoId, Preset, String)>(last_hover_id));
@@ -315,7 +353,6 @@ fn show_folder_node(
     visible: Rect,
     last: &Option<AppliedPreset>,
     marked: &Option<String>,
-    current: &Option<lcc_develop::DevelopSettings>,
     thumbs: bool,
     amt_id: egui::Id,
 ) {
@@ -416,7 +453,7 @@ fn show_folder_node(
     }
 
     for child in &node.children {
-        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, current, thumbs, amt_id);
+        show_folder_node(app, ui, child, all_user_folders, row_h, visible, last, marked, thumbs, amt_id);
     }
 
     let active = app.session.active();
@@ -452,7 +489,8 @@ fn show_folder_node(
         } else if resp.hovered() {
             ui.painter().rect_filled(r, 0.0, t.hover.gamma_multiply(0.7));
         }
-        let look = if thumbs || resp.hovered() { current.as_ref().map(|d| pr.apply(d, 1.0)) } else { None };
+        // the preview is what a click commits: the same composition as `preset.apply` (`Session::preset_applied`)
+        let look = if thumbs || resp.hovered() { active.and_then(|id| app.session.preset_applied(id, &pr, 1.0)) } else { None };
         let mut text_x = r.left() + 40.0 + indent;
         if thumbs && let (Some(id), Some(s)) = (active, look.as_ref()) {
             let tr = Rect::from_min_size(pos2(r.left() + 36.0 + indent, r.top() + 5.0), vec2(66.0, row_h - 10.0));
@@ -869,10 +907,10 @@ pub fn picker_frame(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     let Some(active) = app.session.active() else { return };
-    let (Some(preset), Some(now)) = (app.session.presets.iter().find(|p| p.id == pid).cloned(), app.session.develop_of(active)) else {
+    // what a click commits (`Session::preset_applied`, as `preset.apply`)
+    let Some(look) = app.session.presets.iter().find(|p| p.id == pid).and_then(|preset| app.session.preset_applied(active, preset, 1.0)) else {
         return;
     };
-    let look = preset.apply(&now, 1.0);
     let tex = app.session.variant_job(active, &look, PICKER_PREVIEW_EDGE).and_then(|job| app.renderer.variant(job)).map(|t| (t.id(), t.size));
     let t = Tokens::get(ctx);
     let side = 150.0;

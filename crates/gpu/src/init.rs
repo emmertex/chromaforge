@@ -7,7 +7,11 @@
 //! already-finished future), so there is nothing to time out from the calling thread.
 //!
 //! So every device (rendering, denoise, faces) is made by [`create`] on a thread of its own, and
-//! the caller waits at most [`limit`] (`<PREFIX>_GPU_INIT_TIMEOUT`). Past it the caller gets an
+//! the caller waits until [`limit`] (`<PREFIX>_GPU_INIT_TIMEOUT`) passes with no [`Progress`]: each
+//! kernel built counts, so a first start that compiles every kernel slowly (an empty driver shader
+//! cache after an install or a driver update: 30 s on an RTX 4070 SUPER and an RTX 5070 under DX12)
+//! still ends on the GPU, while a driver call that never returns is given up on after the limit as
+//! before (and any creation after [`limit`] times [`PROGRESS_CAP`] in all). Past it the caller gets an
 //! `Err` that it caches like any other creation failure — the GPU is unavailable for the process —
 //! and the blocked thread is left behind. That thread keeps what has to last as long as the driver
 //! work does: its share of the GPU work in flight (`exit.rs`: a quit then reports the GPU busy
@@ -20,9 +24,10 @@
 //! The error scopes popped after creation (`scope.pop()`) need no limit: on native wgpu they
 //! resolve at once, and they are thread-local, so they could not move to another thread anyway.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::backend::InitMarker;
 use crate::exit::Gate;
@@ -31,9 +36,12 @@ use crate::exit::Gate;
 pub(crate) fn limit_env() -> String {
     lcc_brand::env_var("GPU_INIT_TIMEOUT")
 }
-/// How long device creation may take by default. Normally well under a second, but a first run
-/// that compiles every kernel with a slow driver compiler (DX12's FXC) takes seconds: generous.
+/// How long device creation may go without [`Progress`] by default. Normally well under a second
+/// in all, but a first run compiles every kernel with the driver's compiler (DX12's FXC): generous.
 pub(crate) const DEFAULT_LIMIT: Duration = Duration::from_secs(30);
+/// How many times [`limit`] a creation that keeps making [`Progress`] may take in all (5 minutes by
+/// default): a first start that compiles every kernel took 30 s on two current graphics cards.
+const PROGRESS_CAP: u32 = 10;
 /// The longest limit [`limit_env`] can ask for (an hour).
 const MAX_LIMIT_SECS: u64 = 3600;
 
@@ -106,6 +114,31 @@ const DONE: u8 = 1;
 /// The caller gave up waiting; the worker leaks its result.
 const ABANDONED: u8 = 2;
 
+thread_local! {
+    /// The progress counter of the device creation running on this thread ([`create`]'s thread).
+    static PROGRESS: RefCell<Option<Arc<AtomicU64>>> = const { RefCell::new(None) };
+}
+
+/// What the device creation on the current thread reports to [`create`]'s caller as it goes: each
+/// [`Self::tick`] (a kernel built) restarts the wait. Taken on the creation thread and handed to the
+/// threads it starts; does nothing outside a creation.
+#[derive(Clone, Default)]
+pub(crate) struct Progress(Option<Arc<AtomicU64>>);
+
+impl Progress {
+    /// The current thread's creation's progress.
+    pub(crate) fn current() -> Progress {
+        Progress(PROGRESS.with(|p| p.borrow().clone()))
+    }
+
+    /// One more step done.
+    pub(crate) fn tick(&self) {
+        if let Some(p) = &self.0 {
+            p.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Why no device is created once the process is ending ([`crate::begin_shutdown`]).
 const CLOSING: &str = "the app is closing";
 
@@ -117,14 +150,16 @@ struct Scope {
     marker: InitMarker,
 }
 
-/// Create a device on `backends` with `make` on a thread of its own and wait at most [`limit`] for
-/// it. A panic in it, or a deadline that passes, is an `Err` saying so.
+/// Create a device on `backends` with `make` on a thread of its own and wait for it until [`limit`]
+/// passes with no [`Progress`], at most [`PROGRESS_CAP`] times the limit in all. A panic in it, or a
+/// deadline that passes, is an `Err` saying so.
 ///
 /// The thread, not the caller, holds what must last as long as the driver work does: it counts as
 /// GPU work in flight ([`crate::wait_idle`] is not idle until it ends, issue #620) and runs under
 /// the crash sentinel ([`crate::backend::set_init_marker`]). So a creation left behind past its
 /// limit keeps both: a quit meanwhile reports the GPU busy, and leaves the marker for the next
-/// launch, which then starts on the CPU.
+/// launch, which then starts on the CPU. A creation that finishes in time leaves the gate before
+/// its result is handed over: once `create` returns, its thread is no longer in flight.
 pub(crate) fn create<T: Send + 'static>(backends: wgpu::Backends, make: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     let scope = Scope { stuck: &STUCK, gate: crate::exit::gate(), marker: InitMarker::current() };
     create_on(scope, limit(), backends, make)
@@ -144,14 +179,18 @@ fn create_on<T: Send + 'static>(
         return Err(why);
     }
     // the thread's own share of "GPU work in flight", released when the driver work really ends
+    // (before the result is sent; with the thread when it was given up on)
     let work = gate.enter().ok_or(CLOSING)?;
     let phase = Arc::new(AtomicU8::new(WAITING));
     let (tx, rx) = mpsc::sync_channel(1);
     let worker_phase = Arc::clone(&phase);
+    let progress = Arc::new(AtomicU64::new(0));
+    let worker_progress = Arc::clone(&progress);
     std::thread::Builder::new()
         .name("lc-gpu-device".into())
         .spawn(move || {
-            let _work = work;
+            let work = work;
+            PROGRESS.with(|p| *p.borrow_mut() = Some(worker_progress));
             let r = marker
                 .run(backends, || std::panic::catch_unwind(std::panic::AssertUnwindSafe(make)).unwrap_or_else(|_| Err(format!("{WHAT} panicked"))));
             {
@@ -165,31 +204,69 @@ fn create_on<T: Send + 'static>(
                     drop(s);
                     log::warn!("gpu: a device creation that was given up on has finished after all");
                     std::mem::forget(r);
+                    // (nobody waits for its result: its work in flight ends with the thread)
+                    drop(work);
                     return;
                 }
                 worker_phase.store(DONE, Ordering::Relaxed);
             }
-            let _ = tx.send(r);
+            // the driver work is over: leave before handing the result over, so that a caller that
+            // has it never still sees this thread in flight (one that needs the gate held across
+            // the hand-over holds a work of its own, as `crate::device` does)
+            drop(work);
+            if let Err(mpsc::SendError(r)) = tx.send(r) {
+                // can't happen (once DONE, the caller waits for the result); never drop a device
+                // into the driver outside the gate
+                std::mem::forget(r);
+            }
         })
         .map_err(|e| format!("{WHAT}: could not start its thread ({e})"))?;
-    match rx.recv_timeout(limit) {
-        Ok(r) => r,
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!("{WHAT} panicked")),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let mut s = stuck.lock();
-            if phase.load(Ordering::Relaxed) == DONE {
-                // it finished just now: the result is on its way
-                drop(s);
-                return rx.recv().unwrap_or_else(|_| Err(format!("{WHAT} panicked")));
+    // checked a few times per limit: a creation that keeps making progress gets the limit again
+    let start = Instant::now();
+    let cap = limit.saturating_mul(PROGRESS_CAP);
+    let slice = (limit / 8).max(Duration::from_millis(1));
+    let (mut seen, mut last) = (0, start);
+    loop {
+        let now = Instant::now();
+        let deadline = (last + limit).min(start + cap);
+        let wait = deadline.saturating_duration_since(now).min(slice);
+        match rx.recv_timeout(wait) {
+            Ok(r) => return r,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{WHAT} panicked")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let ticks = progress.load(Ordering::Relaxed);
+                if ticks != seen {
+                    (seen, last) = (ticks, Instant::now());
+                }
+                if Instant::now() < (last + limit).min(start + cap) {
+                    continue;
+                }
+                break;
             }
-            phase.store(ABANDONED, Ordering::Relaxed);
-            let why =
-                format!("GPU {WHAT} did not finish in {} ({}): the graphics driver or display server is not responding", show(limit), limit_env());
-            log::warn!("gpu: {why}; the GPU is not used");
-            s.threads = s.threads.saturating_add(1);
-            Err(s.reason.get_or_insert(why).clone())
         }
     }
+    let mut s = stuck.lock();
+    if phase.load(Ordering::Relaxed) == DONE {
+        // it finished just now: the result is on its way
+        drop(s);
+        return rx.recv().unwrap_or_else(|_| Err(format!("{WHAT} panicked")));
+    }
+    phase.store(ABANDONED, Ordering::Relaxed);
+    let why = if seen == 0 {
+        format!("GPU {WHAT} did not finish in {} ({}): the graphics driver or display server is not responding", show(limit), limit_env())
+    } else if last + limit > start + cap {
+        format!("GPU {WHAT} did not finish in {} ({} times {}): the graphics driver is too slow", show(cap), PROGRESS_CAP, limit_env())
+    } else {
+        format!(
+            "GPU {WHAT} stopped making progress for {} ({}) after {} kernels: the graphics driver or display server is not responding",
+            show(limit),
+            limit_env(),
+            seen
+        )
+    };
+    log::warn!("gpu: {why}; the GPU is not used");
+    s.threads = s.threads.saturating_add(1);
+    Err(s.reason.get_or_insert(why).clone())
 }
 
 #[cfg(test)]
@@ -296,6 +373,74 @@ mod tests {
         assert_eq!(within_20_s(move || create_on(scope, Duration::from_secs(30), B, || Ok(3))), Ok(3));
     }
 
+    /// A first start compiles every kernel, which can take longer than the limit (30 s on two
+    /// current cards against a 30 s limit): as long as kernels keep coming, the creation is waited for.
+    #[test]
+    fn a_slow_creation_that_keeps_making_progress_is_waited_for() {
+        static STUCK: Stuck = Stuck::new();
+        static GATE: Gate = Gate::new();
+        static ACTIVE: Mutex<u32> = Mutex::new(0);
+        let local = Local::new("progress", &STUCK, &GATE, &ACTIVE);
+        let t0 = Instant::now();
+        let scope = local.scope();
+        let r = within_20_s(move || {
+            // a limit with room for a busy machine: beside the other tests, a step (or the return
+            // after the last one) can be a few hundred ms late without anything hanging
+            create_on(scope, Duration::from_secs(1), B, move || -> Result<u32, String> {
+                // twelve "kernels", one every 125 ms: 1.5 s in all, one and a half times the limit
+                let progress = Progress::current();
+                let workers: Vec<_> = (0..2)
+                    .map(|_| {
+                        let progress = progress.clone();
+                        std::thread::spawn(move || {
+                            for _ in 0..6 {
+                                std::thread::sleep(Duration::from_millis(250));
+                                progress.tick();
+                            }
+                        })
+                    })
+                    .collect();
+                for w in workers {
+                    w.join().map_err(|_| "worker panicked".to_string())?;
+                }
+                Ok(7)
+            })
+        });
+        assert_eq!(r, Ok(7), "a creation that keeps making progress gets the time it needs");
+        assert!(t0.elapsed() >= Duration::from_millis(1500), "{:?}", t0.elapsed());
+        assert!(STUCK.reason().is_none());
+    }
+
+    /// Progress that stops is a creation that hangs: given up on a limit after the last step.
+    #[test]
+    fn a_creation_that_stops_making_progress_fails_a_limit_after_its_last_step() {
+        static STUCK: Stuck = Stuck::new();
+        static GATE: Gate = Gate::new();
+        static ACTIVE: Mutex<u32> = Mutex::new(0);
+        let local = Local::new("stalled", &STUCK, &GATE, &ACTIVE);
+        let (release, blocked) = mpsc::channel::<()>();
+        let t0 = Instant::now();
+        let scope = local.scope();
+        let r = within_20_s(move || {
+            create_on(scope, Duration::from_millis(200), B, move || -> Result<u32, String> {
+                let progress = Progress::current();
+                for _ in 0..4 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    progress.tick();
+                }
+                let _ = blocked.recv(); // then stuck in the driver
+                Ok(1)
+            })
+        });
+        let took = t0.elapsed();
+        let why = r.expect_err("a creation that stops making progress is an error");
+        assert!(why.contains("stopped making progress for 200 ms"), "{why}");
+        assert!(why.contains("after 4 kernels"), "{why}");
+        assert!(took >= Duration::from_millis(600), "waited past the last step: {took:?}");
+        drop(release);
+        eventually("the released thread never finished", || STUCK.reason().is_none());
+    }
+
     // Given a creation left behind past its limit, the process is not idle for a quit (issue #620:
     // no driver teardown under it) and the crash sentinel stays, until the driver work really
     // ends; the quit's own wait stays bounded meanwhile
@@ -355,6 +500,28 @@ mod tests {
         // once the process is ending, nothing is created
         GATE.close();
         assert_eq!(create_on::<u32>(local.scope(), Duration::from_secs(30), B, || Ok(1)), Err(CLOSING.to_string()));
+    }
+
+    // Given a creation that returned (a device or a reason), its thread is no longer GPU work in
+    // flight: a quit right after it doesn't wait for it (the flaky `wait_idle(ZERO)` right after
+    // `available()` in tests/shutdown.rs, which found the creation thread still between handing
+    // its result over and leaving the gate)
+    #[test]
+    fn a_creation_that_returned_is_no_longer_in_flight() {
+        static STUCK: Stuck = Stuck::new();
+        static GATE: Gate = Gate::new();
+        static ACTIVE: Mutex<u32> = Mutex::new(0);
+        let local = Local::new("returned", &STUCK, &GATE, &ACTIVE);
+        let mut busy = 0;
+        for i in 0..400u32 {
+            let r = create_on(local.scope(), Duration::from_secs(30), B, move || if i % 2 == 0 { Ok(i) } else { Err("no GPU adapter".into()) });
+            assert_eq!(r.is_ok(), i % 2 == 0, "{r:?}");
+            if !GATE.wait_idle(Duration::ZERO) {
+                busy += 1;
+                assert!(GATE.wait_idle(Duration::from_secs(20)), "the creation thread ends");
+            }
+        }
+        assert_eq!(busy, 0, "a returned creation was still in flight {busy} of 400 times");
     }
 
     // Given a creation that panics (inside the driver or ours), the caller gets an error, not the

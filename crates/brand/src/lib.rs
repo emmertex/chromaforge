@@ -150,6 +150,41 @@ fn is_unmigrated(current: &std::path::Path) -> bool {
     entries.flatten().all(|e| e.file_name() == "logs")
 }
 
+/// One settings file a previous name kept, for a settings folder that already exists (so
+/// [`migrate_legacy_settings`] left it alone): when the settings folder has no `name`, **copy** it from the
+/// first legacy folder that has it (never moved, never overwriting). Returns the legacy file that was copied.
+pub fn migrate_legacy_settings_file(name: &str) -> std::io::Result<Option<PathBuf>> {
+    let Some(current) = settings_dir() else { return Ok(None) };
+    migrate_file_from(&current, &legacy_settings_dirs(), name)
+}
+
+/// [`migrate_legacy_settings_file`] with explicit folders (for tests and tools). `legacy` is searched in order;
+/// a folder that is `current` itself is skipped. An existing `current/name` (file, folder or anything else) is
+/// never touched. Errors are returned, never panicked on; a half-written copy is removed.
+pub fn migrate_file_from(current: &std::path::Path, legacy: &[PathBuf], name: &str) -> std::io::Result<Option<PathBuf>> {
+    let dest = current.join(name);
+    if std::fs::symlink_metadata(&dest).is_ok() {
+        return Ok(None);
+    }
+    let Some(from) = legacy.iter().filter(|d| d.as_path() != current).map(|d| d.join(name)).find(|f| f.is_file()) else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(current)?;
+    let mut src = std::fs::File::open(&from)?;
+    // `create_new`: a file that appeared since the check above is still never overwritten
+    let mut out = match std::fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if let Err(e) = std::io::copy(&mut src, &mut out).and_then(|_| out.sync_all()) {
+        drop(out);
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
+    Ok(Some(from))
+}
+
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
@@ -183,9 +218,11 @@ pub fn library_default_names() -> Vec<String> {
     v
 }
 
-/// Replaces the `{app}` placeholder (localisation catalogs, templates) with [`DISPLAY_NAME`].
+/// Replaces the `{app}` placeholder (localisation catalogs, templates) with [`DISPLAY_NAME`], and `{upstream}` (the
+/// few texts that name the project this one is forked from, such as its library format) with [`UPSTREAM_NAME`]. A brand
+/// with no `[upstream]` has an empty name, so those texts read without it.
 pub fn fill(text: &str) -> String {
-    text.replace("{app}", DISPLAY_NAME)
+    text.replace("{app}", DISPLAY_NAME).replace("{upstream}", UPSTREAM_NAME)
 }
 
 #[cfg(test)]
@@ -193,41 +230,124 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migration_copies_and_marks() {
-        let base = std::env::temp_dir().join(format!("brand-mig-{}", std::process::id()));
+    fn settings_folder_migration() {
+        // migration copies and marks
+        {
+            let base = std::env::temp_dir().join(format!("brand-mig-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let old = base.join("old");
+            std::fs::create_dir_all(old.join("sub")).unwrap();
+            std::fs::write(old.join("settings.json"), "{}").unwrap();
+            std::fs::write(old.join("sub/x"), "x").unwrap();
+            let new = base.join("new");
+            let got = migrate_settings_from(&new, &[base.join("missing"), old.clone()]).unwrap();
+            assert_eq!(got.as_deref(), Some(old.as_path()));
+            assert!(old.join("settings.json").exists(), "legacy folder is kept");
+            assert_eq!(std::fs::read_to_string(new.join("sub/x")).unwrap(), "x");
+            assert!(new.join(MIGRATED_MARKER).exists());
+            // second start: nothing to do
+            assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        // migration runs when only the log folder exists
+        {
+            let base = std::env::temp_dir().join(format!("brand-mig-logs-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            let old = base.join("old");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::write(old.join("settings.json"), "{}").unwrap();
+            let new = base.join("new");
+            std::fs::create_dir_all(new.join("logs")).unwrap();
+            std::fs::write(new.join("logs/app.log"), "x").unwrap();
+            assert!(migrate_settings_from(&new, std::slice::from_ref(&old)).unwrap().is_some());
+            assert!(new.join("settings.json").exists());
+            assert!(new.join("logs/app.log").exists());
+            // settings of its own: left alone
+            std::fs::write(old.join("other.json"), "{}").unwrap();
+            assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
+            assert!(!new.join("other.json").exists());
+            let _ = std::fs::remove_dir_all(&base);
+        }
+    }
+
+    /// A fresh temporary folder for one test (never the real settings folders).
+    fn file_mig_base(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("brand-file-mig-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let old = base.join("old");
-        std::fs::create_dir_all(old.join("sub")).unwrap();
-        std::fs::write(old.join("settings.json"), "{}").unwrap();
-        std::fs::write(old.join("sub/x"), "x").unwrap();
-        let new = base.join("new");
-        let got = migrate_settings_from(&new, &[base.join("missing"), old.clone()]).unwrap();
-        assert_eq!(got.as_deref(), Some(old.as_path()));
-        assert!(old.join("settings.json").exists(), "legacy folder is kept");
-        assert_eq!(std::fs::read_to_string(new.join("sub/x")).unwrap(), "x");
-        assert!(new.join(MIGRATED_MARKER).exists());
-        // second start: nothing to do
-        assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
-        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
     }
 
     #[test]
-    fn migration_runs_when_only_the_log_folder_exists() {
-        let base = std::env::temp_dir().join(format!("brand-mig-logs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let old = base.join("old");
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(old.join("settings.json"), "{}").unwrap();
-        let new = base.join("new");
-        std::fs::create_dir_all(new.join("logs")).unwrap();
-        std::fs::write(new.join("logs/app.log"), "x").unwrap();
-        assert!(migrate_settings_from(&new, std::slice::from_ref(&old)).unwrap().is_some());
-        assert!(new.join("settings.json").exists());
-        assert!(new.join("logs/app.log").exists());
-        // settings of its own: left alone
-        std::fs::write(old.join("other.json"), "{}").unwrap();
-        assert_eq!(migrate_settings_from(&new, &[old]).unwrap(), None);
-        assert!(!new.join("other.json").exists());
-        let _ = std::fs::remove_dir_all(&base);
+    fn single_file_migration() {
+        // file migration copies from the first legacy folder that has it
+        {
+            let base = file_mig_base("copy");
+            let (first, second, third) = (base.join("first"), base.join("second"), base.join("third"));
+            // the first legacy folder exists but lacks the file; the second and third have one each
+            std::fs::create_dir_all(&first).unwrap();
+            std::fs::create_dir_all(&second).unwrap();
+            std::fs::create_dir_all(&third).unwrap();
+            std::fs::write(second.join("surfaces.json"), "from second").unwrap();
+            std::fs::write(third.join("surfaces.json"), "from third").unwrap();
+            // the settings folder exists already (so the folder migration skipped it) with other settings
+            let new = base.join("new");
+            std::fs::create_dir_all(&new).unwrap();
+            std::fs::write(new.join("ui.json"), "{}").unwrap();
+            let legacy = [base.join("missing"), first, second.clone(), third];
+            let got = migrate_file_from(&new, &legacy, "surfaces.json").unwrap();
+            assert_eq!(got, Some(second.join("surfaces.json")));
+            assert_eq!(std::fs::read_to_string(new.join("surfaces.json")).unwrap(), "from second");
+            assert!(second.join("surfaces.json").exists(), "the legacy file is kept");
+            assert_eq!(std::fs::read_to_string(new.join("ui.json")).unwrap(), "{}");
+            // next start: the copy is the app's own now
+            assert_eq!(migrate_file_from(&new, &legacy, "surfaces.json").unwrap(), None);
+            // a settings folder that doesn't exist yet is created
+            let fresh = base.join("fresh");
+            assert!(migrate_file_from(&fresh, &legacy, "surfaces.json").unwrap().is_some());
+            assert_eq!(std::fs::read_to_string(fresh.join("surfaces.json")).unwrap(), "from second");
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        // file migration never overwrites
+        {
+            let base = file_mig_base("keep");
+            let old = base.join("old");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::write(old.join("surfaces.json"), "legacy").unwrap();
+            let new = base.join("new");
+            std::fs::create_dir_all(&new).unwrap();
+            std::fs::write(new.join("surfaces.json"), "mine").unwrap();
+            assert_eq!(migrate_file_from(&new, std::slice::from_ref(&old), "surfaces.json").unwrap(), None);
+            assert_eq!(std::fs::read_to_string(new.join("surfaces.json")).unwrap(), "mine");
+            // an empty file is still the app's own
+            std::fs::write(new.join("surfaces.json"), "").unwrap();
+            assert_eq!(migrate_file_from(&new, std::slice::from_ref(&old), "surfaces.json").unwrap(), None);
+            assert_eq!(std::fs::read_to_string(new.join("surfaces.json")).unwrap(), "");
+            // so is a folder in its place
+            let other = base.join("other");
+            std::fs::create_dir_all(other.join("surfaces.json")).unwrap();
+            assert_eq!(migrate_file_from(&other, std::slice::from_ref(&old), "surfaces.json").unwrap(), None);
+            assert!(other.join("surfaces.json").is_dir());
+            let _ = std::fs::remove_dir_all(&base);
+        }
+        // file migration does nothing without a legacy file
+        {
+            let base = file_mig_base("none");
+            let old = base.join("old");
+            // the legacy folder has other settings, and a folder (not a file) by the name
+            std::fs::create_dir_all(old.join("surfaces.json")).unwrap();
+            std::fs::write(old.join("ui.json"), "{}").unwrap();
+            let new = base.join("new");
+            let legacy = [base.join("missing"), old];
+            assert_eq!(migrate_file_from(&new, &legacy, "surfaces.json").unwrap(), None);
+            assert!(!new.exists(), "no settings folder is created for nothing");
+            // no legacy folders at all
+            assert_eq!(migrate_file_from(&new, &[], "surfaces.json").unwrap(), None);
+            // the settings folder listed as a legacy one is not copied onto itself
+            std::fs::create_dir_all(&new).unwrap();
+            assert_eq!(migrate_file_from(&new, std::slice::from_ref(&new), "surfaces.json").unwrap(), None);
+            assert!(!new.join("surfaces.json").exists());
+            let _ = std::fs::remove_dir_all(&base);
+        }
     }
 }

@@ -26,6 +26,8 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     // metadata and export presets (Lightroom Classic .lrtemplate, XMP metadata templates, ours)
     let mut meta_found = Vec::new();
     let mut export_found = Vec::new();
+    // every file's presets, added in one go below (adding one at a time indexed the library each time)
+    let mut pending: Vec<(lcc_develop::Preset, Value)> = Vec::new();
     for top in &paths {
         let from_dir = std::path::Path::new(top).is_dir();
         for f in expand_preset_paths(std::slice::from_ref(top)) {
@@ -100,18 +102,24 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                             it.unmapped.extend(crate::profile_refs::report(&look, &r));
                             profile = json!({"name": look["name"], "id": it.preset.settings["profile"].get("id")});
                         }
-                        let (name, grp) = (it.preset.name.clone(), it.preset.group.clone());
-                        let id = if dry { Some(it.preset.id.clone()) } else { s.add_presets(vec![it.preset]).pop() };
-                        match id {
-                            Some(id) => {
-                                imported.push(json!({"id": id, "name": name, "group": grp, "file": f, "unmapped": it.unmapped, "profile": profile}))
-                            }
-                            None => skipped += 1,
-                        }
+                        let row = json!({"name": it.preset.name, "group": it.preset.group, "file": f, "unmapped": it.unmapped, "profile": profile});
+                        pending.push((it.preset, row));
                     }
                 }
                 Err(e) => failed.push(json!([f, e])),
             }
+        }
+    }
+    // split, not cloned: a large import holds one copy of the parsed presets
+    let (presets, rows): (Vec<_>, Vec<_>) = pending.into_iter().unzip();
+    let ids = if dry { presets.iter().map(|p| Some(p.id.clone())).collect() } else { s.add_presets_each(presets) };
+    for (mut row, id) in rows.into_iter().zip(ids) {
+        match id {
+            Some(id) => {
+                row["id"] = json!(id);
+                imported.push(row);
+            }
+            None => skipped += 1,
         }
     }
     failed.extend(effect_failed.into_iter().map(|(f, e)| json!([f, e])));
@@ -195,7 +203,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Presets as XMP",
             [],
             None,
-            "{id | ids: [presetId], folder} — Lightroom-style .xmp presets: AI masks (Subject, Sky, Background, People parts), gradients, luminance ranges, the mask sliders, Curve and Point Color as Lightroom reads them; the full preset in lc:PresetSettings (read back on import) → {written: [{id, path, notes}]} (notes: what Lightroom can't hold)",
+            "{id | ids: [presetId], folder}: Lightroom-style .xmp presets: AI masks (Subject, Sky, Background, People parts), gradients, luminance ranges, the mask sliders, Curve and Point Color as Lightroom reads them; the full preset in lc:PresetSettings (read back on import) → {written: [{id, path, notes}]} (notes: what Lightroom can't hold)",
             always,
             export_xmp
         ),
@@ -204,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Presets",
             [],
             None,
-            "{paths: [file or folder], group?, dryRun?} — .lcpreset, XMP presets, .lrtemplate, photos carrying edits (DNG/JPEG/TIFF \"DNG presets\"), Luminar looks (.lmp, .mplumpack collections) and .zip bundles of these; folders give their name as group; crs: fields mapped per docs/xmp-interop.md; local adjustment presets (Lightroom .lrtemplate, Camera Raw local .xmp, .lceffect) become mask effects (`mask.effects`; divider presets become their groups); a profile the preset names applies when it was imported with profile.import (before or after) → {imported: [{id,name,group,file,unmapped,profile: {name, id}|null}], skipped, failed, effects: [{name,group,file,unmapped}], effectDividers: [{name,group,file}], metadataPresets: [as metadata.importPresets rows], exportPresets: [as export.importPresets rows]}; Lightroom Classic metadata and export presets, XMP metadata templates, .lcmeta and .lcexport files become metadata / export presets",
+            "{paths: [file or folder], group?, dryRun?}: .lcpreset, XMP presets, .lrtemplate, photos carrying edits (DNG/JPEG/TIFF \"DNG presets\"), Luminar looks (.lmp, .mplumpack collections) and .zip bundles of these; folders give their name as group; crs: fields mapped per docs/xmp-interop.md; local adjustment presets (Lightroom .lrtemplate, Camera Raw local .xmp, .lceffect) become mask effects (`mask.effects`; divider presets become their groups); a profile the preset names applies when it was imported with profile.import (before or after) → {imported: [{id,name,group,file,unmapped,profile: {name, id}|null}], skipped, failed, effects: [{name,group,file,unmapped}], effectDividers: [{name,group,file}], metadataPresets: [as metadata.importPresets rows], exportPresets: [as export.importPresets rows]}; Lightroom Classic metadata and export presets, XMP metadata templates, .lcmeta and .lcexport files become metadata / export presets",
             always,
             import
         ),

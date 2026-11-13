@@ -552,3 +552,46 @@ fn load_dir_refuses_a_non_regular_xml_entry() {
     assert!(db.is_empty());
     assert_eq!(errs.len(), 1, "{errs:?}");
 }
+
+/// Of two equally good lens matches, the one whose calibration crop is known wins: the other
+/// cannot be converted to the shot's frame at all, so file order must not decide.
+#[test]
+fn tied_lens_matches_prefer_a_known_calibration_crop() {
+    let name = spec_name([50.0, 50.0, 1.8, 1.8]);
+    let known = r#"cropfactor="1""#;
+    let unknown = r#"cropfactor="bad""#;
+    for (first, second) in [(unknown, known), (known, unknown)] {
+        let calibration = |attributes: &str| format!(r#"<calibration {attributes}><distortion model="poly3" focal="50" k1="-0.01" /></calibration>"#);
+        let xml = format!(
+            "<lensdatabase><lens><maker>Test</maker><model>{name}</model>{}{}</lens></lensdatabase>",
+            calibration(first),
+            calibration(second)
+        );
+        let db = LensDb::parse(&xml).unwrap();
+        assert_eq!(db.lenses.len(), 2);
+        assert_eq!(db.lenses.iter().filter(|p| p.crop_factor.is_none()).count(), 1);
+        for profile in [db.find_lens(None, &name, None), db.find_lens_named(None, &name, None)] {
+            let profile = profile.unwrap();
+            assert_eq!(profile.crop_factor, Some(1.0), "{first}, {second}");
+            assert!(profile.correction(&shot(50.0)).is_some());
+        }
+    }
+}
+
+/// A FIFO named `*.xml` is refused without opening it: opening a FIFO for reading blocks until a writer appears.
+#[cfg(unix)]
+#[test]
+fn load_dir_refuses_a_fifo_without_blocking() {
+    let dir = std::env::temp_dir().join(format!("lensdb-test-fifo-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let fifo = dir.join("f.xml");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success());
+    if !made {
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+    let (db, errs) = LensDb::load_dir(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(db.is_empty());
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}

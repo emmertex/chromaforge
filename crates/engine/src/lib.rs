@@ -45,8 +45,12 @@ pub mod desktop;
 pub mod devices;
 pub mod disk_delete;
 pub mod display;
+pub mod dng_update;
+pub mod dng_validate;
 pub mod doc_path;
+pub mod duplicates;
 pub mod dust_map;
+pub mod email;
 pub mod enhance;
 mod errors;
 pub mod export;
@@ -83,6 +87,7 @@ mod lightroom_archive;
 pub mod lightroom_catalog;
 pub mod lightroom_folder;
 pub mod lightroom_job;
+mod lightroom_print;
 mod lightroom_smart;
 mod lightroom_sqlite;
 pub mod link;
@@ -105,6 +110,8 @@ pub mod peer_exchange;
 pub mod peers;
 mod people_smart;
 pub mod people_store;
+pub mod phash;
+pub mod phash_store;
 pub mod placement;
 pub mod prep;
 pub mod preset_import;
@@ -124,6 +131,7 @@ pub mod proof;
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
+pub mod scene_disk;
 pub mod segment;
 pub mod sensor_maps;
 pub mod sidecar;
@@ -140,6 +148,7 @@ pub mod smart_masks;
 pub mod source_report;
 pub mod sync;
 mod sync_same;
+pub mod template_folders;
 pub mod text;
 pub mod timelapse;
 #[cfg(not(target_arch = "wasm32"))]
@@ -152,6 +161,7 @@ pub mod xmp_look;
 
 use std::sync::Arc;
 
+pub use cmd::plugin_filters::ROLL_KEY;
 pub use cmd::{CommandInfo, CommandSpec, canonical_id, command_specs, find_command};
 pub use errors::{AiModel, ErrorKind};
 pub use fonts::{CRAFT_FONTS, CraftFont};
@@ -161,6 +171,24 @@ pub use media::{RenderJob, SourceLevel};
 use serde_json::Value;
 pub use view::{Browse, FilterChip, LibrarySource, Selection, SelectionState, filter_chips};
 pub use {lcc_catalog as catalog, lcc_develop as develop, lcc_gpu as gpu, lcc_pipeline as pipeline};
+
+/// [`Session::before_step`]: the commit count and the length of the queue of ops not yet written to the library's log.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BeforeStep {
+    commits: u64,
+    log: usize,
+}
+
+/// One step a command has just committed ([`Session::committed_step`]), to take back if the command then fails.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CommittedStep {
+    /// [`Session::commits`] with the step committed.
+    commits: u64,
+    /// The undo stack's length with the step on top.
+    undo_len: usize,
+    /// Where the step's op waits in the queue for the library's log, while it hasn't been written.
+    pending: Option<usize>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -182,7 +210,7 @@ pub enum EngineError {
     /// The folder (or file) asked for is a Lightroom Classic catalog or part of one, not a
     /// library of the app (issue #891): nothing was created or opened. `catalog`: the `.lrcat`
     /// to import with `library.importLightroom`, when one was found.
-    #[error("{} is a Lightroom Classic catalog, not a library of the app; import it into a library with File ▸ Import Lightroom Catalog…{}", path.display(), catalog.as_ref().map_or(String::new(), |c| format!(" ({})", c.display())))]
+    #[error("{} is a Lightroom Classic catalog, not a catalog of the app; import it into one with File ▸ Import Lightroom Catalog…{}", path.display(), catalog.as_ref().map_or(String::new(), |c| format!(" ({})", c.display())))]
     LightroomCatalog { path: std::path::PathBuf, catalog: Option<std::path::PathBuf> },
     /// The work was cancelled (by the person, an agent or a newer request): not a failure.
     #[error("{0}")]
@@ -310,6 +338,8 @@ pub struct Session {
     pub auto_applied: std::collections::HashMap<PhotoId, [f64; 8]>,
     pub catalog: Catalog,
     pub source: LibrarySource,
+    /// The sources `library.source` showed, for Go Back / Go Forward (`library.sourceBack`); not saved.
+    pub(crate) source_history: view::SourceHistory,
     pub filter: Filter,
     /// The filter `library.toggleFilters` put aside (Library > Enable Filters off); not persisted.
     pub(crate) shelved_filter: Option<Filter>,
@@ -348,6 +378,15 @@ pub struct Session {
     /// Photos in the current source with no filter on (cached like `visible`).
     total: Option<((u64, String), usize, Option<String>)>,
     pub undo: Vec<UndoEntry>,
+    /// While a long run (a synchronize) is still putting its steps into the history, the run's
+    /// token: the history keeps every step then, so the run can fold them into one whole step
+    /// before the bound applies ([`Session::hold_undo`]). Dead (or never set) when no run holds it.
+    undo_hold: std::sync::Weak<()>,
+    /// Set while a run puts one of its own steps into the history ([`Session::run_step`]).
+    in_run_step: bool,
+    /// A run has put a step into the history under the current hold: from then on any other
+    /// commit (an edit between its steps) ends the hold at once, as the steps can't be folded.
+    hold_stepped: bool,
     /// Undo steps committed in this session, ever (the history drops its oldest past 1000, so
     /// its length can't tell how many steps a command just made; see [`Session::commits`]).
     commits: u64,
@@ -437,6 +476,17 @@ pub struct Session {
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
     /// from it and from the folders inside it.
     pub library_folder: Option<String>,
+    /// Whether the [`LibrarySource::LibraryFolder`] view also shows the photos of the folders
+    /// inside the chosen one (Show Photos in Subfolders, on by default).
+    pub folder_subfolders: bool,
+    /// Lock Filters (on by default): the filter bar's filter stays when another source is chosen.
+    /// Off, choosing a source starts from the filter that source had (see `remember_filters`) or none.
+    pub lock_filters: bool,
+    /// Remember Each Source's Filters Separately: with `lock_filters` off, each source gets back
+    /// the filter it had when it was left.
+    pub remember_filters: bool,
+    /// The filter each source had when it was left (key: [`Session::source_key`]); not saved.
+    pub source_filters: std::collections::HashMap<String, Filter>,
     /// Copied metadata (`photo.copyMetadata`): photo.setMeta params.
     pub meta_clipboard: Option<Value>,
     /// The photo that was active before the current one (Paste Settings from Previous).
@@ -512,6 +562,15 @@ pub struct Session {
     /// The stable id of the open library as plug-ins' data is kept (`""`: none). The plug-in
     /// manager is process-wide; each call made for this session points it at this library first.
     pub(crate) plugin_library: String,
+    /// The UI is running a plug-in command the user started (`plugin.run`): what it needs that the
+    /// user was never asked about goes in `plugin_asks`, instead of an error that says to go to
+    /// the Plug-in Manager. Set by the UI only, around its own runs; never by a request.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_ask_user: bool,
+    /// Permissions plug-in commands the user started need, for the UI to ask about (Allow runs the
+    /// command again).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub plugin_asks: Vec<cmd::plugins::PluginAsk>,
     /// XMP sidecar preferences (persisted with the library).
     pub xmp: sidecar::XmpPrefs,
     /// The library's shared-stem owners with the catalog revision they were built at
@@ -533,6 +592,9 @@ pub struct Session {
     pub print: print::template::PrintSettings,
     /// Saved print templates (`print.template.*`), persisted in prefs.json.
     pub print_templates: Vec<print::template::PrintTemplate>,
+    /// The Template Browser's folders besides [`template_folders::DEFAULT_FOLDER`], sorted by name
+    /// (`print.template.folder.*`), persisted in prefs.json.
+    pub print_template_folders: Vec<String>,
     /// Metadata presets (`metadata.*`), persisted in prefs.json.
     pub metadata_presets: Vec<cmd::metadata::MetadataPreset>,
     /// Import presets: named sets of the Import tab's settings (persisted in prefs.json).
@@ -692,6 +754,16 @@ impl Default for Session {
 }
 
 impl Session {
+    /// What the next Auto Import listing looks at (`None`: no active watched folder).
+    pub fn auto_import_scope(&self) -> Option<cmd::library::AutoImportScope> {
+        let folder = self.import_defaults.auto_active_folder()?.clone();
+        Some(cmd::library::AutoImportScope {
+            folder,
+            subfolders: self.import_defaults.auto_options.subfolders,
+            skip: self.library.as_ref().map(|l| l.dir.clone()),
+        })
+    }
+
     pub fn library_generation(&self) -> u64 {
         self.library_generation
     }
@@ -718,6 +790,7 @@ impl Session {
             auto_applied: Default::default(),
             catalog: Catalog::new(),
             source: LibrarySource::All,
+            source_history: Default::default(),
             filter: Filter::default(),
             shelved_filter: None,
             sort: Sort::default(),
@@ -736,6 +809,9 @@ impl Session {
             visible_gen: 0,
             total: None,
             undo: Vec::new(),
+            undo_hold: std::sync::Weak::new(),
+            in_run_step: false,
+            hold_stepped: false,
             commits: 0,
             undo_dropped: 0,
             redo: Vec::new(),
@@ -785,6 +861,10 @@ impl Session {
             meta_clipboard: None,
             browse: None,
             library_folder: None,
+            folder_subfolders: true,
+            lock_filters: true,
+            remember_filters: false,
+            source_filters: Default::default(),
             previous_active: None,
             dialogs: Default::default(),
             preset_undo: None,
@@ -816,6 +896,10 @@ impl Session {
             library: None,
             library_identity: Arc::new(()),
             plugin_library: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_ask_user: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_asks: Vec::new(),
             xmp: sidecar::XmpPrefs::default(),
             last_export: None,
             previous_export: Vec::new(),
@@ -823,6 +907,7 @@ impl Session {
             export_presets: Vec::new(),
             print: Default::default(),
             print_templates: Vec::new(),
+            print_template_folders: Vec::new(),
             metadata_presets: Vec::new(),
             import_presets: Vec::new(),
             filter_presets: Vec::new(),
@@ -1095,11 +1180,13 @@ impl Session {
             retry_sidecars: Vec::new(),
         });
         self.commits = self.commits.wrapping_add(1);
-        if self.undo.len() > 1000 {
-            let mut dropped = self.undo.remove(0);
-            self.undo_dropped = self.undo_dropped.wrapping_add(1);
-            self.pending_sidecar_repairs.append(&mut dropped.retry_sidecars);
+        if self.hold_stepped && !self.in_run_step {
+            // an edit between a run's steps: they can't be folded any more (the run sees it on
+            // its next step or at its end), so the history is cut now, not when the next step comes
+            self.undo_hold = std::sync::Weak::new();
+            self.hold_stepped = false;
         }
+        self.trim_undo();
         for mut dropped in self.redo.drain(..) {
             self.pending_sidecar_repairs.append(&mut dropped.retry_sidecars);
         }
@@ -1186,6 +1273,49 @@ impl Session {
         rect
     }
 
+    /// Where things stand before a command commits a step it may have to take back if it then fails
+    /// ([`Session::committed_step`]).
+    pub(crate) fn before_step(&self) -> BeforeStep {
+        BeforeStep { commits: self.commits, log: self.pending_log.len() }
+    }
+
+    /// The one step committed since `before`, for [`Session::take_back`]; `None` when no step, or more than one, was
+    /// committed since.
+    pub(crate) fn committed_step(&self, before: BeforeStep) -> Option<CommittedStep> {
+        (self.commits == before.commits.wrapping_add(1) && !self.undo.is_empty()).then(|| CommittedStep {
+            commits: self.commits,
+            undo_len: self.undo.len(),
+            pending: (self.pending_log.len() == before.log.saturating_add(1)).then_some(before.log),
+        })
+    }
+
+    /// Take back `step`, the step a command committed before it failed, as an undo would, with nothing left to redo.
+    /// Only that step: when anything was committed, undone or merged ([`Session::merge_undo`]) since it, the top of the
+    /// undo stack may be a step that isn't the command's, and this refuses instead. When the step isn't written to the
+    /// library's log yet, it leaves the queue, so neither it nor its reversal reaches the disk; otherwise the reversal
+    /// is logged like an undo. A step that can't be taken back stays on the undo stack, and the error says why.
+    pub(crate) fn take_back(&mut self, step: CommittedStep) -> Result<()> {
+        // A later commit changes the count; an undo, a redo or a merge changes the stack's length (at the cap a commit
+        // leaves the length as it was, but changes the count).
+        if self.commits != step.commits || self.undo.len() != step.undo_len {
+            return Err(EngineError::Other("the step to take back is no longer the last one".into()));
+        }
+        let mut e = self.undo.pop().ok_or_else(|| EngineError::Other("nothing to take back".into()))?;
+        if let Err(err) = self.apply_with_files(&mut e, &rename::RealFs) {
+            self.undo.push(e);
+            return Err(err);
+        }
+        self.drop_gone_from_selection();
+        self.reconcile_view();
+        // Dropping the queued step, rather than logging its reversal after it, keeps a write cut short (a crash, a full
+        // disk) from saving the step without its reversal: each op is its own record in the log.
+        match step.pending.filter(|at| at.saturating_add(1) == self.pending_log.len()) {
+            Some(at) => self.pending_log.truncate(at),
+            None => self.pending_log.push(e.op),
+        }
+        Ok(())
+    }
+
     /// Apply an op that is the app's own bookkeeping rather than something the user did (faces found by the background
     /// scan, a raw's as-shot white read by a decode, raws rechecked after an update): journaled like any op, but not
     /// an undo step, and it leaves the redo stack alone.
@@ -1226,6 +1356,50 @@ impl Session {
     /// several steps compares before and after to merge them ([`Session::merge_undo`]).
     pub fn commits(&self) -> u64 {
         self.commits
+    }
+
+    /// Drop the oldest undo steps past [`UNDO_STEPS`], keeping the sidecar repairs they owed;
+    /// nothing while a run holds the history ([`Session::hold_undo`]).
+    pub(crate) fn trim_undo(&mut self) {
+        if self.undo_hold.strong_count() > 0 {
+            return;
+        }
+        let excess = self.undo.len().saturating_sub(UNDO_STEPS);
+        for mut dropped in self.undo.drain(..excess) {
+            self.undo_dropped = self.undo_dropped.wrapping_add(1);
+            self.pending_sidecar_repairs.append(&mut dropped.retry_sidecars);
+        }
+    }
+
+    /// Do `f`, a run's own step ([`Session::hold_undo`]): the commits it makes keep the hold, and
+    /// any other commit after the run's first one ends it. Every commit a run makes for the hold
+    /// goes through here.
+    pub(crate) fn run_step<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let (was, commits) = (std::mem::replace(&mut self.in_run_step, true), self.commits);
+        // a panic in `f` (caught further up, at the command) must not leave the flag set
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.in_run_step = was;
+        self.hold_stepped |= self.commits != commits;
+        match out {
+            Ok(out) => out,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    /// Let a long run that commits many steps (a synchronize) fold them into one step: while the
+    /// returned token lives, the history is not cut to [`UNDO_STEPS`], so the run's first steps
+    /// are still there when it merges them ([`Session::merge_undo`]) and one Undo takes back the
+    /// whole run. The run drops the token when it is done (or abandoned) and calls
+    /// [`Session::trim_undo`]; a commit after the token died does it too. Runs that overlap
+    /// share one token: the history is cut once the last of them lets go.
+    pub(crate) fn hold_undo(&mut self) -> std::sync::Arc<()> {
+        if let Some(token) = self.undo_hold.upgrade() {
+            return token;
+        }
+        let token = std::sync::Arc::new(());
+        self.undo_hold = std::sync::Arc::downgrade(&token);
+        self.hold_stepped = false;
+        token
     }
 
     /// Where the undo history stands, counting the steps it dropped past its cap: the difference
@@ -1929,6 +2103,13 @@ impl Session {
         self.filter.only = photos;
     }
 
+    /// The flag filter shows picks and unflagged photos but no rejects (View > Hide Rejected
+    /// Photos, `library.hideRejected`).
+    pub fn rejects_hidden(&self) -> bool {
+        use lcc_catalog::Flag;
+        self.filter.flags_shown().as_deref() == Some(&[Flag::Pick, Flag::None])
+    }
+
     /// Library > Enable Filters is off: a filter is put aside (`library.toggleFilters`).
     pub fn filters_off(&self) -> bool {
         self.shelved_filter.is_some()
@@ -1959,8 +2140,10 @@ impl Session {
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
         self.reconcile_view();
-        let mut key =
-            (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
+        let mut key = (
+            self.catalog.revision,
+            format!("{:?}|{:?}|{:?}|{:?}|{:?}|{}", self.source, self.filter, self.sort, self.browse, self.library_folder, self.folder_subfolders),
+        );
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
         // changed ask something else). Not the checks of Missing Photos below: they fill the view in, they are
         // no other view.
@@ -2157,6 +2340,7 @@ impl Session {
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+            f.library_folder_only = !self.folder_subfolders;
         }
         if source == LibrarySource::PreviousExport {
             let exported = self.previous_export_filter();
@@ -2229,7 +2413,7 @@ impl Session {
                 return Some(ids.len());
             }
         }
-        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}", self.source, self.browse, self.library_folder));
+        let key = (self.catalog.revision, format!("{:?}|{:?}|{:?}|{}", self.source, self.browse, self.library_folder, self.folder_subfolders));
         let key_changed = self.total.as_ref().map(|total| &total.0) != Some(&key);
         let cached_minute = self.total.as_ref().and_then(|total| total.2.as_deref());
         let current_now = cached_minute.map(|_| (self.clock)());
@@ -2250,6 +2434,7 @@ impl Session {
             }
             if self.source == LibrarySource::LibraryFolder {
                 f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+                f.library_folder_only = !self.folder_subfolders;
             }
             if self.source == LibrarySource::PreviousExport {
                 f.only = self.previous_export_filter();
@@ -2287,6 +2472,39 @@ impl Session {
     /// one, or nothing when the view is empty. A view never keeps an active photo it doesn't show
     /// (issue #1447: a Local folder kept a library photo active, so Detail and the info showed a
     /// photo the grid didn't).
+    /// Names the shown source for [`Session::source_filters`] (a folder or collection by its id/path).
+    pub(crate) fn source_key(&self) -> String {
+        match self.source {
+            LibrarySource::LibraryFolder => format!("folder:{}", lcc_catalog::query::folder_key(self.library_folder.as_deref().unwrap_or_default())),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// After the source changed from `left` (key, filter it had): with Lock Filters off, a new source
+    /// starts unfiltered, or with the filter it had when last left when remembering per source.
+    pub(crate) fn switch_source_filter(&mut self, left_key: String, left_filter: Filter) {
+        if self.lock_filters {
+            return;
+        }
+        let key = self.source_key();
+        if key == left_key {
+            return;
+        }
+        if self.remember_filters {
+            // (bounded: one entry per source ever left, folders can be many)
+            if self.source_filters.len() < 10_000 || self.source_filters.contains_key(&left_key) {
+                self.source_filters.insert(left_key, left_filter);
+            }
+        }
+        self.filter = if self.remember_filters { self.source_filters.get(&key).cloned().unwrap_or_default() } else { Filter::default() };
+        // one folder / collection at a time, as `library.source` does
+        self.filter.album = None;
+        if self.source == LibrarySource::LibraryFolder {
+            self.filter.library_folder = None;
+        }
+        self.shelved_filter = None;
+    }
+
     pub fn keep_active_in_view(&mut self) {
         let active = self.selection.active;
         let vis = self.visible();
@@ -2379,6 +2597,9 @@ pub fn bad_ids_entry(a: &[Value]) -> Option<String> {
     a.iter().enumerate().find(|(_, v)| v.as_u64().is_none()).map(|(i, v)| format!("`ids[{i}]` is {v}, not a photo id (whole number)"))
 }
 
+/// Undo steps kept; the oldest go first.
+pub const UNDO_STEPS: usize = 1000;
+
 /// Automatic versions kept per photo.
 pub const AUTO_VERSIONS: usize = 20;
 
@@ -2437,6 +2658,8 @@ mod tests_albums_local;
 #[cfg(test)]
 mod tests_app_store;
 #[cfg(test)]
+mod tests_auto_import;
+#[cfg(test)]
 mod tests_auto_mask_range;
 #[cfg(test)]
 mod tests_autosync;
@@ -2477,10 +2700,19 @@ mod tests_crop_aspect;
 #[cfg(test)]
 mod tests_crop_aspects;
 #[cfg(test)]
+mod tests_crop_same;
+#[cfg(test)]
+mod tests_cull_suggest;
+#[cfg(test)]
 mod tests_denoise;
 #[cfg(test)]
 #[cfg(feature = "denoise")]
 mod tests_denoise_own;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_dng_update;
+#[cfg(test)]
+mod tests_dng_validate;
 #[cfg(test)]
 mod tests_edit_in;
 #[cfg(test)]
@@ -2583,7 +2815,12 @@ mod tests_people_masks;
 #[cfg(test)]
 mod tests_persist;
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod tests_plugin_develop;
+#[cfg(test)]
 mod tests_plugin_filters;
+#[cfg(test)]
+mod tests_plugin_installs;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_plugin_library;
@@ -2593,6 +2830,8 @@ mod tests_prefs;
 mod tests_preset_interop;
 #[cfg(test)]
 mod tests_preset_marks;
+#[cfg(test)]
+mod tests_presets_named;
 #[cfg(test)]
 mod tests_presets_scale;
 #[cfg(test)]
@@ -2612,6 +2851,8 @@ mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;
 #[cfg(test)]
+mod tests_select_menu;
+#[cfg(test)]
 mod tests_sensor;
 #[cfg(test)]
 mod tests_settings_files;
@@ -2625,6 +2866,8 @@ mod tests_source_report;
 mod tests_spots;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_sync_copies;
 #[cfg(test)]
 mod tests_target_params;
 #[cfg(test)]

@@ -111,6 +111,11 @@ fn tiles_draw_with_attribution_and_pins_cluster() {
     // map.fit frames them
     let v = run(&mut h, "map.fit", json!({}));
     assert!(v["zoom"].as_f64().unwrap() > 10.0, "{v}");
+    // the +/- keys' command: one level at a time, clamped at the ends
+    run(&mut h, "map.view", json!({"lat": 48.85, "lon": 2.35, "zoom": 12}));
+    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": 1}))["zoom"].as_f64(), Some(13.0));
+    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": -2}))["zoom"].as_f64(), Some(11.0));
+    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": -100}))["zoom"].as_f64(), Some(1.0), "clamped");
 }
 
 #[test]
@@ -141,6 +146,7 @@ fn dragging_from_the_filmstrip_and_moving_pins_geotags() {
 
 #[test]
 fn saved_locations_filter_and_tracks() {
+    let dir = lcc_testkit::TempDir::new("lcc-map-ui");
     let mut h = map_on_fake_tiles();
     let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
     run(&mut h, "map.geotag", json!({"ids": [ids[0]], "lat": 48.8566, "lon": 2.3522}));
@@ -163,7 +169,6 @@ fn saved_locations_filter_and_tracks() {
     let r = h.request("engine.execute", json!({"command": "map.search", "params": {"query": "Paris"}}), T);
     assert_eq!(r["ok"], false, "{r}");
     // a GPX track loads, frames the view and draws
-    let dir = std::env::temp_dir().join(format!("lcc-map-ui-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let gpx = dir.join("walk.gpx");
     std::fs::write(
@@ -287,19 +292,6 @@ fn map_50k_pins_frame_time() {
         h.step();
     }
     println!("library 50k: frame {:.2} ms", t.elapsed().as_secs_f64() * 1e3 / 30.0);
-}
-
-#[test]
-fn map_keys_zoom_by_one_level() {
-    use crate::module::Module;
-    let keys = super::MAP.keymap();
-    assert!(keys.contains(&("=", "map.view", r#"{"zoomBy": 1}"#)) && keys.contains(&("-", "map.view", r#"{"zoomBy": -1}"#)));
-    let mut h = demo();
-    run(&mut h, "module.map", json!({}));
-    run(&mut h, "map.view", json!({"lat": 48.85, "lon": 2.35, "zoom": 12}));
-    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": 1}))["zoom"].as_f64(), Some(13.0));
-    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": -2}))["zoom"].as_f64(), Some(11.0));
-    assert_eq!(run(&mut h, "map.view", json!({"zoomBy": -100}))["zoom"].as_f64(), Some(1.0), "clamped");
 }
 
 #[test]
@@ -500,4 +492,40 @@ fn location_filter_filters_the_filmstrip() {
     run(&mut h, "map.filter", json!({"filter": "all"}));
     h.settle(SETTLE);
     assert!(film(&h, ids[0]) && film(&h, ids[1]), "None shows every photo again");
+}
+
+#[test]
+fn info_and_key_boxes_follow_their_menu_toggles() {
+    let mut h = map_on_fake_tiles();
+    // the offline place list names Paris for a view centred there
+    let cities = "1\tParis\tParis\t\t48.85\t2.35\tP\tPPLC\tFR\t\t11\n";
+    let names = lcc_geo::geocode::GeoNames::parse(cities, Some("FR.11\tIle-de-France\n"), Some("FR\tFRA\t250\tFR\tFrance\n"));
+    h.app.map.names = Some(Some(std::sync::Arc::new(names)));
+    h.app.map.centre_name = None;
+    assert!(widget(&h, "map:info").is_none() && widget(&h, "map:key").is_none(), "both start hidden");
+    assert_eq!(crate::menubar::checked(&h.app, "map.showInfo"), Some(false));
+
+    run(&mut h, "map.showInfo", json!({}));
+    run(&mut h, "map.showKey", json!({}));
+    h.settle(SETTLE);
+    assert_eq!(crate::menubar::checked(&h.app, "map.showInfo"), Some(true));
+    assert_eq!(crate::menubar::checked(&h.app, "map.showKey"), Some(true));
+    let canvas = widget(&h, "map:canvas").expect("canvas");
+    for id in ["map:info", "map:key"] {
+        let r = widget(&h, id).unwrap_or_else(|| panic!("{id} is drawn"));
+        assert!(canvas.contains_rect(r), "{id} {r:?} inside {canvas:?}");
+    }
+    let rows: Vec<String> = h.app.map.info_rows().into_iter().map(|r| r.text).collect();
+    assert!(rows.iter().any(|t| t.contains("Paris") && t.contains("France")), "{rows:?}");
+    assert!(rows.iter().any(|t| t.contains("12.0")), "the zoom: {rows:?}");
+
+    // the choice is part of the saved map preferences
+    let saved = serde_json::to_string(&h.app.map.prefs).unwrap();
+    let back: super::MapPrefs = serde_json::from_str(&saved).unwrap();
+    assert!(back.show_info && back.show_key);
+    assert!(!serde_json::from_str::<super::MapPrefs>("{}").unwrap().show_info, "off unless asked for");
+
+    run(&mut h, "map.showInfo", json!({"on": false}));
+    h.settle(SETTLE);
+    assert!(widget(&h, "map:info").is_none() && widget(&h, "map:key").is_some());
 }

@@ -46,13 +46,13 @@ fn lines(app: &LccApp, ctx: &Context, paths: Vec<String>, unknown: bool) -> Vec<
     // photos wait for the library chosen, presets are refused (the drop handler does the same)
     let waiting = crate::panels::library_problem::holds_drops(app) && !cfg!(target_arch = "wasm32");
     if !drop.presets.is_empty() && waiting {
-        out.push(crate::i18n::tr("Open a library first, then drop the presets again").to_string());
+        out.push(crate::i18n::tr("Open a catalog first, then drop the presets again").to_string());
     } else if !drop.presets.is_empty() {
         let n = drop.presets.len();
         out.push(crate::i18n::tr_format!("Drop to import {n} preset{}", plural(n), n = n));
     }
     if !drop.photos.is_empty() && waiting {
-        out.push(crate::i18n::tr("The photos are imported once a library is open").to_string());
+        out.push(crate::i18n::tr("The photos are imported once a catalog is open").to_string());
     } else if !drop.photos.is_empty() && app.lightroom.is_some() && !cfg!(target_arch = "wasm32") {
         // the drop is refused while a Lightroom catalog import owns the catalog
         out.push(crate::i18n::tr("Finish the catalog import before adding photos").to_string());

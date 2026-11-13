@@ -8,7 +8,8 @@ applied after demosaic it made the render's CA worse (Verification). Vignetting 
 conversion is verified on the **ILCE-7RM6** and, for distortion, the APS-C **ZV-E10** ([ZV-E10](#zv-e10)); the ILCE-7RM4A has its own conversion, with other conventions
 ([Two conventions](#two-conventions)), and other Sony bodies' tables give no correction until they are verified.
 
-The correction is on by default for new imports, as for any file with embedded lens data (`Photo::camera_defaults`).
+The correction starts off on new imports, as for every raw outside DNG, RW2 / RWL and RAF
+(`Photo::lens_correction_built_in`); Lens Corrections, the photo's own XMP or a preset turns it on.
 Photos imported before this change keep their settings: **Photo → Reload from Disk** adds the lens data and, when the
 photo is still at its import settings, turns the correction on as one undoable step; the automatic reload after an
 external editor saves the file does the same. Edited photos keep their settings. The Profile Distortion slider

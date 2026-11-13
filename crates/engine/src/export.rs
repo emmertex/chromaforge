@@ -144,6 +144,20 @@ impl Default for Resize {
 /// The develop pipeline holds its own renders to the same ceiling (`lcc_pipeline::geometry::MAX_RENDER_PIXELS`).
 pub const MAX_ENLARGED_PIXELS: f64 = 512e6;
 
+/// Below this many bits per pixel a JPEG file-size limit can force a quality low enough to break
+/// smooth areas such as skies into flat blocks: baseline JPEG degrades sharply between about 0.5
+/// and 0.25 bits per pixel, where each 8×8 block keeps little more than its average. 1 MB is about
+/// 0.2 over a 40 MP photo, and about 3 over 2048 px on the long edge. A caller *estimates* with
+/// [`size_limit_is_tight`] before anything is encoded; an export *reports* the quality the limit
+/// settled on ([`Exported::limit_quality`]).
+pub const TIGHT_LIMIT_BITS_PER_PIXEL: f64 = 0.5;
+
+/// Whether `limit_kb` leaves an output of `pixels` fewer than [`TIGHT_LIMIT_BITS_PER_PIXEL`].
+pub fn size_limit_is_tight(limit_kb: u32, pixels: usize) -> bool {
+    let px = pixels as f64;
+    px > 0.0 && f64::from(limit_kb) * 8192.0 / px < TIGHT_LIMIT_BITS_PER_PIXEL
+}
+
 impl Resize {
     pub fn long_edge(px: u32) -> Self {
         Self { value: px as f32, ..Default::default() }
@@ -235,6 +249,11 @@ pub fn subfolder_problem(name: &str) -> Option<&'static str> {
     }
     if t.chars().all(|c| c == '.') {
         return Some("the subfolder can't be `.` or `..`");
+    }
+    // a name every file system takes: no character Windows refuses (`* ? " < > |`), no trailing dot or space, and no
+    // device name Windows reserves (`CON`, `NUL`, `COM1`…, also before a dot), as for a file name
+    if portable_stem(t) != t {
+        return Some("the subfolder can't hold `* ? \" < > |`, end in a dot or space, or be a reserved Windows name such as `CON` or `NUL`");
     }
     None
 }
@@ -1621,6 +1640,11 @@ pub fn encode_image(img: &Rgba8, o: &ExportOptions) -> Result<Vec<u8>, String> {
 
 /// Like [`encode_image`], embedding `meta` (already filtered by the policy) as EXIF + XMP.
 pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
+    encode_8bit(img, o, meta).map(|(bytes, _)| bytes)
+}
+
+/// [`encode_with_metadata`], with the JPEG quality a file-size limit settled on (None without one).
+fn encode_8bit(img: &Rgba8, o: &ExportOptions, meta: Option<&Metadata>) -> Result<(Vec<u8>, Option<u8>), String> {
     note_encode();
     let img = finish_8bit(img, o);
     let space = o.effective_space();
@@ -1653,22 +1677,22 @@ pub fn encode_with_metadata(img: &Rgba8, o: &ExportOptions, meta: Option<&Metada
         f @ (ExportFormat::Original | ExportFormat::Dng) => return Err(format!("{f:?} export does not encode pixels")),
         ExportFormat::RenderedDng => return Err("Render to DNG needs a float render".into()),
     };
-    r.map_err(|e| e.to_string())
+    r.map(|bytes| (bytes, None)).map_err(|e| e.to_string())
 }
 
 /// Apply the same file-size policy to ordinary JPEGs and complete HDR gain map JPEGs: `encode(q)`
 /// is the whole file of `img` at quality q, `fixed` of its bytes (metadata, profile, a gain map)
-/// don't change with q.
+/// don't change with q. Returns the file and, with a limit, the quality it was written at.
 fn encode_jpeg_with_limit(
     o: &ExportOptions,
     img: &Rgba8,
     sub: ChromaSubsampling,
     fixed: usize,
     encode: &mut dyn FnMut(u8) -> Result<Vec<u8>, String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, Option<u8>), String> {
     match o.limit_kb {
-        Some(kb) => fit_jpeg(img, o.quality, kb, sub, fixed, encode),
-        None => encode(o.quality),
+        Some(kb) => fit_jpeg(img, o.quality, kb, sub, fixed, encode).map(|(bytes, q)| (bytes, Some(q))),
+        None => encode(o.quality).map(|bytes| (bytes, None)),
     }
 }
 
@@ -1685,7 +1709,7 @@ thread_local! {
 /// on a small mosaic of the photo's own blocks (a sixteenth of it), scaled to the first encode's
 /// size, and the second encode is at the quality that curve says fits, with a margin. Should the
 /// photo still not fit (the mosaic misjudged it), the curve is corrected by that encode and a
-/// lower quality tried, until quality 1.
+/// lower quality tried, until quality 1. Returns the file and the quality it was written at.
 fn fit_jpeg(
     img: &Rgba8,
     quality: u8,
@@ -1693,7 +1717,7 @@ fn fit_jpeg(
     sub: ChromaSubsampling,
     fixed: usize,
     encode: &mut dyn FnMut(u8) -> Result<Vec<u8>, String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, u8), String> {
     let limit = (kb as usize).saturating_mul(1024);
     let mut full = |q: u8| {
         #[cfg(test)]
@@ -1703,7 +1727,7 @@ fn fit_jpeg(
     let quality = quality.clamp(1, 100);
     let first = full(quality)?;
     if first.len() <= limit {
-        return Ok(first);
+        return Ok((first, quality));
     }
     let mosaic = sample_mosaic(img);
     let me = EncodeImage::rgba8(&mosaic);
@@ -1738,7 +1762,7 @@ fn fit_jpeg(
         }
         let b = full(pick)?;
         if b.len() <= limit {
-            return Ok(b);
+            return Ok((b, pick));
         }
         if pick <= 1 {
             return Err(format!("cannot fit within {kb} KB"));
@@ -1817,6 +1841,11 @@ fn finish_deep_over<'a>(img: &'a DeepImage, alpha: Option<&mut Plane>, o: &Expor
 /// and the HDR rendition `hdr` (float linear, same space and size). The gain map is measured
 /// against the base as written, so its 8-bit rounding is handed back by the map.
 pub fn encode_gain_map_jpeg(sdr: &Rgba8, hdr: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
+    encode_gain_map_with_quality(sdr, hdr, o, meta).map(|(bytes, _)| bytes)
+}
+
+/// [`encode_gain_map_jpeg`], with the JPEG quality a file-size limit settled on (None without one).
+fn encode_gain_map_with_quality(sdr: &Rgba8, hdr: &DeepImage, o: &ExportOptions, meta: Option<&Metadata>) -> Result<(Vec<u8>, Option<u8>), String> {
     note_encode();
     use lcc_codecs::gainmap;
     let mut t = lap_clock();
@@ -1898,12 +1927,17 @@ pub fn srgb8_in(space: OutputSpace, c: [u8; 3]) -> [u8; 3] {
 /// A render with alpha ([`lcc_pipeline::Rendered::alpha`]) keeps it in the formats that
 /// can ([`ExportFormat::keeps_alpha`]) when it is not opaque everywhere (issue #2976).
 pub fn encode_rendered(r: &lcc_pipeline::Rendered, o: &ExportOptions, meta: Option<&Metadata>) -> Result<Vec<u8>, String> {
+    encode_rendered_with_quality(r, o, meta).map(|(bytes, _)| bytes)
+}
+
+/// [`encode_rendered`], with the JPEG quality a file-size limit settled on (None without one).
+fn encode_rendered_with_quality(r: &lcc_pipeline::Rendered, o: &ExportOptions, meta: Option<&Metadata>) -> Result<(Vec<u8>, Option<u8>), String> {
     let alpha = r.alpha.as_ref().filter(|_| o.format.keeps_alpha());
     match &r.deep {
-        Some(d) if o.effective_depth() != OutputDepth::U8 => encode_deep_with_alpha(d, alpha, o, meta),
+        Some(d) if o.effective_depth() != OutputDepth::U8 => encode_deep_with_alpha(d, alpha, o, meta).map(|bytes| (bytes, None)),
         _ => match alpha {
-            Some(a) => encode_with_metadata(&with_alpha(&r.image, a)?, o, meta),
-            None => encode_with_metadata(&r.image, o, meta),
+            Some(a) => encode_8bit(&with_alpha(&r.image, a)?, o, meta),
+            None => encode_8bit(&r.image, o, meta),
         },
     }
 }
@@ -2057,6 +2091,7 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
         };
         out.make = make;
         out.model = model;
+        out.lens_make = text(&m.lens_make);
         out.lens_model = text(&m.lens);
         out.focal_length = m.focal_mm.map(f64::from);
         out.f_number = m.aperture.map(f64::from);
@@ -2078,6 +2113,9 @@ pub struct Exported {
     /// Set when the render was tried on the GPU and fell back to the CPU: why (see
     /// `docs/gpu-pipeline.md`). The file holds the CPU render either way.
     pub gpu_fallback: Option<String>,
+    /// The JPEG quality a file-size limit (`limitKb`) settled on: the highest up to the requested
+    /// quality whose file fits. None without a limit (and for formats other than JPEG).
+    pub limit_quality: Option<u8>,
     /// What the render reported without failing (e.g. a plug-in filter that was skipped).
     pub warnings: Vec<String>,
     /// A video clip's movie, in a temporary file (`bytes` is then empty): moved into place instead
@@ -2247,12 +2285,21 @@ fn prepare_guarded(
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
         // (HDR files are written without alpha: their transparent areas stay on white)
         let alpha = o.format.keeps_alpha() && !o.hdr_output();
-        let job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
+        let mut job = session.export_job_with_alpha(id, w, h, o.effective_space(), o.effective_depth(), alpha)?;
+        job.request.exact_size = true;
+        job.key ^= EXACT_SIZE_KEY;
         let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
         if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
             return Err(format!("{label}: {why}"));
         }
-        let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
+        let hdr_job = if gain_map {
+            let mut hdr = session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?;
+            hdr.request.exact_size = true;
+            hdr.key ^= EXACT_SIZE_KEY;
+            Some(hdr)
+        } else {
+            None
+        };
         // a gain map also holds the HDR rendition (float), the SDR one in linear light and the
         // stages the two renders share
         let weight = if gain_map { weight.saturating_add(w.saturating_mul(h).saturating_mul(GAIN_MAP_BYTES_PER_PX)) } else { weight };
@@ -2368,6 +2415,7 @@ impl PreparedExport {
                     height: out.height,
                     sidecars: Vec::new(),
                     gpu_fallback: None,
+                    limit_quality: None,
                     warnings: Vec::new(),
                     video_file: Some(out.file),
                 })
@@ -2455,9 +2503,9 @@ impl PreparedExport {
                 }?;
                 // 3. The encode, on this lane's thread after its turn (the next photo renders meanwhile)
                 check()?;
-                let bytes = match &hdr {
-                    Some(hdr) => encode_gain_map_jpeg(&r.image, hdr, &opts, meta.as_ref())?,
-                    None => encode_rendered(&r, &opts, meta.as_ref())?,
+                let (bytes, limit_quality) = match &hdr {
+                    Some(hdr) => encode_gain_map_with_quality(&r.image, hdr, &opts, meta.as_ref())?,
+                    None => encode_rendered_with_quality(&r, &opts, meta.as_ref())?,
                 };
                 lap("encode", &mut t);
                 Ok(Exported {
@@ -2467,6 +2515,7 @@ impl PreparedExport {
                     height: r.image.height,
                     sidecars: Vec::new(),
                     gpu_fallback,
+                    limit_quality,
                     warnings: r.warnings.clone(),
                     video_file: None,
                 })
@@ -2517,6 +2566,7 @@ impl PreparedExport {
                         height: size.1,
                         sidecars: vec![("xmp", packet.into_bytes())],
                         gpu_fallback: None,
+                        limit_quality: None,
                         warnings: Vec::new(),
                         video_file: None,
                     });
@@ -2543,6 +2593,7 @@ impl PreparedExport {
                     height: raw.height,
                     sidecars: Vec::new(),
                     gpu_fallback: None,
+                    limit_quality: None,
                     warnings: Vec::new(),
                     video_file: None,
                 })
@@ -2686,6 +2737,27 @@ pub fn export_batch(
 ) -> Result<Vec<serde_json::Value>, String> {
     let items = prepare_batch(session, ids, o)?;
     run_batch(items, o, to, write, exists, true, &mut |_, _| true)
+}
+
+/// Record that the photos `files` (the per-photo results of an export batch) wrote a file were exported now
+/// ([`lcc_catalog::Photo::exported`]; saved with the library, not an undo step). Failures, skipped files and results that
+/// name no photo (a contact sheet, a timelapse) leave their photos alone. Returns how many photos were marked.
+pub fn mark_exported(session: &mut crate::Session, files: &[serde_json::Value]) -> usize {
+    let now = (session.clock)();
+    let mut marked = 0;
+    for f in files {
+        if f.get("path").is_none() || f.get("error").is_some() {
+            continue;
+        }
+        let Some(id) = f.get("photo").and_then(serde_json::Value::as_u64).map(lcc_catalog::PhotoId) else { continue };
+        if session.catalog.photo(id).is_none() {
+            continue;
+        }
+        if session.apply_system(lcc_catalog::Op::SetExported { id, exported: Some(now.clone()) }).is_ok() {
+            marked += 1;
+        }
+    }
+    marked
 }
 
 /// [`export_batch`] with `lanes` photos side by side, on the GPU or not, the files thrown away
@@ -3047,6 +3119,8 @@ pub fn export_mix() -> bool {
 /// Working memory a gain map JPEG adds per output pixel ([`encode_gain_map_jpeg`]): the float HDR
 /// rendition (12 B), the SDR one in linear light (12 B) and the stages its two renders share.
 const GAIN_MAP_BYTES_PER_PX: usize = 48;
+/// Mixed into an export job's key: its exact-size request renders differently from a fitted one.
+const EXACT_SIZE_KEY: u64 = 0x86e2_fadc_0917_b435;
 
 /// [`run_batch`] with `lanes` photos in flight. Without `cancel` the calling thread is one of the
 /// lanes; with it the lanes are threads of their own and this one only places the files, looking
@@ -3396,12 +3470,15 @@ impl<'a> Placer<'a> {
         match written {
             Ok((path, files, sidecars)) => {
                 self.taken.extend(files);
-                let mut entry = json!({"path": path, "width": e.width, "height": e.height, "bytes": e.len(), "sidecars": sidecars});
+                let mut entry = json!({"photo": photo.0, "path": path, "width": e.width, "height": e.height, "bytes": e.len(), "sidecars": sidecars});
                 if e.video_file.is_some() {
                     entry["video"] = json!(true);
                 }
                 if let Some(why) = &e.gpu_fallback {
                     entry["gpuFallback"] = json!(why);
+                }
+                if let Some(q) = e.limit_quality {
+                    entry["quality"] = json!(q);
                 }
                 if !e.warnings.is_empty() {
                     entry["warnings"] = json!(e.warnings);
@@ -3627,24 +3704,30 @@ mod tests {
         assert!(alpha.data.iter().any(|&a| a > 0.99) && alpha.data.contains(&0.0));
     }
 
+    /// A size limit can cut the quality far below the requested one, so each file says what it
+    /// settled on; without a limit the file is written at the requested quality and says nothing.
     #[test]
-    fn formats_have_magic() {
+    fn a_size_limit_reports_the_quality_it_settled_on() {
         let img = test_image();
-        for (f, magic) in
-            [(ExportFormat::Jpeg, &b"\xFF\xD8"[..]), (ExportFormat::Png, b"\x89PNG"), (ExportFormat::Tiff, b"II"), (ExportFormat::Webp, b"RIFF")]
-        {
-            let b = encode_image(&img, &ExportOptions { format: f, ..Default::default() }).unwrap();
-            assert!(b.starts_with(magic), "{f:?}");
-        }
+        let full = encode_image(&img, &ExportOptions { quality: 90, ..Default::default() }).unwrap();
+        let kb = (full.len() / 1024 / 3).max(2) as u32;
+        let (bytes, q) = encode_8bit(&img, &ExportOptions { quality: 90, limit_kb: Some(kb), ..Default::default() }, None).unwrap();
+        assert!(bytes.len() <= kb as usize * 1024);
+        assert!(q.is_some_and(|q| (1..90).contains(&q)), "{q:?}");
+        let (_, roomy) = encode_8bit(&img, &ExportOptions { quality: 90, limit_kb: Some(u32::MAX), ..Default::default() }, None).unwrap();
+        assert_eq!(roomy, Some(90), "a limit that changed nothing keeps the requested quality");
+        let (_, plain) = encode_8bit(&img, &ExportOptions { quality: 90, ..Default::default() }, None).unwrap();
+        assert_eq!(plain, None);
+        let (_, png) = encode_8bit(&img, &ExportOptions { format: ExportFormat::Png, limit_kb: Some(kb), ..Default::default() }, None).unwrap();
+        assert_eq!(png, None, "only JPEG has a quality to report");
     }
 
     #[test]
-    fn size_limit_respected() {
-        let img = test_image();
-        let full = encode_image(&img, &ExportOptions { quality: 100, ..Default::default() }).unwrap();
-        let kb = (full.len() / 1024 / 2).max(2) as u32;
-        let b = encode_image(&img, &ExportOptions { quality: 100, limit_kb: Some(kb), ..Default::default() }).unwrap();
-        assert!(b.len() <= kb as usize * 1024);
+    fn a_size_limit_is_tight_below_half_a_bit_per_pixel() {
+        assert!(size_limit_is_tight(1024, 5152 * 7728), "1 MB over 40 MP is about 0.2 bits per pixel");
+        assert!(!size_limit_is_tight(1024, 1365 * 2048), "about 3 bits per pixel");
+        assert!(!size_limit_is_tight(1024, 0));
+        assert!(size_limit_is_tight(0, 1000));
     }
 
     #[test]
@@ -3662,8 +3745,9 @@ mod tests {
         let opts = ExportOptions { hdr: true, quality: 100, limit_kb: Some(u32::MAX), ..Default::default() };
         let full = encode_gain_map_jpeg(&img, &hdr, &opts, None).unwrap();
         let kb = (full.len() / 2048) as u32;
-        let limited = encode_gain_map_jpeg(&img, &hdr, &ExportOptions { limit_kb: Some(kb), ..opts.clone() }, None).unwrap();
+        let (limited, q) = encode_gain_map_with_quality(&img, &hdr, &ExportOptions { limit_kb: Some(kb), ..opts.clone() }, None).unwrap();
         assert!(limited.len() <= kb as usize * 1024, "{} bytes exceeds {kb} KB", limited.len());
+        assert!(q.is_some_and(|q| q < 100), "the limit lowered the quality: {q:?}");
         let decoded = lcc_codecs::gainmap::read_jpeg(&limited).unwrap();
         assert!(decoded.meta.alternate_headroom > 1.0, "the gain map must survive size limiting");
         let impossible = encode_gain_map_jpeg(&img, &hdr, &ExportOptions { limit_kb: Some(1), ..opts }, None);
@@ -3973,6 +4057,22 @@ mod tests {
         old.meta.camera = "Canon Canon IXUS 185".into();
         let m = export_metadata(&old, &Catalog::new(), &ExportOptions::default()).unwrap();
         assert_eq!((m.make.as_deref(), m.model.as_deref()), (None, Some("Canon Canon IXUS 185")));
+    }
+
+    /// The lens maker (Exif LensMake, upstream #3828) is exported with metadata "All" and reads back from the JPEG.
+    #[test]
+    fn export_writes_lens_make() {
+        use lcc_catalog::{Catalog, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-10-06T00:00:00");
+        p.meta.lens = "RF 24-105mm f/4L IS USM".into();
+        p.meta.lens_make = "Canon".into();
+        let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+        assert_eq!(m.lens_make.as_deref(), Some("Canon"));
+        let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&m)).unwrap();
+        assert_eq!(lcc_meta::extract(&jpg).lens_make.as_deref(), Some("Canon"));
+        p.meta.lens_make.clear();
+        let m = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
+        assert_eq!(m.lens_make, None);
     }
 
     #[test]
@@ -4615,6 +4715,8 @@ mod tests {
     fn distinct_levels(bytes: &[u8]) -> (usize, lcc_codecs::Decoded) {
         let d = lcc_codecs::decode(bytes, Default::default()).expect("decodes");
         let mut v: Vec<u32> = (0..d.image.width).map(|x| d.image.get(x, 1)[1].to_bits()).collect();
+        // sorted first: 8-bit output is dithered (process V8), so equal levels aren't all side by side
+        v.sort_unstable();
         v.dedup();
         (v.len(), d)
     }

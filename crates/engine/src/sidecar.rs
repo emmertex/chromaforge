@@ -220,6 +220,10 @@ pub struct SidecarData {
     /// [`merge_into`] puts boxes drawn on the photo as stored where the upright photo has them (#2674).
     pub regions_drawn_on: Option<(f64, f64)>,
     pub orientation: Option<lcc_meta::Orientation>,
+    /// The packet's `tiff:Orientation` when it carries another editor's develop settings (`crs:`): how that editor
+    /// turns the stored pixels upright, the file's own orientation and the user's rotation together. The import
+    /// turns the photo by what it adds to the file's orientation ([`SidecarData::turn_from`]).
+    pub turned_to: Option<lcc_meta::Orientation>,
     /// Capture time (ISO 8601) from `exif:DateTimeOriginal`, `photoshop:DateCreated` or
     /// `xmp:CreateDate` (first found). Used only when the file itself has no capture time.
     pub captured: Option<String>,
@@ -361,8 +365,10 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
                     })
                     .unwrap_or(crate::import::ImportUprightMode::Unknown);
                 // Lightroom keeps its Upright analysis when Upright is Off but doesn't apply it:
-                // nothing is lost then
-                if mode != crate::import::ImportUprightMode::Off {
+                // nothing is lost then; Auto, Level, Vertical and Full apply Lightroom's own matrix
+                // (`geometry.lrc_upright`), so only a mode without a usable one is redone here
+                let applied = partial.pointer("/geometry/lrc_upright").is_some_and(|v| !v.is_null());
+                if mode != crate::import::ImportUprightMode::Off && !applied {
                     out.warnings.push(crate::import::ImportWarning {
                         path: String::new(),
                         code: crate::import::ImportWarningCode::UprightGeometry,
@@ -396,6 +402,9 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         }
         None => None,
     };
+    if matches!(out.develop, Some(DevelopPatch::Partial(_))) {
+        out.turned_to = m.orientation;
+    }
     Ok(out)
 }
 
@@ -512,6 +521,57 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
     p.develop = Arc::new(develop);
     p.edited = Some(now.to_string());
     true
+}
+
+impl SidecarData {
+    /// The patch with the rotation [`SidecarData::turned_to`] adds to `file` (the orientation the photo file states,
+    /// which the decode applies): Lightroom writes a photo turned in it as the whole orientation. Only another
+    /// editor's settings take it; the app's own (`lc:settings`) carry their rotation already.
+    pub fn turn_from(mut self, file: Option<lcc_meta::Orientation>) -> Self {
+        if let (Some(to), Some(DevelopPatch::Partial(v))) = (self.turned_to, self.develop.as_mut())
+            && let Some(o) = v.as_object_mut()
+            && let Ok(turn) = serde_json::to_value(file.unwrap_or_default().inverse().then(to))
+        {
+            o.insert("orientation".into(), turn);
+        }
+        self
+    }
+
+    /// The patch with a Lightroom crop, spots and mask shapes put in the app's frame: `crs:CropLeft` … `CropBottom` are two opposite corners
+    /// of the straightened crop on the stored image, before its orientation (the sidecar's whole orientation, else
+    /// the file's) and the straighten turn, as in a Lightroom catalog
+    /// ([`crate::lightroom_catalog::catalog_crop`]). `upright` is the photo's size turned by the file's orientation.
+    /// Only another editor's settings take it; the app's own (`lc:settings`) are in its frame already.
+    pub fn crop_from(mut self, file: Option<lcc_meta::Orientation>, upright: (u32, u32)) -> Self {
+        let file = file.unwrap_or_default();
+        let (w, h) = if file.swaps_axes() { (upright.1, upright.0) } else { upright };
+        if let Some(DevelopPatch::Partial(v)) = self.develop.as_mut()
+            && w > 0
+            && h > 0
+        {
+            let o = self.turned_to.unwrap_or(file);
+            orient_lightroom_patch(v, o, f64::from(w) / f64::from(h), f64::from(upright.0) / f64::from(upright.1));
+        }
+        self
+    }
+}
+
+/// Put a Lightroom patch's crop, spots and mask shapes (on the stored image, of aspect `stored`) in the app's frame
+/// for orientation `o`. `photo_aspect` is the photo record's width / height: [`merge_into`] refits radials from
+/// [`crate::crs_masks::DEFAULT_ASPECT`] to it, so they are left in those terms, fitted to the turned image once it has.
+pub(crate) fn orient_lightroom_patch(v: &mut Value, o: lcc_meta::Orientation, stored: f64, photo_aspect: f64) {
+    if !(stored.is_finite() && stored > 0.0) {
+        return;
+    }
+    crate::lightroom_catalog::catalog_crop(v, o, stored);
+    if o != lcc_meta::Orientation::Normal {
+        use crate::crs_masks::{DEFAULT_ASPECT, orient_geometry, refit_radials};
+        refit_radials(v, DEFAULT_ASPECT, stored);
+        orient_geometry(v, o, stored);
+        if photo_aspect.is_finite() && photo_aspect > 0.0 {
+            refit_radials(v, photo_aspect, DEFAULT_ASPECT);
+        }
+    }
 }
 
 impl SidecarData {
@@ -1351,7 +1411,7 @@ impl Session {
     fn sidecar_paths(&self, id: PhotoId, owners: &StemOwners) -> Result<(PathBuf, Vec<PathBuf>)> {
         let p = self.catalog.photo(id).ok_or(lcc_catalog::CatalogError::NoPhoto(id))?;
         if p.copy_of.is_some() {
-            return Err(EngineError::Other(format!("{} is a virtual copy: its settings live only in the library", p.file_name)));
+            return Err(EngineError::Other(format!("{} is a virtual copy: its settings live only in the catalog", p.file_name)));
         }
         let orig = file_path(p).ok_or_else(|| EngineError::Other(format!("{} is not a file on disk", p.file_name)))?;
         // A relative path would be taken from the working directory.
@@ -1955,6 +2015,7 @@ mod tests {
         list.push(lcc_raw::dcp::Calibrated {
             make: "LOOKTEST".into(),
             names: vec!["LOOKTEST ONE".into()],
+            lens: None,
             looks: vec![("cal:adobe-vivid".into(), dcp)],
             default: Some("cal:adobe-vivid".into()),
         });

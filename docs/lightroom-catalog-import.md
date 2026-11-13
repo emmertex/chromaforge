@@ -13,7 +13,7 @@ transactional SQLite snapshot. The app owns subsequent edits.
 The same command also opens a Capture One catalog (`.cocatalogdb`, see *Capture One catalogs* below); the file
 dialog offers both kinds together and each on its own.
 
-File → Open Library… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
+File → Open Catalog… given a Lightroom catalog folder (or an `.lrdata` / `.lrcat-data` folder, or the `.lrcat`)
 doesn't make a library of the app there: it offers this import instead, with the catalog found
 (`crates/engine/src/lightroom_folder.rs`, issue #891), and then asks where the catalog goes as described next
 (unless the question is turned off, below).
@@ -26,9 +26,9 @@ unless Settings says to always merge (*Turning the question off*, below):
   already in the library open now (the library's name is its folder's name).
 - **Create a new library**: named after the catalog file (`Travel.lrcat` → "Travel", or "Travel 2" when a
   "Travel" folder is already there) and placed next to the open library (in its parent folder); both can be
-  changed (Choose… picks the folder). The app creates and opens it as File → New Library… does (the folder
+  changed (Choose… picks the folder). The app creates and opens it as File → New Catalog… does (the folder
   must be new or empty; it is refused while another import runs), then imports the catalog into it. The library
-  left behind stays in File → Open Recent Library.
+  left behind stays in File → Open Recent Catalog.
 - **Cancel** does nothing.
 
 The window opens on *Merge* when the open library has no photos (there is nothing to merge with) and on *Create a
@@ -66,12 +66,13 @@ readable in the same result window. If another dialog is open, the result waits 
 is also available through `library.importLightroom {"status":true}` during that session.
 
 Original files are referenced in place. Ratings, picks/rejects, color labels, XMP metadata,
-hierarchical keywords, regular collections/collection sets, smart collections, folder stacks,
+hierarchical keywords, regular collections/collection sets, smart collections, saved prints, folder stacks,
 virtual copies and mapped develop settings are imported. Missing originals remain catalogued for relinking, count as added records and are reported
 separately from failures reading files that are present. Known-missing originals are not probed
 again. Previously browsed Local records join All Photos even when their originals are offline;
 their promotion is counted once and undone together with the catalog import.
-An image whose file, folder or root folder record is gone from the catalog, or whose original path
+An image whose file, folder or root folder record is gone from the catalog, whose reference to one is not a whole
+number (missing, NULL, text or a fraction: it names no record, not record 0), or whose original path
 is empty (Lightroom leaves these behind and ignores them), is skipped together with its virtual
 copies instead of failing the whole import. The result lists them as data (`skipped`: each
 image id with its reason, `missingFile`, `missingFolder`, `missingRoot`, `incompletePath` or
@@ -85,7 +86,10 @@ catalog's settings, history and snapshots, and a setting the catalog leaves out 
 some at zero) starts from the camera's defaults. Any change after browsing, a rating or keyword
 included, makes a Local photo's settings count as existing. Persistent import
 identity prevents reimport from duplicating virtual copies and collections. One undo step reverses
-catalog changes; any saved recovery archives remain available.
+catalog changes; any saved recovery archives remain available. When the catalog's data can't be
+applied, the import stops with that error and adds no photos: the records it had already made for the
+catalog's originals are removed, and photos browsed in Local are Local again. The redo history is
+cleared, as by any change.
 
 Records marked `VIDEO` in the source catalog appear in the **Videos** type filter, including
 offline originals. Reimport also repairs the classification of videos imported as images by
@@ -124,7 +128,11 @@ importing: metadata checks detect ordinary concurrent changes, but are not SQLit
 Develop settings that can't be read fail the import with a clear error (otherwise every photo
 would arrive unedited). Optional history, snapshot, metadata, keyword and collection tables that
 can't be read are skipped with warnings, unless the read failed because the catalog file itself
-failed or changed, which fails the import; required photo tables still report errors. Unrelated
+failed or changed, which fails the import; required photo tables still report errors. A develop
+settings, metadata, keyword, history, snapshot or collection member record whose `image` is not a whole
+number (missing, NULL, text or a fraction) belongs to no photo: it is left out, with one warning per
+table; a collection member stays in the recovery archive but joins no album. A record whose `image` is
+a whole number naming no photo in the catalog is still dropped without a warning. Unrelated
 unsupported schemas are ignored. A needed
 WITHOUT ROWID or virtual table produces an explicit error, handled as a warning when optional.
 
@@ -162,11 +170,30 @@ A Chromaforge album nests only inside a folder (a Lightroom collection set), but
 keeps a saved print, book, slideshow or web gallery (and, in some catalogs, a collection) inside a
 plain or smart collection, and a parent can be system-only (Quick Collection, an unsaved creation:
 not imported) or gone from the catalog. Such an album joins the nearest collection set above it, or
-the top level, and the result names it under warnings; saved prints, books, slideshows and web
-galleries import as regular albums with the photos they hold. On reimport an album keeps the place
-the user gave it. A collection the catalog lists twice imports once; a different collection with
+the top level, and the result names it under warnings; books, slideshows and web galleries import as
+regular albums with the photos they hold. On reimport an album keeps the place the user gave it.
+
+A saved print (`creationId` `com.adobe.ag.print`) becomes a Saved Print: the album holds the
+collection's photos and the print layout, and Print ▸ Saved Prints (or a double-click in Collections)
+opens it. Its layout is the Lua table in `AgLibraryCollectionContent` (`owningModule`
+`com.adobe.ag.print`): the page size and margins (points), the layout style, and the Print Job.
+A Custom Package keeps every cell where Lightroom placed it (`bounds`, points from the page's top
+left, in catalog order, back to front) with the photo it names; a cell whose photo isn't imported
+stays empty. A Picture Package keeps its cells and repeats each photo in them; a Single Image /
+Contact Sheet keeps its rows, columns, gaps and margins (cells fill the margins, so a fixed cell
+size Lightroom kept smaller is reported). Zoom to Fill, Rotate to Fit, the stroke (a package's
+Inner Stroke, a grid's Stroke Border), page background, page numbers, page info, crop marks / cut
+guides, destination (printer or JPEG), resolution, print sharpening, media, rendering intent, Print
+Adjustment, 16-bit output and draft mode carry over. The identity plate, watermark, a package's
+photo border and a named printer profile have no equivalent here and are listed under warnings; the
+original layout stays in the recovery archive. A layout that can't be read (or a saved print the
+catalog keeps no layout for) imports as a plain album with the reason. Reimport gives an earlier
+import's plain album of a saved print its layout once; a Saved Print keeps its layout, so changes
+made since stay. The report counts them as `savedPrints`. An unsaved print is system-only and not
+imported. A collection the catalog lists twice imports once; a different collection with
 the id of an earlier one is left out with a warning naming both, and the photos listed under that
-id go to the first.
+id go to the first. A collection member whose `collection` is not a whole
+number (missing, NULL, text or a fraction) joins no album, with one warning; it does not join collection 0.
 
 Lightroom's develop history (`Adobe_libraryImageDevelopHistoryStep`) becomes the photo's History,
 oldest first, each step named as in Lightroom and mapped like the current settings (so a step shows
@@ -184,9 +211,13 @@ public XMP documentation, 105 map (test `develop_field_coverage_over_public_crs_
 eight have no equivalent and are reported: `AutoWhiteVersion`, `LensProfileSetup`, `UprightPreview`,
 `UprightCenterMode`, `UprightFocalLength35mm`, the pre-2012 `Defringe`, `HDRMaxValue` and `SDRBlend`.
 A Custom white balance on a raw the app develops relative to its as-shot look (ARW, NEF, RW2,
-RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin: the catalog keeps no
-as-shot white for Custom photos, so the photo stays As Shot and `Temperature, Tint` are reported
-(issue #510; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
+RAF, CR3, CR2, PEF, SRW; Lightroom names them all `RAW`) can't be taken as Kelvin on its own. A Custom
+photo's develop settings keep no as-shot white, but its history does: the last
+`Adobe_libraryImageDevelopHistoryStep` that says As Shot with a `Temperature` and `Tint` gives the white
+the edit is the same mired shift from (read row by row, none kept, so a history table of any size gives it; a
+read that fails warns and keeps the whites found so far). With no such step the photo stays As Shot and
+`Temperature, Tint` are reported
+(issue #510, upstream #3906; a DNG keeps the Kelvin value, and an XMP packet with `crs:AsShotTemperature` is
 shifted by the same mired difference, see [xmp-interop.md](xmp-interop.md)). A raw whose camera has
 measured colour matrices (`lcc_raw::spectral`: ILCE-7M3, D850, EOS 5D Mark III…), or whose white-balance
 presets give a Kelvin scale (`lcc_raw::kelvin_presets`: ILCA-99M2, ILCA-77M2…), edits in Kelvin

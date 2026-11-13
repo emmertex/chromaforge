@@ -2,8 +2,9 @@
 //! [`Editor`], Capture One's, darktable's, RawTherapee's or DxO PhotoLab's) exports of a contributor's own photos
 //! (`<cli> calibrate-lightroom fit [--editor ID]`), so photos opened in the app render as they do there.
 //!
-//! One file per camera model and editor (`data/calibrations/<Make>_<Model>.json` for Lightroom,
-//! `<Make>_<Model>_<editor>.json` for another, embedded at build time) holds:
+//! One file per camera model, lens and editor (`data/calibrations/<Make>_<Model>.json` for Lightroom,
+//! `<Make>_<Model>_<editor>.json` for another, `…_<Lens>…` before the editor when the fit is for one lens, embedded at
+//! build time) holds:
 //! - the camera's colour model in the DNG profile form (DNG 1.7 chapter 6): `ColorMatrix1/2` (they place the white,
 //!   so Kelvin and tint read as Lightroom's), `ForwardMatrix1/2` and an optional dual `HueSatMap`, for two
 //!   calibration illuminants;
@@ -15,7 +16,13 @@
 //!
 //! **Data rules** (maintainer decision 2026-10-25): the numbers are fitted to Lightroom's *output images* of the
 //! contributor's own photos, as aggregate statistics. No Adobe profile (DCP/LCP), no matrix read from an
-//! Adobe-converted DNG, no image content, file name, date, serial number, location or lens enters a file.
+//! Adobe-converted DNG, no image content, file name, date, serial number or location enters a file. The one lens
+//! datum allowed is the lens *model identifier* (Exif `LensModel`, issue #1015) of a fit made for one lens, e.g. one
+//! of a phone's cameras that share an Exif model; never a lens serial number.
+//!
+//! **Lens matching** (issue #1015): a calibration without a lens is for every photo of the camera; one with a lens
+//! only for photos whose lens model is that lens. A photo takes the calibration for its own lens when there is one,
+//! else the lens-less one, and never a calibration for another lens.
 //! [`Calibration::validate`] enforces the shape and bounds, and every field is on an allow-list: a file with an
 //! unknown field is refused.
 //!
@@ -118,6 +125,9 @@ pub struct Calibration {
     /// Other Exif model names of the same camera.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// The lens model (Exif `LensModel`) the fit is for; `None`: every lens of the camera (see the module doc).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens: Option<String>,
     /// The editor the looks match (Lightroom when the file doesn't say).
     #[serde(default, skip_serializing_if = "is_lightroom")]
     pub editor: Editor,
@@ -346,6 +356,9 @@ impl Calibration {
         for a in &self.aliases {
             check_identifier("alias", a, 64).map_err(err)?;
         }
+        if let Some(l) = &self.lens {
+            check_identifier("lens", l, 64).map_err(err)?;
+        }
         if self.method != self.editor.method() {
             return Err(Error(format!("{name}: unknown method {:?} for {}", self.method, self.editor.name())));
         }
@@ -428,6 +441,7 @@ impl Calibration {
 
     /// Whether the calibration is for a camera (Exif make and model): its model or an alias, compared without case
     /// and a leading brand word; a make naming another brand never matches.
+    /// The lens is not compared: see [`Calibration::fits_lens`].
     pub fn matches(&self, make: Option<&str>, model: &str) -> bool {
         let own = super::brand(&self.make);
         if make.map(super::brand).is_some_and(|b| !b.is_empty() && b != own) {
@@ -435,6 +449,27 @@ impl Calibration {
         }
         let wanted = super::key(&own, model);
         !wanted.is_empty() && std::iter::once(&self.model).chain(&self.aliases).any(|m| super::key(&own, m) == wanted)
+    }
+
+    /// Whether the calibration may serve a photo taken with `lens` (its Exif lens model): a lens-less calibration
+    /// serves every photo, a lens-specific one only photos of that lens.
+    pub fn fits_lens(&self, lens: Option<&str>) -> bool {
+        match &self.lens {
+            None => true,
+            Some(own) => lens.is_some_and(|l| lcc_raw::dcp::same_lens(own, l)),
+        }
+    }
+
+    /// Whether this and `other` are for the same camera, lens and editor (one file's worth: `add` refuses to
+    /// replace one without `--replace`).
+    pub fn same_slot(&self, other: &Calibration) -> bool {
+        self.editor == other.editor
+            && self.matches(Some(&other.make), &other.model)
+            && match (&self.lens, &other.lens) {
+                (None, None) => true,
+                (Some(a), Some(b)) => lcc_raw::dcp::same_lens(a, b),
+                _ => false,
+            }
     }
 
     /// Colour tags of the camera model with `look` on top: what a photo of this camera is developed with.
@@ -473,16 +508,22 @@ impl Calibration {
         let looks = self.looks.iter().map(|l| (look_id(&l.name), std::sync::Arc::new(self.look_dcp(l)))).collect();
         // only a Lightroom calibration gives the camera a default look; other editors' looks are chosen per photo
         let default = (self.editor == Editor::Lightroom).then(|| self.default_look().map(|l| look_id(&l.name))).flatten();
-        lcc_raw::dcp::Calibrated { make: super::brand(&self.make), names, looks, default }
+        lcc_raw::dcp::Calibrated { make: super::brand(&self.make), names, lens: self.lens.as_ref().map(|l| l.trim().to_string()), looks, default }
     }
 
     /// The file name a calibration is kept under: `<Make>_<Model>.json` for Lightroom, `<Make>_<Model>_<editor>.json`
-    /// for another editor, characters outside letters, digits, `-` and `.` as `_`.
+    /// for another editor, `_<Lens>` after the model for a lens-specific fit; characters outside letters, digits, `-`
+    /// and `.` as `_`.
     pub fn file_name(&self) -> String {
-        let raw = match self.editor {
-            Editor::Lightroom => format!("{}_{}", super::brand(&self.make), self.model.trim()),
-            e => format!("{}_{}_{}", super::brand(&self.make), self.model.trim(), e.id()),
-        };
+        let mut raw = format!("{}_{}", super::brand(&self.make), self.model.trim());
+        if let Some(l) = &self.lens {
+            raw.push('_');
+            raw.push_str(l.trim());
+        }
+        if self.editor != Editor::Lightroom {
+            raw.push('_');
+            raw.push_str(self.editor.id());
+        }
         let safe: String = raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
         format!("{safe}.json")
     }
@@ -502,9 +543,20 @@ pub fn embedded_files() -> &'static [(&'static str, &'static str)] {
     FILES
 }
 
-/// The calibration for a camera (Exif make and model), if one is embedded.
-pub fn find(make: Option<&str>, model: &str) -> Option<&'static Calibration> {
-    embedded().iter().find(|c| c.matches(make, model))
+/// The Lightroom calibration for a camera (Exif make and model) and a photo's lens (Exif lens model), if one is
+/// embedded: the one for that lens, else the lens-less one, never one for another lens (see the module doc).
+pub fn find(make: Option<&str>, model: &str, lens: Option<&str>) -> Option<&'static Calibration> {
+    pick(embedded(), make, model, lens)
+}
+
+/// [`find`] over `list`: Lightroom calibrations of the camera, the lens's own first, else the lens-less one.
+pub fn pick<'a>(list: &'a [Calibration], make: Option<&str>, model: &str, lens: Option<&str>) -> Option<&'a Calibration> {
+    let mut of_camera = list.iter().filter(|c| c.editor == Editor::Lightroom && c.matches(make, model) && c.fits_lens(lens));
+    let first = of_camera.next()?;
+    if first.lens.is_some() {
+        return Some(first);
+    }
+    Some(of_camera.find(|c| c.lens.is_some()).unwrap_or(first))
 }
 
 #[cfg(test)]
@@ -521,6 +573,7 @@ mod tests {
             make: "SONY".into(),
             model: "ILCE-7M4".into(),
             aliases: vec![],
+            lens: None,
             editor: Editor::Lightroom,
             method: METHOD.into(),
             tool_version: "26.43.4".into(),
@@ -586,6 +639,52 @@ mod tests {
         assert_eq!(Editor::parse("CaptureOne"), Some(Editor::CaptureOne));
         assert_eq!(Editor::parse("paint"), None);
         assert_eq!(Editor::parse(""), None);
+    }
+
+    fn with_lens(lens: Option<&str>, look: &str) -> Calibration {
+        let mut c = sample();
+        c.lens = lens.map(str::to_string);
+        c.looks[0].name = look.into();
+        c
+    }
+
+    #[test]
+    fn lens_calibrations_name_their_files_and_round_trip() {
+        let plain = sample();
+        assert_eq!(plain.file_name(), "SONY_ILCE-7M4.json");
+        assert!(!plain.to_json().unwrap().contains("\"lens\""), "a lens-less file is written as before");
+        let wide = with_lens(Some("FE 24mm F1.4 GM"), "Adobe Color");
+        wide.validate().unwrap();
+        assert_eq!(wide.file_name(), "SONY_ILCE-7M4_FE_24mm_F1.4_GM.json");
+        assert_eq!(Calibration::parse(&wide.to_json().unwrap()).unwrap(), wide);
+        let c1 = Calibration { editor: Editor::CaptureOne, method: Editor::CaptureOne.method(), ..wide.clone() };
+        assert_eq!(c1.file_name(), "SONY_ILCE-7M4_FE_24mm_F1.4_GM_capture-one.json");
+        // a slash inside a lens name is allowed (as in models) and never reaches the file name
+        let slashed = with_lens(Some("Main 23mm f/1.6"), "Adobe Color");
+        slashed.validate().unwrap();
+        assert!(!slashed.file_name().contains('/'));
+        assert_ne!(slashed.file_name(), wide.file_name());
+        assert!(wide.calibrated().lens.is_some() && plain.calibrated().lens.is_none());
+    }
+
+    #[test]
+    fn lens_match_is_preferred_lens_less_is_the_fallback_and_other_lenses_never_serve() {
+        let list = vec![with_lens(Some("Wide 24mm"), "Wide Look"), with_lens(None, "Any Look"), with_lens(Some("Ultra 14mm"), "Ultra Look")];
+        let name = |lens: Option<&str>| pick(&list, Some("SONY"), "ILCE-7M4", lens).map(|c| c.looks[0].name.clone());
+        assert_eq!(name(Some("Wide 24mm")).as_deref(), Some("Wide Look"));
+        assert_eq!(name(Some("  wide   24MM ")).as_deref(), Some("Wide Look"), "case and spacing don't matter");
+        assert_eq!(name(Some("Ultra 14mm")).as_deref(), Some("Ultra Look"));
+        assert_eq!(name(Some("Tele 70mm")).as_deref(), Some("Any Look"), "an unknown lens takes the lens-less fit");
+        assert_eq!(name(None).as_deref(), Some("Any Look"), "no lens on the photo: the lens-less fit");
+        assert_eq!(name(Some("")).as_deref(), Some("Any Look"));
+        // without a lens-less fit, a photo of another (or no) lens gets none rather than another lens's
+        let only_wide = vec![with_lens(Some("Wide 24mm"), "Wide Look")];
+        assert!(pick(&only_wide, Some("SONY"), "ILCE-7M4", Some("Ultra 14mm")).is_none());
+        assert!(pick(&only_wide, Some("SONY"), "ILCE-7M4", None).is_none());
+        assert!(pick(&only_wide, Some("CANON"), "ILCE-7M4", Some("Wide 24mm")).is_none(), "another camera never");
+        // the slot a file holds: camera, lens and editor
+        assert!(list[0].same_slot(&with_lens(Some("WIDE 24mm"), "x")));
+        assert!(!list[0].same_slot(&list[1]) && !list[0].same_slot(&list[2]) && list[1].same_slot(&sample()));
     }
 
     #[test]
@@ -670,6 +769,12 @@ mod tests {
         let mut c = ok.clone();
         c.looks[0].baseline_exposure_offset = 1e9;
         cases.push(c);
+        // a lens is an identifier like the model: no paths, control characters, empties or huge strings
+        for lens in ["", "   ", "/etc/passwd", "a/../b", "lens\\x", "lens\u{0}", "lens\n2", &"L".repeat(65)] {
+            let mut c = ok.clone();
+            c.lens = Some(lens.to_string());
+            cases.push(c);
+        }
         for (i, c) in cases.iter().enumerate() {
             assert!(c.validate().is_err(), "case {i} should be refused");
             // and through the text form, where it arrives from
@@ -756,34 +861,32 @@ mod tests {
                 "{name} should be written in the canonical form (`calibrate-lightroom add`)"
             );
         }
-    }
-
-    #[test]
-    fn embedded_calibrations_have_sane_hue_shifts() {
-        for (name, text) in embedded_files() {
-            let c = Calibration::parse(text).unwrap();
-            if let Some(tables) = &c.camera.hue_sat_map {
-                for (i, t) in tables.iter().enumerate() {
-                    for entry in &t.data {
-                        assert!(entry[0].abs() <= 75.0, "{name} table {i}: extreme hue shift {:.1}° (must be <= 75°)", entry[0]);
-                        assert!(entry[1] <= 4.0, "{name} table {i}: extreme sat scale {:.2} (must be <= 4.0)", entry[1]);
+        // embedded calibrations have sane hue shifts
+        {
+            for (name, text) in embedded_files() {
+                let c = Calibration::parse(text).unwrap();
+                if let Some(tables) = &c.camera.hue_sat_map {
+                    for (i, t) in tables.iter().enumerate() {
+                        for entry in &t.data {
+                            assert!(entry[0].abs() <= 75.0, "{name} table {i}: extreme hue shift {:.1}° (must be <= 75°)", entry[0]);
+                            assert!(entry[1] <= 4.0, "{name} table {i}: extreme sat scale {:.2} (must be <= 4.0)", entry[1]);
+                        }
                     }
                 }
             }
         }
-    }
-
-    #[test]
-    fn nikon_z6_3_calibration_has_no_extreme_hue_sat_map() {
-        let Some(cal) = embedded().iter().find(|c| c.model == "NIKON Z6_3") else {
-            panic!("the Nikon Z 6III calibration is embedded");
-        };
-        // The overfitted hue_sat_map caused purple discoloration in skies and cool shadows.
-        // It must either be absent or strictly bounded.
-        if let Some(tables) = &cal.camera.hue_sat_map {
-            for t in tables {
-                for entry in &t.data {
-                    assert!(entry[0].abs() < 45.0, "Z6_3 hue shift too large: {}", entry[0]);
+        // nikon z6 3 calibration has no extreme hue sat map
+        {
+            let Some(cal) = embedded().iter().find(|c| c.model == "NIKON Z6_3") else {
+                panic!("the Nikon Z 6III calibration is embedded");
+            };
+            // The overfitted hue_sat_map caused purple discoloration in skies and cool shadows.
+            // It must either be absent or strictly bounded.
+            if let Some(tables) = &cal.camera.hue_sat_map {
+                for t in tables {
+                    for entry in &t.data {
+                        assert!(entry[0].abs() < 45.0, "Z6_3 hue shift too large: {}", entry[0]);
+                    }
                 }
             }
         }

@@ -24,12 +24,15 @@ fn meta_of(m: &lcc_meta::Metadata) -> (Meta, Option<String>) {
         camera_make,
         camera_model,
         camera_serial: m.serial_number.as_deref().map(str::trim).unwrap_or_default().chars().take(64).collect(),
+        lens_make: m.lens_make.clone().unwrap_or_default(),
         // (a camera that writes no lens name, like Nikon's DSLRs, still says what range the lens covers)
         lens: m.lens_model.clone().or_else(|| m.lens_spec.and_then(lcc_meta::lens_spec_name)).unwrap_or_default(),
         focal_mm: m.focal_length.map(|f| f as f32),
         aperture: m.f_number.map(|f| f as f32),
         shutter,
         iso: m.iso,
+        flash: m.flash.as_ref().map(|f| f.fired),
+        exposure_bias: m.exposure_bias.map(|v| v as f32).filter(|v| v.is_finite()),
         lens_range: m.lens_spec.map(|s| (s[0] as f32, s[1] as f32)).filter(|(a, b)| a.is_finite() && b.is_finite() && *a > 0.0 && *b >= *a),
         location: m.sublocation.clone().unwrap_or_default(),
         city: m.city.clone().unwrap_or_default(),
@@ -729,6 +732,7 @@ fn load_bytes_now(
         let reduced =
             (allow_reduced && denoise.is_none() && max_edge < usize::MAX).then(|| lcc_raw::decode_reduced(&bytes, max_edge).ok().flatten()).flatten();
         let used_reduced = reduced.is_some();
+        let t_decode = web_time::Instant::now();
         let decoded = match reduced {
             Some(r) => Ok(r),
             None => lcc_raw::decode(&bytes),
@@ -743,6 +747,7 @@ fn load_bytes_now(
             }
             Err(Err(e)) => return Err(e),
         };
+        let decode_ms = t_decode.elapsed().as_secs_f64() * 1e3;
         // hot, dead and stuck pixels are corrected on the mosaic, before anything reads it
         let pixels = repair_pixels(&mut raw, &RawOptions::of(&options));
         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
@@ -765,7 +770,10 @@ fn load_bytes_now(
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
         let window = lcc_raw::sensor_window(&bytes, [info.active_area.width, info.active_area.height]);
-        let lens = crate::lens_profiles::for_raw(&info, window, || lcc_meta::extract(&bytes));
+        let (lens, lens_from_file) = match crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(&bytes), None) {
+            Some((l, applied)) => (Some(l), applied == crate::lens_profiles::Applied::Embedded),
+            None => (None, false),
+        };
         // (the camera look still pairs the sensor with the camera JPEG through the warp the camera applied to it)
         let lens_geometry = crate::camera_preview::lens_geometry(&raw.opcodes.list3);
         // A DNG's preview already has its lens opcodes applied. Keep them for its single tone fit,
@@ -778,6 +786,9 @@ fn load_bytes_now(
         let scale = WbScaleOf::new(raw.format, &raw.color, raw.wb_multipliers, &raw.metadata);
         // (whether the photo's Profile option can start from measured colour: decided before the colour is chosen)
         let colorimetric = crate::camera_preview::colorimetric_camera(&raw).is_some();
+        // (a DNG of rendered RGB: no camera profile describes it, so the Profiles panel offers none)
+        let rendered_rgb = lcc_raw::color::is_rendered_rgb(&raw.color);
+        let t_colour = web_time::Instant::now();
         // the source's segmentation mattes (DNG semantic masks), read while the starting colour is fitted
         let (((xy, t, camera_look), kept_tone), mattes) = rayon::join(
             || {
@@ -797,6 +808,13 @@ fn load_bytes_now(
             || dng_mattes(&bytes, &info),
         );
         drop(bytes);
+        if lcc_pipeline::profiling() {
+            eprintln!(
+                "[profile] raw load: decode {decode_ms:.1} ms, repair + outliers + profile {:.1} ms, starting colour {:.1} ms",
+                (t_colour - t_decode).as_secs_f64() * 1e3 - decode_ms,
+                t_colour.elapsed().as_secs_f64() * 1e3
+            );
+        }
         // Previews and thumbnails bin the mosaic straight to (about) the size they need; only
         // larger levels (exports, 1:1) demosaic the whole sensor.
         let t0 = web_time::Instant::now();
@@ -883,6 +901,7 @@ fn load_bytes_now(
                 as_shot_temp: temp,
                 as_shot_tint: tint,
                 lens,
+                lens_from_file,
                 relative_wb: scale.relative,
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
@@ -893,10 +912,13 @@ fn load_bytes_now(
                 // (the catalog knows the original's size: `media::source_info`)
                 native_long: None,
                 colorimetric,
+                rendered_rgb,
                 alpha: None,
                 generated: None,
                 avoid: None,
                 pixels: Some(pixels),
+                // (the catalog knows which photo this is: `media::source_info`)
+                identity: None,
             },
             used_reduced,
         ));
@@ -1543,6 +1565,21 @@ fn file_modified(path: &str) -> Option<String> {
     lcc_catalog::dates::local(secs)
 }
 
+/// Whether the file at `path` is as it was when `info` probed it: still a file, the same size and the same
+/// modification time (to the second, as the probe records it). A file edited in place keeps its size when only
+/// a few bytes change (an embedded XMP packet rewritten at the same length), so the size alone can't tell; for
+/// the same reason a file whose modification time isn't known, now or then, counts as changed (upstream #3607).
+pub(crate) fn probe_still_valid(path: &str, info: &ProbeInfo) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() || meta.len() != info.file_size {
+        return false;
+    }
+    match (file_modified(path), info.file_modified.as_deref()) {
+        (Some(now), Some(then)) => now == then,
+        _ => false,
+    }
+}
+
 impl crate::Session {
     /// Install the filesystem file hooks (desktop, CLI, MCP headless), and on macOS the Apple Photos
     /// runner ([`crate::apple_photos::osascript`]; installed, not run).
@@ -2089,6 +2126,28 @@ pub(crate) mod tests {
         let (_, window, read) = preview_window(&path, usize::MAX).expect("the file reads").expect("sRGB is what the JPEG-only decode assumes");
         assert!(read.planned && !read.adobe_rgb, "the plan still answers");
         assert!(window.starts_with(&[0xff, 0xd8]), "and hands on the JPEG");
+    }
+
+    /// A scan's probe is reused only for a file as it was: a file rewritten at the same size has another
+    /// modification time, and a file with no known time on either side counts as changed (upstream #3607).
+    #[test]
+    fn a_probe_is_reused_only_for_a_file_with_the_same_size_and_modification_time() {
+        let dir = std::env::temp_dir().join(format!("lcc-probe-valid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jpg");
+        std::fs::write(&path, [0u8; 10]).unwrap();
+        let path = path.to_string_lossy().to_string();
+        let now = file_modified(&path);
+        assert!(now.is_some());
+        let probed = |size: u64, modified: Option<String>| ProbeInfo { file_size: size, file_modified: modified, ..ProbeInfo::default() };
+        assert!(probe_still_valid(&path, &probed(10, now.clone())));
+        assert!(!probe_still_valid(&path, &probed(9, now.clone())), "another size");
+        assert!(!probe_still_valid(&path, &probed(10, None)), "no time when probed");
+        let earlier = std::fs::metadata(&path).unwrap().modified().unwrap() - std::time::Duration::from_secs(3600);
+        let earlier_secs = earlier.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(!probe_still_valid(&path, &probed(10, lcc_catalog::dates::local(earlier_secs as i64))), "rewritten since");
+        assert!(!probe_still_valid(&dir.join("gone.jpg").to_string_lossy(), &probed(10, now)), "gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A JPEG with no date in its metadata (an export saved without it) takes the file's date, as
@@ -3151,7 +3210,7 @@ pub(crate) mod tests {
         assert_eq!(p.kind, MediaKind::Raw, "still a raw file (filters, Convert to DNG…)");
         assert!(!p.develops_raw());
         // rendered like the JPEG it is: relative white balance, display tone curve, no raw defaults
-        assert_eq!(SourceInfo { native_long: None, ..crate::media::source_info(&p) }, SourceInfo::default());
+        assert_eq!(SourceInfo { native_long: None, identity: None, ..crate::media::source_info(&p) }, SourceInfo::default());
         // (new photos start with Constrain Crop on, which is not an edit)
         assert!(p.develop.is_unedited() && p.develop.geometry.constrain_crop, "{:?}", p.develop);
         assert!(s.render_job(id, 48, 48, false, true).unwrap().run().rendered.is_ok());
@@ -3427,6 +3486,51 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An unedited raw's grid thumbnail is its camera JPEG, never rendered: that JPEG is what the photo keeps showing
+    /// once its original is missing and an update has changed the thumbnails' keys; with the file back, the camera
+    /// JPEG is read from it again.
+    #[test]
+    fn a_missing_raw_keeps_its_camera_jpeg_thumbnail_through_an_update() {
+        use crate::media::QuickSource;
+        let dir = std::env::temp_dir().join(format!("lc-kept-raw-{}", std::process::id()));
+        let (src, lib) = (dir.join("card"), dir.join("lib"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&src).unwrap();
+        let path = src.join("a.cr3");
+        std::fs::write(&path, cr3_with_preview(96, 64)).unwrap();
+        let id = {
+            let mut s = crate::Session::new().with_fs();
+            s.open_library(&lib, false).unwrap();
+            let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
+            let id = lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap());
+            let job = s.thumb_job(id, 128).unwrap();
+            assert_eq!(s.quick_thumb_job(&job).unwrap().run().quick, Some(QuickSource::Embedded));
+            let t = std::time::Instant::now();
+            while s.media.rendered.queued_bytes() > 0 && t.elapsed() < std::time::Duration::from_secs(30) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            id
+        };
+        // the card is out, and the next start comes after more updates than earlier versions' thumbnails are
+        // looked for under: only the thumbnail the photo kept can show
+        std::fs::rename(&src, dir.join("card-out")).unwrap();
+        let mut s = crate::Session::new().with_fs();
+        s.open_library(&lib, false).unwrap();
+        s.media.thumb_version += crate::media::KEPT_VERSIONS + 1;
+        let job = s.thumb_job(id, 128).unwrap();
+        let q = s.quick_thumb_job(&job).unwrap().run();
+        assert_eq!((q.quick, q.placement), (Some(QuickSource::Kept), None), "the kept thumbnail, claiming no placement");
+        let img = q.rendered.expect("the kept camera JPEG").image;
+        assert_eq!((img.width, img.height), (96, 64), "the camera JPEG it showed before");
+        // the card is back with another picture in the file: its camera JPEG is read again
+        std::fs::rename(dir.join("card-out"), &src).unwrap();
+        std::fs::write(&path, cr3_with_preview(80, 40)).unwrap();
+        let q = s.quick_thumb_job(&job).unwrap().run();
+        assert_eq!(q.quick, Some(QuickSource::Embedded));
+        assert_eq!(q.rendered.unwrap().image.width, 80, "read from the file, not the kept thumbnail");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A Sony ARW of `model`: a 64 × 48 uncompressed 14-bit CFA strip in a SubIFD (as `crates/raw/tests/it/vendor_robust.rs`
     /// lays it out) whose IFD carries the full-frame 16–35 mm distortion table (tag 0x7037).
     fn sony_arw(model: &str) -> Vec<u8> {
@@ -3452,10 +3556,11 @@ pub(crate) mod tests {
         TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()
     }
 
-    /// Sony's embedded distortion correction is on by default: an ARW of a verified body imports with "Enable Lens
-    /// Corrections" on and still counts as unedited; another body's tables aren't read, so its correction is off.
+    /// Sony's embedded distortion correction is read (a verified body's tables) but starts off, as for every raw
+    /// outside the built-in formats: the ARW imports with "Enable Profile Corrections" off and counts as unedited;
+    /// another body's tables aren't read at all.
     #[test]
-    fn arw_with_lens_data_imports_with_profile_corrections_on() {
+    fn arw_with_lens_data_imports_with_profile_corrections_off() {
         let dir = std::env::temp_dir().join(format!("lc-arw-lens-default-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3465,7 +3570,7 @@ pub(crate) mod tests {
             std::fs::write(&path, sony_arw(model)).unwrap();
             let r = s.execute("library.import", &serde_json::json!({"paths": [path.to_string_lossy()]})).unwrap();
             let p = s.catalog.photo(lcc_catalog::PhotoId(r["imported"][0].as_u64().unwrap())).unwrap();
-            assert_eq!((p.format.as_str(), p.embedded_lens.is_some(), p.develop.optics.lens_profile), ("ARW", on, on), "{model}");
+            assert_eq!((p.format.as_str(), p.embedded_lens.is_some(), p.develop.optics.lens_profile), ("ARW", on, false), "{model}");
             assert!(!p.is_edited(), "{model}: as imported");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -3488,6 +3593,59 @@ pub(crate) mod tests {
                 assert_eq!(p.develop.optics.lens_profile, embedded.is_some(), "{format} {embedded:?}");
             }
         }
+    }
+
+    /// A Canon CR3 whose lens the database matches (or any raw outside the built-in formats with lens data) starts
+    /// with "Enable Profile Corrections" off and unedited, so browsing and culling never warp it; its own XMP
+    /// with `LensProfileEnable=1` turns the correction on, and with the switch absent leaves it off.
+    #[test]
+    fn database_matched_raw_starts_with_profile_corrections_off() {
+        use lcc_catalog::{Photo, PhotoId, Source};
+        let s = crate::Session::new();
+        let lens = lcc_develop::EmbeddedLens { warp: Some(Default::default()), ..Default::default() };
+        let xmp = |switch: &str| {
+            format!(
+                r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+                <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+                   crs:ProcessVersion="15.4" crs:Exposure2012="+0.50" {switch}/></rdf:RDF></x:xmpmeta>"#
+            )
+        };
+        for format in ["CR3", "CR2", "NEF", "ARW", "ORF", "PEF"] {
+            let new = || {
+                let name = format!("x.{format}");
+                let mut p = Photo::new(PhotoId(1), Source::File { path: format!("/{name}") }, &name, format, 64, 48, "");
+                p.kind = MediaKind::Raw;
+                p.embedded_lens = Some(Box::new(lens));
+                crate::import::apply_import_defaults(&s, &mut p);
+                p
+            };
+            let p = new();
+            assert!(!p.develop.optics.lens_profile, "{format}: a new photo starts with the correction off");
+            assert!(!p.is_edited() && *p.develop == p.camera_defaults(), "{format}");
+            for (switch, on) in [(r#"crs:LensProfileEnable="1""#, true), ("", false), (r#"crs:LensProfileEnable="0""#, false)] {
+                let mut p = new();
+                let sc = crate::sidecar::parse_sidecar(&xmp(switch), crate::crs::Target::RawAbsolute).unwrap();
+                crate::sidecar::merge_into(&mut p, &sc, "now");
+                assert_eq!(p.develop.optics.lens_profile, on, "{format} {switch:?}");
+            }
+        }
+    }
+
+    /// A photo catalogued when import still turned every raw's lens correction on (a database match too) and never
+    /// edited since counts as unedited; one with a history keeps counting its settings as edits.
+    #[test]
+    fn a_photo_imported_with_the_old_default_is_still_unedited() {
+        use lcc_catalog::{HistoryStep, Photo, PhotoId, Source};
+        let mut p = Photo::new(PhotoId(1), Source::File { path: "/x.CR3".into() }, "x.CR3", "CR3", 64, 48, "");
+        p.kind = MediaKind::Raw;
+        p.embedded_lens = Some(Box::new(lcc_develop::EmbeddedLens { warp: Some(Default::default()), ..Default::default() }));
+        let mut d = p.camera_defaults();
+        assert!(!d.optics.lens_profile);
+        d.optics.lens_profile = true;
+        p.develop = std::sync::Arc::new(d.clone());
+        assert!(!p.is_edited(), "as an older build imported it");
+        p.history.push(HistoryStep { label: "Lens Corrections".into(), settings: std::sync::Arc::new(d), batch: None });
+        assert!(p.is_edited(), "turned on by the user");
     }
 
     /// Stored settings stay as they are when the library opens again: an ARW catalogued before its lens data was read
@@ -3533,6 +3691,38 @@ pub(crate) mod tests {
         assert!(!s.catalog.photo(old).unwrap().is_edited(), "still as imported");
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Upstream #3783: a DNG's `ProfileToneCurve` is the finish stage's camera curve, so process V8
+    /// extends it past its last point (the sensor's white, scene 1.0) with the stop roll-off as well. A
+    /// curve that reaches white there renders as under V7 up to it and white past it; one that ends
+    /// below white (here 0.9) keeps what Exposure lifts past the sensor's white apart instead of
+    /// reaching 8-bit 255 within a stop.
+    #[test]
+    fn v8_extends_a_dng_tone_curve_past_white_in_stops() {
+        use lcc_color::transfer::linear_to_srgb;
+        use lcc_develop::{DevelopSettings, Process};
+        use lcc_pipeline::SourceInfo;
+        let code = |curve: &[f64], process: Process, y: f32| {
+            let tone = lcc_raw::profile::ToneCurve::from_tag(curve).and_then(|c| super::dng_tone_curve(&c));
+            let info = SourceInfo { raw: true, camera_tone: Some(tone.expect("a valid curve")), ..SourceInfo::default() };
+            let s = DevelopSettings { process: process.version(), ..DevelopSettings::default() };
+            let o = lcc_pipeline::finish::base_tone(&s, &info, 1.0).apply(y);
+            (linear_to_srgb(o.clamp(0.0, 1.0)) * 255.0).round()
+        };
+        let to_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.78, 1.0, 1.0];
+        for y in [0.01, 0.05, 0.18, 0.5, 0.9] {
+            assert_eq!(code(&to_white, Process::V8, y), code(&to_white, Process::V7, y), "{y}");
+        }
+        for y in [1.0, 2.0, 4.0] {
+            assert_eq!((code(&to_white, Process::V7, y), code(&to_white, Process::V8, y)), (255.0, 255.0), "{y}");
+        }
+        let below_white = [0.0, 0.0, 0.03, 0.09, 0.18, 0.4, 0.5, 0.72, 1.0, 0.9];
+        let at = |process, ev: f32| code(&below_white, process, ev.exp2());
+        assert_eq!(at(Process::V8, 0.0), at(Process::V7, 0.0));
+        assert_eq!(at(Process::V7, 1.0), 255.0, "V7 is frozen");
+        let (white, beyond) = (at(Process::V8, 0.0), at(Process::V8, 1.0));
+        assert!(beyond < 254.0 && beyond - white >= 3.0, "{white} then {beyond} a stop past the sensor's white");
     }
 
     /// An ILCE-7CR frame at ISO 50 (the sensor at ISO 100 with a stop more light) develops at half the level of the

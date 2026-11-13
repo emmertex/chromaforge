@@ -96,6 +96,30 @@ fn keyword_rename_merge_delete_undo_and_replay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `keyword.delete {keywords}` removes several keywords (and what is below them) as one undo step, and refuses the
+/// whole call when one is empty (upstream #2757).
+#[test]
+fn several_keywords_are_deleted_as_one_undo_step() {
+    let dir = temp_dir("kw-batch");
+    let mut s = Session::new();
+    s.open_library(&dir, true).unwrap();
+    let ids: Vec<u64> = s.visible_cloned().iter().take(2).map(|p| p.0).collect();
+    s.execute("photo.setMeta", &json!({"ids": [ids[0]], "keywords": ["travel|italy", "sea", "keep"]})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [ids[1]], "keywords": ["sea", "city"]})).unwrap();
+    let before = s.catalog.to_snapshot();
+    assert!(s.execute("keyword.delete", &json!({"keywords": ["sea", ""]})).is_err());
+    assert!(s.execute("keyword.delete", &json!({"keywords": []})).is_err());
+    assert_eq!(s.catalog.to_snapshot(), before, "a refused call changes nothing");
+    let undo_before = s.undo.len();
+    s.execute("keyword.delete", &json!({"keywords": ["travel", "sea"]})).unwrap();
+    assert_eq!(s.undo.len(), undo_before + 1, "one undo step");
+    assert_eq!(keywords_of(&s, ids[0]), ["keep"]);
+    assert_eq!(keywords_of(&s, ids[1]), ["city"]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.to_snapshot(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn write_png(path: &std::path::Path, seed: u8) {
     let (w, h) = (24usize, 16usize);
     let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 9) as u8, (i / w * 11) as u8, seed, 255]).collect();
@@ -134,6 +158,44 @@ fn capture_time_from_file_date() {
     // a removed original: an error, not a panic
     std::fs::remove_file(src.join("a.png")).unwrap();
     assert!(s.execute("photo.setCaptureTime", &json!({"ids": [id], "fromFile": true})).is_err());
+    let _ = std::fs::remove_dir_all(&src);
+    let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// Revert Capture Time to Original: the file's own Exif time (with offset and sub-seconds) comes back; a file that
+/// states none is left alone and counted; nothing readable is an error.
+#[test]
+fn capture_time_reverts_to_the_files_exif() {
+    let src = temp_dir("exifdate-src");
+    let lib = temp_dir("exifdate-lib");
+    write_png(&src.join("plain.png"), 1);
+    let (w, h) = (24usize, 16usize);
+    let img = lcc_raster::Rgba8 { width: w, height: h, data: vec![[9, 9, 9, 255]; w * h] };
+    let meta = lcc_meta::Metadata { capture_time: lcc_meta::DateTime::parse_iso("2024-01-16T12:34:56.250+02:00"), ..Default::default() };
+    let exif = lcc_meta::write_exif(&meta);
+    let bytes =
+        lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta { exif: Some(&exif), ..Default::default() }).unwrap();
+    std::fs::write(src.join("dated.png"), bytes).unwrap();
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    let r =
+        s.execute("library.import", &json!({"paths": [src.join("plain.png").to_string_lossy(), src.join("dated.png").to_string_lossy()]})).unwrap();
+    let ids: Vec<u64> = r["imported"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let by_name = |s: &Session, n: &str| ids.iter().copied().find(|id| path_of(s, *id).ends_with(n)).unwrap();
+    let (plain, dated) = (by_name(&s, "plain.png"), by_name(&s, "dated.png"));
+    let stated = captured(&s, dated);
+    assert!(stated.as_deref().is_some_and(|c| c.starts_with("2024-01-16T12:34:56")), "{stated:?}");
+    s.execute("photo.setCaptureTime", &json!({"ids": [plain, dated], "time": "2001-01-01T00:00:00", "each": true})).unwrap();
+    let r = s.execute("photo.setCaptureTime", &json!({"ids": [plain, dated], "fromExif": true})).unwrap();
+    assert_eq!(r["changed"], 1, "{r}");
+    assert_eq!(r["noExif"], 1, "{r}");
+    assert_eq!(captured(&s, dated), stated, "back to the file's own, offset and sub-seconds kept");
+    assert_eq!(captured(&s, plain).as_deref(), Some("2001-01-01T00:00:00"), "no Exif time: left alone");
+    assert!(s.execute("photo.setCaptureTime", &json!({"ids": [plain], "fromExif": true})).is_err());
+    assert!(s.execute("photo.setCaptureTime", &json!({"ids": [dated], "fromExif": true, "fromFile": true})).is_err());
+    // a removed original: no panic
+    std::fs::remove_file(src.join("dated.png")).unwrap();
+    assert!(s.execute("photo.setCaptureTime", &json!({"ids": [dated], "fromExif": true})).is_err());
     let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&lib);
 }

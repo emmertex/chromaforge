@@ -41,7 +41,7 @@ pub(crate) fn scan_row(progress: &SyncProgress, name: &str) -> (u64, u64, String
 }
 
 fn listing_text(folders: usize, files: usize) -> String {
-    crate::i18n::tr_format!("Listing folders — folders: {folders}, files: {files}", folders = folders, files = files)
+    crate::i18n::tr_format!("Listing folders (folders: {folders}, files: {files})", folders = folders, files = files)
 }
 
 /// Open the dialog for folder `path` (called `name` in it) and start scanning.
@@ -168,7 +168,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     };
     let t = Tokens::get(ui.ctx());
     ui.set_min_width(420.0);
-    ui.label(crate::i18n::tr("Bring the library up to date with this folder and the folders inside it:"));
+    ui.label(crate::i18n::tr("Bring the catalog up to date with this folder and the folders inside it:"));
     ui.label(egui::RichText::new(name.as_str()).strong());
     ui.label(egui::RichText::new(path.as_str()).color(t.text_dim));
     ui.add_space(6.0);
@@ -196,7 +196,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     // the files skipped for being in the library elsewhere (`dups` of them), and those that can't be read
     let skipped = |ui: &mut egui::Ui, dups: usize| {
         if dups > 0 {
-            dim(ui, &count("Skipped: files already in the library elsewhere", dups));
+            dim(ui, &count("Skipped: files already in the catalog elsewhere", dups));
         }
         if c.unreadable > 0 {
             dim(ui, &count("Skipped: files that can't be read", c.unreadable));
@@ -205,7 +205,7 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     if c.up_to_date() {
         // nothing to choose: the answer takes the choices' place, and the one button closes
         // (`only_shows`)
-        ui.label(crate::i18n::tr("The library is up to date with this folder."));
+        ui.label(crate::i18n::tr("The catalog is up to date with this folder."));
         skipped(ui, c.duplicates);
         return;
     }
@@ -216,20 +216,20 @@ pub fn body(app: &LccApp, ui: &mut egui::Ui, dlg: &mut Dialog) {
     if c.copies > 0 {
         ui.indent("syncSkipDuplicatesIndent", |ui| {
             let mut skip = !*import_duplicates;
-            let r = ui.add_enabled(*import_new, egui::Checkbox::new(&mut skip, count("Don't import files already in the library", c.copies)));
+            let r = ui.add_enabled(*import_new, egui::Checkbox::new(&mut skip, count("Don't import files already in the catalog", c.copies)));
             crate::widgets::register(ui, "syncSkipDuplicates", r.rect);
-            let r = r.on_hover_text(crate::i18n::tr("A file with the same content as a photo of the library, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize."));
+            let r = r.on_hover_text(crate::i18n::tr("A file with the same content as a photo of the catalog, under another name or in another folder. Untick to bring such files in as photos of their own. Remembered for the next Synchronize."));
             if r.changed() {
                 *import_duplicates = !skip;
             }
         });
     }
     choice(ui, relink_moved, c.moved, count("Relink photos whose file was renamed or moved", c.moved), "syncRelinkMoved");
-    choice(ui, remove_missing, c.missing, count("Remove missing photos from the library", c.missing), "syncRemoveMissing");
+    choice(ui, remove_missing, c.missing, count("Remove missing photos from the catalog", c.missing), "syncRemoveMissing");
     choice(ui, read_metadata, c.metadata, count("Read metadata updates from XMP sidecars", c.metadata), "syncReadMetadata");
     ui.add_space(6.0);
     if c.nothing_to_do(true, *import_duplicates) {
-        dim(ui, crate::i18n::tr("The library is up to date with this folder."));
+        dim(ui, crate::i18n::tr("The catalog is up to date with this folder."));
     }
     if c.missing > 0 {
         dim(ui, crate::i18n::tr("Missing photos move to Recently Deleted and can be restored; no file on disk is touched."));
@@ -341,7 +341,7 @@ fn remember_import_duplicates(app: &mut LccApp, import_duplicates: bool) {
     if import_duplicates != app.session.import_defaults.import_duplicates
         && let Err(e) = app.run("library.preferences", json!({"import": {"importDuplicates": import_duplicates}}))
     {
-        log::warn!("synchronize: the choice about files already in the library was not saved: {e}");
+        log::warn!("synchronize: the choice about files already in the catalog was not saved: {e}");
     }
 }
 
@@ -356,7 +356,8 @@ pub struct SyncRun {
     /// Steps that went into the catalog but could not be saved (a full disk…), and why.
     not_saved: Vec<String>,
     commit: Option<SyncCommit>,
-    /// Cancel was pressed: nothing new is started; what was readied is still committed.
+    /// Cancel was pressed: nothing new is started; what was readied is still committed. Whether
+    /// that left work undone is decided when the worker ends.
     stopping: bool,
     /// Its row in the activity stack (its ✕ is Cancel).
     guard: TaskGuard,
@@ -379,6 +380,32 @@ impl Drop for SyncRun {
     fn drop(&mut self) {
         self.progress.files.cancel.store(true, Ordering::Relaxed);
     }
+}
+
+/// Tests: a synchronize whose worker is over once the returned sender is dropped, having done
+/// `done` of `total` pieces of work (what [`SyncRun::counts`] says): the end of a run, without a
+/// real folder to race against. It has nothing to commit; the caller cancels it (or not) before
+/// the drop.
+#[cfg(test)]
+pub(crate) fn ending_run(app: &mut LccApp, name: &str, (done, total): (usize, usize)) -> std::sync::mpsc::Sender<SyncStep> {
+    let progress = Arc::new(SyncProgress::default());
+    progress.to_check.store(total, Ordering::Relaxed);
+    progress.checked.store(done, Ordering::Relaxed);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let guard = app.session.activity.start("sync", "Synchronizing folder", Cancel::Flag(progress.files.cancel.clone()));
+    guard.detail(name);
+    let Ok((_, commit)) = SyncJob::start(&mut app.session, FolderChanges::default(), SyncChoice::default()) else { return tx };
+    app.sync_run = Some(SyncRun {
+        name: name.to_string(),
+        progress,
+        crashed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        rx,
+        commit: Some(commit),
+        stopping: false,
+        not_saved: Vec::new(),
+        guard,
+    });
+    tx
 }
 
 /// Commit what the worker readied (called every frame); when it is done, one undo step and a
@@ -416,8 +443,11 @@ pub fn poll_run(app: &mut LccApp, ctx: &egui::Context) {
         run.commit = Some(commit);
         return;
     }
+    // The worker is over, so its counts are final. A Cancel that came after the last piece was
+    // handed over left nothing undone: that run finished.
+    let (done, total) = run.counts();
     let (name, stopped, crashed, mut not_saved) =
-        (run.name.clone(), run.stopping, run.crashed.load(Ordering::Relaxed), std::mem::take(&mut run.not_saved));
+        (run.name.clone(), run.stopping && done < total, run.crashed.load(Ordering::Relaxed), std::mem::take(&mut run.not_saved));
     app.sync_run = None;
     let mut report = None;
     if let Err(e) = app.session.execute_fn("folder.synchronize", |s| {
@@ -448,7 +478,7 @@ pub fn poll_run(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(e) = not_saved.first() {
         parts.push(format!("{}: {e}", crate::i18n::tr("Not saved")));
     }
-    let text = if parts.is_empty() { crate::i18n::tr("The library is up to date with this folder.").to_string() } else { parts.join(" · ") };
+    let text = if parts.is_empty() { crate::i18n::tr("The catalog is up to date with this folder.").to_string() } else { parts.join(" · ") };
     if not_saved.is_empty() && !crashed {
         app.toast(ctx, format!("{name}: {text}"));
     } else {

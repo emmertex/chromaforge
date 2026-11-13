@@ -1,8 +1,9 @@
 //! `cargo xtask shortcuts`: regenerates `docs/manual/keyboard-shortcuts.md` from the running
 //! command registry. It builds `lcc-cli`, runs `app-cli snapshot --demo` with one `ui.menu.list`
 //! request (every menu command with the shortcut the default Classic keymap gives it) and writes a
-//! Markdown table per top-level menu. Labels that carry the product name (`{app}`) become `<app>`,
-//! so the generated file passes `cargo xtask brand check`.
+//! Markdown table per top-level menu. The reply shows labels as the user sees them, so the product name
+//! (`display_name` in the brand file, which `{app}` is filled with) becomes `<app>` again: the generated file
+//! stays the same under any brand.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,8 @@ pub struct Entry {
     pub shortcut: String,
 }
 
-/// The entries with a shortcut out of a `ui.menu.list` reply line.
-pub fn parse(reply: &str) -> Result<Vec<Entry>, String> {
+/// The entries with a shortcut out of a `ui.menu.list` reply line, `display` (the product name) written `<app>`.
+pub fn parse(reply: &str, display: &str) -> Result<Vec<Entry>, String> {
     let v: serde_json::Value = serde_json::from_str(reply).map_err(|e| format!("ui.menu.list reply: {e}"))?;
     let list = v.get("result").and_then(|r| r.as_array()).ok_or("ui.menu.list: no result array")?;
     let s = |e: &serde_json::Value, k: &str| e.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
@@ -36,7 +37,7 @@ pub fn parse(reply: &str) -> Result<Vec<Entry>, String> {
                 .and_then(|m| m.as_array())
                 .map(|m| m.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
                 .unwrap_or_default(),
-            label: s(e, "label").replace("{app}", "<app>"),
+            label: s(e, "label").replace(display, "<app>").replace("{app}", "<app>"),
             id: s(e, "id"),
             shortcut: s(e, "shortcut"),
         })
@@ -93,7 +94,8 @@ pub fn run(root: &Path) -> Result<(), String> {
         .lines()
         .find(|l| l.contains("\"result\""))
         .ok_or_else(|| format!("no ui.menu.list reply from {}: {}", cli.display(), String::from_utf8_lossy(&out.stderr)))?;
-    let entries = parse(line)?;
+    let display = crate::brand::Brand::current()?.req("display_name")?.to_string();
+    let entries = parse(line, &display)?;
     let dest = root.join(OUT);
     std::fs::write(&dest, render(&entries)).map_err(|e| format!("{}: {e}", dest.display()))?;
     println!("wrote {OUT} ({} shortcuts)", entries.len());
@@ -105,22 +107,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renders_menus_and_hides_the_name() {
-        let reply = r#"{"id":1,"ok":true,"result":[
-            {"id":"a.b","label":"Quit {app}","menu":["File"],"shortcut":"Cmd+Q"},
-            {"id":"c.d","label":"None","menu":["File"],"shortcut":null},
-            {"id":"e.f","label":"Pipe","menu":["View","Sub"],"shortcut":"|"}]}"#;
-        let e = parse(reply).unwrap();
-        assert_eq!(e.len(), 2);
-        let md = render(&e);
-        assert!(md.contains("| `Cmd+Q` | Quit <app> |  | `a.b` |"));
-        assert!(md.contains("## View") && md.contains("| Sub |") && md.contains("`\\|`"));
-        assert!(!md.contains("{app}"));
-    }
-
-    #[test]
-    fn bad_reply_is_an_error() {
-        assert!(parse("not json").is_err());
-        assert!(parse("{}").is_err());
+    fn renders_menus_hides_the_name_and_refuses_bad_replies() {
+        // renders menus and hides the name
+        {
+            let reply = r#"{"id":1,"ok":true,"result":[
+                {"id":"a.b","label":"Quit Zzyzx Test","menu":["File"],"shortcut":"Cmd+Q"},
+                {"id":"c.d","label":"None","menu":["File"],"shortcut":null},
+                {"id":"e.f","label":"Pipe","menu":["View","Sub"],"shortcut":"|"}]}"#;
+            let e = parse(reply, "Zzyzx Test").unwrap();
+            assert_eq!(e.len(), 2);
+            let md = render(&e);
+            assert!(md.contains("| `Cmd+Q` | Quit <app> |  | `a.b` |"));
+            assert!(md.contains("## View") && md.contains("| Sub |") && md.contains("`\\|`"));
+            assert!(!md.contains("Zzyzx"));
+        }
+        // bad reply is an error
+        {
+            assert!(parse("not json", "App").is_err());
+            assert!(parse("{}", "App").is_err());
+        }
     }
 }

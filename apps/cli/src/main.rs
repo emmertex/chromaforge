@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 
 /// `--help` text; `{cli}`, `{bin}`, `{app}` and `{P}` are filled by [`usage`].
 const USAGE: &str = "\
-{cli} — headless {app} (photo library + raw developer)
+{cli}: headless {app} (photo library + raw developer)
 
 USAGE:
   {cli} run [OPTIONS] COMMAND [key=value | '{json}']… [COMMAND …]…
@@ -149,13 +149,16 @@ USAGE:
       take their colour from the profile and only their tone from their own JPEG.
   {cli} calibrate-lightroom preset -o FILE.xmp
       Write the baseline Lightroom preset to apply (on virtual copies) before exporting for a fit.
-  {cli} calibrate-lightroom fit --raws DIR… --exports DIR… [-o OUTDIR] [--contributor NAME] [--dry-run]
+  {cli} calibrate-lightroom fit --raws DIR… --exports DIR… [-o OUTDIR] [--contributor NAME]
+          [--lens MODEL] [--dry-run]
       Fit a camera's colour model and looks to Lightroom's exports of your own raws (16-bit TIFF, one export
       folder per Lightroom profile). Writes <Make>_<Model>.json (the file to send: numbers only, no images) and
-      one .dcp per look for your own testing. --dry-run pairs and reports coverage without fitting.
-  {cli} calibrate-lightroom add FILE [--repo DIR] [--contributor NAME]
+      one .dcp per look for your own testing. --lens: the fit is for that lens only (Exif lens model, e.g. one
+      of a phone's cameras). --dry-run pairs and reports coverage without fitting.
+  {cli} calibrate-lightroom add FILE [--repo DIR] [--contributor NAME] [--lens MODEL] [--replace]
       Developers: validate a contributed calibration, write it to crates/camdb/data/calibrations/ and add its
-      assets/ATTRIBUTION.md row (DIR: the repository root, default .).
+      assets/ATTRIBUTION.md row (DIR: the repository root, default .). A calibration already there for the
+      same camera, lens and editor is kept unless --replace.
   {cli} calibrate-lightroom list
       The calibrations built into this binary, with their looks and held-out colour error.
   {cli} calibrate-lightroom verify --raws DIR… --exports DIR… [--report DIR] [--json] [--size N] [--max N]
@@ -902,6 +905,14 @@ fn read_settings(p: &str) -> Result<SettingsFile, String> {
     }
 }
 
+/// Why `library.import` (its result `r`) brought in nothing from `input`.
+fn not_imported(input: &str, r: &Value) -> String {
+    if r["still_copying"].as_array().is_some_and(|a| !a.is_empty()) {
+        return format!("{input}: still being copied, try again shortly");
+    }
+    format!("{input}: not a readable photo")
+}
+
 fn render(args: &[String]) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
@@ -954,7 +965,7 @@ fn render(args: &[String]) -> Result<(), String> {
     let mut s = Session::new().with_fs().with_default_denoise_models().with_default_genfill().with_system_clock().with_default_connections();
     let abs = expand_paths(std::slice::from_ref(&input));
     let r = s.execute("library.import", &json!({"paths": abs})).map_err(|e| e.to_string())?;
-    let id = r["imported"][0].as_u64().ok_or_else(|| format!("{input}: not a readable photo"))?;
+    let id = r["imported"][0].as_u64().ok_or_else(|| not_imported(&input, &r))?;
     let run = |s: &mut Session, cmd: &str, p: Value| s.execute(cmd, &p).map(|_| ()).map_err(|e| e.to_string());
     run(&mut s, "library.select", json!({"ids": [id], "active": id}))?;
     if let Some(p) = preset {

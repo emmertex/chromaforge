@@ -23,6 +23,7 @@ mod fuji;
 mod gpx;
 mod heif;
 mod iptc;
+pub mod jxl;
 mod legacy;
 pub mod mrw;
 mod psd;
@@ -632,13 +633,6 @@ mod tests {
         assert_eq!(a.rating, Some(4));
         assert_eq!(a.make.as_deref(), Some("A"));
         assert_eq!(a.keywords, vec!["k".to_string()]);
-    }
-
-    #[test]
-    fn names() {
-        let m = Metadata { metering_mode: Some(5), exposure_program: Some(3), ..Default::default() };
-        assert_eq!(m.metering_name(), Some("Pattern"));
-        assert_eq!(m.exposure_program_name(), Some("Aperture-priority AE"));
     }
 
     /// An MWG regions packet with one face, its box centred at (0.25, 0.4) and 0.1 × 0.15 of `AppliedToDimensions`

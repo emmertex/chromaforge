@@ -1,6 +1,6 @@
 //! The desktop app.
 //!
-//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--control <port>] [files or folders…]`
+//! Usage: `<binary> [--library DIR | --memory] [--no-demo] [--no-update-check] [--control <port>] [files or folders…]`
 //!
 //! The library (catalog, presets, thumbnail cache) lives in `--library DIR`, else
 //! `$<PREFIX>_LIBRARY`, else — with Settings ▸ General ▸ At launch set to *Ask me*, or Alt/Option
@@ -178,7 +178,7 @@ impl eframe::App for App {
             catalog_hooks::backup_if_due(&mut self.0.session);
         }
         if let Err(e) = self.0.session.close_library() {
-            log::error!("saving the library failed: {e}");
+            log::error!("saving the catalog failed: {e}");
         }
         // last, with everything saved: no render may be inside the GPU driver when the process ends
         if !self.0.shutdown(EXIT_WAIT) {
@@ -210,11 +210,11 @@ impl eframe::App for App {
 /// a second; anything slower gives way to quitting.
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The window's renderer (egui-wgpu): eframe's defaults, with the app's backend choice — DX12
-/// alone on Windows unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
-/// with Vulkan in the set, wgpu loads the Vulkan driver even when it then picks DX12) — and DX12
+/// The window's renderer (egui-wgpu): eframe's defaults, with the app's backend choice — one backend
+/// alone on Windows (Vulkan; the chain falls back to DX12) unless `<PREFIX>_GPU_BACKEND` / `WGPU_BACKEND` say otherwise (issue #136:
+/// with two in the set, wgpu loads both drivers even when it then picks one) — and DX12
 /// shaders compiled with FXC, never a stray `dxcompiler.dll` (issue #471).
-/// The fallback chain on top of it (DX12 → Vulkan → GL → glow) is in `window_gpu`.
+/// The fallback chain on top of it (Vulkan → DX12 → GL → glow) is in `window_gpu`.
 #[cfg(test)]
 fn window_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     window_gpu::base_options()
@@ -448,7 +448,7 @@ fn load_prefs_at(path: &std::path::Path, set_aside_damaged: bool) -> (Option<UiS
                 Err(r) => format!("it couldn't be set aside ({r})"),
             };
             let msg = format!(
-                "The app settings ({}) are damaged ({e}); {what}. Defaults are used — reopen your library with Settings → Open Library… if it isn't shown.",
+                "The app settings ({}) are damaged ({e}); {what}. Defaults are used. Reopen your catalog with File ▸ Open Catalog… if it isn't shown.",
                 path.display()
             );
             (None, Some(msg), kept.is_err())
@@ -597,6 +597,37 @@ impl PrefsWriter {
     }
 }
 
+/// The program that opens `url` in the default browser.
+fn open_url_command(url: &str) -> std::process::Command {
+    if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(url);
+        c
+    } else if cfg!(target_os = "windows") {
+        windows_open_url_command(url)
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(url);
+        c
+    }
+}
+
+/// Start `cmd` without waiting for it: a launcher such as `xdg-open` can stay attached to the browser, and
+/// waiting for it froze the window. The child is reaped on its own thread (adapted from upstream #4033).
+fn launch(mut cmd: std::process::Command) -> Result<(), String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd.spawn().map_err(|e| format!("{program}: {e}"))?;
+    let reaper = std::thread::Builder::new().name("lc-open-url".into()).spawn(move || match child.wait() {
+        Ok(s) if s.success() => {}
+        Ok(s) => log::warn!("{program} exited with {s}"),
+        Err(e) => log::warn!("{program}: {e}"),
+    });
+    if let Err(e) = reaper {
+        log::warn!("could not watch the link opener: {e}");
+    }
+    Ok(())
+}
+
 /// The Windows command that opens `url` in the default browser. `explorer <url>` opened File
 /// Explorer instead for links with a query or fragment, like the Map button's OpenStreetMap link
 /// (issue #234). The URL protocol handler hands the URL to the browser as is; no shell runs, so
@@ -728,7 +759,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
                 .map(|p| p.to_string_lossy().to_string())
         }),
         pick_folder: picker!(|| {
-            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Library")).pick_folder().map(|p| p.to_string_lossy().to_string())
+            file_dialog().set_title(lcc_ui_egui::i18n::tr("Open Catalog")).pick_folder().map(|p| p.to_string_lossy().to_string())
         }),
         #[cfg(target_os = "linux")]
         open_model_folder: Some(std::sync::Arc::new(|path: &str| {
@@ -747,14 +778,7 @@ fn services(cc: &eframe::CreationContext<'_>, log_file: Option<&std::path::Path>
         open_url: Some(Box::new(|url: &str| {
             // https links, plus the local page Preview in Browser generates (nothing else)
             lcc_ui_egui::links::check_browser_url(url)?;
-            let status = if cfg!(target_os = "macos") {
-                std::process::Command::new("open").arg(url).status()
-            } else if cfg!(target_os = "windows") {
-                windows_open_url_command(url).status()
-            } else {
-                std::process::Command::new("xdg-open").arg(url).status()
-            };
-            status.map(|_| ()).map_err(|e| e.to_string())
+            launch(open_url_command(url))
         })),
         reveal: Some(Box::new(|path: &str| {
             let status = if cfg!(target_os = "macos") {
@@ -991,7 +1015,27 @@ fn surface_store() -> Option<Box<dyn lcc_ui_egui::surface::SurfaceStore>> {
     if lcc_brand::env_is_set("NO_PREFS") {
         return None;
     }
-    config_dir().map(|d| Box::new(SurfaceFile(d.join("control-surfaces.json"))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+    config_dir().map(|d| Box::new(SurfaceFile(d.join(SURFACE_FILE))) as Box<dyn lcc_ui_egui::surface::SurfaceStore>)
+}
+
+/// The control-surface settings file's name in the settings folder.
+const SURFACE_FILE: &str = "control-surfaces.json";
+
+/// Control-surface layouts a previous name kept: a settings folder that existed before the first start under
+/// this name is not copied as a whole ([`lcc_brand::migrate_legacy_settings`]), so its `control-surfaces.json`
+/// is brought over on its own, when this one has none. Only into the platform settings folder the legacy ones
+/// sit beside: not into a `<PREFIX>_CONFIG_DIR` override or a portable data folder, which stay isolated. A
+/// failed copy is logged; the app starts without the layouts.
+fn migrate_legacy_surface_file() {
+    let (Some(current), Some(platform)) = (config_dir(), lcc_brand::settings_dir()) else { return };
+    if current != platform {
+        return;
+    }
+    match lcc_brand::migrate_legacy_settings_file(SURFACE_FILE) {
+        Ok(Some(from)) => log::info!("control-surface settings copied from {}", from.display()),
+        Ok(None) => {}
+        Err(e) => log::warn!("could not copy the previous control-surface settings: {e}"),
+    }
 }
 
 /// A session with no library yet (one opens later), with the folders face models and slideshow
@@ -1061,7 +1105,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
     };
     let Some(dir) = dir else {
         log::warn!("no library location (set --library or {})", lcc_brand::env_var("LIBRARY"));
-        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the library in. Choose a folder for it.")));
+        return (unopened(), Some(LibraryProblem::new("", "There is no home folder to keep the catalog in. Choose a folder for it.")));
     };
     // a library the settings remember (or the default location) is opened, never created: on a drive that isn't
     // connected its folder is missing, and opening it would make an empty library there, with demo photos, that
@@ -1070,7 +1114,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
         log::warn!("the remembered library {} isn't there; not creating one", dir.display());
         let mut problem = LibraryProblem::new(
             dir.to_string_lossy(),
-            format!("{}: no library found here (is its drive connected, or was it moved or renamed?)", dir.display()),
+            format!("{}: no catalog found here (is its drive connected, or was it moved or renamed?)", dir.display()),
         );
         problem.never_create = true;
         return (unopened(), Some(problem));
@@ -1090,7 +1134,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
             (s, None)
         }
         Err(e) => {
-            log::error!("can't open library {}: {e}", dir.display());
+            log::error!("can't open catalog {}: {e}", dir.display());
             (unopened(), Some(LibraryProblem::new(dir.to_string_lossy(), e.to_string())))
         }
     }
@@ -1098,7 +1142,7 @@ fn open_library_session(in_memory: bool, dir: Option<std::path::PathBuf>, seed_d
 
 /// `--help` text; `{bin}`, `{app}`, `{P}` and `{lib}` are filled by [`help`].
 const HELP: &str = "\
-{bin} — photo library + raw developer
+{bin}: photo library + raw developer
 
 USAGE: {bin} [OPTIONS] [FILES/FOLDERS…]   (files and folders are imported; a library's catalog.snap or
                                           folder opens that library)
@@ -1110,6 +1154,8 @@ OPTIONS:
                    else ~/Pictures/{lib})
   --no-demo        don't seed a new library with the procedural demo photos
   --memory         throwaway in-memory session (alias --demo); nothing is saved
+  --no-update-check  don't look for a newer release at start, whatever Settings > General says, for this run
+                   (Help > Check for Updates… still works)
   --control PORT   serve the JSON-lines control channel on 127.0.0.1:PORT (env {P}_CONTROL_PORT;
                    see docs/control-protocol.md). Clients must first send the run's token, which the app
                    writes to <settings folder>/control-token-PORT
@@ -1121,7 +1167,7 @@ OPTIONS:
 ENVIRONMENT:
   {P}_CONFIG_DIR=DIR   use this settings folder instead of the platform default (empty = no settings folder).
                    Without it, a portable.txt file next to the program puts the folder beside it
-  {P}_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: DX12 on Windows, Metal on macOS,
+  {P}_GPU_BACKEND=dx12|vulkan|metal|auto|off   graphics backend (default: Vulkan then DX12 on Windows, Metal on macOS,
                    Vulkan on Linux; off = render on the CPU); else WGPU_BACKEND. {P}_GPU=0: CPU rendering.
   {P}_HDR_DISPLAY=0   keep the window SDR. {P}_HDR_HEADROOM=X / {P}_HDR_PAPER_WHITE=NITS: the display's headroom
                    (× SDR white) and SDR white where the system doesn't report them (Wayland)
@@ -1168,7 +1214,7 @@ fn launch_imports_in(args: &[String], cwd: Option<&std::path::Path>, home: Optio
             Some(LaunchPath::Library(dir)) => {
                 log::warn!("one library at a time: not opening {dir} given at launch");
                 notices
-                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one library at a time. Open it with File ▸ Open Library…")));
+                    .push(lcc_brand::fill(&format!("{dir} was not opened: {{app}} opens one catalog at a time. Open it with File ▸ Open Catalog…")));
             }
             Some(LaunchPath::Import(p)) => files.push(p),
             Some(LaunchPath::Refused { path, why }) => {
@@ -1241,6 +1287,12 @@ fn panic_log_path(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<
 
 /// Whether the arguments ask for a `--memory` (or `--demo`) session. The values of `--control` and `--library` are
 /// skipped, as the parser takes them.
+/// Whether the window looks for a newer release at start: only a session that keeps its settings, and not when
+/// `--no-update-check` was given (Settings > General still decides within that).
+fn startup_update_check(keeps_settings: bool, no_update_check: bool) -> bool {
+    keeps_settings && !no_update_check
+}
+
 fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
     let mut args = args.into_iter();
     while let Some(a) = args.next() {
@@ -1267,6 +1319,7 @@ fn main() -> eframe::Result {
     let mut control_token_arg = control_auth::env_token().filter(|v| !v.trim().is_empty());
     let mut files = Vec::new();
     let mut seed_demo = true;
+    let mut no_update_check = false;
     let mut in_memory = false;
     let mut library_dir: Option<std::path::PathBuf> = None;
     let mut launch_link: Option<String> = None;
@@ -1279,6 +1332,7 @@ fn main() -> eframe::Result {
             "--control-token" => control_token_arg = Some(args.next().unwrap_or_default()),
             "--library" => library_dir = args.next().map(std::path::PathBuf::from),
             "--no-demo" => seed_demo = false,
+            "--no-update-check" => no_update_check = true,
             "--memory" | "--demo" => in_memory = true,
             "--hdr-probe" => {
                 // optional seconds (default 5)
@@ -1310,6 +1364,8 @@ fn main() -> eframe::Result {
             Ok(None) => {}
             Err(e) => log::warn!("could not copy the previous settings folder: {e}"),
         }
+        // a settings folder that already existed: its control-surface layouts still come over
+        migrate_legacy_surface_file();
     }
     // The log file: opened after the arguments, so `--version`, `--help` and a usage error leave
     // no file behind. Records logged until now are written to it first.
@@ -1357,11 +1413,14 @@ fn main() -> eframe::Result {
         lcc_ui_egui::i18n::set_language(ui.language);
     }
     // --library (or <PREFIX>_LIBRARY), else the list of recent libraries if Settings say Ask me,
-    // else the startup catalog, else the library last opened from Settings, else the default
-    // location if a catalog of this app is there; otherwise (a first start) the welcome dialog
-    // asks. Another app's library (e.g. the upstream app's, named by settings copied from it) is
-    // never opened as this app's own.
+    // else the library last opened from Settings, else the default location if a library of this
+    // app is there; otherwise (a first start) the welcome dialog asks. Another app's library (e.g.
+    // the upstream app's, named by settings copied from it) is never opened as this app's own.
     let mut prefs = prefs;
+    // the recent list of older versions joins the settings' before Ask me is read (issue #871)
+    catalog_hooks::carry_over_recent(prefs.as_mut(), !in_memory && !keep_prefs_file, |ui| {
+        PrefsWriter { path: prefs_path(), ..Default::default() }.save_ui(ui, false)
+    });
     let explicit = library_dir.or_else(|| lcc_brand::env_os("LIBRARY").filter(|p| !p.is_empty()).map(Into::into));
     // only a library named on the command line or in the environment may be created at launch
     let explicit_given = explicit.is_some();
@@ -1370,7 +1429,7 @@ fn main() -> eframe::Result {
         (explicit, None)
     } else {
         let from_prefs = prefs.as_ref().map(|u| u.settings.library_path.clone()).filter(|p| !p.is_empty() && !lcc_brand::env_is_set("LIBRARY"));
-        let remembered = [catalog_hooks::startup_catalog(), from_prefs.map(Into::into)];
+        let remembered = [from_prefs.map(Into::into)];
         match catalog_hooks::decide(explicit, &remembered, lcc_engine::library::default_dir()) {
             catalog_hooks::Startup::Open(d) => (Some(d), None),
             catalog_hooks::Startup::Welcome { foreign } => {
@@ -1496,7 +1555,6 @@ fn main() -> eframe::Result {
                     // Auto Sync is the app's, remembered across libraries and restarts
                     app.session.auto_sync = app.ui.settings.auto_sync;
                 }
-                catalog_hooks::remember_recent(&mut app, in_memory);
                 // the recent libraries to choose from (issue #1290), checked on a worker once shown
                 if launch == Launch::Ask {
                     problem = Some(LibraryProblem::choose_later(&app.ui.settings));
@@ -1510,7 +1568,7 @@ fn main() -> eframe::Result {
                 app.pending_link = launch_link;
                 app.gpu_notice = true;
                 // the start-up update check, when the user turned it on (off by default)
-                app.startup_update_check = keeps_settings;
+                app.startup_update_check = startup_update_check(keeps_settings, no_update_check);
                 // an empty library opens where Import is offered (a grid, with the sidebar); before
                 // the snapshot below, so this alone isn't written to the settings file
                 if problem.is_none() && files.is_empty() {
@@ -1705,6 +1763,25 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 mod tests {
     use super::*;
 
+    /// A link opener that stays running (xdg-open attached to the browser) must not hold the caller; a missing one is an error naming it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_opener_is_not_waited_for() {
+        let mut slow = std::process::Command::new("sleep");
+        slow.arg("3");
+        let t = std::time::Instant::now();
+        launch(slow).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        let err = launch(std::process::Command::new("definitely-not-a-launcher")).unwrap_err();
+        assert!(err.contains("definitely-not-a-launcher"), "{err}");
+    }
+
+    #[test]
+    fn the_link_opener_gets_the_url_last() {
+        let c = open_url_command("https://example.org/");
+        assert_eq!(c.get_args().last().and_then(|a| a.to_str()).map(|a| a.contains("example.org")), Some(true));
+    }
+
     /// The HDR window guard (ported from OneSlips): an HDR monitor keeps the window's device from the
     /// renderer only where the guard holds (Linux / BSD); `<PREFIX>_GPU_WINDOW` decides over both.
     #[test]
@@ -1796,7 +1873,7 @@ mod tests {
         let lib = dir.join("unmounted").join("Library");
         let (_, problem) = open_library_session(false, Some(lib.clone()), true, false);
         let problem = problem.expect("a problem is reported");
-        assert!(problem.never_create && problem.error.contains("no library found"), "{}", problem.error);
+        assert!(problem.never_create && problem.error.contains("no catalog found"), "{}", problem.error);
         assert!(!lib.exists() && !dir.exists(), "nothing was created where the library should be");
         // named on the command line: created
         let (s, problem) = open_library_session(false, Some(lib.clone()), false, true);
@@ -1844,6 +1921,22 @@ mod tests {
         let saved: UiState = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.settings.recent_libraries, ["/gone/b"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Issue #1110: the before/after view mode (`\`, the Original Photo box) is momentary, so a
+    /// session quit in it must come back showing the edits, not frozen on the original.
+    #[test]
+    fn the_before_after_view_mode_does_not_outlive_a_restart() {
+        use lcc_ui_egui::state::BeforeAfter;
+        let ui = UiState { before_after: BeforeAfter::Original, ..Default::default() };
+        let saved = serde_json::to_value(&ui).unwrap();
+        assert!(saved.get("beforeAfter").is_none(), "the view mode is not saved: {saved}");
+        let back: UiState = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.before_after, BeforeAfter::Off);
+        // an older preferences file that still carries the mode reads, and starts without it
+        let legacy: UiState = serde_json::from_value(serde_json::json!({"beforeAfter": "original", "thumbSize": 210.0})).unwrap();
+        assert_eq!(legacy.thumb_size, 210.0);
+        assert_eq!(legacy.before_after, BeforeAfter::Off);
     }
 
     /// Issue #103: a damaged ui.json (which holds the library location) is kept aside and
@@ -2107,14 +2200,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Issue #136: Windows windows render with DX12 alone (no Vulkan driver loaded) by default.
+    /// Issues #136 and #934: Windows windows start on Vulkan alone (one driver loaded) by default.
     #[test]
     fn window_backends_follow_the_platform_default() {
         let eframe::egui_wgpu::WgpuSetup::CreateNew(n) = window_wgpu_options().wgpu_setup else { panic!("expected CreateNew") };
         let b = n.instance_descriptor.backends;
         if !lcc_brand::env_is_set("GPU_BACKEND") && std::env::var_os("WGPU_BACKEND").is_none() {
             if cfg!(windows) {
-                assert_eq!(b, eframe::wgpu::Backends::DX12);
+                assert_eq!(b, eframe::wgpu::Backends::VULKAN);
             } else if cfg!(target_os = "macos") {
                 assert_eq!(b, eframe::wgpu::Backends::METAL);
             }
@@ -2375,6 +2468,15 @@ mod config_path_tests {
     fn panic_log_stays_in_the_settings_folder() {
         let name = format!("{}-panics.log", lcc_brand::BINARY);
         assert_eq!(panic_log_path(std::iter::empty()), log_dir().map(|d| d.join(name)));
+    }
+
+    /// `--no-update-check` turns the start-up look for a newer release off for the run; without it, a session
+    /// that keeps its settings looks.
+    #[test]
+    fn no_update_check_flag_disables_the_startup_check() {
+        assert!(startup_update_check(true, false));
+        assert!(!startup_update_check(true, true));
+        assert!(!startup_update_check(false, false));
     }
 
     /// A `--memory` session keeps no panic log (it saves nothing); an option's value that reads `--memory` is not the

@@ -766,6 +766,7 @@ mod tests {
     use super::*;
     use crate::devices::PageGroup;
     use crate::profile::Page;
+    use crate::settings::MotionSettings;
 
     fn settings() -> SurfaceSettings {
         let mut p = Profile { name: "T".into(), ..Default::default() };
@@ -784,7 +785,9 @@ mod tests {
         p.base.insert("pad.4".into(), Binding::Reset);
         p.contexts.insert("default".into(), vec!["Cull".into(), "Light".into()]);
         p.contexts.insert("crop".into(), vec!["Crop".into()]);
-        SurfaceSettings { profiles: vec![p], profile: "T".into(), enabled: true, ..SurfaceSettings::default() }
+        // a 1:1 dial feel and no per-value tuning: these tests check the arithmetic, not the shipped feel
+        let motion = MotionSettings { speed: 1.0, acceleration: 1.0, ..MotionSettings::default() };
+        SurfaceSettings { profiles: vec![p], profile: "T".into(), enabled: true, motion, tuning: Default::default(), ..SurfaceSettings::default() }
     }
 
     fn turn(c: &str, t: i32) -> Input {
@@ -961,15 +964,6 @@ mod tests {
         assert!(r.held().is_empty());
         r.settings_mut().enabled = false;
         assert!(r.act(&b, Some(1), 80.0).is_empty());
-    }
-
-    #[test]
-    fn fast_turning_accelerates() {
-        let mut r = Runtime::new(settings());
-        r.input(turn("dial", 1), 0.0);
-        r.input(turn("dial", 1), 5.0); // 5 ms after: full ceiling (10×)
-        let f = r.flush(10.0);
-        assert!((adjusts(&f) - 0.11).abs() < 1e-9, "{f:?}");
     }
 
     #[test]

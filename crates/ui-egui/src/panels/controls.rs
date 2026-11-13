@@ -100,6 +100,13 @@ fn slider(ui: &mut egui::Ui, id: &str, v: &mut f64, range: std::ops::RangeInclus
     r.changed()
 }
 
+/// A speed slider: logarithmic, so the fine end (0.01–0.3) gets as much travel as the fast end.
+fn slider_speed(ui: &mut egui::Ui, id: &str, v: &mut f64) -> bool {
+    let r = ui.add(egui::Slider::new(v, 0.01..=5.0).logarithmic(true).fixed_decimals(2).suffix("×"));
+    register(ui.ctx(), format!("slider:{id}"), r.rect);
+    r.changed()
+}
+
 fn slider_u32(ui: &mut egui::Ui, id: &str, v: &mut u32, range: std::ops::RangeInclusive<u32>, suffix: &str) -> bool {
     let r = ui.add(egui::Slider::new(v, range).suffix(suffix));
     register(ui.ctx(), format!("slider:{id}"), r.rect);
@@ -767,14 +774,14 @@ fn draw_control(ui: &mut egui::Ui, t: &Tokens, rect: Rect, control: &str, view: 
         let tint = if inherited { Color32::from_gray(120) } else { Color32::WHITE };
         drew = crate::surface_icons::paint(ui, name, ir, tint);
     }
-    let text = if label.is_empty() { "—".to_string() } else { label.to_string() };
+    let text = if label.is_empty() { String::new() } else { label.to_string() };
     let font = FontId::proportional(if drew { 10.0 } else { 11.0 });
     let galley = ui.painter().layout(text, font, if label.is_empty() || inherited { t.text_dim } else { t.text }, rect.width() - 8.0);
     let y = if drew { rect.bottom() - text_h + (text_h - galley.size().y).max(0.0) / 2.0 - 2.0 } else { rect.center().y - galley.size().y / 2.0 };
     let pos = pos2(rect.center().x - galley.size().x / 2.0, y);
     ui.painter().galley(pos, galley, t.text);
     let tip = if label.is_empty() {
-        tr("Nothing — click to set").to_string()
+        tr("Nothing set (click to set it)").to_string()
     } else if inherited {
         format!("{label} ({})", tr("from All pages"))
     } else {
@@ -1039,7 +1046,7 @@ fn editor_panel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, page: &str, max
         let mut c = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("Its speed")).color(t.text_label));
-            c |= slider(ui, "surface.valueSpeed", &mut tu.speed, 0.1..=5.0, 2, "×");
+            c |= slider_speed(ui, "surface.valueSpeed", &mut tu.speed);
             ui.label(RichText::new(tr("Its acceleration")).color(t.text_label));
             c |= slider(ui, "surface.valueAccel", &mut tu.acceleration, 0.1..=4.0, 2, "×");
         });
@@ -1336,9 +1343,9 @@ fn contexts(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         let current = profile.contexts.get(*key).and_then(|l| l.first()).cloned();
         row(ui, t, label, |ui| {
             let r = egui::ComboBox::from_id_salt(format!("surfaceContext-{key}"))
-                .selected_text(current.clone().unwrap_or_else(|| "—".into()))
+                .selected_text(current.clone().unwrap_or_else(|| tr("None").to_string()))
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(current.is_none(), "—").clicked() {
+                    if ui.selectable_label(current.is_none(), tr("None")).clicked() {
                         let k = key.to_string();
                         edit_profile(app, |p| {
                             p.contexts.remove(&k);
@@ -1453,7 +1460,7 @@ fn connection(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         hint(ui, t, "No surface is connected.");
     } else {
         for (client, device) in connected {
-            ui.horizontal(|ui| status(ui, t, true, &format!("{client} — {device}")));
+            ui.horizontal(|ui| status(ui, t, true, &format!("{client}: {device}")));
         }
     }
     let paired: Vec<(String, String)> = app.surface.settings().paired.iter().map(|c| (c.client.clone(), c.name.clone())).collect();
@@ -1558,7 +1565,7 @@ fn profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         .id_salt("surfaceReport")
         .show(ui, |ui| {
             for l in r.dropped.iter().take(200) {
-                ui.label(RichText::new(format!("✕ {} — {}", l.from, lcc_brand::fill(&l.note))).size(11.0).color(t.text_dim));
+                ui.label(RichText::new(format!("✕ {}: {}", l.from, lcc_brand::fill(&l.note))).size(11.0).color(t.text_dim));
             }
             for l in r.mapped.iter().take(400) {
                 let note = if l.note.is_empty() { String::new() } else { format!(" ({})", lcc_brand::fill(&l.note)) };
@@ -1587,7 +1594,7 @@ fn feel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     heading(ui, t, "Dial Feel");
     let mut m = app.surface.settings().motion.clone();
     let mut changed = false;
-    row(ui, t, "Speed", |ui| changed |= slider(ui, "surface.speed", &mut m.speed, 0.1..=5.0, 2, "×"));
+    row(ui, t, "Speed", |ui| changed |= slider_speed(ui, "surface.speed", &mut m.speed));
     row(ui, t, "Acceleration", |ui| changed |= slider(ui, "surface.acceleration", &mut m.acceleration, 0.1..=4.0, 2, "×"));
     row(ui, t, "Fine steps", |ui| changed |= slider(ui, "surface.fine", &mut m.fine, 0.01..=1.0, 2, "×"));
     row(ui, t, "Big steps", |ui| changed |= slider(ui, "surface.coarse", &mut m.coarse, 1.0..=20.0, 1, "×"));
@@ -1602,7 +1609,7 @@ fn feel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     row(ui, t, "Value", |ui| {
         let r = egui::ComboBox::from_id_salt("surfaceTuningTarget").selected_text(label).show_ui(ui, |ui| {
             for s in ls::targets::all_targets() {
-                if ui.selectable_label(s.id == target, format!("{} — {}", tr(s.group), tr(s.label))).clicked() {
+                if ui.selectable_label(s.id == target, format!("{}: {}", tr(s.group), tr(s.label))).clicked() {
                     app.surface.editor.tuning_target = s.id.clone();
                 }
             }
@@ -1611,7 +1618,7 @@ fn feel(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     });
     let mut tu = app.surface.settings().tuning_of(&target);
     let mut c = false;
-    row(ui, t, "Its speed", |ui| c |= slider(ui, "surface.tuneSpeed", &mut tu.speed, 0.1..=5.0, 2, "×"));
+    row(ui, t, "Its speed", |ui| c |= slider_speed(ui, "surface.tuneSpeed", &mut tu.speed));
     row(ui, t, "Its acceleration", |ui| c |= slider(ui, "surface.tuneAccel", &mut tu.acceleration, 0.1..=4.0, 2, "×"));
     row(ui, t, "Slow turning", |ui| c |= slider(ui, "surface.tuneMin", &mut tu.acceleration_min, 0.1..=10.0, 1, "×"));
     row(ui, t, "Fast turning", |ui| c |= slider(ui, "surface.tuneMax", &mut tu.acceleration_max, 0.1..=15.0, 1, "×"));

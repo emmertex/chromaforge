@@ -205,9 +205,23 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     app.pending_picks = waiting;
     for (p, paths) in answered {
         let params = with_answer(&p.params, p.key, p.kind, &paths);
-        if let Err(e) = app.run(&p.command, params) {
-            app.toast_error(ctx, e);
+        match app.run(&p.command, params) {
+            Ok(r) => {
+                if let Some(text) = answered_message(&p.command, &r) {
+                    app.toast(ctx, text);
+                }
+            }
+            Err(e) => app.toast_error(ctx, e),
         }
+    }
+}
+
+/// What `command`, run with a dialog's answer, says when it worked (`None`: its result shows
+/// for itself). The same words whether the dialog answered at once or later.
+pub fn answered_message(command: &str, result: &Value) -> Option<String> {
+    match command {
+        "folder.move" => Some(crate::i18n::tr_format!("Moved; {} photo(s) relinked", result["relinked"])),
+        _ => None,
     }
 }
 
@@ -290,7 +304,7 @@ mod tests {
 
     #[test]
     fn import_photos_waits_for_its_dialog_and_runs_with_the_answer() {
-        let dir = std::env::temp_dir().join(format!("lc-pick-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-pick");
         let photo = photo_in(&dir);
         let (mut h, asked) = app_with_picker();
         // the command returns at once: no review of its own yet, the native dialog is up
@@ -317,7 +331,7 @@ mod tests {
 
     #[test]
     fn photos_chosen_before_a_restart_still_open_the_import_review() {
-        let dir = std::env::temp_dir().join(format!("lc-pick-restart-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-pick-restart");
         let photo = photo_in(&dir);
         let (mut h, _) = app_with_picker();
         let ctx = h.view.ctx.clone();
@@ -337,6 +351,21 @@ mod tests {
         answer_after_restart(&mut h.app, &ctx, PickKind::Files, Ok(vec![]));
         assert!(h.app.ui.toast().is_none(), "cancelled: nothing to say");
         assert!(import_sources(&mut h).is_none());
+    }
+
+    #[test]
+    fn move_folder_asks_off_the_ui_thread_and_runs_when_the_dialog_closes() {
+        let (mut h, asked) = app_with_picker();
+        let params = json!({"path": "/pics/trip"});
+        let req = PickRequest::folder("Move Folder To…");
+        let picked = ask(&mut h.app, "folder.move", &params, "into", req, |_| None);
+        assert!(matches!(picked, Picked::Later), "the window is not held up");
+        assert_eq!(asked.lock().unwrap()[0].0.kind, PickKind::Folder);
+        asked.lock().unwrap()[0].1.send(Ok(vec!["/pics/elsewhere".to_string()])).unwrap();
+        let ctx = h.view.ctx.clone();
+        poll(&mut h.app, &ctx);
+        assert!(h.app.pending_picks.is_empty());
+        assert!(h.app.ui.take_toast().is_some(), "the move ran with the chosen folder and said how it went");
     }
 
     #[test]
@@ -360,7 +389,7 @@ mod tests {
 
     #[test]
     fn a_folder_dialog_fills_in_one_path_and_a_save_dialog_names_the_file() {
-        let dir = std::env::temp_dir().join(format!("lc-pick-folder-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-pick-folder");
         let _photo = photo_in(&dir);
         let (mut h, asked) = app_with_picker();
         // a host with only background dialogs (Android has no synchronous folder picker) still
@@ -454,7 +483,7 @@ mod tests {
 
     #[test]
     fn without_a_picker_the_synchronous_dialog_answers_at_once() {
-        let dir = std::env::temp_dir().join(format!("lc-pick-sync-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-pick-sync");
         let photo = photo_in(&dir);
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), Default::default());
         let p = photo.clone();

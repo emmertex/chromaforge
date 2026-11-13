@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! My Catalog/
-//!   My Catalog.<catalog_ext>   entry point (what File → Open Catalog picks; JSON, see EntryFile)
+//!   My Catalog.<catalog_ext>   entry point (what File → Libraries → Open Library… picks; JSON, see EntryFile)
 //!   catalog.redb               the v4 store (crate::db)
 //!   catalog.log                op log: undo journal, change feed, crash safety (crate::journal)
 //!   catalog.snap               a stub that makes builds before v4 refuse the folder, untouched
@@ -244,7 +244,7 @@ impl Journal {
             db = CatalogDb::open(&db_path)?;
             db.mark_version().map_err(|e| match e {
                 CatalogError::Io(e) => CatalogError::Io(format!(
-                    "can't upgrade {} from catalog format v{stored} to v{} ({e}). The library was left unchanged: free some disk space (or make the catalog writable), then try again",
+                    "can't upgrade {} from catalog format v{stored} to v{} ({e}). The catalog was left unchanged: free some disk space (or make it writable), then try again",
                     db_path.display(),
                     crate::journal::VERSION
                 )),
@@ -339,14 +339,15 @@ fn migrate_v3(store: Box<dyn Store>, dir: &Path) -> Result<(Box<dyn Store>, Cata
 
 // ---- recent catalogs
 
-/// The list behind File → Open Recent Catalog (most recent first), kept in a JSON file.
+/// The recent list of older versions (most recent first, in `recent-catalogs.json`): read once, to
+/// carry its libraries over into the app's one recent list (issue #871).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentCatalogs {
     pub paths: Vec<PathBuf>,
-    /// Open this catalog at startup instead of the last one; `None`: the last one.
+    /// The catalog older versions opened at startup instead of the last one (not carried over).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<PathBuf>,
-    /// Show the catalog chooser at startup (also when Alt is held).
+    /// Older versions showed their catalog chooser at startup (carried over as At launch: Ask me).
     #[serde(default)]
     pub prompt_at_startup: bool,
 }

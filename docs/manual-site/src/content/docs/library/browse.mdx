@@ -1,0 +1,46 @@
+---
+title: Browse and cull
+description: Grid, loupe, compare, survey and reference views.
+sidebar:
+  order: 1
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="lib-grid" alt="Library grid with the catalog, collections and filter bar" />
+
+- **Photo Grid** and **Square Grid**: thumbnails with badges (flag, stars, edited, keywords, stack count, virtual copy). Size slider in the bottom bar, or `=` / `-`.
+- **Grid View Style** (**View** menu): compact or expanded cells, index numbers, badges, caption (file name, exposure, capture date). **Grid Info** toggles the info overlay.
+- **Loupe** (**Detail View**, `D`, or Enter on a photo): one photo with the Navigator, zoom (Fit, Fill, 1:1) and filmstrip.
+- **Compare** (`Shift+C`): two photos side by side, *Select* and *Candidate*, zoom linked. **Swap** and **Make Select** in the bar.
+- **Survey** (`N`): the selection together, one cell each.
+- **Reference View** (`Shift+R`): a reference photo beside the active one (**Photo ▸ Set as Reference Photo**).
+- **People** view: faces grouped by person, see [People and faces](../people/).
+- Move with arrows, `Home` / `End`; `Shift` + arrows extend the selection; **Select Only Active Photo** narrows it.
+- The header shows "1 selected" when one photo is selected.
+- Resizing the filmstrip keeps the active photo in place.
+- **Auto Advance** (**Photo** menu) steps forward after each rating or flag.
+- Cull with stars, flags and labels: [Ratings, flags, labels](../ratings/). **Assisted Culling** scores focus and bursts.
+- **Quick Develop** panel (right): Saved Preset, Crop Ratio, Treatment, White Balance, Auto Tone and stepped tone buttons for the selection.
+- **Sync Metadata** and **Sync Settings** buttons sit under the right panel.
+- **Photo Merge** (HDR, panorama, focus stack) and **Edit In** an external editor: **Photo** menu.
+
+## Loupe
+
+<Shot name="lib-loupe" alt="Loupe view with filmstrip" />
+
+## Compare
+
+<Shot name="lib-compare" alt="Compare view: Select and Candidate" />
+
+- Click a filmstrip cell to replace the active side; `Ctrl`/`Cmd`-click changes the selection without touching the pair.
+
+## Survey
+
+<Shot name="lib-survey" alt="Survey view of four photos" />
+
+<Aside type="note" title="Modern layout">
+  The grid, filter, search chips, flag and stars are on screen. Loupe, Compare, Survey: **View** menu. Sort and grid style: **View ▸ Sort**, **View ▸ Grid View Style**. Stacks, Photo Merge, Edit In: **Photo** menu. See [Three layouts](../../start/layouts/).
+</Aside>

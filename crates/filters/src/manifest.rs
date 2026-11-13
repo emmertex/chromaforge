@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::about::About;
 use crate::{Error, Result};
 
 /// Longest manifest the host reads.
@@ -110,6 +111,111 @@ pub struct Manifest {
     /// is dropped (the menu stays flat).
     #[serde(skip)]
     pub groups: Vec<(String, Vec<String>)>,
+    /// A header picture the host may show at the top of the filter's controls (`"header": "<svg…>"`,
+    /// or `{"dark": "<svg…>", "light": "<svg…>"}` for dark and light interface themes). Read by
+    /// [`Manifest::parse`]; a picture that isn't an SVG document of at most [`MAX_HEADER_BYTES`]
+    /// is dropped (no header).
+    #[serde(skip)]
+    pub header: Option<Header>,
+    /// Headings the host shows the parameters under (`"sections": [{"label": "Tone", "params":
+    /// ["exposure", …], "collapsed": false}, …]`, an ABI v1.1 proposal), in order. Read by
+    /// [`Manifest::parse`]; a section without a printable 1-64 character label or without a
+    /// parameter of the manifest is dropped, a parameter named twice stays in the first section,
+    /// and parameters in no section come first. Hosts without the field show a flat list.
+    #[serde(skip)]
+    pub sections: Vec<ParamSection>,
+    /// The key the host may offer for adding the filter to the selected photos (`"shortcut":
+    /// "Ctrl+Alt+N"`, an ABI v1.1 proposal: modifiers `Cmd`, `Ctrl`, `Alt`, `Shift` and a key, joined
+    /// with `+`). Read by [`Manifest::parse`]; a value that isn't 1-32 printable characters is
+    /// dropped, and the host decides whether it can bind the key; the user may change it like any
+    /// shortcut. Hosts without the field ignore it.
+    #[serde(skip)]
+    pub shortcut: Option<String>,
+    /// A square icon the host may show for the filter (`"icon": "<svg…>"`, drawn on the host's own
+    /// background, so it suits dark and light themes). Read by [`Manifest::parse`]; a picture that
+    /// isn't an SVG document of at most [`MAX_HEADER_BYTES`] is dropped (the host draws its own).
+    #[serde(skip)]
+    pub icon: Option<String>,
+    /// Where the filter comes from (`homepage`, `repository`, `changelog`, `license`, an ABI v1.1
+    /// proposal; hosts without the fields ignore them). Read by [`Manifest::parse`]; a value the
+    /// host can't use is dropped and named in [`Manifest::dropped`].
+    #[serde(skip)]
+    pub about: About,
+    /// Manifest values [`Manifest::parse`] dropped, each with why (`"homepage: not an https://
+    /// link"`).
+    #[serde(skip)]
+    pub dropped: Vec<String>,
+}
+
+/// Most parameter sections a manifest may declare (see [`Manifest::sections`]).
+pub const MAX_SECTIONS: usize = 16;
+
+/// A heading and the parameters under it (see [`Manifest::sections`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParamSection {
+    pub label: String,
+    pub params: Vec<String>,
+    /// Shown folded until the user opens it.
+    #[serde(default)]
+    pub collapsed: bool,
+}
+
+/// `v` as the parameter sections of a manifest with parameters `params` (see [`Manifest::sections`]).
+fn param_sections(v: Option<&Value>, params: &[(String, ParamSpec)]) -> Vec<ParamSection> {
+    let Some(list) = v.and_then(Value::as_array) else { return Vec::new() };
+    let printable = |l: &str| l.chars().count() <= 64 && l.chars().all(|c| !c.is_control() && !hidden_format(c)) && l.chars().any(visible);
+    let mut placed: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for sec in list.iter().take(MAX_SECTIONS) {
+        let Some(label) = sec.get("label").and_then(Value::as_str).map(str::trim).filter(|l| printable(l)) else { continue };
+        let Some(names) = sec.get("params").and_then(Value::as_array) else { continue };
+        let mut mine = Vec::new();
+        for n in names.iter().filter_map(Value::as_str) {
+            if params.iter().any(|(k, _)| k == n) && !placed.contains(&n) {
+                placed.push(n);
+                mine.push(n.to_string());
+            }
+        }
+        if mine.is_empty() {
+            continue;
+        }
+        out.push(ParamSection { label: label.to_string(), params: mine, collapsed: sec.get("collapsed").and_then(Value::as_bool).unwrap_or(false) });
+    }
+    out
+}
+
+/// The largest header SVG kept (a logo drawn as paths is a few kilobytes).
+pub const MAX_HEADER_BYTES: usize = 24 * 1024;
+
+/// A filter's header picture (see [`Manifest::header`]): SVG documents for dark and light
+/// interface themes, at least one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    pub dark: Option<String>,
+    pub light: Option<String>,
+}
+
+/// `v` as an SVG document of at most [`MAX_HEADER_BYTES`] (a picture a filter carries), or `None`.
+fn svg_document(v: Option<&Value>) -> Option<String> {
+    let t = v?.as_str()?.trim();
+    (t.len() <= MAX_HEADER_BYTES && (t.starts_with("<svg") || t.starts_with("<?xml")) && t.contains("</svg>")).then(|| t.to_string())
+}
+
+impl Header {
+    fn parse(v: &Value) -> Option<Header> {
+        let h = match v {
+            Value::String(_) => Header { dark: svg_document(Some(v)), light: None },
+            _ => Header { dark: svg_document(v.get("dark")), light: svg_document(v.get("light")) },
+        };
+        (h.dark.is_some() || h.light.is_some()).then_some(h)
+    }
+
+    /// The picture for a dark (`true`) or light interface theme, or the other one when the
+    /// filter gives only one.
+    pub fn for_theme(&self, dark: bool) -> &str {
+        let (want, other) = if dark { (&self.dark, &self.light) } else { (&self.light, &self.dark) };
+        want.as_deref().or(other.as_deref()).unwrap_or_default()
+    }
 }
 
 /// The pipeline stage a filter asks for (see [`Manifest::stage`]).
@@ -188,6 +294,16 @@ impl Manifest {
         man.validate()?;
         // optional per-parameter labels (unknown keys to the parameter schema itself)
         let raw: Value = serde_json::from_str(text).map_err(|e| Error::Manifest(format!("manifest: {e}")))?;
+        man.header = raw.get("header").and_then(Header::parse);
+        man.icon = svg_document(raw.get("icon"));
+        (man.about, man.dropped) = About::parse(&raw);
+        man.sections = param_sections(raw.get("sections"), &man.params);
+        man.shortcut = raw
+            .get("shortcut")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.chars().count() <= 32 && t.chars().all(|c| !c.is_control() && !hidden_format(c)) && t.chars().any(visible))
+            .map(str::to_string);
         if let Some(ps) = raw.get("params").and_then(Value::as_object) {
             man.labels = man
                 .params
@@ -499,6 +615,28 @@ mod tests {
     }
 
     #[test]
+    fn a_filters_pictures_are_optional_and_must_be_svg_documents() {
+        let with = |v: &str| format!(r#"{{"id":"a.b","name":"A","kind":"filter"{v}}}"#);
+        let none = Manifest::parse(with("").as_bytes()).unwrap();
+        assert!(none.icon.is_none() && none.header.is_none());
+        let svg = r#"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'><rect width='8' height='8'/></svg>"#;
+        let m = Manifest::parse(with(&format!(r#","icon":"{svg}","header":"{svg}""#)).as_bytes()).unwrap();
+        assert_eq!(m.icon.as_deref(), Some(svg));
+        let h = m.header.unwrap();
+        assert_eq!(h.for_theme(true), svg);
+        assert_eq!(h.for_theme(false), svg, "one picture serves both themes");
+        let m = Manifest::parse(with(&format!(r#","header":{{"light":"{svg}"}}"#)).as_bytes()).unwrap();
+        assert_eq!(m.header.as_ref().map(|h| h.for_theme(true)), Some(svg));
+        // not an SVG document, too large, or the wrong type: dropped, the manifest still loads
+        for bad in [r#""icon":"<html></html>""#, r#""icon":7"#, r#""header":{"dark":"png bytes"}"#, r#""header":["<svg></svg>"]"#] {
+            let m = Manifest::parse(with(&format!(",{bad}")).as_bytes()).unwrap();
+            assert!(m.icon.is_none() && m.header.is_none(), "{bad}");
+        }
+        let huge = format!("<svg>{}</svg>", "x".repeat(MAX_HEADER_BYTES));
+        assert!(Manifest::parse(with(&format!(r#","icon":"{huge}""#)).as_bytes()).unwrap().icon.is_none());
+    }
+
+    #[test]
     fn parses_and_keeps_param_order() {
         let m = Manifest::parse(FULL.as_bytes()).unwrap();
         assert_eq!(m.id, "org.example.tone");
@@ -574,6 +712,37 @@ mod tests {
         }
         let odd = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","stage":7}"#).unwrap();
         assert_eq!(odd.stage, None, "an unknown stage is ignored, not an error");
+        assert!(odd.sections.is_empty());
+    }
+
+    #[test]
+    fn sections_group_known_parameters_once_and_drop_the_rest() {
+        let m = Manifest::parse(
+            br#"{"id":"a.b","name":"N","kind":"filter",
+                "params":{"a":{"type":"bool"},"b":{"type":"bool"},"c":{"type":"bool"},"d":{"type":"bool"}},
+                "sections":[{"label":"Tone","params":["a","b","nope"]},
+                            {"label":"Again","params":["b"]},
+                            {"label":"\u202Eevil","params":["c"]},
+                            {"label":"Colour","params":["c"],"collapsed":true},
+                            "junk", {"params":["d"]}, {"label":"Empty","params":[]}]}"#,
+        )
+        .unwrap();
+        let got: Vec<(&str, Vec<&str>, bool)> =
+            m.sections.iter().map(|s| (s.label.as_str(), s.params.iter().map(String::as_str).collect(), s.collapsed)).collect();
+        assert_eq!(got, vec![("Tone", vec!["a", "b"], false), ("Colour", vec!["c"], true)]);
+        let none = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","sections":{"label":"x"}}"#).unwrap();
+        assert!(none.sections.is_empty(), "not a list: no sections, not an error");
+    }
+
+    #[test]
+    fn a_shortcut_is_kept_as_text_when_printable() {
+        let m = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","shortcut":" Ctrl+Alt+N "}"#).unwrap();
+        assert_eq!(m.shortcut.as_deref(), Some("Ctrl+Alt+N"));
+        for bad in [r#""shortcut":7"#, r#""shortcut":"""#, r#""shortcut":"\u202EN""#, r#""shortcut":"Ctrl+Alt+NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN""#]
+        {
+            let m = Manifest::parse(format!(r#"{{"id":"a.b","name":"N","kind":"filter",{bad}}}"#).as_bytes()).unwrap();
+            assert_eq!(m.shortcut, None, "{bad}");
+        }
     }
 
     #[test]

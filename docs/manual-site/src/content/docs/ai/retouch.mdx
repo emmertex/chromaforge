@@ -1,0 +1,31 @@
+---
+title: People retouch
+description: Smooth Skin, Find Blemishes and Teeth, driven by face and people models.
+sidebar:
+  order: 9
+---
+
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+These are beyond Lightroom and use the open MediaPipe people and face models (Apache-2.0, about 20 MB together, downloaded from Settings ▸ AI Models on request).
+
+- **Where**: the Edit panel ▸ **Retouch** section with three rows: **Skin**, **Blemishes**, **Teeth**.
+- **Skin** (Smooth Skin): Amount, Texture, Even Tone, Redness, Reduce Shine. Face, Body or Both; all people or person 1 to 4.
+- **Blemishes** (**Find Blemishes**): finds small darker or redder round spots on skin and adds heal spots in one undo step. Faces under 160 px and faces with more than 14 candidates (stubble, freckles) get none; at most 6 per face. **Include body skin** also searches shoulders, arms and back.
+- **Teeth**: Whiten and Brighten, all or one person.
+- **Eye focus strip**: View ▸ **Eye Focus Strip** shows each person's sharper eye judged sharp, soft or blurry, with closed eyes and sunglasses marked.
+- Runs in the background with an activity row; the analysis is stored with the photo and sliders copy and sync, but never another photo's skin.
+- Sliders are measured against each face's eye distance, so previews and exports match.
+
+<NeedsImage what="Retouch section with Skin expanded and a before/after of smoothed skin on a portrait" />
+
+## Limits
+
+- Needs faces that the model finds. Profile faces get no landmarks, so Find Blemishes skips them.
+- Eyes, lips and hair are not retouch parts yet (only Teeth).
+- No expression detection in culling. Assisted Culling itself is classical (focus score, clipping, burst grouping), not AI.
+
+<Aside type="note" title="Modern layout">
+Retouch is in the Develop panels list. Eye strip: **☰ ▸ View ▸ Eye Focus Strip**.
+</Aside>

@@ -222,6 +222,20 @@ fn masked_columns(data: &[u16], width: usize, active: Rect, white: f32) -> Range
     2..end.max(2)
 }
 
+/// Whether the camera's full-size JPEG in IFD0 has the aspect ratio of `crop` (within 1 %), or IFD0 gives no size.
+/// A camera that applies an `AspectInfo` rectangle (PowerShot G12 at 3:2) crops its own JPEG to it; one whose JPEG
+/// shows the whole frame did not (issue #964: EOS 7D files carry a 4:3 `AspectInfo` with a 3:2 JPEG), so the tag
+/// is not trusted there.
+fn preview_agrees(ifd0: &Ifd, crop: Rect) -> bool {
+    let (Some(pw), Some(ph)) = (ifd0.u64(t::IMAGE_WIDTH), ifd0.u64(t::IMAGE_LENGTH)) else { return true };
+    if pw == 0 || ph == 0 {
+        return true;
+    }
+    let (cw, ch) = (crop.width as u128, crop.height as u128);
+    let (a, b) = (cw * ph as u128, ch * pw as u128);
+    a.abs_diff(b) * 100 <= a.max(b)
+}
+
 pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let tiff = Tiff::parse(bytes)?;
     let ifd0 = &tiff.ifds[0];
@@ -324,7 +338,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
             active = Rect::new(l, tp, r - l + 1, b - tp + 1);
             // `AspectInfo` is measured from the image area's origin, so it only applies when that area is known.
             crop = Rect::new(0, 0, active.width, active.height);
-            crop = canon_aspect_crop(mn.as_ref().map(|m| &m.ifd), crop).unwrap_or(crop);
+            crop = canon_aspect_crop(mn.as_ref().map(|m| &m.ifd), crop).filter(|c| preview_agrees(ifd0, *c)).unwrap_or(crop);
         }
     }
     let color_data = mn.as_ref().and_then(|m| m.ifd.value(COLOR_BALANCE).map(|v| words(v, m.order)));
@@ -386,6 +400,18 @@ pub(crate) mod tests {
 
     /// A synthetic CR2 whose sensor samples are `img` (`w`×`h`, 14-bit), with `note` as the Exif maker note.
     fn synthetic_cr2_of(img: &[u16], w: usize, h: usize, slices: Option<[u16; 3]>, note: Option<Vec<u8>>) -> Vec<u8> {
+        synthetic_cr2_preview(img, w, h, slices, note, None)
+    }
+
+    /// [`synthetic_cr2_of`] whose IFD0 (the camera's full-size JPEG) is `preview` (width, height) when given.
+    fn synthetic_cr2_preview(
+        img: &[u16],
+        w: usize,
+        h: usize,
+        slices: Option<[u16; 3]>,
+        note: Option<Vec<u8>>,
+        preview: Option<(u32, u32)>,
+    ) -> Vec<u8> {
         let widths: Vec<usize> = match slices {
             Some([n, sw, last]) => {
                 let mut v = vec![sw as usize; n as usize];
@@ -407,6 +433,10 @@ pub(crate) mod tests {
         ifd0.set(t::MAKE, Value::Ascii("Canon".into()));
         ifd0.set(t::MODEL, Value::Ascii("Canon EOS Test".into()));
         ifd0.set(t::ORIENTATION, Value::Short(vec![8]));
+        if let Some((pw, ph)) = preview {
+            ifd0.set(t::IMAGE_WIDTH, Value::Long(vec![pw]));
+            ifd0.set(t::IMAGE_LENGTH, Value::Long(vec![ph]));
+        }
         // maker note: SensorInfo + ColorBalance, plain IFD with offsets relative to the TIFF header
         let mut exif = IfdBuilder::new();
         exif.set(t::ISO_SPEED, Value::Short(vec![400]));
@@ -583,6 +613,11 @@ pub(crate) mod tests {
 
     /// [`decode_with_note`] with a `w` x `h` sensor.
     fn decode_sized_with_note(w: usize, h: usize, entries: &[(u16, u16, Vec<u8>)]) -> RawImage {
+        decode_sized_with_note_preview(w, h, entries, None)
+    }
+
+    /// [`decode_sized_with_note`] with IFD0 sized `preview`.
+    fn decode_sized_with_note_preview(w: usize, h: usize, entries: &[(u16, u16, Vec<u8>)], preview: Option<(u32, u32)>) -> RawImage {
         let ifd_len = 2 + 12 * entries.len() + 4;
         let (mut note, mut data, mut at) = (Vec::new(), Vec::new(), Vec::new());
         note.extend_from_slice(&(entries.len() as u16).to_le_bytes());
@@ -601,7 +636,8 @@ pub(crate) mod tests {
         }
         note.extend_from_slice(&0u32.to_le_bytes());
         note.extend_from_slice(&data);
-        let (mut bytes, _) = synthetic_cr2_note(w, h, None, Some(note));
+        let img: Vec<u16> = (0..w * h).map(|i| 1024 + ((i * 7919) % 12000) as u16).collect();
+        let mut bytes = synthetic_cr2_preview(&img, w, h, None, Some(note), preview);
         let tiff = Tiff::parse(&bytes).unwrap();
         let off = tiff.exif().unwrap().get(t::MAKER_NOTE).unwrap().offset as usize;
         for (field, value) in at {
@@ -802,17 +838,32 @@ pub(crate) mod tests {
             assert_eq!(image.crop, Rect::new(0, 0, 64, 48), "{aspect:?}");
             assert_eq!((image.metadata.width, image.metadata.height), (Some(64), Some(48)));
         }
-    }
-
-    /// Rectangles that don't fit the image area leave the crop alone and cannot overflow; without a usable
-    /// `SensorInfo` the origin `AspectInfo` is measured from is unknown, so it isn't applied either.
-    #[test]
-    fn aspect_info_that_does_not_fit_is_ignored() {
-        for bad in [[0, 65, 42, 0, 3], [0, 64, 42, 0, 7], [0, 64, 42, 1, 3], [0, 1, 42, 0, 0], [0, 64, 0, 0, 0], [0, u32::MAX, 42, 0, 0]] {
-            assert_eq!(decode_with_aspect(Some(bad)).crop, Rect::new(0, 0, 64, 48), "{bad:?}");
+        // aspect info that does not fit is ignored
+        // Rectangles that don't fit the image area leave the crop alone and cannot overflow; without a usable
+        // `SensorInfo` the origin `AspectInfo` is measured from is unknown, so it isn't applied either.
+        {
+            for bad in [[0, 65, 42, 0, 3], [0, 64, 42, 0, 7], [0, 64, 42, 1, 3], [0, 1, 42, 0, 0], [0, 64, 0, 0, 0], [0, u32::MAX, 42, 0, 0]] {
+                assert_eq!(decode_with_aspect(Some(bad)).crop, Rect::new(0, 0, 64, 48), "{bad:?}");
+            }
+            let aspect = [0u32, 32, 8, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let image = decode_with_note(&[(CANON_ASPECT_INFO, 4, aspect)]);
+            assert_eq!((image.active_area, image.crop), (Rect::new(0, 0, 64, 10), Rect::new(0, 0, 64, 10)));
         }
-        let aspect = [0u32, 32, 8, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let image = decode_with_note(&[(CANON_ASPECT_INFO, 4, aspect)]);
-        assert_eq!((image.active_area, image.crop), (Rect::new(0, 0, 64, 10), Rect::new(0, 0, 64, 10)));
+        // aspect info the camera jpeg disagrees with is ignored
+        // Issue #964: an EOS 7D CR2 carries a 4:3 `AspectInfo` although the camera recorded (and its full-size JPEG
+        // shows) the whole 3:2 frame. A rectangle the camera's own JPEG disagrees with is not applied; one it agrees
+        // with still is.
+        {
+            // 3:2 image area 60 x 40 at (4, 2) on a 66 x 44 sensor; a 4:3 AspectInfo of 52 x 39 inside it
+            let si: Vec<u8> = [66u16, 44, 0, 0, 0, 4, 2, 63, 41].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let aspect: Vec<u8> = [2u32, 52, 39, 4, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let entries = [(SENSOR_INFO, 3, si), (CANON_ASPECT_INFO, 4, aspect)];
+            let image = decode_sized_with_note_preview(66, 44, &entries, Some((5184, 3456)));
+            assert_eq!(image.crop, Rect::new(0, 0, 60, 40));
+            assert_eq!(image.info().developed_size(), (60, 40));
+            // a JPEG cropped to the rectangle (PowerShot-style in-camera aspect) keeps the aspect crop
+            let image = decode_sized_with_note_preview(66, 44, &entries, Some((4608, 3456)));
+            assert_eq!(image.crop, Rect::new(4, 0, 52, 39));
+        }
     }
 }

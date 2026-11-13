@@ -130,7 +130,7 @@ fn read_list(path: &str) -> Result<String> {
     }
     // Notepad and some exporters save UTF-16: say how to get the file in, not just that it isn't
     if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
-        return Err(bad("keyword.import", format!("{path}: UTF-16 text — save it as UTF-8 and import it again")));
+        return Err(bad("keyword.import", format!("{path}: UTF-16 text. Save it as UTF-8 and import it again")));
     }
     String::from_utf8(bytes).map_err(|_| bad("keyword.import", format!("{path}: not UTF-8 text")))
 }
@@ -267,7 +267,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save Keyword Set",
             [],
             None,
-            "{name, keywords?: [up to 9, \"\" = an empty slot] (default: the renamed set's, else the current nine), replace?: the set it renames, new?: refuse a name another set has} — replaces a set of that name (or `replace`, in its place) and makes it current",
+            "{name, keywords?: [up to 9, \"\" = an empty slot] (default: the renamed set's, else the current nine), replace?: the set it renames, new?: refuse a name another set has}: replaces a set of that name (or `replace`, in its place) and makes it current",
             always,
             |s, p| {
                 let name = str_param(p, "name")
@@ -341,7 +341,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Toggle Keyword from Set",
             [],
             None,
-            "{index: 1..9, ids?} — the set's keyword N: added to the target photos, or removed when they all have it",
+            "{index: 1..9, ids?}: the set's keyword N: added to the target photos, or removed when they all have it",
             super::has_selection,
             |s, p| {
                 let i = p
@@ -379,7 +379,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Keyword Shortcut",
             [],
             None,
-            "{keywords: [..] or \"a, b\" (none clears it); keyword: one (older form)} — the keywords ⇧K adds to or removes from the selected photos; a new name goes inside the default parent → {keywords}",
+            "{keywords: [..] or \"a, b\" (none clears it); keyword: one (older form)}: the keywords ⇧K adds to or removes from the selected photos; a new name goes inside the default parent → {keywords}",
             always,
             |s, p| {
                 s.keyword_shortcut = shortcut_keywords(s, p);
@@ -392,7 +392,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add Keyword Shortcut",
             ["Metadata"],
             Some("Shift+K"),
-            "{ids?} — the keyword shortcut's keywords: removed from the target photos when every one has them all, else added → {changed, keywords, added}",
+            "{ids?}: the keyword shortcut's keywords: removed from the target photos when every one has them all, else added → {changed, keywords, added}",
             super::has_selection,
             |s, p| {
                 let keywords = s.keyword_shortcut.clone();
@@ -487,7 +487,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Keyword",
             [],
             None,
-            "{keyword, name?: its new name (one level), synonyms?, includeOnExport?, exportContaining?, exportSynonyms?, person?} — what isn't given keeps its value",
+            "{keyword, name?: its new name (one level), synonyms?, includeOnExport?, exportContaining?, exportSynonyms?, person?}: what isn't given keeps its value",
             always,
             |s, p| {
                 let from = named_keyword(s, p, "keyword.edit")?;
@@ -508,7 +508,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Move Keyword",
             [],
             None,
-            "{keyword, parent: keyword | null (the top level), merge?: bool} — with the keywords below it; onto a name that is taken only with `merge: true`",
+            "{keyword, parent: keyword | null (the top level), merge?: bool}: with the keywords below it; onto a name that is taken only with `merge: true`",
             always,
             |s, p| {
                 let from = named_keyword(s, p, "keyword.move")?;
@@ -535,7 +535,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Purge Unused Keywords",
             [],
             None,
-            "{} — takes off the keyword list the keywords no photo has → {purged}",
+            "{}: takes off the keyword list the keywords no photo has → {purged}",
             always,
             |s, _| {
                 let op = s.catalog.purge_unused_keywords_ops();
@@ -548,7 +548,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Put New Keywords Inside",
             [],
             None,
-            "{keyword: keyword | null} — the parent keyword.create puts new keywords inside (null: the top level)",
+            "{keyword: keyword | null}: the parent keyword.create puts new keywords inside (null: the top level)",
             always,
             |s, p| {
                 let keyword = match p.get("keyword") {
@@ -565,7 +565,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export Keywords",
             [],
             None,
-            "{path?} — the keyword list as a file (Lightroom Classic's format, which Capture One, Photo Supreme and Bridge read) → {keywords, captureOneRefuses: keywords with ; , < > that Capture One's importer refuses, unwritable: keywords left out because the format can't hold them (a name in brackets or braces, a line break, deeper than 64 levels; a synonym as \"path {synonym}\"), text when there is no path}",
+            "{path?}: the keyword list as a file (Lightroom Classic's format, which Capture One, Photo Supreme and Bridge read) → {keywords, captureOneRefuses: keywords with ; , < > that Capture One's importer refuses, unwritable: keywords left out because the format can't hold them (a name in brackets or braces, a line break, deeper than 64 levels; a synonym as \"path {synonym}\"), text when there is no path}",
             always,
             |s, p| {
                 let file = s.catalog.keyword_list_text();
@@ -595,7 +595,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Import Keywords",
             [],
             None,
-            "{path | text} — a keyword list (Lightroom Classic's format, also Capture One's and Photo Supreme's Formatted Vocabulary File): adds the keywords the library doesn't have, gives those it has the list's synonyms; one undo step → {added, updated}",
+            "{path | text}: a keyword list (Lightroom Classic's format, also Capture One's and Photo Supreme's Formatted Vocabulary File): adds the keywords the library doesn't have, gives those it has the list's synonyms; one undo step → {added, updated}",
             always,
             |s, p| {
                 let text = match (str_param(p, "path").map(str::trim).filter(|x| !x.is_empty()), str_param(p, "text")) {
@@ -617,7 +617,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Rename Keyword",
             [],
             None,
-            "{from, to} — on every photo, children included (`a` → `b` renames `a|x` to `b|x`); renaming onto an existing keyword merges them",
+            "{from, to}: on every photo, children included (`a` → `b` renames `a|x` to `b|x`); renaming onto an existing keyword merges them",
             always,
             |s, p| {
                 let from = str_param(p, "from").ok_or_else(|| bad("keyword.rename", "missing `from`"))?.to_string();
@@ -632,9 +632,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Keyword",
             [],
             None,
-            "{keyword} — removes it (and the keywords below it) from every photo",
+            "{keyword}: removes it (and the keywords below it) from every photo. Several at once: {keywords: [keyword]}, still one undo step; an empty one refuses the whole call",
             always,
             |s, p| {
+                if p.get("keywords").is_some_and(|v| !v.is_null()) {
+                    let ks = strs(p, "keywords");
+                    let op = s.catalog.delete_keywords_ops(&ks).map_err(|e| bad("keyword.delete", e.to_string()))?;
+                    let cleaned: Vec<String> = ks.iter().map(|k| clean(k)).collect();
+                    return commit_keywords(s, "Delete Keywords", op, |f| (!cleaned.iter().any(|c| is_under(f, c))).then(|| f.to_string()));
+                }
                 let k = str_param(p, "keyword").ok_or_else(|| bad("keyword.delete", "missing `keyword`"))?.to_string();
                 let op = s.catalog.delete_keyword_ops(&k).map_err(|e| bad("keyword.delete", e.to_string()))?;
                 let c = clean(&k);
@@ -646,7 +652,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Merge Keywords",
             [],
             None,
-            "{from: [keyword], into: keyword} — replaces each `from` keyword (children included) with `into` on every photo",
+            "{from: [keyword], into: keyword}: replaces each `from` keyword (children included) with `into` on every photo",
             always,
             |s, p| {
                 let from = strs(p, "from");

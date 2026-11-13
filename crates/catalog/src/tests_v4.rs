@@ -370,6 +370,47 @@ fn damaged_or_missing_store_is_an_error_not_a_crash() {
 }
 
 #[test]
+fn loading_reads_the_store_from_memory() {
+    use redb::StorageBackend;
+    let s = Scratch::new("mem");
+    let want = {
+        let (mut j, mut c, _) = open(s.path());
+        fill(&mut j, &mut c, 300);
+        j.snapshot(&c).unwrap();
+        c.to_snapshot()
+    };
+    let p = s.path().join(DB_FILE);
+    {
+        let (_j, got, r) = open(s.path());
+        assert_eq!(r.failed, 0);
+        assert_eq!(got.to_snapshot(), want);
+    }
+    let before = std::fs::read(&p).unwrap();
+
+    // the copy in memory: the file's bytes, and no offset or length redb could ask for panics
+    let mem = crate::db::MemFile::read(&p, u64::MAX).unwrap();
+    let len = mem.len().unwrap();
+    assert_eq!(len, before.len() as u64);
+    let mut all = vec![0u8; before.len()];
+    mem.read(0, &mut all).unwrap();
+    assert_eq!(all, before);
+    let mut buf = [0u8; 16];
+    for at in [len - 8, len, len + 1, u64::MAX - 4, u64::MAX] {
+        assert!(mem.read(at, &mut buf).is_err(), "read at {at}");
+        assert!(mem.write(at, &buf).is_err(), "write at {at}");
+    }
+    assert!(mem.set_len(u64::MAX).is_err());
+    mem.set_len(len + 32).unwrap();
+    mem.read(len + 16, &mut buf).unwrap();
+    assert_eq!(buf, [0u8; 16], "new bytes are zero");
+    mem.set_len(4).unwrap();
+    assert!(mem.read(0, &mut buf).is_err());
+    // a store larger than the limit is not read into memory (the load reads the file instead)
+    assert!(crate::db::MemFile::read(&p, len - 1).is_err());
+    assert!(crate::db::MemFile::read(&s.path().join("missing"), u64::MAX).is_err());
+}
+
+#[test]
 fn a_store_changed_by_another_writer_is_rewritten_whole() {
     // (the app allows one session per library, `LibraryLock`; this is the store's own guard)
     let s = Scratch::new("twice");
@@ -459,13 +500,18 @@ fn backup_integrity_optimise() {
     let report = j.check_integrity(&c).unwrap();
     assert!(report.ok(), "{report:?}");
     let root = s.path().join("elsewhere");
+    // backups are named by the second they were made in: the earlier two are renamed to earlier times instead of
+    // waiting a second between them
     let mut made = Vec::new();
-    for _ in 0..3 {
-        made.push(j.backup(&c, &root, 2).unwrap());
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+    for old in ["2001-01-01 000000", "2002-01-01 000000"] {
+        let b = j.backup(&c, &root, 2).unwrap();
+        std::fs::rename(&b, root.join(old)).unwrap();
+        made.push(root.join(old));
     }
-    let left: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).collect();
-    assert_eq!(left.len(), 2, "pruned to 2: {left:?}");
+    made.push(j.backup(&c, &root, 2).unwrap());
+    let mut left: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).collect();
+    left.sort();
+    assert_eq!(left, made[1..], "pruned to the newest 2");
     // a backup opens as a catalog of its own
     {
         let copy = Scratch::new("bk-copy");
@@ -888,12 +934,10 @@ fn exit_backup_skips_a_catalog_unchanged_since_the_last() {
     let op = Op::AddAlbum { album };
     c.apply(op.clone()).unwrap();
     j.append(&[op]).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(j.backup_if_due(&c).unwrap().is_some(), "an op since");
     assert!(j.backup_if_due(&c).unwrap().is_none());
     // the library's presets and habits since
     std::fs::write(s.path().join("prefs.json"), b"{\"presets\": []}").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     assert!(j.backup_if_due(&c).unwrap().is_some(), "prefs.json changed");
     // unknown: changed
     assert!(CatalogSettings::load(s.path()).backup_wanted(library::now_secs(), None));

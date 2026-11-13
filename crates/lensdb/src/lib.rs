@@ -232,7 +232,7 @@ impl LensDb {
             {
                 score *= 0.8;
             }
-            if score >= 0.6 && best.is_none_or(|(s, _)| score > s) {
+            if score >= 0.6 && best.is_none_or(|(s, b)| score > s || (score == s && b.crop_factor.is_none() && lens.crop_factor.is_some())) {
                 best = Some((score, lens));
             }
         }
@@ -271,7 +271,7 @@ impl LensDb {
                 continue;
             }
             let score = focals.iter().filter(|f| (lo..=hi).contains(*f)).count() as f64 / focals.len() as f64;
-            if score > 0.0 && best.is_none_or(|(s, _)| score > s) {
+            if score > 0.0 && best.is_none_or(|(s, b)| score > s || (score == s && b.crop_factor.is_none() && p.crop_factor.is_some())) {
                 best = Some((score, p));
             }
         }
@@ -301,7 +301,11 @@ fn exif_focal_range(exif: &[String]) -> Option<(f64, f64)> {
 fn read_capped(path: &Path) -> Result<String, Error> {
     use std::io::Read;
     let io = |e: std::io::Error| Error::Io(e.to_string());
-    // the opened file is checked, not the pathname: a link or FIFO swapped in after a pathname check is refused too
+    // the pathname is checked before opening (opening a FIFO for reading blocks until a writer appears), then the
+    // opened file again: a link or FIFO swapped in after the pathname check is refused too
+    if !std::fs::metadata(path).map_err(io)?.is_file() {
+        return Err(Error::Io(format!("{}: not a regular file", path.display())));
+    }
     let file = std::fs::File::open(path).map_err(io)?;
     let meta = file.metadata().map_err(io)?;
     if !meta.is_file() {

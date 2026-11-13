@@ -44,6 +44,7 @@ fn green_at(img: &lcc_raster::Rgb32f, x: usize, y: usize) -> f32 {
 /// A clear hot pixel is corrected while a raw is decoded, unless the photo's switch is off; the decode reports it.
 #[test]
 fn decode_corrects_a_hot_pixel_unless_switched_off() {
+    let _maps = crate::sensor_maps::change_generation();
     let (w, h) = (96usize, 64usize);
     let dng = synthetic_dng_of(w, h, "RGGB", mosaic(w, h, 1, &[(41, 30, 0.7)]), None, meta(0, None));
     let on = crate::media::LoadOptions { path: Some("_P1_0001.dng".into()), ..Default::default() };
@@ -66,6 +67,7 @@ fn decode_corrects_a_hot_pixel_unless_switched_off() {
 #[test]
 fn a_body_map_confirms_a_faint_hot_pixel_across_photos() {
     use lcc_raw::defects::{Thresholds, detect, refine};
+    let _maps = crate::sensor_maps::change_generation();
     let (w, h) = (96usize, 64usize);
     // (above what a map learns, 0.04 here; under what one photo corrects, 0.056)
     let faint = (50usize, 20usize, 0.05f32);
@@ -105,6 +107,7 @@ fn a_body_map_confirms_a_faint_hot_pixel_across_photos() {
 #[test]
 fn sensor_switch_and_auto_dust_spots_round_trip() {
     use lcc_develop::{AutoSpot, AutoSpotKind, DevelopSettings, Spot, SpotMode};
+    let _maps = crate::sensor_maps::change_generation();
     let d = DevelopSettings::default();
     assert!(!d.to_json().to_string().contains("sensor"), "default settings JSON unchanged");
     assert_eq!(lcc_develop::controls::get(&d, "sensor.pixelFix"), Some(1.0));
@@ -145,6 +148,7 @@ fn sensor_switch_and_auto_dust_spots_round_trip() {
 /// Turning the switch off decodes the photo again without corrections, and on again with them.
 #[test]
 fn the_switch_reloads_the_photo() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-switch");
     let (w, h) = (96usize, 64usize);
     let path = dir.join("_P2_0001.dng");
@@ -182,6 +186,7 @@ fn wait_job(s: &mut Session) -> Value {
 /// photos agree on, and `status` / `clear` show and forget it.
 #[test]
 fn pixel_map_commands_build_show_and_clear_a_body_map() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-rebuild");
     let (w, h) = (128usize, 96usize);
     let mut paths = Vec::new();
@@ -230,6 +235,7 @@ fn pixel_map_commands_build_show_and_clear_a_body_map() {
 /// Dark frames confirm their hot pixels at once and keep their noise figures.
 #[test]
 fn dark_frame_calibration_confirms_hot_pixels() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dark");
     let (w, h) = (96usize, 64usize);
     let mut n = 5u64;
@@ -265,6 +271,7 @@ fn dark_frame_calibration_confirms_hot_pixels() {
 /// it again replaces them instead of adding more; moving one makes it the user's own.
 #[test]
 fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dust");
     let (w, h) = (900usize, 600usize);
     let spots = [(180.0f32, 140.0f32), (600.0, 300.0)];
@@ -308,8 +315,9 @@ fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
 /// right place; a selection runs in the background and `dust.pump` applies it.
 #[test]
 fn a_body_dust_map_finds_faint_dust_on_later_photos() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dustmap");
-    let (w, h) = (1200usize, 800usize);
+    let (w, h) = (600usize, 400usize);
     // a smooth bright mosaic with a soft dark spot at (cx, cy) on the sensor, `depth` deep
     let photo = |seed: u64, depth: f32| {
         let mut n = seed.wrapping_add(7);
@@ -317,9 +325,9 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
             .map(|i| {
                 n = n.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                 let (x, y) = ((i % w) as f32, (i / w) as f32);
-                let d2 = (x - 840.0).powi(2) + (y - 260.0).powi(2);
-                let t = 1.0 - depth * (-d2 / (2.0 * 7.0 * 7.0)).exp();
-                (256.0 + (2600.0 + 1.0 * y) * t + ((n >> 40) % 9) as f32) as u16
+                let d2 = (x - 420.0).powi(2) + (y - 130.0).powi(2);
+                let t = 1.0 - depth * (-d2 / (2.0 * 5.0 * 5.0)).exp();
+                (256.0 + (2600.0 + 2.0 * y) * t + ((n >> 40) % 9) as f32) as u16
             })
             .collect::<Vec<u16>>()
     };
@@ -348,13 +356,13 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
     assert!(alone["found"].as_u64() < Some(1) || r["confirmed"].as_u64() >= Some(1), "{alone} {r}");
     assert_eq!(r["added"], 1, "{r}");
     let sp = &r["spots"][0];
-    assert!((sp["x"].as_f64().unwrap() - 840.0 / w as f64).abs() < 0.01 && (sp["y"].as_f64().unwrap() - 260.0 / h as f64).abs() < 0.015, "{r}");
+    assert!((sp["x"].as_f64().unwrap() - 420.0 / w as f64).abs() < 0.01 && (sp["y"].as_f64().unwrap() - 130.0 / h as f64).abs() < 0.015, "{r}");
     assert_eq!(sp["confirmed"], true);
     // turned to portrait (Rotate Right): the spot follows the sensor position
     s.execute("photo.rotateRight", &json!({"ids": [fid.0]})).unwrap();
     let o = s.develop_of(fid).unwrap().orientation;
     let r = s.execute("spot.findDust", &json!({})).unwrap();
-    let (ex, ey) = o.map(840.0 / w as f64, 260.0 / h as f64, 1.0, 1.0);
+    let (ex, ey) = o.map(420.0 / w as f64, 130.0 / h as f64, 1.0, 1.0);
     let sp = &r["spots"][0];
     assert!((sp["x"].as_f64().unwrap() - ex).abs() < 0.015 && (sp["y"].as_f64().unwrap() - ey).abs() < 0.015, "{o:?} {r}");
     // a selection: in the background, applied by dust.pump
@@ -383,6 +391,7 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
 /// by default; a PNG is never included).
 #[test]
 fn remove_dust_on_import_runs_on_new_raws() {
+    let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-import");
     let (w, h) = (96usize, 64usize);
     let raw = dir.join("_I1_0001.dng");
@@ -404,4 +413,100 @@ fn remove_dust_on_import_runs_on_new_raws() {
     }
     s.execute("dust.pump", &json!({})).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Confirm a pixel on `body`'s map: the same sample found in photos of three capture periods.
+fn confirm_pixel(body: &str, x: u32) {
+    use lcc_raw::defects::{Defect, DefectKind};
+    let found = [Defect { x, y: 7, s: 1, kind: DefectKind::Hot, level: 0.2 }];
+    let mut changed = false;
+    for k in 0..3u32 {
+        let shot = crate::sensor_maps::Shot {
+            fingerprint: 0x5e7_0000 + u64::from(x) * 16 + u64::from(k),
+            captured: Some(format!("2026-09-27T1{k}:00:00")),
+            exposure: Some(0.01),
+            iso: Some(400),
+            f_number: Some(8.0),
+        };
+        changed |= crate::sensor_maps::record_pixels(body, "Testmaker", "Sensor Test 1", [96, 64], &shot, &found) == Some(true);
+    }
+    assert!(changed, "{body}: the pixel is confirmed");
+}
+
+/// Confirming a hot pixel on one camera body changes the preview keys of that body's photos and of no other body's:
+/// the rest of a library keeps its thumbnails, loupe and 1:1 previews.
+#[test]
+fn a_body_map_changes_only_that_bodys_preview_keys() {
+    let dir = temp_dir("sensor-keys");
+    let (w, h) = (96usize, 64usize);
+    let mut s = Session::new().with_fs();
+    // two bodies with a serial number, and two cameras that write none and are known by their file names
+    let mut photo = |name: &str, serial: Option<&str>| {
+        let path = dir.join(name);
+        // (different pixels: an identical file would be skipped as a duplicate)
+        let seed = name.bytes().map(u64::from).sum::<u64>();
+        std::fs::write(&path, synthetic_dng_of(w, h, "RGGB", mosaic(w, h, seed, &[]), None, meta(0, serial))).unwrap();
+        s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+        s.catalog.photos().find(|p| p.file_name == name).unwrap().id
+    };
+    let serial_a = photo("a_0001.dng", Some("SN-KEYS-A"));
+    let serial_b = photo("b_0001.dng", Some("SN-KEYS-B"));
+    let named_a = photo("_K1_0001.dng", None);
+    let named_b = photo("_K2_0001.dng", None);
+    // (each file-named body has a map, as it does once one of its raws has been decoded)
+    for b in ["file:K1", "file:K2"] {
+        crate::sensor_maps::update(b, "Testmaker", "Sensor Test 1", [96, 64], |_| ()).unwrap();
+    }
+    let keys = |s: &mut Session, id| {
+        let p = s.catalog.photo(id).unwrap().clone();
+        let thumb = s.thumb_job(id, 256).unwrap().cache.unwrap().1;
+        (thumb, Session::full_view_key(&p), Session::variant_key(&p, &p.develop, 128))
+    };
+    let all = |s: &mut Session| [serial_a, serial_b, named_a, named_b].map(|id| keys(s, id));
+    let differ = |a: &(lcc_preview::Hash128, lcc_preview::Hash128, lcc_preview::Hash128),
+                  b: &(lcc_preview::Hash128, lcc_preview::Hash128, lcc_preview::Hash128)| { a.0 != b.0 && a.1 != b.1 && a.2 != b.2 };
+
+    let before = all(&mut s);
+    confirm_pixel("SN-KEYS-A", 11);
+    let after = all(&mut s);
+    assert!(differ(&before[0], &after[0]), "the body whose map changed gets new keys");
+    assert_eq!(before[1], after[1], "another body's keys stay");
+    assert_eq!(before[2], after[2], "a file-named body's keys stay");
+    assert_eq!(before[3], after[3], "a file-named body's keys stay");
+
+    let before = after;
+    confirm_pixel("file:K1", 13);
+    let after = all(&mut s);
+    assert_eq!(before[0], after[0]);
+    assert_eq!(before[1], after[1]);
+    assert!(differ(&before[2], &after[2]), "a body known by its file names gets new keys too");
+    assert_eq!(before[3], after[3]);
+
+    for b in ["SN-KEYS-A", "file:K1", "file:K2"] {
+        let _ = crate::sensor_maps::clear(b, true, true);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Confirming a pixel on one body makes that body's decoded raws out of date, and no other photo's.
+#[test]
+fn a_body_map_change_drops_only_that_bodys_decoded_sources() {
+    use crate::media::{DecodedSource, SourceLevel};
+    use lcc_catalog::PhotoId;
+    let mut s = Session::new();
+    let source = |body: Option<&str>| {
+        let pixels = body.map(|b| lcc_pipeline::PixelRepair { on: true, body: Some(b.into()), ..Default::default() });
+        let info = lcc_pipeline::SourceInfo { pixels, ..Default::default() };
+        DecodedSource::new(std::sync::Arc::new(lcc_raster::Rgb32f::from_fn(8, 8, |_, _| [0.5; 3])), Some(info))
+    };
+    let (a, b, none) = (PhotoId(901), PhotoId(902), PhotoId(903));
+    s.media.get(a, SourceLevel::Preview);
+    s.media.insert_source(a, SourceLevel::Preview, source(Some("SN-SRC-A")));
+    s.media.insert_source(b, SourceLevel::Preview, source(Some("SN-SRC-B")));
+    s.media.insert_source(none, SourceLevel::Preview, source(None));
+    confirm_pixel("SN-SRC-A", 17);
+    assert!(s.media.get(a, SourceLevel::Preview).is_none(), "decoded before its body's map changed");
+    assert!(s.media.get(b, SourceLevel::Preview).is_some(), "another body's decode is still right");
+    assert!(s.media.get(none, SourceLevel::Preview).is_some(), "no map went into this one");
+    let _ = crate::sensor_maps::clear("SN-SRC-A", true, true);
 }

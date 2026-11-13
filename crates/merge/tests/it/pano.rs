@@ -280,3 +280,52 @@ fn panoramas_keep_the_photos_resolution_unless_asked() {
     let nan = run(&shots, 800.0, &opts(f64::NAN)).0;
     assert_eq!((nan.image.width, nan.image.height), (full.image.width, full.image.height));
 }
+
+/// Upstream issue #2320: a few wide frames can settle the fitted focal length below the lens's, and
+/// a canvas sized from it holds fewer pixels than the photos. EXIF's focal length sets the native scale.
+#[test]
+fn the_lens_focal_length_sets_the_native_scale() {
+    let e = env();
+    let f = 800.0; // what the frames were shot with: the fit settles near it
+    let lens = 960.0; // what EXIF says, on a 1600-pixel long edge
+    let shots = [
+        Shot { yaw: -20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 0.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+    ];
+    let rs: Vec<M3> = shots.iter().map(|s| rot(s.yaw, s.pitch, s.roll)).collect();
+    let mut frames: Vec<Frame> = shots.iter().zip(&rs).map(|(s, r)| shoot(&e, r, f, 1600, 1200, s.gain)).collect();
+    for frame in &mut frames {
+        frame.metadata.focal_length_35mm = Some(lens / 1600.0 * 36.0);
+    }
+    let res = stitch(frames, &PanoOptions { projection: Projection::Spherical, ..Default::default() }, &no_progress).unwrap();
+    assert_eq!(res.used.len(), 3, "all three frames must connect: {:?}", res.used);
+    assert!((res.focal / lens - 1.0).abs() < 0.01, "output focal {} for a {lens} px lens", res.focal);
+    let mp = (res.image.width * res.image.height) as f64 / 1e6;
+    assert!((mp / res.native_megapixels - 1.0).abs() < 0.02, "canvas {mp} MP for {} MP native", res.native_megapixels);
+}
+
+/// EXIF's focal length is input: an infinite, NaN or absurd one is no focal length at all. The
+/// stitch keeps its fitted scale and reports finite numbers, never an infinite canvas.
+#[test]
+fn a_hostile_exif_focal_length_is_ignored() {
+    let e = env();
+    let shots = [
+        Shot { yaw: -20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 0.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+        Shot { yaw: 20.0, pitch: 0.0, roll: 0.0, gain: 1.0 },
+    ];
+    let rs: Vec<M3> = shots.iter().map(|s| rot(s.yaw, s.pitch, s.roll)).collect();
+    let frames = || -> Vec<Frame> { shots.iter().zip(&rs).map(|(s, r)| shoot(&e, r, 800.0, 1200, 900, s.gain)).collect() };
+    let opts = PanoOptions { projection: Projection::Spherical, ..Default::default() };
+    let plain = stitch(frames(), &opts, &no_progress).unwrap();
+    for bad in [f64::INFINITY, f64::NAN, 1e300] {
+        let mut fs = frames();
+        for frame in &mut fs {
+            frame.metadata.focal_length_35mm = Some(bad);
+        }
+        let res = stitch(fs, &opts, &no_progress).unwrap();
+        assert!(res.native_megapixels.is_finite() && res.focal.is_finite(), "{bad}: {} MP, focal {}", res.native_megapixels, res.focal);
+        assert_eq!((res.image.width, res.image.height), (plain.image.width, plain.image.height), "{bad} is no focal length");
+    }
+}

@@ -92,23 +92,57 @@ pub fn paint(ui: &Ui, rect: Rect, icon: &Identicon) {
     }
 }
 
+/// What the manager keeps of a plug-in's own icon: the module it came from and its texture
+/// (`None`: that module has none, or it can't be drawn).
+type Own = (String, Option<egui::TextureHandle>);
+
+fn own_key(id: &str) -> egui::Id {
+    egui::Id::new(("plugin-own-icon", id.to_string()))
+}
+
+/// The texture of plug-in `id`'s own icon (a pixel filter's manifest `icon`), once [`keep_custom`]
+/// stored it; `None` for the identicon.
+pub fn custom(ctx: &egui::Context, id: &str) -> Option<egui::TextureHandle> {
+    ctx.data(|d| d.get_temp::<Own>(own_key(id))).and_then(|(_, tex)| tex)
+}
+
+/// Whether the icon stored for plug-in `id` came from module `module_hash` (an update brings a
+/// new module, and maybe a new icon).
+pub fn custom_is_current(ctx: &egui::Context, id: &str, module_hash: &str) -> bool {
+    ctx.data(|d| d.get_temp::<Own>(own_key(id))).is_some_and(|(h, _)| h == module_hash)
+}
+
+/// Stores plug-in `id`'s own icon from module `module_hash` (`None`: it has none, or it can't be
+/// drawn).
+pub fn keep_custom(ctx: &egui::Context, id: &str, module_hash: &str, texture: Option<egui::TextureHandle>) {
+    ctx.data_mut(|d| d.insert_temp::<Own>(own_key(id), (module_hash.to_string(), texture)));
+}
+
+/// Paints plug-in `id`'s icon into `rect`: its own, else its identicon.
+pub fn paint_for(ui: &Ui, rect: Rect, id: &str) {
+    match custom(ui.ctx(), id) {
+        Some(tex) => {
+            // fitted into the square with its aspect kept (a wide picture sits centred)
+            let size = tex.size_vec2();
+            let scale = (rect.width() / size.x.max(1.0)).min(rect.height() / size.y.max(1.0));
+            let fitted = Rect::from_center_size(rect.center(), size * scale);
+            let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex.id(), fitted, uv, Color32::WHITE);
+        }
+        None => paint(ui, rect, &identicon(id)),
+    }
+}
+
 /// Allocates a `size`-point square and paints plug-in `id`'s icon in it.
 pub fn show(ui: &mut Ui, id: &str, size: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    paint(ui, rect, &identicon(id));
+    paint_for(ui, rect, id);
     resp
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_same_id_always_gives_the_same_icon() {
-        for id in ["io.github.nwh212.chromaneg", "io.github.clydecbrown.pureraw", ""] {
-            assert_eq!(identicon(id), identicon(id), "{id:?}");
-        }
-    }
 
     /// The hash has no seed: this id's icon is the same on every run and every machine.
     #[test]
@@ -132,8 +166,10 @@ mod tests {
     }
 
     #[test]
-    fn icons_are_mirrored_and_never_blank() {
-        for id in ["a", "b", "", "io.github.nwh212.chromaneg"] {
+    fn icons_are_mirrored_and_never_blank_whatever_the_id() {
+        // (hostile ids too: very long, control characters, bidi overrides, astral characters)
+        let long = "x".repeat(10_000);
+        for id in ["a", "b", "", "io.github.nwh212.chromaneg", long.as_str(), "\u{0}\u{7}\n\t\u{202e}☃️漢字\u{10ffff}", "\u{0}\u{0}\u{0}"] {
             let icon = identicon(id);
             for row in icon.cells {
                 for c in 0..CELLS {
@@ -142,16 +178,6 @@ mod tests {
             }
             assert!(icon.cells.iter().flatten().any(|c| *c), "{id:?}: something to see");
             assert!(icon.hue < 360);
-        }
-    }
-
-    #[test]
-    fn hostile_ids_give_an_icon_without_a_panic() {
-        let long = "x".repeat(10_000);
-        let odd = "\u{0}\u{7}\n\t\u{202e}☃️漢字\u{10ffff}";
-        for id in [String::new(), long, odd.to_string(), "\u{0}".repeat(3)] {
-            let icon = identicon(&id);
-            assert!(icon.cells.iter().flatten().any(|c| *c));
         }
     }
 }

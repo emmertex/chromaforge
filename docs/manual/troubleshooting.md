@@ -26,6 +26,7 @@ JSON line for each command says why it failed. If the app does crash, please rep
   `<PREFIX>_GPU_BACKEND=vulkan|metal|dx12|gl` (`off` also disables the GPU). Settings has a GPU rendering switch too.
 - `<PREFIX>_PROFILE=1` prints per-stage pipeline timings to standard error.
 - Library → Previews → Clear Preview Cache rebuilds thumbnails and previews.
+- A very large library on a network share or hard disk opens much faster since 26.46.2; culling stays responsive while previews are prepared in the background, and a raw's first picture is its camera JPEG.
 
 ## A raw file looks wrong or doesn't open
 
@@ -37,14 +38,17 @@ most. `<cli> calibrate` can fit a profile for your camera from your own raws and
 ## Photos are missing
 
 Library → Find Missing Photos… lists photos whose originals can't be found (a disconnected drive, a renamed folder)
-and relinks them. Their edits and metadata are safe in the catalog meanwhile.
+and relinks them. Their edits and metadata are safe in the catalog meanwhile. A folder that can't be read (permissions, a
+disconnected share) shows the reason in the grid instead of an empty "No photos in this folder".
+
+Library → Validate DNG Files checks the selected DNGs' raw data against their checksum and lists damaged files.
 
 ## The catalog won't open
 
 - "This library is already open in …": another running program holds the library's lock (the message names the
   process and computer). Close it there. A `catalog.lock` file left by a crash doesn't block anything: the
   operating system releases the lock when the process ends.
-- File → Test Catalog Integrity checks the store; File → Restore Library from Backup… or opening a copy from
+- File → Test Catalog Integrity checks the store; File → Restore Catalog from Backup… or opening a copy from
   `backups/` gets you back to the last good state.
 
 ## Updating the app

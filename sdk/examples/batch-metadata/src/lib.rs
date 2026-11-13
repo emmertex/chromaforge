@@ -18,7 +18,6 @@ use lcc_plugin_sdk::{Request, export_plugin, host};
 const MANIFEST: &str = r#"{
   "id": "org.example.batch-metadata",
   "name": "Batch Metadata (example)",
-  "version": "0.1.0",
   "description": "Titles and captions from a template, and keywords, for many photos at once",
   "author": "the app's authors",
   "permissions": {"catalog": true, "metadataWrite": true},
@@ -125,7 +124,7 @@ fn split_keywords(text: &str) -> Vec<String> {
     out
 }
 
-export_plugin!(MANIFEST, handle);
+export_plugin!(package: MANIFEST, handle);
 
 #[cfg(test)]
 mod tests {

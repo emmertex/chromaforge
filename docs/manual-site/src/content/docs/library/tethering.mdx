@@ -1,0 +1,30 @@
+---
+title: Tethered capture
+description: Shoot into the library from a camera.
+sidebar:
+  order: 15
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import NeedsImage from '../../../components/NeedsImage.astro';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<NeedsImage what="The tether bar over the Library: session name, Capture button, shutter, aperture, ISO and white balance menus, and the newest shot in the loupe." />
+
+- **File ▸ Tethered Capture…** starts a session.
+- **Studio capture** works with any camera: the camera's own software or a card reader writes shots into a watched folder, and each new shot is imported with the session's settings. The newest shot opens in the loupe.
+- Session options: **session name**, copy into Originals or add in place, **develop preset**, **metadata preset**, **keywords**, **naming** (`{session}`, `{seq:4}`), a **collection** (default: the session name).
+- **Native tethering** over USB or Wi-Fi (PTP/IP): **Capture**, shots taken with the camera's shutter button also download, **delete from card** after download.
+- **Tether bar**: readouts and menus for shutter speed, aperture, ISO, white balance, exposure compensation and battery.
+- **Same as previous**: each shot takes the previous shot's develop settings.
+- **Live view** where the camera supports it.
+- A simulated camera lets you try the workflow without hardware.
+- Native capture is verified only with the simulated camera so far; if a connection fails the bar gives the reason and suggests studio capture. Some makers (Canon, Sony, Fujifilm) still need studio capture to trigger the shutter.
+- The session shows in the activity stack; its **✕** stops it.
+
+<Aside type="note" title="Modern layout">
+  **File ▸ Tethered Capture…** in the ☰ menu.
+</Aside>

@@ -945,7 +945,10 @@ impl LogGrid {
 /// (`CameraTone::apply`): moving the second-last knot down steepens it, and the extended highlights
 /// would end up brighter than `own`'s. Raises `knots`' second-last knot until the rate is at most
 /// `own`'s, easing the raise into the knots below with a bell-shaped ramp (about a stop wide) so it
-/// doesn't bend the curve sharply either; no knot above `cap(x)`.
+/// doesn't bend the curve sharply either; no knot above `cap(x)`. The process V8 shoulder
+/// (`CameraTone::apply_rolloff`) is not part of this bound: V1 to V7 read the same curve, and a V8
+/// bound here would change their renders. It stays below `own`'s too when the last segment's slope
+/// over the squared gap to white is at most `own`'s (upstream #3783).
 fn ease_shoulder(knots: &mut [[f32; 2]; 32], own: &[[f32; 2]; 32], cap: impl Fn(f32) -> f32) {
     let [.., a, b] = *own;
     let [.., second_last, end] = *knots;
@@ -3926,23 +3929,15 @@ mod tests {
     }
 
     #[test]
-    fn corpus_a7cr_uses_the_bundled_profile() {
-        corpus_uses_the_bundled_profile("arw-sony-a7cr-lossless-l.arw", "ILCE-7CR");
-    }
-
-    #[test]
-    fn corpus_d780_uses_the_bundled_profile() {
-        corpus_uses_the_bundled_profile("nef-nikon-d780.nef", "NIKON D780");
-    }
-
-    #[test]
-    fn corpus_d750_uses_the_bundled_profile() {
-        corpus_uses_the_bundled_profile("nef-nikon-d750.nef", "NIKON D750");
-    }
-
-    #[test]
-    fn corpus_d90_uses_the_bundled_profile() {
-        corpus_uses_the_bundled_profile("nef-nikon-d90.nef", "NIKON D90");
+    fn corpus_raws_use_their_bundled_profiles() {
+        for (file, model) in [
+            ("arw-sony-a7cr-lossless-l.arw", "ILCE-7CR"),
+            ("nef-nikon-d780.nef", "NIKON D780"),
+            ("nef-nikon-d750.nef", "NIKON D750"),
+            ("nef-nikon-d90.nef", "NIKON D90"),
+        ] {
+            corpus_uses_the_bundled_profile(file, model);
+        }
     }
     /// A public DC-FZ1000 II RW2 shot at 4:3 on its 3:2 sensor (skipped without the corpus): the default crop is 4:3
     /// while the embedded JPEG shows the whole sensor; the look is still fitted, against the matching part of it.
@@ -4137,6 +4132,30 @@ mod tests {
             let x = 0.001 * 1.005f32.powi(i);
             assert!(fixed.tone.apply(x) <= fitted.tone.apply(x) + 1e-5, "{what} at {x}: {} > {}", fixed.tone.apply(x), fitted.tone.apply(x));
         }
+        // The V8 shoulder stays below too whenever the lowered last segment's slope over its squared gap
+        // to white is at most the fitted one's (`dro_off` doesn't enforce it, so V1 to V7 keep their
+        // curve; upstream #3783)
+        if v8_bounded(&fixed.tone, &fitted.tone) {
+            assert!(v8_below(&fixed.tone, &fitted.tone), "{what}: brighter than the fitted curve under V8");
+        }
+    }
+
+    /// Whether the last segment of `a`, over its squared gap to white, is at most `b`'s: then `a`'s V8
+    /// shoulder ([`CameraTone::apply_rolloff`]) is nowhere above `b`'s (upstream #3783).
+    fn v8_bounded(a: &CameraTone, b: &CameraTone) -> bool {
+        let rate = |t: &CameraTone| {
+            let k = t.knots();
+            ((k[31][1] - k[30][1]) / (k[31][0] - k[30][0])).max(0.0) / (1.0 - k[31][1]).powi(2)
+        };
+        rate(a) <= rate(b)
+    }
+
+    /// Whether `a`'s V8 curve is nowhere brighter than `b`'s, from deep shadows to far past the last knot.
+    fn v8_below(a: &CameraTone, b: &CameraTone) -> bool {
+        (0..=2400).all(|i| {
+            let x = 0.001 * 1.005f32.powi(i);
+            a.apply_rolloff(x) <= b.apply_rolloff(x) + 1e-5
+        })
     }
 
     /// Issue #244: Sony's Dynamic Range Optimizer lifts the camera JPEG's shadows, not the raw's. A
@@ -4338,7 +4357,11 @@ mod tests {
     /// style) was shot with DRO Auto, so its curve comes down to Sony's without DRO in the shadows the
     /// camera lifted; the ILCE-7M4 sample (DRO Auto, Vivid) has deeper shadows than that curve and
     /// keeps them, only its brighter highlights come down. Both keep the colour fitted to their
-    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit.
+    /// JPEGs. The ILCE-7M3 sample (DRO off) keeps its own fit. Each is compared with its fit as the
+    /// app has it before the DRO step: compared with the unsmoothed fit, the ILCE-7M4's curve was
+    /// 0.0002 brighter near its first knot, where the smoothing lifts it, and the test failed. The
+    /// points where a DRO curve must be well below take the fit before smoothing, the curve closest to
+    /// the JPEG's lifted shadows, which they were measured against.
     #[test]
     fn corpus_arw_with_dro_is_lowered_to_the_dro_off_tone() {
         let dir = lcc_brand::env_os("CORPUS")
@@ -4365,15 +4388,27 @@ mod tests {
             raw.opcodes.list3.retain(|op| !op.is_lens_correction());
             let transform = lcc_raw::color::camera_transform(&raw, lcc_raw::color::as_shot_white_xy(&raw));
             let look = fit_preview(&raw, &bytes, &transform, None, None).0.expect("a camera look");
-            // the look fitted to the JPEG, as before this change
+            // the look fitted to the JPEG as `fit_preview` has it before the DRO step: smoothed
+            // (`with_smooth_tone`, which can lift a curve slightly where it bends) and carried on past
+            // its last knot with the camera's pooled curve
             let (sensor, reference, clipped) = proxies(&raw, &bytes, &transform, PROXY, 0.0, None, None).unwrap();
             let profile = raw.metadata.model.as_deref().and_then(crate::camera_profiles::get);
             let colour = profile.as_ref().and_then(|p| Some((p.matrix().mul(&transform.matrix.inverse()?), p.hue_sat.clone())));
-            let fitted = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let unsmoothed = fit_look(&sensor, &reference, &clipped, colour).unwrap();
+            let fitted = with_smooth_tone(unsmoothed.clone());
+            let fitted = match profile.as_ref().and_then(|p| p.tone) {
+                Some(pooled) => CameraLook { tone: extend_tone(&fitted.tone, &pooled), ..fitted },
+                None => fitted,
+            };
             if dro {
                 assert_lowered(&fitted, &look, name);
+                // the Sony DRO samples' lowered curves stay below their fitted ones under V8 as well
+                assert!(v8_below(&look.tone, &fitted.tone), "{name}: brighter than the fitted curve under V8");
+                // the shadows the camera JPEG lifts are gone: measured against the fit before smoothing, the curve
+                // closest to the JPEG (smoothing alone lowers the ILCE-7RM2's by about 7 % at 0.1)
                 for x in lowered {
-                    assert!(look.tone.apply(x) < 0.95 * fitted.tone.apply(x), "{name} at {x}: {} vs {}", look.tone.apply(x), fitted.tone.apply(x));
+                    let (got, jpeg) = (look.tone.apply(x), unsmoothed.tone.apply(x));
+                    assert!(got < 0.95 * jpeg, "{name} at {x}: {got} vs {jpeg} before smoothing");
                 }
             } else {
                 assert_eq!((look.matrix, &look.hue_sat, look.tone), (fitted.matrix, &fitted.hue_sat, fitted.tone), "{name}");

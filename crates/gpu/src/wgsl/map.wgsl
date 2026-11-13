@@ -172,8 +172,25 @@ fn clamp0_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups
     put_rgb(i, max(rgb_a(i), vec3<f32>(0.0)));
 }
 
-// Per-pixel chromaticity (rgb / Y of max(rgb, 0)): the plane colour NR's 3 × 3 speckle median reads
-// (`local::chroma_plane`). P[1] = width.
+// The chromaticity (rgb / Y of max(rgb, 0)) of pixel (x, y), edges clamped (`local::chroma_plane`).
+fn chroma_at(x: i32, y: i32, w: u32, h: u32) -> vec3<f32> {
+    let xx = u32(min(max(x, 0), i32(w) - 1));
+    let yy = u32(min(max(y, 0), i32(h) - 1));
+    let c = max(rgb_a(yy * w + xx), vec3<f32>(0.0));
+    return c / max(lum2020(c), 1e-6);
+}
+
+// One comparator of the median network: `a` takes the smaller, `b` the larger, per channel.
+fn cmp_swap(a: ptr<function, vec3<f32>>, b: ptr<function, vec3<f32>>) {
+    let lo = min(*a, *b);
+    *b = max(*a, *b);
+    *a = lo;
+}
+
+// Per-pixel chromaticity's 3 × 3 median, per channel: the plane colour NR's speckle median reads
+// (`local::median_chroma3x3`). P[1] = width. The median is a selection, so the 19-comparator
+// median-of-9 network on plain variables gives the CPU sort's fifth value. (An insertion sort over a
+// private array, as this was, came out wrong on Vulkan: issue #934 moved Windows' compute onto it.)
 @compute @workgroup_size(256)
 fn chroma_med(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
@@ -181,40 +198,38 @@ fn chroma_med(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgrou
         return;
     }
     let w = pu(1u);
-    let x = i % w;
-    let y = i / w;
-    var v = array<array<f32, 9u>, 3u>();
-    var n = 0u;
-    for (var dy: i32 = -1; dy <= 1; dy++) {
-        for (var dx: i32 = -1; dx <= 1; dx++) {
-            let xx = u32(min(max(i32(x) + dx, 0), i32(w) - 1));
-            let yy = u32(min(max(i32(y) + dy, 0), i32(pu(0u) / w) - 1));
-            let c = max(rgb_a(yy * w + xx), vec3<f32>(0.0));
-            let yl = max(lum2020(c), 1e-6);
-            for (var k = 0u; k < 3u; k++) {
-                v[k][n] = c[k] / yl;
-            }
-            n++;
-        }
-    }
-    var out = vec3<f32>(0.0);
-    for (var k = 0u; k < 3u; k++) {
-        // insertion sort; the 3 × 3 median is the fifth
-        for (var s = 1u; s < 9u; s++) {
-            let key = v[k][s];
-            var j = s;
-            loop {
-                if (j == 0u || v[k][j - 1u] <= key) {
-                    break;
-                }
-                v[k][j] = v[k][j - 1u];
-                j--;
-            }
-            v[k][j] = key;
-        }
-        out[k] = v[k][4u];
-    }
-    put_rgb(i, out);
+    let h = pu(0u) / w;
+    let x = i32(i % w);
+    let y = i32(i / w);
+    var p0 = chroma_at(x - 1, y - 1, w, h);
+    var p1 = chroma_at(x, y - 1, w, h);
+    var p2 = chroma_at(x + 1, y - 1, w, h);
+    var p3 = chroma_at(x - 1, y, w, h);
+    var p4 = chroma_at(x, y, w, h);
+    var p5 = chroma_at(x + 1, y, w, h);
+    var p6 = chroma_at(x - 1, y + 1, w, h);
+    var p7 = chroma_at(x, y + 1, w, h);
+    var p8 = chroma_at(x + 1, y + 1, w, h);
+    cmp_swap(&p1, &p2);
+    cmp_swap(&p4, &p5);
+    cmp_swap(&p7, &p8);
+    cmp_swap(&p0, &p1);
+    cmp_swap(&p3, &p4);
+    cmp_swap(&p6, &p7);
+    cmp_swap(&p1, &p2);
+    cmp_swap(&p4, &p5);
+    cmp_swap(&p7, &p8);
+    cmp_swap(&p0, &p3);
+    cmp_swap(&p5, &p8);
+    cmp_swap(&p4, &p7);
+    cmp_swap(&p3, &p6);
+    cmp_swap(&p1, &p4);
+    cmp_swap(&p2, &p5);
+    cmp_swap(&p4, &p7);
+    cmp_swap(&p4, &p2);
+    cmp_swap(&p6, &p4);
+    cmp_swap(&p4, &p2);
+    put_rgb(i, p4);
 }
 
 // Colour NR: blend chromaticity towards the luminance-weighted blurred one and re-apply luminance

@@ -198,11 +198,20 @@ pub struct Meta {
     /// two bodies of one model apart for their own camera profiles ([`Meta::camera_model`] says the model).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub camera_serial: String,
+    /// The lens maker (Exif `LensMake`), written back on export. Left out of the catalog JSON when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lens_make: String,
     pub lens: String,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
     pub shutter: String,
     pub iso: Option<u32>,
+    /// Whether the flash fired (Exif `Flash`); `None` when the file does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+    /// Exposure compensation in EV (Exif `ExposureBiasValue`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_bias: Option<f32>,
     /// The lens's focal range (mm, shortest and longest), from the file's LensSpecification: the loupe's shot info
     /// adds it to a lens name that doesn't say it (OneSlips PERF-CULL-7 a5f6da85e). Left out of the catalog JSON when
     /// unknown, so older catalogs read unchanged.
@@ -378,6 +387,10 @@ pub struct Photo {
     /// step, a version, Swap); `None`: the import state ([`Photo::before_base`]). Format version 16.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::settings_ref::opt")]
     pub before: Option<Arc<DevelopSettings>>,
+    /// When the photo was last exported (ISO 8601 local time, set by the engine's export; `None`: never,
+    /// or cleared by Photo ▸ Reset Export Status). Catalog format 17.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported: Option<String>,
     /// Assisted culling scores (`None` until analysed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
@@ -511,6 +524,10 @@ pub struct Analysis {
     /// Combined 0..1 cull score from classical measures.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cull_score: Option<f32>,
+    /// Suggested star rating 1..=5 from the cull score (bulk culling's starting point; the engine
+    /// never applies it over a rating the user set). Absent until a run suggested one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested: Option<u8>,
 }
 
 /// Raw formats whose files carry vendor white-balance multipliers but no colour matrices: their starting
@@ -522,6 +539,12 @@ pub fn relative_wb_format(format: &str) -> bool {
     ["ARW", "NEF", "NRW", "RW2", "RWL", "RAW", "RAF", "CR3", "CR2", "PEF", "SRW", "ORF", "ERF", "CRW", "MRW"]
         .iter()
         .any(|f| format.eq_ignore_ascii_case(f))
+}
+
+/// Whether a raw of `format` (its extension) carries a lens correction that starts on: DNG, RW2 / RWL and RAF
+/// (see [`Photo::lens_correction_built_in`]).
+pub fn lens_built_in_format(format: &str) -> bool {
+    ["DNG", "RW2", "RWL", "RAF"].iter().any(|f| format.eq_ignore_ascii_case(f))
 }
 
 /// Whether a raw of `format` shot on `camera` (Exif make and model, as [`Meta::camera`] keeps them) is developed
@@ -607,6 +630,7 @@ impl Photo {
             import_look: None,
             import_state: None,
             before: None,
+            exported: None,
             analysis: None,
             preview_only: None,
             preview_checked: String::new(),
@@ -671,7 +695,8 @@ impl Photo {
         }
     }
     /// The built-in defaults for this photo, before any user default preset: raws start from
-    /// their as-shot white balance; embedded lens corrections on when the file has them. They
+    /// their as-shot white balance; lens corrections off, except a format whose own correction
+    /// is part of the file ([`Photo::lens_correction_built_in`]). They
     /// carry the photo's own rendering process ([`lcc_develop::ProcessVersion`]): which
     /// process a photo renders with is not an edit, so comparisons with its defaults (edited?
     /// still as imported?) don't change when a newer process exists. A new photo has the latest.
@@ -685,7 +710,7 @@ impl Photo {
         if self.develops_raw() && !relative {
             d.wb.scale = lcc_develop::WbScale::Kelvin;
         }
-        if self.embedded_lens.is_some() {
+        if self.lens_correction_built_in() {
             d.optics.lens_profile = true;
         }
         d.process = self.develop.process;
@@ -693,6 +718,16 @@ impl Photo {
         // import preference says, and its value is not an edit
         d.geometry.constrain_crop = self.develop.geometry.constrain_crop;
         d
+    }
+    /// Whether this photo's lens correction is on before anyone asks for it: the file carries
+    /// lens data ([`Photo::embedded_lens`]) and is a DNG (whose opcodes are part of the image),
+    /// a Panasonic / Leica RW2 or RWL (Micro Four Thirds and fixed-lens bodies correct
+    /// distortion in camera) or a Fujifilm RAF. Every other raw, including a lens the database
+    /// matches (a Canon CR3, a Nikon NEF, a Sony ARW), starts with "Enable Profile Corrections"
+    /// off, as in Lightroom Classic, so browsing and culling never pay for a warp nobody asked
+    /// for; the photo's own edit, a preset or the switch in Develop turns it on.
+    pub fn lens_correction_built_in(&self) -> bool {
+        self.embedded_lens.is_some() && lens_built_in_format(&self.format)
     }
     /// The file name's extension without the dot, as written (`CR2` for `IMG_0042.CR2`); empty
     /// when the name has none (`README`, a dot file such as `.hidden`).
@@ -748,6 +783,12 @@ impl Photo {
         // As Shot reads the source's current WB; stored numbers can predate a decoder update.
         if self.develop.wb.mode == WbMode::AsShot && defaults.wb.mode == WbMode::AsShot {
             defaults.wb = self.develop.wb;
+        }
+        // Before lens corrections started off, import turned them on for every raw with lens data
+        // (a database match too): a photo with no history that differs from its defaults only
+        // there is still as imported.
+        if self.history.is_empty() && self.embedded_lens.is_some() && self.develop.optics.lens_profile && !defaults.optics.lens_profile {
+            defaults.optics.lens_profile = true;
         }
         *self.develop != defaults && !self.develop.is_unedited()
     }
@@ -842,20 +883,12 @@ mod camera_label_tests {
     use super::camera_label;
 
     #[test]
-    fn label_drops_a_repeated_maker() {
+    fn label_joins_the_parts_without_repeating_the_maker() {
         assert_eq!(camera_label("Canon", "Canon IXUS 185"), "Canon IXUS 185");
         assert_eq!(camera_label("Nothing", "Nothing Phone (3a) Pro"), "Nothing Phone (3a) Pro");
         assert_eq!(camera_label("SONY", "Sony A7 IV"), "Sony A7 IV");
-    }
-
-    #[test]
-    fn label_joins_distinct_parts() {
         assert_eq!(camera_label("Sony", "A7 IV"), "Sony A7 IV");
         assert_eq!(camera_label(" Apple ", " iPhone 15 "), "Apple iPhone 15");
-    }
-
-    #[test]
-    fn label_falls_back_to_the_part_that_exists() {
         assert_eq!(camera_label("", "Canon IXUS 185"), "Canon IXUS 185");
         assert_eq!(camera_label("Canon", ""), "Canon");
         assert_eq!(camera_label("  ", "  "), "");
