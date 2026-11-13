@@ -1199,6 +1199,8 @@
   "Its photos show here without being added: cull them (P picks, X rejects), then import the picks, the selection or all of them.": "Die Fotos erscheinen hier, ohne hinzugefügt zu werden: sortieren Sie sie (P markiert, X lehnt ab) und importieren Sie dann die markierten, die ausgewählten oder alle.",
   "JPEG Quality": "JPEG-Qualität",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "JPEG-Kopien mit ihren Bearbeitungen, sRGB, ohne Standort; danach öffnet sich in Ihrem Mailprogramm eine neue Nachricht.",
+  "JPEG quality {q} to fit the size limit": "JPEG-Qualität {q}, damit die Datei in die Größengrenze passt",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "JPEG-Qualität {q}, damit die Datei in die Größengrenze passt (eine kleinere Größe oder eine höhere Grenze erhält mehr Qualität)",
   "Job Title": "Berufsbezeichnung",
   "Join the Discord": "Dem Discord beitreten",
   "Keep": "Behalten",

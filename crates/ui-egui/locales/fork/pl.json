@@ -1365,6 +1365,8 @@
   "Its speed": "Szybkość",
   "JPEG Quality": "Jakość JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "Kopie JPEG z naniesionymi zmianami, sRGB, bez lokalizacji; potem w programie pocztowym otworzy się nowa wiadomość.",
+  "JPEG quality {q} to fit the size limit": "Jakość JPEG {q}, aby zmieścić się w limicie rozmiaru",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Jakość JPEG {q}, aby zmieścić się w limicie rozmiaru (mniejszy rozmiar lub większy limit zachowuje więcej jakości)",
   "Job Title": "Stanowisko",
   "Join the Discord": "Dołącz do Discorda",
   "Keep": "Zachowaj",

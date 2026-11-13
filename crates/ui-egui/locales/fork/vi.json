@@ -1444,6 +1444,8 @@
   "Its terms let it train on uploads, with no opt-out. Not for photos of children.": "Điều khoản của dịch vụ cho phép huấn luyện trên ảnh tải lên, không có tùy chọn từ chối. Không dùng cho ảnh trẻ em.",
   "JPEG Quality": "Chất lượng JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "Bản sao JPEG kèm chỉnh sửa, sRGB, không có vị trí; sau đó một thư mới mở ra trong chương trình email của bạn.",
+  "JPEG quality {q} to fit the size limit": "Chất lượng JPEG {q} để vừa giới hạn kích thước",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Chất lượng JPEG {q} để vừa giới hạn kích thước (kích thước nhỏ hơn hoặc giới hạn lớn hơn giữ được nhiều chất lượng hơn)",
   "Job Title": "Chức danh",
   "Join the Discord": "Tham gia Discord",
   "Keep": "Giữ",

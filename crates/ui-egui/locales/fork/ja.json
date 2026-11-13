@@ -1320,6 +1320,8 @@
   "Its photos show here without being added: cull them (P picks, X rejects), then import the picks, the selection or all of them.": "写真は追加されずにここに表示されます。選別（P で採用、X で除外）してから、採用した写真、選択した写真、またはすべてを読み込みます。",
   "JPEG Quality": "JPEG 画質",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "編集を反映した JPEG コピー（sRGB、位置情報なし）を作成し、メールソフトで新規メッセージを開きます。",
+  "JPEG quality {q} to fit the size limit": "サイズ制限に収めるため JPEG 画質 {q}",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "サイズ制限に収めるため JPEG 画質 {q}（サイズを小さくするか制限を大きくすると画質を保てます）",
   "JPEG with the same name (`IMG_0001.CR3` + `IMG_0001.JPG`) no longer share one sidecar: the raw keeps `IMG_0001.xmp`,": "同名の JPEG(`IMG_0001.CR3` + `IMG_0001.JPG`)はサイドカーを共有しなくなりました: RAW は `IMG_0001.xmp` を使い、",
   "Job Title": "役職",
   "Join the Discord": "Discord に参加",

@@ -1231,6 +1231,8 @@
   "Its photos show here without being added: cull them (P picks, X rejects), then import the picks, the selection or all of them.": "Фото показуються тут, не додаючись: відберіть їх (P відбирає, X відхиляє), потім імпортуйте відібрані, виділені або всі.",
   "JPEG Quality": "Якість JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "JPEG-копії з правками, sRGB, без місця зйомки; потім у поштовій програмі відкриється новий лист.",
+  "JPEG quality {q} to fit the size limit": "Якість JPEG {q}, щоб вкластися в обмеження розміру",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Якість JPEG {q}, щоб вкластися в обмеження розміру (менший розмір або більше обмеження зберігають більше якості)",
   "Job Title": "Посада",
   "Join the Discord": "Приєднатися до Discord",
   "Keep": "Залишити",

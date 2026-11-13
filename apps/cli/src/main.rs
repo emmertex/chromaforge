@@ -1037,7 +1037,9 @@ fn render(args: &[String]) -> Result<(), String> {
         lcc_engine::export::write_file(sc, bytes)?;
         eprintln!("{CLI}: wrote {sc}");
     }
-    eprintln!("{CLI}: wrote {output} ({}×{})", e.width, e.height);
+    let limit =
+        e.limit_quality.filter(|q| *q < o.quality).zip(o.limit_kb).map(|(q, kb)| format!(", JPEG quality {q} to fit {kb} KB")).unwrap_or_default();
+    eprintln!("{CLI}: wrote {output} ({}×{}{limit})", e.width, e.height);
     if let Some(photos) = after.run(&[json!({"path": output})], false) {
         if let Some(err) = photos.get("error").and_then(Value::as_str) {
             return Err(format!("render: {output} was written, but {err}"));

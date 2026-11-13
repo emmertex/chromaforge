@@ -29,6 +29,9 @@ pub struct ExportTask {
     guard: TaskGuard,
     /// `app.export {pluginDestination}`: the plug-in export destination the files go to when done.
     pub plugin_destination: Option<Value>,
+    /// The JPEG quality asked for when a file-size limit is set: the toast says when the limit
+    /// settled below it ([`limit_quality_note`]).
+    limit_from: Option<u8>,
 }
 
 impl ExportTask {
@@ -40,7 +43,7 @@ impl ExportTask {
         rx: Receiver<Result<(Vec<Value>, Option<Value>, bool), String>>,
         guard: TaskGuard,
     ) -> Self {
-        Self { total, progress, cancel, rx, guard, plugin_destination: None }
+        Self { total, progress, cancel, rx, guard, plugin_destination: None, limit_from: None }
     }
 
     /// `{total, done, current}` for `ui.inspect`.
@@ -156,6 +159,7 @@ fn start_now(
     };
     let write = app.services.write_shared.clone().ok_or("no background writer")?;
     let total = items.len();
+    let limit_from = opts.limit_kb.map(|_| opts.quality);
     let progress = Arc::new(Mutex::new((0, String::new())));
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = channel();
@@ -216,7 +220,7 @@ fn start_now(
     std::thread::Builder::new().name("export".into()).spawn(work).map_err(|e| e.to_string())?;
     #[cfg(target_arch = "wasm32")]
     work();
-    app.export = Some(ExportTask { total, progress, cancel, rx, guard, plugin_destination: None });
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard, plugin_destination: None, limit_from });
     Ok(json!({"background": true, "total": total}))
 }
 
@@ -263,7 +267,7 @@ pub fn start_contact_sheet(app: &mut LccApp, params: &Value) -> Result<Value, St
     work();
     let row = app.session.activity.start("export", "Exporting contact sheet", Cancel::Flag(cancel.clone()));
     row.progress(0, total as u64);
-    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None });
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None, limit_from: None });
     Ok(json!({"background": true, "total": total}))
 }
 
@@ -316,7 +320,7 @@ pub fn start_print(app: &mut LccApp, params: &Value) -> Result<Value, String> {
     work();
     let row = app.session.activity.start("export", "Printing to PDF", Cancel::Flag(cancel.clone()));
     row.progress(0, total as u64);
-    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None });
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None, limit_from: None });
     Ok(json!({"background": true, "total": total}))
 }
 
@@ -367,6 +371,20 @@ pub fn poll_photos(app: &mut LccApp, ctx: &egui::Context) {
 #[cfg(target_arch = "wasm32")]
 pub fn poll_photos(_: &mut LccApp, _: &egui::Context) {}
 
+/// Below this JPEG quality a file-size limit leaves smooth areas such as skies blotchy (issue #3033).
+const LOW_LIMIT_QUALITY: u64 = 40;
+
+/// The toast's account of a file-size limit set with quality `requested`: the lowest quality it
+/// settled on across `files`, and what to do when that is low. None when the limit lowered no file.
+pub fn limit_quality_note(files: &[Value], requested: u8) -> Option<String> {
+    let q = files.iter().filter_map(|f| f.get("quality").and_then(Value::as_u64)).filter(|&q| q < u64::from(requested)).min()?;
+    Some(if q < LOW_LIMIT_QUALITY {
+        crate::i18n::tr_format!("JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)", q = q)
+    } else {
+        crate::i18n::tr_format!("JPEG quality {q} to fit the size limit", q = q)
+    })
+}
+
 /// Per frame: keep the activity row up to date; when the batch finishes, report it.
 pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
     let Some(task) = &app.export else {
@@ -380,6 +398,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
         Ok(r) => {
             let cancelled = matches!(&r, Ok((_, _, true)));
             let total = task.total;
+            let limit_from = task.limit_from;
             // the batch's summary (`activity.list` → finished): photos placed, the failures and why
             if let Ok((files, _, _)) = &r {
                 task.guard.progress(files.len() as u64, total as u64);
@@ -438,6 +457,10 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
                             m += &crate::i18n::tr_format!(" · {} failed: {}", failed.len(), first["error"].as_str().unwrap_or("error"));
                         }
                         photos_failed |= e.get("folder").is_some();
+                    }
+                    if let Some(note) = limit_from.and_then(|q| limit_quality_note(&files, q)) {
+                        m += " · ";
+                        m += &note;
                     }
                     if cancelled {
                         m += " · cancelled";
@@ -586,6 +609,15 @@ mod contact_sheet_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toast names the quality a size limit settled on (the lowest of the batch), and nothing
+    /// when the limit lowered no file.
+    #[test]
+    fn a_size_limit_quality_is_reported_only_when_it_lowered_something() {
+        assert_eq!(limit_quality_note(&[json!({"path": "a.jpg"}), json!({"path": "b.jpg", "quality": 90})], 90), None);
+        let files = [json!({"path": "a.jpg", "quality": 72}), json!({"error": "disk full"}), json!({"path": "b.jpg", "quality": 12})];
+        assert!(limit_quality_note(&files, 90).is_some_and(|n| n.contains("12")));
+    }
 
     /// The toast's Apple Photos part (issue #236): the count and album, a partial import's
     /// warning, an error with what to do, a cancelled export.

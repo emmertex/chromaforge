@@ -1254,6 +1254,8 @@
   "Its speed": "Rychlost",
   "JPEG Quality": "Kvalita JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "Kopie JPEG s úpravami, sRGB, bez polohy; poté se v poštovním programu otevře nová zpráva.",
+  "JPEG quality {q} to fit the size limit": "Kvalita JPEG {q}, aby se soubor vešel do limitu velikosti",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Kvalita JPEG {q}, aby se soubor vešel do limitu velikosti (menší rozměr nebo vyšší limit zachová více kvality)",
   "Job Title": "Pracovní pozice",
   "Join the Discord": "Připojit se k Discordu",
   "Keep": "Ponechat",
