@@ -80,9 +80,32 @@ pub fn platform_dirs() -> Option<&'static PlatformDirs> {
     PLATFORM_DIRS.get()
 }
 
+/// Whether this process is a test binary: Cargo builds every crate's unit and integration tests into
+/// `target/<profile>/deps/`, where no app or tool it builds for running lives.
+pub fn is_test_binary() -> bool {
+    static TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TEST.get_or_init(|| {
+        cfg!(test)
+            || std::env::current_exe().ok().is_some_and(|exe| {
+                let parent = exe.parent();
+                parent.and_then(|p| p.file_name()).is_some_and(|n| n == "deps")
+                    && parent.and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.file_name()).is_some_and(|n| n == "target")
+            })
+    })
+}
+
+/// The settings root a test binary uses instead of the user's: a folder of its own in the temp folder, so no test
+/// reads or writes the real settings, whatever it forgets to override.
+fn test_config_root() -> PathBuf {
+    std::env::temp_dir().join("lcc-test-settings").join(std::process::id().to_string())
+}
+
 /// The platform config root: the host's [`PlatformDirs`], else `~/Library/Application Support`,
-/// `%APPDATA%`, or `$XDG_CONFIG_HOME` / `~/.config`.
+/// `%APPDATA%`, or `$XDG_CONFIG_HOME` / `~/.config`. In a test binary ([`is_test_binary`]), a temporary folder.
 fn config_root() -> Option<PathBuf> {
+    if is_test_binary() {
+        return Some(test_config_root());
+    }
     if let Some(d) = platform_dirs() {
         Some(d.config_root.clone())
     } else if cfg!(target_os = "macos") {
@@ -228,6 +251,15 @@ pub fn fill(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No test reads or writes the user's settings: in a test binary the settings folder is a temporary one.
+    #[test]
+    fn tests_never_use_the_real_settings_folder() {
+        assert!(is_test_binary());
+        let dir = settings_dir().unwrap();
+        assert!(dir.starts_with(std::env::temp_dir()), "{}", dir.display());
+        assert!(legacy_settings_dirs().iter().all(|d| d.starts_with(std::env::temp_dir())));
+    }
 
     #[test]
     fn settings_folder_migration() {
