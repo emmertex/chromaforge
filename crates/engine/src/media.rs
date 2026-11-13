@@ -1580,6 +1580,24 @@ impl RenderJob {
                 let src = straight.as_ref().unwrap_or(src);
                 // (a straight picture is this job's own: no stage of an earlier render applies to it)
                 let stages = if straight.is_some() { None } else { self.stages.as_deref() };
+                // an over-budget brush mask is an error for the caller, not a view missing its later strokes
+                if let Err(e) = lcc_pipeline::check_brush_budget(src, &info, &self.settings, &self.request) {
+                    return RenderResult {
+                        request_id: self.request_id,
+                        source_key: self.source_key,
+                        placement: self.placement,
+                        photo: self.photo,
+                        level: self.level,
+                        key: self.key,
+                        rendered: Err(e),
+                        gpu_fallback: None,
+                        loaded: (!was_loaded).then_some(source),
+                        quick: None,
+                        display: None,
+                        hdr_texels: None,
+                        frame: None,
+                    };
+                }
                 // Views and exports use the GPU when there is one (waiting for the device if it is
                 // still being created). Thumbnails (grid, filmstrip, preset and profile previews)
                 // use it once it is ready, and never wait for it: at startup they render on the CPU.

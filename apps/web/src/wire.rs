@@ -212,6 +212,8 @@ impl WorkerCore {
             None => src,
         };
         let info = src.info_or(job.info());
+        // an over-budget brush mask is an error for the caller, not a preview missing its later strokes
+        lcc_engine::pipeline::check_brush_budget(&src.image, &info, &job.settings, &job.request())?;
         let mut rendered = match &job.stages {
             Some(view) => {
                 let st = self.stages.entry(view.clone()).or_default().clone();
