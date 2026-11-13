@@ -1350,7 +1350,7 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
     let archive_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("Interop"));
     let index_path = archive_dir.as_ref().map(|p| p.join("lightroom-index.json"));
     let mut index = load_index(index_path.as_deref())?;
-    let archive_path = archive_dir.as_ref().map(|dir| crate::lightroom_archive::store(dir, &data).map_err(|e| error(e.to_string()))).transpose()?;
+    let archive_path = archive_dir.as_ref().map(|dir| crate::lightroom_archive::store(dir, &data).map(|stored| stored.path).map_err(|e| error(e.to_string()))).transpose()?;
     let undo0 = s.undo.len();
     let existing: HashMap<_, _> =
         s.catalog.photos().filter(|p| p.copy_of.is_none()).filter_map(|p| source_path(p).map(|path| (key(path), p.id))).collect();
@@ -4949,7 +4949,7 @@ pub(crate) mod tests {
         let catalog = read(&path).unwrap();
         assert_eq!(catalog.photos.len(), shapes.len(), "{:?}", catalog.skipped);
         // the catalog's own value stays in the import archive, whatever the library keeps
-        let archived = fixture::read_archive(&crate::lightroom_archive::store(&dir.join("Interop"), &catalog).unwrap());
+        let archived = fixture::read_archive(&crate::lightroom_archive::store(&dir.join("Interop"), &catalog).unwrap().path);
         for photo in archived["photos"].as_array().unwrap() {
             let i = usize::try_from(photo["source_id"].as_i64().unwrap() - 1).unwrap();
             let (c, _) = shapes[i];
