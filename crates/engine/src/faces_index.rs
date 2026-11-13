@@ -11,7 +11,7 @@
 //! face, so every face is shown equally close however loosely or tightly its own region was drawn (a Lightroom box, an
 //! older tool's box), else the region's own box.
 //!
-//! Layout (little-endian): `"LCFE"`, version `3`, tag length `u16`, the tag (`<model id>@<sha256>`), dimension `u32`,
+//! Layout (little-endian): `"LCFE"`, version `2`, tag length `u16`, the tag (`<model id>@<sha256>`), dimension `u32`,
 //! then records of `photo u64`, four `i32` (the region's box in ten-thousandths), four `i32` (the view box likewise), and
 //! `dim` `f32`.
 
@@ -23,9 +23,11 @@ use std::sync::Arc;
 use lcc_geom::Rect;
 
 const MAGIC: &[u8; 4] = b"LCFE";
-/// 3: each face averaged with its mirror image ([`lcc_faces::runtime::Embedder::embed_faces`]). A file of an
-/// older version is not read, so its faces are embedded again rather than mixed with the new ones.
-const VERSION: u8 = 3;
+const VERSION: u8 = 2;
+/// Ends the tag of a cache whose faces are each averaged with their mirror image
+/// ([`lcc_faces::runtime::Embedder::embed_faces`]); a cache made the other way has another tag, so it is not read and
+/// its faces are embedded again rather than mixed with the new ones.
+pub(crate) const MIRROR_TAG: &str = "+mirror";
 
 pub(crate) type Key = (u64, [i32; 4]);
 

@@ -264,7 +264,8 @@ suggest names for the ones you have not:
   (issue #1920): the same person then matches more often. On 1,800 LFW pairs with AuraFace v1, at its match bar of 0.40,
   94.3 % of a person's pairs matched instead of 93.1 % (92.9 % instead of 89.3 % for faces 37 pixels wide, 82.4 % instead
   of 76.8 % at 24 pixels), and no pair of two different people matched either way. It doubles the time the model takes per
-  face. Faces scanned before this are embedded again, once, by the next scan.
+  face, so Settings ▸ Faces ▸ Matching has a switch (`faces.matching` `mirrorAverage`, on by default). The cache's tag ends
+  in `+mirror` when it is on, so turning it on or off embeds the faces again, once, by the next scan.
 - Everything stays on your computer. The embeddings (one short list of numbers per face) are cached in the library folder in
   `face-embeddings-<model id>.bin`, one file per model, so switching models back and forth does not start over; they are
   not part of the catalog and not written to XMP.
