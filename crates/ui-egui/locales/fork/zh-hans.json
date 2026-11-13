@@ -3127,6 +3127,7 @@
   "video clips export as movies, trimmed, with their video edits": "视频剪辑将导出为影片，包含修剪和视频编辑",
   "video playback isn't available in this build": "此版本不支持视频播放",
   "volumes (Linux, case-sensitive APFS) `img_1.JPG` next to `IMG_1.JPG` is a different photo and the renamed one gets": "卷上（Linux、区分大小写的 APFS），`IMG_1.JPG` 旁的 `img_1.JPG` 是另一张照片，重命名后的照片获得",
+  "waiting for Apple Photos": "正在等待 Apple Photos",
   "were missing, without touching anything already set.": "缺失的信息，不会改动任何已设置的内容。",
   "when the browser may evict the library. Hosting: the sample cache headers no longer mark the (unhashed) files": "浏览器何时可能清除图库。托管：示例缓存标头不再将（未加哈希的）文件标记为",
   "whether originals are there is checked on a worker thread (grid thumbnails, the Info panel, the photo menu, Missing": "原件是否存在会在工作线程中检查（网格缩略图、信息面板、照片菜单、缺失",

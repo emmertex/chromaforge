@@ -3204,6 +3204,7 @@
   "video clips export as movies, trimmed, with their video edits": "ビデオクリップはトリミングとビデオ編集を反映したムービーとして書き出されます",
   "video playback isn't available in this build": "このビルドではビデオ再生を利用できません",
   "volumes (Linux, case-sensitive APFS) `img_1.JPG` next to `IMG_1.JPG` is a different photo and the renamed one gets": "ボリューム(Linux、大文字小文字を区別する APFS)では `img_1.JPG` と `IMG_1.JPG` は別の写真で、名前を変えた方は次の名前になります:",
+  "waiting for Apple Photos": "Apple Photos を待っています",
   "were missing, without touching anything already set.": "欠けていた項目を、既に設定済みのものには触れずに補います。",
   "when the browser may evict the library. Hosting: the sample cache headers no longer mark the (unhashed) files": "ブラウザーがライブラリを削除する可能性がある場合。ホスティング: サンプルのキャッシュヘッダーは(ハッシュなしの)ファイルを",
   "whether originals are there is checked on a worker thread (grid thumbnails, the Info panel, the photo menu, Missing": "元ファイルの有無はワーカースレッドで確認されます(グリッドのサムネイル、情報パネル、写真メニュー、見つからない",

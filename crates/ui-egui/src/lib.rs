@@ -994,6 +994,8 @@ pub struct LccApp {
     pub shown_library: Option<u64>,
     /// A background export in progress.
     pub export: Option<export_task::ExportTask>,
+    /// Image exports asked for while `export` runs, started in turn after it (issue #2965).
+    pub export_queue: std::collections::VecDeque<export_task::Queued>,
     /// A background Photo ▸ Render to DNG in progress, and the last one's result.
     pub render_dng: Option<render_dng_task::RenderDngTask>,
     pub last_render_dng: Option<serde_json::Value>,
@@ -1315,6 +1317,7 @@ impl LccApp {
             review_pending: None,
             shown_library: None,
             export: None,
+            export_queue: Default::default(),
             render_dng: None,
             last_render_dng: None,
             dng_update: None,

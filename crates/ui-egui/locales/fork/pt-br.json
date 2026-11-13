@@ -3204,6 +3204,7 @@
   "video clips export as movies, trimmed, with their video edits": "clipes de vídeo são exportados como filmes, aparados, com suas edições de vídeo",
   "video playback isn't available in this build": "a reprodução de vídeo não está disponível nesta compilação",
   "volumes (Linux, case-sensitive APFS) `img_1.JPG` next to `IMG_1.JPG` is a different photo and the renamed one gets": "volumes que diferenciam maiúsculas (Linux, APFS sensível a maiúsculas) `img_1.JPG` ao lado de `IMG_1.JPG` é outra foto e a renomeada recebe",
+  "waiting for Apple Photos": "aguardando o Apple Photos",
   "were missing, without touching anything already set.": "faltavam, sem mexer em nada já definido.",
   "when the browser may evict the library. Hosting: the sample cache headers no longer mark the (unhashed) files": "quando o navegador pode remover a biblioteca. Hospedagem: os cabeçalhos de cache de exemplo não marcam mais os arquivos (sem hash) como",
   "whether originals are there is checked on a worker thread (grid thumbnails, the Info panel, the photo menu, Missing": "se os originais estão presentes é verificado em uma thread de trabalho (miniaturas da grade, o painel Informações, o menu da foto, Fotos",

@@ -3205,6 +3205,7 @@
   "video clips export as movies, trimmed, with their video edits": "видеоклипы экспортируются как фильмы, обрезанными и с их видеоправками",
   "video playback isn't available in this build": "воспроизведение видео недоступно в этой сборке",
   "volumes (Linux, case-sensitive APFS) `img_1.JPG` next to `IMG_1.JPG` is a different photo and the renamed one gets": "томах (Linux, APFS с учётом регистра) `img_1.JPG` рядом с `IMG_1.JPG` является другим фото, и переименованное получает",
+  "waiting for Apple Photos": "ожидание Apple Photos",
   "weeks": "недель",
   "were missing, without touching anything already set.": "отсутствовали, не трогая ничего уже заданного.",
   "when the browser may evict the library. Hosting: the sample cache headers no longer mark the (unhashed) files": "когда браузер может вытеснить библиотеку. Хостинг: образцы заголовков кэша больше не помечают (нехешированные) файлы как",

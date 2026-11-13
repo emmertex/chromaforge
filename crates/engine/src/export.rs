@@ -2394,6 +2394,13 @@ pub fn set_video_hooks(items: &mut [PreparedExport], hooks: &crate::export_video
 }
 
 impl PreparedExport {
+    /// Check what it writes against `guard`, built now, instead of the library as it was when it was prepared: an
+    /// export that waited its turn (issue #2965) may write after more photos were catalogued, and must not write
+    /// over their originals either.
+    pub fn use_guard(&mut self, guard: std::sync::Arc<crate::originals::OriginalGuard>) {
+        self.guard = guard;
+    }
+
     /// Whether this item is a video clip exported as a movie.
     pub fn is_video(&self) -> bool {
         matches!(self.work, Work::Video(_))

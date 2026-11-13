@@ -2961,6 +2961,7 @@
   "updated {date}": "оновлено {date}",
   "video clips export as movies, trimmed, with their video edits": "відеокліпи експортуються як фільми, обрізаними та з їхніми відеоправками",
   "video playback isn't available in this build": "відтворення відео недоступне в цій збірці",
+  "waiting for Apple Photos": "очікування Apple Photos",
   "width": "ширина",
   "written by a newer {app} is refused with \"this library was written by a newer version of {app}\" and left": "створена новішим {app}, відхиляється з повідомленням «цю бібліотеку створено новішою версією {app}» і залишається",
   "written by a newer {app}), {app} says so and why, and offers Try Again, Choose Another Library…, Continue": "створена новішим {app}), {app} пояснює причину й пропонує Спробувати знову, Вибрати іншу бібліотеку…, Продовжити",

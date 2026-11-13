@@ -50,9 +50,28 @@ impl ExportTask {
     }
 }
 
+/// An image export asked for while another runs (issue #2965): it waits its turn instead of being refused, and
+/// starts when the exports before it have ended. Its photos are prepared when it is asked for, so it exports them
+/// as they were then. Its row in the activity stack says it is waiting; ✕ there drops it.
+pub struct Queued {
+    items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    /// What to do with the files; `None`: decided when it starts, so a running export that holds the Apple Photos
+    /// import doesn't stop this one from waiting for it.
+    after: Option<AfterExport>,
+    then: Option<Then>,
+    cancel: Arc<AtomicBool>,
+    /// The waiting row; dropped (gone from the stack) when the export starts or is dropped.
+    row: TaskGuard,
+    /// `app.export {pluginDestination}`, handed to the task when it starts.
+    pub plugin_destination: Option<Value>,
+}
+
 /// Start exporting `items` in the background, then do `after` with the files written (Add to Apple
-/// Photos). Errors per photo are collected, not fatal.
-pub fn start(app: &mut LccApp, items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: AfterExport) -> Result<Value, String> {
+/// Photos; `None`: work it out from `opts` when the export starts). Errors per photo are collected, not fatal.
+/// While another export runs it is queued behind it ([`Queued`]); the result then says `queued: n`.
+pub fn start(app: &mut LccApp, items: Vec<PreparedExport>, opts: ExportOptions, to: Destination, after: Option<AfterExport>) -> Result<Value, String> {
     start_then(app, items, opts, to, after, None)
 }
 
@@ -64,15 +83,67 @@ pub type Then = Box<dyn FnOnce(&[Value]) -> Option<Value> + Send>;
 /// [`start`] with a step to run on the worker when the files are written ([`Then`]).
 pub fn start_then(
     app: &mut LccApp,
-    mut items: Vec<PreparedExport>,
+    items: Vec<PreparedExport>,
     opts: ExportOptions,
     to: Destination,
-    after: AfterExport,
+    after: Option<AfterExport>,
     then: Option<Then>,
 ) -> Result<Value, String> {
     if app.export.is_some() {
-        return Err("an export is already running".into());
+        app.services.write_shared.as_ref().ok_or("no background writer")?;
+        let total = items.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let label = crate::i18n::tr_format!("Waiting to export {total} photo{}", if total == 1 { "" } else { "s" }, total = total);
+        let row = app.session.activity.start("export", &label, Cancel::Flag(cancel.clone()));
+        row.progress(0, total as u64);
+        app.export_queue.push_back(Queued { items, opts, to, after, then, cancel, row, plugin_destination: None });
+        return Ok(json!({"background": true, "total": total, "queued": app.export_queue.len()}));
     }
+    start_now(app, items, opts, to, after, then)
+}
+
+/// The next queued export that hasn't been dropped, started now. One that adds to Apple Photos waits while another
+/// import holds Photos ([`poll`] tries again). The library may have grown while it waited, so what it writes is
+/// checked against the originals as they are now. One that can't start says why, on screen for longer, and the one
+/// after it is tried.
+fn start_next(app: &mut LccApp, ctx: &egui::Context) {
+    app.export_queue.retain(|q| !q.cancel.load(Ordering::Relaxed));
+    while let Some(q) = app.export_queue.front() {
+        if q.opts.add_to_photos && app.session.apple_photos_imports.running().is_some() {
+            q.row.detail(crate::i18n::tr("waiting for Apple Photos"));
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+        let Some(Queued { mut items, opts, to, after, then, plugin_destination, .. }) = app.export_queue.pop_front() else { return };
+        let guard = Arc::new(app.session.original_guard());
+        for item in &mut items {
+            item.use_guard(guard.clone());
+        }
+        match start_now(app, items, opts, to, after, then) {
+            Ok(_) => {
+                if let Some(t) = app.export.as_mut() {
+                    t.plugin_destination = plugin_destination;
+                }
+                return;
+            }
+            Err(e) => app.toast_for(ctx, crate::i18n::tr_format!("A waiting export could not start: {e}", e = e), 15.0),
+        }
+    }
+}
+
+fn start_now(
+    app: &mut LccApp,
+    mut items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: Option<AfterExport>,
+    then: Option<Then>,
+) -> Result<Value, String> {
+    // a queued export reserves Apple Photos now, when the one before it has let go of it
+    let after = match after {
+        Some(after) => after,
+        None => app.session.after_export(&opts)?,
+    };
     let write = app.services.write_shared.clone().ok_or("no background writer")?;
     let total = items.len();
     let progress = Arc::new(Mutex::new((0, String::new())));
@@ -288,7 +359,13 @@ pub fn poll_photos(_: &mut LccApp, _: &egui::Context) {}
 
 /// Per frame: keep the activity row up to date; when the batch finishes, report it.
 pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
-    let Some(task) = &app.export else { return };
+    let Some(task) = &app.export else {
+        // nothing running, but an export waits (for Apple Photos): see whether it can start now
+        if !app.export_queue.is_empty() {
+            start_next(app, ctx);
+        }
+        return;
+    };
     match task.rx.try_recv() {
         Ok(r) => {
             let cancelled = matches!(&r, Ok((_, _, true)));
@@ -374,15 +451,20 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             } else {
                 app.toast(ctx, msg);
             }
+            // after this export's toast, so a waiting export that can't start is the one shown
+            start_next(app, ctx);
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => {
             let (done, current) = task.progress.lock().map(|g| g.clone()).unwrap_or_default();
             task.guard.progress(done as u64, task.total as u64);
             task.guard.detail(&current);
+            // a waiting export whose ✕ was pressed leaves the queue (and its row the stack)
+            app.export_queue.retain(|q| !q.cancel.load(Ordering::Relaxed));
         }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             app.export = None;
             app.toast(ctx, crate::i18n::tr("Export stopped unexpectedly"));
+            start_next(app, ctx);
         }
     }
 }
