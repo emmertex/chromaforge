@@ -968,7 +968,7 @@ impl Packets {
 /// in `photoshop:DateCreated` only, so an `exif:DateTimeOriginal` already there (an earlier full time) is removed
 /// rather than left to outrank it on the next read.
 fn merged_contents(path: &Path, p: &Photo, packets: &Packets, stamp: &str) -> std::io::Result<(String, bool, Option<PathBuf>)> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match read_capped(path, SIDECAR_READ_MAX) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((packets.with_gps.clone(), false, None)),
         // can't see what is there: never overwrite it blindly
@@ -1092,14 +1092,26 @@ pub(crate) fn jpeg_header_xmp(bytes: &[u8]) -> Option<String> {
     read_jpeg_xmp(&mut std::io::Cursor::new(bytes), JPEG_XMP_HEADER_SPAN, JPEG_XMP_HEADER_STEPS)
 }
 
+/// Most bytes of a sidecar read whole (it must be a regular file).
+const SIDECAR_READ_MAX: u64 = 256 << 20;
+
+/// [`crate::bounded_read::read_bounded`] as an `io::Result`, keeping `NotFound` distinguishable.
+fn read_capped(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use crate::bounded_read::ReadError;
+    crate::bounded_read::read_bounded(path, max).map_err(|e| match e {
+        ReadError::Io(e) => e,
+        other => std::io::Error::other(other.to_string()),
+    })
+}
+
 /// The XMP packet that describes a photo on disk: its sidecar, else embedded raw/DNG or JPEG XMP.
 pub fn read_packet(original: &str, kind: MediaKind, naming: SidecarNaming) -> Option<(String, PathBuf)> {
     if let Some(sc) = find_sidecar(original, naming) {
         // A discovered sidecar keeps precedence even when reading it fails.
-        return std::fs::read_to_string(&sc).ok().map(|s| (s, sc));
+        return read_capped(&sc, SIDECAR_READ_MAX).ok().and_then(|b| String::from_utf8(b).ok()).map(|s| (s, sc));
     }
     if kind == MediaKind::Raw {
-        let bytes = std::fs::read(original).ok()?;
+        let bytes = read_capped(original.as_ref(), crate::bounded_read::MAX_MEDIA_BYTES).ok()?;
         let x = lcc_meta::embedded(&bytes).xmp?;
         return Some((x, PathBuf::from(original)));
     }

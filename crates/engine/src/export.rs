@@ -627,7 +627,9 @@ pub(crate) fn watermark_logo(path: &str) -> Option<std::sync::Arc<Rgba8>> {
 /// The error says why it couldn't be read or decoded.
 pub fn read_graphic(path: &str) -> Result<Rgba8, String> {
     let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), 256 << 20).map_err(|e| format!("can't read {path}: {e}"))?;
-    let decoded = lcc_codecs::decode(&bytes, Default::default()).map_err(|e| format!("can't decode {path}: {e}"))?;
+    // a graphic is a logo or a layout image, not a photo: held to 8192 x 8192 pixels, not the general gigapixel cap
+    let opts = lcc_codecs::DecodeOptions { max_pixels: 1 << 26, ..Default::default() };
+    let decoded = lcc_codecs::decode(&bytes, opts).map_err(|e| format!("can't decode {path}: {e}"))?;
     Ok(decoded.to_srgb8().into_oriented(lcc_geom::Orientation::from_exif(decoded.orientation)))
 }
 
@@ -1480,9 +1482,12 @@ impl ExportOptions {
         let name = crate::rename::expand_tokens(&base, p, n, 3).replace("{custom}", self.custom_text.trim());
         let mut name = portable_stem(&name);
         let (stem, ext) = p.file_name.rsplit_once('.').unwrap_or((&p.file_name, ""));
+        // the catalog's own file name is cleaned like the expansion: a supplied catalog may hold separators
+        let ext = ext.replace(['/', '\\', ':', '\0'], "_");
+        let ext = ext.as_str();
         if name.trim().is_empty() {
             // every token came out empty (no title, no capture time…): keep the original name
-            name = stem.to_string();
+            name = portable_stem(stem);
         }
         if self.format == ExportFormat::Original {
             let base = name.trim_end_matches('.');
