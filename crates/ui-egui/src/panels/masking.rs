@@ -2578,10 +2578,7 @@ mod tests {
         let mut h = crate::headless::Headless::new(app, [3200.0, 1400.0], 1.0);
         h.settle(std::time::Duration::from_secs(30));
         let ctx = h.view.ctx.clone();
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(3200.0, 1400.0))),
-            ..Default::default()
-        };
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(3200.0, 1400.0))), ..Default::default() };
         let mut width = 0.0;
         let mut out = ctx.run_ui(input, |root| {
             egui::Area::new(egui::Id::new("overlayPopupTest")).show(root.ctx(), |ui| {
