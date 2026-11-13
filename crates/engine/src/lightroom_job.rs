@@ -69,7 +69,8 @@ fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate:
 /// in the list; the archive itself still counts as saved.
 fn note_cleanup(stored: crate::lightroom_archive::Stored, dir: &Path, data: &mut CatalogImport, program: &str) -> PathBuf {
     if let Some(problem) = stored.cleanup_failed {
-        data.warnings.insert(0, format!("{program} source archive saved as {}, but cleaning up {} failed: {problem}", stored.path.display(), dir.display()));
+        data.warnings
+            .insert(0, format!("{program} source archive saved as {}, but cleaning up {} failed: {problem}", stored.path.display(), dir.display()));
     }
     stored.path
 }

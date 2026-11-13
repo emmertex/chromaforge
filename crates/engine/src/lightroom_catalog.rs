@@ -1346,7 +1346,10 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
     let archive_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("Interop"));
     let index_path = archive_dir.as_ref().map(|p| p.join("lightroom-index.json"));
     let mut index = load_index(index_path.as_deref())?;
-    let archive_path = archive_dir.as_ref().map(|dir| crate::lightroom_archive::store(dir, &data).map(|stored| stored.path).map_err(|e| error(e.to_string()))).transpose()?;
+    let archive_path = archive_dir
+        .as_ref()
+        .map(|dir| crate::lightroom_archive::store(dir, &data).map(|stored| stored.path).map_err(|e| error(e.to_string())))
+        .transpose()?;
     let undo0 = s.undo.len();
     let existing: HashMap<_, _> =
         s.catalog.photos().filter(|p| p.copy_of.is_none()).filter_map(|p| source_path(p).map(|path| (key(path), p.id))).collect();
@@ -4693,7 +4696,11 @@ pub(crate) mod tests {
     #[test]
     fn xmp_is_bounded_per_packet_not_as_a_running_total() {
         use SqlValue::{Integer as I, Null as N, Text as T};
-        let rows = vec![vec![N, I(1), T("<x:xmpmeta/>".into())], vec![N, I(2), T("<x:xmpmeta/>".into())], vec![N, I(3), T("<x:xmpmeta>padding</x:xmpmeta>".into())]];
+        let rows = vec![
+            vec![N, I(1), T("<x:xmpmeta/>".into())],
+            vec![N, I(2), T("<x:xmpmeta/>".into())],
+            vec![N, I(3), T("<x:xmpmeta>padding</x:xmpmeta>".into())],
+        ];
         let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
         let reader = Reader { db: Database::open_with_wal(bytes, &[]).unwrap() };
         let cancel = AtomicBool::new(false);
