@@ -96,7 +96,8 @@ pub fn people_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId) {
         }
         _ => {}
     }
-    ui.horizontal_wrapped(|ui| {
+    // one part per line, like Lightroom's list (issue #1111): a wrapped row read as radio buttons
+    ui.vertical(|ui| {
         for part in PEOPLE_PARTS {
             let whole = part == "Entire Person";
             let mut on = if whole { parts.is_empty() } else { parts.iter().any(|p| p == part) };

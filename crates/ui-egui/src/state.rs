@@ -1579,6 +1579,10 @@ pub struct UiState {
     pub detail_due: Option<(f64, u32)>,
     /// A mask component being renamed inline: (mask id, component index, name).
     pub renaming_component: Option<(u32, usize, String)>,
+    /// The Who row under a People component was asked for (component menu > Who…, issue #1111):
+    /// otherwise it shows only once a person or role is in play.
+    #[serde(skip)]
+    pub who_shown: bool,
     /// The Set Role row under a People component, while open: (role, person).
     #[serde(skip)]
     pub role_draft: Option<(String, String)>,
@@ -2616,6 +2620,7 @@ impl Default for UiState {
             sam_downloading: false,
             renaming_component: None,
             roles_window: false,
+            who_shown: false,
             role_draft: None,
             people_pick: None,
             people_asked: None,

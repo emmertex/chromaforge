@@ -20,6 +20,9 @@ const fn shaded(s: ControlSpec, shade: lcc_develop::Shade) -> ControlSpec {
     ControlSpec { shade, ..s }
 }
 
+/// A component row's thumbnail side (the row is 28 high).
+pub(crate) const COMPONENT_THUMB: f32 = 26.0;
+
 /// Local adjustment sliders (key = `LocalAdjustments` field name).
 pub const LOCAL: &[ControlSpec] = &[
     spec("temp", "Temp", -100.0, 100.0, 1.0, 0, Track::Temp),
@@ -699,7 +702,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             register(ui.ctx(), format!("componentOp:{i}"), opr);
                             paint(ui.painter(), opr.shrink(1.0), op, t.text_label);
                         }
-                        let icon_r = Rect::from_min_size(pos2(opr.right() + 3.0, r.top() + 5.0), vec2(18.0, 18.0));
+                        // the thumbnail fills the row's height, so the selection is readable (issue #1111)
+                        let icon_r = Rect::from_min_size(pos2(opr.right() + 3.0, r.top() + 1.0), vec2(COMPONENT_THUMB, COMPONENT_THUMB));
                         register(ui.ctx(), format!("componentIcon:{i}"), icon_r);
                         // the component's own thumbnail (made into a mask of its own)
                         let alone = lcc_develop::Mask {
@@ -1473,6 +1477,10 @@ fn show_overlay_row(app: &mut LccApp, ui: &mut egui::Ui) {
 /// find them again.
 fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, shape: &MaskShape) {
     let MaskShape::People { person, parts, who, .. } = shape else { return };
+    // hidden until it matters (issue #1111): a person or role chosen, roles set, or asked for
+    if !who_row_shown(app.ui.who_shown, who.is_some() || *person > 0, !app.session.people_store().roles.is_empty()) {
+        return;
+    }
     let tr = crate::i18n::tr;
     let mut names: Vec<String> = app
         .session
@@ -1572,6 +1580,12 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
         let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
         let _ = app.run("masks.recompute", json!({"id": photo.0}));
     }
+}
+
+/// Whether a People component's Who row shows: asked for, or someone in particular is chosen, or
+/// the shoot has roles to pick from.
+fn who_row_shown(asked: bool, chosen: bool, roles: bool) -> bool {
+    asked || chosen || roles
 }
 
 /// What a role binding's scope covers, in words.
@@ -1902,6 +1916,20 @@ fn component_row_menu(app: &mut LccApp, ui: &mut egui::Ui, mask: u32, k: usize, 
             ui.close();
         }
         ui.separator();
+    }
+    let people = app
+        .session
+        .active()
+        .and_then(|p| app.session.develop_of(p))
+        .and_then(|d| d.masks.iter().find(|m| m.id == mask).and_then(|m| m.components.get(k)).map(|c| matches!(c.shape, MaskShape::People { .. })))
+        .unwrap_or(false);
+    if people {
+        let b = ui.button(menu_label(if app.ui.who_shown { "Hide Who" } else { "Who…" }));
+        register(ui.ctx(), format!("componentMenu:who:{k}"), b.rect);
+        if b.clicked() {
+            app.ui.who_shown = !app.ui.who_shown;
+            ui.close();
+        }
     }
     let mut run = |ui: &mut egui::Ui, text: &str, p: serde_json::Value| {
         if ui.button(menu_label(text)).clicked() {

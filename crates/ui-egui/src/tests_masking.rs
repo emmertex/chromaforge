@@ -2310,6 +2310,22 @@ fn mask_point_color_eyedropper_answers_click_widget() {
     assert_eq!(h.app.ui.tool, "maskPointColor", "click answered {r}; widgets {rect}");
 }
 
+/// Issue #1111: a plain People component keeps the panel uncluttered (no Who row) until Who… in
+/// its menu asks for it.
+#[test]
+fn the_who_row_waits_until_it_is_asked_for() {
+    let mut h = detail("panel.masking");
+    exec(&mut h, "mask.add", json!({"kind": "sky"}));
+    exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
+    h.settle(SETTLE);
+    let shown = |h: &mut Headless| h.request("ui.widgets", json!({"filter": "maskWho:0"}), T)["result"].as_array().is_some_and(|a| !a.is_empty());
+    assert!(!shown(&mut h), "no Who row for an everyone mask without roles");
+    click(&mut h, "button:componentMenu:0");
+    click(&mut h, "componentMenu:who:0");
+    h.settle(SETTLE);
+    assert!(shown(&mut h), "Who… shows the row");
+}
+
 #[test]
 fn a_selected_people_component_offers_who_it_is_about() {
     let mut h = detail("panel.masking");
