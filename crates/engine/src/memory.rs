@@ -434,14 +434,13 @@ impl crate::Session {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
     /// Inside a container or a systemd scope with `MemoryMax`, the budget is sized from the limit,
     /// not the machine's RAM (#3072).
     #[test]
-    #[cfg(target_os = "linux")]
     fn total_ram_honours_the_cgroup_limit() {
         let ram = total_ram().unwrap();
         let info = std::fs::read_to_string("/proc/meminfo").unwrap();
