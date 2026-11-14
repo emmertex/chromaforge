@@ -41,11 +41,28 @@ pub const LOCAL: &[ControlSpec] = &[
     spec("defringe", "Defringe", -100.0, 100.0, 1.0, 0, Track::Centered),
 ];
 
+/// The mask's Color tint (Lightroom's Color swatch under Saturation, issue #1145): the hue in
+/// degrees round the wheel and how strongly the masked area takes it.
+pub const TINT: [ControlSpec; 2] = [
+    spec("color_hue", "Hue", 0.0, 360.0, 1.0, 0, Track::Rainbow),
+    spec("color_sat", "Saturation", 0.0, 100.0, 1.0, 0, Track::Gradient { from: "#7a7a7a", to: "#e04a3a" }),
+];
+
+/// The swatch colour of a tint: `hue` in degrees, `sat` 0..100 (no tint: `None`).
+pub(crate) fn tint_swatch(hue: f64, sat: f64) -> Option<egui::Color32> {
+    if !(sat.is_finite() && hue.is_finite()) || sat <= 0.0 {
+        return None;
+    }
+    let h = (hue.rem_euclid(360.0) / 360.0) as f32;
+    let s = (sat.clamp(0.0, 100.0) / 100.0) as f32;
+    Some(egui::Color32::from(egui::ecolor::Hsva::new(h, s, 1.0, 1.0)))
+}
+
 /// The mask's slider sections (issue #642), as Lightroom Classic groups them: (fold key, title,
 /// the [`LOCAL`] sliders in it). Color Grading follows Color ([`grading_section`]).
 pub const GROUPS: &[(&str, &str, &[&str])] = &[
     ("light", "Light", &["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]),
-    ("color", "Color", &["temp", "tint", "hue", "saturation"]),
+    ("color", "Color", &["temp", "tint", "hue", "saturation", "color_sat"]),
     ("effects", "Effects", &["texture", "clarity", "dehaze"]),
     ("detail", "Detail", &["sharpness", "noise", "moire", "defringe"]),
 ];
@@ -889,6 +906,34 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
         if *key == "color" {
+            // the tint swatch under Saturation; its row opens the hue and strength sliders
+            let open = app.ui.flyout_open("maskTint");
+            let row = flyout_row(ui, "maskTint", "Color", Icon::Target, open);
+            let sw = Rect::from_center_size(pos2(row.rect.right() - 36.0, row.rect.center().y), vec2(16.0, 16.0));
+            register(ui.ctx(), "maskTint:swatch", sw);
+            let t = Tokens::get(ui.ctx());
+            match tint_swatch(m.adjust.color_hue, m.adjust.color_sat) {
+                Some(c) => {
+                    ui.painter().rect_filled(sw, 2.0, c);
+                }
+                // no tint: an empty box crossed through, as Lightroom shows it
+                None => {
+                    ui.painter().line_segment([sw.left_bottom(), sw.right_top()], Stroke::new(1.0, t.text_dim));
+                }
+            }
+            ui.painter().rect_stroke(sw, 2.0, Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
+            if row.clicked() {
+                app.ui.toggle_flyout("maskTint");
+            }
+            if open {
+                crate::widgets::slider_group(ui, "maskTint", |ui| {
+                    for s in &TINT {
+                        let v = local_get(&m.adjust, s.id);
+                        let out = slider(ui, s, v, true, None);
+                        apply_slider_out(app, s, out, |app, v| app.run("mask.adjust", json!({"values": {s.id: v}})));
+                    }
+                });
+            }
             divider(ui);
             grading_section(app, ui, &m.adjust);
             // the mask's own Color Mixer and Point Color (a colour photo's tools, as globally)

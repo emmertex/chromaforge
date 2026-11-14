@@ -90,3 +90,22 @@ fn sections_fold_grading_sets_its_zone_and_the_row_bin_deletes() {
     assert_eq!(left.len(), 1, "one mask deleted");
     assert_ne!(left[0].id, first, "the hovered one");
 }
+
+/// Issue #1145: the Color swatch under Saturation opens a tint (hue in degrees, strength) that
+/// the mask takes; with no strength there is no tint.
+#[test]
+fn the_color_swatch_tints_the_mask() {
+    let mut h = masking();
+    assert!(has(&mut h, "maskTint:swatch"), "the swatch row is under the Color sliders");
+    assert!(!has(&mut h, "slider:color_sat"), "the tint sliders wait for the row");
+    req(&mut h, "ui.clickWidget", json!({"id": "flyout:maskTint"}));
+    h.settle(SETTLE);
+    assert!(has(&mut h, "slider:color_hue") && has(&mut h, "slider:color_sat"));
+    req(&mut h, "ui.dragWidget", json!({"id": "slider:color_sat", "fx": 0.1, "dx": 600.0, "steps": 8}));
+    h.settle(SETTLE);
+    let a = masks(&h)[0].adjust;
+    assert!(a.color_sat > 50.0, "tint strength raised: {}", a.color_sat);
+    assert!(crate::panels::masking::tint_swatch(a.color_hue, a.color_sat).is_some());
+    assert!(crate::panels::masking::tint_swatch(200.0, 0.0).is_none(), "no strength, no tint");
+    assert!(crate::panels::masking::tint_swatch(f64::NAN, 50.0).is_none());
+}
