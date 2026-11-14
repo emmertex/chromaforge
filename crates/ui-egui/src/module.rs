@@ -728,15 +728,20 @@ pub fn switch(app: &mut LccApp, to: ModuleId) -> Result<Value, String> {
     if app.ui.module == to {
         return Ok(json!({"module": to}));
     }
-    // The Browse tab is not a module: a module switch while it is up (the Modern Develop pill, a
-    // shortcut, an agent) leaves it first, as the Classic module bar does — the tab's sheet must
-    // never end up drawn under another module's chrome. With a browsed photo active, Develop
-    // means "Develop without Import": the Library tab's Develop module on the photo in place.
+    // The Browse tab is not a module: a module switch while it is up (the module bar, the Modern
+    // Develop pill, a shortcut, an agent) leaves it first — the tab's sheet must never end up drawn
+    // under another module's chrome. With a browsed photo chosen, Develop, Print, Export and
+    // Slideshow act on it without importing it: the module in the Library tab on the photo in place
+    // (on the library's own photo when the file is in the library already).
     if crate::import_tab::showing(app) {
-        if to == ModuleId::Develop && app.session.source == lcc_engine::LibrarySource::Folder && app.session.active().is_some() {
-            return crate::import_tab::develop_without_import(app);
+        if crate::import_tab::acts_in_place(to) && app.session.source == lcc_engine::LibrarySource::Folder && app.session.active().is_some() {
+            return crate::import_tab::open_without_import(app, to);
         }
         let _ = crate::import_tab::switch(app, crate::import_tab::Tab::Library);
+    } else if app.ui.import_develop && to != ModuleId::Library && !crate::import_tab::acts_in_place(to) {
+        // from a browsed photo opened without import to a module about the library (Map, Book,
+        // Web): the library, never a bounce back to the Browse tab
+        crate::import_tab::end_without_import(app);
     }
     match to {
         ModuleId::Develop => {
@@ -1491,11 +1496,11 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
             if let Some(m) = switch_to {
                 let result = match m {
                     None => app.run("view.importTab", json!({})),
-                    Some(m) => {
-                        // leaving Import for a module: back to the library first
-                        let back = if importing { app.run("view.libraryTab", json!({})) } else { Ok(json!({})) };
-                        back.and_then(|_| app.run(m.command(), json!({})))
-                    }
+                    // Library from Import: the Library tab (Library is the module the Browse tab shows)
+                    Some(ModuleId::Library) if importing => app.run("view.libraryTab", json!({})),
+                    // another module leaves the tab itself ([`switch`]): Develop, Print, Export… open on
+                    // the browsed selection without importing it
+                    Some(m) => app.run(m.command(), json!({})),
                 };
                 if let Err(e) = result {
                     app.ui.status = e;
