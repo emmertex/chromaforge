@@ -65,6 +65,8 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("faceScan", "reference/settings#face-scan"),
     // Settings ▸ Profiles
     ("profiles", "reference/settings#profiles"),
+    // Settings ▸ Develop
+    ("toolProfiles", "reference/settings#tool-profiles"),
     // Settings ▸ AI Denoise
     ("denoise", "reference/settings#ai-denoise"),
     ("denoiseModels", "ai/denoise#optional-models"),

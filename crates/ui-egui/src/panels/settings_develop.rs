@@ -21,7 +21,7 @@ fn edit(app: &mut LccApp, ctx: &egui::Context, params: Value) {
 }
 
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    heading(ui, t, "Tool Profiles");
+    super::settings::heading_help(ui, t, "Tool Profiles", "toolProfiles");
     hint(
         ui,
         t,
