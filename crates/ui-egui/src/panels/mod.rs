@@ -62,6 +62,7 @@ pub mod rules_editor;
 pub mod rules_move;
 pub mod second;
 pub mod settings;
+pub mod settings_develop;
 pub mod settings_folders;
 pub mod settings_profiles;
 pub mod slide_layout;

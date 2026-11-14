@@ -92,6 +92,13 @@ const SECTIONS: &[Section] = &[
     Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"], words: "slide duration fade playback export" },
     Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"], words: "faces people recognition" },
     Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"], words: "profiles hide camera body serial" },
+    Section {
+        key: "develop",
+        label: "Develop",
+        icon: Icon::Sliders,
+        tabs: &["develop"],
+        words: "develop tool profiles tools sliders groups custom hide panel witchcraft eboda",
+    },
     Section { key: "denoise", label: "AI Denoise", icon: Icon::Sparkle, tabs: &["denoise"], words: "ai denoise" },
     Section {
         key: "ai",
