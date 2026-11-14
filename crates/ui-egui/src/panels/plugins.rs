@@ -154,16 +154,34 @@ fn key() -> egui::Id {
 }
 
 /// Window state: one Plug-in Manager per process (the manager itself is process-wide).
+#[cfg(not(test))]
 static STATE: std::sync::Mutex<Option<State>> = std::sync::Mutex::new(None);
+
+// Tests run many apps in one process, each test on its own thread: there every test has a
+// Plug-in Manager of its own. Shared, one test's open manager covered the other tests' windows
+// (tests_i18n_sweep leaves it open; tests_import_tab's clicks in a 900 x 700 window landed on it).
+#[cfg(test)]
+thread_local! {
+    static STATE: std::cell::RefCell<Option<State>> = const { std::cell::RefCell::new(None) };
+}
 
 fn state(ctx: &egui::Context) -> State {
     let _ = ctx;
-    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default()
+    #[cfg(not(test))]
+    let s = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    #[cfg(test)]
+    let s = STATE.with_borrow(Clone::clone);
+    s.unwrap_or_default()
 }
 
 fn set_state(ctx: &egui::Context, s: State) {
     let _ = ctx;
-    *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    #[cfg(not(test))]
+    {
+        *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
+    }
+    #[cfg(test)]
+    STATE.set(Some(s));
 }
 
 fn app_ctx(app: &LccApp) -> egui::Context {
@@ -598,10 +616,22 @@ struct ExportHooksTask {
     guard: TaskGuard,
 }
 
+#[cfg(not(test))]
 static TASK: Mutex<Option<ExportHooksTask>> = Mutex::new(None);
 
+// Under test, each test's own (as the manager's [`STATE`]): a lock per test thread, leaked so its
+// guard lives as long as the static's.
+#[cfg(test)]
+thread_local! {
+    static TASK: &'static Mutex<Option<ExportHooksTask>> = Box::leak(Box::new(Mutex::new(None)));
+}
+
 fn task_lock() -> std::sync::MutexGuard<'static, Option<ExportHooksTask>> {
-    TASK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    #[cfg(not(test))]
+    let task = &TASK;
+    #[cfg(test)]
+    let task = TASK.with(|t| *t);
+    task.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Whether export hooks are running (`ui.inspect`, tests).
@@ -669,10 +699,21 @@ fn report(app: &mut LccApp, ctx: &egui::Context, results: &[Value]) {
 }
 
 /// The plug-in export destination chosen in the Export dialog: (plugin, destination, values).
+#[cfg(not(test))]
 static DESTINATION: std::sync::Mutex<Option<(String, String, Value)>> = std::sync::Mutex::new(None);
 
+// Under test, each test's own, as [`TASK`].
+#[cfg(test)]
+thread_local! {
+    static DESTINATION: &'static Mutex<Option<(String, String, Value)>> = Box::leak(Box::new(Mutex::new(None)));
+}
+
 fn destination_lock() -> std::sync::MutexGuard<'static, Option<(String, String, Value)>> {
-    DESTINATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    #[cfg(not(test))]
+    let destination = &DESTINATION;
+    #[cfg(test)]
+    let destination = DESTINATION.with(|d| *d);
+    destination.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// What to pass as `app.export {pluginDestination}`: the destination chosen in the Export
@@ -2049,6 +2090,48 @@ fn field_ui(ui: &mut egui::Ui, scope: &str, f: &Value, values: &mut Value) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Under test every test has a Plug-in Manager of its own: one opened on another test's thread
+    /// doesn't cover this test's window.
+    #[test]
+    fn a_manager_opened_on_another_test_thread_stays_there() {
+        let ctx = egui::Context::default();
+        let other = std::thread::spawn(|| {
+            let ctx = egui::Context::default();
+            set_state(&ctx, State { open: true, ..State::default() });
+            state(&ctx).open
+        });
+        assert!(other.join().unwrap(), "open on its own thread");
+        assert!(!state(&ctx).open, "and closed on this one");
+    }
+
+    /// So are the running export hooks: hooks started on another test's thread don't run here.
+    #[test]
+    fn export_hooks_started_on_another_test_thread_stay_there() {
+        let other = std::thread::spawn(|| {
+            let session = lcc_engine::Session::new();
+            let (_asks, requests) = std::sync::mpsc::channel();
+            let (_ends, results) = std::sync::mpsc::channel();
+            let guard = session.activity.start("plugins", "Running plug-in export hooks", Cancel::No);
+            *task_lock() = Some(ExportHooksTask { total: 1, progress: Arc::default(), requests, results, guard });
+            let running = export_hooks_running();
+            *task_lock() = None;
+            running
+        });
+        assert!(other.join().unwrap(), "running on its own thread");
+        assert!(!export_hooks_running(), "and not on this one");
+    }
+
+    /// And the plug-in export destination chosen in the Export dialog.
+    #[test]
+    fn a_destination_chosen_on_another_test_thread_stays_there() {
+        let other = std::thread::spawn(|| {
+            *destination_lock() = Some(("test.plugin".into(), "upload".into(), json!({})));
+            destination_lock().is_some()
+        });
+        assert!(other.join().unwrap(), "chosen on its own thread");
+        assert!(destination_lock().is_none(), "and none on this one");
+    }
 
     #[test]
     fn rows_name_the_request_each_one_is() {

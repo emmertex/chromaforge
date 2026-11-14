@@ -2863,27 +2863,21 @@ mod tests {
         elide_head(text, max as f32, |s| s.chars().count() as f32)
     }
 
+    /// A label that fits is left alone; a long path loses its leading folders, not its end; a
+    /// single name too long is cut at the end, on a character boundary.
     #[test]
-    fn a_label_that_fits_is_left_alone() {
-        assert_eq!(fit("/Users/me/Pictures", 18), "/Users/me/Pictures");
-    }
-
-    #[test]
-    fn a_long_path_loses_its_leading_folders_not_its_end() {
-        assert_eq!(fit("/Users/me/Pictures/Lightroom", 20), "…/Pictures/Lightroom");
-        assert_eq!(fit("/Users/me/Pictures/Lightroom", 12), "…/Lightroom");
-    }
-
-    #[test]
-    fn a_single_name_too_long_is_cut_at_the_end() {
-        assert_eq!(fit("2024-summer-holiday", 8), "2024-su…");
-        assert_eq!(fit("2024-summer-holiday", 1), "…");
-        assert_eq!(fit("2024-summer-holiday", 0), "…");
-    }
-
-    #[test]
-    fn multibyte_names_are_cut_on_character_boundaries() {
-        assert_eq!(fit("/写真/夏休み旅行の記録", 6), "夏休み旅行…");
+    fn a_long_label_loses_its_leading_folders_not_its_end() {
+        for (text, max, want) in [
+            ("/Users/me/Pictures", 18, "/Users/me/Pictures"),
+            ("/Users/me/Pictures/Lightroom", 20, "…/Pictures/Lightroom"),
+            ("/Users/me/Pictures/Lightroom", 12, "…/Lightroom"),
+            ("2024-summer-holiday", 8, "2024-su…"),
+            ("2024-summer-holiday", 1, "…"),
+            ("2024-summer-holiday", 0, "…"),
+            ("/写真/夏休み旅行の記録", 6, "夏休み旅行…"),
+        ] {
+            assert_eq!(fit(text, max), want, "{text:?} in {max}");
+        }
     }
 
     fn names(v: &[(String, String)]) -> Vec<&str> {
@@ -2976,7 +2970,7 @@ mod tests {
     /// hidden attribute, so Home's tree does not list AppData and open down into its temp folder.
     #[test]
     fn subfolders_leave_out_hidden_folders() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-hidden-subfolders-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-hidden-subfolders");
         let _ = std::fs::remove_dir_all(&dir);
         for name in ["Shown", ".dot", "Hidden"] {
             std::fs::create_dir_all(dir.join(name)).unwrap();

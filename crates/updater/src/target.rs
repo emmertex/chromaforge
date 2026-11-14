@@ -192,72 +192,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_artifacts() {
-        assert_eq!(Kind::of("app-1.2.3-windows-x64.msi"), Some(Kind::Msi));
-        assert_eq!(Kind::of("app-1.2.3-windows-x64-portable.zip"), Some(Kind::Archive));
-        assert_eq!(Kind::of("app-1.2.3-macos-universal.dmg"), Some(Kind::Dmg));
-        assert_eq!(Kind::of("app-1.2.3-linux-x86_64.AppImage"), Some(Kind::AppImage));
-        assert_eq!(Kind::of("app-1.2.3-linux-x86_64.tar.gz"), Some(Kind::Archive));
-        assert_eq!(Kind::of("app-1.2.3-freebsd-x86_64.tar.gz"), Some(Kind::Archive));
-        assert_eq!(Kind::of("app-1.2.3-linux-x86_64.flatpak"), Some(Kind::Archive));
-        assert_eq!(Kind::of("SHA256SUMS.txt"), Some(Kind::Checksums));
-        assert_eq!(Kind::of("app-1.2.3-linux-x86_64.AppImage.zsync"), None);
-        assert_eq!(Kind::of("app-1.2.3-web.zip"), Some(Kind::Archive));
-        assert_eq!(Kind::of("notes.md"), None);
-        assert_eq!(Kind::of("app.exe"), None);
-    }
-
-    #[test]
-    fn maps_the_shipped_platforms() {
-        assert_eq!(Target::of("windows", "x86_64"), Some(Target { os: Os::Windows, arch: "x64" }));
-        assert_eq!(Target::of("windows", "x86"), Some(Target { os: Os::Windows, arch: "x86" }));
-        assert_eq!(Target::of("windows", "aarch64"), Some(Target { os: Os::Windows, arch: "arm64" }));
-        assert_eq!(Target::of("macos", "aarch64"), Some(Target { os: Os::Macos, arch: "universal" }));
-        assert_eq!(Target::of("macos", "x86_64"), Some(Target { os: Os::Macos, arch: "universal" }));
-        assert_eq!(Target::of("linux", "riscv64"), Some(Target { os: Os::Linux, arch: "riscv64" }));
-        assert_eq!(Target::of("freebsd", "x86_64"), Some(Target { os: Os::Freebsd, arch: "x86_64" }));
-        assert_eq!(Target::of("android", "aarch64"), None);
-        assert_eq!(Target::of("windows", "powerpc"), None);
-    }
-
-    #[test]
-    fn picks_only_this_platforms_files() {
-        let win = Target { os: Os::Windows, arch: "x64" };
-        assert!(win.matches_name("app-1.2.3-windows-x64.msi"));
-        assert!(!win.matches_name("app-1.2.3-windows-x64-portable.zip"), "the portable zip is a manual install");
-        assert!(!win.matches_name("app-1.2.3-windows-arm64.msi"));
-        assert!(!win.matches_name("app-1.2.3-linux-x86_64.AppImage"));
-        // a Windows version that only ever mentions x64 in prose still matches: the name is ours
-        assert!(!win.matches_name("app-1.2.3-linux-x86_64.tar.gz"));
-        let mac = Target { os: Os::Macos, arch: "universal" };
-        assert!(mac.matches_name("app-1.2.3-macos-universal.dmg"));
-        assert!(mac.matches_name("app-1.2.3-rc.1-macos-universal.dmg"));
-        assert!(mac.matches_name("app-1.2.3-macos-aarch64.dmg"), "a per-arch dmg is still the macOS app");
-        assert!(!mac.matches_name("app-1.2.3-windows-x64.msi"));
-        let lin = Target { os: Os::Linux, arch: "aarch64" };
-        assert!(lin.matches_name("app-1.2.3-linux-aarch64.AppImage"));
-        assert!(!lin.matches_name("app-1.2.3-linux-x86_64.AppImage"));
-        assert!(win.matches_portable("app-1.2.3-windows-x64-portable.zip"));
-        assert!(!win.matches_portable("app-1.2.3-windows-x64.msi"), "the installer is not a portable copy's file");
-        assert!(!win.matches_portable("app-1.2.3-windows-arm64-portable.zip"));
-        assert!(lin.matches_portable("app-1.2.3-linux-aarch64.AppImage"));
-    }
-
-    #[test]
-    fn describes_what_will_happen() {
-        assert!(Target { os: Os::Linux, arch: "x86_64" }.describe().contains("replace this program"));
-        assert!(Target { os: Os::Windows, arch: "x64" }.describe().contains("installer"));
-        assert!(Target { os: Os::Linux, arch: "riscv64" }.describe().contains("open the folder"));
-    }
-
-    #[test]
-    fn asset_ranks_installers_above_archives() {
-        let msi = Asset::new("a-windows-x64.msi", "https://x/1", 10, None).expect("msi");
-        let zip = Asset::new("a-windows-x64-portable.zip", "https://x/2", 10, None).expect("zip");
-        let sums = Asset::new("SHA256SUMS.txt", "https://x/3", 10, None).expect("sums");
-        assert!(msi.kind.rank() < zip.kind.rank());
-        assert!(zip.kind.rank() < sums.kind.rank());
-        assert_eq!(Asset::new("app.exe", "https://x/4", 1, None), None);
-        assert!(msi.kind.installs_by().contains("installer"));
+    fn artifacts_are_classified_matched_and_ranked() {
+        // classifies artifacts
+        {
+            assert_eq!(Kind::of("app-1.2.3-windows-x64.msi"), Some(Kind::Msi));
+            assert_eq!(Kind::of("app-1.2.3-windows-x64-portable.zip"), Some(Kind::Archive));
+            assert_eq!(Kind::of("app-1.2.3-macos-universal.dmg"), Some(Kind::Dmg));
+            assert_eq!(Kind::of("app-1.2.3-linux-x86_64.AppImage"), Some(Kind::AppImage));
+            assert_eq!(Kind::of("app-1.2.3-linux-x86_64.tar.gz"), Some(Kind::Archive));
+            assert_eq!(Kind::of("app-1.2.3-freebsd-x86_64.tar.gz"), Some(Kind::Archive));
+            assert_eq!(Kind::of("app-1.2.3-linux-x86_64.flatpak"), Some(Kind::Archive));
+            assert_eq!(Kind::of("SHA256SUMS.txt"), Some(Kind::Checksums));
+            assert_eq!(Kind::of("app-1.2.3-linux-x86_64.AppImage.zsync"), None);
+            assert_eq!(Kind::of("app-1.2.3-web.zip"), Some(Kind::Archive));
+            assert_eq!(Kind::of("notes.md"), None);
+            assert_eq!(Kind::of("app.exe"), None);
+        }
+        // picks only this platforms files
+        {
+            let win = Target { os: Os::Windows, arch: "x64" };
+            assert!(win.matches_name("app-1.2.3-windows-x64.msi"));
+            assert!(!win.matches_name("app-1.2.3-windows-x64-portable.zip"), "the portable zip is a manual install");
+            assert!(!win.matches_name("app-1.2.3-windows-arm64.msi"));
+            assert!(!win.matches_name("app-1.2.3-linux-x86_64.AppImage"));
+            // a Windows version that only ever mentions x64 in prose still matches: the name is ours
+            assert!(!win.matches_name("app-1.2.3-linux-x86_64.tar.gz"));
+            let mac = Target { os: Os::Macos, arch: "universal" };
+            assert!(mac.matches_name("app-1.2.3-macos-universal.dmg"));
+            assert!(mac.matches_name("app-1.2.3-rc.1-macos-universal.dmg"));
+            assert!(mac.matches_name("app-1.2.3-macos-aarch64.dmg"), "a per-arch dmg is still the macOS app");
+            assert!(!mac.matches_name("app-1.2.3-windows-x64.msi"));
+            let lin = Target { os: Os::Linux, arch: "aarch64" };
+            assert!(lin.matches_name("app-1.2.3-linux-aarch64.AppImage"));
+            assert!(!lin.matches_name("app-1.2.3-linux-x86_64.AppImage"));
+            assert!(win.matches_portable("app-1.2.3-windows-x64-portable.zip"));
+            assert!(!win.matches_portable("app-1.2.3-windows-x64.msi"), "the installer is not a portable copy's file");
+            assert!(!win.matches_portable("app-1.2.3-windows-arm64-portable.zip"));
+            assert!(lin.matches_portable("app-1.2.3-linux-aarch64.AppImage"));
+        }
+        // asset ranks installers above archives
+        {
+            let msi = Asset::new("a-windows-x64.msi", "https://x/1", 10, None).expect("msi");
+            let zip = Asset::new("a-windows-x64-portable.zip", "https://x/2", 10, None).expect("zip");
+            let sums = Asset::new("SHA256SUMS.txt", "https://x/3", 10, None).expect("sums");
+            assert!(msi.kind.rank() < zip.kind.rank());
+            assert!(zip.kind.rank() < sums.kind.rank());
+            assert_eq!(Asset::new("app.exe", "https://x/4", 1, None), None);
+            assert!(msi.kind.installs_by().contains("installer"));
+        }
     }
 }

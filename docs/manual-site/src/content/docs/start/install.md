@@ -5,7 +5,7 @@ description: Get Chromaforge running.
 
 - Download from the project's **Releases** page.
 - **macOS**: open the `.dmg`, drag the app to Applications. The app is not signed with an Apple developer certificate, so macOS warns first (see below).
-- **Windows**: run the installer, or unpack the portable zip.
+- **Windows**: run the installer, or unpack the portable zip. The files are not code-signed, so SmartScreen may warn: choose **More info ▸ Run anyway**.
 - **Linux**: AppImage, `.deb`, `.rpm`, Flatpak or a tarball.
 - **Android**: install from [Google Play](https://play.google.com/store/apps/details?id=<app_id>), or sideload the `.apk` from Releases. Play runs a little behind Releases because of Google's review process.
 - **Web**: open the browser build; it runs locally, nothing is uploaded.

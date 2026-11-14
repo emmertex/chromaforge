@@ -2044,6 +2044,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "settings.reduceMotion", &mut app.ui.settings.reduce_motion, "Reduce motion");
     hint(ui, t, crate::i18n::tr("Turns off zoom and spinner animations. Fades stay."));
     check(ui, "settings.wheelResizesBrush", &mut app.ui.settings.wheel_resizes_brush, "Wheel resizes brush instead of zooming");
+    check(ui, "settings.expandedSliders", &mut app.ui.settings.expanded_sliders, "Expanded sliders");
+    hint(ui, t, crate::i18n::tr("Warning, expanding sliders is not XMP compliant."));
     heading(ui, t, crate::i18n::tr("Keywords"));
     row(ui, t, crate::i18n::tr("Keywords of the selection"), |ui| {
         use crate::state::KeywordChips as K;
@@ -2995,7 +2997,7 @@ mod tests {
     /// The folder scan before an import's review counts too: it ends in an import into the open library.
     #[test]
     fn open_library_is_refused_while_an_import_scan_runs() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-switchscan-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-switchscan");
         let _ = std::fs::create_dir_all(&dir);
         let mut app = LccApp::new(lcc_engine::Session::with_demo(), crate::Services::default());
         app.run("photo.setReference", json!({})).unwrap();
@@ -3022,38 +3024,29 @@ mod path_tests {
         elide_path(path, max as f32, |s| s.chars().count() as f32)
     }
 
+    /// A path that fits is left alone; one that doesn't loses its leading folders and keeps its end
+    /// (with either separator: `Path::display` gives backslashes on Windows); a last folder too long
+    /// by itself loses its end, on a character boundary; a separator at the end is not where the
+    /// name starts.
     #[test]
-    fn a_path_that_fits_is_left_alone() {
-        assert_eq!(fit("/Users/me/Pictures", 18), "/Users/me/Pictures");
-        assert_eq!(fit("", 5), "");
-    }
-
-    #[test]
-    fn leading_folders_go_first_and_the_end_stays() {
-        assert_eq!(fit("/Users/me/Pictures/Library", 20), "…/Pictures/Library");
-        assert_eq!(fit("/Users/me/Pictures/Library", 10), "…/Library");
-    }
-
-    /// Windows paths: `Path::display` gives backslashes there.
-    #[test]
-    fn a_path_with_backslashes_keeps_its_end_too() {
-        assert_eq!(fit(r"C:\Users\me\Pictures\Library", 20), r"…\Pictures\Library");
-        assert_eq!(fit(r"C:\Users\me/Pictures\Library", 10), r"…\Library");
-    }
-
-    #[test]
-    fn a_last_folder_too_long_by_itself_loses_its_end() {
-        assert_eq!(fit("/Users/me/a-very-long-folder-name", 8), "a-very-…");
-        assert_eq!(fit("no-separator-at-all", 8), "no-sepa…");
-        assert_eq!(fit("/Users/Фотографии-из-отпуска", 8), "Фотогра…");
-    }
-
-    #[test]
-    fn a_separator_at_the_end_is_not_where_the_name_starts() {
-        assert_eq!(fit("/Users/me/Pictures/Library/", 11), "…/Library/");
-        assert_eq!(fit("/Users/me/a-very-long-folder-name/", 8), "a-very-…");
-        assert_eq!(fit(r"C:\Users\me\Library\", 11), r"…\Library\");
-        assert_eq!(fit("///", 2), "…");
-        assert_eq!(fit(r"\\server\share\folder", 15), r"…\share\folder");
+    fn a_long_path_loses_its_leading_folders_and_keeps_its_end() {
+        for (path, max, want) in [
+            ("/Users/me/Pictures", 18, "/Users/me/Pictures"),
+            ("", 5, ""),
+            ("/Users/me/Pictures/Library", 20, "…/Pictures/Library"),
+            ("/Users/me/Pictures/Library", 10, "…/Library"),
+            (r"C:\Users\me\Pictures\Library", 20, r"…\Pictures\Library"),
+            (r"C:\Users\me/Pictures\Library", 10, r"…\Library"),
+            ("/Users/me/a-very-long-folder-name", 8, "a-very-…"),
+            ("no-separator-at-all", 8, "no-sepa…"),
+            ("/Users/Фотографии-из-отпуска", 8, "Фотогра…"),
+            ("/Users/me/Pictures/Library/", 11, "…/Library/"),
+            ("/Users/me/a-very-long-folder-name/", 8, "a-very-…"),
+            (r"C:\Users\me\Library\", 11, r"…\Library\"),
+            ("///", 2, "…"),
+            (r"\\server\share\folder", 15, r"…\share\folder"),
+        ] {
+            assert_eq!(fit(path, max), want, "{path:?} in {max}");
+        }
     }
 }

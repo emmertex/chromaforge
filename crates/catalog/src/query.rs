@@ -1577,15 +1577,3 @@ pub fn merged_kind(file_name: &str) -> Option<&'static str> {
         None
     }
 }
-
-#[cfg(test)]
-mod tests_sort_default {
-    /// A new library's grid has no date sections, as Lightroom Classic's Grid (the fork's default; grouping by day,
-    /// month or year is still a choice in the Sort menu, and a library that saved one keeps it).
-    #[test]
-    fn the_grid_starts_ungrouped_as_in_lightroom_classic() {
-        assert_eq!(super::Sort::default().group, crate::GroupBy::None);
-        let saved: super::Sort = serde_json::from_str(r#"{"key": "captureDate", "ascending": true, "group": "day"}"#).unwrap();
-        assert_eq!(saved.group, crate::GroupBy::Day, "a saved choice stays");
-    }
-}

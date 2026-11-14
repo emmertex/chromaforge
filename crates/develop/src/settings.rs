@@ -1377,8 +1377,11 @@ pub struct Crop {
 // Masks and local adjustments
 
 /// The sliders available inside a mask (Lightroom's local adjustments).
+///
+/// Serialized through [`LocalAdjustmentsWire`], which converts the Hue of older catalogs, presets
+/// and effect files (a −100..100 slider value) to degrees.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "LocalAdjustmentsWire", into = "LocalAdjustmentsWire")]
 pub struct LocalAdjustments {
     pub temp: f64,
     pub tint: f64,
@@ -1391,6 +1394,7 @@ pub struct LocalAdjustments {
     pub texture: f64,
     pub clarity: f64,
     pub dehaze: f64,
+    /// Hue shift in degrees, −180..180 ([`LOCAL_HUE_MAX`]).
     pub hue: f64,
     pub saturation: f64,
     pub sharpness: f64,
@@ -1418,6 +1422,85 @@ pub struct LocalAdjustments {
     /// Local vignette/grain are not in Lightroom; we keep the struct extensible.
     pub amount: f64,
 }
+
+/// The mask Hue slider's reach either way, in degrees.
+pub const LOCAL_HUE_MAX: f64 = 180.0;
+
+/// Degrees per step of the old mask Hue slider: it was stored as −100..100 (Lightroom's
+/// `crs:LocalHue` × 100) and rendered as `value / 100 × 0.6` radians (about ±34°).
+pub const LEGACY_LOCAL_HUE_DEG: f64 = 0.6 * 180.0 / std::f64::consts::PI / 100.0;
+
+/// The mask Hue's standard reach (Lightroom's `crs:LocalHue` ±1), in degrees: about 34.38°.
+pub const LOCAL_HUE_STANDARD: f64 = 100.0 * LEGACY_LOCAL_HUE_DEG;
+
+macro_rules! local_wire {
+    ($($f:ident),* $(,)?) => {
+        /// How [`LocalAdjustments`] is stored. `hue_deg` marks a Hue in degrees; without it (catalogs,
+        /// presets and effect files from before the change, partial JSON) `hue` is the old −100..100
+        /// slider value and converts to the same angle in degrees.
+        #[derive(Clone, Copy, Serialize, Deserialize)]
+        #[serde(default)]
+        pub struct LocalAdjustmentsWire {
+            $($f: f64,)*
+            hue: f64,
+            hue_deg: bool,
+        }
+
+        impl Default for LocalAdjustmentsWire {
+            fn default() -> Self {
+                let d = LocalAdjustments::default();
+                Self { $($f: d.$f,)* hue: d.hue, hue_deg: false }
+            }
+        }
+
+        impl From<LocalAdjustmentsWire> for LocalAdjustments {
+            fn from(w: LocalAdjustmentsWire) -> Self {
+                let hue = if w.hue_deg { w.hue } else { w.hue * LEGACY_LOCAL_HUE_DEG };
+                Self { $($f: w.$f,)* hue }
+            }
+        }
+
+        impl From<LocalAdjustments> for LocalAdjustmentsWire {
+            fn from(a: LocalAdjustments) -> Self {
+                Self { $($f: a.$f,)* hue: a.hue, hue_deg: true }
+            }
+        }
+    };
+}
+
+local_wire!(
+    temp,
+    tint,
+    exposure,
+    contrast,
+    highlights,
+    shadows,
+    whites,
+    blacks,
+    texture,
+    clarity,
+    dehaze,
+    saturation,
+    sharpness,
+    noise,
+    moire,
+    defringe,
+    color_hue,
+    color_sat,
+    grade_shadows_hue,
+    grade_shadows_sat,
+    grade_shadows_lum,
+    grade_midtones_hue,
+    grade_midtones_sat,
+    grade_midtones_lum,
+    grade_highlights_hue,
+    grade_highlights_sat,
+    grade_highlights_lum,
+    grade_global_hue,
+    grade_global_sat,
+    grade_global_lum,
+    amount,
+);
 
 impl LocalAdjustments {
     /// The mask's colour-grading wheels (shadows, midtones, highlights, global) as [`Wheel`]s.

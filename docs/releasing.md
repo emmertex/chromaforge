@@ -60,6 +60,9 @@ How a real run flows:
    - Name the upstream pull requests that landed since the last release (the intake PRs' adopted rows) in a
      `## Upstream` section, one line per change ending `(upstream #N, <author>)`. Don't link them: the upstream
      repository's name fails the brand check.
+   - **Check the manual against the changelog** in the same PR: every feature in `docs/changelog/<version>.md` has its
+     page or line in `docs/manual-site/` / `docs/manual/`, nothing there describes removed behaviour, and the install
+     and signing statements (macOS is not signed or notarized unless that changed) still hold.
 3. Set the workspace version in `Cargo.toml` (for example, with `cargo xtask version set 1.2.0`), in the same PR.
    For a manual workflow run, the version input can override the workspace version for that run.
    Use a semantic version such as `1.2.0` or `1.2.0-rc.1`; versions containing a hyphen are

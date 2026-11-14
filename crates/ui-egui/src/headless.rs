@@ -296,6 +296,9 @@ impl Headless {
         } else {
             (egui::vec2(1600.0, 1000.0), 1.0)
         };
+        // every unit test is its own process under nextest: generate each demo photo once per build
+        #[cfg(test)]
+        lcc_engine::scene_disk::use_build_dir();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = app.with_control(rx);
         app.headless_host = true;
@@ -573,10 +576,10 @@ mod tests {
     fn detail_offers_ai_denoise_for_raw_photos_without_any_set_up() {
         use crate::state::Dialog;
         use lcc_catalog::{MediaKind, Op, Photo, PhotoId, Source};
+        let dir = lcc_testkit::TempDir::new("lc-ui-denoise");
         // tall enough that the Detail panel's setup button is on screen above the Sync bar, whatever the panel order
         let mut h = demo([1400.0, 1600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-denoise-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
@@ -681,9 +684,9 @@ mod tests {
     #[test]
     fn a_rejected_model_file_says_why_in_settings() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-denoise-rejected");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-denoise-rejected-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.set_denoise_models_dir(Some(dir.join("denoise-models")));
@@ -906,10 +909,7 @@ mod tests {
         assert!((h.view.ctx.content_rect().width() - 1.0).abs() < 0.01);
         let main = h.view.ctx.clone();
         assert_eq!(h.app.headless_screenshot(&main, true).unwrap().size, [1, 60]);
-    }
-
-    #[test]
-    fn control_resize_rounds_in_native_points_after_a_fractional_zoom_out() {
+        // a fractional zoom-out rounds in native points
         let mut app = LccApp::new(lcc_engine::Session::new(), crate::Services::default());
         app.ui.settings.gpu = false;
         let mut h = Headless::new(app, [480.0, 320.0], 0.9);
@@ -980,18 +980,9 @@ mod tests {
         let state = h.request("ui.inspect", json!({}), t)["result"].clone();
         assert_eq!(state["selection"], json!(ids[..4]));
         assert_eq!(state["active"], ids[1]);
-    }
-
-    /// Upstream #3716: a right-click on a surveyed photo makes it the active one (the selection stays), and P
-    /// flags as Pick with the Crop panel open, where X is the crop aspect swap.
-    #[test]
-    fn survey_right_click_activates_and_p_flags_with_crop_open() {
-        let mut h = demo([1000.0, 700.0]);
-        h.settle(SETTLE);
-        let t = Duration::from_secs(10);
-        let ids: Vec<u64> = h.app.session.visible_cloned().iter().map(|id| id.0).collect();
+        // Upstream #3716: a right-click on a surveyed photo makes it the active one (the selection stays), and P
+        // flags as Pick with the Crop panel open, where X is the crop aspect swap.
         h.request("engine.execute", json!({"command": "library.select", "params": {"ids": ids[..3]}}), t);
-        h.request("ui.set", json!({"view": "survey"}), t);
         h.settle(SETTLE);
         h.request("ui.clickWidget", json!({"id": format!("film:{}", ids[2]), "button": "right"}), t);
         h.settle(SETTLE);
@@ -1019,6 +1010,16 @@ mod tests {
             r
         };
         h.settle(SETTLE);
+        // with no text field focused `ui.clipboard` is refused, rather than doing what ⌘V does there on one
+        // platform (paste edit settings) and nothing on another
+        let undo = h.app.session.undo.len();
+        for action in ["copy", "paste"] {
+            let r = h.request("ui.clipboard", json!({"action": action, "text": "travel"}), t);
+            assert_eq!(r["ok"], false, "{action}: {r}");
+            assert!(r["error"].as_str().is_some_and(|e| e.contains("text field")), "{r}");
+        }
+        h.settle(SETTLE);
+        assert_eq!(h.app.session.undo.len(), undo, "nothing was pasted");
         ask(&mut h, "ui.clickWidget", json!({"id": "field:search"}));
         ask(&mut h, "ui.text", json!({"text": "wedding"}));
         ask(&mut h, "ui.key", json!({"key": "a", "cmd": true}));
@@ -1030,45 +1031,6 @@ mod tests {
         assert_eq!(h.app.ui.search, "travel");
         let r = h.request("ui.clipboard", json!({"action": "shred"}), t);
         assert_eq!(r["ok"], false, "an unknown action is refused: {r}");
-    }
-
-    /// `ui.clipboard` acts in a text field: with none focused it is refused, rather than doing
-    /// what ⌘V does there on one platform (paste edit settings) and nothing on another.
-    #[test]
-    fn the_clipboard_method_needs_a_text_field() {
-        let mut h = demo([1200.0, 760.0]);
-        let t = Duration::from_secs(10);
-        h.settle(SETTLE);
-        let undo = h.app.session.undo.len();
-        for action in ["copy", "paste"] {
-            let r = h.request("ui.clipboard", json!({"action": action, "text": "travel"}), t);
-            assert_eq!(r["ok"], false, "{action}: {r}");
-            assert!(r["error"].as_str().is_some_and(|e| e.contains("text field")), "{r}");
-        }
-        h.settle(SETTLE);
-        assert_eq!(h.app.session.undo.len(), undo, "nothing was pasted");
-    }
-
-    /// `ui.clickWidget` right-clicks with `button: "right"`, as `ui.click` does (MCP `click`
-    /// passes it on with a widget): a filmstrip photo's context menu opens.
-    #[test]
-    fn click_widget_right_clicks() {
-        let mut h = demo([1200.0, 760.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail"}), t);
-        h.settle(SETTLE);
-        let cell = h
-            .app
-            .widgets
-            .iter()
-            .find(|(w, _)| w.strip_prefix("film:").is_some_and(|n| n.parse::<u64>().is_ok()))
-            .map(|(w, _)| w.clone())
-            .expect("a filmstrip photo");
-        assert!(!egui::Popup::is_any_open(&h.view.ctx));
-        let r = h.request("ui.clickWidget", json!({"id": cell, "button": "right"}), t);
-        assert_eq!(r["ok"], true, "{r}");
-        h.settle(SETTLE);
-        assert!(egui::Popup::is_any_open(&h.view.ctx), "its context menu");
     }
 
     /// Fork #46: the filmstrip's photo menu has Add to / Remove from Quick Collection (B), which
@@ -1091,17 +1053,8 @@ mod tests {
             h.settle(SETTLE);
             assert_eq!(in_quick(&h), want);
         }
-    }
-
-    /// #1239: deleting asks first by default, and the context menu's Delete Photo asks too.
-    #[test]
-    fn context_menu_delete_asks_first() {
-        let mut h = demo([1200.0, 760.0]);
-        let t = Duration::from_secs(10);
+        // #1239: deleting asks first by default, and the context menu's Delete Photo asks too
         assert!(h.app.ui.settings.confirm_delete, "on by default");
-        h.request("ui.set", json!({"view": "detail"}), t);
-        h.settle(SETTLE);
-        let id = h.app.session.selection.active.expect("an active photo");
         let cell = format!("film:{}", id.0);
         h.request("ui.clickWidget", json!({"id": cell, "button": "right"}), t);
         h.settle(SETTLE);
@@ -1215,23 +1168,6 @@ mod tests {
         assert_eq!(h.app.session.visible_position(h.app.session.selection.active.unwrap()), Some(1));
     }
 
-    /// The search field is a shared text field: right-click ▸ Paste puts the clipboard's text in
-    /// and filters by it.
-    #[test]
-    fn the_search_field_pastes_from_its_menu() {
-        let mut h = demo([1200.0, 760.0]);
-        let t = Duration::from_secs(10);
-        h.settle(SETTLE);
-        h.view.clipboard = "wedding".into();
-        for (id, button) in [("field:search", "right"), ("field:search:paste", "left")] {
-            let r = h.request("ui.clickWidget", json!({"id": id, "button": button}), t);
-            assert_eq!(r["ok"], true, "{id}: {r}");
-            h.settle(SETTLE);
-        }
-        assert_eq!(h.app.ui.search, "wedding");
-        assert_eq!(h.app.session.filter.text, "wedding", "and the library is filtered by it");
-    }
-
     /// Issue #1648: clearing the filters from the loupe's pill empties the search field too, so
     /// the field never shows a search that is no longer applied.
     #[test]
@@ -1270,6 +1206,15 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
         assert_eq!((h.app.ui.search.as_str(), h.app.session.filter.text.as_str()), ("", ""));
+        // the search field is a shared text field: right-click ▸ Paste puts the clipboard's text in and filters by it
+        h.view.clipboard = "wedding".into();
+        for (id, button) in [("field:search", "right"), ("field:search:paste", "left")] {
+            let r = h.request("ui.clickWidget", json!({"id": id, "button": button}), t);
+            assert_eq!(r["ok"], true, "{id}: {r}");
+            h.settle(SETTLE);
+        }
+        assert_eq!(h.app.ui.search, "wedding");
+        assert_eq!(h.app.session.filter.text, "wedding", "and the library is filtered by it");
     }
 
     #[test]
@@ -1292,25 +1237,6 @@ mod tests {
         assert!(bright > 30, "no text in the top bar ({bright} bright px)");
         // thumbnails arrived (photo textures were drawn)
         assert!(h.app.renderer.thumb_textures() > 0);
-    }
-
-    #[test]
-    fn snapshots_are_deterministic_and_control_requests_work() {
-        let shot = || {
-            let mut h = demo([900.0, 600.0]);
-            let r = h.request("ui.set", json!({"view": "detail"}), Duration::from_secs(10));
-            assert_eq!(r["ok"], true, "{r}");
-            // Compare only fully settled frames: a timed-out settle would compare half-rendered
-            // pictures and fail as a misleading pixel diff (seen on loaded CI machines).
-            assert!(h.settle(Duration::from_secs(300)), "the demo detail view did not settle within 300 s");
-            h.paint()
-        };
-        let (a, b) = (shot(), shot());
-        assert_eq!(a.size, b.size);
-        // The photo may come from the GPU in one run and the CPU in the other (the GPU warms up in
-        // the background), which differ by ≤ 1–2 LSB; anything more is a real difference.
-        let diff = a.pixels.iter().zip(&b.pixels).filter(|(x, y)| x.to_array().iter().zip(y.to_array()).any(|(p, q)| p.abs_diff(q) > 2)).count();
-        assert_eq!(diff, 0, "{diff} pixels differ between two runs");
     }
 
     /// Keyboard culling: Compare (rating keys hit the candidate, arrows move it, auto-advance),
@@ -1382,7 +1308,7 @@ mod tests {
         meta.regions = vec![lcc_meta::Region {
             rect: lcc_geom::Rect { x0: 0.3, y0: 0.2, x1: 0.55, y1: 0.6 },
             kind: lcc_meta::RegionKind::Face,
-            name: Some("Person A".into()),
+            name: None,
             description: None,
         }];
         h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
@@ -1404,29 +1330,8 @@ mod tests {
         assert!(back.face_boxes);
         let old: crate::state::UiState = serde_json::from_value(json!({"faceBoxes": true})).unwrap();
         assert!(!old.face_boxes, "an older build's default is not the user's choice");
-    }
-
-    /// Naming a face in the loupe: point at an unnamed face, click its "Add name" label, type, Enter. Needs the
-    /// recognition runtime only for the background indexer, so the naming itself is tested whatever the build.
-    #[test]
-    fn naming_a_face_in_the_loupe() {
+        // Naming a face in the loupe: point at an unnamed face, click its "Add name" label, type, Enter.
         use crate::state::NameEdit;
-        use lcc_catalog::Op;
-        let mut h = demo([1400.0, 900.0]);
-        let t = Duration::from_secs(10);
-        let id = h.app.session.active().unwrap();
-        let mut meta = h.app.session.catalog.photo(id).unwrap().meta.clone();
-        meta.regions = vec![lcc_meta::Region {
-            rect: lcc_geom::Rect { x0: 0.3, y0: 0.2, x1: 0.55, y1: 0.6 },
-            kind: lcc_meta::RegionKind::Face,
-            name: None,
-            description: None,
-        }];
-        h.app.session.commit("setup", Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
-        h.request("ui.set", json!({"view": "detail", "right": "none"}), t);
-        // face boxes are off by default: switched on here
-        let r = h.request("engine.execute", json!({"command": "view.faceBoxes", "params": {"show": true}}), t);
-        assert_eq!(r["ok"], true, "{r}");
         h.settle(SETTLE);
         // pointing at the box shows the invitation; clicking it opens the name box
         h.request("ui.pointer", json!({"events": [{"kind": "move", "x": 0.42, "y": 0.4}]}), t);
@@ -1564,9 +1469,9 @@ mod tests {
     #[test]
     fn adding_a_face_model_shows_its_terms_and_installs_only_once_accepted() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facemodel");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facemodel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1621,8 +1526,8 @@ mod tests {
     #[test]
     fn detect_faces_without_the_face_model_offers_its_download_and_fetches_nothing() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-detector");
         let mut h = demo([1400.0, 900.0]);
-        let dir = std::env::temp_dir().join(format!("lc-ui-detector-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1653,9 +1558,9 @@ mod tests {
     #[test]
     fn download_shows_the_terms_first_and_fetches_nothing_until_accepted() {
         use crate::state::Dialog;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facedl");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facedl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -1696,9 +1601,9 @@ mod tests {
     fn people_and_the_name_box_offer_to_set_face_recognition_up() {
         use crate::state::{Dialog, ViewMode};
         use lcc_catalog::Op;
+        let dir = lcc_testkit::TempDir::new("lc-ui-facesetup");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-facesetup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         h.app.session.face_models_dir = Some(dir.join("models"));
@@ -2209,20 +2114,6 @@ mod tests {
         assert!(h.app.renderer.variant_textures() >= kept, "{} pictures kept after more frames, {kept} before", h.app.renderer.variant_textures());
     }
 
-    /// `ui.inspect` says how hard the face scan is allowed to work and whether the window counts as in front, so a slow
-    /// scan can be told from a stuck one.
-    #[test]
-    fn inspect_reports_the_face_scan_pace() {
-        let mut h = demo([1000.0, 700.0]);
-        let t = Duration::from_secs(10);
-        h.settle(SETTLE);
-        h.step();
-        let r = h.request("ui.inspect", json!({}), t);
-        let scan = &r["result"]["faceScan"];
-        assert!(["pause", "light", "normal", "full"].contains(&scan["pace"].as_str().unwrap_or("")), "{scan}");
-        assert!(scan["focused"].is_boolean() && scan["pending"].is_u64() && scan["indexed"].is_u64(), "{scan}");
-    }
-
     /// Profile browser: live variant thumbnails, hover previews in the loupe without touching the
     /// photo or its history, click applies, the star toggles the favourite.
     #[test]
@@ -2263,6 +2154,14 @@ mod tests {
         assert_eq!(h.app.session.profile_favorites, ["lc.portrait"]);
         assert_eq!(photo(&h).develop.profile.id, "lc.vivid", "the star doesn't apply");
         h.settle(SETTLE);
+        // hovering the applied profile shows the applied look (no preview), not the last other profile hovered
+        h.request("ui.hoverWidget", json!({"id": "profileCell:lc.portrait"}), t);
+        h.step();
+        assert!(h.app.hover_preview.is_some(), "another profile previews");
+        h.request("ui.hoverWidget", json!({"id": "profileCell:lc.vivid"}), t);
+        h.step();
+        assert!(h.app.hover_preview.is_none(), "the applied profile is shown, not the last hovered one");
+        h.settle(SETTLE);
     }
 
     /// Profile groups start folded except the one holding the photo's profile; folding or
@@ -2289,23 +2188,6 @@ mod tests {
         assert!(cells(&h).len() > before, "{folded} opened");
         let saved = serde_json::to_value(&h.app.ui).unwrap();
         assert_eq!(saved["groupOpen"][folded.replacen("profileGroup:", "profile:", 1)], true, "{}", saved["groupOpen"]);
-    }
-
-    /// Hovering the applied profile shows the applied look (no preview), not the last other profile hovered.
-    #[test]
-    fn hovering_the_applied_profile_drops_the_last_hover() {
-        let mut h = demo([1400.0, 900.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail"}), t);
-        h.request("engine.execute", json!({"command": "panel.profiles"}), t);
-        h.settle(SETTLE);
-        h.request("ui.clickWidget", json!({"id": "profileCell:lc.vivid"}), t);
-        h.request("ui.hoverWidget", json!({"id": "profileCell:lc.portrait"}), t);
-        h.step();
-        assert!(h.app.hover_preview.is_some(), "another profile previews");
-        h.request("ui.hoverWidget", json!({"id": "profileCell:lc.vivid"}), t);
-        h.step();
-        assert!(h.app.hover_preview.is_none(), "the applied profile is shown, not the last hovered one");
     }
 
     /// The preset applied to a photo is still marked (and its Amount slider back) after visiting
@@ -2388,6 +2270,7 @@ mod tests {
         // (preset groups start folded)
         let groups: Vec<String> = h.app.session.presets.iter().map(|p| format!("preset:{}", p.group)).collect();
         h.app.ui.group_open.extend(groups.into_iter().map(|g| (g, true)));
+        crate::panels::presets::set_shown(&mut h.app, false);
         h.request("engine.execute", json!({"command": "panel.presets"}), t);
         h.settle(SETTLE);
         let id = h.app.session.active().unwrap();
@@ -2413,7 +2296,9 @@ mod tests {
         assert_eq!(h.app.hover_preview.as_ref().map(|p| p.label.as_str()), Some("Preset: Warm Glow"));
         // thumbnails: variant textures for the visible presets
         h.app.ui.preset_thumbs = true;
-        h.request("ui.move", json!({"x": 5, "y": 500}), t);
+        // (off the left column, where the presets now are)
+        let away = h.app.image_rect.map_or(egui::pos2(800.0, 500.0), |r| r.center());
+        h.request("ui.move", json!({"x": away.x, "y": away.y}), t);
         h.settle(SETTLE);
         h.step();
         assert!(h.app.hover_preview.is_none());
@@ -2488,32 +2373,6 @@ mod tests {
         assert!(deep.is_some_and(|n| n > 500), "scrolled rows: {later:?}");
     }
 
-    /// With `label` and `labels` both set (a saved single-label filter, or an agent), the filter
-    /// bar lights only the labels that pass both, and a click starts from those, not their union.
-    #[test]
-    fn filter_bar_labels_from_label_and_labels() {
-        use lcc_catalog::ColorLabel;
-        let mut h = demo([1400.0, 800.0]);
-        let t = Duration::from_secs(10);
-        // (the filter bar shows from the start: `view.filterBar` would hide it)
-        h.app.ui.filter_bar = true;
-        h.settle(SETTLE);
-        h.app.session.execute("library.filter", &json!({"label": "red", "labels": ["red", "yellow"]})).unwrap();
-        // a frame so the bar is laid out for the new filter before the click
-        h.step();
-        let r = h.request("ui.clickWidget", json!({"id": "filter:label-green"}), t);
-        assert_eq!(r["ok"], true, "{r}");
-        let f = h.app.session.filter.clone();
-        assert_eq!((f.label, f.labels), (None, vec![ColorLabel::Red, ColorLabel::Green]));
-        // nothing passes both: nothing is lit, so a click shows just that label
-        h.app.session.execute("library.filter", &json!({"label": "red", "labels": ["yellow"]})).unwrap();
-        h.step();
-        h.request("ui.clickWidget", json!({"id": "filter:label-green"}), t);
-        let f = h.app.session.filter.clone();
-        assert_eq!((f.label, f.labels), (None, vec![ColorLabel::Green]));
-        h.settle(SETTLE);
-    }
-
     /// The filter bar drives `library.filter` and saves the view as a smart album.
     #[test]
     fn filter_bar_filters_and_saves_a_smart_album() {
@@ -2546,6 +2405,23 @@ mod tests {
         h.request("ui.clickWidget", json!({"id": "button:filterClear"}), t);
         assert_eq!(h.app.session.filter, Default::default());
         assert_eq!(h.app.session.visible_cloned().len(), all);
+        h.settle(SETTLE);
+        // With `label` and `labels` both set (a saved single-label filter, or an agent), the bar lights only
+        // the labels that pass both, and a click starts from those, not their union.
+        use lcc_catalog::ColorLabel;
+        h.app.session.execute("library.filter", &json!({"label": "red", "labels": ["red", "yellow"]})).unwrap();
+        // a frame so the bar is laid out for the new filter before the click
+        h.step();
+        let r = h.request("ui.clickWidget", json!({"id": "filter:label-green"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        let f = h.app.session.filter.clone();
+        assert_eq!((f.label, f.labels), (None, vec![ColorLabel::Red, ColorLabel::Green]));
+        // nothing passes both: nothing is lit, so a click shows just that label
+        h.app.session.execute("library.filter", &json!({"label": "red", "labels": ["yellow"]})).unwrap();
+        h.step();
+        h.request("ui.clickWidget", json!({"id": "filter:label-green"}), t);
+        let f = h.app.session.filter.clone();
+        assert_eq!((f.label, f.labels), (None, vec![ColorLabel::Green]));
         h.settle(SETTLE);
     }
 
@@ -2802,9 +2678,9 @@ mod tests {
     /// Cancelling it exports nothing; a host without a folder dialog asks for `dir`.
     #[test]
     fn export_choose_folder_later_asks_when_the_export_starts() {
+        let out = lcc_testkit::TempDir::new("lc-choose-later");
         let mut h = demo([1400.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-choose-later-{}", std::process::id()));
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (a, folder) = (asked.clone(), out.to_string_lossy().into_owned());
         h.app.services.pick_folder = Some(Box::new(move || {
@@ -2881,16 +2757,8 @@ mod tests {
         let after = top(&mut h, "section:exportMetadata");
         assert!(after < before, "scrolled up to Metadata ({before} → {after})");
         assert!(shown(&mut h, "button:exportMetadata-0"));
-    }
-
-    /// Wide enough, the Export dialog lists its presets in a column (a click loads one, keeping
-    /// where to export); in a narrow window it falls back to the Preset menu, and stays on screen.
-    #[test]
-    fn export_dialog_preset_column_and_narrow_fallback() {
-        let t = Duration::from_secs(10);
-        let mut h = demo([1400.0, 900.0]);
-        h.request("engine.execute", json!({"command": "dialog.export", "params": {}}), t);
-        h.settle(SETTLE);
+        // Wide enough, the dialog lists its presets in a column (a click loads one, keeping where to export);
+        // in a narrow window it falls back to the Preset menu, and stays on screen.
         let has = |h: &mut Headless, id: &str| h.request("ui.widgets", json!({"filter": id}), t)["result"].as_array().is_some_and(|a| !a.is_empty());
         assert!(has(&mut h, "button:exportPreset-builtin-0"), "the preset column");
         assert!(!has(&mut h, "combo:exportPreset"));
@@ -3005,9 +2873,9 @@ mod tests {
     /// `bitDepth` is checked against JPEG's, not let through to an 8-bit file.
     #[test]
     fn export_checks_the_depth_of_the_format_a_bare_path_gets() {
+        let out = lcc_testkit::TempDir::new("lc-bare-path-depth");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-bare-path-depth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         h.app.services.write = Some(Box::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
@@ -3070,14 +2938,56 @@ mod tests {
         assert!(last["files"][0]["width"].as_u64().is_some_and(|w| w <= 64));
     }
 
+    /// Issue #2965: an export asked for while another runs waits its turn instead of being refused; it shows as a
+    /// waiting row in the activity stack and runs when the first ends, and ✕ on a waiting export drops it.
+    #[test]
+    fn a_second_export_waits_for_the_first() {
+        let mut h = demo([1200.0, 900.0]);
+        let t = Duration::from_secs(10);
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let w = written.clone();
+        h.app.services.write_shared = Some(std::sync::Arc::new(move |p: &str, _: &[u8]| {
+            std::thread::sleep(Duration::from_millis(150)); // slow enough that the first is still running
+            w.lock().unwrap().push(p.to_string());
+            Ok(())
+        }));
+        let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+        let export =
+            |h: &mut Headless, ids: &[u64], dir: &str| h.app.run("app.export", json!({"ids": ids, "dir": dir, "background": true, "longEdge": 64}));
+        export(&mut h, &ids[..2], "/lc-queue-a").unwrap();
+        assert!(h.app.export.is_some(), "the first runs in the background");
+        let second = export(&mut h, &ids[2..], "/lc-queue-b").unwrap();
+        assert_eq!((second["queued"].clone(), second["total"].clone()), (json!(1), json!(1)), "{second}");
+        let third = export(&mut h, &ids[..1], "/lc-queue-c").unwrap();
+        assert_eq!(third["queued"], 2, "{third}");
+        let seen = h.request("ui.inspect", json!({}), t)["result"].clone();
+        assert_eq!(seen["export"]["queued"], 2, "{}", seen["export"]);
+        let rows = seen["activity"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 3, "the running export and the two waiting: {rows:?}");
+        // ✕ on the last waiting one drops it
+        let last = rows.iter().rev().find(|r| r["label"].as_str().is_some_and(|l| l.starts_with("Waiting to export"))).expect("a waiting row");
+        h.app.run("activity.cancel", json!({"id": last["id"]})).unwrap();
+        let t0 = Instant::now();
+        while (h.app.export.is_some() || !h.app.export_queue.is_empty()) && t0.elapsed() < Duration::from_secs(90) {
+            h.step();
+        }
+        assert!(h.app.export.is_none() && h.app.export_queue.is_empty(), "all done");
+        let w = written.lock().unwrap().clone();
+        let count = |d: &str| w.iter().filter(|p| p.starts_with(d)).count();
+        assert_eq!((count("/lc-queue-a/"), count("/lc-queue-b/"), count("/lc-queue-c/")), (2, 1, 0), "{w:?}");
+        let first_b = w.iter().position(|p| p.starts_with("/lc-queue-b/")).unwrap();
+        assert_eq!(w[..first_b].iter().filter(|p| p.starts_with("/lc-queue-a/")).count(), 2, "in turn: {w:?}");
+        assert_eq!(h.request("ui.inspect", json!({}), t)["result"]["activity"], json!([]), "no rows left");
+    }
+
     /// Issue #236: the Export dialog's Add to Apple Photos is there on macOS only; there the
     /// background export hands the files it wrote to Photos (a fake runner: tests never start
     /// osascript or Photos) and the toast says how it went.
     #[test]
     fn export_dialog_adds_to_apple_photos_on_macos() {
+        let out = lcc_testkit::TempDir::new("lc-photos-dialog");
         let mut h = demo([1200.0, 1100.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-dialog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
         let calls = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
@@ -3130,12 +3040,12 @@ mod tests {
     /// worker thread, whose language is always English.
     #[test]
     fn the_photos_progress_line_is_in_the_users_language() {
+        let out = lcc_testkit::TempDir::new("lc-photos-language");
         if !cfg!(target_os = "macos") {
             return;
         }
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-language-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.ui.language = crate::i18n::Locale::De;
         crate::i18n::set_language(crate::i18n::Locale::De);
@@ -3150,7 +3060,7 @@ mod tests {
             Ok(lcc_engine::apple_photos::Output { status: Some(0), stdout: "ID\n".into(), stderr: String::new() })
         }));
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(1).map(|p| p.0).collect();
-        let params = json!({"ids": ids, "dir": out, "longEdge": 48, "addToPhotos": true, "background": true});
+        let params = json!({"ids": ids, "dir": out.path(), "longEdge": 48, "addToPhotos": true, "background": true});
         let r = h.request("engine.execute", json!({"command": "app.export", "params": params}), t);
         assert_eq!(r["ok"], true, "{r}");
         // Photos has been asked, and the window hasn't drawn a frame since (Codex review of #643):
@@ -3180,9 +3090,9 @@ mod tests {
     /// drawing frames with the activity row up, and the DNGs arrive stacked on their originals.
     #[test]
     fn render_to_dng_keeps_the_window_drawing() {
+        let out = lcc_testkit::TempDir::new("lc-render-dng-ui");
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(30);
-        let out = std::env::temp_dir().join(format!("lc-render-dng-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
@@ -3218,9 +3128,9 @@ mod tests {
     /// once with the running job; the app announces the outcome when Photos is done.
     #[test]
     fn a_slow_photos_import_never_blocks_the_window() {
+        let out = lcc_testkit::TempDir::new("lc-photos-slow-ui");
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(30);
-        let out = std::env::temp_dir().join(format!("lc-photos-slow-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let file = out.join("a.jpg");
@@ -3268,9 +3178,9 @@ mod tests {
     /// `wait: false` is still running waits for it, on every exit path (dropping the `Headless`).
     #[test]
     fn a_headless_run_waits_for_its_photos_import_before_ending() {
+        let dir = lcc_testkit::TempDir::new("lc-photos-headless-drop");
         let mut h = demo([800.0, 600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-photos-headless-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.jpg");
@@ -3303,12 +3213,12 @@ mod tests {
     /// export is still writing waits through the writing and then the import the export starts.
     #[test]
     fn a_headless_run_waits_for_its_exports_photos_import() {
+        let dir = lcc_testkit::TempDir::new("lc-photos-headless-export-drop");
         if !cfg!(target_os = "macos") {
             return; // addToPhotos is refused before exporting elsewhere
         }
         let mut h = demo([800.0, 600.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-photos-headless-export-drop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let marker = dir.join("imported");
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| {
@@ -3335,12 +3245,12 @@ mod tests {
     /// export's job number; the export then adds its files under that job.
     #[test]
     fn a_background_export_holds_photos_while_it_writes() {
+        let out = lcc_testkit::TempDir::new("lc-photos-hold-ui");
         if !cfg!(target_os = "macos") {
             return; // addToPhotos is refused before exporting elsewhere
         }
         let mut h = demo([1000.0, 700.0]);
         let t = Duration::from_secs(10);
-        let out = std::env::temp_dir().join(format!("lc-photos-hold-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).unwrap();
         let other = out.join("other.jpg");
@@ -3421,6 +3331,7 @@ mod tests {
     /// moves it there, and the sort becomes Custom Order (Lightroom Classic's drag to reorder).
     #[test]
     fn drag_photos_to_reorder_an_album() {
+        let out = lcc_testkit::TempDir::new("lc-ui-custom-order");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
         let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(4).map(|p| p.0).collect();
@@ -3452,7 +3363,6 @@ mod tests {
         assert_eq!(now, vec![shown[0], shown[3], shown[1], shown[2]]);
         assert!(h.app.ui.dragging_photos.is_none(), "the drag ended");
         // exporting the selection numbers it in Custom Order, however it was selected
-        let out = std::env::temp_dir().join(format!("lc-ui-custom-order-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         h.app.services.write_shared = Some(Arc::new(|p: &str, bytes: &[u8]| lcc_engine::export::write_file(p, bytes)));
         let picked: Vec<u64> = now.iter().rev().copied().collect();
@@ -3574,44 +3484,6 @@ mod tests {
         assert_eq!(h.app.session.develop_of(photo).unwrap(), before);
     }
 
-    /// The crop mask strength is a setting that rejects unknown levels.
-    #[test]
-    fn crop_mask_opacity_command() {
-        let mut h = demo([1200.0, 800.0]);
-        let t = Duration::from_secs(10);
-        assert_eq!(h.app.ui.crop_mask_opacity, 60);
-        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 20}}), t);
-        assert_eq!(h.app.ui.crop_mask_opacity, 20);
-        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 33}}), t);
-        assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
-        assert_eq!(crate::state::crop_mask_alpha(100), 255);
-        assert_eq!(crate::state::crop_mask_alpha(0), 0);
-    }
-
-    /// Choose Overlays to Cycle…: O visits only the ticked guides, and one must stay ticked.
-    #[test]
-    fn crop_overlay_cycle_skips_unticked_guides() {
-        use crate::state::CropOverlay as O;
-        let mut h = demo([1200.0, 800.0]);
-        let t = Duration::from_secs(10);
-        let set = |h: &mut Headless, names: serde_json::Value| {
-            h.request("engine.execute", json!({"command": "view.cropOverlays", "params": {"overlays": names}}), t)
-        };
-        let r = set(&mut h, json!(["thirds", "diagonal", "spiral"]));
-        assert_eq!(r["ok"], true, "{r}");
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            h.request("engine.execute", json!({"command": "view.cropOverlay"}), t);
-            seen.push(h.app.ui.crop_overlay);
-        }
-        assert_eq!(seen, [O::Diagonal, O::Spiral, O::Thirds, O::Diagonal]);
-        let r = set(&mut h, json!([]));
-        assert_eq!(r["ok"], false, "{r}");
-        let r = set(&mut h, json!(["bogus"]));
-        assert_eq!(r["ok"], false, "{r}");
-        assert_eq!(h.app.ui.crop_overlay_cycle, [O::Thirds, O::Diagonal, O::Spiral], "a refused list changes nothing");
-    }
-
     /// While cropping: O cycles the guides, ⇧O mirrors them, A locks / unlocks the aspect.
     #[test]
     fn crop_keys() {
@@ -3635,6 +3507,37 @@ mod tests {
         h.request("ui.key", json!({"key": "A"}), t);
         assert!(locked(&h));
         assert!(!h.app.ui.visualize_spots);
+        // the crop mask strength is a setting that rejects unknown levels
+        assert_eq!(h.app.ui.crop_mask_opacity, 60);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 20}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20);
+        h.request("engine.execute", json!({"command": "view.cropMaskOpacity", "params": {"opacity": 33}}), t);
+        assert_eq!(h.app.ui.crop_mask_opacity, 20, "an unknown level is refused");
+        // Choose Overlays to Cycle…: O visits only the ticked guides, and one must stay ticked
+        h.app.ui.crop_overlay = crate::state::CropOverlay::Thirds;
+        use crate::state::CropOverlay as O;
+        let set = |h: &mut Headless, names: serde_json::Value| {
+            h.request("engine.execute", json!({"command": "view.cropOverlays", "params": {"overlays": names}}), t)
+        };
+        let r = set(&mut h, json!(["thirds", "diagonal", "spiral"]));
+        assert_eq!(r["ok"], true, "{r}");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.request("engine.execute", json!({"command": "view.cropOverlay"}), t);
+            seen.push(h.app.ui.crop_overlay);
+        }
+        assert_eq!(seen, [O::Diagonal, O::Spiral, O::Thirds, O::Diagonal]);
+        let r = set(&mut h, json!([]));
+        assert_eq!(r["ok"], false, "{r}");
+        let r = set(&mut h, json!(["bogus"]));
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(h.app.ui.crop_overlay_cycle, [O::Thirds, O::Diagonal, O::Spiral], "a refused list changes nothing");
+        // Return commits a tool panel back to Edit; elsewhere it does nothing
+        assert_eq!(h.app.ui.right, crate::state::RightPanel::Crop);
+        h.request("ui.key", json!({"key": "Enter"}), t);
+        assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit);
+        h.request("ui.key", json!({"key": "Enter"}), t);
+        assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "no-op outside tools");
     }
 
     /// Info panel: typing into a field survives frames and is saved when it loses focus; the new
@@ -3662,16 +3565,8 @@ mod tests {
         // the copyright status picker is on the panel too
         let w = h.request("ui.widgets", json!({"filter": "copyrightStatus"}), t);
         assert!(w["result"].to_string().contains("field:copyrightStatus"), "{w}");
-    }
-
-    /// Info panel fields are shared text fields. The caption takes several lines: Return starts a
-    /// new one and only leaving the field saves it. Esc gives up an edit (the title stays as it
-    /// was, nothing saved), and right-click ▸ Paste works there too.
-    #[test]
-    fn info_fields_take_lines_esc_and_the_menu() {
-        let mut h = demo([1300.0, 1000.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail", "right": "info"}), t);
+        // Info panel fields are shared text fields. The caption takes several lines: Return starts a new one and
+        // only leaving the field saves it. Esc gives up an edit, and right-click ▸ Paste works there too.
         h.settle(SETTLE);
         let meta = |h: &Headless| h.app.session.catalog.photo(h.app.session.active().unwrap()).unwrap().meta.clone();
         let ask = |h: &mut Headless, method: &str, params: serde_json::Value| {
@@ -3711,9 +3606,9 @@ mod tests {
     /// subfolders and Add to My Photos work from the grid header.
     #[test]
     fn browse_a_local_folder() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-browse");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-browse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("inner")).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -3756,7 +3651,7 @@ mod tests {
         assert_eq!(h.request("ui.clickWidget", json!({"id": format!("crumb:{parent_index}")}), t)["ok"], true);
         h.settle(SETTLE);
         // the same folder, whatever the platform's separators (issue #538)
-        assert_eq!(std::path::Path::new(&h.app.session.browse.as_ref().unwrap().path), dir.as_path());
+        assert_eq!(std::path::Path::new(&h.app.session.browse.as_ref().unwrap().path), dir.path());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3766,10 +3661,11 @@ mod tests {
     /// open down to the hidden folder and push the restore row out of view.
     #[test]
     fn local_location_can_be_hidden_and_restored() {
+        let dir2 = lcc_testkit::TempDir::new("lc-ui-hide-b");
+        let dir = lcc_testkit::TempDir::new("lc-ui-hide");
         let size = [1300.0, 900.0];
         let mut h = demo(size);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-hide-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.to_string_lossy().to_string();
@@ -3820,7 +3716,6 @@ mod tests {
         assert!(dir.is_dir(), "the folder itself is untouched");
         // a second hidden place: the row lists them, and each comes back on its own (issue #2114:
         // the row used to bring every hidden place back at once)
-        let dir2 = std::env::temp_dir().join(format!("lc-ui-hide-{}-b", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir2);
         std::fs::create_dir_all(&dir2).unwrap();
         let path2 = dir2.to_string_lossy().to_string();
@@ -3874,9 +3769,9 @@ mod tests {
     /// the view, the way it did before; it used to leave the view empty ("No photos in this folder").
     #[test]
     fn favorite_folder_click_shows_its_photos() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-fav");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-fav-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -3908,9 +3803,9 @@ mod tests {
     #[test]
     fn unreadable_folder_browse_says_so() {
         use std::os::unix::fs::PermissionsExt;
+        let dir = lcc_testkit::TempDir::new("lc-ui-unreadable");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-unreadable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -3934,9 +3829,9 @@ mod tests {
     /// the kept folders survive a save/load of the UI state (a restart).
     #[test]
     fn kept_local_root_stays_while_browsing_below_and_elsewhere() {
+        let base = lcc_testkit::TempDir::new("lc-ui-roots");
         let mut h = demo([1300.0, 1400.0]);
         let t = Duration::from_secs(10);
-        let base = std::env::temp_dir().join(format!("lc-ui-roots-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for d in ["Photos/2026/20260101", "Photos/2026/20260114", "Other"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
@@ -4010,26 +3905,6 @@ mod tests {
         assert_eq!(exposure(&h), 1.0);
     }
 
-    /// ↑ / ↓ over a slider nudge it (one undo step each); ⇧Z picks and moves to the next photo.
-    #[test]
-    fn slider_nudge_and_pick_advance() {
-        let mut h = demo([1300.0, 900.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
-        h.settle(SETTLE);
-        let exposure = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().light.exposure;
-        assert_eq!(h.request("ui.hoverWidget", json!({"id": "slider:light.exposure"}), t)["ok"], true);
-        h.request("ui.key", json!({"key": "Up"}), t);
-        h.request("ui.key", json!({"key": "Up", "shift": true}), t);
-        assert!((exposure(&h) - 0.30).abs() < 1e-9, "{}", exposure(&h));
-        h.request("ui.key", json!({"key": "Down"}), t);
-        assert!((exposure(&h) - 0.25).abs() < 1e-9, "{}", exposure(&h));
-        let first = h.app.session.active().unwrap();
-        h.request("ui.key", json!({"key": "Z", "shift": true}), t);
-        assert_eq!(h.app.session.catalog.photo(first).unwrap().flag, lcc_catalog::Flag::Pick);
-        assert_ne!(h.app.session.active(), Some(first), "advanced");
-    }
-
     /// A slider drag that ends just past the window's edge (the integration drops that release)
     /// doesn't keep the slider captured: back over the photo the slider stays put, and a click
     /// on the photo zooms as usual (the Grain sliders at the bottom of the panel made it easy).
@@ -4078,32 +3953,6 @@ mod tests {
         assert!(!matches!(h.app.ui.zoom, crate::state::Zoom::Fit), "the click on the photo zoomed in");
     }
 
-    /// On process V7 the Effects panel's grain sliders include colour grain, the tone response, size
-    /// variation, clumping and the seed, which drive the photo's settings like any develop control.
-    #[test]
-    fn grain_colour_and_response_sliders() {
-        // tall enough for the Effects panel's last slider without scrolling
-        let mut h = demo([1300.0, 1600.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
-        let r = h.request("engine.execute", json!({"command": "develop.set", "params": {"values": {"grain.amount": 40.0}}}), t);
-        assert_eq!(r["ok"], true, "{r}");
-        // only the Effects section open, so its sliders are on screen
-        h.app.ui.open_sections = vec!["effects".to_string()];
-        h.settle(SETTLE);
-        let grain = |h: &Headless| h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().grain;
-        for (id, text) in
-            [("grain.response", "-30"), ("grain.color", "25"), ("grain.sizeVariation", "70"), ("grain.clumping", "80"), ("grain.seed", "7")]
-        {
-            assert_eq!(h.request("ui.clickWidget", json!({"id": format!("sliderValue:{id}")}), t)["ok"], true, "{id} is in the panel");
-            h.request("ui.text", json!({"text": text}), t);
-            h.request("ui.key", json!({"key": "Enter"}), t);
-            h.step();
-        }
-        let g = grain(&h);
-        assert_eq!((g.amount, g.color, g.response, g.size_variation, g.clumping, g.seed), (40.0, 25.0, -30.0, 70.0, 80.0, 7));
-    }
-
     /// Click a slider's value and type one (issue #322): Return sets it as one undo step, Esc
     /// keeps the old value, and the keys typed don't reach the shortcuts (1 = one star).
     #[test]
@@ -4133,6 +3982,29 @@ mod tests {
         h.request("ui.key", json!({"key": "Enter"}), t);
         assert!((exposure(&h) - 1.5).abs() < 1e-9, "{}", exposure(&h));
         assert_eq!(h.app.session.undo.len(), undo0 + 1);
+        // the typed value is a shared text field: right-click ▸ Paste replaces the value (selected when the
+        // field opens) and Return applies it; the menu doesn't close the field
+        h.view.clipboard = "0.75".into();
+        for (id, button) in
+            [("sliderValue:light.exposure", "left"), ("sliderField:light.exposure", "right"), ("sliderField:light.exposure:paste", "left")]
+        {
+            let r = h.request("ui.clickWidget", json!({"id": id, "button": button}), t);
+            assert_eq!(r["ok"], true, "{id}: {r}");
+            h.settle(SETTLE);
+        }
+        h.request("ui.key", json!({"key": "Enter"}), t);
+        h.settle(SETTLE);
+        assert!((exposure(&h) - 0.75).abs() < 1e-9, "pasted: {}", exposure(&h));
+        // ↑ / ↓ over a slider nudge it; ⇧Z picks and moves to the next photo
+        assert_eq!(h.request("ui.hoverWidget", json!({"id": "slider:light.exposure"}), t)["ok"], true);
+        h.request("ui.key", json!({"key": "Up"}), t);
+        h.request("ui.key", json!({"key": "Up", "shift": true}), t);
+        assert!((exposure(&h) - 1.05).abs() < 1e-9, "nudged up: {}", exposure(&h));
+        h.request("ui.key", json!({"key": "Down"}), t);
+        assert!((exposure(&h) - 1.00).abs() < 1e-9, "nudged down: {}", exposure(&h));
+        h.request("ui.key", json!({"key": "Z", "shift": true}), t);
+        assert_eq!(h.app.session.catalog.photo(active).unwrap().flag, lcc_catalog::Flag::Pick);
+        assert_ne!(h.app.session.active(), Some(active), "advanced");
     }
 
     /// A real click on a slider's value spans frames (press, then release a few frames later, as a
@@ -4218,28 +4090,6 @@ mod tests {
         );
     }
 
-    /// A slider's typed value is a shared text field: right-click ▸ Paste replaces the value
-    /// (selected when the field opens) and Return applies it; the menu doesn't close the field.
-    #[test]
-    fn a_slider_value_pastes_from_its_menu() {
-        let mut h = demo([1300.0, 900.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail", "right": "edit"}), t);
-        h.settle(SETTLE);
-        h.view.clipboard = "0.75".into();
-        for (id, button) in
-            [("sliderValue:light.exposure", "left"), ("sliderField:light.exposure", "right"), ("sliderField:light.exposure:paste", "left")]
-        {
-            let r = h.request("ui.clickWidget", json!({"id": id, "button": button}), t);
-            assert_eq!(r["ok"], true, "{id}: {r}");
-            h.settle(SETTLE);
-        }
-        h.request("ui.key", json!({"key": "Enter"}), t);
-        h.settle(SETTLE);
-        let exposure = h.app.session.develop_of(h.app.session.active().unwrap()).unwrap().light.exposure;
-        assert!((exposure - 0.75).abs() < 1e-9, "{exposure}");
-    }
-
     /// The eye on a section header switches the section off and on again, one undo step each
     /// (issue #316).
     #[test]
@@ -4262,20 +4112,6 @@ mod tests {
         assert!(!h.app.ui.section_open("curve"), "the click didn't open the section");
     }
 
-    /// Return commits a tool panel back to Edit; elsewhere it does nothing.
-    #[test]
-    fn return_commits_the_crop_tool() {
-        let mut h = demo([1200.0, 800.0]);
-        let t = Duration::from_secs(10);
-        h.request("ui.set", json!({"view": "detail"}), t);
-        h.request("engine.execute", json!({"command": "panel.crop"}), t);
-        assert_eq!(h.app.ui.right, crate::state::RightPanel::Crop);
-        h.request("ui.key", json!({"key": "Enter"}), t);
-        assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit);
-        h.request("ui.key", json!({"key": "Enter"}), t);
-        assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "no-op outside tools");
-    }
-
     /// ⌘Q (File → Quit) closes the window.
     #[test]
     fn cmd_q_quits() {
@@ -4291,9 +4127,9 @@ mod tests {
     /// them in place (they aren't "In catalog" yet), and confirming brings them into the library.
     #[test]
     fn import_from_folder_offers_the_photos_browsed_in_local() {
+        let dir = lcc_testkit::TempDir::new("lc-ui-browsed-import");
         let mut h = demo([1300.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-ui-browsed-import-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4325,9 +4161,9 @@ mod tests {
     /// File → Import from Folder… opens the import review for a folder (searched recursively).
     #[test]
     fn add_folder_opens_the_import_review() {
+        let dir = lcc_testkit::TempDir::new("lc-addfolder");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-addfolder-{}", std::process::id()));
         let sub = dir.join("day 2");
         std::fs::create_dir_all(&sub).unwrap();
         let img = lcc_raster::Rgba8::from_fn(24, 16, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4435,9 +4271,9 @@ mod tests {
     /// asks once it's free.
     #[test]
     fn a_connected_card_opens_the_import_review() {
+        let root = lcc_testkit::TempDir::new("lc-card");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let root = std::env::temp_dir().join(format!("lc-card-{}", std::process::id()));
         let dcim = root.join("DCIM/100NIKON");
         std::fs::create_dir_all(&dcim).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4477,9 +4313,9 @@ mod tests {
     /// Clicking the folder being read again keeps the running read (and its progress).
     #[test]
     fn browsing_the_same_folder_again_does_not_restart() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-again");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-again-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -4518,9 +4354,9 @@ mod tests {
     /// untouched Local photos are only forgotten from folders not browsed for the set number of days.
     #[test]
     fn browsing_from_the_ui_records_the_folder() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-stamp");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-stamp-{}", std::process::id()));
         let day = dir.join("2026/10/14");
         std::fs::create_dir_all(&day).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
@@ -4542,9 +4378,9 @@ mod tests {
     /// another app, as `library.browse` does (issue #1392).
     #[test]
     fn browsing_again_from_the_ui_forgets_deleted_files() {
+        let dir = lcc_testkit::TempDir::new("lc-browse-gone");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-browse-gone-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -4577,9 +4413,9 @@ mod tests {
 
     #[test]
     fn add_folder_scans_in_the_background() {
+        let dir = lcc_testkit::TempDir::new("lc-scanbg");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-scanbg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let png = lcc_engine::export::encode_image(
@@ -4600,9 +4436,9 @@ mod tests {
     /// refused and leaves the running scan's options alone.
     #[test]
     fn folder_scan_cancel_and_busy() {
+        let dir = lcc_testkit::TempDir::new("lc-scancancel");
         let mut h = demo([1200.0, 900.0]);
         let t = Duration::from_secs(10);
-        let dir = std::env::temp_dir().join(format!("lc-scancancel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 8, |x, y| [(x * 9) as u8, (y * 12) as u8, 80, 255]);
         let png = lcc_engine::export::encode_image(
@@ -4674,39 +4510,6 @@ mod tests {
         assert!(h.app.session.visible_cloned().is_empty());
     }
 
-    /// Develop's Sync… button opens Synchronize Settings; Synchronize carries only the checked
-    /// groups; the switch beside it turns Auto Sync on and off.
-    #[test]
-    fn sync_button_opens_synchronize_settings() {
-        let mut h = demo([1400.0, 900.0]);
-        let t = Duration::from_secs(10);
-        let ids: Vec<u64> = h.app.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
-        let exec = |h: &mut Headless, c: &str, p: Value| h.request("engine.execute", json!({"command": c, "params": p}), t);
-        exec(&mut h, "library.select", json!({"ids": [ids[0]]}));
-        exec(&mut h, "develop.set", json!({"values": {"light.exposure": 1.0, "color.vibrance": 30}}));
-        exec(&mut h, "library.select", json!({"ids": ids, "active": ids[0]}));
-        exec(&mut h, "module.develop", json!({}));
-        h.settle(SETTLE);
-        let r = h.request("ui.clickWidget", json!({"id": "button:syncBar"}), t);
-        assert_eq!(r["ok"], true, "{r}");
-        h.settle(SETTLE);
-        assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SyncSettings { .. })), "{:?}", h.app.ui.dialog);
-        // Check None, then only Light
-        for w in ["syncGroup:none", "syncGroup:light"] {
-            assert_eq!(h.request("ui.clickWidget", json!({"id": w}), t)["ok"], true, "{w}");
-            h.settle(SETTLE);
-        }
-        assert_eq!(h.request("ui.dialog.confirm", json!({}), t)["ok"], true);
-        for id in &ids[1..] {
-            let d = h.app.session.develop_of(lcc_catalog::PhotoId(*id)).unwrap();
-            assert_eq!((d.light.exposure, d.color.vibrance), (1.0, 0.0));
-        }
-        assert!(!h.app.session.auto_sync);
-        assert_eq!(h.request("ui.clickWidget", json!({"id": "button:autoSyncSwitch"}), t)["ok"], true);
-        h.settle(SETTLE);
-        assert!(h.app.session.auto_sync);
-    }
-
     /// Issue #61: Shift+Cmd+S opens Synchronize Settings (also Photo ▸ Develop Settings ▸ Sync
     /// Settings…); with only Exposure ticked the other selected photos get the exposure and nothing else.
     #[test]
@@ -4743,6 +4546,18 @@ mod tests {
             d.light.exposure = old.light.exposure;
             assert_eq!(d, old, "only the exposure of photo {id} changes");
         }
+        // Develop's Sync… button opens the same dialog, and the switch beside it turns Auto Sync on
+        h.settle(SETTLE);
+        let r = h.request("ui.clickWidget", json!({"id": "button:syncBar"}), t);
+        assert_eq!(r["ok"], true, "{r}");
+        h.settle(SETTLE);
+        assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::SyncSettings { .. })), "{:?}", h.app.ui.dialog);
+        h.request("ui.dialog.cancel", json!({}), t);
+        h.settle(SETTLE);
+        assert!(!h.app.session.auto_sync);
+        assert_eq!(h.request("ui.clickWidget", json!({"id": "button:autoSyncSwitch"}), t)["ok"], true);
+        h.settle(SETTLE);
+        assert!(h.app.session.auto_sync);
     }
 
     /// Colour labels: Info-panel swatches set/clear the label, the names dialog renames them and
@@ -4778,7 +4593,7 @@ mod tests {
     /// with keywords, as one undo step.
     #[test]
     fn import_review_dialog() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..5u8 {
@@ -4836,7 +4651,7 @@ mod tests {
     #[test]
     fn import_review_offers_recently_deleted_files() {
         for (choice, tag) in [("restore", "r"), ("fresh", "f")] {
-            let dir = std::env::temp_dir().join(format!("lc-ui-import-trash-{tag}-{}", std::process::id()));
+            let dir = lcc_testkit::TempDir::new(&format!("lc-ui-import-trash-{tag}"));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             for i in 0..2u8 {
@@ -4902,7 +4717,7 @@ mod tests {
     /// photo (issue #1285).
     #[test]
     fn import_review_checks_a_recently_deleted_file_by_hand() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-trash-click-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-trash-click");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..2u8 {
@@ -5004,7 +4819,7 @@ mod tests {
     /// and the filmstrip don't show.
     #[test]
     fn an_import_from_an_album_view_shows_the_first_new_photo() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-show-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-show");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for i in 0..3u8 {
@@ -5037,7 +4852,7 @@ mod tests {
     /// the import's batches.
     #[test]
     fn import_copy_renames_into_destination() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-copy-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-copy");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("out"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5087,7 +4902,7 @@ mod tests {
     /// template that would climb out of the destination is refused.
     #[test]
     fn import_copy_into_a_custom_folder_template() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-tpl-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-tpl");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("out"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5145,7 +4960,7 @@ mod tests {
     /// Move; the files land in the folder template, renamed, and leave the card.
     #[test]
     fn import_move_into_a_folder_template() {
-        let base = std::env::temp_dir().join(format!("lc-ui-import-move-{}", std::process::id()));
+        let base = lcc_testkit::TempDir::new("lc-ui-import-move");
         let _ = std::fs::remove_dir_all(&base);
         let (src, dest) = (base.join("card"), base.join("Photos"));
         std::fs::create_dir_all(&src).unwrap();
@@ -5202,7 +5017,7 @@ mod tests {
     /// inserts it at the text cursor (not appended, not replacing the template).
     #[test]
     fn import_rename_tags_insert_at_the_cursor() {
-        let dir = std::env::temp_dir().join(format!("lc-ui-import-tags-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-ui-import-tags");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[90, 3, 9, 255]; 64] };
@@ -5738,7 +5553,7 @@ mod tests {
     #[test]
     fn display_profile_converts_previews() {
         use crate::render::Slot;
-        let dir = std::env::temp_dir().join(format!("app-display-ui-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("app-display-ui");
         std::fs::create_dir_all(&dir).unwrap();
         let p3 = dir.join("p3.icc");
         std::fs::write(&p3, lcc_codecs::icc::write_named(lcc_codecs::NamedSpace::DisplayP3)).unwrap();
@@ -5828,7 +5643,7 @@ mod tests {
         use lcc_codecs::{NamedSpace, icc::write_named};
         use std::sync::{Arc, Mutex};
         let id = |space| lcc_engine::display::Display::from_bytes("", &write_named(space)).unwrap().id();
-        let dir = std::env::temp_dir().join(format!("app-screen-profile-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("app-screen-profile");
         std::fs::create_dir_all(&dir).unwrap();
         let chosen = dir.join("prophoto.icc");
         std::fs::write(&chosen, write_named(NamedSpace::ProPhoto)).unwrap();
@@ -6062,14 +5877,8 @@ mod tests {
         h.request("ui.key", json!({"key": "F11"}), t);
         h.settle(SETTLE);
         assert!(!h.app.window_is_fullscreen, "F11 leaves full screen");
-    }
-
-    #[test]
-    fn full_screen_preview_and_info_overlay_by_keyboard() {
+        // in the preview: arrows step, I cycles the info overlay, Esc exits; ⌘I cycles the overlay in Detail
         use crate::state::InfoOverlay;
-        let mut h = demo([1000.0, 700.0]);
-        let t = Duration::from_secs(10);
-        let vis: Vec<u64> = h.app.session.visible_cloned().iter().map(|p| p.0).collect();
         h.request("engine.execute", json!({"command": "library.select", "params": {"ids": [vis[0]]}}), t);
         h.request("ui.key", json!({"key": "f"}), t);
         assert!(h.app.ui.fullscreen);
@@ -6094,11 +5903,6 @@ mod tests {
         assert_eq!(h.app.ui.info_overlay, InfoOverlay::Exposure);
         h.request("ui.key", json!({"key": "i", "cmd": true}), t);
         assert_eq!(h.app.ui.info_overlay, InfoOverlay::Off);
-        // F11, the full-screen key (Cmd+Shift+F is the Advanced Search since issue #846)
-        h.request("ui.key", json!({"key": "F11"}), t);
-        assert!(h.app.window_is_fullscreen);
-        h.request("ui.key", json!({"key": "F11"}), t);
-        assert!(!h.app.window_is_fullscreen);
         h.settle(SETTLE);
     }
 

@@ -450,7 +450,8 @@ impl CatalogDb {
 
         // settings first: photos refer to them
         let st = r.open_table(SETTINGS).map_err(dberr)?;
-        let mut raw: Vec<(u128, Vec<u8>)> = Vec::with_capacity(st.len().map_err(dberr)? as usize);
+        // (the count a store gives is only a hint: a damaged one can say billions, and reserving that much aborts)
+        let mut raw: Vec<(u128, Vec<u8>)> = Vec::with_capacity((st.len().map_err(dberr)? as usize).min(1 << 16));
         for e in st.iter().map_err(dberr)? {
             let (k, v) = e.map_err(dberr)?;
             raw.push((k.value(), v.value().to_vec()));

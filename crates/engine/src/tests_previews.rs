@@ -63,15 +63,37 @@ fn check_one_to_one(s: &mut Session, id: lcc_catalog::PhotoId) {
     }
 }
 
-// Given a procedural photo with edits, every 1:1 window equals the full-resolution export
+/// A session with `n` photos of `w`×`h` whose sources at `level` are already decoded: textured
+/// pictures made in milliseconds (a full-size demo scene takes ten seconds to generate).
+fn decoded_photos(n: u64, w: usize, h: usize, level: crate::media::SourceLevel) -> (Session, Vec<lcc_catalog::PhotoId>) {
+    use lcc_catalog::{Op, Photo, PhotoId, Source};
+    let mut s = Session::new();
+    let ids: Vec<PhotoId> = (1..=n).map(PhotoId).collect();
+    for &id in &ids {
+        let name = format!("{}.jpg", id.0);
+        let p = Photo::new(id, Source::File { path: format!("/nowhere/{name}") }, &name, "JPEG", w as u32, h as u32, "");
+        s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        let k = id.0 as usize;
+        let px = |x: usize, y: usize| {
+            let t = ((x * 7 + y * 13 + k * 5) % 97) as f32 / 97.0;
+            [0.1 + 0.5 * x as f32 / w as f32 + 0.1 * t, 0.2 + 0.4 * y as f32 / h as f32, 0.15 + 0.3 * t]
+        };
+        s.media.insert(id, level, std::sync::Arc::new(lcc_raster::Rgb32f::from_fn(w, h, px)));
+    }
+    (s, ids)
+}
+
+// Given a camera-sized photo with tone, local-contrast and sharpening edits, every 1:1 window
+// equals the full-resolution export
 #[test]
 fn one_to_one_pixels_equal_full_resolution_export_pixels() {
-    let mut s = Session::with_demo();
-    let id = s.active().unwrap();
-    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.4})).unwrap();
-    s.execute("develop.set", &json!({"control": "effects.clarity", "value": 20})).unwrap();
-    s.execute("develop.set", &json!({"control": "detail.sharpenAmount", "value": 60})).ok();
-    check_one_to_one(&mut s, id);
+    let (mut s, ids) = decoded_photos(1, 3000, 2000, crate::media::SourceLevel::Full);
+    let mut d = (*s.develop_of(ids[0]).unwrap()).clone();
+    d.light.exposure = 0.4;
+    d.effects.clarity = 20.0;
+    d.detail.sharpen_amount = 60.0;
+    s.set_develop(ids[0], d, "Edits").unwrap();
+    check_one_to_one(&mut s, ids[0]);
 }
 
 // Given corpus raws (`cargo xtask corpus --download`), the same holds for real files; skipped
@@ -111,8 +133,8 @@ fn one_to_one_pixels_equal_export_pixels_on_corpus_raws() {
 #[test]
 fn one_to_one_previews_are_discarded_on_their_own() {
     let _keys = crate::sensor_maps::keep_generation();
-    let mut s = Session::with_demo();
-    let id = s.active().unwrap();
+    let (mut s, ids) = decoded_photos(1, 3000, 2000, crate::media::SourceLevel::Full);
+    let id = ids[0];
     let p = s.catalog.photo(id).unwrap().clone();
     s.execute("library.buildPreviews", &json!({"size": "full", "ids": [id.0], "wait": true})).unwrap();
     let full = Session::full_view_key(&p);
@@ -182,9 +204,16 @@ fn preview_build_makes_the_thumbnail_from_the_views_source() {
 // Given many photos, a standard preview build renders them side by side and counts every one
 #[test]
 fn preview_build_of_many_photos_counts_each_once() {
-    let mut s = Session::with_demo();
-    let ids: Vec<u64> = s.catalog.photos().map(|p| p.id.0).collect();
-    assert!(ids.len() > 4);
+    let (mut s, ids) = decoded_photos(6, 600, 400, crate::media::SourceLevel::Thumb);
+    // (more photos than the cache keeps decoded: the rest come from this loader, no file needed)
+    s.media.reduced_loader = None;
+    s.media.preview_loader = None;
+    s.media.file_loader = Some(std::sync::Arc::new(|_, _, _| {
+        let mut image = lcc_raster::Rgb32f::new(600, 400);
+        image.data.fill([0.3, 0.2, 0.1]);
+        Ok((image, Default::default()))
+    }));
+    let ids: Vec<u64> = ids.iter().map(|id| id.0).collect();
     let r = s.execute("library.buildPreviews", &json!({"size": "standard", "edge": 512, "ids": ids, "wait": true})).unwrap();
     assert_eq!(r["done"], json!(ids.len()), "{r}");
     assert_eq!(r["total"], json!(ids.len()));

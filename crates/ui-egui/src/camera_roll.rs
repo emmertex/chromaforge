@@ -304,7 +304,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, answer) = app_with_roll();
         app.run("file.addCameraRoll", json!({})).unwrap();
-        let dir = std::env::temp_dir().join(format!("lc-camera-roll-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-camera-roll");
         std::fs::create_dir_all(&dir).unwrap();
         let img = lcc_raster::Rgba8::from_fn(8, 6, |x, y| [(x * 20) as u8, (y * 30) as u8, 9, 255]);
         let o = lcc_engine::export::ExportOptions { format: lcc_engine::export::ExportFormat::Png, ..Default::default() };
@@ -345,7 +345,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, answer) = app_with_roll();
         app.ui.camera_roll_watch = true;
-        let dir = std::env::temp_dir().join(format!("lc-camera-roll-watch-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-camera-roll-watch");
         std::fs::create_dir_all(&dir).unwrap();
         let photo = photo_in(&dir, "IMG_1.png");
         watch_tick(&mut app, &ctx, false);
@@ -365,7 +365,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, answer) = app_with_roll();
         app.ui.camera_roll_watch = true;
-        let dir = std::env::temp_dir().join(format!("lc-camera-roll-known-{}", std::process::id()));
+        let dir = lcc_testkit::TempDir::new("lc-camera-roll-known");
         std::fs::create_dir_all(&dir).unwrap();
         let photo = photo_in(&dir, "IMG_1.png");
         app.session.execute("library.import", &json!({"paths": [photo.clone()]})).unwrap();

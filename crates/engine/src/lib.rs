@@ -131,6 +131,7 @@ pub mod proof;
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
+pub mod scene_disk;
 pub mod segment;
 pub mod sensor_maps;
 pub mod sidecar;
@@ -2323,6 +2324,22 @@ impl Session {
         self.catalog.tally(&self.view_filter(self.source, &self.filter.without_quick()))
     }
 
+    /// What the People view counts faces among (issue #1131): the view's source (a folder, a collection,
+    /// Missing Photos…) and the filter bar, without its own person picks. Missing Photos, which a filter
+    /// can't say, becomes the list of photos found missing.
+    pub fn people_filter(&self) -> Filter {
+        let base = Filter { person: None, people: Vec::new(), ..self.filter.clone() };
+        let mut f = self.view_filter(self.source, &base);
+        if self.source == LibrarySource::Missing {
+            let (cat, avail) = (&self.catalog, &self.media.availability);
+            let mut ids = cat.query(&f, &lcc_catalog::Sort::default());
+            ids.retain(|id| cmd::missing::is_missing(cat, avail, *id));
+            f.only_none = ids.is_empty();
+            f.only = ids;
+        }
+        f
+    }
+
     pub(crate) fn view_filter(&self, source: LibrarySource, base: &Filter) -> Filter {
         let mut f = source.to_filter(base, &self.catalog);
         if source == LibrarySource::Folder {
@@ -2811,6 +2828,8 @@ mod tests_organize;
 mod tests_people_corpus;
 #[cfg(test)]
 mod tests_people_masks;
+#[cfg(test)]
+mod tests_people_scope;
 #[cfg(test)]
 mod tests_persist;
 #[cfg(test)]

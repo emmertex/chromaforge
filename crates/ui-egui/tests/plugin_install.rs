@@ -5,7 +5,7 @@
 //! Its own test binary: the Plug-in Manager's window state is the process's, and other UI tests
 //! drawing frames at the same time would race it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -19,6 +19,7 @@ fn app() -> Headless {
     // install into memory, never into the real user's settings folder
     lcc_engine::cmd::plugins::use_in_memory_manager();
     let services = Services { png: None, ..Default::default() };
+    lcc_engine::scene_disk::use_build_dir();
     let app = LccApp::new(lcc_engine::Session::with_demo(), services);
     Headless::new(app, [1200.0, 800.0], 1.0)
 }
@@ -73,8 +74,8 @@ fn open_dialog(h: &mut Headless, path: &str) {
     h.step();
 }
 
-fn folder() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("plugin-install-ui-{}", std::process::id()));
+fn folder() -> lcc_testkit::TempDir {
+    let dir = lcc_testkit::TempDir::new("plugin-install-ui");
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }

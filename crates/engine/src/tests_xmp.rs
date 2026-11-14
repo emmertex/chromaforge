@@ -28,11 +28,9 @@ pub(crate) fn same_path_for_volume(a: &Path, b: &Path) -> bool {
     a == b || (a.parent().is_some_and(case_insensitive) && a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()))
 }
 
-pub(crate) fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("lc-xmp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// A test's folder in Temp, removed when the test ends (other test modules use it too).
+pub(crate) fn temp_dir(tag: &str) -> lcc_testkit::TempDir {
+    lcc_testkit::TempDir::new(&format!("lc-xmp-{tag}"))
 }
 
 /// The temp volume ignores letter case (Windows, default macOS): `a.xmp` and `a.XMP` are one file
@@ -2191,6 +2189,17 @@ fn saving_merges_into_another_apps_sidecar() {
     assert_ne!(second, backup);
     assert_eq!(std::fs::read(&backup).unwrap(), b"<not xmp");
     assert_eq!(std::fs::read(&second).unwrap(), b"<still not xmp");
+    // a sidecar over the parser's complexity limit (upstream #3696) holds metadata that could be read: the
+    // save leaves it as it is, without a backup, rather than replacing it
+    let decls: String = (0..600).map(|i| format!(" xmlns:n{i}=\"urn:n:{i}\"")).collect();
+    let complex = format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"{decls}><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>"
+    );
+    std::fs::write(src.join("shot.xmp"), &complex).unwrap();
+    let before = std::fs::read_dir(&src).unwrap().count();
+    let r = s.execute("photo.saveMetadataToFile", &json!({}));
+    assert_eq!(std::fs::read_to_string(src.join("shot.xmp")).unwrap(), complex, "{r:?}");
+    assert_eq!(std::fs::read_dir(&src).unwrap().count(), before, "no backup was made");
     let _ = std::fs::remove_dir_all(&src);
     let _ = std::fs::remove_dir_all(&lib);
 }

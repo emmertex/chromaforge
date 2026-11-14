@@ -36,6 +36,15 @@ Works with [Immich](https://immich.app) servers, version 3.0 or later. Older ser
 - **Publish**: an Immich publish service sends a collection to the Immich album of the same name (rendered, original or both), checked by checksum so nothing is stored twice. A shared link can be made for a published gallery.
 - Long runs show in the activity stack and can be stopped.
 
+## Locked folders
+- Photos in Immich's **locked folders** can be synced, imported and linked once the session is unlocked.
+- **Settings ▸ Connections**, account card ▸ **Locked Folders** shows whether the session is unlocked; **Unlock…** asks for the account's PIN (4–6 digits) or password.
+- The PIN or password is sent once and never stored or logged. The unlock lasts until Immich locks the session again; locked photos then drop out of the next sync.
+
+## Review comments
+- **Library ▸ Review Comments** lists the comments on photos published to an Immich service (the album's activity: author, date, text), per photo; **Refresh** asks again.
+- Hard Drive and SFTP publish services have no comments and say so.
+
 ## Limits
 - Keychain storage depends on the platform; where none is reachable, connecting says so. Use the encrypted file option.
 - Sync is for photos already linked; it is not a full mirror of the Immich library.
