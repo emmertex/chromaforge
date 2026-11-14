@@ -1265,8 +1265,9 @@ pub struct UiState {
     /// The view showed a browsed folder last frame ([`crate::import_tab::keep_in_step`]).
     #[serde(skip)]
     pub import_was_browsing: bool,
-    /// Developing a browsed photo without importing it: the Library tab shows the Develop module
-    /// on the folder's active photo while the browse stays on ([`crate::import_tab::keep_in_step`]).
+    /// Working on browsed photos without importing them: the Library tab shows Develop, Print,
+    /// Export or Slideshow on the folder's photos while the browse stays on
+    /// ([`crate::import_tab::open_without_import`], [`crate::import_tab::keep_in_step`]).
     #[serde(skip)]
     pub import_develop: bool,
     /// The library filter the Import tab put aside on entering it (the tab has no filter bar and a
