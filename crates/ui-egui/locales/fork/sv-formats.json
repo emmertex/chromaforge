@@ -153,6 +153,7 @@
   "Version {new} is older than the installed version {installed}": "Version {new} är äldre än den installerade versionen {installed}",
   "Version {version} is available.": "Version {version} finns tillgänglig.",
   "Video in {dir}": "Video i {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Vinjetteringskalibrering användes inte på {n} foton: ingen referens för deras kamera, objektiv och bländare",
   "What {name} does with it:": "Vad {name} gör med det:",
   "Where should the Capture One catalog “{catalog}” go?": "Vart ska Capture One-katalogen ”{catalog}” importeras?",
   "about {} hours": "cirka {} timmar",

@@ -770,6 +770,14 @@ fn load_bytes_now(
         // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
         let info = raw.info();
         let window = lcc_raw::sensor_window(&bytes, [info.active_area.width, info.active_area.height]);
+        // a flat-field map works in full-resolution sensor pixels: a reduced DNG copy has a smaller active area
+        // of its own, so the full image's comes from the file's header
+        let full_active = if used_reduced {
+            lcc_raw::probe_info(&bytes).ok().map(|i| [i.active_area.width, i.active_area.height])
+        } else {
+            Some([info.active_area.width, info.active_area.height])
+        };
+        let full_window = if used_reduced { full_active.and_then(|a| lcc_raw::sensor_window(&bytes, a)) } else { window };
         let (lens, lens_from_file) = match crate::lens_profiles::resolve_raw(&info, window, || lcc_meta::extract(&bytes), None) {
             Some((l, applied)) => (Some(l), applied == crate::lens_profiles::Applied::Embedded),
             None => (None, false),
@@ -891,7 +899,8 @@ fn load_bytes_now(
         // a fitted look's tone, else the tone a profile without a curve of its own keeps, else the file's (or profile's) curve
         let camera_tone =
             camera_look.as_ref().map(|p| p.tone).or(kept_tone).or_else(|| raw.color.profile.tone_curve.as_ref().and_then(dng_tone_curve));
-        let local_tone = local_tone(&raw);
+        let placement = source_placement(&raw, full_active, full_window);
+        let local_tone = local_tone(&raw, lcc_raw::gaintable::SourcePlacement::new(placement.rect, placement.orientation));
         let (temp, tint) = scale.as_shot(xy);
         return Ok((
             img,
@@ -919,6 +928,9 @@ fn load_bytes_now(
                 pixels: Some(pixels),
                 // (the catalog knows which photo this is: `media::source_info`)
                 identity: None,
+                placement: Some(placement),
+                // (the session adds the catalog's maps: `media`, as it adds the generated patches)
+                vignetting_maps: None,
             },
             used_reduced,
         ));
@@ -1067,14 +1079,48 @@ impl WbScaleOf {
 
 /// The raw's gain table map with where its developed picture (the default crop, oriented) sits in
 /// the active area: rendered when the photo's "Camera local tone mapping" option is on.
-fn local_tone(raw: &lcc_raw::RawImage) -> Option<Arc<lcc_pipeline::local_tone::LocalTone>> {
+fn local_tone(raw: &lcc_raw::RawImage, placement: lcc_raw::gaintable::SourcePlacement) -> Option<Arc<lcc_pipeline::local_tone::LocalTone>> {
     let map = raw.color.profile.gain_table_map.clone()?;
-    let a = raw.active_area;
-    let (aw, ah) = (a.width.max(1) as f64, a.height.max(1) as f64);
-    let c = raw.develop_crop(a.width, a.height);
-    let rect = [c.x as f64 / aw, c.y as f64 / ah, c.width as f64 / aw, c.height as f64 / ah];
-    let placement = lcc_raw::gaintable::SourcePlacement { rect, orientation: raw.orientation };
     Some(Arc::new(lcc_pipeline::local_tone::LocalTone { map, placement }))
+}
+
+/// Where a raw's developed picture (the default crop, oriented) sits in its active area, and that area on the sensor:
+/// for the gain table ([`local_tone`]) and a flat-field map (`lcc_pipeline::vignetting_calibration`). `full_active` is the
+/// full-resolution active area's size (a reduced DNG copy has a smaller one of its own; `None` when unknown) and
+/// `window` where it sits on the sensor (`lcc_raw::sensor_window`).
+fn source_placement(
+    raw: &lcc_raw::RawImage,
+    full_active: Option<[usize; 2]>,
+    window: Option<lcc_raw::SensorWindow>,
+) -> lcc_raw::gaintable::SourcePlacement {
+    placement_from(raw.active_area, raw.crop, raw.orientation, full_active, window)
+}
+
+/// [`source_placement`] from the parts of a raw's facts it reads (the decode's and a header read's alike).
+fn placement_from(
+    a: lcc_raw::Rect,
+    crop: lcc_raw::Rect,
+    orientation: lcc_geom::Orientation,
+    full_active: Option<[usize; 2]>,
+    window: Option<lcc_raw::SensorWindow>,
+) -> lcc_raw::gaintable::SourcePlacement {
+    let (aw, ah) = (a.width.max(1) as f64, a.height.max(1) as f64);
+    // (the default crop within the active area, the whole area without one: `RawImage::develop_crop`)
+    let c = crop.clipped(a.width, a.height);
+    let c = if c.width == 0 || c.height == 0 { lcc_raw::Rect::new(0, 0, a.width, a.height) } else { c };
+    let rect = [c.x as f64 / aw, c.y as f64 / ah, c.width as f64 / aw, c.height as f64 / ah];
+    let window = window.filter(|w| Some(w.size) == full_active);
+    lcc_raw::gaintable::SourcePlacement { active_size: full_active, window, ..lcc_raw::gaintable::SourcePlacement::new(rect, orientation) }
+}
+
+/// Where a raw file's developed picture sits on its sensor, from its header (no decode): what a flat-field map is
+/// matched against before the photo is rendered. `None`: not a raw this build reads.
+pub fn placement_of(bytes: &[u8]) -> Option<lcc_raw::gaintable::SourcePlacement> {
+    lcc_raw::probe(bytes)?;
+    let info = lcc_raw::probe_info(bytes).ok()?;
+    let active = [info.active_area.width, info.active_area.height];
+    let window = lcc_raw::sensor_window(bytes, active);
+    Some(placement_from(info.active_area, info.crop, info.orientation, Some(active), window))
 }
 
 /// The semantic masks of a DNG that AI masks understand, over the developed image (default crop,

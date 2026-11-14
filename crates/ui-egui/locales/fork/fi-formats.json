@@ -148,6 +148,7 @@
   "Version {new} is older than the installed version {installed}": "Versio {new} on vanhempi kuin asennettu versio {installed}",
   "Version {version} is available.": "Versio {version} on saatavilla.",
   "Video in {dir}": "Video kansiossa {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Vinjetoinnin kalibrointia ei käytetty {n} kuvaan: niiden kameralle, objektiiville ja aukolle ei ole viitekuvaa",
   "What {name} does with it:": "Mitä {name} tekee sillä:",
   "Where should the Capture One catalog “{catalog}” go?": "Minne Capture One -luettelo ”{catalog}” tuodaan?",
   "about {} hours": "noin {} h",

@@ -176,6 +176,10 @@ pub struct Metadata {
     pub lens_serial_number: Option<String>,
     /// Min/max focal length (mm) and min/max f-number at those, as in Exif `LensSpecification`.
     pub lens_spec: Option<[f64; 4]>,
+    /// Image stabilisation (vibration reduction) at capture: on, off, or not recorded. Nikon: the maker note's
+    /// VRInfo (`0x001F`), the camera's VR setting for in-body and lens VR alike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stabilization: Option<bool>,
     // capture
     pub capture_time: Option<DateTime>,
     /// Seconds.

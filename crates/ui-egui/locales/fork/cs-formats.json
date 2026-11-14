@@ -137,6 +137,7 @@
   "Version {new} is older than the installed version {installed}": "Verze {new} je starší než nainstalovaná verze {installed}",
   "Version {version} is available.": "Je k dispozici verze {version}.",
   "Video in {dir}": "Video ve složce {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Kalibrace vinětace nepoužita u {n} fotografií: chybí reference pro jejich fotoaparát, objektiv a clonu",
   "What {name} does with it:": "Co s tím {name} dělá:",
   "Where should the Capture One catalog “{catalog}” go?": "Kam má jít katalog Capture One „{catalog}“?",
   "about {} hours": "asi {} h",

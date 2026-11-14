@@ -178,6 +178,7 @@
   "Version {new} is older than the installed version {installed}": "Phiên bản {new} cũ hơn phiên bản đã cài {installed}",
   "Version {version} is available.": "Đã có phiên bản {version}.",
   "Video in {dir}": "Video trong {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Không áp dụng hiệu chuẩn tối góc cho {n} ảnh: không có ảnh tham chiếu cho máy ảnh, ống kính và khẩu độ của chúng",
   "What {name} does with it:": "{name} làm gì với nó:",
   "Where should the Capture One catalog “{catalog}” go?": "Nhập danh mục Capture One «{catalog}» vào đâu?",
   "about {} hours": "khoảng {} giờ",

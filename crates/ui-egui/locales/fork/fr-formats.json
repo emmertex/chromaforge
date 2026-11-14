@@ -121,6 +121,7 @@
   "Version {new} is older than the installed version {installed}": "La version {new} est plus ancienne que la version installée {installed}",
   "Version {version} is available.": "La version {version} est disponible.",
   "Video in {dir}": "Vidéo dans {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Calibrage du vignettage non appliqué à {n} photos : aucune référence pour leur appareil, leur objectif et leur ouverture",
   "Where should the Capture One catalog “{catalog}” go?": "Où importer le catalogue Capture One « {catalog} » ?",
   "about {} hours": "environ {} heures",
   "about {} minutes": "environ {} minutes",
