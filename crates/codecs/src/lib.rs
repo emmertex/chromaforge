@@ -313,12 +313,11 @@ mod has_pixels_tests {
             let r = check_has_pixels(Format::Png, &image(w, h, len));
             assert!(matches!(r, Err(Error::Malformed(Format::Png, _))), "{w}x{h} with {len} pixels");
         }
-    }
-
-    #[test]
-    fn decoded_image_with_all_pixels_is_accepted() {
-        assert!(check_has_pixels(Format::Png, &image(4, 4, 16)).is_ok());
-        assert!(check_has_pixels(Format::Png, &image(1, 1, 1)).is_ok());
+        // decoded image with all pixels is accepted
+        {
+            assert!(check_has_pixels(Format::Png, &image(4, 4, 16)).is_ok());
+            assert!(check_has_pixels(Format::Png, &image(1, 1, 1)).is_ok());
+        }
     }
 }
 

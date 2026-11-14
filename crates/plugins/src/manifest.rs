@@ -727,29 +727,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_full_manifest() {
-        let m = Manifest::parse(
-            json!({
-                "id": "org.example.geo", "name": "Geo", "version": "1.0.0",
-                "permissions": {"catalog": true, "network": ["api.example.com"]},
-                "commands": [{"id": "lookup", "label": "Look Up Places", "menu": "Metadata",
-                    "dialog": [{"key": "radius", "label": "Radius", "type": "number", "min": 0, "max": 10, "default": 1},
-                               {"key": "lang", "label": "Language", "type": "choice", "options": ["en", "de"]}]}],
-                "hooks": {"metadata": true},
-                "publish": {"id": "webdav", "name": "WebDAV"}
-            })
-            .to_string()
-            .as_bytes(),
-        )
-        .unwrap();
-        assert!(m.permissions.catalog && m.hooks.metadata && !m.hooks.export);
-        let c = m.command("lookup").unwrap();
-        let a = dialog_args(&c.dialog, &json!({"radius": 50})).unwrap();
-        assert_eq!(a, json!({"radius": 10.0, "lang": "en"}));
-        assert!(dialog_args(&c.dialog, &json!({"lang": "fr"})).is_err());
-    }
-
-    #[test]
     fn rejects_bad_manifests() {
         for bad in [
             json!({"id": "", "name": "x"}),

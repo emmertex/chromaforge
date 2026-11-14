@@ -1,0 +1,27 @@
+---
+title: Find duplicates
+description: Group copies of the same photo and clean them out.
+sidebar:
+  order: 15
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import NeedsImage from '../../../components/NeedsImage.astro';
+
+---
+
+<NeedsImage what="The Find Duplicates window: groups of copies with the best copy first and unmarked, the rest marked, and the Remove, Reject and Stack Groups buttons." />
+
+- **Find Duplicates…** (**Library** menu): groups photos that are copies of one another across the whole library.
+- **Exact copies** (same file) are found at once from the content hashes the catalog keeps.
+- **Find Similar Copies** reads every photo's picture in the background (a raw by its camera JPEG, a clip by a poster frame) and also finds copies that differ: resized, re-compressed or renamed. A different photo of the same scene is not a copy. Progress and Stop show in the activity stack.
+- **Raw + JPEG pairs** of the same shot are their own kind: offered as something to stack, never marked for removal.
+- The best copy of each group comes first and is unmarked; the rest start marked. Click a photo to change its mark.
+- **Remove** sends the marked photos to Recently Deleted (one undo step). **Reject** flags them. **Stack Groups** stacks each group; see [Stacks](../stacks/).
+- Nothing is deleted from disk by the window.
+- Photos in Recently Deleted, virtual copies and photos only browsed in Local never group.
+- Not in the web build. Command: `library.findDuplicates` (`similar` for the second scan).
+
+<Aside type="note" title="Modern layout">
+  **Library ▸ Find Duplicates…** in the ☰ menu.
+</Aside>

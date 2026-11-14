@@ -171,6 +171,21 @@ pub fn setup_banner(app: &mut LccApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The switch for averaging each face with its mirror image: a little steadier matching for twice the scanning time.
+fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value) {
+    heading(ui, t, "Matching");
+    let mut on = list["mirrorAverage"].as_bool().unwrap_or(true);
+    let r = crate::dialog_frame::in_control_column(ui, |ui| ui.checkbox(&mut on, crate::i18n::tr("Average each face with its mirror image")));
+    register(ui.ctx(), "check:settings.facesMirrorAverage", r.rect);
+    if r.changed() {
+        match app.run("faces.matching", json!({"mirrorAverage": on})) {
+            Ok(_) => app.caches.faces_epoch += 1,
+            Err(e) => app.toast(ui.ctx(), e),
+        }
+    }
+    hint(ui, t, "Matches a little more often, but scanning takes twice as long. Changing it scans the faces again.");
+}
+
 /// Where the face models run (the GPU only once a check shows it gives the CPU's results faster), and the switch that
 /// keeps them on the CPU.
 fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
@@ -284,6 +299,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         scan_progress(app, ui, t);
     }
     gpu_section(app, ui, t, &list["gpu"]);
+    mirror_section(app, ui, t, &list);
     hint(ui, t, "The face models are downloaded and chosen under Settings ▸ AI Models.");
     if crate::dialog_frame::link(ui, Some("faces:openAiModels"), "Open AI Models").clicked() {
         let _ = app.run("app.settings", json!({"tab": "ai"}));

@@ -145,7 +145,7 @@ fn ml_status_before_any_job_starts_nothing() {
 }
 
 #[test]
-fn ml_status_sets_device_and_reports_available_devices() {
+fn ml_status_sets_device_reports_available_devices_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({})).unwrap();
     assert_eq!(st["deviceChoice"], "auto");
@@ -157,30 +157,22 @@ fn ml_status_sets_device_and_reports_available_devices() {
     assert_eq!(st["deviceChoice"], "cpu");
     assert_eq!(st["preference"], "cpu");
 
-    let st = s.execute("ml.status", &json!({"device": "auto"})).unwrap();
-    assert_eq!(st["deviceChoice"], "auto");
-    assert_eq!(st["preference"], "auto");
-}
-
-#[test]
-fn ml_status_refuses_non_string_and_invalid_devices() {
-    let mut s = session();
+    // a device that is not a string, or not one there is, is refused and changes nothing
     for bad in [json!({"device": 123}), json!({"device": true}), json!({"device": []}), json!({"device": {}})] {
         assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
     }
     for bad in [json!({"device": "potato"}), json!({"device": "vulkan:10de:9999:Fake#1"})] {
         assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
     }
-}
-
-#[test]
-fn ml_status_empty_device_resets_preference_to_auto() {
-    let mut s = session();
-    s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
     assert_eq!(s.execute("ml.status", &json!({})).unwrap()["preference"], "cpu");
-    let st = s.execute("ml.status", &json!({"device": ""})).unwrap();
-    assert_eq!(st["deviceChoice"], "auto");
-    assert_eq!(st["preference"], "auto");
+
+    // "auto", and an empty device, go back to the automatic choice
+    for auto in ["auto", ""] {
+        s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+        let st = s.execute("ml.status", &json!({"device": auto})).unwrap();
+        assert_eq!(st["deviceChoice"], "auto", "{auto:?}");
+        assert_eq!(st["preference"], "auto", "{auto:?}");
+    }
 }
 
 #[test]

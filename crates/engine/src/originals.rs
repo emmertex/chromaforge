@@ -42,6 +42,12 @@ impl OriginalGuard {
         let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         put(format!("{stem}.xmp"), path.with_extension("xmp"), format!("the XMP sidecar of {label}"));
         put(format!("{name}.xmp"), PathBuf::from(format!("{}.xmp", path.to_string_lossy())), format!("the XMP sidecar of {label}"));
+        // every other spelling the reader accepts (`.XMP`, `.Xmp`, a recased photo extension)
+        for c in crate::sidecar::sidecar_candidates(&path.to_string_lossy(), crate::sidecar::SidecarNaming::Stem) {
+            if let Some(file) = c.file_name().map(|n| n.to_string_lossy().to_string()) {
+                put(file, c, format!("the XMP sidecar of {label}"));
+            }
+        }
     }
 
     /// `Err` (a message for the user) when writing `target` would replace a protected file, or
@@ -241,6 +247,22 @@ mod tests {
         assert!(g.check(&d.join("out/other.jpg")).is_ok(), "an ordinary existing file");
         let links = g.links.get().unwrap_or(&HashMap::new()).values().flatten().count();
         assert_eq!(links, 1, "only the symlink is resolved");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sidecars_the_reader_accepts_in_other_cases_are_protected() {
+        let d = std::env::temp_dir().join(format!("lc-originals-case-sidecar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let orig = d.join("IMG_1.jpg");
+        std::fs::write(&orig, b"original").unwrap();
+        let mut g = OriginalGuard::default();
+        g.add(&orig, "IMG_1.jpg");
+        for name in ["IMG_1.XMP", "IMG_1.Xmp", "IMG_1.JPG.xmp", "IMG_1.jpg.XMP"] {
+            std::fs::write(d.join(name), b"<x/>").unwrap();
+            assert!(g.check(&d.join(name)).unwrap_err().contains("sidecar"), "{name}");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
