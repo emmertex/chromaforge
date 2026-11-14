@@ -327,6 +327,19 @@ pub fn show(app: &mut LccApp, outer: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
         super::connections::smart_search_box(app, ui);
     }
+    // Vignetting Calibration references: only while the catalog holds a map (or the filter is set)
+    if f.vignetting_reference.is_some() || app.session.catalog.vignetting_maps().next().is_some() {
+        let options = [
+            ("Vignetting reference: any photo", Value::Null),
+            ("Vignetting reference", json!("reference")),
+            ("Not a vignetting reference", json!("none")),
+        ];
+        let want = f.vignetting_reference.as_deref();
+        let current = options.iter().find(|(_, v)| v.as_str() == want).map_or("Vignetting reference: any photo", |(l, _)| *l);
+        picker(app, ui, "vignettingReference", current, want.is_some(), |_| {
+            options.iter().map(|(l, v)| (l.to_string(), json!({"vignettingReference": v.clone()}), want == v.as_str())).collect()
+        });
+    }
 
     // metadata pickers
     let ui: &mut egui::Ui = if two_rows { &mut row2 } else { &mut row1 };

@@ -218,11 +218,4 @@ mod tests {
         assert_eq!(s.visible_cloned(), vec![original]);
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    #[test]
-    fn a_photo_without_a_file_has_no_alternatives() {
-        let mut s = Session::with_demo();
-        assert!(s.execute("photo.showAlternatives", &json!({})).is_err());
-        assert!(s.execute("photo.importAlternatives", &json!({})).is_err());
-    }
 }

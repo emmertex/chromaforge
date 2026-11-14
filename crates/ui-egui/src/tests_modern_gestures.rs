@@ -157,6 +157,12 @@ fn back_closes_dialog_menu_card_and_develop_then_leaves_the_root_to_the_system()
         assert_eq!(r["ok"], true, "{r}");
         r["result"].clone()
     };
+    // the Back key runs the same steps, one a press
+    exec(&mut h, "modern.group", json!({"group": "light"}));
+    ask(&mut h, "ui.key", json!({"key": "BrowserBack"}));
+    assert!(h.app.ui.modern.group.is_none(), "the Back key put the card away");
+    assert_eq!(h.app.ui.module, ModuleId::Develop, "one press, one step");
+
     exec(&mut h, "app.settings", json!({}));
     assert!(h.app.ui.dialog.is_some());
     assert_eq!(back(&mut h)["closed"], "dialog");
@@ -186,16 +192,7 @@ fn back_closes_dialog_menu_card_and_develop_then_leaves_the_root_to_the_system()
 }
 
 #[test]
-fn the_back_key_runs_the_same_steps() {
-    let mut h = develop([800.0, 1280.0]);
-    exec(&mut h, "modern.group", json!({"group": "light"}));
-    ask(&mut h, "ui.key", json!({"key": "BrowserBack"}));
-    assert!(h.app.ui.modern.group.is_none(), "the Back key put the card away");
-    assert_eq!(h.app.ui.module, ModuleId::Develop, "one press, one step");
-}
-
-#[test]
-fn the_ui_keeps_clear_of_the_cutout_and_the_system_bars() {
+fn the_ui_keeps_clear_of_the_insets_and_a_narrow_dock_scrolls_to_the_open_group() {
     // a folding phone's cover screen with the camera cutout at the top, and a gesture bar
     let (top, bottom) = (38.0, 18.0);
     let mut h = library([412.0, 960.0]);
@@ -217,11 +214,8 @@ fn the_ui_keeps_clear_of_the_cutout_and_the_system_bars() {
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.ui.modern.insets.top, 0.0);
     assert!(h.app.ui.modern.insets.left <= 400.0);
-}
-
-#[test]
-fn on_a_narrow_window_the_dock_scrolls_to_the_open_group() {
-    let mut h = develop([412.0, 960.0]);
+    // on this narrow window the dock scrolls to the open group
+    exec(&mut h, "modern.insets", json!({"top": 0.0, "left": 0.0, "bottom": 0.0}));
     let dock = rect(&h, "modern:dock").expect("the dock");
     assert!(dock.width() <= 412.0, "the dock fits the window ({dock:?})");
     for group in ["effects", "heal", "presets"] {

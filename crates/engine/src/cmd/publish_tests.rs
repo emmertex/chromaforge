@@ -143,29 +143,6 @@ fn immich_album_names_follow_renames_and_sets() {
 }
 
 #[test]
-fn bad_publish_params_are_errors() {
-    let (root, mut s) = library("bad");
-    for p in [
-        json!({"dir": "relative/path"}),
-        json!({}),
-        json!({"kind": "flickr", "dir": "/tmp"}),
-        json!({"dir": root.to_string_lossy(), "export": {"path": "/etc/x"}}),
-        json!({"dir": root.to_string_lossy(), "export": {"format": "nope"}}),
-    ] {
-        assert!(s.execute("publish.createService", &p).is_err(), "{p}");
-    }
-    assert!(s.execute("publish.run", &json!({"collection": 12345})).is_err());
-    assert!(s.execute("publish.run", &json!({})).is_err());
-    // a damaged publish.json is reported, not replaced
-    std::fs::write(root.join("lib").join(lcc_publish::FILE), b"{").unwrap();
-    let e = s.execute("publish.services", &json!({})).unwrap_err().to_string();
-    assert!(e.contains("damaged"), "{e}");
-    // an in-memory library has no publish services
-    let mut m = Session::new();
-    assert!(m.execute("publish.services", &json!({})).is_err());
-}
-
-#[test]
 fn studio_capture_imports_new_shots() {
     let (root, mut s) = library("studio");
     let watch = root.join("camera");
@@ -222,8 +199,20 @@ fn studio_capture_imports_new_shots() {
 }
 
 #[test]
-fn a_published_collection_lists_new_then_modified_then_published() {
+fn a_published_collection_lists_sections_has_no_comments_and_bad_params_are_errors() {
     let (root, mut s) = library("sections");
+    // bad parameters are errors (a relative folder, an export that names its own path)
+    for p in [
+        json!({"dir": "relative/path"}),
+        json!({}),
+        json!({"kind": "flickr", "dir": "/tmp"}),
+        json!({"dir": root.to_string_lossy(), "export": {"path": "/etc/x"}}),
+        json!({"dir": root.to_string_lossy(), "export": {"format": "nope"}}),
+    ] {
+        assert!(s.execute("publish.createService", &p).is_err(), "{p}");
+    }
+    assert!(s.execute("publish.run", &json!({"collection": 12345})).is_err());
+    assert!(s.execute("publish.run", &json!({})).is_err());
     let ids = import(&mut s, &root, 4);
     let out = root.join("published");
     s.execute("publish.createService", &json!({"name": "Disk", "dir": out.to_string_lossy(), "export": {"format": "jpeg", "longEdge": 20}})).unwrap();
@@ -254,23 +243,10 @@ fn a_published_collection_lists_new_then_modified_then_published() {
     let plain = s.execute("album.create", &json!({"name": "Plain"})).unwrap();
     let plain = plain["id"].as_u64().or_else(|| plain.as_u64()).unwrap();
     assert!(crate::cmd::publish::sections(&s, lcc_catalog::AlbumId(plain)).is_none());
-}
-
-/// A service without comments says so, without being contacted; an Immich one reports the capability.
-#[test]
-fn review_comments_says_when_a_service_has_none() {
-    let (root, mut s) = library("comments");
-    let ids = import(&mut s, &root, 2);
-    let out = root.join("published");
-    let disk = json!({"name": "Disk", "dir": out.to_string_lossy(), "export": {"format": "jpeg", "longEdge": 20}});
-    s.execute("publish.createService", &disk).unwrap();
-    s.execute("library.select", &json!({"ids": ids})).unwrap();
-    let made = s.execute("publish.createCollection", &json!({"service": "Disk", "name": "Web", "addSelected": true})).unwrap();
-    let coll = made["collection"].as_u64().unwrap();
-    s.execute("publish.run", &json!({"collection": coll})).unwrap();
+    // a service without comments says so, without being contacted; an Immich one reports the capability
     let r = s.execute("publish.reviewComments", &json!({"collection": coll})).unwrap();
     assert_eq!((r["supported"].clone(), r["photos"].clone()), (json!(false), json!([])), "{r}");
-    let one = s.execute("publish.comments", &json!({"collection": coll, "id": ids[0]})).unwrap();
+    let one = s.execute("publish.comments", &json!({"collection": coll, "id": ids[1]})).unwrap();
     assert_eq!((one["supported"].clone(), one["comments"].clone()), (json!(false), json!([])), "{one}");
     assert!(s.execute("publish.reviewComments", &json!({})).is_err(), "a collection is required");
     assert!(s.execute("publish.reviewComments", &json!({"collection": 987654})).is_err());
@@ -278,4 +254,11 @@ fn review_comments_says_when_a_service_has_none() {
     let list = s.execute("publish.services", &json!({})).unwrap();
     let immich = list["services"].as_array().unwrap().iter().find(|x| x["kind"] == "immich").unwrap();
     assert_eq!(immich["capabilities"]["comments"], true);
+    // a damaged publish.json is reported, not replaced
+    std::fs::write(root.join("lib").join(lcc_publish::FILE), b"{").unwrap();
+    let e = s.execute("publish.services", &json!({})).unwrap_err().to_string();
+    assert!(e.contains("damaged"), "{e}");
+    // an in-memory library has no publish services
+    let mut m = Session::new();
+    assert!(m.execute("publish.services", &json!({})).is_err());
 }

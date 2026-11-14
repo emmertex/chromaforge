@@ -2031,6 +2031,8 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                         plugin_fields.push((id, sc.plugin_fields.clone()));
                     }
                     crate::sidecar::merge_into(&mut p, sc, &now);
+                    // a flat-field map our own sidecar carried is stored ahead of the photo that uses it
+                    ops.extend(sc.vignetting_calibration_ops(&s.catalog, &now));
                     // a Lightroom edit (crs: settings) keeps Constrain Crop as it always read: off
                     if matches!(sc.develop, Some(crate::sidecar::DevelopPatch::Partial(_))) && p.develop.geometry.constrain_crop {
                         let mut d = (*p.develop).clone();

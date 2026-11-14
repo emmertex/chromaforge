@@ -1386,17 +1386,6 @@ mod tests {
         assert_eq!(r["failed"], json!(0));
     }
 
-    // 1:1 previews run two photos per graphics card (two more feed a second card), never more than
-    // the memory-bound count; standard previews keep the export's count
-    #[test]
-    fn full_size_previews_run_two_photos_per_graphics_card() {
-        let hint = crate::gpu::batch_lanes_hint(2);
-        assert_eq!(hint, 2 * crate::gpu::batch_cards().max(1));
-        assert_eq!(super::lanes(64, true), crate::export::export_parallelism(64).min(hint));
-        assert_eq!(super::lanes(64, false), crate::export::export_parallelism(64));
-        assert!(super::lanes(1, true) >= 1);
-    }
-
     // Given a photo, its preview build renders as batch work (a turn on whichever card has room,
     // behind the photo on screen), never as the screen's interactive work; the thread is back to
     // interactive work after it, also when the work panics

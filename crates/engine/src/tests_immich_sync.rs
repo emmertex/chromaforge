@@ -480,8 +480,8 @@ fn two_way_sync_dry_run_conflicts_and_deletions() {
 }
 
 #[test]
-fn sync_touches_a_locked_folder_asset() {
-    let Setup { mut s, state, one, dir, .. } = setup("sync-locked");
+fn sync_touches_a_locked_folder_asset_and_runs_in_the_background_and_on_a_schedule() {
+    let Setup { mut s, state, hits, one, dir, .. } = setup("sync-locked");
     // Immich's locked folders: the asset carries visibility `locked`. Since the app can unlock
     // its server session (`immich.unlockSession`), such an asset takes part like any other; a
     // locked session would simply not list it.
@@ -494,19 +494,15 @@ fn sync_touches_a_locked_folder_asset() {
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["pushed"], 1, "{r}");
     assert_eq!(remote(&state, "aaaa-1")["exifInfo"]["rating"], 2, "the locked asset is updated");
-    let _ = std::fs::remove_dir_all(&dir);
-}
 
-#[test]
-fn background_sync_runs_off_the_session_thread_and_on_a_schedule() {
-    let Setup { mut s, state, hits, one, dir, .. } = setup("bg");
-    s.execute("photo.rate", &json!({"ids": [one.0], "rating": 2})).unwrap();
+    // a background sync runs off the session thread
+    s.execute("photo.rate", &json!({"ids": [one.0], "rating": 3})).unwrap();
     assert_eq!(s.execute("immich.sync", &json!({"background": true})).unwrap()["started"], true);
     // a second start while one runs is refused, not queued twice
     let again = s.execute("immich.sync", &json!({"background": true})).unwrap();
     assert!(again["started"] == false || again["ok"].is_boolean(), "{again}");
     pump_until(&mut s, |s, _| s.remote.sync.values().all(|a| !a.running));
-    assert_eq!(remote(&state, "aaaa-1")["exifInfo"]["rating"], 2);
+    assert_eq!(remote(&state, "aaaa-1")["exifInfo"]["rating"], 3);
     // idle: the pump doesn't talk to the server when no interval is set
     let n = hits.load(Ordering::SeqCst);
     for _ in 0..50 {
@@ -559,24 +555,6 @@ fn people_import_confirm_and_push_names() {
     // confirmed regions survive a re-import
     s.execute("immich.importPeople", &json!({})).unwrap();
     assert_eq!(s.catalog.photo(one).unwrap().people(), vec!["Ann Lee"]);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn smart_search_maps_results_to_photos_and_shows_or_saves_them() {
-    let Setup { mut s, two, dir, .. } = setup("search");
-    let r = s.execute("immich.smartSearch", &json!({"query": "from immich", "show": true, "saveAs": "Immich: from immich"})).unwrap();
-    assert_eq!(r["ok"], true, "{r}");
-    assert_eq!(r["photos"], json!([two.0]));
-    assert_eq!(r["unmatched"], 1);
-    assert_eq!(s.visible(), vec![two], "the temporary collection");
-    let album = lcc_catalog::AlbumId(r["album"].as_u64().unwrap());
-    assert_eq!(s.catalog.album(album).unwrap().photos, vec![two]);
-    // nothing found: an empty grid, not everything
-    s.execute("immich.smartSearch", &json!({"query": "zebra", "show": true})).unwrap();
-    assert!(s.visible().is_empty());
-    assert!(s.execute("immich.smartSearch", &json!({"query": "  "})).is_err());
-    assert!(s.execute("immich.smartSearch", &json!({"query": "x", "mode": "nope"})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -660,7 +638,7 @@ fn publish_to_immich_albums_renders_and_stacks() {
 }
 
 #[test]
-fn albums_sync_both_ways() {
+fn albums_sync_both_ways_and_smart_search_maps_results_to_photos() {
     let Setup { mut s, state, one, two, dir, .. } = setup("albums");
     let a = s.execute("album.create", &json!({"name": "Holiday"})).unwrap()["id"].as_u64().unwrap();
     s.execute("album.addPhotos", &json!({"id": a, "ids": [one.0]})).unwrap();
@@ -678,6 +656,20 @@ fn albums_sync_both_ways() {
     state.lock().unwrap().albums[0].2.retain(|x| x != "aaaa-1");
     s.execute("immich.syncAlbums", &json!({})).unwrap();
     assert_eq!(s.catalog.album(lcc_catalog::AlbumId(a)).unwrap().photos, vec![two]);
+
+    // smart search maps Immich's results to photos, and shows or saves them
+    let r = s.execute("immich.smartSearch", &json!({"query": "from immich", "show": true, "saveAs": "Immich: from immich"})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["photos"], json!([two.0]));
+    assert_eq!(r["unmatched"], 1);
+    assert_eq!(s.visible(), vec![two], "the temporary collection");
+    let album = lcc_catalog::AlbumId(r["album"].as_u64().unwrap());
+    assert_eq!(s.catalog.album(album).unwrap().photos, vec![two]);
+    // nothing found: an empty grid, not everything
+    s.execute("immich.smartSearch", &json!({"query": "zebra", "show": true})).unwrap();
+    assert!(s.visible().is_empty());
+    assert!(s.execute("immich.smartSearch", &json!({"query": "  "})).is_err());
+    assert!(s.execute("immich.smartSearch", &json!({"query": "x", "mode": "nope"})).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

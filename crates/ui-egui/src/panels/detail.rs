@@ -3492,7 +3492,9 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     let d = &DevelopSettings { crop: lcc_develop::Crop { geometry: shown, ..d.crop }, ..d.clone() };
     let quad = frame_crop_quad(d, frame);
     let pts: Vec<Pos2> = quad.iter().map(|q| map.screen(*q)).collect();
-    let p = ui.painter();
+    // zoomed in, the box reaches past the canvas: it is drawn only on it, never over the
+    // filmstrip or the panels (#1156)
+    let p = &ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
     // darken outside the crop (the box's corners in screen order: a flipped photo shows its
     // top-left corner elsewhere)
     let quad = flipped_corners(&pts, frame.flip_h, frame.flip_v);
@@ -6450,7 +6452,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     let bar =
                         Rect::from_min_max(pos2(cr.left() + 8.0, img_area.bottom() + 3.0), pos2(cr.right() - 8.0, img_area.bottom() + 3.0 + strip));
                     register(ui.ctx(), format!("filmmarks:{}", id.0), bar);
-                    super::grid::paint_badges(p, &t, bar, ph, false);
+                    super::grid::paint_badges(p, &t, bar, ph, false, app.session.catalog.is_vignetting_reference(ph.id));
                 }
                 let thumb = app.renderer.thumb(*id);
                 // the picture: a click outside it (on the frame) selects this photo alone

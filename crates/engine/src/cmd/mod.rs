@@ -64,6 +64,7 @@ mod people_recognize;
 mod people_roles;
 pub mod profile_manager;
 pub(crate) mod retouch;
+pub mod vignetting_calibration;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 #[cfg(not(target_arch = "wasm32"))]
@@ -267,6 +268,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(map::specs());
         v.extend(previews::specs());
         v.extend(lut_profiles::specs());
+        v.extend(vignetting_calibration::specs());
         v.extend(lens_db::specs());
         v.extend(source::specs());
         v.extend(chart_profile::specs());

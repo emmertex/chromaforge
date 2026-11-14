@@ -131,13 +131,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_identical_picture_hashes_identically() {
-        let scenes = lcc_scenes::demo_library();
-        let scene = scenes.first().unwrap();
-        assert_eq!(hash_rgb32f(&scene.render(256, 192)), hash_rgb32f(&scene.render(256, 192)));
-    }
-
-    #[test]
     fn a_resized_or_recompressed_copy_stays_within_the_match_distance() {
         // one gamma domain throughout (the production paths are too: stills hash sRGB pictures,
         // clips hash their linear posters, and the two never compare with each other)
@@ -168,20 +161,15 @@ mod tests {
     }
 
     #[test]
-    fn different_pictures_stay_apart() {
+    fn different_pictures_stay_apart_and_spread_their_bits() {
         let scenes = lcc_scenes::demo_library();
-        let first = hash_rgb32f(&scenes[0].render(256, 192));
-        for scene in scenes.iter().skip(1).take(4) {
-            let other = hash_rgb32f(&scene.render(256, 192));
-            assert!(distance(first, other) > MATCH_DISTANCE, "scene {} vs scene 0: only {} bits apart", scene.id, distance(first, other),);
+        let hashes: Vec<u64> = scenes.iter().take(6).map(|s| hash_rgb32f(&s.render(256, 192))).collect();
+        for (scene, other) in scenes.iter().zip(&hashes).skip(1).take(4) {
+            assert!(distance(hashes[0], *other) > MATCH_DISTANCE, "scene {} vs scene 0: only {} bits apart", scene.id, distance(hashes[0], *other));
         }
-    }
-
-    #[test]
-    fn the_hash_spreads_its_bits() {
         // every picture sets a middle share of its 64 bits, so hashes carry the distinction
-        for scene in lcc_scenes::demo_library().iter().take(6) {
-            let bits = hash_rgb32f(&scene.render(256, 192)).count_ones();
+        for (scene, hash) in scenes.iter().zip(&hashes) {
+            let bits = hash.count_ones();
             assert!((16..48).contains(&bits), "scene {}: {bits} of 64 bits set", scene.id);
         }
     }

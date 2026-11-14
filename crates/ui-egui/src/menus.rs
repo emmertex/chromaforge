@@ -2255,8 +2255,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 .map(|d| d.replace('T', " "))
                 .unwrap_or_default();
             let mode = p.get("mode").and_then(Value::as_str).unwrap_or("set").to_string();
-            app.ui.dialog =
-                Some(Dialog::CaptureTime { mode, time: time.get(..19).unwrap_or(&time).to_string(), days: 0, hours: 0, minutes: 0, zone: 0.0 });
+            app.ui.dialog = Some(Dialog::CaptureTime {
+                mode,
+                time: time.get(..19).unwrap_or(&time).to_string(),
+                days: 0,
+                hours: 0,
+                minutes: 0,
+                zone: 0.0,
+                each: false,
+            });
             Ok(Value::Null)
         }
         "dialog.keywordSet" => {
@@ -3160,10 +3167,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     parts.push(msg);
                 }
                 // Show the new presets where they live, in Develop's left column, unfolded (issue
-                // #469). Outside Develop the import leaves the screen as it is: the toast says
-                // what came in.
+                // #469). Outside Develop the screen is left as it is: the panel is unfolded where
+                // it lives for Develop's next visit, and the toast says what came in (issue #875).
                 if n > 0 && app.ui.module == crate::module::ModuleId::Develop {
                     let _ = crate::panels::presets::reveal(app);
+                } else if n > 0 && !crate::panels::presets::shown(app) {
+                    crate::panels::presets::set_shown(app, true);
                 }
             }
             let mut msg = parts.join(" · ");

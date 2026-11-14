@@ -25,6 +25,7 @@ fn app() -> Headless {
     // install into memory, never into the real user's settings folder
     lcc_engine::cmd::plugins::use_in_memory_manager();
     let services = Services { png: None, ..Default::default() };
+    lcc_engine::scene_disk::use_build_dir();
     let app = LccApp::new(lcc_engine::Session::with_demo(), services);
     let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
     // a window left open by another test starts closed
@@ -815,6 +816,7 @@ fn the_about_tab_shows_where_a_plugin_comes_from() {
         })),
         ..Default::default()
     };
+    lcc_engine::scene_disk::use_build_dir();
     let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), services), [1400.0, 900.0], 1.0);
     exec(&mut h, "plugins.manager", json!({"open": false}));
     let before = lcc_engine::cmd::plugins::manager().replace(lcc_plugins::Manager::in_memory());

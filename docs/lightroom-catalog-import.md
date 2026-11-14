@@ -107,7 +107,9 @@ of them in one table, is left out with a warning (a row past that limit is marke
 (uncompressed and on disk); one past that with its history-step and snapshot settings is saved
 without them, with a warning, and skipped only when still too big. At most eight archives and
 128 MiB total are retained. Oldest managed archives are retired; legacy `.json` archives remain
-untouched.
+untouched. When an archive is saved but cleanup afterwards fails (a temporary file or an old archive that
+can't be removed), the report still names the archive and a separate warning names what was left
+behind; the folder is synced once the archive is saved.
 `Interop/lightroom-index.json` records imported identities. Source catalogs and originals are
 never overwritten.
 

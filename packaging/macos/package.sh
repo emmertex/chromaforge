@@ -142,21 +142,9 @@ echo "==> building $DMG"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/$NAME.app"
-# A hidden copy under each earlier display name ([legacy] display_names in the brand file): the updater
-# of a build released under that name looks for its own name in the image (fork #411).
-LEGACY_NAMES="$(awk '
-  /^[[:space:]]*\[/ { sec = $0; gsub(/[][[:space:]]/, "", sec); next }
-  sec == "legacy" && $1 == "display_names" {
-    line = $0; sub(/^[^[]*\[/, "", line); sub(/\].*$/, "", line)
-    n = split(line, parts, "\"")
-    for (i = 2; i <= n; i += 2) print parts[i]
-  }' "$BRAND_FILE_PATH")"
-while IFS= read -r legacy; do
-  if [[ -z "$legacy" ]] || [[ "$legacy" = "$NAME" ]]; then continue; fi
-  echo "==> adding a hidden copy as $legacy.app for installs released under that name"
-  ditto "$APP" "$STAGE/$legacy.app"
-  chflags hidden "$STAGE/$legacy.app"
-done <<< "$LEGACY_NAMES"
+# While [legacy] display_names is non-empty in the brand file, add a hidden `<name>.app` copy under each
+# earlier name: the updater of a build released under that name looks for its own name in the image
+# (fork #411). Restore the block from 0a528340e when the next rename needs it.
 ln -s /Applications "$STAGE/Applications"
 # Finder window layout: background, icon size and positions (packaging/macos/dmg/README.md).
 mkdir -p "$STAGE/.background"

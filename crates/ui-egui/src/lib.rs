@@ -467,6 +467,8 @@ mod tests_view_state;
 #[cfg(test)]
 mod tests_viewperf;
 #[cfg(test)]
+mod tests_vignetting_calibration_ui;
+#[cfg(test)]
 mod tests_wb_selector;
 #[cfg(test)]
 mod tests_witchcraft;
@@ -994,6 +996,8 @@ pub struct LccApp {
     pub shown_library: Option<u64>,
     /// A background export in progress.
     pub export: Option<export_task::ExportTask>,
+    /// Image exports asked for while `export` runs, started in turn after it (issue #2965).
+    pub export_queue: std::collections::VecDeque<export_task::Queued>,
     /// A background Photo ▸ Render to DNG in progress, and the last one's result.
     pub render_dng: Option<render_dng_task::RenderDngTask>,
     pub last_render_dng: Option<serde_json::Value>,
@@ -1315,6 +1319,7 @@ impl LccApp {
             review_pending: None,
             shown_library: None,
             export: None,
+            export_queue: Default::default(),
             render_dng: None,
             last_render_dng: None,
             dng_update: None,
@@ -1591,6 +1596,25 @@ impl LccApp {
                 "catalog.optimize" => Some(i18n::tr("Catalog optimized").to_string()),
                 "library.clearPreviews" => Some(format!("✓ {}", i18n::tr("Discard Preview Cache"))),
                 "develop.autoSync" => Some(format!("{}: {}", i18n::tr("Auto Sync"), i18n::tr(if self.session.auto_sync { "On" } else { "Off" }))),
+                // a vignetting calibration left off photos without a fitting reference (Apply, Sync, Paste)
+                "vignettingCalibration.apply" | "develop.sync" | "develop.paste" => {
+                    let skipped = r
+                        .as_ref()
+                        .ok()
+                        .and_then(|v| v.get("skipped").or_else(|| v.get("vignettingCalibrationSkipped")))
+                        .and_then(Value::as_array)
+                        .map_or(0, Vec::len);
+                    match skipped {
+                        0 => None,
+                        1 => Some(
+                            i18n::tr("Vignetting calibration not applied to 1 photo: no reference for its camera, lens and aperture").to_string(),
+                        ),
+                        n => Some(i18n::tr_format!(
+                            "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture",
+                            n = n
+                        )),
+                    }
+                }
                 _ => None,
             };
             if let Some(message) = completed {
@@ -2294,6 +2318,9 @@ impl LccApp {
             // worker fills: a sleeping NAS or a dropped share never stalls a frame
             let repaint = ctx.clone();
             self.session.media.availability.run_in_background(std::sync::Arc::new(move || repaint.request_repaint()));
+            // where each raw sits on its sensor (flat-field matching) is read from its header by a worker too
+            let repaint = ctx.clone();
+            self.session.vignetting_calibration_placements.run_in_background(std::sync::Arc::new(move || repaint.request_repaint()));
             self.styled = true;
             self.font_language = self.ui.language;
         } else if self.font_language != self.ui.language {

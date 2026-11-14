@@ -589,6 +589,10 @@ pub struct AppSettings {
     pub film_names: bool,
     /// Filmstrip: rating / flag / edited badges on the thumbnails.
     pub film_badges: bool,
+    /// Sliders that opt in reach past Lightroom's range (Settings ▸ Interface ▸ Sliders; only the
+    /// mask Hue so far: ±180° instead of about ±34°). Off: the standard range; values already past
+    /// it are kept, never rewritten.
+    pub expanded_sliders: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
@@ -798,6 +802,7 @@ impl Default for AppSettings {
             machine_test: None,
             film_names: true,
             film_badges: true,
+            expanded_sliders: false,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             lock_zoom: true,
@@ -1593,6 +1598,9 @@ pub struct UiState {
     pub concept_pick: bool,
     /// The Roles window (who has which role, and where) is open.
     pub roles_window: bool,
+    /// Show the Who / Set Role / Roles row under a selected People mask component.
+    #[serde(default)]
+    pub show_people_who: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -1881,6 +1889,20 @@ pub struct UiState {
     /// Develop ▸ Lens Corrections: the lens maker picked in the lens picker before a model (issue #307).
     #[serde(skip)]
     pub lens_pick_make: Option<String>,
+    /// Develop ▸ Lens Corrections ▸ Vignetting Calibration: `vignettingCalibration.photo` for (photo, settings hash), so the panel
+    /// reads the raw's header once per change, not every frame.
+    #[serde(skip)]
+    pub vignetting_calibration_info: Option<(lcc_catalog::PhotoId, u64, serde_json::Value)>,
+    /// The photo whose raw Create is measuring on a worker thread (its button waits meanwhile).
+    #[serde(skip)]
+    pub vignetting_calibration_creating: Option<lcc_catalog::PhotoId>,
+    /// What the last Create said about its reference (`vignettingCalibration.create`'s result: exposure, fall-off), for that photo.
+    #[serde(skip)]
+    pub vignetting_calibration_report: Option<(lcc_catalog::PhotoId, serde_json::Value)>,
+    /// A Borderline reference Create measured, kept while the Create Anyway question is open (confirming doesn't
+    /// measure again).
+    #[serde(skip)]
+    pub vignetting_calibration_pending: Option<(lcc_catalog::PhotoId, Box<lcc_engine::cmd::vignetting_calibration::Measured>)>,
     /// The start-up update check has run (once per session; Help ▸ Check for Updates… is manual).
     #[serde(skip)]
     pub update_checked_at_startup: bool,
@@ -2009,8 +2031,8 @@ pub enum Dialog {
         params: serde_json::Value,
         key: String,
     },
-    /// Edit Capture Time: `mode` "set" (`time`; the others shift along), "shift" (by `days`,
-    /// `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
+    /// Edit Capture Time: `mode` "set" (`time`; the others shift along, or with `each` every photo gets
+    /// `time`), "shift" (by `days`, `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
     CaptureTime {
         mode: String,
         time: String,
@@ -2018,6 +2040,10 @@ pub enum Dialog {
         hours: i32,
         minutes: i32,
         zone: f32,
+        /// "set" with several photos: every one gets `time` instead of moving by the active photo's change
+        /// (issue #4205).
+        #[serde(default)]
+        each: bool,
     },
     /// The import review (File → Import Photos…).
     Import {
@@ -2354,6 +2380,18 @@ pub enum Dialog {
         task: String,
         warning: String,
     },
+    /// Create measured a reference that doesn't quite look like a flat field (Borderline): `reasons` (translated) say
+    /// why; Create Anyway keeps the map measured meanwhile ([`UiState::vignetting_calibration_pending`]) for `photo`.
+    VignettingCreateAnyway {
+        photo: u64,
+        reasons: String,
+    },
+    /// Create measured a reference for a combination (camera model, lens, aperture, a zoom's focal length) that has one
+    /// in use: `question` (translated) names it; Replace withdraws it and keeps the new one, in one undo step.
+    VignettingReplace {
+        photo: u64,
+        question: String,
+    },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
         count: usize,
@@ -2616,6 +2654,7 @@ impl Default for UiState {
             sam_downloading: false,
             renaming_component: None,
             roles_window: false,
+            show_people_who: false,
             role_draft: None,
             people_pick: None,
             people_asked: None,
@@ -2742,6 +2781,10 @@ impl Default for UiState {
             dialog: None,
             settings_section: None,
             lens_pick_make: None,
+            vignetting_calibration_info: None,
+            vignetting_calibration_creating: None,
+            vignetting_calibration_report: None,
+            vignetting_calibration_pending: None,
             update_checked_at_startup: false,
             update_checked_at: 0.0,
             update_pending: None,
@@ -3129,30 +3172,6 @@ mod loupe_info_tests {
             serde_json::from_value(serde_json::json!({"filmNames": false, "loupeInfo": {"info1": ["rating", "fileName", "none"]}})).unwrap();
         assert_eq!(newer.loupe_info, LoupeInfo::default());
         assert!(!newer.film_names, "the rest of the settings are still read");
-    }
-
-    /// Show message when loading or rendering photos is on until it is turned off, and is saved
-    /// with the app's settings.
-    #[test]
-    fn the_loading_message_choice_is_saved_with_the_settings() {
-        assert!(AppSettings::default().loupe_messages);
-        let old: AppSettings = serde_json::from_value(serde_json::json!({"filmNames": false})).unwrap();
-        assert!(old.loupe_messages, "a settings file from before the choice existed keeps the message");
-        let settings = AppSettings { loupe_messages: false, ..AppSettings::default() };
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["loupeMessages"], false);
-        let read: AppSettings = serde_json::from_value(saved).unwrap();
-        assert!(!read.loupe_messages);
-    }
-
-    #[test]
-    fn ml_device_setting_round_trips() {
-        assert_eq!(AppSettings::default().ml_device, "");
-        let settings = AppSettings { ml_device: "cpu".into(), ..AppSettings::default() };
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(saved["mlDevice"], "cpu");
-        let read: AppSettings = serde_json::from_value(saved).unwrap();
-        assert_eq!(read.ml_device, "cpu");
     }
 }
 

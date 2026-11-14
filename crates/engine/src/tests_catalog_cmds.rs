@@ -91,14 +91,12 @@ fn backup_integrity_and_optimise_on_a_disk_catalog() {
     let r = s.execute("catalog.backupIfDue", &json!({})).unwrap();
     assert!(r["backup"].is_string(), "{r}");
     assert!(s.execute("catalog.settings", &json!({"backup": "hourly"})).is_err());
-}
 
-#[test]
-fn an_in_memory_session_has_no_catalog_to_back_up() {
-    let mut s = Session::with_demo();
-    assert!(s.execute("catalog.backup", &json!({})).is_err());
-    assert!(s.execute("catalog.checkIntegrity", &json!({})).is_err());
-    assert_eq!(s.execute("catalog.backupIfDue", &json!({})).unwrap()["backup"], json!(null));
+    // an in-memory session has no catalog to back up: the commands say so, the exit-time check is quiet
+    let mut mem = Session::new();
+    assert!(mem.execute("catalog.backup", &json!({})).is_err());
+    assert!(mem.execute("catalog.checkIntegrity", &json!({})).is_err());
+    assert_eq!(mem.execute("catalog.backupIfDue", &json!({})).unwrap()["backup"], json!(null), "in memory");
 }
 
 #[test]
@@ -208,23 +206,10 @@ fn reading_and_saving_xmp_records_a_stamp() {
     s.execute("photo.readMetadataFromFile", &json!({"ids": [id.0]})).unwrap();
     assert_eq!(s.catalog.photo(id).unwrap().rating, 2);
     assert_eq!(s.xmp_status(id), XmpStatus::InSync);
-    // the stamp survives a reopen (journaled)
-    let dir = s.catalog_dir().unwrap().to_path_buf();
-    s.close_library().unwrap();
-    drop(s);
-    let mut s = Session::new().with_fs();
-    s.open_library(&dir, false).unwrap();
-    assert!(s.catalog.photo(id).unwrap().xmp.is_some());
-}
-
-#[test]
-fn auto_write_stamps_and_a_changed_sidecar_shows_on_disk() {
-    let (_lib, _src, mut s) = library("xmpauto", 1);
-    let id = ids(&s)[0];
+    // auto write stamps too, and a sidecar another app rewrites shows as changed on disk
     s.execute("library.xmpPreferences", &json!({"autoWrite": true})).unwrap();
     s.execute("photo.rate", &json!({"ids": [id.0], "rating": 5})).unwrap();
-    assert_eq!(s.xmp_status(id), XmpStatus::InSync);
-    // another app rewrites the sidecar
+    assert_eq!(s.xmp_status(id), XmpStatus::InSync, "auto write");
     let p = s.catalog.photo(id).unwrap();
     let orig = crate::sidecar::file_path(p).unwrap().to_string();
     let side = crate::sidecar::find_sidecar(&orig, s.sidecar_naming(id)).unwrap();
@@ -232,6 +217,13 @@ fn auto_write_stamps_and_a_changed_sidecar_shows_on_disk() {
     body.push_str("\n<!-- edited elsewhere -->\n");
     std::fs::write(&side, body).unwrap();
     assert_eq!(s.xmp_status(id), XmpStatus::ChangedOnDisk);
+    // the stamp survives a reopen (journaled)
+    let dir = s.catalog_dir().unwrap().to_path_buf();
+    s.close_library().unwrap();
+    drop(s);
+    let mut s = Session::new().with_fs();
+    s.open_library(&dir, false).unwrap();
+    assert!(s.catalog.photo(id).unwrap().xmp.is_some());
 }
 
 /// One photo with a written sidecar (rating 5) and that sidecar's path, with [`library`]'s folders
@@ -259,6 +251,17 @@ fn rerate_on_disk(side: &Path, rating: u8) {
 fn auto_read_applies_a_sidecar_changed_only_on_disk() {
     let (_lib, _src, mut s, id, side) = synced_photo("xmpautoread");
     assert!(s.xmp.auto_read, "on by default");
+    // a malformed sidecar is an error or reported, never a panic, and nothing is read from it
+    let good = std::fs::read_to_string(&side).unwrap();
+    for bad in ["", "<x:xmpmeta", "\u{0}\u{1}garbage", "<?xpacket begin=\"\"?><rdf:RDF><rdf:Description xmp:Rating=\"99999999999999\"", "<<<>>>"] {
+        std::fs::write(&side, bad).unwrap();
+        let r = s.execute("photo.autoReadMetadata", &json!({"ids": [id.0]}));
+        if let Ok(r) = r {
+            assert_eq!(r["failed"].as_array().map(Vec::len), Some(1), "{bad:?} is reported: {r}");
+        }
+    }
+    assert_eq!(s.catalog.photo(id).unwrap().rating, 5, "nothing read from a broken file");
+    std::fs::write(&side, good).unwrap();
     rerate_on_disk(&side, 2);
     assert_eq!(s.xmp_status(id), XmpStatus::ChangedOnDisk);
     let r = s.execute("photo.autoReadMetadata", &json!({"ids": [id.0]})).unwrap();
@@ -293,19 +296,6 @@ fn folder_sync_auto_reads_unless_turned_off() {
     s.execute("library.xmpPreferences", &json!({"autoRead": true})).unwrap();
     s.execute("folder.sync", &json!({"path": folder, "import": false})).unwrap();
     assert_eq!(s.catalog.photo(id).unwrap().rating, 1);
-}
-
-#[test]
-fn auto_read_of_a_malformed_sidecar_is_an_error_not_a_panic() {
-    let (_lib, _src, mut s, id, side) = synced_photo("xmpautobad");
-    for bad in ["", "<x:xmpmeta", "\u{0}\u{1}garbage", "<?xpacket begin=\"\"?><rdf:RDF><rdf:Description xmp:Rating=\"99999999999999\"", "<<<>>>"] {
-        std::fs::write(&side, bad).unwrap();
-        let r = s.execute("photo.autoReadMetadata", &json!({"ids": [id.0]}));
-        if let Ok(r) = r {
-            assert_eq!(r["failed"].as_array().map(Vec::len), Some(1), "{bad:?} is reported: {r}");
-        }
-    }
-    assert_eq!(s.catalog.photo(id).unwrap().rating, 5, "nothing read from a broken file");
 }
 
 #[test]

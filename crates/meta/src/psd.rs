@@ -133,14 +133,13 @@ mod tests {
         let actual = crate::extract(&dated_image(1));
         assert_eq!(actual.capture_time, expected);
         assert_eq!(actual.gps, dated_metadata().gps);
-    }
-
-    #[test]
-    fn psb_capture_time_is_extracted() {
-        let expected = dated_metadata().capture_time;
-        let actual = crate::extract(&dated_image(2));
-        assert_eq!(actual.capture_time, expected);
-        assert_eq!(actual.gps, dated_metadata().gps);
+        // psb capture time is extracted
+        {
+            let expected = dated_metadata().capture_time;
+            let actual = crate::extract(&dated_image(2));
+            assert_eq!(actual.capture_time, expected);
+            assert_eq!(actual.gps, dated_metadata().gps);
+        }
     }
 
     #[test]

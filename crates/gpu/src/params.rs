@@ -166,6 +166,10 @@ const FIELDS: &[(&str, usize)] = &[
     ("LUT_AMT", 1),
     ("LUT_MIN", 3),
     ("LUT_MAX", 3),
+    // per-channel RGB Contrast/Blacks LUT (`FinishParams::rgb_contrast`), `RGB_CONTRAST_N` floats in `aux`
+    ("RGB_CONTRAST", 1),
+    ("RGB_CONTRAST_OFF", 1),
+    ("RGB_CONTRAST_ZERO", 1),
     // first row of a band dispatch (the kernel runs over rows Y0.., see `render`)
     ("Y0", 1),
     // the mask planes' stride (0: the whole image's, `w × h`) and the band's first pixel in them
@@ -285,6 +289,14 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
     let lut = fp.lut.as_ref().filter(|(l, _)| l.size >= 2 && l.size.checked_pow(3) == Some(l.data.len()));
     if let Some((l, _)) = lut {
         aux.extend(l.data.iter().flatten());
+    }
+    let rgb_contrast_off = aux.len();
+    if let Some(rc) = &fp.rgb_contrast {
+        if rc.lut().len() != lcc_pipeline::tone::RGB_CONTRAST_N {
+            fail(FailKind::Fatal, format!("rgb_contrast table has {} entries, expected {}", rc.lut().len(), lcc_pipeline::tone::RGB_CONTRAST_N));
+            return (Vec::new(), aux);
+        }
+        aux.extend_from_slice(rc.lut());
     }
     // local Color Mixer and Point Color: one record per mask (each list used only when it lines up
     // with the masks, as on the CPU)
@@ -436,6 +448,11 @@ pub fn finish_block(fp: &FinishParams, masks: &[[f32; MASK_TERMS]], curves: &[Op
         p.f("LUT_AMT", *amount);
         p.fs("LUT_MIN", &l.domain_min);
         p.fs("LUT_MAX", &l.domain_max);
+    }
+    if let Some(rc) = &fp.rgb_contrast {
+        p.b("RGB_CONTRAST", true);
+        p.u("RGB_CONTRAST_OFF", rgb_contrast_off as u32);
+        p.f("RGB_CONTRAST_ZERO", rc.zero());
     }
     let grain_on = fp.grain.is_some() || fp.particles.is_some();
     if let Some((amt, cell, rough, seed)) = fp.grain {

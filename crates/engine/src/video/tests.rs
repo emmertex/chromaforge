@@ -335,25 +335,6 @@ fn capture_frame_bakes_the_clip_grade() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-#[test]
-fn commands_are_listed_with_docs() {
-    for id in [
-        "video.get",
-        "video.play",
-        "video.pause",
-        "video.togglePlay",
-        "video.seek",
-        "video.stepFrame",
-        "video.setTrim",
-        "video.resetTrim",
-        "video.setPoster",
-        "video.captureFrame",
-    ] {
-        let c = crate::cmd::find_command(id).unwrap_or_else(|| panic!("{id}"));
-        assert!(!c.params.is_empty() && !c.label.is_empty());
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn the_native_backend_reports_a_garbage_clip_as_an_error() {

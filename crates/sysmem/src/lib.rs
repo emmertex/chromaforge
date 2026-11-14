@@ -321,24 +321,26 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_at_the_lowest_priority_keeps_working() {
-        let (changed, sum) = std::thread::spawn(|| (super::lowest_thread_priority(), (0..1000u64).sum::<u64>())).join().unwrap();
-        assert_eq!(sum, 499_500);
-        assert_eq!(changed, cfg!(windows));
-    }
-
-    #[test]
-    fn a_lowered_thread_keeps_working() {
-        let (changed, again, sum) = std::thread::spawn(|| {
-            let changed = super::lower_thread_priority();
-            let again = super::lower_thread_priority();
-            (changed, again, (0..1000u64).sum::<u64>())
-        })
-        .join()
-        .unwrap();
-        assert_eq!(sum, 499_500);
-        assert_eq!(changed, cfg!(windows));
-        assert_eq!(again, cfg!(windows));
+    fn lowered_threads_keep_working() {
+        // a thread at the lowest priority keeps working
+        {
+            let (changed, sum) = std::thread::spawn(|| (super::lowest_thread_priority(), (0..1000u64).sum::<u64>())).join().unwrap();
+            assert_eq!(sum, 499_500);
+            assert_eq!(changed, cfg!(windows));
+        }
+        // a lowered thread keeps working
+        {
+            let (changed, again, sum) = std::thread::spawn(|| {
+                let changed = super::lower_thread_priority();
+                let again = super::lower_thread_priority();
+                (changed, again, (0..1000u64).sum::<u64>())
+            })
+            .join()
+            .unwrap();
+            assert_eq!(sum, 499_500);
+            assert_eq!(changed, cfg!(windows));
+            assert_eq!(again, cfg!(windows));
+        }
     }
 
     #[test]

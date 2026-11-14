@@ -127,7 +127,7 @@ impl Group {
                 "detail.nrLuminance",
                 "detail.nrColor",
             ],
-            Group::Optics => &["optics.distortion", "optics.vignetting", "optics.caRed", "optics.caBlue"],
+            Group::Optics => &["optics.distortion", "optics.vignetting", "optics.caRed", "optics.caBlue", "optics.vignettingCalibrationAmount"],
             Group::Effects => &["effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount", "grain.amount"],
             _ => &[],
         }
@@ -175,12 +175,16 @@ pub(crate) fn tool_room(app: &LccApp, area: Rect) -> (f32, f32, f32) {
 /// The group's controls this photo has. White balance is on the photo's own scale, as the Edit
 /// panel shows it: Kelvin for raw files, relative (−100..100) for rendered ones.
 pub(crate) fn specs(app: &LccApp, g: Group) -> Vec<&'static ControlSpec> {
-    let kelvin = app.session.active().and_then(|id| app.session.catalog.photo(id)).is_some_and(|p| p.develops_raw() && !p.relative_wb());
+    let active = app.session.active().and_then(|id| app.session.catalog.photo(id));
+    let kelvin = active.is_some_and(|p| p.develops_raw() && !p.relative_wb());
+    // the flat field's Amount only while the photo has a map (the rest is in Lens Corrections, which the group opens)
+    let vignetting_calibration = active.is_some_and(|p| p.develop.optics.vignetting_calibration.is_some());
     g.control_ids()
         .iter()
         .filter_map(|id| match *id {
             "wb.temp" if !kelvin => Some(&edit::REL_TEMP),
             "wb.tint" if !kelvin => Some(&edit::REL_TINT),
+            "optics.vignettingCalibrationAmount" if !vignetting_calibration => None,
             id => controls::find(id),
         })
         .collect()

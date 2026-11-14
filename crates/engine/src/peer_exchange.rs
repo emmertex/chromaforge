@@ -36,11 +36,26 @@ pub struct Record {
     pub rating: u8,
     pub flag: Flag,
     pub label: Option<ColorLabel>,
+    /// The flat-field map the settings reference, from this library's catalog: the other library stores it first
+    /// (its catalog has its own table). Never a photo id: those are this catalog's only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vignetting_maps: Vec<lcc_develop::EmbeddedVignettingMap>,
 }
 
+/// What this build's exchange can carry beyond the records of the first version: `vignettingCalibration` (records with their
+/// flat-field maps). A device that doesn't say so is an older build, which would drop the maps it merges.
+pub const CAPS: &[&str] = &["vignettingCalibration"];
+
 impl Record {
-    pub fn of(p: &Photo) -> Record {
-        Record { develop: p.develop.clone(), rating: p.rating, flag: p.flag, label: p.label }
+    pub fn of(p: &Photo, cat: &lcc_catalog::Catalog) -> Record {
+        let vignetting_maps =
+            p.develop.optics.vignetting_calibration.as_ref().and_then(|id| cat.vignetting_map(id)).map(|r| r.map.clone()).into_iter().collect();
+        Record { develop: p.develop.clone(), rating: p.rating, flag: p.flag, label: p.label, vignetting_maps }
+    }
+
+    /// Whether the settings reference a flat-field map.
+    pub fn has_vignetting_calibration(&self) -> bool {
+        self.develop.optics.vignetting_calibration.is_some()
     }
 
     /// A short, stable fingerprint (SHA-256 of the record's JSON, 128 bits in hex).
@@ -73,7 +88,7 @@ pub fn records(catalog: &lcc_catalog::Catalog) -> Records {
     let mut out = Records::new();
     for p in catalog.photos() {
         if let Some(k) = key_of(p) {
-            out.entry(k.to_string()).or_insert_with(|| (p.id, Record::of(p)));
+            out.entry(k.to_string()).or_insert_with(|| (p.id, Record::of(p, catalog)));
         }
     }
     out
@@ -175,6 +190,9 @@ enum Msg {
         map: BTreeMap<String, String>,
         #[serde(default)]
         conflicts: Vec<String>,
+        /// What this side's exchange can carry ([`CAPS`]); none from an older build.
+        #[serde(default)]
+        caps: Vec<String>,
     },
     Want {
         keys: Vec<String>,
@@ -212,6 +230,9 @@ pub struct Outcome {
     pub remote_conflicts: std::collections::HashSet<String>,
     /// The other side offered a library this one doesn't share yet.
     pub offer: Option<CatalogInfo>,
+    /// Photos left out of this exchange because they use a flat-field map and the other device's build can't carry
+    /// one (it would drop the map when it merged them).
+    pub left_out: usize,
 }
 
 /// The most records sent in one frame, and roughly the most bytes.
@@ -225,6 +246,15 @@ fn send(ch: &mut Channel, m: &Msg) -> Result<(), String> {
 }
 fn recv(ch: &mut Channel) -> Result<Msg, String> {
     ch.recv_json::<Msg>().map_err(|e| e.to_string())
+}
+
+/// The photos that stay out of an exchange with a device whose build says it can carry `remote_caps`: with an older
+/// one (no `vignettingCalibration`), every photo whose settings here use a flat-field map.
+pub fn held_back(records: &Records, remote_caps: &[String]) -> Vec<String> {
+    if remote_caps.iter().any(|c| c == "vignettingCalibration") {
+        return Vec::new();
+    }
+    records.iter().filter(|(_, (_, r))| r.has_vignetting_calibration()).map(|(k, _)| k.clone()).collect()
 }
 
 /// The other side's turn, then this side's, or the other way round.
@@ -282,13 +312,26 @@ pub fn exchange(ch: &mut Channel, initiator: bool, local: &Local, on_records: &m
     };
 
     let my_digests: BTreeMap<String, String> = local.records.iter().map(|(k, (_, r))| (k.clone(), r.digest())).collect();
-    let Msg::Digests { map: remote, conflicts: remote_conflicts } =
-        swap(ch, initiator, &Msg::Digests { map: my_digests.clone(), conflicts: local.conflicts.clone() })?
+    let caps = CAPS.iter().map(|c| c.to_string()).collect();
+    let Msg::Digests { map: mut remote, conflicts: remote_conflicts, caps: remote_caps } =
+        swap(ch, initiator, &Msg::Digests { map: my_digests.clone(), conflicts: local.conflicts.clone(), caps })?
     else {
         return Err("unexpected message".into());
     };
     if remote.len() > MAX_KEYS {
         return Err("the other catalog is too large".into());
+    }
+    // an older build on the other side can't carry flat-field maps: photos that use one here stay out of this
+    // exchange both ways (it would take them without the map, or overwrite them without it)
+    let mut my_digests = my_digests;
+    let held = held_back(&local.records, &remote_caps);
+    for k in &held {
+        my_digests.remove(k);
+        remote.remove(k);
+    }
+    let left_out = held.len();
+    if left_out > 0 {
+        log::warn!("sync: {left_out} photo(s) with a vignetting calibration left out: the other device's build can't carry vignetting maps");
     }
     // the records this side lacks: changed over there since last time, present here, different
     let want: Vec<String> = remote
@@ -300,6 +343,8 @@ pub fn exchange(ch: &mut Channel, initiator: bool, local: &Local, on_records: &m
     if their_want.len() > MAX_KEYS {
         return Err("too many records asked for".into());
     }
+    // (only what this side offered: a photo left out stays out, whatever the other side asks)
+    let their_want: Vec<String> = their_want.into_iter().filter(|k| my_digests.contains_key(k)).collect();
     on_records(want.len().saturating_add(their_want.len()));
     let records = if initiator {
         send_records(ch, &local.records, &their_want)?;
@@ -317,6 +362,7 @@ pub fn exchange(ch: &mut Channel, initiator: bool, local: &Local, on_records: &m
         told: local.conflicts.clone(),
         remote_conflicts: remote_conflicts.into_iter().take(MAX_KEYS).collect(),
         offer: None,
+        left_out,
     })
 }
 
@@ -355,7 +401,7 @@ mod tests {
     fn rec(exposure: f64, rating: u8) -> Record {
         let mut d = DevelopSettings::default();
         d.light.exposure = exposure;
-        Record { develop: Arc::new(d), rating, flag: Flag::None, label: None }
+        Record { develop: Arc::new(d), rating, flag: Flag::None, label: None, vignetting_maps: Vec::new() }
     }
 
     fn base(local: &Record, remote: &Record) -> Base {
@@ -390,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_fresh_library_takes_the_edits_without_copies() {
-        let fresh = Record { develop: Arc::new(DevelopSettings::default()), rating: 0, flag: Flag::None, label: None };
+        let fresh = Record { develop: Arc::new(DevelopSettings::default()), rating: 0, flag: Flag::None, label: None, vignetting_maps: Vec::new() };
         let edited = rec(1.0, 4);
         let empty = Base::default();
         assert_eq!(decide(&fresh, &edited.digest(), Some(&edited), &empty, "k", false), Action::Take(edited.clone()));

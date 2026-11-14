@@ -17,6 +17,7 @@
 //! <cli> calibrate-lightroom preset|fit|add|list|verify …
 //! <cli> calibrate-chart --shot RAW --corners "x,y x,y x,y x,y" [--light L] [--shot …]… [--chart 2014|2005] [--dcp OUT] [--preview DIR]
 //! <cli> compare REFERENCE TEST [--size N] [--no-align] [--diff OUT.png] [--json]
+//! <cli> vignetting-calibration REFERENCE.raw [--grid N] [--smooth S] [--check B.raw [--force]] [--save MAP.json] [--save-settings PARTIAL.json] [--json]
 //! <cli> camdb extract [--contributor NAME] NATIVE.dng…
 //! <cli> camdb show MAKE MODEL
 //! <cli> bench-cull FOLDER [--files K] [--n N] [--copy M] [--work DIR] [--json FILE]
@@ -32,6 +33,7 @@ mod catalog_migrate;
 mod compare;
 mod run_action;
 mod sync_folder;
+mod vignetting_calibration;
 
 use std::io::Write;
 use std::path::Path;
@@ -170,6 +172,13 @@ USAGE:
       …, read through their embedded colour profiles). Lines them up, then prints CIEDE2000 (mean, median, p95,
       p99) overall, by tone band and by hue, with the lightness, saturation and hue bias. --size: long edge
       compared (default 512); --no-align: compare pixel for pixel; --diff: write a false-colour ΔE00 map.
+  {cli} vignetting-calibration REFERENCE.raw [--grid N] [--smooth S] [--check B.raw [--force]] [--save MAP.json] [--save-settings PARTIAL.json] [--json]
+      Measure a flat-field reference (a raw shot through a diffuser): its light fall-off in EV at the corners and
+      along the radius, its optical centre, and the lens database's vignetting for the same lens, focal length and
+      aperture. --check applies the map to a second reference of the same camera, lens, focal length and aperture
+      (--force: of another) and reports the fall-off left; --save writes the map as JSON; --save-settings writes
+      it as partial develop settings (render --settings, develop.merge) that apply it at amount 100. --grid: cells
+      along the long side (default 96); --smooth: smoothing in cells (default 1).
   {cli} calibrate-lightroom probe -o DIR (--like RAW | --make MAKE --model MODEL) [--unique-model NAME] [--base-only]
       Write synthetic probe DNGs for a camera: colour patches spread through camera RGB, and one copy per
       slider-sweep step with that Lightroom setting embedded (applied when Lightroom imports it). Export them all
@@ -321,6 +330,7 @@ fn main() -> ExitCode {
         Some("calibrate-lightroom") => calibrate_lightroom::run(&args[1..]),
         Some("calibrate-chart") => calibrate_chart::run(&args[1..]),
         Some("compare") => compare::run(&args[1..]),
+        Some("vignetting-calibration") => vignetting_calibration::run(&args[1..]),
         Some("--version" | "-V" | "version") => {
             println!("{CLI} {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -447,28 +457,37 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 6);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let pools: Vec<lcc_engine::camera_profiles::Pool> = std::thread::scope(|scope| {
+    let mut pools: Vec<(usize, lcc_engine::camera_profiles::Pool)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut pool = lcc_engine::camera_profiles::Pool::default();
-                    while let Some(path) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    let mut pools = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = files.get(index) else { break };
+                        let mut pool = lcc_engine::camera_profiles::Pool::default();
                         let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| pool.add(&bytes));
                         let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         match result {
-                            Ok(Some(model)) => eprintln!("[{n}/{}] {} ({model})", files.len(), path.display()),
+                            Ok(Some(model)) => {
+                                eprintln!("[{n}/{}] {} ({model})", files.len(), path.display());
+                                pools.push((index, pool));
+                            }
                             Ok(None) => eprintln!("[{n}/{}] {}: skipped (no usable camera JPEG or colour)", files.len(), path.display()),
                             Err(e) => eprintln!("[{n}/{}] {}: {e}", files.len(), path.display()),
                         }
                     }
-                    pool
+                    pools
                 })
             })
             .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
     });
+    // The fitting holdout and floating-point sums depend on pair order. Keep parallel decoding, but merge
+    // in the sorted input order rather than worker admission/completion order.
+    pools.sort_by_key(|(index, _)| *index);
     let mut pool = lcc_engine::camera_profiles::Pool::default();
-    for p in pools {
+    for (_, p) in pools {
         pool.merge(p);
     }
     let mut written = 0;
@@ -1028,7 +1047,9 @@ fn render(args: &[String]) -> Result<(), String> {
         lcc_engine::export::write_file(sc, bytes)?;
         eprintln!("{CLI}: wrote {sc}");
     }
-    eprintln!("{CLI}: wrote {output} ({}×{})", e.width, e.height);
+    let limit =
+        e.limit_quality.filter(|q| *q < o.quality).zip(o.limit_kb).map(|(q, kb)| format!(", JPEG quality {q} to fit {kb} KB")).unwrap_or_default();
+    eprintln!("{CLI}: wrote {output} ({}×{}{limit})", e.width, e.height);
     if let Some(photos) = after.run(&[json!({"path": output})], false) {
         if let Some(err) = photos.get("error").and_then(Value::as_str) {
             return Err(format!("render: {output} was written, but {err}"));

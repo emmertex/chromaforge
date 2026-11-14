@@ -16,7 +16,14 @@ Photo Grid and Square Grid (View menu), loupe (`E`), compare (`C`) and survey (`
   ([library-shortcuts.md](../library-shortcuts.md)).
 - **Metadata:** Info and Keywords panels, metadata presets, hierarchical keywords with import/export (File →
   Import/Export Keywords…), the Painter (`Cmd+Alt+K`), Save Metadata to File (`Cmd+S`).
-- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns; save it as a smart collection.
+- **Find:** the filter bar (`Cmd+F`): text, attributes, metadata columns (including Aperture and Shutter Speed); save it as a smart collection.
+  Library → Advanced Search… (`Cmd+Shift+F`) filters by structured fields; codec and frame rate are not supported yet.
+- **Clean up:** Library → Find Duplicates… groups exact and look-alike copies (raw + JPEG pairs are offered as stacks, not
+  removals; [duplicates.md](../duplicates.md)); Validate DNG Files checks the DNGs' checksums; Photo → Reset Export Status
+  clears the exported badge; Metadata → Update DNG Preview & Metadata refreshes a DNG's preview and XMP.
+- **Culling suggestions:** Assisted Culling suggests 1–5 stars and Pick / Reject for photos you have not rated or flagged;
+  the smart-collection field Suggested Stars filters on them.
+- **Folders:** Show Parent Folder (right-click) adds a parent to the list; a folder that cannot be read shows the reason.
 
 ## Develop
 
@@ -27,6 +34,9 @@ Calibration (`Cmd+1`…`Cmd+5` jump to sections), plus the tools above them: Cro
 Masking (`Shift+W`: brush `K`, linear `M`, radial `Shift+M`, colour and luminance range, AI
 subject/sky/background/object masks). Presets (`Shift+P`), profiles, snapshots, history and versions (`Shift+V`);
 before/after (`Y`, `\`); clipping (`J`); soft proofing (`S`).
+Show Before (`\`) and Original Photo are momentary and never saved. Delete, `X` and the tool keys act only on a tool that
+is on screen. Calibration's primary Saturation is fixed in process V9 (older photos keep their look). Create Camera
+Profile accepts a ColorChecker 24 or SpyderCHECKR 24 photo.
 Copy and paste settings with `Cmd+C`/`Cmd+V` (`Cmd+Shift+C` to choose which). Photo → Photo Merge makes HDR and
 panorama DNGs. Every slider is a develop control: `<cli> controls` lists ids and ranges.
 
