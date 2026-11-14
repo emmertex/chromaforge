@@ -251,6 +251,9 @@ fn importing_presets_in_library_leaves_develop_its_edit_panel() {
     h.settle(SETTLE);
     assert_eq!(h.app.ui.module, crate::module::ModuleId::Develop);
     assert_eq!(h.app.ui.right, crate::state::RightPanel::Edit, "Develop opens with its Edit panel");
-    assert!(crate::panels::classic::is_open_with_key(&h.app, crate::panels::presets::IN_COLUMN_KEY), "the Presets panel is unfolded in Develop's left column");
+    assert!(
+        crate::panels::classic::is_open_with_key(&h.app, crate::panels::presets::IN_COLUMN_KEY),
+        "the Presets panel is unfolded in Develop's left column"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
