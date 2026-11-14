@@ -1415,6 +1415,24 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                 plate_menu(app, ui, plate);
                 plate
             };
+            // module picker, right-aligned
+            // Import is the first entry (Settings ▸ Import ▸ Import as a tab); it is a tab, not a module
+            let tab = crate::import_tab::enabled(app);
+            let importing = crate::import_tab::showing(app);
+            let shown: Vec<Option<ModuleId>> =
+                tab.then_some(None).into_iter().chain(ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).map(Some)).collect();
+            let label_of = |m: &Option<ModuleId>| m.map_or("Import", |m| m.label());
+            let sizes: Vec<(Option<ModuleId>, f32)> = shown
+                .iter()
+                .map(|m| (*m, ui.painter().layout_no_wrap(crate::i18n::tr(label_of(m)).to_string(), t.font(15.0), t.text).size().x))
+                .collect();
+            let sep = 22.0;
+            let total: f32 = sizes.iter().map(|(_, w)| w).sum::<f32>() + sep * sizes.len().saturating_sub(1) as f32;
+            let mut x = (full.right() - total).max(plate.right() + 40.0);
+            // the quick settings bar's stretch: from the plate (or the activity area's bars) to the picker;
+            // hovering it fades the bar in and dismisses the status line's message
+            let quick_zone = crate::quick_bar::zone(full, plate.right(), x);
+            let quick_hover = crate::quick_bar::hover(app, ui, quick_zone);
             // the status line beside the plate (imports, exports, builds report here), while no task runs
             if ip.show_status && !busy && !app.ui.status.is_empty() {
                 let w = (full.width() * 0.3).max(120.0);
@@ -1440,20 +1458,8 @@ pub fn module_bar(app: &mut LccApp, ui: &mut egui::Ui) {
                     ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((STATUS_SECS - (now - since)).max(0.05)));
                 }
             }
-            // module picker, right-aligned
-            // Import is the first entry (Settings ▸ Import ▸ Import as a tab); it is a tab, not a module
-            let tab = crate::import_tab::enabled(app);
-            let importing = crate::import_tab::showing(app);
-            let shown: Vec<Option<ModuleId>> =
-                tab.then_some(None).into_iter().chain(ModuleId::ALL.into_iter().filter(|m| !app.ui.hidden_modules.contains(m)).map(Some)).collect();
-            let label_of = |m: &Option<ModuleId>| m.map_or("Import", |m| m.label());
-            let sizes: Vec<(Option<ModuleId>, f32)> = shown
-                .iter()
-                .map(|m| (*m, ui.painter().layout_no_wrap(crate::i18n::tr(label_of(m)).to_string(), t.font(15.0), t.text).size().x))
-                .collect();
-            let sep = 22.0;
-            let total: f32 = sizes.iter().map(|(_, w)| w).sum::<f32>() + sep * sizes.len().saturating_sub(1) as f32;
-            let mut x = (full.right() - total).max(plate.right() + 40.0);
+            // the quick settings bar is drawn after the status line, over the stretch between them
+            crate::quick_bar::show(app, ui, quick_zone, quick_hover);
             let mut switch_to = None;
             for (i, (m, w)) in sizes.iter().enumerate() {
                 if i > 0 {

@@ -107,6 +107,7 @@ mod pointer_repair;
 pub mod print_ui;
 pub mod print_view;
 pub mod progress;
+pub mod quick_bar;
 pub mod rating;
 pub mod recheck;
 pub mod region;
@@ -378,6 +379,8 @@ mod tests_pickers;
 mod tests_plugin_jobs;
 #[cfg(test)]
 mod tests_preset_favorites;
+#[cfg(test)]
+mod tests_quick_bar;
 #[cfg(test)]
 mod tests_preset_folders;
 #[cfg(test)]
@@ -947,6 +950,8 @@ pub struct LccApp {
     pub(crate) hq_drag: region::HqDrag,
     /// The eye focus strip's results and crops (`view.eyeFocus`).
     pub(crate) eye_strip: eye_strip::EyeStrip,
+    /// The quick settings bar in the module bar (`quick_bar`): its fade and the entry it flashes.
+    pub(crate) quick_bar: quick_bar::QuickBar,
     /// Where the activity stack ended last frame (None: not shown), so overlays under it keep clear.
     pub(crate) activity_bottom: Option<f32>,
     /// The eye job key of the photo the strip shows (for `ui.inspect`).
@@ -1295,6 +1300,7 @@ impl LccApp {
             still_refine: Default::default(),
             hq_drag: Default::default(),
             eye_strip: Default::default(),
+            quick_bar: Default::default(),
             activity_bottom: None,
             eye_key: None,
             whole_since: None,
