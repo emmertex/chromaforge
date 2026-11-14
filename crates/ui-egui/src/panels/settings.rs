@@ -2044,6 +2044,8 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     check(ui, "settings.reduceMotion", &mut app.ui.settings.reduce_motion, "Reduce motion");
     hint(ui, t, crate::i18n::tr("Turns off zoom and spinner animations. Fades stay."));
     check(ui, "settings.wheelResizesBrush", &mut app.ui.settings.wheel_resizes_brush, "Wheel resizes brush instead of zooming");
+    check(ui, "settings.expandedSliders", &mut app.ui.settings.expanded_sliders, "Expanded sliders");
+    hint(ui, t, crate::i18n::tr("Warning, expanding sliders is not XMP compliant."));
     heading(ui, t, crate::i18n::tr("Keywords"));
     row(ui, t, crate::i18n::tr("Keywords of the selection"), |ui| {
         use crate::state::KeywordChips as K;

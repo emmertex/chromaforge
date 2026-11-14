@@ -228,7 +228,8 @@ pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
         (j.clarity / 100.0) as f32,
         (j.dehaze / 100.0) as f32,
         (j.saturation / 100.0) as f32,
-        (j.hue / 100.0) as f32 * 0.6,
+        // degrees → radians (in f64: an old −100..100 value lands on the same f32 angle as before)
+        if j.hue.is_finite() { j.hue.clamp(-lcc_develop::LOCAL_HUE_MAX, lcc_develop::LOCAL_HUE_MAX).to_radians() as f32 } else { 0.0 },
         (j.sharpness / 100.0) as f32,
         (j.noise / 100.0) as f32,
         (j.moire / 100.0) as f32,
@@ -1263,6 +1264,33 @@ fn enc(v: f32, dither: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hue_term(a: &LocalAdjustments) -> f32 {
+        let zero = mask_terms(&LocalAdjustments::default());
+        // the one term the Hue moves
+        let probe = mask_terms(&LocalAdjustments { hue: 90.0, ..Default::default() });
+        let k = (0..MASK_TERMS).find(|&k| probe[k] != zero[k]).unwrap();
+        mask_terms(a)[k]
+    }
+
+    #[test]
+    fn a_legacy_mask_hue_renders_at_the_same_angle_as_before() {
+        for old in [-100.0, -37.0, -1.0, 0.0, 12.5, 50.0, 100.0] {
+            let a: LocalAdjustments = serde_json::from_value(serde_json::json!({ "hue": old })).unwrap();
+            let before = (old / 100.0) as f32 * 0.6;
+            assert!((hue_term(&a) - before).abs() < 1e-6, "{old}: {} vs {before}", hue_term(&a));
+        }
+    }
+
+    #[test]
+    fn the_mask_hue_reaches_half_a_turn_and_hostile_values_stay_finite() {
+        let full = hue_term(&LocalAdjustments { hue: 180.0, ..Default::default() });
+        assert!((full - std::f32::consts::PI).abs() < 1e-5);
+        for bad in [f64::NAN, f64::INFINITY, -1e300] {
+            let t = hue_term(&LocalAdjustments { hue: bad, ..Default::default() });
+            assert!(t.is_finite() && t.abs() <= std::f32::consts::PI + 1e-5, "{bad}: {t}");
+        }
+    }
 
     #[test]
     fn grain_noise_is_finite_for_degenerate_coordinates() {
