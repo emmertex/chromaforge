@@ -653,6 +653,28 @@ impl Default for WhiteBalance {
     }
 }
 
+/// How the Contrast and Blacks sliders act on colour (`Light::contrast_mode`, issue #839):
+/// `Luminance` scales all three RGB channels by the luminance tone ratio (preserving linear colour ratios
+/// and saturation); `Rgb` applies Contrast and Blacks per RGB channel like an RGB tone curve (deepening
+/// shadow contrast and saturation, matching the classic per-channel curve look).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContrastMode {
+    #[default]
+    Luminance,
+    Rgb,
+}
+
+impl ContrastMode {
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::Luminance)
+    }
+
+    pub const fn is_rgb(self) -> bool {
+        matches!(self, Self::Rgb)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Light {
@@ -662,6 +684,9 @@ pub struct Light {
     pub shadows: f64,
     pub whites: f64,
     pub blacks: f64,
+    /// Mode for Contrast and Blacks: `Luminance` (default) or `Rgb` (issue #839).
+    #[serde(skip_serializing_if = "ContrastMode::is_default")]
+    pub contrast_mode: ContrastMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

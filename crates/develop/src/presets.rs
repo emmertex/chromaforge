@@ -198,7 +198,7 @@ const fn item(id: &'static str, label: &'static str, paths: &'static [&'static s
 
 const LIGHT_ITEMS: &[SettingItem] = &[
     item("light.exposure", "Exposure", &["light.exposure"]),
-    item("light.contrast", "Contrast", &["light.contrast"]),
+    item("light.contrast", "Contrast", &["light.contrast", "light.contrast_mode"]),
     item("light.highlights", "Highlights", &["light.highlights"]),
     item("light.shadows", "Shadows", &["light.shadows"]),
     item("light.whites", "Whites", &["light.whites"]),
@@ -1150,7 +1150,11 @@ mod tests {
             for it in g.items() {
                 assert!(it.id.starts_with(&format!("{}.", g.id())), "{}", it.id);
                 for p in it.paths {
-                    assert!(path_in(&full, p) || ["camera_profile", "retouch"].contains(p), "{}: {p} isn't in the settings", it.id);
+                    assert!(
+                        path_in(&full, p) || ["camera_profile", "retouch", "light.contrast_mode"].contains(p),
+                        "{}: {p} isn't in the settings",
+                        it.id
+                    );
                 }
             }
         }

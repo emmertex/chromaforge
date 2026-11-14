@@ -234,6 +234,18 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.light.whites = 30.0;
             s.light.blacks = -25.0;
         }),
+        ("rgb contrast/blacks", |s| {
+            s.light.exposure = -0.3;
+            s.light.contrast = 50.0;
+            s.light.whites = 20.0;
+            s.light.blacks = -35.0;
+            s.light.contrast_mode = lcc_develop::ContrastMode::Rgb;
+        }),
+        ("rgb contrast/blacks lifted", |s| {
+            s.light.contrast = -40.0;
+            s.light.blacks = 45.0;
+            s.light.contrast_mode = lcc_develop::ContrastMode::Rgb;
+        }),
         ("vibrance/saturation", |s| {
             s.color.vibrance = 40.0;
             s.color.saturation = -20.0;
@@ -843,6 +855,22 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.optics.defringe_purple_amount = 5.0;
         }),
     ]
+}
+
+/// `ContrastMode::Rgb` evaluates the per-channel Contrast/Blacks LUT on the GPU and matches the CPU.
+#[test]
+fn rgb_contrast_mode_renders_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let src = scene(0, 480, 320);
+    let (raw, req) = (SourceInfo { raw: true, ..Default::default() }, RenderRequest::fit(480, 480));
+    for name in ["rgb contrast/blacks", "rgb contrast/blacks lifted"] {
+        let mut s = DevelopSettings::default();
+        let edit = cases().into_iter().find(|(n, _)| *n == name).map(|c| c.1).unwrap();
+        edit(&mut s);
+        check(name, &src, &raw, &s, &req);
+    }
 }
 
 /// A mask's local Point Color is drawn by the kernel, as the CPU draws it.
