@@ -335,7 +335,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, zone: Option<Rect>, hovered: bo
                 if a < 1.0 {
                     p.rect_filled(glyph, 2.0, t.inset.gamma_multiply(1.0 - a));
                 }
-                crate::panels::plugin_icon::paint_for(ui, glyph, plugin);
+                paint_plugin_icon(ui, glyph, plugin);
             }
         }
         let tip = match shows {
@@ -362,6 +362,16 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, zone: Option<Rect>, hovered: bo
         app.toast_error(&ctx, e);
     }
 }
+
+/// A plug-in's icon (its own, else its identicon).
+#[cfg(not(target_arch = "wasm32"))]
+fn paint_plugin_icon(ui: &egui::Ui, r: Rect, plugin: &str) {
+    crate::panels::plugin_icon::paint_for(ui, r, plugin);
+}
+
+/// The web build runs no plug-ins: there is never one to draw.
+#[cfg(target_arch = "wasm32")]
+fn paint_plugin_icon(_ui: &egui::Ui, _r: Rect, _plugin: &str) {}
 
 /// Paint a built-in entry's glyph in `r`.
 fn paint_glyph(p: &egui::Painter, r: Rect, glyph: Glyph, colour: Color32) {
