@@ -380,8 +380,6 @@ mod tests_plugin_jobs;
 #[cfg(test)]
 mod tests_preset_favorites;
 #[cfg(test)]
-mod tests_quick_bar;
-#[cfg(test)]
 mod tests_preset_folders;
 #[cfg(test)]
 mod tests_preset_import;
@@ -399,6 +397,8 @@ mod tests_profile_menu;
 mod tests_profiles_layout;
 #[cfg(test)]
 mod tests_progress;
+#[cfg(test)]
+mod tests_quick_bar;
 #[cfg(test)]
 mod tests_quit_unsaved;
 #[cfg(test)]

@@ -85,7 +85,13 @@ pub struct Entry {
 pub const ENTRIES: &[Entry] = &[
     Entry { id: "info", label: "Info Overlay", command: "view.infoOverlay", glyph: Glyph::Icon(Icon::Info), state: info_state },
     Entry { id: "overlay", label: "On-Screen Overlay", command: "view.changeOverlay", glyph: Glyph::Icon(Icon::Chat), state: overlay_state },
-    Entry { id: "eyes", label: "Eye Focus Strip", command: "view.eyeFocus", glyph: Glyph::Icon(Icon::Eye), state: |a| Shows::switch(a.eye_focus_on()) },
+    Entry {
+        id: "eyes",
+        label: "Eye Focus Strip",
+        command: "view.eyeFocus",
+        glyph: Glyph::Icon(Icon::Eye),
+        state: |a| Shows::switch(a.eye_focus_on()),
+    },
     Entry { id: "clipping", label: "Show Clipping", command: "view.clipping", glyph: Glyph::Clipping, state: |a| Shows::switch(a.ui.show_clipping) },
     Entry {
         id: "focusPoint",
@@ -94,8 +100,20 @@ pub const ENTRIES: &[Entry] = &[
         glyph: Glyph::Icon(Icon::Target),
         state: |a| Shows::switch(a.ui.settings.focus_point),
     },
-    Entry { id: "faceBoxes", label: "Face Boxes", command: "view.faceBoxes", glyph: Glyph::Icon(Icon::FaceBox), state: |a| Shows::switch(a.ui.face_boxes) },
-    Entry { id: "filmstrip", label: "Filmstrip", command: "view.filmstrip", glyph: Glyph::Icon(Icon::Filmstrip), state: |a| Shows::switch(a.ui.filmstrip) },
+    Entry {
+        id: "faceBoxes",
+        label: "Face Boxes",
+        command: "view.faceBoxes",
+        glyph: Glyph::Icon(Icon::FaceBox),
+        state: |a| Shows::switch(a.ui.face_boxes),
+    },
+    Entry {
+        id: "filmstrip",
+        label: "Filmstrip",
+        command: "view.filmstrip",
+        glyph: Glyph::Icon(Icon::Filmstrip),
+        state: |a| Shows::switch(a.ui.filmstrip),
+    },
 ];
 
 fn info_state(app: &LccApp) -> Shows {
@@ -155,7 +173,11 @@ pub fn flash(app: &mut LccApp, id: &str) {
 enum Item {
     BuiltIn(usize),
     /// A plug-in's quick action: plug-in id, command id, its label.
-    Plugin { plugin: String, command: String, label: String },
+    Plugin {
+        plugin: String,
+        command: String,
+        label: String,
+    },
 }
 
 impl Item {
@@ -364,7 +386,10 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
             // {flash?: id} blinks one entry (as the eye strip's ✕ does); always → the entries
             if let Some(f) = p.get("flash") {
                 let Some(f) = f.as_str().filter(|f| items().iter().any(|i| i.id() == *f)) else {
-                    return Some(Err(format!("view.quickSettings: no quick setting `{}`", f.as_str().unwrap_or_default().chars().take(80).collect::<String>())));
+                    return Some(Err(format!(
+                        "view.quickSettings: no quick setting `{}`",
+                        f.as_str().unwrap_or_default().chars().take(80).collect::<String>()
+                    )));
                 };
                 flash(app, f);
             }

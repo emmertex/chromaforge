@@ -2072,7 +2072,9 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     hint(
         ui,
         t,
-        crate::i18n::tr("Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too."),
+        crate::i18n::tr(
+            "Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too.",
+        ),
     );
     // the overlay that reports every change (and the control surfaces' readout)
     super::surface_osd::settings_section(app, ui, t);
