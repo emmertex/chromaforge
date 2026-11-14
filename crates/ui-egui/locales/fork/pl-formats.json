@@ -81,6 +81,8 @@
   "Installing it will {action}.": "Instalacja: {action}.",
   "Its manifest has fields this version doesn't know, which it ignores: {fields}": "Jego manifest zawiera pola, których ta wersja nie zna, więc je pomija: {fields}",
   "Its manifest has values this version can't use, which it leaves out: {values}": "Jego manifest zawiera wartości, których ta wersja nie może użyć, więc je pomija: {values}",
+  "JPEG quality {q} to fit the size limit": "Jakość JPEG {q}, aby zmieścić się w limicie rozmiaru",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Jakość JPEG {q}, aby zmieścić się w limicie rozmiaru (mniejszy rozmiar lub większy limit zachowuje więcej jakości)",
   "Key from the environment variable {}": "Klucz ze zmiennej środowiskowej {}",
   "Key saved ({})": "Klucz zapisany ({})",
   "Last checked {when}": "Ostatnio sprawdzono {when}",

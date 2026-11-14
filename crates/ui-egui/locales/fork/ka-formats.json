@@ -102,6 +102,8 @@
   "Installing it will {action}.": "ინსტალაცია: {action}.",
   "Its manifest has fields this version doesn't know, which it ignores: {fields}": "მის მანიფესტს აქვს ველები, რომლებიც ამ ვერსიამ არ იცის და უგულებელყოფს: {fields}",
   "Its manifest has values this version can't use, which it leaves out: {values}": "მის მანიფესტს აქვს მნიშვნელობები, რომლებსაც ეს ვერსია ვერ იყენებს და გამოტოვებს: {values}",
+  "JPEG quality {q} to fit the size limit": "JPEG-ის ხარისხი {q}, ზომის ლიმიტში მოსახვედრად",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "JPEG-ის ხარისხი {q}, ზომის ლიმიტში მოსახვედრად (უფრო მცირე ზომა ან უფრო დიდი ლიმიტი მეტ ხარისხს ინარჩუნებს)",
   "Key from the environment variable {}": "გასაღები გარემოს ცვლადიდან {}",
   "Key saved (ends in {})": "გასაღები შენახულია (ბოლოვდება {}-ით)",
   "Key saved ({})": "გასაღები შენახულია ({})",
