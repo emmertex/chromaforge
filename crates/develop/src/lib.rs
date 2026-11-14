@@ -270,6 +270,23 @@ mod tests_skin;
 
 #[cfg(test)]
 mod tests {
+    use crate::{LEGACY_LOCAL_HUE_DEG, LocalAdjustments};
+
+    #[test]
+    fn mask_hue_in_degrees_round_trips_and_old_values_convert() {
+        for deg in [-180.0, -97.5, 0.0, 34.0, 179.0, 180.0] {
+            let a = LocalAdjustments { hue: deg, exposure: 0.5, ..Default::default() };
+            let back: LocalAdjustments = serde_json::from_value(serde_json::to_value(a).unwrap()).unwrap();
+            assert_eq!(back, a, "{deg}");
+        }
+        // an old catalog / preset: the −100..100 slider value, no marker
+        let old: LocalAdjustments = serde_json::from_value(json!({"hue": 100.0, "saturation": 20.0})).unwrap();
+        assert!((old.hue - 100.0 * LEGACY_LOCAL_HUE_DEG).abs() < 1e-12 && (old.hue - 34.377).abs() < 1e-3);
+        assert_eq!((old.saturation, old.amount), (20.0, 100.0), "the other fields and defaults are untouched");
+        // hostile: wrong types are an error, never a panic
+        assert!(serde_json::from_value::<LocalAdjustments>(json!({"hue": "x", "hue_deg": 3})).is_err());
+    }
+
     #[test]
     fn resetting_the_profile_section_restores_the_default_profile() {
         // the chosen creative profile is not a control, so resetting the section must restore it too

@@ -20,6 +20,13 @@ const fn shaded(s: ControlSpec, shade: lcc_develop::Shade) -> ControlSpec {
     ControlSpec { shade, ..s }
 }
 
+/// Slider `s` as Settings ▸ Expanded sliders allows: off, the mask Hue keeps Lightroom's range
+/// (about ±34°, [`lcc_develop::LOCAL_HUE_STANDARD`]); on, ±180°. Only the range shown changes; a
+/// stored value past it is kept as it is.
+pub fn local_spec(s: &ControlSpec, expanded: bool) -> ControlSpec {
+    if s.id == "hue" && !expanded { ControlSpec { min: -lcc_develop::LOCAL_HUE_STANDARD, max: lcc_develop::LOCAL_HUE_STANDARD, ..*s } } else { *s }
+}
+
 /// Local adjustment sliders (key = `LocalAdjustments` field name).
 pub const LOCAL: &[ControlSpec] = &[
     spec("temp", "Temp", -100.0, 100.0, 1.0, 0, Track::Temp),
@@ -33,7 +40,7 @@ pub const LOCAL: &[ControlSpec] = &[
     spec("texture", "Texture", -100.0, 100.0, 1.0, 0, Track::Centered),
     shaded(spec("clarity", "Clarity", -100.0, 100.0, 1.0, 0, Track::Centered), lcc_develop::Shade::ReverseRamp),
     spec("dehaze", "Dehaze", -100.0, 100.0, 1.0, 0, Track::Centered),
-    spec("hue", "Hue", -100.0, 100.0, 1.0, 0, Track::Rainbow),
+    spec("hue", "Hue", -lcc_develop::LOCAL_HUE_MAX, lcc_develop::LOCAL_HUE_MAX, 1.0, 0, Track::Rainbow),
     spec("saturation", "Saturation", -100.0, 100.0, 1.0, 0, Track::Gradient { from: "#7a7a7a", to: "#e04a3a" }),
     spec("sharpness", "Sharpness", -100.0, 100.0, 1.0, 0, Track::Centered),
     spec("noise", "Noise", -100.0, 100.0, 1.0, 0, Track::Centered),
@@ -888,7 +895,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if !section_header(app, ui, key, title, group_changed(&m.adjust, ids)) {
             continue;
         }
-        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)) {
+        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)).map(|s| local_spec(s, app.ui.settings.expanded_sliders)).collect::<Vec<_>>() {
+            let s = &s;
             let v = local_get(&m.adjust, s.id);
             let out = slider(ui, s, v, true, None);
             apply_slider_out(app, s, out, |app, v| app.run("mask.adjust", json!({"values": {s.id: v}})));
@@ -987,7 +995,8 @@ fn next_mask_settings(app: &mut LccApp, ui: &mut egui::Ui) {
         if !section_header(app, ui, key, title, group_changed(&shown.adjust, ids)) {
             continue;
         }
-        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)) {
+        for s in LOCAL.iter().filter(|s| ids.contains(&s.id)).map(|s| local_spec(s, app.ui.settings.expanded_sliders)).collect::<Vec<_>>() {
+            let s = &s;
             let v = local_get(&shown.adjust, s.id);
             let out = slider(ui, s, v, true, None);
             apply_slider_out(app, s, out, |app, v| app.run("mask.adjust", json!({"values": {s.id: v}})));
@@ -2605,6 +2614,20 @@ fn carry_component(app: &mut LccApp, photo: Option<u64>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // issue #1145: Settings ▸ Expanded sliders off keeps the mask Hue to Lightroom's range
+    #[test]
+    fn expanded_sliders_widen_only_the_mask_hue() {
+        let hue = LOCAL.iter().find(|s| s.id == "hue").unwrap();
+        let off = local_spec(hue, false);
+        assert!(off.max < 40.0 && off.min > -40.0 && off.max > 30.0, "{off:?}");
+        let on = local_spec(hue, true);
+        assert_eq!((on.min, on.max), (-180.0, 180.0));
+        for s in LOCAL.iter().filter(|s| s.id != "hue") {
+            let n = local_spec(s, false);
+            assert_eq!((n.min, n.max), (s.min, s.max), "{}", s.id);
+        }
+    }
 
     #[test]
     fn a_detail_pass_counts_as_the_segmenter_working() {
