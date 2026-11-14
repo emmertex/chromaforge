@@ -371,6 +371,17 @@ mod config_tests {
 mod tests {
     use super::*;
 
+    /// No test writes into the user's settings folder: in a test binary the settings folder is a temporary one
+    /// (`lcc_brand::is_test_binary`), unless whoever runs the tests chose one with `<PREFIX>_CONFIG_DIR`.
+    #[test]
+    fn tests_use_a_temporary_settings_folder() {
+        if lcc_brand::env_os("CONFIG_DIR").is_some() {
+            return;
+        }
+        let dir = config_dir().expect("a settings folder");
+        assert!(dir.starts_with(std::env::temp_dir()), "{}", dir.display());
+    }
+
     /// Issue #163: the recent-catalogs list follows the config-dir resolver, never the platform folder
     /// when `<PREFIX>_CONFIG_DIR` is set, and none at all when it is empty.
     #[test]

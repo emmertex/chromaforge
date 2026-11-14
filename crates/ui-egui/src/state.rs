@@ -1593,6 +1593,9 @@ pub struct UiState {
     pub concept_pick: bool,
     /// The Roles window (who has which role, and where) is open.
     pub roles_window: bool,
+    /// Show the Who / Set Role / Roles row under a selected People mask component.
+    #[serde(default)]
+    pub show_people_who: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -2009,8 +2012,8 @@ pub enum Dialog {
         params: serde_json::Value,
         key: String,
     },
-    /// Edit Capture Time: `mode` "set" (`time`; the others shift along), "shift" (by `days`,
-    /// `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
+    /// Edit Capture Time: `mode` "set" (`time`; the others shift along, or with `each` every photo gets
+    /// `time`), "shift" (by `days`, `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
     CaptureTime {
         mode: String,
         time: String,
@@ -2018,6 +2021,10 @@ pub enum Dialog {
         hours: i32,
         minutes: i32,
         zone: f32,
+        /// "set" with several photos: every one gets `time` instead of moving by the active photo's change
+        /// (issue #4205).
+        #[serde(default)]
+        each: bool,
     },
     /// The import review (File → Import Photos…).
     Import {
@@ -2616,6 +2623,7 @@ impl Default for UiState {
             sam_downloading: false,
             renaming_component: None,
             roles_window: false,
+            show_people_who: false,
             role_draft: None,
             people_pick: None,
             people_asked: None,

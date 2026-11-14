@@ -92,6 +92,8 @@ pub struct XmpData {
     /// item order, language alternatives put `x-default` first. Foreign namespaces that reuse a recognized
     /// prefix use `Q{hex-encoded namespace URI}local` instead, so they cannot impersonate known properties.
     pub properties: BTreeMap<String, Vec<String>>,
+    /// True when flattened properties were omitted after reaching the cumulative key-size limit.
+    pub properties_truncated: bool,
     /// Every top-level property with its full structure (arrays of structs such as local
     /// corrections, which [`XmpData::properties`] flattens).
     pub values: BTreeMap<String, XmpValue>,
@@ -394,10 +396,14 @@ fn is_rdf_meta_attr(k: &str) -> bool {
     matches!(k, "rdf:about" | "rdf:ID" | "rdf:nodeID" | "xml:lang" | "rdf:parseType" | "rdf:resource" | "rdf:datatype") || k.starts_with("xmlns")
 }
 
-fn collect_description(d: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
+fn collect_description(d: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut KeyBudget) {
     for (k, v) in &d.attrs {
         // the budget is checked before the path is built, not after
-        if is_rdf_meta_attr(k) || *budget < prefix.len().saturating_add(k.len()) {
+        if is_rdf_meta_attr(k) {
+            continue;
+        }
+        if budget.left < prefix.len().saturating_add(k.len()) {
+            budget.truncated = true;
             continue;
         }
         let key = format!("{prefix}{k}");
@@ -410,21 +416,29 @@ fn collect_description(d: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<
     }
 }
 
+/// What is left of the flattened-key budget, and whether any property was left out for lack of it.
+struct KeyBudget {
+    left: usize,
+    truncated: bool,
+}
+
 /// Charge one flattened key's length to the key budget; `false` when the budget is spent (the
 /// property is then left out, like other elements a limit has cut).
-fn take_key_bytes(key: &str, budget: &mut usize) -> bool {
+fn take_key_bytes(key: &str, budget: &mut KeyBudget) -> bool {
     let n = key.len();
-    if *budget < n {
+    if budget.left < n {
+        budget.truncated = true;
         return false;
     }
-    *budget = budget.saturating_sub(n);
+    budget.left = budget.left.saturating_sub(n);
     true
 }
 
-fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut usize) {
+fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<String>>, budget: &mut KeyBudget) {
     // a path that can't fit the budget isn't built (a long ancestor path shared by many children
     // would otherwise be copied for each of them after the budget is spent)
-    if *budget < prefix.len().saturating_add(p.name.len()) {
+    if budget.left < prefix.len().saturating_add(p.name.len()) {
+        budget.truncated = true;
         return;
     }
     let key = format!("{prefix}{}", p.name);
@@ -605,7 +619,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
     let mut props = BTreeMap::new();
     let mut values = BTreeMap::new();
     // One budget for the whole document: several descriptions cannot each spend a fresh one.
-    let mut key_budget = MAX_KEY_BYTES;
+    let mut key_budget = KeyBudget { left: MAX_KEY_BYTES, truncated: false };
     for d in descs {
         collect_description(d, "", &mut props, &mut key_budget);
         if let XmpValue::Struct(m) = node_struct(d) {
@@ -707,7 +721,7 @@ pub fn parse_xmp(s: &str) -> Result<XmpData, XmpError> {
     }
     m.regions = values.get("mwg-rs:Regions").map(parse_regions).unwrap_or_default();
     let lc_settings = props.get("lc:settings").and_then(|v| v.first()).cloned();
-    Ok(XmpData { metadata: m, lc_settings, properties: props, values })
+    Ok(XmpData { metadata: m, lc_settings, properties: props, properties_truncated: key_budget.truncated, values })
 }
 
 fn frac(v: f64) -> String {
@@ -1832,6 +1846,7 @@ mod tests {
         assert!(total <= MAX_KEY_BYTES, "flattened-key text {total} is over the {MAX_KEY_BYTES} budget");
         assert!(d.properties.len() < 3000, "keys stop being added once the budget is spent");
         assert!(!d.properties.is_empty(), "properties parsed before the budget are kept");
+        assert!(d.properties_truncated, "omitted flattened keys are reported to callers");
     }
 
     #[test]

@@ -804,3 +804,14 @@ fn unnamed_and_suggested_faces_follow_the_library_filter_when_scoped() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn mirror_averaging_is_on_by_default_and_can_be_turned_off() {
+    let d = temp("mirror_option");
+    let (mut s, _) = setup(&d, 64);
+    assert_eq!(s.execute("faces.matching", &json!({})).unwrap()["mirrorAverage"], true);
+    assert_eq!(s.execute("faces.matching", &json!({"mirrorAverage": false})).unwrap()["mirrorAverage"], false);
+    assert!(s.execute("faces.matching", &json!({"mirrorAverage": "no"})).is_err());
+    assert_eq!(s.execute("faces.matching", &json!({})).unwrap()["mirrorAverage"], false, "the choice is kept");
+    assert_eq!(s.execute("faces.matching", &json!({"mirrorAverage": true})).unwrap()["mirrorAverage"], true);
+}
