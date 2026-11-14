@@ -2317,8 +2317,14 @@ fn a_selected_people_component_offers_who_it_is_about() {
     exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"]}}));
     let photo = h.app.session.active().expect("photo").0;
     exec(&mut h, "people.setRole", json!({"role": "Groom", "person": "Alex", "scope": {"ids": [photo]}}));
+    h.settle(SETTLE);
+    assert!(!widgets_contain(&mut h, "maskWho:0"), "Who picker is hidden by default");
+    click(&mut h, "button:componentMenu:0");
+    let r = h.request("ui.clickWidget", json!({"id": "maskMenu:toggleWho"}), T);
+    assert_eq!(r["ok"], true, "component menu toggles Show Who & Roles: {r}");
+    h.settle(SETTLE);
     let r = h.request("ui.clickWidget", json!({"id": "maskWho:0"}), T);
-    assert_eq!(r["ok"], true, "the Who picker shows under a selected People component: {r}");
+    assert_eq!(r["ok"], true, "the Who picker shows under a selected People component once enabled: {r}");
     // choosing a role goes into the recipe and is resolved here (no Groom face: everyone)
     exec(&mut h, "mask.update", json!({"component": 0, "shape": {"kind": "people", "person": 0, "parts": ["Clothes"], "who": {"role": "Groom"}}}));
     let done = exec(&mut h, "masks.recompute", json!({}));
@@ -2428,6 +2434,10 @@ fn mask_rows_show_thumbnails_and_the_roles_window_clears_a_role() {
     }
     assert!(shown, "the mask's thumbnail shows");
     assert!(widgets_contain(&mut h, "componentThumb:0"), "and its component's");
+    let mask_thumb = h.app.widgets.iter().find(|(w, _)| w == &format!("maskThumb:{m}")).map(|(_, r)| *r).unwrap();
+    let comp_thumb = h.app.widgets.iter().find(|(w, _)| w == "componentThumb:0").map(|(_, r)| *r).unwrap();
+    assert!(mask_thumb.width() >= 30.0 && mask_thumb.height() >= 30.0, "mask preview is large enough to read: {mask_thumb:?}");
+    assert!(comp_thumb.width() >= 26.0 && comp_thumb.height() >= 26.0, "component preview is large enough to read: {comp_thumb:?}");
     // the Roles window
     let photo = h.app.session.active().expect("photo").0;
     exec(&mut h, "people.setRole", json!({"role": "Bride", "person": "Sam", "scope": {"ids": [photo]}}));
@@ -2817,6 +2827,17 @@ fn people_and_remembered_tiles_open_their_pickers() {
     let mut h = detail("panel.masking");
     click(&mut h, "maskNew:people");
     assert!(h.app.ui.people_pick.is_some(), "the People picker is open");
+    h.settle(SETTLE);
+    let mut prev: Option<egui::Rect> = None;
+    for part in crate::panels::mask_pickers::PEOPLE_PARTS {
+        let id = format!("maskPeople:part:{part}");
+        let r = h.app.widgets.iter().find(|(w, _)| w == &id).map(|(_, r)| *r).unwrap_or_else(|| panic!("no {id}"));
+        if let Some(p) = prev {
+            assert!(r.top() >= p.bottom(), "{part} should be below previous part: {r:?} vs {p:?}");
+            assert!((r.left() - p.left()).abs() < 1.0, "{part} should align vertically: {r:?} vs {p:?}");
+        }
+        prev = Some(r);
+    }
     h.app.ui.people_pick = Some((2, vec!["Clothes".into()]));
     click(&mut h, "button:maskPeople:create");
     assert!(h.app.ui.people_pick.is_none(), "closed after Create Mask");

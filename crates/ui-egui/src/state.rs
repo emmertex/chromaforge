@@ -1593,6 +1593,9 @@ pub struct UiState {
     pub concept_pick: bool,
     /// The Roles window (who has which role, and where) is open.
     pub roles_window: bool,
+    /// Show the Who / Set Role / Roles row under a selected People mask component.
+    #[serde(default)]
+    pub show_people_who: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -2620,6 +2623,7 @@ impl Default for UiState {
             sam_downloading: false,
             renaming_component: None,
             roles_window: false,
+            show_people_who: false,
             role_draft: None,
             people_pick: None,
             people_asked: None,
