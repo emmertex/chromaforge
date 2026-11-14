@@ -9,6 +9,7 @@ plug-ins are not supported.
 | Contribution | Manifest | Request it receives |
 |---|---|---|
 | Menu commands, optionally with a dialog | `commands: [{id, label, menu, dialog, prepare?, job?}]` (`job: true`: see [Jobs](#jobs-long-commands-with-progress)) | `{"hook":"command","command","args","selection","source"}`; with `prepare: true`, first `{"hook":"command.prepare","command","selection","source"}` (`source`: see [Adding files to the library](#adding-files-to-the-library); see [Settings, remembered values and prepare steps](#settings-remembered-values-and-prepare-steps)) |
+| Quick settings bar buttons | `quickAction: true` on a command (at most 4 a plug-in; host feature `quickActions`) | the command's own `{"hook":"command",…}` request, exactly as from its menu item (see [Quick actions](#quick-actions)) |
 | Settings (the plug-in's page in the Plug-in Manager) | `settings: [{key, label, type, …, prepare?}]` | none, or `{"hook":"settings.prepare"}` when a field has `prepare: true`; the plug-in reads them with `settings.get` |
 | Export post-processing | `hooks.export: true` | `{"hook":"export","files":[{path, photo}]}`; the exported files are lent to the call for reading and writing |
 | Metadata and keyword suggestions | `hooks.metadata: true` | `{"hook":"metadata","photos":[photo.inspect JSON]}` → `{"suggestions":[{photo, fields?, keywords?}]}` |
@@ -46,6 +47,29 @@ link`), and so do the install dialog and `plugin.inspectFile` (`dropped`). `plug
 license?, issues?}`, `issues` being Report a Problem's page. The host feature `about` names them.
 The SDK can fill them from the plug-in crate's `Cargo.toml` ([Writing one in
 Rust](#2-declare-a-manifest-and-handle-requests)).
+
+### Quick actions
+
+A command with `"quickAction": true` also gets a button in the **quick settings bar**, the row of
+switches that fades in when the pointer is in the blank stretch of the module bar between the
+identity plate and the module names. Its buttons come after the app's own (info overlay,
+on-screen overlay, eye focus strip, …), in install order, drawn with the plug-in's icon (its
+`icon` picture, else the identicon the Plug-in Manager draws) and named by the command's `label`
+on hover. A click runs the command as its File ▸ Plug-in Extras item does (`plugins.runItem
+{plugin, command}`): a `prepare` step, a dialog and a job all work as from the menu. A plug-in
+may flag at most 4 commands (`lcc_plugins::MAX_QUICK_ACTIONS`); more is a manifest error. Only
+enabled plug-ins show; a bar too narrow for every button drops plug-ins' buttons first.
+`view.quickSettings` lists the bar's entries, plug-ins' included (`plugin:<id>/<command>`), and
+`plugin.commands` gives each command's `quickAction`.
+
+The field is additive (ABI v1 is unchanged): a host without the bar ignores it as an unknown field,
+and the command stays in the menu. A plug-in that needs the button to be useful says
+`"requires": ["quickActions"]`.
+
+```json
+{"id": "org.example.tools", "name": "Tools", "version": "1.0.0",
+ "commands": [{"id": "stamp", "label": "Stamp Copyright", "quickAction": true}]}
+```
 
 Commands appear under File ▸ Plug-ins and run as the engine command `plugin.run {plugin, command, args?, ids?, source?, wait?}`. The UI, CLI,
 control channel and MCP all use this command. `plugin.commands` lists the commands so front
@@ -413,7 +437,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)), and `quickActions` (`quickAction` on a command, [Quick actions](#quick-actions)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -589,7 +613,7 @@ The manifest fields:
 | `homepage`, `repository`, `changelog`, `license` | optional, shown on the About tab: `https://` links and the licence as text (see [Where it comes from](#what-a-plug-in-can-add)); host feature `about` |
 | `icon`, `header` | optional SVG pictures (see [Its own pictures](#what-a-plug-in-can-add)); host feature `pictures` |
 | `permissions` | what the plug-in asks for (see [Permissions](#permissions)); ask for as little as possible |
-| `commands` | `[{id, label, menu?, dialog?, prepare?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false` |
+| `commands` | `[{id, label, menu?, dialog?, prepare?, job?, quickAction?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false`; `quickAction: true` adds a quick settings bar button ([Quick actions](#quick-actions)) |
 | `settings` | `[{key, label, type, …, prepare?}]`, at most 32; needs `requires: ["settings"]` |
 | `hooks` | `{export?: true, metadata?: true}` |
 | `publish` | `{id, name}`: one publish service |
