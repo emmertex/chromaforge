@@ -67,6 +67,7 @@ mod focus_scan;
 pub mod folder_poll;
 mod frame_rate;
 pub mod headless;
+pub mod help_link;
 pub mod help_overlay;
 pub mod i18n;
 mod i18n_fork;
@@ -267,6 +268,8 @@ mod tests_grid_style;
 mod tests_guided_guides;
 #[cfg(test)]
 mod tests_hdr_zoom_cache;
+#[cfg(test)]
+mod tests_help_links;
 #[cfg(test)]
 mod tests_histogram_drag;
 #[cfg(test)]
@@ -3077,6 +3080,7 @@ impl LccApp {
             catalog_ui::show(self, &ctx);
             panels::library_problem::show(self, &ctx);
             pick::poll(self, &ctx);
+            help_link::poll(self, &ctx);
             panels::surface_osd::show(self, &ctx);
             panels::presets::picker_frame(self, &ctx);
             panels::toast(self, &ctx);
@@ -3147,6 +3151,7 @@ impl LccApp {
         panels::activity::show(self, &ctx);
         export_task::poll_photos(self, &ctx);
         pick::poll(self, &ctx);
+        help_link::poll(self, &ctx);
         camera_roll::poll(self, &ctx);
         panels::grid::drag_feedback(self, &ctx);
         panels::left::album_drag_feedback(self, &ctx);

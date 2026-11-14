@@ -102,7 +102,7 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     let status = cached_status(app, &ctx);
     let downloads = cached_downloads(app, &ctx);
-    crate::dialog_frame::group_begin(ui, Some("Semantic search"));
+    crate::dialog_frame::group_begin_help(ui, Some("Semantic search"), Some("semanticSearch"));
     let r = ui.label(tr(
         "Searches the catalog by description (for example “moody studio portraits”) using image-text embeddings computed in the background.",
     ));

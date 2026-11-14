@@ -268,7 +268,7 @@ fn open_page(app: &mut LccApp, url: &str) {
 /// The Settings ▸ Faces tab.
 pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let list = models(app, ui.ctx());
-    heading(ui, t, "Face recognition");
+    super::settings::heading_help(ui, t, "Face recognition", "faces");
     if list["dir"].is_null() {
         hint(ui, t, "This build has nowhere to keep face models, so the model list is not available. (The desktop app has.)");
         return;
@@ -364,7 +364,7 @@ pub fn models_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 
 /// The face scan: where it stands (`faces.status`), how many faces it learned, and Pause / Resume, Clear… and Restart….
 fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    heading(ui, t, "Face scan");
+    super::settings::heading_help(ui, t, "Face scan", "faceScan");
     let status = app.session.execute("faces.status", &json!({})).unwrap_or(Value::Null);
     let scan = super::index_controls::Indexer {
         key: "faces",
