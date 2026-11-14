@@ -1319,10 +1319,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                 },
             };
-            // without a tab, the section shown last (else General)
+            // without a tab, the section shown last (else General); `page` names the category as
+            // `tab` does, whichever way Settings lists its categories (left, top, the sheet's rail)
             let last = app.ui.settings.settings_tab.clone();
             let last = if crate::settings_screen::known(&last) { last.as_str() } else { "general" };
-            let tab = section_tab.or_else(|| p.get("tab").and_then(Value::as_str)).unwrap_or(last);
+            let asked = p.get("tab").or_else(|| p.get("page")).and_then(Value::as_str);
+            let tab = section_tab.or(asked).unwrap_or(last);
             if !crate::panels::settings::TABS.iter().any(|(id, _)| *id == tab) && !crate::settings_screen::known(tab) {
                 let tabs: Vec<&str> = crate::panels::settings::TABS.iter().map(|(id, _)| *id).collect();
                 return Some(Err(format!("unknown settings tab `{tab}` ({})", tabs.join("|"))));
