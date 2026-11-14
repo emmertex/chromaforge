@@ -24,6 +24,10 @@ use lcc_geom::Rect;
 
 const MAGIC: &[u8; 4] = b"LCFE";
 const VERSION: u8 = 2;
+/// Ends the tag of a cache whose faces are each averaged with their mirror image
+/// ([`lcc_faces::runtime::Embedder::embed_faces`]); a cache made the other way has another tag, so it is not read and
+/// its faces are embedded again rather than mixed with the new ones.
+pub(crate) const MIRROR_TAG: &str = "+mirror";
 
 pub(crate) type Key = (u64, [i32; 4]);
 
