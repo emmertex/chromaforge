@@ -97,7 +97,12 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     crate::menubar::show_in_window(app, ui, room);
                 }
             });
-            // search field (centred on the window)
+            // search field (centred on the window); with semantic search switched off (Settings ▸ AI Models) it has no AI
+            // button and searches the text
+            let semantic_on = app.session.semantic_search_on();
+            if !semantic_on {
+                app.ui.semantic_search = false;
+            }
             let id = crate::text_field::id("field:search");
             if std::mem::take(&mut app.ui.focus_search) {
                 ui.memory_mut(|m| m.request_focus(id));
@@ -146,56 +151,63 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                     );
                 }
             }
-            let ai_resp =
-                ui.interact(ai_r, egui::Id::new("search-ai-btn"), Sense::click()).on_hover_text(crate::i18n::tr("Natural-language search (AI)"));
-            ai_resp.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Button, true, app.ui.semantic_search, crate::i18n::tr("Natural-language search (AI)"))
-            });
-            register(ui.ctx(), "search:ai", ai_r);
-            ui.painter().rect_filled(
-                ai_r,
-                3.0,
-                if app.ui.semantic_search {
-                    t.accent
-                } else if ai_resp.hovered() {
-                    t.hover
-                } else {
-                    egui::Color32::TRANSPARENT
-                },
-            );
-            ui.painter().text(
-                ai_r.center(),
-                Align2::CENTER_CENTER,
-                crate::i18n::tr("AI"),
-                t.semibold(10.5),
-                if app.ui.semantic_search {
-                    t.canvas
-                } else if ai_resp.hovered() {
-                    t.text
-                } else {
-                    t.text_dim
-                },
-            );
-            if ai_resp.clicked() {
-                app.ui.semantic_search = !app.ui.semantic_search;
-                let q = app.ui.search.clone();
-                if !q.trim().is_empty() {
-                    let p = if app.ui.semantic_search {
-                        json!({"text": "", "semantic": q})
+            if semantic_on {
+                let ai_resp =
+                    ui.interact(ai_r, egui::Id::new("search-ai-btn"), Sense::click()).on_hover_text(crate::i18n::tr("Natural-language search (AI)"));
+                ai_resp.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Button,
+                        true,
+                        app.ui.semantic_search,
+                        crate::i18n::tr("Natural-language search (AI)"),
+                    )
+                });
+                register(ui.ctx(), "search:ai", ai_r);
+                ui.painter().rect_filled(
+                    ai_r,
+                    3.0,
+                    if app.ui.semantic_search {
+                        t.accent
+                    } else if ai_resp.hovered() {
+                        t.hover
                     } else {
-                        json!({"semantic": serde_json::Value::Null, "text": q})
-                    };
-                    if let Err(e) = app.run("library.filter", p) {
-                        app.toast_error(ui.ctx(), e);
-                    } else if app.ui.semantic_search && app.session.selected_ml_model().is_none() {
-                        app.toast_with_action(
-                            ui.ctx(),
-                            crate::i18n::tr("Download the semantic search model to search by description."),
-                            crate::i18n::tr("AI Models…"),
-                            "dialog.aiModels",
-                            json!({}),
-                            8.0,
-                        );
+                        egui::Color32::TRANSPARENT
+                    },
+                );
+                ui.painter().text(
+                    ai_r.center(),
+                    Align2::CENTER_CENTER,
+                    crate::i18n::tr("AI"),
+                    t.semibold(10.5),
+                    if app.ui.semantic_search {
+                        t.canvas
+                    } else if ai_resp.hovered() {
+                        t.text
+                    } else {
+                        t.text_dim
+                    },
+                );
+                if ai_resp.clicked() {
+                    app.ui.semantic_search = !app.ui.semantic_search;
+                    let q = app.ui.search.clone();
+                    if !q.trim().is_empty() {
+                        let p = if app.ui.semantic_search {
+                            json!({"text": "", "semantic": q})
+                        } else {
+                            json!({"semantic": serde_json::Value::Null, "text": q})
+                        };
+                        if let Err(e) = app.run("library.filter", p) {
+                            app.toast_error(ui.ctx(), e);
+                        } else if app.ui.semantic_search && app.session.selected_ml_model().is_none() {
+                            app.toast_with_action(
+                                ui.ctx(),
+                                crate::i18n::tr("Download the semantic search model to search by description."),
+                                crate::i18n::tr("AI Models…"),
+                                "dialog.aiModels",
+                                json!({}),
+                                8.0,
+                            );
+                        }
                     }
                 }
             }

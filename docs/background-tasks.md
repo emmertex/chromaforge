@@ -75,6 +75,12 @@ guard.detail(&file_name);
     "Stop Waiting…", which shows `text` (translated, names in) and asks first. `activity.list` reports it as
     `stopWarning`, and `activity.cancel` and Quit Anyway still stop it at once. A job that stops between files
     loses nothing already done and needs none.
+- **Pause and settings:** a continuous job the user may want to hold (the face scan, search indexing) calls
+  `guard.set_controls(Some(Controls { paused, pause, resume, settings_tab, settings_section }))`: the engine commands
+  that pause and resume it, and the Settings page with its options. Its row then has a pause button (resume while
+  `paused`) and a gear (`activity:pause:<id>` / `activity:resume:<id>`, `activity:settings:<id>`); `activity.list`
+  reports them as `controls` and `activity.pause {id, paused?}` runs the same commands. Keep the row while paused, with
+  "Paused" as its detail, so resume is there.
 - **Quiet periodic work** shows no row: the auto-import folder listing runs every few seconds through
   `tasks::spawn(.., None, ..)`.
 
@@ -112,7 +118,7 @@ let photo = batch.child("denoise", "AI Denoise"); // the photo in progress, unde
 | Folder metadata save / read | `crates/engine/src/cmd/folder_metadata.rs` | a job that needs the session, so a per-frame pump (`folder.metadataPump`) does a few photos at a time and the row's flag stops it |
 | Model downloads | `crates/engine/src/face_download.rs` | report progress through a `TaskHandle` in shared state |
 | Lightroom catalog import | `crates/ui-egui/src/lightroom_import.rs` | stop being cancellable for a phase that must finish |
-| Face scan | `crates/engine/src/cmd/face_recognize.rs` | a continuous job with no ✕, kept in session state |
+| Face scan | `crates/engine/src/cmd/face_recognize.rs` | a continuous job with no ✕, kept in session state; pause / resume and a gear (`set_controls`), the row kept while paused |
 | Filling spots | `crates/ui-egui/src/render.rs` (`Renderer::track_fills`) | a row held while a render that solves a content-aware fill is out, with no ✕ (`Cancel::No`); solved fills are cached, so it shows for a new fill only |
 | AI Denoise | `crates/engine/src/denoise.rs` (`denoise_track`) | a continuous queue shown as a batch while busy (photos counted since it was last idle), the running photo's tiles as its child; ✕ empties the queue and holds those photos until asked for again |
 | Find Missing Photos | `crates/ui-egui/src/tasks.rs` | a generic background task with a row (`kind: Some(..)`) |
