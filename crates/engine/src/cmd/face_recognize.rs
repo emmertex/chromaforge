@@ -431,7 +431,8 @@ mod imp {
                 return Err(bad(cmd, "the chosen model is not a recognition model"));
             }
         };
-        let tag = format!("{id}@{}", installed.manifest.sha256.as_deref().unwrap_or("unknown"));
+        let mirror = if read_settings(&dir).mirror_average() { crate::faces_index::MIRROR_TAG } else { "" };
+        let tag = format!("{id}@{}{mirror}", installed.manifest.sha256.as_deref().unwrap_or("unknown"));
         // which photos the detector has searched is kept beside the library (or in memory when it is not on disk)
         let scan_path = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("face-scanned.bin"));
         if s.faces.scanned.path() != scan_path.as_deref() {

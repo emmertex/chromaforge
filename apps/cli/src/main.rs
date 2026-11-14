@@ -457,28 +457,37 @@ fn calibrate(args: &[String]) -> Result<(), String> {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 6);
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let pools: Vec<lcc_engine::camera_profiles::Pool> = std::thread::scope(|scope| {
+    let mut pools: Vec<(usize, lcc_engine::camera_profiles::Pool)> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 scope.spawn(|| {
-                    let mut pool = lcc_engine::camera_profiles::Pool::default();
-                    while let Some(path) = files.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    let mut pools = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = files.get(index) else { break };
+                        let mut pool = lcc_engine::camera_profiles::Pool::default();
                         let result = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| pool.add(&bytes));
                         let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         match result {
-                            Ok(Some(model)) => eprintln!("[{n}/{}] {} ({model})", files.len(), path.display()),
+                            Ok(Some(model)) => {
+                                eprintln!("[{n}/{}] {} ({model})", files.len(), path.display());
+                                pools.push((index, pool));
+                            }
                             Ok(None) => eprintln!("[{n}/{}] {}: skipped (no usable camera JPEG or colour)", files.len(), path.display()),
                             Err(e) => eprintln!("[{n}/{}] {}: {e}", files.len(), path.display()),
                         }
                     }
-                    pool
+                    pools
                 })
             })
             .collect();
-        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
     });
+    // The fitting holdout and floating-point sums depend on pair order. Keep parallel decoding, but merge
+    // in the sorted input order rather than worker admission/completion order.
+    pools.sort_by_key(|(index, _)| *index);
     let mut pool = lcc_engine::camera_profiles::Pool::default();
-    for p in pools {
+    for (_, p) in pools {
         pool.merge(p);
     }
     let mut written = 0;
@@ -1038,7 +1047,9 @@ fn render(args: &[String]) -> Result<(), String> {
         lcc_engine::export::write_file(sc, bytes)?;
         eprintln!("{CLI}: wrote {sc}");
     }
-    eprintln!("{CLI}: wrote {output} ({}×{})", e.width, e.height);
+    let limit =
+        e.limit_quality.filter(|q| *q < o.quality).zip(o.limit_kb).map(|(q, kb)| format!(", JPEG quality {q} to fit {kb} KB")).unwrap_or_default();
+    eprintln!("{CLI}: wrote {output} ({}×{}{limit})", e.width, e.height);
     if let Some(photos) = after.run(&[json!({"path": output})], false) {
         if let Some(err) = photos.get("error").and_then(Value::as_str) {
             return Err(format!("render: {output} was written, but {err}"));

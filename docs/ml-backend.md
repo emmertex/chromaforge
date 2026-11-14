@@ -59,7 +59,8 @@ embedding cache store.
 - commands:
   - `ml.status {preference?: auto | cpu}`: reports device status, queue counts, `enabled`, `modelId`, `modelInstalled`,
     `indexedPhotos`, and `unindexedPhotos`;
-  - `ml.enable {enabled: bool}`: enables or pauses background ML indexing;
+  - `ml.enable {enabled: bool}`: enables or pauses background ML indexing; the choice is saved in the models folder's
+    `settings.json` and kept across launches;
   - `ml.models.list`, `ml.models.install`, `ml.models.select`, `ml.models.remove`, `ml.models.download`,
     `ml.models.downloads`, `ml.models.downloadCancel`: manage installed and downloadable ML models behind explicit
     licence acknowledgement;

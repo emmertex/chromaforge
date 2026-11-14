@@ -109,6 +109,9 @@ impl Pace {
 struct MlSettings {
     embedder: Option<String>,
     device: Option<String>,
+    /// Background indexing on or off (`ml.enable`); unset means on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
 }
 
 fn read_settings(dir: &Path) -> MlSettings {
@@ -215,8 +218,10 @@ pub(crate) struct State {
     settings_cache: Option<(PathBuf, MlSettings)>,
     /// Cached installed manifests and active embedder id (`(dir, at, installed, active_id)`).
     models_cache: Option<(PathBuf, web_time::Instant, Vec<ModelManifest>, Option<String>)>,
-    /// Whether background indexing is enabled (`ml.enable`).
+    /// Whether background indexing is enabled (`ml.enable`); read it through `Session::ml_enabled`.
     pub enabled: bool,
+    /// `ml_models_dir` whose saved `MlSettings.enabled` was already adopted.
+    enabled_adopted_dir: Option<PathBuf>,
     /// Set when the user clicks ✕ on the `mlIndex` activity row; cleared on library change, import, or `ml.index`.
     pub paused_by_user: bool,
     /// Bumped whenever the library or active model changes so stale in-flight results are ignored.
@@ -257,6 +262,7 @@ impl Default for State {
             settings_cache: None,
             models_cache: None,
             enabled: true,
+            enabled_adopted_dir: None,
             paused_by_user: false,
             epoch: 1,
             pace: Arc::new(AtomicU8::new(Pace::Normal as u8)),
@@ -625,6 +631,19 @@ impl Session {
         self.ml.query_queue.get_or_insert_with(|| Queue::new(Config { preference, ..Config::default() }, probe, None))
     }
 
+    /// Whether background indexing is on, adopting the choice saved in the models folder once per folder (#1133).
+    pub(crate) fn ml_enabled(&mut self) -> bool {
+        if let Some(dir) = self.ml_models_dir.clone()
+            && self.ml.enabled_adopted_dir.as_deref() != Some(dir.as_path())
+        {
+            if let Some(saved) = self.ml.cached_settings(&dir).enabled {
+                self.ml.enabled = saved;
+            }
+            self.ml.enabled_adopted_dir = Some(dir);
+        }
+        self.ml.enabled
+    }
+
     /// `ml.status {preference?, device?}`.
     pub(crate) fn ml_status(&mut self, p: &Value) -> crate::Result<Value> {
         // Adopt saved device preference from MlSettings once per models dir if unset in memory and not pinned by environment.
@@ -809,7 +828,7 @@ impl Session {
 
         let device_choice = self.ml.chosen_device();
         if let Some(obj) = base.as_object_mut() {
-            obj.insert("enabled".into(), Value::Bool(self.ml.enabled));
+            obj.insert("enabled".into(), Value::Bool(self.ml_enabled()));
             obj.insert("modelId".into(), model_id.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null));
             obj.insert("modelInstalled".into(), Value::Bool(model_id.is_some()));
             obj.insert("indexedPhotos".into(), json!(indexed));
@@ -831,7 +850,13 @@ impl Session {
     pub(crate) fn ml_enable(&mut self, p: &Value) -> crate::Result<Value> {
         const C: &str = "ml.enable";
         let enabled = p.get("enabled").and_then(Value::as_bool).ok_or_else(|| bad(C, "missing boolean `enabled`"))?;
+        self.ml_enabled();
         self.ml.enabled = enabled;
+        if let Some(dir) = self.ml_models_dir.clone() {
+            let mut settings = self.ml.cached_settings(&dir);
+            settings.enabled = Some(enabled);
+            self.ml.save_settings(&dir, settings).map_err(|e| bad(C, e))?;
+        }
         if enabled {
             self.ml.paused_by_user = false;
         } else if let Some(q) = &self.ml.queue {
@@ -873,7 +898,7 @@ impl Session {
         }
         Ok(json!({
             "dir": self.ml_models_dir.as_ref().map(|d| d.display().to_string()),
-            "enabled": self.ml.enabled,
+            "enabled": self.ml_enabled(),
             "runtime": cfg!(not(target_arch = "wasm32")),
             "models": models,
             "selectedEmbedder": selected,
@@ -1416,7 +1441,7 @@ impl Session {
         let (added, _) = self.drain_ml_results();
 
         let mut ready = false;
-        if self.ml.enabled
+        if self.ml_enabled()
             && !self.ml.paused_by_user
             && let Ok(enc) = self.ensure_ml_encoder(false)
         {
@@ -1594,7 +1619,7 @@ impl Session {
             return Ok(Vec::new());
         }
         let (enc, tag, qvec) = self.encode_query_vec(cmd_name, &text)?;
-        if self.ml.enabled && !self.ml.paused_by_user {
+        if self.ml_enabled() && !self.ml.paused_by_user {
             let _ = self.queue_ml_photos(&enc, None, Priority::Background);
         }
         let allowed: HashSet<u64> = self.catalog.photos().filter(|ph| ph.in_library()).map(|ph| ph.id.0).collect();
@@ -1677,7 +1702,7 @@ impl Session {
 
         let (enc, tag, qvec) = self.encode_query_vec(C, &text)?;
         let model_id = enc.manifest().id.clone();
-        if filter_grid && self.ml.enabled && !self.ml.paused_by_user {
+        if filter_grid && self.ml_enabled() && !self.ml.paused_by_user {
             let _ = self.queue_ml_photos(&enc, None, Priority::Background);
         }
         let hits = self
@@ -1739,7 +1764,7 @@ impl Session {
         Ok(json!({
             "active": false,
             "ready": false,
-            "enabled": self.ml.enabled,
+            "enabled": self.ml_enabled(),
             "paused": false,
             "added": 0,
             "indexedPhotos": 0,

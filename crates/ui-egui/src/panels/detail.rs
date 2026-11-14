@@ -3492,7 +3492,9 @@ fn crop_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
     let d = &DevelopSettings { crop: lcc_develop::Crop { geometry: shown, ..d.crop }, ..d.clone() };
     let quad = frame_crop_quad(d, frame);
     let pts: Vec<Pos2> = quad.iter().map(|q| map.screen(*q)).collect();
-    let p = ui.painter();
+    // zoomed in, the box reaches past the canvas: it is drawn only on it, never over the
+    // filmstrip or the panels (#1156)
+    let p = &ui.painter_at(app.canvas_rect.unwrap_or(map.rect));
     // darken outside the crop (the box's corners in screen order: a flipped photo shows its
     // top-left corner elsewhere)
     let quad = flipped_corners(&pts, frame.flip_h, frame.flip_v);

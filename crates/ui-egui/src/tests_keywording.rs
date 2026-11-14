@@ -226,6 +226,19 @@ fn containing_keywords_view_lists_parents_too() {
     assert!(!has(&h, "keywordChip:beach"), "the chips give way");
 }
 
+// A chip says the keyword's own name, not the path of the keywords containing it (those are the
+// "& Containing" view's); two chips with the same name say their whole paths (issue #1132).
+#[test]
+fn chips_name_the_keyword_not_its_path() {
+    let (mut h, ids) = two_selected();
+    ask(&mut h, "engine.execute", json!({"command": "photo.setMeta", "params": {"ids": ids, "addKeywords": ["Animals|Mammals|Canids|Dog"]}}));
+    let dog = rect(&h, "keywordChip:Animals|Mammals|Canids|Dog").width();
+    assert!(dog < rect(&h, "keywordChip:Weddings").width(), "\"Dog\" is shorter than \"Weddings\": {dog}");
+    ask(&mut h, "engine.execute", json!({"command": "photo.setMeta", "params": {"ids": ids, "addKeywords": ["Trips|Dog"]}}));
+    let dog = rect(&h, "keywordChip:Animals|Mammals|Canids|Dog").width();
+    assert!(dog > rect(&h, "keywordChip:Weddings").width(), "two Dogs: each says its path: {dog}");
+}
+
 fn rect(h: &Headless, id: &str) -> egui::Rect {
     h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("no widget {id}"))
 }
@@ -256,7 +269,7 @@ fn grouped_keywords_share_a_line_naming_their_parent() {
     assert_eq!(
         count(&h, "keywordGroup:"),
         0,
-        "whole names unless asked: {:?}",
+        "no groups unless asked: {:?}",
         h.app.widgets.iter().filter(|(w, _)| w.starts_with("keywordGroup")).collect::<Vec<_>>()
     );
     let whole = rect(&h, "keywordChip:Places|Italy|Rome").width();
@@ -267,7 +280,7 @@ fn grouped_keywords_share_a_line_naming_their_parent() {
     let (rome, venice) = (rect(&h, "keywordChip:Places|Italy|Rome"), rect(&h, "keywordChip:Places|Italy|Venice"));
     assert!(rome.top() >= heading.bottom(), "under its heading: {rome:?} {heading:?}");
     assert_eq!(rome.top(), venice.top(), "side by side");
-    assert!(rome.width() < whole, "the chip says only “Rome”: {} < {whole}", rome.width());
+    assert!(rome.width() <= whole, "the chip says only “Rome”, as the flat box does: {} <= {whole}", rome.width());
     // a keyword that shares nothing has no heading and comes first
     assert!(!has(&h, "keywordGroup:Transport") && !has(&h, "keywordGroup:"), "one keyword is no group");
     assert!(rect(&h, "keywordChip:sea").top() < heading.top());

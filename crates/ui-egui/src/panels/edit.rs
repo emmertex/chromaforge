@@ -205,6 +205,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         for c in ["light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks"] {
             control(app, ui, d, c, true);
         }
+        contrast_mode_row(app, ui, d);
         ui.add_space(6.0);
         sub_title(ui, crate::i18n::tr("Presence"));
         // video takes no local-contrast effects
@@ -2662,6 +2663,45 @@ fn hdr_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
         }
     });
     control(app, ui, d, "hdr.maxEv", true);
+}
+
+const CONTRAST_MODES: [(lcc_develop::ContrastMode, &str, &str); 2] =
+    [(lcc_develop::ContrastMode::Luminance, "Luminance", "luminance"), (lcc_develop::ContrastMode::Rgb, "RGB", "rgb")];
+
+/// The Basic ▸ Tone switch between luminance-only and per-channel RGB Contrast and Blacks (#839).
+fn contrast_mode_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let t = Tokens::get(ui.ctx());
+    let items: [(&str, &str); 2] = CONTRAST_MODES.map(|(_, l, k)| (l, k));
+    let active = CONTRAST_MODES.iter().position(|(m, _, _)| *m == d.light.contrast_mode);
+    let mut chosen = None;
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 16, top: 4, bottom: 2 }).show(ui, |ui| {
+        let full_w = ui.available_width();
+        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(full_w, 24.0), egui::Sense::hover());
+        let label_w = 90.0f32.min(full_w * 0.4);
+        let label_rect = egui::Rect::from_min_size(row_rect.min, egui::vec2(label_w, row_rect.height()));
+        let seg_rect = egui::Rect::from_min_max(
+            egui::pos2(row_rect.min.x + label_w + 8.0, row_rect.min.y),
+            row_rect.max,
+        );
+        let resp = ui.interact(label_rect, ui.id().with("contrast_mode_label"), egui::Sense::hover());
+        resp.on_hover_text(crate::i18n::tr(
+            "Luminance adjusts tonal brightness while keeping linear channel ratios; RGB applies Contrast and Blacks across the Red, Green and Blue channels like an RGB tone curve",
+        ));
+        ui.painter().text(
+            egui::pos2(label_rect.left(), label_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            crate::i18n::tr("Contrast Mode"),
+            t.font(11.5),
+            t.text_dim,
+        );
+        let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(seg_rect));
+        chosen = crate::widgets::segmented(&mut child_ui, "contrastMode", &items, active, 2);
+    });
+    if let Some((mode, _, _)) = chosen.and_then(|i| CONTRAST_MODES.get(i)).copied()
+        && mode != d.light.contrast_mode
+    {
+        let _ = app.run("develop.merge", json!({"settings": {"light": {"contrast_mode": mode}}, "label": "Contrast Mode"}));
+    }
 }
 
 // ------------------------------------------------------------------------------ colour grading

@@ -589,6 +589,10 @@ pub struct AppSettings {
     pub film_names: bool,
     /// Filmstrip: rating / flag / edited badges on the thumbnails.
     pub film_badges: bool,
+    /// Sliders that opt in reach past Lightroom's range (Settings ▸ Interface ▸ Sliders; only the
+    /// mask Hue so far: ±180° instead of about ±34°). Off: the standard range; values already past
+    /// it are kept, never rewritten.
+    pub expanded_sliders: bool,
     /// Grid: when to show the rating / flag / edited badges.
     pub grid_badges: GridBadges,
     /// How far a mouse-wheel notch scrolls the grid and filmstrip, times [`crate::theme::WHEEL_STRIP_SHARE`]
@@ -798,6 +802,7 @@ impl Default for AppSettings {
             machine_test: None,
             film_names: true,
             film_badges: true,
+            expanded_sliders: false,
             grid_badges: GridBadges::Auto,
             wheel_scroll_speed: 1.0,
             lock_zoom: true,
@@ -1593,6 +1598,9 @@ pub struct UiState {
     pub concept_pick: bool,
     /// The Roles window (who has which role, and where) is open.
     pub roles_window: bool,
+    /// Show the Who / Set Role / Roles row under a selected People mask component.
+    #[serde(default)]
+    pub show_people_who: bool,
     /// Close the window on the next frame (File → Quit).
     #[serde(skip)]
     pub quit: bool,
@@ -2023,8 +2031,8 @@ pub enum Dialog {
         params: serde_json::Value,
         key: String,
     },
-    /// Edit Capture Time: `mode` "set" (`time`; the others shift along), "shift" (by `days`,
-    /// `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
+    /// Edit Capture Time: `mode` "set" (`time`; the others shift along, or with `each` every photo gets
+    /// `time`), "shift" (by `days`, `hours`, `minutes`) or "zone" (time-zone shift by `zone` hours).
     CaptureTime {
         mode: String,
         time: String,
@@ -2032,6 +2040,10 @@ pub enum Dialog {
         hours: i32,
         minutes: i32,
         zone: f32,
+        /// "set" with several photos: every one gets `time` instead of moving by the active photo's change
+        /// (issue #4205).
+        #[serde(default)]
+        each: bool,
     },
     /// The import review (File → Import Photos…).
     Import {
@@ -2642,6 +2654,7 @@ impl Default for UiState {
             sam_downloading: false,
             renaming_component: None,
             roles_window: false,
+            show_people_who: false,
             role_draft: None,
             people_pick: None,
             people_asked: None,
