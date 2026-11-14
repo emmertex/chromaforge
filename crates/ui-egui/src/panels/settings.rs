@@ -23,7 +23,7 @@ use crate::theme::Tokens;
 use crate::widgets::register;
 
 /// Sections `app.settings {section}` can open, with their tab.
-pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import")];
+pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import"), ("semanticSearch", "ai")];
 
 /// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
 /// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
@@ -2081,6 +2081,15 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         choices(ui, "settingsInfo", &[(I::Off, "Off"), (I::Basic, "Info 1"), (I::Exposure, "Info 2")], &mut app.ui.info_overlay);
     });
     hint(ui, t, crate::i18n::tr("View → View Options chooses the lines Info 1 and Info 2 show."));
+    check(ui, "settings.eyeFocus", &mut app.ui.eye_focus, "Show the eye focus strip");
+    check(ui, "settings.eyeFocusImport", &mut app.ui.eye_focus_import, "Show the eye focus strip while browsing a folder");
+    hint(
+        ui,
+        t,
+        crate::i18n::tr(
+            "Each person's sharper eye at 100 % across the top of the loupe. The quick settings bar (point at the space beside the module names) switches it too.",
+        ),
+    );
     // the overlay that reports every change (and the control surfaces' readout)
     super::surface_osd::settings_section(app, ui, t);
 }

@@ -24,6 +24,7 @@ pub mod folders;
 pub mod genfill;
 pub mod grid;
 pub mod histogram;
+pub mod index_controls;
 pub mod keymap;
 pub mod keyword_list;
 pub mod keywording;
