@@ -133,6 +133,7 @@ pub const FIELDS: &[(&str, &str, Kind)] = &[
     ("cropped", "Cropped", Kind::Bool),
     ("treatment", "Treatment", Kind::Choice(&[("color", "In Color"), ("monochrome", "Black & White")])),
     ("processVersion", "Process Version", Kind::Number),
+    ("vignettingReference", "Vignetting Reference", Kind::Choice(&[("reference", "Reference"), ("none", "Not a Reference")])),
     // Assisted Culling
     ("sharpness", "Focus (assisted culling)", Kind::Number),
     ("bestOfGroup", "Best of Similar Shots", Kind::Bool),
@@ -157,7 +158,7 @@ pub const FIELD_GROUPS: &[(&str, &[&str])] = &[
     ("Camera Info", &["camera", "lens", "focalLength", "aperture", "shutterSpeed", "iso", "flash", "exposureBias", "cameraSerial"]),
     ("Location", &["location", "sublocation", "city", "state", "country", "countryCode", "hasGps"]),
     ("Size", &["longEdge", "shortEdge", "width", "height", "aspect", "megapixels"]),
-    ("Develop", &["edited", "cropped", "treatment", "processVersion"]),
+    ("Develop", &["edited", "cropped", "treatment", "processVersion", "vignettingReference"]),
     ("Assisted Culling", &["sharpness", "bestOfGroup", "clipped", "eyesOpen", "aesthetic", "cullScore", "suggestedStars"]),
 ];
 
@@ -1123,6 +1124,7 @@ impl Rule {
                 num_op(op, Some(w * h / 1e6), value)
             }
             "processVersion" => num_op(op, Some(f64::from(p.develop.process.0)), value),
+            "vignettingReference" => crate::query::vignetting_reference_is(cat, p.id, &want) == (op == "is"),
             "sharpness" => num_op(op, p.analysis.map(|a| a.sharpness as f64), value),
             "bestOfGroup" => yes(p.analysis.is_some_and(|a| a.best || a.group.is_none())),
             "clipped" => num_op(op, p.analysis.map(|a| a.clipped as f64), value),

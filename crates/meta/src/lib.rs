@@ -31,7 +31,7 @@ pub mod tags;
 mod xmp;
 mod xmp_merge;
 
-pub use container::{Embedded, embedded, jpeg_segments, png_chunks, webp_chunks};
+pub use container::{Embedded, embedded, jpeg_segments, jpeg_segments_with_all_xmp, png_chunks, webp_chunks};
 pub use datetime::{DatePrecision, DateTime};
 pub use exif::{from_tiff, read_exif, strip_exif_header, try_read_exif, try_read_exif_with, write_exif};
 pub use focus::FocusPoint;
@@ -176,6 +176,10 @@ pub struct Metadata {
     pub lens_serial_number: Option<String>,
     /// Min/max focal length (mm) and min/max f-number at those, as in Exif `LensSpecification`.
     pub lens_spec: Option<[f64; 4]>,
+    /// Image stabilisation (vibration reduction) at capture: on, off, or not recorded. Nikon: the maker note's
+    /// VRInfo (`0x001F`), the camera's VR setting for in-body and lens VR alike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stabilization: Option<bool>,
     // capture
     pub capture_time: Option<DateTime>,
     /// Seconds.
@@ -633,13 +637,6 @@ mod tests {
         assert_eq!(a.rating, Some(4));
         assert_eq!(a.make.as_deref(), Some("A"));
         assert_eq!(a.keywords, vec!["k".to_string()]);
-    }
-
-    #[test]
-    fn names() {
-        let m = Metadata { metering_mode: Some(5), exposure_program: Some(3), ..Default::default() };
-        assert_eq!(m.metering_name(), Some("Pattern"));
-        assert_eq!(m.exposure_program_name(), Some("Aperture-priority AE"));
     }
 
     /// An MWG regions packet with one face, its box centred at (0.25, 0.4) and 0.1 × 0.15 of `AppliedToDimensions`

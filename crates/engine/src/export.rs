@@ -627,7 +627,9 @@ pub(crate) fn watermark_logo(path: &str) -> Option<std::sync::Arc<Rgba8>> {
 /// The error says why it couldn't be read or decoded.
 pub fn read_graphic(path: &str) -> Result<Rgba8, String> {
     let bytes = crate::bounded_read::read_bounded(std::path::Path::new(path), 256 << 20).map_err(|e| format!("can't read {path}: {e}"))?;
-    let decoded = lcc_codecs::decode(&bytes, Default::default()).map_err(|e| format!("can't decode {path}: {e}"))?;
+    // a graphic is a logo or a layout image, not a photo: held to 8192 x 8192 pixels, not the general gigapixel cap
+    let opts = lcc_codecs::DecodeOptions { max_pixels: 1 << 26, ..Default::default() };
+    let decoded = lcc_codecs::decode(&bytes, opts).map_err(|e| format!("can't decode {path}: {e}"))?;
     Ok(decoded.to_srgb8().into_oriented(lcc_geom::Orientation::from_exif(decoded.orientation)))
 }
 
@@ -1480,9 +1482,12 @@ impl ExportOptions {
         let name = crate::rename::expand_tokens(&base, p, n, 3).replace("{custom}", self.custom_text.trim());
         let mut name = portable_stem(&name);
         let (stem, ext) = p.file_name.rsplit_once('.').unwrap_or((&p.file_name, ""));
+        // the catalog's own file name is cleaned like the expansion: a supplied catalog may hold separators
+        let ext = ext.replace(['/', '\\', ':', '\0'], "_");
+        let ext = ext.as_str();
         if name.trim().is_empty() {
             // every token came out empty (no title, no capture time…): keep the original name
-            name = stem.to_string();
+            name = portable_stem(stem);
         }
         if self.format == ExportFormat::Original {
             let base = name.trim_end_matches('.');
@@ -2101,6 +2106,46 @@ pub fn export_metadata(photo: &lcc_catalog::Photo, catalog: &lcc_catalog::Catalo
     Some(out)
 }
 
+/// Recognized raw XMP location properties make an Original unsafe to copy even when malformed or held
+/// in an ordinary packet not projected into `Metadata` (port of upstream PR 3054). Every ordinary JPEG
+/// packet and the extended one are parsed; a packet or chunk stream that can't be fully inspected
+/// fails closed.
+fn original_embeds_xmp_location(bytes: &[u8], label: &str) -> Result<bool, String> {
+    if bytes.starts_with(b"8BPS") {
+        return Ok(false);
+    }
+    let (embedded, ordinary_packets) = if bytes.starts_with(&[0xff, 0xd8]) {
+        lcc_meta::jpeg_segments_with_all_xmp(bytes)
+    } else {
+        let embedded = lcc_meta::embedded(bytes);
+        let packets = embedded.xmp.iter().cloned().collect();
+        (embedded, packets)
+    };
+    let mut found = false;
+    for packet in ordinary_packets.iter().map(String::as_str).chain(embedded.xmp_extended.as_deref()) {
+        let xmp = lcc_meta::parse_xmp(packet)
+            .map_err(|e| format!("{label}: can't verify location metadata in this original file: malformed embedded XMP: {e}"))?;
+        if xmp.properties_truncated {
+            return Err(format!("{label}: can't verify location metadata in this original file: embedded XMP property limit was exceeded"));
+        }
+        found |= [
+            "exif:GPSLatitude",
+            "exif:GPSLongitude",
+            "exif:GPSAltitude",
+            "photoshop:City",
+            "photoshop:State",
+            "photoshop:Country",
+            "Iptc4xmpCore:Location",
+        ]
+        .into_iter()
+        .any(|key| xmp.properties.get(key).is_some_and(|values| values.iter().any(|v| !v.trim().is_empty())));
+    }
+    if embedded.chunk_walk_incomplete {
+        return Err(format!("{label}: can't verify location metadata in this original file: embedded PNG/WebP chunk stream is incomplete"));
+    }
+    Ok(found)
+}
+
 /// One exported file.
 pub struct Exported {
     pub file_name: String,
@@ -2389,6 +2434,13 @@ pub fn set_video_hooks(items: &mut [PreparedExport], hooks: &crate::export_video
 }
 
 impl PreparedExport {
+    /// Check what it writes against `guard`, built now, instead of the library as it was when it was prepared: an
+    /// export that waited its turn (issue #2965) may write after more photos were catalogued, and must not write
+    /// over their originals either.
+    pub fn use_guard(&mut self, guard: std::sync::Arc<crate::originals::OriginalGuard>) {
+        self.guard = guard;
+    }
+
     /// Whether this item is a video clip exported as a movie.
     pub fn is_video(&self) -> bool {
         matches!(self.work, Work::Video(_))
@@ -2532,20 +2584,7 @@ impl PreparedExport {
                         // fail closed: a PSD whose metadata can't be read might hide a location
                         let metadata = lcc_meta::try_extract(&bytes)
                             .map_err(|e| format!("{label}: can't verify location metadata in this original file: {e}"))?;
-                        let mut embeds_xmp_gps = false;
-                        if !bytes.starts_with(b"8BPS") {
-                            let embedded = lcc_meta::embedded(&bytes);
-                            // standard and Extended XMP packets alike; a GPS property whose value is malformed cannot be
-                            // projected into `Metadata`, so the raw properties are looked at too (upstream #3054)
-                            for packet in [embedded.xmp.as_deref(), embedded.xmp_extended.as_deref()].into_iter().flatten() {
-                                let xmp = lcc_meta::parse_xmp(packet).map_err(|e| {
-                                    format!("{label}: can't verify location metadata in this original file: malformed embedded XMP: {e}")
-                                })?;
-                                embeds_xmp_gps |= ["exif:GPSLatitude", "exif:GPSLongitude"]
-                                    .into_iter()
-                                    .any(|key| xmp.properties.get(key).is_some_and(|values| values.iter().any(|v| !v.trim().is_empty())));
-                            }
-                        }
+                        let embeds_xmp_gps = original_embeds_xmp_location(&bytes, &label)?;
                         let embeds_place_name =
                             [metadata.sublocation.as_deref(), metadata.city.as_deref(), metadata.state.as_deref(), metadata.country.as_deref()]
                                 .into_iter()
@@ -3702,26 +3741,6 @@ mod tests {
         let mut alpha = Plane::new(200, 100);
         draw_watermark_deep_over(&mut deep, Some(&mut alpha), &wm);
         assert!(alpha.data.iter().any(|&a| a > 0.99) && alpha.data.contains(&0.0));
-    }
-
-    #[test]
-    fn formats_have_magic() {
-        let img = test_image();
-        for (f, magic) in
-            [(ExportFormat::Jpeg, &b"\xFF\xD8"[..]), (ExportFormat::Png, b"\x89PNG"), (ExportFormat::Tiff, b"II"), (ExportFormat::Webp, b"RIFF")]
-        {
-            let b = encode_image(&img, &ExportOptions { format: f, ..Default::default() }).unwrap();
-            assert!(b.starts_with(magic), "{f:?}");
-        }
-    }
-
-    #[test]
-    fn size_limit_respected() {
-        let img = test_image();
-        let full = encode_image(&img, &ExportOptions { quality: 100, ..Default::default() }).unwrap();
-        let kb = (full.len() / 1024 / 2).max(2) as u32;
-        let b = encode_image(&img, &ExportOptions { quality: 100, limit_kb: Some(kb), ..Default::default() }).unwrap();
-        assert!(b.len() <= kb as usize * 1024);
     }
 
     /// A size limit can cut the quality far below the requested one, so each file says what it

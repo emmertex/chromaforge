@@ -21,6 +21,22 @@ fn tone_apply(y: f32) -> f32 {
     return v;
 }
 
+fn rgb_contrast_apply(v: f32, base: u32, zero: f32, peak: f32) -> f32 {
+    if (v <= 0.0) {
+        return zero;
+    }
+    if (v >= peak) {
+        return aux[base + RGB_CONTRAST_N - 1u] + (v - peak);
+    }
+    let u = sqrt(v / peak);
+    let f = u * f32(RGB_CONTRAST_N - 1u);
+    let i = min(u32(f), RGB_CONTRAST_N - 2u);
+    let t = f - f32(i);
+    let a = aux[base + i];
+    let b = aux[base + i + 1u];
+    return a + (b - a) * t;
+}
+
 // The camera chroma curve follows the tone LUT in `aux` (`ToneMap::chroma_scale`).
 fn chroma_scale(o: f32) -> f32 {
     let f = clamp(o, 0.0, 1.0) * f32(CHROMA_N - 1u);
@@ -961,7 +977,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // --- tone map on luminance, highlight desaturation
     let yl = lum2020(c);
-    let o = tone_apply(yl);
+    var o = tone_apply(yl);
     var d = vec3<f32>(0.0);
     if (yl > 1e-9) {
         d = c * o / yl;
@@ -971,6 +987,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         d = vec3<f32>(o) + (d - vec3<f32>(o)) * k;
     }
     let peak = pf(F_PEAK);
+    if (pu(F_RGB_CONTRAST) != 0u) {
+        let rc_base = pu(F_RGB_CONTRAST_OFF);
+        let rc_zero = pf(F_RGB_CONTRAST_ZERO);
+        d = vec3<f32>(
+            rgb_contrast_apply(d.x, rc_base, rc_zero, peak),
+            rgb_contrast_apply(d.y, rc_base, rc_zero, peak),
+            rgb_contrast_apply(d.z, rc_base, rc_zero, peak),
+        );
+        o = rgb_contrast_apply(o, rc_base, rc_zero, peak);
+    }
     let hdr = peak > 1.0;
     let deep = pu(F_DEEP) != 0u;
     let mx = max(d.x, max(d.y, d.z));

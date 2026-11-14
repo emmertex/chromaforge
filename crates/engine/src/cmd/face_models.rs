@@ -33,6 +33,9 @@ pub(super) struct FaceSettings {
     /// How many of a person's best matching faces a match is based on (`None`: [`lcc_faces::matching::TOP_FACES`]).
     #[serde(deserialize_with = "lenient_count", skip_serializing_if = "Option::is_none")]
     pub(super) top_faces: Option<usize>,
+    /// Scan without averaging each face with its mirror image (half the recognition work, slightly fewer matches).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) no_mirror: bool,
 }
 
 /// A saved count that is not a whole number (a hand-edited `-1`, `"3"`) is read as no choice: the file is not taken for a
@@ -42,6 +45,11 @@ fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
 }
 
 impl FaceSettings {
+    /// Whether a scan averages each face with its mirror image (the default).
+    pub(super) fn mirror_average(&self) -> bool {
+        !self.no_mirror
+    }
+
     /// How many of a person's best matching faces a match is based on, within what matching accepts.
     pub(super) fn top_faces(&self) -> usize {
         self.top_faces.unwrap_or(lcc_faces::matching::TOP_FACES).clamp(1, lcc_faces::matching::MAX_TOP_FACES)
@@ -97,10 +105,20 @@ fn matching(s: &mut Session, p: &Value) -> Result<Value> {
             s.faces.top_seen = None;
         }
     }
+    if let Some(v) = p.get("mirrorAverage") {
+        st.no_mirror = !v.as_bool().ok_or_else(|| bad(C, "`mirrorAverage` is true or false"))?;
+        write_settings(&dir, &st)?;
+        // the next scan looks again at once; faces embedded the other way are embedded again
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            s.faces.checked = None;
+        }
+    }
     Ok(json!({
         "topFaces": st.top_faces(),
         "topFacesDefault": lcc_faces::matching::TOP_FACES,
         "topFacesMax": lcc_faces::matching::MAX_TOP_FACES,
+        "mirrorAverage": st.mirror_average(),
     }))
 }
 
@@ -266,6 +284,8 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
         "topFaces": settings.top_faces(),
         "topFacesDefault": lcc_faces::matching::TOP_FACES,
         "topFacesMax": lcc_faces::matching::MAX_TOP_FACES,
+        // whether a scan averages each face with its mirror image (`faces.matching`)
+        "mirrorAverage": settings.mirror_average(),
         // where the models run: {cpuOnly, detection, recognition} as `faces.gpu` gives it
         "gpu": super::face_detect::gpu_json(s),
         // Native builds always have the pure-Rust runner; model files/background scanning remain native-only.
@@ -602,6 +622,6 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(query "faces.models.remove", "Remove Face Model", [], None, "{id}: delete an installed model", always, remove),
         cmd!(query "faces.models.select", "Choose Face Recognition Model", [], None, "{id: installed recogniser | null}", always, select),
         cmd!(query "faces.enable", "Face Recognition On/Off", [], None, "{enabled?: bool} (toggles when omitted)", always, enable),
-        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null} → {topFaces, topFacesDefault, topFacesMax}: how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have", always, matching),
+        cmd!(query "faces.matching", "Face Matching", [], None, "{topFaces?: 1..8 | null, mirrorAverage?: bool} → {topFaces, topFacesDefault, topFacesMax, mirrorAverage}: `mirrorAverage` (default true) makes a scan average each face with its mirror image, which matches slightly more often and takes twice as long to scan (faces embedded the other way are embedded again when it changes). `topFaces`: how many of a person's best matching faces a suggestion's score is the mean of (Settings ▸ Faces; null goes back to the default). More faces make two odd photos of someone (blurred, in profile) less able to carry a stranger. Only the scores of people with more faces than the count before can fall: a person with fewer faces is scored on the ones they have", always, matching),
     ]
 }

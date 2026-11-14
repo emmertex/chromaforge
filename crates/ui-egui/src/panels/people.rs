@@ -65,7 +65,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let now = ui.input(|i| i.time);
     let thumb = app.ui.thumb_size;
-    let people = app.caches.people(&app.session.catalog, &app.session.filter);
+    // what the view shows: its source (folder, collection, Missing Photos…) and the filter bar (issue #1131)
+    let scope = app.session.people_filter();
+    let people = app.caches.people(&app.session.catalog, &scope);
     // the search box, at the right of the header: the cards below keep only the names that hold what is typed
     // (case aside); emptied, every person is back
     let query = app.ui.people_search.trim().to_lowercase();

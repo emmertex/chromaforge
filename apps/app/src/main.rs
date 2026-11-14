@@ -277,7 +277,15 @@ fn gpu_lost_marker_path() -> Option<std::path::PathBuf> {
 /// Why the GPU was lost, when the device failed in this process (a driver reset, a hang, the
 /// Windows watchdog), even if a new device replaced it since: `None` when it never failed.
 fn gpu_lost_reason() -> Option<String> {
-    lcc_engine::gpu::unavailable_reason().and_then(|r| r.strip_prefix("stopped after a GPU failure: ").map(str::to_string))
+    lost_reason_from(lcc_engine::gpu::last_loss(), lcc_engine::gpu::unavailable_reason())
+}
+
+/// [`gpu_lost_reason`] from the session's latest device failure (`last_loss`, kept after a new device
+/// replaced it) and why renders don't use the GPU now (`unavailable`). A first loss reads "paused after a
+/// GPU failure, restarting the graphics card: …" while the replacement is pending, so the reason comes
+/// from `last_loss`; "stopped after a GPU failure: …" also covers a device marked broken without a loss.
+fn lost_reason_from(last_loss: Option<String>, unavailable: Option<String>) -> Option<String> {
+    last_loss.filter(|r| !r.trim().is_empty()).or_else(|| unavailable?.strip_prefix("stopped after a GPU failure: ").map(str::to_string))
 }
 
 /// Record that the app stopped after the GPU was lost, for the next launch.
@@ -2152,6 +2160,35 @@ mod tests {
         assert!(!m.exists());
         assert_eq!(gpu_crash_check_at(Some(m.clone()), false), None);
         lcc_engine::gpu::backend::set_init_marker(None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A first GPU loss: the device is waiting to be replaced, so the reason reads "paused after a GPU
+    /// failure, …", not "stopped after …". The window's renderer panicked on the lost device all the same
+    /// (two crashes on an AMD card under Vulkan), and the stop must still be recorded so the next start
+    /// renders on the CPU. Only "stopped after" counted, and no marker was written.
+    #[test]
+    fn a_first_gpu_loss_is_recorded_while_its_replacement_is_pending() {
+        let lost = "device lost (Unknown): Unexpected error variant (driver implementation is at fault)";
+        let paused = format!("paused after a GPU failure, restarting the graphics card: {lost}");
+        assert_eq!(lost_reason_from(Some(lost.into()), Some(paused)).as_deref(), Some(lost));
+        // the new device came up before the window stopped: the loss is still this session's
+        assert_eq!(lost_reason_from(Some(lost.into()), None).as_deref(), Some(lost));
+        // a device marked broken without a loss record, after the recoveries ran out
+        assert_eq!(lost_reason_from(None, Some(format!("stopped after a GPU failure: {lost}"))).as_deref(), Some(lost));
+        // no failure: a panic for another reason turns nothing off
+        assert_eq!(lost_reason_from(None, Some("disabled by the GPU rendering preference (app.gpu)".into())), None);
+        assert_eq!(lost_reason_from(None, None), None);
+        assert_eq!(lost_reason_from(Some("  ".into()), None), None);
+        // and what the stop then writes: the next start says why and renders on the CPU
+        let d = dir("gpu-lost-paused");
+        let m = d.join("gpu-lost.marker");
+        let reason = lost_reason_from(Some(lost.into()), Some(format!("paused after a GPU failure, restarting the graphics card: {lost}")));
+        if let Some(r) = &reason {
+            record_gpu_lost(Some(&m), r);
+        }
+        let notice = gpu_lost_check_at(Some(&m), false).unwrap_or_default();
+        assert!(notice.contains("driver implementation is at fault") && notice.contains("GPU rendering is now off"), "{notice}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

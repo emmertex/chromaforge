@@ -653,6 +653,28 @@ impl Default for WhiteBalance {
     }
 }
 
+/// How the Contrast and Blacks sliders act on colour (`Light::contrast_mode`, issue #839):
+/// `Luminance` scales all three RGB channels by the luminance tone ratio (preserving linear colour ratios
+/// and saturation); `Rgb` applies Contrast and Blacks per RGB channel like an RGB tone curve (deepening
+/// shadow contrast and saturation, matching the classic per-channel curve look).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContrastMode {
+    #[default]
+    Luminance,
+    Rgb,
+}
+
+impl ContrastMode {
+    pub const fn is_default(&self) -> bool {
+        matches!(self, Self::Luminance)
+    }
+
+    pub const fn is_rgb(self) -> bool {
+        matches!(self, Self::Rgb)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Light {
@@ -662,6 +684,9 @@ pub struct Light {
     pub shadows: f64,
     pub whites: f64,
     pub blacks: f64,
+    /// Mode for Contrast and Blacks: `Luminance` (default) or `Rgb` (issue #839).
+    #[serde(skip_serializing_if = "ContrastMode::is_default")]
+    pub contrast_mode: ContrastMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1195,6 +1220,19 @@ pub struct Optics {
     /// written to XMP.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lens: Option<ChosenLens>,
+    /// The flat-field map (Capture One's LCC "Uniform Light", [`crate::vignetting_calibration`]) that evens out the lens's
+    /// fall-off as measured from a reference shot, whatever `lens_profile` says: its id; the catalog holds the map.
+    /// Not written while there is none, so settings without one keep their JSON and `hash64`; anything but an id
+    /// reads as none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub vignetting_calibration: Option<crate::VignettingMapId>,
+    /// How much of the map's correction applies, % (0 to 120). Not written at the default (100).
+    #[serde(skip_serializing_if = "is_default_vignetting_calibration_amount")]
+    pub vignetting_calibration_amount: f64,
+}
+
+fn is_default_vignetting_calibration_amount(a: &f64) -> bool {
+    *a == crate::DEFAULT_VIGNETTING_CALIBRATION_PERCENT
 }
 
 /// A lens picked from the lens database ([`Optics::lens`]): its maker and model as the database names them, and the
@@ -1228,6 +1266,8 @@ impl Default for Optics {
             ca_red: 0.0,
             ca_blue: 0.0,
             lens: None,
+            vignetting_calibration: None,
+            vignetting_calibration_amount: crate::DEFAULT_VIGNETTING_CALIBRATION_PERCENT,
         }
     }
 }
@@ -1377,8 +1417,11 @@ pub struct Crop {
 // Masks and local adjustments
 
 /// The sliders available inside a mask (Lightroom's local adjustments).
+///
+/// Serialized through [`LocalAdjustmentsWire`], which converts the Hue of older catalogs, presets
+/// and effect files (a −100..100 slider value) to degrees.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "LocalAdjustmentsWire", into = "LocalAdjustmentsWire")]
 pub struct LocalAdjustments {
     pub temp: f64,
     pub tint: f64,
@@ -1391,6 +1434,7 @@ pub struct LocalAdjustments {
     pub texture: f64,
     pub clarity: f64,
     pub dehaze: f64,
+    /// Hue shift in degrees, −180..180 ([`LOCAL_HUE_MAX`]).
     pub hue: f64,
     pub saturation: f64,
     pub sharpness: f64,
@@ -1418,6 +1462,85 @@ pub struct LocalAdjustments {
     /// Local vignette/grain are not in Lightroom; we keep the struct extensible.
     pub amount: f64,
 }
+
+/// The mask Hue slider's reach either way, in degrees.
+pub const LOCAL_HUE_MAX: f64 = 180.0;
+
+/// Degrees per step of the old mask Hue slider: it was stored as −100..100 (Lightroom's
+/// `crs:LocalHue` × 100) and rendered as `value / 100 × 0.6` radians (about ±34°).
+pub const LEGACY_LOCAL_HUE_DEG: f64 = 0.6 * 180.0 / std::f64::consts::PI / 100.0;
+
+/// The mask Hue's standard reach (Lightroom's `crs:LocalHue` ±1), in degrees: about 34.38°.
+pub const LOCAL_HUE_STANDARD: f64 = 100.0 * LEGACY_LOCAL_HUE_DEG;
+
+macro_rules! local_wire {
+    ($($f:ident),* $(,)?) => {
+        /// How [`LocalAdjustments`] is stored. `hue_deg` marks a Hue in degrees; without it (catalogs,
+        /// presets and effect files from before the change, partial JSON) `hue` is the old −100..100
+        /// slider value and converts to the same angle in degrees.
+        #[derive(Clone, Copy, Serialize, Deserialize)]
+        #[serde(default)]
+        pub struct LocalAdjustmentsWire {
+            $($f: f64,)*
+            hue: f64,
+            hue_deg: bool,
+        }
+
+        impl Default for LocalAdjustmentsWire {
+            fn default() -> Self {
+                let d = LocalAdjustments::default();
+                Self { $($f: d.$f,)* hue: d.hue, hue_deg: false }
+            }
+        }
+
+        impl From<LocalAdjustmentsWire> for LocalAdjustments {
+            fn from(w: LocalAdjustmentsWire) -> Self {
+                let hue = if w.hue_deg { w.hue } else { w.hue * LEGACY_LOCAL_HUE_DEG };
+                Self { $($f: w.$f,)* hue }
+            }
+        }
+
+        impl From<LocalAdjustments> for LocalAdjustmentsWire {
+            fn from(a: LocalAdjustments) -> Self {
+                Self { $($f: a.$f,)* hue: a.hue, hue_deg: true }
+            }
+        }
+    };
+}
+
+local_wire!(
+    temp,
+    tint,
+    exposure,
+    contrast,
+    highlights,
+    shadows,
+    whites,
+    blacks,
+    texture,
+    clarity,
+    dehaze,
+    saturation,
+    sharpness,
+    noise,
+    moire,
+    defringe,
+    color_hue,
+    color_sat,
+    grade_shadows_hue,
+    grade_shadows_sat,
+    grade_shadows_lum,
+    grade_midtones_hue,
+    grade_midtones_sat,
+    grade_midtones_lum,
+    grade_highlights_hue,
+    grade_highlights_sat,
+    grade_highlights_lum,
+    grade_global_hue,
+    grade_global_sat,
+    grade_global_lum,
+    amount,
+);
 
 impl LocalAdjustments {
     /// The mask's colour-grading wheels (shadows, midtones, highlights, global) as [`Wheel`]s.

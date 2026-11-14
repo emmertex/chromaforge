@@ -94,6 +94,8 @@ mod tests {
         };
         let mut s = lcc_engine::Session::with_demo();
         s.execute("slideshow.playback", &json!({"slideDuration": 1, "fadeDuration": 0.5})).unwrap();
+        // three slides show everything the whole demo library would, in a fraction of the encode time
+        s.filter.only = s.visible_cloned().into_iter().take(3).collect();
         (LccApp::new(s, services), asked)
     }
 

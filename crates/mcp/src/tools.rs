@@ -561,18 +561,22 @@ fn image_bytes_result(bytes: Vec<u8>, max: Option<u32>, format: &str, save_to: O
     }
 }
 
-/// A user-given `path` to save to must not be a photo's original (or its sidecar).
-fn check_save_path(b: &mut dyn Backend, args: &Value) -> Result<(), String> {
-    match args.get("path").and_then(Value::as_str) {
-        Some(p) => exec(b, "export.checkTarget", json!({"path": p})).map(|_| ()),
-        None => Ok(()),
-    }
+/// A user-given `path` to save to must not be a photo's original (or its sidecar). The path is made
+/// absolute here, against this process's working directory (where the save happens), and that same
+/// path is what the desktop checks and what is written: a relative one would otherwise be checked
+/// against the desktop's folder and written against ours.
+fn check_save_path(b: &mut dyn Backend, args: &Value) -> Result<Option<String>, String> {
+    let Some(p) = args.get("path").and_then(Value::as_str) else { return Ok(None) };
+    let abs = std::path::absolute(p).map_err(|e| format!("{p}: {e}"))?.to_string_lossy().into_owned();
+    exec(b, "export.checkTarget", json!({"path": abs}))?;
+    Ok(Some(abs))
 }
 
 fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
-    if let Err(e) = check_save_path(b, args) {
-        return ToolResult::error(e);
-    }
+    let save_to = match check_save_path(b, args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
     let size = args.get("size").and_then(Value::as_u64).unwrap_or(1024).clamp(16, 4096);
     let given = match photo_id_arg(args) {
         Ok(g) => g,
@@ -592,7 +596,6 @@ fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
     };
     let Some(id) = id else { return ToolResult::error("no active photo: import or select one, or pass `id`") };
     let format = args.get("format").and_then(Value::as_str).unwrap_or("png");
-    let save_to = args.get("path").and_then(Value::as_str);
     // The PNG comes back in the reply: with `--connect` the app may run on another machine, where a temp file path
     // means nothing here (upstream #3312).
     let mut meta = match b.call("ui.render", json!({"id": id, "size": size, "inline": true})) {
@@ -602,7 +605,7 @@ fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
     meta["id"] = json!(id);
     if let Some(png) = meta.as_object_mut().and_then(|m| m.remove("png")) {
         return match png.as_str().and_then(base64_decode) {
-            Some(bytes) => image_bytes_result(bytes, None, format, save_to, meta),
+            Some(bytes) => image_bytes_result(bytes, None, format, save_to.as_deref(), meta),
             None => ToolResult::error("ui.render returned an invalid base64 PNG"),
         };
     }
@@ -617,13 +620,14 @@ fn render_photo(b: &mut dyn Backend, args: &Value) -> ToolResult {
         Err(e) => return ToolResult::error(e),
     };
     meta["id"] = json!(id);
-    image_result(&tmp.file, None, format, save_to, meta)
+    image_result(&tmp.file, None, format, save_to.as_deref(), meta)
 }
 
 fn screenshot(b: &mut dyn Backend, args: &Value) -> ToolResult {
-    if let Err(e) = check_save_path(b, args) {
-        return ToolResult::error(e);
-    }
+    let save_to = match check_save_path(b, args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
     let tmp = match TempPng::new("screenshot") {
         Ok(t) => t,
         Err(e) => return ToolResult::error(e),
@@ -634,7 +638,7 @@ fn screenshot(b: &mut dyn Backend, args: &Value) -> ToolResult {
             &tmp.file,
             Some(args.get("maxSize").and_then(Value::as_u64).unwrap_or(1600).clamp(64, 8192) as u32),
             args.get("format").and_then(Value::as_str).unwrap_or("png"),
-            args.get("path").and_then(Value::as_str),
+            save_to.as_deref(),
             meta,
         ),
         Err(e) => ToolResult::error(e),

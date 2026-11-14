@@ -145,7 +145,7 @@ fn ml_status_before_any_job_starts_nothing() {
 }
 
 #[test]
-fn ml_status_sets_device_and_reports_available_devices() {
+fn ml_status_sets_device_reports_available_devices_and_refuses_junk() {
     let mut s = session();
     let st = s.execute("ml.status", &json!({})).unwrap();
     assert_eq!(st["deviceChoice"], "auto");
@@ -157,30 +157,22 @@ fn ml_status_sets_device_and_reports_available_devices() {
     assert_eq!(st["deviceChoice"], "cpu");
     assert_eq!(st["preference"], "cpu");
 
-    let st = s.execute("ml.status", &json!({"device": "auto"})).unwrap();
-    assert_eq!(st["deviceChoice"], "auto");
-    assert_eq!(st["preference"], "auto");
-}
-
-#[test]
-fn ml_status_refuses_non_string_and_invalid_devices() {
-    let mut s = session();
+    // a device that is not a string, or not one there is, is refused and changes nothing
     for bad in [json!({"device": 123}), json!({"device": true}), json!({"device": []}), json!({"device": {}})] {
         assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
     }
     for bad in [json!({"device": "potato"}), json!({"device": "vulkan:10de:9999:Fake#1"})] {
         assert!(s.execute("ml.status", &bad).is_err(), "{bad:?}");
     }
-}
-
-#[test]
-fn ml_status_empty_device_resets_preference_to_auto() {
-    let mut s = session();
-    s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
     assert_eq!(s.execute("ml.status", &json!({})).unwrap()["preference"], "cpu");
-    let st = s.execute("ml.status", &json!({"device": ""})).unwrap();
-    assert_eq!(st["deviceChoice"], "auto");
-    assert_eq!(st["preference"], "auto");
+
+    // "auto", and an empty device, go back to the automatic choice
+    for auto in ["auto", ""] {
+        s.execute("ml.status", &json!({"device": "cpu"})).unwrap();
+        let st = s.execute("ml.status", &json!({"device": auto})).unwrap();
+        assert_eq!(st["deviceChoice"], "auto", "{auto:?}");
+        assert_eq!(st["preference"], "auto", "{auto:?}");
+    }
 }
 
 #[test]
@@ -206,6 +198,30 @@ fn ml_status_preference_is_session_only_while_device_persists() {
     let st2 = s2.execute("ml.status", &json!({})).unwrap();
     assert_eq!(st2["deviceChoice"], "cpu");
     assert_eq!(st2["preference"], "cpu");
+
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn turning_background_indexing_off_lasts_across_sessions() {
+    // #1133: the Settings ▸ AI Models checkbox was forgotten on quit, so indexing resumed on the next launch
+    let temp = temp_dir("enable-stick");
+    let mut s = session();
+    s.ml_models_dir = Some(temp.clone());
+    assert_eq!(s.execute("ml.status", &json!({})).unwrap()["enabled"], true, "on by default");
+    s.execute("ml.enable", &json!({"enabled": false})).unwrap();
+
+    let mut s2 = session();
+    s2.ml_models_dir = Some(temp.clone());
+    let pump = s2.execute("ml.pump", &json!({})).unwrap();
+    assert_eq!((pump["enabled"].clone(), pump["active"].clone()), (json!(false), json!(false)), "{pump}");
+    assert_eq!(s2.execute("ml.status", &json!({})).unwrap()["enabled"], false);
+    assert_eq!(s2.execute("ml.models.list", &json!({})).unwrap()["enabled"], false);
+
+    s2.execute("ml.enable", &json!({"enabled": true})).unwrap();
+    let mut s3 = session();
+    s3.ml_models_dir = Some(temp.clone());
+    assert_eq!(s3.execute("ml.status", &json!({})).unwrap()["enabled"], true);
 
     let _ = std::fs::remove_dir_all(&temp);
 }

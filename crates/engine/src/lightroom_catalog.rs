@@ -113,10 +113,11 @@ fn source_path(p: &Photo) -> Option<&str> {
 pub(crate) struct Reader {
     db: Database,
 }
-/// Expanded XMP packets kept from one catalog, all rows together (each is bounded on its own).
-const MAX_XMP_TOTAL: usize = 1 << 30;
-/// Keyword paths kept for the photos of one catalog, all together.
-const MAX_KEYWORD_BYTES: usize = 256 << 20;
+/// The longest XMP packet kept for one image (what a compressed one may expand to). The bound is per
+/// image, never a running total, so the size of a catalog alone cannot drop a packet (upstream #3674).
+const MAX_XMP_PACKET: usize = 16 << 20;
+/// Keyword paths kept for the photos of one catalog, all together (a million photos at ~1 KB of paths each still fit).
+const MAX_KEYWORD_BYTES: usize = 1 << 30;
 /// Most bytes of history-step or snapshot settings decoded from one table. They are archived, and an archive holds at
 /// most [`crate::lightroom_archive::MAX_ARCHIVE_BYTES`] of JSON, so this keeps all a catalog can archive while a
 /// hostile one can't make the reader allocate without bound (each row alone may decode to 16 MiB).
@@ -318,16 +319,15 @@ impl Reader {
 
     /// `Adobe_AdditionalMetadata`, streamed into image id -> row with its (decompressed) `xmp` packet.
     fn xmp_table(&self, cancel: &AtomicBool) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
-        self.xmp_table_within(cancel, MAX_XMP_TOTAL)
+        self.xmp_table_within(cancel, MAX_XMP_PACKET)
     }
 
-    /// [`Self::xmp_table`] with the packets of all rows together held to `max_total` decoded bytes: a packet past it
-    /// is left off its row (named in the warnings), so one oversized catalog keeps the packets that fit and every
-    /// row's other columns (upstream #3674).
-    fn xmp_table_within(&self, cancel: &AtomicBool, max_total: usize) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
+    /// [`Self::xmp_table`] with each packet held to `max_packet` decoded bytes: a packet past it is left off
+    /// its row and named in the warnings; the bound is per image, so the size of the catalog alone never
+    /// drops a packet (upstream #3674).
+    fn xmp_table_within(&self, cancel: &AtomicBool, max_packet: usize) -> Result<(HashMap<i64, Row>, Vec<String>), String> {
         let mut warnings = Vec::new();
         let mut out = HashMap::new();
-        let mut xmp_total = 0usize;
         let mut unkeyed = 0usize;
         let read = self.each_row("Adobe_AdditionalMetadata", false, false, cancel, |mut r, blobs| {
             let Some(image) = image_of(&r) else {
@@ -341,27 +341,23 @@ impl Reader {
                 }
                 // the declared size (the decode checks it) against what is left, before inflating
                 let declared = bytes.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).map_or(0, |s| u32::from_be_bytes(s) as usize);
-                let over = |n: usize| n <= 16 << 20 && xmp_total.saturating_add(n) > max_total;
+                let over = |n: usize| n > max_packet;
                 let decoded = if over(declared) { Ok(None) } else { decode_compressed(&bytes, "XMP").map(Some) };
                 match decoded {
                     Ok(Some(packet)) if !over(packet.len()) => {
-                        xmp_total += packet.len();
                         r.insert(column.to_string(), Value::String(packet));
                     }
-                    Ok(_) => warnings.push(format!("image {image}: the XMP packets together exceed {} MiB; this one is left out", max_total >> 20)),
+                    Ok(_) => warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20)),
                     Err(error) => warnings.push(format!("image {image}: {error}")),
                 }
             }
-            // a text packet counts toward the total like a decoded one
+            // a text packet is held to the same bound as a decoded one
             if let Some(len) = r.get("xmp").and_then(Value::as_str).map(str::len)
                 && !blobs_had_xmp
+                && len > max_packet
             {
-                if xmp_total.saturating_add(len) > max_total {
-                    r.remove("xmp");
-                    warnings.push(format!("image {image}: the XMP packets together exceed {} MiB; this one is left out", max_total >> 20));
-                } else {
-                    xmp_total += len;
-                }
+                r.remove("xmp");
+                warnings.push(format!("image {image}: the XMP packet exceeds {} MiB; it is left out", max_packet >> 20));
             }
             out.insert(image, r);
             Ok(())
@@ -887,7 +883,7 @@ fn read_lightroom(path: &Path, reader: Reader, source_guard: SourceGuard, cancel
         if let Some(p) = path {
             keyword_bytes = keyword_bytes.saturating_add(p.len());
             if keyword_bytes > MAX_KEYWORD_BYTES {
-                return Err("the catalog's keyword assignments together exceed 256 MB".into());
+                return Err("the catalog's keyword assignments together exceed 1 GiB".into());
             }
             keywords.entry(image).or_default().push(p);
         }
@@ -1350,7 +1346,10 @@ fn apply(s: &mut crate::Session, data: CatalogImport, update_existing: bool) -> 
     let archive_dir = s.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.join("Interop"));
     let index_path = archive_dir.as_ref().map(|p| p.join("lightroom-index.json"));
     let mut index = load_index(index_path.as_deref())?;
-    let archive_path = archive_dir.as_ref().map(|dir| crate::lightroom_archive::store(dir, &data).map_err(|e| error(e.to_string()))).transpose()?;
+    let archive_path = archive_dir
+        .as_ref()
+        .map(|dir| crate::lightroom_archive::store(dir, &data).map(|stored| stored.path).map_err(|e| error(e.to_string())))
+        .transpose()?;
     let undo0 = s.undo.len();
     let existing: HashMap<_, _> =
         s.catalog.photos().filter(|p| p.copy_of.is_none()).filter_map(|p| source_path(p).map(|path| (key(path), p.id))).collect();
@@ -2497,12 +2496,8 @@ pub(crate) mod tests {
         let (s, r) = import_with_refused(false, 0);
         assert_only_the_sample_imported(&s, &r, false);
         assert!(r["missing"].as_array().is_some_and(|m| m.contains(&json!("//server/share/far.ARW"))), "the refused photo is listed as missing: {r}");
-    }
-
-    /// The same with a virtual copy: its master was skipped, so the copy failed the import with
-    /// "virtual copy 2: missing master".
-    #[test]
-    fn a_refused_photo_with_id_zero_leaves_other_virtual_copies_their_master() {
+        // the same with a virtual copy: its master was skipped, so the copy failed the import with
+        // "virtual copy 2: missing master"
         let (s, r) = import_with_refused(true, 0);
         assert_only_the_sample_imported(&s, &r, true);
     }
@@ -4336,15 +4331,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn observed_changed_optional_settings_wal_frame_fails_public_read() {
-        let result = read_after_indexed_optional_frame_changes("Adobe_imageDevelopSettings");
-        assert!(result.is_err(), "an indexed source-frame change in an optional table must fail the whole read, not become a warning");
-    }
-
-    #[test]
-    fn observed_changed_optional_xmp_wal_frame_fails_public_read() {
-        let result = read_after_indexed_optional_frame_changes("Adobe_AdditionalMetadata");
-        assert!(result.is_err(), "an indexed source-frame change in optional XMP must fail the whole read, not become a warning");
+    fn observed_changed_optional_wal_frames_fail_public_read() {
+        for table in ["Adobe_imageDevelopSettings", "Adobe_AdditionalMetadata"] {
+            let result = read_after_indexed_optional_frame_changes(table);
+            assert!(result.is_err(), "{table}: an indexed source-frame change in an optional table must fail the whole read, not become a warning");
+        }
     }
 
     #[test]
@@ -4700,56 +4691,22 @@ pub(crate) mod tests {
         assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    /// Upstream #3674: the XMP bound is per packet: many small ones all stay however many there are, and one
+    /// past the bound is left off its row, named, while the others keep theirs.
     #[test]
-    fn oversized_optional_table_warns_and_is_skipped_upstream_fixture() {
-        let mut main = vec![0u8; 2 * 512];
-        main[..16].copy_from_slice(b"SQLite format 3\0");
-        main[16..18].copy_from_slice(&512u16.to_be_bytes());
-        main[18] = 1;
-        main[19] = 1;
-        main[21] = 64;
-        main[22] = 32;
-        main[23] = 32;
-        main[28..32].copy_from_slice(&2u32.to_be_bytes());
-        main[44..48].copy_from_slice(&4u32.to_be_bytes());
-        main[56..60].copy_from_slice(&1u32.to_be_bytes());
-        main[100] = 0x0d;
-        let schema = vec![
-            SqlValue::Text("table".into()),
-            SqlValue::Text("optional_history".into()),
-            SqlValue::Text("optional_history".into()),
-            SqlValue::Integer(2),
-            SqlValue::Text("CREATE TABLE optional_history (payload BLOB)".into()),
-        ];
-        leaf_one(&mut main[..512], 100, 1, &schema);
-        let page = &mut main[512..];
-        page[0] = 0x0d;
-        page[3..5].copy_from_slice(&1u16.to_be_bytes());
-        let mut cell = varint((64 * 1024 * 1024 + 1) as u64);
-        cell.extend(varint(1));
-        let start = 500 - cell.len();
-        page[start..start + cell.len()].copy_from_slice(&cell);
-        page[8..10].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
-        page[5..7].copy_from_slice(&u16::try_from(start).unwrap_or(0).to_be_bytes());
-        let db = Database::open_with_wal(main, &[]).unwrap();
-        let reader = Reader { db };
-        let mut warnings = Vec::new();
-        let cancel = AtomicBool::new(false);
-        let rows = reader.optional_table("optional_history", &mut warnings, &cancel).unwrap();
-        assert!(rows.is_empty());
-        assert!(warnings.iter().any(|warning| warning.contains("optional_history")));
-    }
-    /// Upstream #3674: text XMP packets count toward the catalog-wide total too; one past it is left off its row.
-    #[test]
-    fn text_xmp_counts_toward_the_total_cap() {
+    fn xmp_is_bounded_per_packet_not_as_a_running_total() {
         use SqlValue::{Integer as I, Null as N, Text as T};
-        let rows = vec![vec![N, I(1), T("<x:xmpmeta/>".into())], vec![N, I(2), T("<x:xmpmeta/>".into())]];
+        let rows = vec![
+            vec![N, I(1), T("<x:xmpmeta/>".into())],
+            vec![N, I(2), T("<x:xmpmeta/>".into())],
+            vec![N, I(3), T("<x:xmpmeta>padding</x:xmpmeta>".into())],
+        ];
         let bytes = native_catalog_rows(&[("Adobe_AdditionalMetadata", "id_local INTEGER PRIMARY KEY, image, xmp", rows)], None);
         let reader = Reader { db: Database::open_with_wal(bytes, &[]).unwrap() };
         let cancel = AtomicBool::new(false);
-        let (rows, warnings) = reader.xmp_table_within(&cancel, 12 + 5).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows.values().filter(|r| r.contains_key("xmp")).count(), 1);
+        let (rows, warnings) = reader.xmp_table_within(&cancel, 12).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.values().filter(|r| r.contains_key("xmp")).count(), 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("exceed"), "{warnings:?}");
     }
@@ -4996,7 +4953,7 @@ pub(crate) mod tests {
         let catalog = read(&path).unwrap();
         assert_eq!(catalog.photos.len(), shapes.len(), "{:?}", catalog.skipped);
         // the catalog's own value stays in the import archive, whatever the library keeps
-        let archived = fixture::read_archive(&crate::lightroom_archive::store(&dir.join("Interop"), &catalog).unwrap());
+        let archived = fixture::read_archive(&crate::lightroom_archive::store(&dir.join("Interop"), &catalog).unwrap().path);
         for photo in archived["photos"].as_array().unwrap() {
             let i = usize::try_from(photo["source_id"].as_i64().unwrap() - 1).unwrap();
             let (c, _) = shapes[i];
