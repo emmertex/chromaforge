@@ -1,11 +1,5 @@
 # What's new in {app}
 
-## 2026-11-12
-
-### Calibrated profiles keep the camera's own name
-- A camera profile written by `calibrate-lightroom fit` no longer repeats the make when the model already starts with
-  it ("Canon EOS 6D", not "CANON Canon EOS 6D"), so an imported profile shows in the Camera Profiles menu (#1119).
-
 ## 2026-10-24
 
 ### Relative-date filters and smart albums follow the clock
