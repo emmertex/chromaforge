@@ -1339,8 +1339,6 @@
   "Its photos show here without being added: cull them (P picks, X rejects), then import the picks, the selection or all of them.": "Фото показываются здесь, не добавляясь: отберите их (P отбирает, X отклоняет), затем импортируйте отобранные, выделенные или все.",
   "JPEG Quality": "Качество JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "JPEG-копии с правками, sRGB, без геопривязки; затем в почтовой программе откроется новое письмо.",
-  "JPEG quality {q} to fit the size limit": "Качество JPEG {q}, чтобы уложиться в ограничение размера",
-  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Качество JPEG {q}, чтобы уложиться в ограничение размера (меньший размер или большее ограничение сохраняют больше качества)",
   "JPEG with the same name (`IMG_0001.CR3` + `IMG_0001.JPG`) no longer share one sidecar: the raw keeps `IMG_0001.xmp`,": "JPEG с тем же именем (`IMG_0001.CR3` + `IMG_0001.JPG`) больше не делят один файл XMP: raw сохраняет `IMG_0001.xmp`,",
   "Job Title": "Должность",
   "Join the Discord": "Присоединиться к Discord",

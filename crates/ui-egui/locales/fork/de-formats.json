@@ -77,6 +77,8 @@
   "Installing it will {action}.": "Die Installation wird: {action}.",
   "Its manifest has fields this version doesn't know, which it ignores: {fields}": "Sein Manifest hat Felder, die diese Version nicht kennt und ignoriert: {fields}",
   "Its manifest has values this version can't use, which it leaves out: {values}": "Sein Manifest hat Werte, die diese Version nicht verwenden kann und weglässt: {values}",
+  "JPEG quality {q} to fit the size limit": "JPEG-Qualität {q}, damit die Datei in die Größengrenze passt",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "JPEG-Qualität {q}, damit die Datei in die Größengrenze passt (eine kleinere Größe oder eine höhere Grenze erhält mehr Qualität)",
   "Last checked {when}": "Zuletzt geprüft: {when}",
   "Location {n}": "Ort {n}",
   "Making the denoised picture… {}%": "Entrauschtes Bild wird berechnet … {}%",
