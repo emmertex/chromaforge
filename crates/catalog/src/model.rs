@@ -883,20 +883,12 @@ mod camera_label_tests {
     use super::camera_label;
 
     #[test]
-    fn label_drops_a_repeated_maker() {
+    fn label_joins_the_parts_without_repeating_the_maker() {
         assert_eq!(camera_label("Canon", "Canon IXUS 185"), "Canon IXUS 185");
         assert_eq!(camera_label("Nothing", "Nothing Phone (3a) Pro"), "Nothing Phone (3a) Pro");
         assert_eq!(camera_label("SONY", "Sony A7 IV"), "Sony A7 IV");
-    }
-
-    #[test]
-    fn label_joins_distinct_parts() {
         assert_eq!(camera_label("Sony", "A7 IV"), "Sony A7 IV");
         assert_eq!(camera_label(" Apple ", " iPhone 15 "), "Apple iPhone 15");
-    }
-
-    #[test]
-    fn label_falls_back_to_the_part_that_exists() {
         assert_eq!(camera_label("", "Canon IXUS 185"), "Canon IXUS 185");
         assert_eq!(camera_label("Canon", ""), "Canon");
         assert_eq!(camera_label("  ", "  "), "");

@@ -329,16 +329,16 @@ mod tests {
         let addr = l.local_addr().unwrap();
         let t = std::thread::spawn(move || {
             let mut s = TcpStream::connect(addr).unwrap();
-            // a length that never completes, one byte every 100 ms for 5 s
+            // a length that never completes, one byte every 30 ms for 1.5 s
             for b in [0u8, 0, 0x01, 0].into_iter().chain(std::iter::repeat(b'{')).take(50) {
                 if s.write_all(&[b]).is_err() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(30));
             }
         });
         let started = Instant::now();
-        let r = Channel::handshake_within(l.accept().unwrap().0, &me, false, Duration::from_millis(800));
+        let r = Channel::handshake_within(l.accept().unwrap().0, &me, false, Duration::from_millis(250));
         assert!(r.is_err());
         assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
         t.join().unwrap();
@@ -352,7 +352,7 @@ mod tests {
         let s = TcpStream::connect(l.local_addr().unwrap()).unwrap();
         let _held = l.accept().unwrap();
         let started = Instant::now();
-        assert!(Channel::handshake_within(s, &me, true, Duration::from_millis(500)).is_err());
+        assert!(Channel::handshake_within(s, &me, true, Duration::from_millis(150)).is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 
@@ -360,7 +360,7 @@ mod tests {
     fn a_deadline_bounds_reads_after_the_handshake() {
         let (ca, cb, _, _) = pair();
         let (ca, mut cb) = (ca.unwrap(), cb.unwrap());
-        cb.set_deadline(Duration::from_millis(500));
+        cb.set_deadline(Duration::from_millis(200));
         let mut raw = ca.stream.try_clone().unwrap();
         let t = std::thread::spawn(move || {
             raw.write_all(&[0, 0, 0, 40]).unwrap();
@@ -368,7 +368,7 @@ mod tests {
                 if raw.write_all(&[1]).is_err() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(30));
             }
         });
         let started = Instant::now();

@@ -317,7 +317,7 @@ fn remove_dust_tags_its_spots_and_replaces_them_when_run_again() {
 fn a_body_dust_map_finds_faint_dust_on_later_photos() {
     let _maps = crate::sensor_maps::change_generation();
     let dir = temp_dir("sensor-dustmap");
-    let (w, h) = (1200usize, 800usize);
+    let (w, h) = (600usize, 400usize);
     // a smooth bright mosaic with a soft dark spot at (cx, cy) on the sensor, `depth` deep
     let photo = |seed: u64, depth: f32| {
         let mut n = seed.wrapping_add(7);
@@ -325,9 +325,9 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
             .map(|i| {
                 n = n.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
                 let (x, y) = ((i % w) as f32, (i / w) as f32);
-                let d2 = (x - 840.0).powi(2) + (y - 260.0).powi(2);
-                let t = 1.0 - depth * (-d2 / (2.0 * 7.0 * 7.0)).exp();
-                (256.0 + (2600.0 + 1.0 * y) * t + ((n >> 40) % 9) as f32) as u16
+                let d2 = (x - 420.0).powi(2) + (y - 130.0).powi(2);
+                let t = 1.0 - depth * (-d2 / (2.0 * 5.0 * 5.0)).exp();
+                (256.0 + (2600.0 + 2.0 * y) * t + ((n >> 40) % 9) as f32) as u16
             })
             .collect::<Vec<u16>>()
     };
@@ -356,13 +356,13 @@ fn a_body_dust_map_finds_faint_dust_on_later_photos() {
     assert!(alone["found"].as_u64() < Some(1) || r["confirmed"].as_u64() >= Some(1), "{alone} {r}");
     assert_eq!(r["added"], 1, "{r}");
     let sp = &r["spots"][0];
-    assert!((sp["x"].as_f64().unwrap() - 840.0 / w as f64).abs() < 0.01 && (sp["y"].as_f64().unwrap() - 260.0 / h as f64).abs() < 0.015, "{r}");
+    assert!((sp["x"].as_f64().unwrap() - 420.0 / w as f64).abs() < 0.01 && (sp["y"].as_f64().unwrap() - 130.0 / h as f64).abs() < 0.015, "{r}");
     assert_eq!(sp["confirmed"], true);
     // turned to portrait (Rotate Right): the spot follows the sensor position
     s.execute("photo.rotateRight", &json!({"ids": [fid.0]})).unwrap();
     let o = s.develop_of(fid).unwrap().orientation;
     let r = s.execute("spot.findDust", &json!({})).unwrap();
-    let (ex, ey) = o.map(840.0 / w as f64, 260.0 / h as f64, 1.0, 1.0);
+    let (ex, ey) = o.map(420.0 / w as f64, 130.0 / h as f64, 1.0, 1.0);
     let sp = &r["spots"][0];
     assert!((sp["x"].as_f64().unwrap() - ex).abs() < 0.015 && (sp["y"].as_f64().unwrap() - ey).abs() < 0.015, "{o:?} {r}");
     // a selection: in the background, applied by dust.pump

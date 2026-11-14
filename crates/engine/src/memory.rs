@@ -434,14 +434,13 @@ impl crate::Session {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
     /// Inside a container or a systemd scope with `MemoryMax`, the budget is sized from the limit,
     /// not the machine's RAM (#3072).
     #[test]
-    #[cfg(target_os = "linux")]
     fn total_ram_honours_the_cgroup_limit() {
         let ram = total_ram().unwrap();
         let info = std::fs::read_to_string("/proc/meminfo").unwrap();
@@ -452,13 +451,6 @@ mod tests {
             return;
         };
         assert!(ram as u64 <= limit, "total_ram {ram} above the cgroup limit {limit}");
-    }
-
-    /// Prints what the budget is sized from; run by hand inside and outside a limited scope.
-    #[test]
-    #[ignore = "diagnostic: prints the RAM and default budget this process sees"]
-    fn prints_the_default_budget() {
-        println!("total_ram {:?} MiB, default_budget {} MiB", total_ram().map(|b| b >> 20), default_budget() >> 20);
     }
 }
 

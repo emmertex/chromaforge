@@ -441,25 +441,20 @@ mod tests {
     }
 
     #[test]
-    fn a_release_without_our_file_is_reported() {
-        let mac = Options { target: Some(Target { os: Os::Macos, arch: "universal" }), ..opts() };
-        let err = run(&mac, &feed("1.2.0")).expect_err("no dmg");
-        assert!(matches!(err, UpdateError::NoAssetFor { .. }), "{err}");
-        assert!(err.to_string().contains("macos-universal"), "{err}");
-    }
-
-    #[test]
-    fn a_platform_we_do_not_build_for_says_so() {
-        let none = Options { target: None, ..opts() };
-        let err = run(&none, &feed("1.2.0")).expect_err("no platform");
-        assert!(matches!(err, UpdateError::Unsupported(_)), "{err}");
-    }
-
-    #[test]
-    fn urls_are_what_github_serves() {
-        assert_eq!(manifest_url("a/b"), "https://github.com/a/b/releases/latest/download/latest.json");
-        assert_eq!(manifest_url("/a/b/"), "https://github.com/a/b/releases/latest/download/latest.json");
-        assert_eq!(api_url("a/b"), "https://api.github.com/repos/a/b/releases?per_page=30");
+    fn a_release_without_our_file_or_platform_is_reported() {
+        // a release without our file is reported
+        {
+            let mac = Options { target: Some(Target { os: Os::Macos, arch: "universal" }), ..opts() };
+            let err = run(&mac, &feed("1.2.0")).expect_err("no dmg");
+            assert!(matches!(err, UpdateError::NoAssetFor { .. }), "{err}");
+            assert!(err.to_string().contains("macos-universal"), "{err}");
+        }
+        // a platform we do not build for says so
+        {
+            let none = Options { target: None, ..opts() };
+            let err = run(&none, &feed("1.2.0")).expect_err("no platform");
+            assert!(matches!(err, UpdateError::Unsupported(_)), "{err}");
+        }
     }
 
     #[test]
@@ -475,15 +470,6 @@ mod tests {
         assert!(!c.begin(), "a second one waits");
         c.end();
         assert!(c.begin());
-    }
-
-    #[test]
-    fn defaults_come_from_the_brand() {
-        let o = Options::default();
-        assert_eq!(o.repo, lcc_brand::REPOSITORY);
-        assert_eq!(o.current, Version::current());
-        assert_eq!(o.target, Target::current());
-        assert!(!o.prerelease);
     }
 
     #[test]

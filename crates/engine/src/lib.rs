@@ -131,6 +131,7 @@ pub mod proof;
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
+pub mod scene_disk;
 pub mod segment;
 pub mod sensor_maps;
 pub mod sidecar;

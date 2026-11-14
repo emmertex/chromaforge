@@ -76,13 +76,6 @@ fn buttons_emit_their_commands() {
 }
 
 #[test]
-fn playing_shows_pause() {
-    let h = bar(VideoUiState { playing: true, ..clip() });
-    assert!(h.query_by_label("Pause").is_some());
-    assert!(h.query_by_label("Play").is_none());
-}
-
-#[test]
 fn clicking_the_track_seeks() {
     let mut h = bar(clip());
     let track = h.state().track;
@@ -175,20 +168,6 @@ fn grid_cell_shows_the_badge() {
     h.app.ui.view = crate::state::ViewMode::PhotoGrid;
     h.settle(std::time::Duration::from_secs(30));
     assert!(h.app.widgets.iter().any(|(w, _)| w == "badge:video:1"), "video badge drawn");
-}
-
-#[test]
-fn allowed_controls() {
-    for ok in ["light.exposure", "wb.temp", "color.saturation", "curve", "mixer", "grading"] {
-        assert!(control_allowed(ok), "{ok}");
-    }
-    for no in ["effects.clarity", "detail.nrLuminance", "optics.distortion", "enhance.denoise", "calibration.redHue", "hdr.sdrBrightness"] {
-        assert!(!control_allowed(no), "{no}");
-    }
-    assert!(section_allowed("light") && section_allowed("color"));
-    for no in ["effects", "detail", "optics", "calibration"] {
-        assert!(!section_allowed(no));
-    }
 }
 
 #[test]

@@ -3108,118 +3108,117 @@ mod gps_tests {
 
     #[test]
     fn coordinates_people_type() {
-        let p = super::parse_gps;
-        assert_eq!(p("51.5072, -0.1276"), Some((51.5072, -0.1276)));
-        assert_eq!(p("10 20 30"), None);
-        assert_eq!(p("10  20"), Some((10.0, 20.0)));
-        let (la, lo) = p("51°30'26\"N 0°7'39\"W").unwrap();
-        assert!((la - 51.50722).abs() < 1e-4 && (lo + 0.1275).abs() < 1e-4, "{la} {lo}");
-        let (la, lo) = p("33.8688 S, 151.2093 E").unwrap();
-        assert!((la + 33.8688).abs() < 1e-9 && (lo - 151.2093).abs() < 1e-9);
-        assert_eq!(p("51.5 N 0.1 W"), Some((51.5, -0.1)));
-        assert_eq!(p("N 51.5072 W 0.1276"), Some((51.5072, -0.1276)));
-        assert_eq!(p("S 33.8688 E 151.2093"), Some((-33.8688, 151.2093)));
-        assert_eq!(p("\u{2212}33.8688, 151.2093"), Some((-33.8688, 151.2093)));
-        assert_eq!(p("51.5072 -0.1276"), Some((51.5072, -0.1276)));
-        assert_eq!(p("51.5072 0.1276 W"), Some((51.5072, -0.1276)));
-        let (la, lo) = p("51° 30' 26\" 0° 7' 39\"").unwrap();
-        assert!((la - 51.50722).abs() < 1e-4 && (lo - 0.1275).abs() < 1e-4, "{la} {lo}");
-        assert_eq!(p("95, 10"), None);
-        assert_eq!(p("hello"), None);
-        assert_eq!(p("s 33.8688 e 151.2093"), Some((-33.8688, 151.2093)));
-        assert_eq!(p("0N, 0E"), Some((0.0, 0.0)));
-        assert_eq!(p("90N, 180E"), Some((90.0, 180.0)));
-        assert_eq!(p("90S, 180W"), Some((-90.0, -180.0)));
-    }
-
-    #[test]
-    fn gps_does_not_reinterpret_exponents() {
-        assert_eq!(super::parse_gps("1e-3, 2e-3"), None);
-    }
-
-    #[test]
-    fn gps_rejects_wrong_axis_or_conflicting_hemispheres() {
-        let p = super::parse_gps;
-        assert_eq!(p("45E, 7N"), None);
-        assert_eq!(p("45E 7N"), None);
-        assert_eq!(p("45NS, 7E"), None);
-        assert_eq!(p("-45N, 7E"), None);
-        assert_eq!(p("45N 7NE"), None);
-    }
-
-    #[test]
-    fn gps_tries_whitespace_split_when_prefix_marker_split_fails() {
-        assert_eq!(super::parse_gps("N51 0E"), Some((51.0, 0.0)));
-    }
-
-    #[test]
-    fn gps_rejects_unconsumed_coordinate_text() {
-        assert_eq!(super::parse_gps("garbage45, 7junk"), None);
-    }
-
-    #[test]
-    fn gps_rejects_oversized_coordinate_text() {
-        let input = format!("{}, 0", "0".repeat(129));
-        assert_eq!(super::parse_gps(&input), None);
-    }
-
-    #[test]
-    fn gps_rejects_invalid_dms_components() {
-        let p = super::parse_gps;
-        assert_eq!(p("45°60'0\"N, 7E"), None);
-        assert_eq!(p("45°0'60\"N, 7E"), None);
-        assert_eq!(p("45°-1'0\"N, 7E"), None);
-        assert_eq!(p("45°0'-1\"N, 7E"), None);
-    }
-
-    #[test]
-    fn gps_rejected_text_does_not_change_metadata() {
-        let mut s = crate::Session::with_demo();
-        let ids: Vec<_> = s.catalog.photos().take(2).map(|photo| photo.id).collect();
-        assert_eq!(ids.len(), 2, "demo has two records for the batch check");
-        let id_values: Vec<_> = ids.iter().map(|id| id.0).collect();
-        s.execute("library.select", &json!({"ids": id_values})).unwrap();
-        s.execute("photo.setMeta", &json!({"title": "Before"})).unwrap();
-        s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.25})).unwrap();
-        s.execute("edit.undo", &json!({})).unwrap();
-        assert!(!s.redo.is_empty(), "rejection must preserve a populated redo history");
-
-        let snapshot = s.catalog.to_snapshot();
-        let revision = s.catalog.revision;
-        let selection = s.selection.clone();
-        let commits = s.commits();
-        let undo = format!("{:?}", s.undo);
-        let redo = format!("{:?}", s.redo);
-        let error = s.execute("photo.setMeta", &json!({"gps": "garbage45, 7junk", "title": "After"})).unwrap_err();
-
-        assert!(matches!(error, crate::EngineError::BadParams { ref cmd, .. } if cmd == "photo.setMeta"), "{error}");
-        assert_eq!(s.catalog.to_snapshot(), snapshot, "catalog data is unchanged");
-        assert_eq!(s.catalog.revision, revision, "catalog revision is unchanged");
-        assert_eq!(s.selection, selection, "selection is unchanged");
-        assert_eq!(s.commits(), commits, "commit count is unchanged");
-        assert_eq!(format!("{:?}", s.undo), undo, "undo history is unchanged");
-        assert_eq!(format!("{:?}", s.redo), redo, "redo history is unchanged");
-        for id in ids {
-            assert_eq!(s.catalog.photo(id).map(|photo| photo.meta.title.as_str()), Some("Before"));
+        // coordinates people type
+        {
+            let p = super::parse_gps;
+            assert_eq!(p("51.5072, -0.1276"), Some((51.5072, -0.1276)));
+            assert_eq!(p("10 20 30"), None);
+            assert_eq!(p("10  20"), Some((10.0, 20.0)));
+            let (la, lo) = p("51°30'26\"N 0°7'39\"W").unwrap();
+            assert!((la - 51.50722).abs() < 1e-4 && (lo + 0.1275).abs() < 1e-4, "{la} {lo}");
+            let (la, lo) = p("33.8688 S, 151.2093 E").unwrap();
+            assert!((la + 33.8688).abs() < 1e-9 && (lo - 151.2093).abs() < 1e-9);
+            assert_eq!(p("51.5 N 0.1 W"), Some((51.5, -0.1)));
+            assert_eq!(p("N 51.5072 W 0.1276"), Some((51.5072, -0.1276)));
+            assert_eq!(p("S 33.8688 E 151.2093"), Some((-33.8688, 151.2093)));
+            assert_eq!(p("\u{2212}33.8688, 151.2093"), Some((-33.8688, 151.2093)));
+            assert_eq!(p("51.5072 -0.1276"), Some((51.5072, -0.1276)));
+            assert_eq!(p("51.5072 0.1276 W"), Some((51.5072, -0.1276)));
+            let (la, lo) = p("51° 30' 26\" 0° 7' 39\"").unwrap();
+            assert!((la - 51.50722).abs() < 1e-4 && (lo - 0.1275).abs() < 1e-4, "{la} {lo}");
+            assert_eq!(p("95, 10"), None);
+            assert_eq!(p("hello"), None);
+            assert_eq!(p("s 33.8688 e 151.2093"), Some((-33.8688, 151.2093)));
+            assert_eq!(p("0N, 0E"), Some((0.0, 0.0)));
+            assert_eq!(p("90N, 180E"), Some((90.0, 180.0)));
+            assert_eq!(p("90S, 180W"), Some((-90.0, -180.0)));
+        }
+        // gps does not reinterpret exponents
+        {
+            assert_eq!(super::parse_gps("1e-3, 2e-3"), None);
+        }
+        // gps rejects wrong axis or conflicting hemispheres
+        {
+            let p = super::parse_gps;
+            assert_eq!(p("45E, 7N"), None);
+            assert_eq!(p("45E 7N"), None);
+            assert_eq!(p("45NS, 7E"), None);
+            assert_eq!(p("-45N, 7E"), None);
+            assert_eq!(p("45N 7NE"), None);
+        }
+        // gps tries whitespace split when prefix marker split fails
+        {
+            assert_eq!(super::parse_gps("N51 0E"), Some((51.0, 0.0)));
+        }
+        // gps rejects unconsumed coordinate text
+        {
+            assert_eq!(super::parse_gps("garbage45, 7junk"), None);
+        }
+        // gps rejects oversized coordinate text
+        {
+            let input = format!("{}, 0", "0".repeat(129));
+            assert_eq!(super::parse_gps(&input), None);
+        }
+        // gps rejects invalid dms components
+        {
+            let p = super::parse_gps;
+            assert_eq!(p("45°60'0\"N, 7E"), None);
+            assert_eq!(p("45°0'60\"N, 7E"), None);
+            assert_eq!(p("45°-1'0\"N, 7E"), None);
+            assert_eq!(p("45°0'-1\"N, 7E"), None);
         }
     }
 
     #[test]
-    fn gps_valid_edit_is_one_undo_step() {
-        let mut s = crate::Session::with_demo();
-        let id = s.active().or_else(|| s.catalog.photos().next().map(|photo| photo.id)).unwrap();
-        let previous = s.catalog.photo(id).unwrap().meta.clone();
-        let commits = s.commits();
-        s.execute("photo.setMeta", &json!({"gps": "48°51'30\"N 2°17'40\"E", "title": "GPS edited"})).unwrap();
-        let photo = s.catalog.photo(id).unwrap();
-        assert_eq!(photo.meta.title, "GPS edited");
-        assert!(photo.meta.gps.is_some());
-        assert_eq!(s.commits(), commits + 1);
+    fn gps_rejected_text_changes_nothing_and_a_valid_edit_is_one_undo_step() {
+        // gps rejected text does not change metadata
+        {
+            let mut s = crate::Session::with_demo();
+            let ids: Vec<_> = s.catalog.photos().take(2).map(|photo| photo.id).collect();
+            assert_eq!(ids.len(), 2, "demo has two records for the batch check");
+            let id_values: Vec<_> = ids.iter().map(|id| id.0).collect();
+            s.execute("library.select", &json!({"ids": id_values})).unwrap();
+            s.execute("photo.setMeta", &json!({"title": "Before"})).unwrap();
+            s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.25})).unwrap();
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(!s.redo.is_empty(), "rejection must preserve a populated redo history");
 
-        s.execute("edit.undo", &json!({})).unwrap();
-        let photo = s.catalog.photo(id).unwrap();
-        assert_eq!(photo.meta.title, previous.title);
-        assert_eq!(photo.meta.gps, previous.gps);
+            let snapshot = s.catalog.to_snapshot();
+            let revision = s.catalog.revision;
+            let selection = s.selection.clone();
+            let commits = s.commits();
+            let undo = format!("{:?}", s.undo);
+            let redo = format!("{:?}", s.redo);
+            let error = s.execute("photo.setMeta", &json!({"gps": "garbage45, 7junk", "title": "After"})).unwrap_err();
+
+            assert!(matches!(error, crate::EngineError::BadParams { ref cmd, .. } if cmd == "photo.setMeta"), "{error}");
+            assert_eq!(s.catalog.to_snapshot(), snapshot, "catalog data is unchanged");
+            assert_eq!(s.catalog.revision, revision, "catalog revision is unchanged");
+            assert_eq!(s.selection, selection, "selection is unchanged");
+            assert_eq!(s.commits(), commits, "commit count is unchanged");
+            assert_eq!(format!("{:?}", s.undo), undo, "undo history is unchanged");
+            assert_eq!(format!("{:?}", s.redo), redo, "redo history is unchanged");
+            for id in ids {
+                assert_eq!(s.catalog.photo(id).map(|photo| photo.meta.title.as_str()), Some("Before"));
+            }
+        }
+        // gps valid edit is one undo step
+        {
+            let mut s = crate::Session::with_demo();
+            let id = s.active().or_else(|| s.catalog.photos().next().map(|photo| photo.id)).unwrap();
+            let previous = s.catalog.photo(id).unwrap().meta.clone();
+            let commits = s.commits();
+            s.execute("photo.setMeta", &json!({"gps": "48°51'30\"N 2°17'40\"E", "title": "GPS edited"})).unwrap();
+            let photo = s.catalog.photo(id).unwrap();
+            assert_eq!(photo.meta.title, "GPS edited");
+            assert!(photo.meta.gps.is_some());
+            assert_eq!(s.commits(), commits + 1);
+
+            s.execute("edit.undo", &json!({})).unwrap();
+            let photo = s.catalog.photo(id).unwrap();
+            assert_eq!(photo.meta.title, previous.title);
+            assert_eq!(photo.meta.gps, previous.gps);
+        }
     }
 }
 

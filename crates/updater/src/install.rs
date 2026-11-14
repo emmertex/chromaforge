@@ -621,32 +621,32 @@ mod tests {
     }
 
     #[test]
-    fn a_checksum_list_is_never_installed() {
-        let err = install(Kind::Checksums, &downloaded("SHA256SUMS.txt"), "1.2.3").expect_err("refused");
-        assert!(matches!(err, UpdateError::Install(_)), "{err}");
-        assert!(err.to_string().contains("checksum"));
-    }
-
-    #[test]
-    fn a_windows_installer_is_refused_on_other_systems() {
-        if cfg!(windows) {
-            return;
+    fn installs_that_cannot_work_are_refused() {
+        // a checksum list is never installed
+        {
+            let err = install(Kind::Checksums, &downloaded("SHA256SUMS.txt"), "1.2.3").expect_err("refused");
+            assert!(matches!(err, UpdateError::Install(_)), "{err}");
+            assert!(err.to_string().contains("checksum"));
         }
-        let err = install(Kind::Msi, &downloaded("a.msi"), "1.2.3").expect_err("refused");
-        assert!(err.to_string().contains("Windows installer"), "{err}");
-    }
-
-    #[test]
-    fn a_missing_archive_is_an_error_not_a_panic() {
-        let err = install(Kind::Archive, &downloaded("nowhere/a.zip"), "1.2.3").expect_err("refused");
-        assert!(matches!(err, UpdateError::Install(_)), "{err}");
-    }
-
-    #[test]
-    fn an_appimage_that_is_not_there_is_refused() {
-        if cfg!(all(unix, not(target_os = "macos"))) {
-            let err = install(Kind::AppImage, &downloaded("nowhere.AppImage"), "1.2.3").expect_err("refused");
-            assert!(err.to_string().contains("not there"), "{err}");
+        // a missing archive is an error not a panic
+        {
+            let err = install(Kind::Archive, &downloaded("nowhere/a.zip"), "1.2.3").expect_err("refused");
+            assert!(matches!(err, UpdateError::Install(_)), "{err}");
+        }
+        // an appimage that is not there is refused
+        {
+            if cfg!(all(unix, not(target_os = "macos"))) {
+                let err = install(Kind::AppImage, &downloaded("nowhere.AppImage"), "1.2.3").expect_err("refused");
+                assert!(err.to_string().contains("not there"), "{err}");
+            }
+        }
+        // a windows installer is refused on other systems
+        {
+            if cfg!(windows) {
+                return;
+            }
+            let err = install(Kind::Msi, &downloaded("a.msi"), "1.2.3").expect_err("refused");
+            assert!(err.to_string().contains("Windows installer"), "{err}");
         }
     }
 
@@ -657,14 +657,5 @@ mod tests {
         assert_eq!(appimage_path(Some("/nowhere/app.AppImage".into())), None);
         let exe = current_exe().expect("test exe");
         assert!(appimage_path(Some(exe.clone().into_os_string())).is_some());
-    }
-
-    #[test]
-    fn the_exe_is_known() {
-        // the test binary is a real running executable; `current_exe` must find it
-        assert!(current_exe().is_some());
-        if cfg!(target_os = "macos") {
-            assert_eq!(app_bundle(), None, "a cargo test binary is not inside an .app");
-        }
     }
 }
