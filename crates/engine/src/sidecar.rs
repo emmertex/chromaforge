@@ -228,6 +228,9 @@ pub struct SidecarData {
     /// `xmp:CreateDate` (first found). Used only when the file itself has no capture time.
     pub captured: Option<String>,
     pub develop: Option<DevelopPatch>,
+    /// The flat-field map our own settings (`lc:settings`, portable) carried; whoever applies the settings stores it
+    /// first ([`SidecarData::vignetting_calibration_ops`]).
+    pub vignetting_maps: Vec<(lcc_develop::VignettingMapId, lcc_develop::EmbeddedVignettingMap)>,
     /// A video clip's trim (`lcvid:trimIn`, `lcvid:trimOut`; seconds, `None` out = the end), when stated.
     pub video_trim: Option<(f64, Option<f64>)>,
     /// A video clip's poster frame time (`lcvid:posterTime`), when stated.
@@ -324,8 +327,11 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         out.label = Some(ColorLabel::parse(l.trim()));
         out.label_text = Some(l.trim().to_string());
     }
-    let full =
-        d.lc_settings.as_deref().and_then(|j| serde_json::from_str::<Value>(j).ok()).and_then(|v| DevelopSettings::from_untrusted_json(&v).ok());
+    let full = d.lc_settings.as_deref().and_then(|j| serde_json::from_str::<Value>(j).ok()).and_then(|mut v| {
+        // (a flat-field map comes with them: taken out, the settings reference it)
+        out.vignetting_maps.extend(lcc_develop::absorb_portable(&mut v));
+        DevelopSettings::from_untrusted_json(&v).ok()
+    });
     out.develop = match full {
         Some(s) => Some(DevelopPatch::Full(Box::new(s))),
         None if crate::crs::has_adjustments(&d.properties) => {
@@ -524,6 +530,12 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
 }
 
 impl SidecarData {
+    /// The ops that store the flat-field map these settings carried in `cat` (none when it has it already): ahead of
+    /// the ops that apply them. The map links to no photo; the catalog finds its reference by the raw's SHA-1.
+    pub fn vignetting_calibration_ops(&self, cat: &lcc_catalog::Catalog, now: &str) -> Vec<Op> {
+        crate::vignetting_calibration_io::add_ops(cat, &self.vignetting_maps, now)
+    }
+
     /// The patch with the rotation [`SidecarData::turned_to`] adds to `file` (the orientation the photo file states,
     /// which the decode applies): Lightroom writes a photo turned in it as the whole orientation. Only another
     /// editor's settings take it; the app's own (`lc:settings`) carry their rotation already.
@@ -816,6 +828,16 @@ fn packet(p: &Photo, cat: &lcc_catalog::Catalog, remove_location: bool, gps: boo
         d.plugin_filters.clear();
         d.optics.lens = None;
         serde_json::to_string(&d).unwrap_or_default()
+    };
+    // portable: the flat-field map goes with the settings (another catalog reads it back); settings without one are
+    // written exactly as before
+    let settings = match p.develop.optics.vignetting_calibration.as_ref().and_then(|id| cat.vignetting_map(id)) {
+        Some(r) => {
+            let mut v: Value = serde_json::from_str(&settings).unwrap_or(Value::Null);
+            lcc_develop::embed_portable(&mut v, |_| Some(r.map.clone()));
+            serde_json::to_string(&v).unwrap_or(settings)
+        }
+        None => settings,
     };
     let flag = match p.flag {
         Flag::None => "none",
@@ -1518,12 +1540,13 @@ impl Session {
         let sc = sc.resolve_label(&self.catalog);
         let mut q = (**p).clone();
         let develop_changed = merge_into(&mut q, &sc, &(self.clock)());
-        let mut ops = vec![
+        let mut ops = sc.vignetting_calibration_ops(&self.catalog, &(self.clock)());
+        ops.extend([
             Op::SetRating { id, rating: q.rating },
             Op::SetFlag { id, flag: q.flag },
             Op::SetLabel { id, label: q.label },
             Op::SetMeta { id, meta: Box::new(q.meta.clone()) },
-        ];
+        ]);
         if q.captured != p.captured {
             ops.push(Op::SetCaptured { id, captured: q.captured.clone() });
         }

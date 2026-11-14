@@ -1220,6 +1220,19 @@ pub struct Optics {
     /// written to XMP.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lens: Option<ChosenLens>,
+    /// The flat-field map (Capture One's LCC "Uniform Light", [`crate::vignetting_calibration`]) that evens out the lens's
+    /// fall-off as measured from a reference shot, whatever `lens_profile` says: its id; the catalog holds the map.
+    /// Not written while there is none, so settings without one keep their JSON and `hash64`; anything but an id
+    /// reads as none.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub vignetting_calibration: Option<crate::VignettingMapId>,
+    /// How much of the map's correction applies, % (0 to 120). Not written at the default (100).
+    #[serde(skip_serializing_if = "is_default_vignetting_calibration_amount")]
+    pub vignetting_calibration_amount: f64,
+}
+
+fn is_default_vignetting_calibration_amount(a: &f64) -> bool {
+    *a == crate::DEFAULT_VIGNETTING_CALIBRATION_PERCENT
 }
 
 /// A lens picked from the lens database ([`Optics::lens`]): its maker and model as the database names them, and the
@@ -1253,6 +1266,8 @@ impl Default for Optics {
             ca_red: 0.0,
             ca_blue: 0.0,
             lens: None,
+            vignetting_calibration: None,
+            vignetting_calibration_amount: crate::DEFAULT_VIGNETTING_CALIBRATION_PERCENT,
         }
     }
 }

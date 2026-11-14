@@ -13,12 +13,16 @@ pub mod recipe;
 pub mod retouch;
 pub mod segmask;
 pub mod settings;
+pub mod vignetting_calibration;
 
 pub use controls::{CONTROLS, ControlSpec, Section, Shade, Track};
 pub use presets::{Preset, SettingItem, SettingsGroup, SettingsPick, apply_partial, extract_groups};
 pub use retouch::{MAX_RETOUCH_MASKS, PartRequest, Retouch, RetouchAnalysis, RetouchMask, RetouchPart, RetouchTeeth};
 pub use segmask::SegMask;
 pub use settings::*;
+pub use vignetting_calibration::{
+    DEFAULT_VIGNETTING_CALIBRATION_PERCENT, EmbeddedVignettingMap, EvCodes, VignettingMapId, VignettingMapOrigin, absorb_portable, embed_portable,
+};
 
 use serde_json::Value;
 
@@ -67,7 +71,18 @@ impl DevelopSettings {
     /// names no [`WbScale`] keeps the meaning it always had (`Legacy`), whatever scale these settings were on: a
     /// partial from before the scale existed, or one that never said, must not become Kelvin by landing on
     /// Kelvin settings. Out-of-range values are brought back into range ([`DevelopSettings::keep_in_range`]).
+    /// A flat-field map (`optics.vignetting_calibration`, an id) named without `optics.vignetting_calibration_amount` comes at the default
+    /// amount (100); `null` removes it and keeps the amount. A portable partial's map (`optics.vignetting_calibration_map`) only
+    /// sets the id here: storing the map is the catalog's ([`vignetting_calibration::absorb_portable`]).
     pub fn merged(&self, partial: &Value) -> Result<DevelopSettings, serde_json::Error> {
+        let partial = vignetting_calibration::complete_partial(partial);
+        let mut owned;
+        let mut partial = partial.as_ref();
+        if partial.get("optics").is_some_and(|o| o.get(vignetting_calibration::PORTABLE_MAP_KEY).is_some()) {
+            owned = partial.clone();
+            vignetting_calibration::absorb_portable(&mut owned);
+            partial = &owned;
+        }
         let mut v = self.to_json();
         presets::deep_merge(&mut v, partial);
         let mut out = DevelopSettings::from_json(&v)?;

@@ -1889,6 +1889,20 @@ pub struct UiState {
     /// Develop ▸ Lens Corrections: the lens maker picked in the lens picker before a model (issue #307).
     #[serde(skip)]
     pub lens_pick_make: Option<String>,
+    /// Develop ▸ Lens Corrections ▸ Vignetting Calibration: `vignettingCalibration.photo` for (photo, settings hash), so the panel
+    /// reads the raw's header once per change, not every frame.
+    #[serde(skip)]
+    pub vignetting_calibration_info: Option<(lcc_catalog::PhotoId, u64, serde_json::Value)>,
+    /// The photo whose raw Create is measuring on a worker thread (its button waits meanwhile).
+    #[serde(skip)]
+    pub vignetting_calibration_creating: Option<lcc_catalog::PhotoId>,
+    /// What the last Create said about its reference (`vignettingCalibration.create`'s result: exposure, fall-off), for that photo.
+    #[serde(skip)]
+    pub vignetting_calibration_report: Option<(lcc_catalog::PhotoId, serde_json::Value)>,
+    /// A Borderline reference Create measured, kept while the Create Anyway question is open (confirming doesn't
+    /// measure again).
+    #[serde(skip)]
+    pub vignetting_calibration_pending: Option<(lcc_catalog::PhotoId, Box<lcc_engine::cmd::vignetting_calibration::Measured>)>,
     /// The start-up update check has run (once per session; Help ▸ Check for Updates… is manual).
     #[serde(skip)]
     pub update_checked_at_startup: bool,
@@ -2366,6 +2380,18 @@ pub enum Dialog {
         task: String,
         warning: String,
     },
+    /// Create measured a reference that doesn't quite look like a flat field (Borderline): `reasons` (translated) say
+    /// why; Create Anyway keeps the map measured meanwhile ([`UiState::vignetting_calibration_pending`]) for `photo`.
+    VignettingCreateAnyway {
+        photo: u64,
+        reasons: String,
+    },
+    /// Create measured a reference for a combination (camera model, lens, aperture, a zoom's focal length) that has one
+    /// in use: `question` (translated) names it; Replace withdraws it and keeps the new one, in one undo step.
+    VignettingReplace {
+        photo: u64,
+        question: String,
+    },
     /// Confirm moving photos to Recently Deleted or deleting from disk.
     ConfirmDelete {
         count: usize,
@@ -2755,6 +2781,10 @@ impl Default for UiState {
             dialog: None,
             settings_section: None,
             lens_pick_make: None,
+            vignetting_calibration_info: None,
+            vignetting_calibration_creating: None,
+            vignetting_calibration_report: None,
+            vignetting_calibration_pending: None,
             update_checked_at_startup: false,
             update_checked_at: 0.0,
             update_pending: None,

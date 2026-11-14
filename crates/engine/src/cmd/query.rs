@@ -238,9 +238,10 @@ pub fn specs() -> Vec<CommandSpec> {
             }
             Ok(v)
         }),
-        cmd!(query "develop.get", "Get Develop Settings", [], None, "{id?} → the photo's develop settings; `process` is the rendering process they are interpreted by (see develop.updateProcess)", always, |s, p| {
+        cmd!(query "develop.get", "Get Develop Settings", [], None, "{id?} → the photo's develop settings; `process` is the rendering process they are interpreted by (see develop.updateProcess); a flat-field map they reference comes with them at `optics.vignetting_calibration_map` (develop.merge takes it back)", always, |s, p| {
             let id = photo_arg(s, p, "develop.get")?;
-            Ok(s.develop_of(id)
+            let mut v = s
+                .develop_of(id)
                 .map(|d| {
                     let mut v = d.to_json();
                     // saved settings leave V1 out (`ProcessVersion::is_legacy`); here it is always stated
@@ -249,7 +250,10 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     v
                 })
-                .unwrap_or(Value::Null))
+                .unwrap_or(Value::Null);
+            // portable: settings an agent takes elsewhere carry their flat-field map
+            s.portable_settings(&mut v);
+            Ok(v)
         }),
         cmd!(query "develop.controls", "List Develop Controls", [], None, "{section?}: every slider with range, default and current value", always, |s, p| {
             let d = s.active().and_then(|id| s.develop_of(id)).unwrap_or_default();

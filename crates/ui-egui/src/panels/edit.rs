@@ -75,6 +75,7 @@ pub(crate) fn short_name(id: &str) -> Option<&'static str> {
         "detail.nrColor" => "Color",
         "optics.profileDistortion" => "Distortion",
         "optics.profileVignetting" => "Vignetting",
+        "optics.vignettingCalibrationAmount" => "Amount",
         "optics.vignettingMidpoint" => "Midpoint",
         "optics.defringePurpleHueLo" | "optics.defringeGreenHueLo" => "Hue Low",
         "optics.defringePurpleHueHi" | "optics.defringeGreenHueHi" => "Hue High",
@@ -402,6 +403,8 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 control(app, ui, d, c, has_lens);
             }
         }
+        // Capture One's LCC "Uniform Light": shown whether or not lens corrections are on
+        vignetting_calibration_section(app, ui, id, d);
         // What photos imported from now on start from, and one action that makes these settings it
         // (issue #148: the two checkboxes above reset on every photo, so a batch wants a default).
         // One quiet line under the lens controls (issue #346: it used to split them from the sliders).
@@ -3210,6 +3213,397 @@ fn lens_note(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, has_
     };
     let r = ui.label(egui::RichText::new(text).size(11.0).color(t.text_dim));
     crate::widgets::register(ui.ctx(), "label:lensNote", r.rect);
+}
+
+/// What the flat-field panel's answers are kept for: the photo's settings, and how many raws' placements the
+/// background reader has found so far (`lcc_engine::vignetting_calibration_placement`): a match waiting for the photo's header
+/// is asked again once it is read.
+fn vignetting_calibration_key(app: &LccApp, d: &DevelopSettings) -> u64 {
+    // (and the catalog's maps and which are withdrawn: an undo of Create or of a withdraw changes no settings; maps are
+    // few)
+    let maps = app.session.catalog.vignetting_maps().fold(0u64, |acc, (id, r)| {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (id.as_str(), r.withdrawn).hash(&mut h);
+        acc ^ h.finish()
+    });
+    d.hash64() ^ app.session.vignetting_calibration_placements.generation().wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ maps.rotate_left(17)
+}
+
+/// `vignettingCalibration.photo` for the photo as its settings are now, read once per change of the settings (or when a raw's
+/// placement read in the background became known: [`vignetting_calibration_key`]).
+fn vignetting_calibration_info(app: &mut LccApp, id: PhotoId, d: &DevelopSettings) -> Value {
+    let hash = vignetting_calibration_key(app, d);
+    if let Some((pid, h, v)) = &app.ui.vignetting_calibration_info
+        && (*pid, *h) == (id, hash)
+    {
+        return v.clone();
+    }
+    let v = app.run("vignettingCalibration.photo", json!({"id": id.0})).unwrap_or(Value::Null);
+    app.ui.vignetting_calibration_info = Some((id, hash, v.clone()));
+    v
+}
+
+/// One line for a map's reference shot: lens, focal length and aperture (numbers stay as they are).
+fn vignetting_calibration_source_line(m: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(l) = m["lens"].as_str().filter(|l| !l.trim().is_empty()) {
+        parts.push(l.trim().to_string());
+    }
+    if let Some(f) = m["focal"].as_f64() {
+        parts.push(format!("{} mm", f.round()));
+    }
+    if let Some(a) = m["aperture"].as_f64() {
+        parts.push(format!("f/{a:.1}"));
+    }
+    if let Some(b) = m["model"].as_str().filter(|b| !b.trim().is_empty()) {
+        parts.push(b.trim().to_string());
+    }
+    parts.join(", ")
+}
+
+/// Why a map doesn't apply to the photo (`vignettingCalibration.photo`'s match), as one sentence.
+fn vignetting_calibration_refusal(r: &Value) -> Option<String> {
+    use crate::i18n::tr;
+    Some(match r["refused"].as_str()? {
+        "imageArea" => tr("This calibration doesn't fit this photo's image area").to_string(),
+        "anotherCamera" => tr("Made with another camera").to_string(),
+        "anotherLens" => tr("Made with another lens").to_string(),
+        "focalLength" => tr("Made at another focal length").to_string(),
+        "aperture" => tr("Made at another aperture").to_string(),
+        "apertureUnknown" => tr("Only one of the photo and the reference records its aperture").to_string(),
+        _ => return None,
+    })
+}
+
+/// What differs between a map and the photo, as one short, quiet line (`vignettingCalibration.photo`): "+2 mm ·
+/// unevenly lit reference".
+fn vignetting_calibration_note(r: &Value) -> Option<String> {
+    use crate::i18n::tr;
+    let parts: Vec<String> = r["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| {
+            Some(match w["kind"].as_str()? {
+                "focalLength" => format!("{:+} mm", w["diff"].as_f64().unwrap_or(0.0)),
+                "lensUnknown" => tr("lens not recorded, can't be checked").to_string(),
+                "apertureUnknown" => tr("aperture not recorded, can't be checked").to_string(),
+                "uneven" => tr("unevenly lit reference").to_string(),
+                _ => return None,
+            })
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// What the last Create measured on its reference, in camera terms, and a note when it should be shot again.
+fn vignetting_calibration_exposure_lines(report: &Value) -> Vec<String> {
+    use crate::i18n::tr;
+    let e = &report["exposure"];
+    let pct = |v: &Value| format!("{:.0}", v.as_f64().unwrap_or(0.0) * 100.0);
+    let mut out = vec![
+        tr("Reference: centre at {centre} % of white, darkest corner at {corner} %")
+            .replace("{centre}", &pct(&e["centre"][1]))
+            .replace("{corner}", &pct(&e["darkest"])),
+    ];
+    match e["verdict"].as_str() {
+        Some("under") => out.push(tr("Underexposed: aim the histogram peak at 2/3 to 3/4 of its width").to_string()),
+        Some("nearClip") => out.push(tr("Close to clipping: expose a little less").to_string()),
+        _ => {}
+    }
+    if report["keptForOtherAreas"].as_array().is_some_and(|a| !a.is_empty()) {
+        out.push(tr("References for other image areas with this lens and aperture stay in use for those shots").to_string());
+    }
+    if report["vr"].as_bool() == Some(true) {
+        out.push(tr("VR was on: turn it off for references for the most precise result").to_string());
+    }
+    out
+}
+
+/// Create: measure photo `id`'s raw on a worker thread (the decode takes a second or more: the window keeps drawing,
+/// the activity stack shows it), then keep and apply the map here, say "Vignetting calibration created" and keep what
+/// was measured for the panel's exposure lines. (A command run by an agent or the CLI measures in place:
+/// `vignettingCalibration.create`.)
+fn start_vignetting_calibration_create(app: &mut LccApp, ctx: &egui::Context, id: PhotoId) {
+    use crate::i18n::tr;
+    let (path, file_name, captured) = match lcc_engine::cmd::vignetting_calibration::reference_file(&app.session, id) {
+        Ok(f) => f,
+        Err(e) => return app.toast_error(ctx, e.to_string()),
+    };
+    use lcc_engine::cmd::vignetting_calibration::{MeasureError, Measured};
+    app.ui.vignetting_calibration_creating = Some(id);
+    app.ui.vignetting_calibration_pending = None;
+    let work = move || lcc_engine::cmd::vignetting_calibration::measure(&path, &file_name, captured);
+    let done = move |app: &mut LccApp, ctx: &egui::Context, measured: Result<Measured, MeasureError>| {
+        app.ui.vignetting_calibration_creating = None;
+        app.ui.vignetting_calibration_info = None;
+        match measured {
+            // clearly not a flat field: refused, with the reason
+            Err(MeasureError::Implausible(p)) => {
+                app.toast_error(ctx, format!("{}. {}", tr("This photo doesn't look like a flat-field reference"), plausibility_reasons(&p.reasons)));
+            }
+            Err(MeasureError::Other(e)) => app.toast_error(ctx, e),
+            Ok(m) => {
+                if let Err(e) = continue_vignetting_calibration(app, id, m, false) {
+                    app.toast_error(ctx, e);
+                }
+            }
+        }
+    };
+    if let Err(e) = crate::tasks::spawn(app, tr("Measuring the vignetting reference"), Some("vignettingCalibration"), work, done) {
+        app.ui.vignetting_calibration_creating = None;
+        app.toast_error(ctx, e);
+    }
+}
+
+/// What Create does with a measured reference, step by step: a Borderline one asks first (Create Anyway; `anyway`:
+/// asked already), then one for a combination with a reference in use asks whether to replace it, then it is kept and
+/// applied. While a question is open the measured map waits in [`crate::state::UiState::vignetting_calibration_pending`]
+/// (answering doesn't measure again). `Ok(Null)` while asking.
+pub(crate) fn continue_vignetting_calibration(
+    app: &mut LccApp,
+    id: PhotoId,
+    m: lcc_engine::cmd::vignetting_calibration::Measured,
+    anyway: bool,
+) -> Result<Value, String> {
+    use lcc_engine::cmd::vignetting_calibration as vc;
+    if m.plausibility.verdict == lcc_raw::vignetting_plausibility::Verdict::Borderline && !anyway {
+        let reasons = plausibility_reasons(&m.plausibility.reasons);
+        app.ui.vignetting_calibration_pending = Some((id, Box::new(m)));
+        app.ui.dialog = Some(crate::state::Dialog::VignettingCreateAnyway { photo: id.0, reasons });
+        return Ok(Value::Null);
+    }
+    if let Some(old) = vc::conflicts(&app.session, &m).first() {
+        let mut question = replace_question(&old.map);
+        // (a new full-frame reference replacing a crop one: nothing is lost, say so)
+        let lib = &lcc_engine::vignetting_calibration_library::coverage;
+        if lib(&old.map) != lib(&m.map) {
+            question = format!("{question} {}", crate::i18n::tr("The new reference covers its image area too."));
+        }
+        app.ui.vignetting_calibration_pending = Some((id, Box::new(m)));
+        app.ui.dialog = Some(crate::state::Dialog::VignettingReplace { photo: id.0, question });
+        return Ok(Value::Null);
+    }
+    commit_vignetting_calibration(app, id, m, false)
+}
+
+/// "There's already a reference for NIKKOR Z 50mm f/1.8 S at f/1.8 on NIKON Z 8 (from SHOT_0001.NEF, 2026-01-28).
+/// Replace it?"
+fn replace_question(old: &lcc_develop::EmbeddedVignettingMap) -> String {
+    use crate::i18n::tr;
+    let s = &old.source;
+    let mut lens = s.lens.clone().filter(|l| !l.trim().is_empty()).unwrap_or_else(|| tr("this lens").to_string());
+    if let (true, Some(f)) = (s.lens.as_deref().is_some_and(lcc_engine::vignetting_calibration_library::is_zoom), s.focal_length) {
+        lens = format!("{lens} ({} mm)", f.round());
+    }
+    let aperture = s.aperture.map_or_else(|| "?".to_string(), |a| format!("f/{}", lcc_engine::cmd::vignetting_calibration::aperture_text(a)));
+    tr("There's already a reference for {lens} at {aperture} on {camera} (from {file}, {date}). Replace it?")
+        .replace("{lens}", &lens)
+        .replace("{aperture}", &aperture)
+        .replace("{camera}", s.model.as_deref().unwrap_or(""))
+        .replace("{file}", s.file_name.as_deref().unwrap_or(""))
+        .replace("{date}", s.captured.as_deref().map(|c| c.get(..10).unwrap_or(c)).unwrap_or(""))
+}
+
+/// Keep and apply a measured reference (`replace`: the one in use for its combination is withdrawn in the same step)
+/// and say so.
+fn commit_vignetting_calibration(
+    app: &mut LccApp,
+    id: PhotoId,
+    m: lcc_engine::cmd::vignetting_calibration::Measured,
+    replace: bool,
+) -> Result<Value, String> {
+    // (a Borderline one gets here only after Create Anyway)
+    let report = lcc_engine::cmd::vignetting_calibration::commit_measured(&mut app.session, id, m, true, replace).map_err(|e| e.to_string())?;
+    app.ui.vignetting_calibration_info = None;
+    app.ui.vignetting_calibration_report = Some((id, report.clone()));
+    if let Some(ctx) = app.tasks.repaint.clone() {
+        app.toast(&ctx, crate::i18n::tr("Vignetting calibration created"));
+    }
+    Ok(report)
+}
+
+/// The measured reference waiting for `photo`'s question.
+fn take_pending(app: &mut LccApp, photo: u64) -> Result<(PhotoId, lcc_engine::cmd::vignetting_calibration::Measured), String> {
+    app.ui
+        .vignetting_calibration_pending
+        .take()
+        .filter(|(id, _)| id.0 == photo)
+        .map(|(id, m)| (id, *m))
+        .ok_or_else(|| "the measured reference is gone; Create again".into())
+}
+
+/// Create Anyway in [`crate::state::Dialog::VignettingCreateAnyway`]: go on with the reference measured meanwhile.
+pub(crate) fn create_vignetting_calibration_anyway(app: &mut LccApp, photo: u64) -> Result<Value, String> {
+    let (id, m) = take_pending(app, photo)?;
+    continue_vignetting_calibration(app, id, m, true)
+}
+
+/// Replace in [`crate::state::Dialog::VignettingReplace`]: keep the new reference, withdraw the old one (one undo
+/// step; photos that use it keep it).
+pub(crate) fn replace_vignetting_calibration(app: &mut LccApp, photo: u64) -> Result<Value, String> {
+    let (id, m) = take_pending(app, photo)?;
+    commit_vignetting_calibration(app, id, m, true)
+}
+
+/// Why a raw doesn't look like a flat-field reference, as sentences.
+fn plausibility_reasons(reasons: &[lcc_raw::vignetting_plausibility::Reason]) -> String {
+    use crate::i18n::tr;
+    use lcc_raw::vignetting_plausibility::Reason;
+    let text: Vec<&str> = reasons
+        .iter()
+        .map(|r| match r {
+            Reason::Detail => tr("It has detail in it: a flat-field reference shows only an even surface"),
+            Reason::Colour => tr("Its colours aren't even"),
+            Reason::Shape => tr("It doesn't get darker evenly from the middle toward the edges"),
+            Reason::NoFalloff => tr("It doesn't get darker toward the edges"),
+            Reason::Dark => tr("It is too dark"),
+            Reason::Clipped => tr("Parts of it are clipped"),
+        })
+        .collect();
+    format!("{}.", text.join(". "))
+}
+
+/// Develop ▸ Lens Corrections ▸ Vignetting Calibration (design notes §10, *UI*). Two buttons: Create (measure this raw
+/// as a reference) and Apply (each photo of the selection, or this one, gets the reference that fits it, picked by
+/// itself: `vignettingCalibration.apply` without a map). With a calibration: which reference it is, with Show
+/// Reference, what differs, the Amount and Remove.
+fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSettings) {
+    use crate::i18n::tr;
+    let t = Tokens::get(ui.ctx());
+    sub_title(ui, tr("Vignetting Calibration"));
+    let info = vignetting_calibration_info(app, id, d);
+    let note = |ui: &mut egui::Ui, text: &str, key: &str| {
+        let r = ui.label(egui::RichText::new(text).size(11.0).color(t.text_dim));
+        register(ui.ctx(), key, r.rect);
+    };
+    let mut run: Option<(&str, Value)> = None;
+    let map = &info["map"];
+    let has_map = !map.is_null();
+    let missing = info["missing"].as_bool() == Some(true);
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(ui, |ui| {
+        let raw = info["raw"].as_bool().unwrap_or(false);
+        let measuring = app.ui.vignetting_calibration_creating.is_some();
+        let selected = app.session.selection.ids.len();
+        let auto = &info["auto"];
+        let can_apply = selected > 1 || auto["id"].is_string();
+        ui.horizontal_wrapped(|ui| {
+            let r = ui.add_enabled_ui(raw && !measuring, |ui| text_button(ui, "vignettingCalibrationCreate", "Create", false)).inner;
+            register(ui.ctx(), "button:vignettingCalibrationCreate", r.rect);
+            let r = if raw {
+                r.on_hover_text(tr("Measure this photo as a reference: an even screen or a diffuser, shot with the lens and aperture of the photos"))
+            } else {
+                r.on_disabled_hover_text(tr("Vignetting calibrations are made from raw photos"))
+            };
+            if r.clicked() {
+                start_vignetting_calibration_create(app, ui.ctx(), id);
+            }
+            let r = ui.add_enabled_ui(can_apply, |ui| text_button(ui, "vignettingCalibrationApply", "Apply", false)).inner;
+            register(ui.ctx(), "button:vignettingCalibrationApply", r.rect);
+            let r = if !can_apply {
+                // (there is a reference for the lens, only not at this aperture: say which aperture is missing)
+                let text = match (auto["none"].as_str(), auto["aperture"].as_f64()) {
+                    (Some("noReferenceAtAperture"), Some(a)) => tr("No reference at {aperture} for this lens yet")
+                        .replace("{aperture}", &format!("f/{}", lcc_engine::cmd::vignetting_calibration::aperture_text(a))),
+                    _ => tr("No reference for this camera and lens yet").to_string(),
+                };
+                r.on_disabled_hover_text(text)
+            } else if selected > 1 {
+                r.on_hover_text(tr("Each of the {n} selected photos gets the reference that fits it").replace("{n}", &selected.to_string()))
+            } else {
+                r.on_hover_text(tr("Apply the reference that fits this photo"))
+            };
+            if r.clicked() {
+                // (each photo's own reference; the selection when there is one, else this photo)
+                let ids: Vec<u64> = if selected > 1 { app.session.selection.ids.iter().map(|p| p.0).collect() } else { vec![id.0] };
+                run = Some(("vignettingCalibration.apply", json!({"ids": ids})));
+            }
+            if has_map {
+                let r = text_button(ui, "vignettingCalibrationRemove", "Remove", false);
+                register(ui.ctx(), "button:vignettingCalibrationRemove", r.rect);
+                if r.clicked() {
+                    run = Some(("vignettingCalibration.remove", json!({"ids": [id.0]})));
+                }
+            }
+        });
+        if app.ui.vignetting_calibration_creating == Some(id) {
+            note(ui, tr("Measuring the vignetting reference…"), "label:vignettingCalibrationMeasuring");
+        }
+        // this photo as a reference: each map measured from it and in use, with Stop Using as Reference (one undo
+        // step). A withdrawn one shows nothing: the photo is a normal photo again, and Create makes it a reference again
+        // (the same map, put back in use).
+        let active = info["referenceOf"].as_array().into_iter().flatten().filter(|m| m["withdrawn"].as_bool() != Some(true));
+        for (k, m) in active.enumerate() {
+            let line = tr("This photo is a vignetting reference ({reference})").replace("{reference}", &vignetting_calibration_source_line(m));
+            note(ui, &line, &format!("label:vignettingCalibrationIsReference{k}"));
+            let r = text_button(ui, &format!("vignettingCalibrationWithdraw{k}"), "Stop Using as Reference", false)
+                .on_hover_text(tr("Apply no longer picks this reference; photos that use it keep it"));
+            register(ui.ctx(), format!("button:vignettingCalibrationWithdraw{k}"), r.rect);
+            if r.clicked() {
+                run = Some(("vignettingCalibration.withdraw", json!({"map": m["id"]})));
+            }
+        }
+        if !has_map {
+            if auto["id"].is_string() {
+                note(
+                    ui,
+                    &tr("Apply uses {reference}").replace("{reference}", &vignetting_calibration_source_line(auto)),
+                    "label:vignettingCalibrationAuto",
+                );
+            }
+            return;
+        }
+        if missing {
+            note(ui, tr("This photo's vignetting map is missing"), "label:vignettingCalibrationMissing");
+            return;
+        }
+        let r = ui.label(egui::RichText::new(vignetting_calibration_source_line(map)).size(11.5));
+        register(ui.ctx(), "label:vignettingCalibrationSource", r.rect);
+        let file = map["fileName"].as_str().unwrap_or("");
+        let date = map["captured"].as_str().map(|c| c.get(..10).unwrap_or(c)).unwrap_or("");
+        if info["reference"]["inCatalog"].as_bool() == Some(true) {
+            ui.horizontal_wrapped(|ui| {
+                note(ui, &tr("From {file}, {date}").replace("{file}", file).replace("{date}", date), "label:vignettingCalibrationReference");
+                let link = egui::RichText::new(tr("Show Reference")).size(11.0).color(t.accent).underline();
+                let r = ui.add(egui::Label::new(link).sense(egui::Sense::click()));
+                register(ui.ctx(), "link:vignettingCalibrationShowReference", r.rect);
+                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    run = Some(("vignettingCalibration.showReference", json!({"id": id.0})));
+                }
+            });
+        } else {
+            note(ui, &tr("From {file}, {date}").replace("{file}", file).replace("{date}", date), "label:vignettingCalibrationReference");
+            note(
+                ui,
+                tr("The reference photo is no longer in this catalog; the correction still applies"),
+                "label:vignettingCalibrationReferenceGone",
+            );
+        }
+        if let Some(n) = vignetting_calibration_refusal(&info["match"]) {
+            note(ui, &n, "label:vignettingCalibrationRefused");
+        }
+        if let Some(n) = vignetting_calibration_note(&info["match"]) {
+            note(ui, &n, "label:vignettingCalibrationNote");
+        }
+        if let Some((_, report)) = app.ui.vignetting_calibration_report.as_ref().filter(|(p, r)| *p == id && r["map"]["id"] == map["id"]) {
+            for (k, line) in vignetting_calibration_exposure_lines(report).iter().enumerate() {
+                note(ui, line, &format!("label:vignettingCalibrationExposure{k}"));
+            }
+        }
+        if info["profileVignettingReplaced"].as_bool() == Some(true) {
+            note(ui, tr("Profile vignetting is replaced by the vignetting calibration"), "label:vignettingCalibrationReplacesProfile");
+        }
+    });
+    if has_map {
+        control_as(app, ui, d, "optics.vignettingCalibrationAmount", !missing, Some("Amount"));
+    }
+    if let Some((c, p)) = run {
+        app.ui.vignetting_calibration_info = None;
+        if let Err(e) = app.run(c, p) {
+            app.toast_error(ui.ctx(), e);
+        }
+    }
 }
 
 /// Develop ▸ Lens Corrections' lens picker (issue #307): Make → Model dropdowns filled from the lens database

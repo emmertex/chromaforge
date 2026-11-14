@@ -112,6 +112,10 @@ pub struct Filter {
     /// Immich link state: `linked`, `notLinked` (no confirmed link) or `probable`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub immich: Option<String>,
+    /// Vignetting Calibration reference ([`vignetting_reference_is`]): `reference` (in use) or `none` (not a
+    /// reference, or a withdrawn one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vignetting_reference: Option<String>,
     /// A folder on disk: its files only (browsed ones too); `subfolders` includes everything below.
     pub folder: Option<String>,
     pub subfolders: bool,
@@ -586,6 +590,17 @@ pub fn immich_state_is(cat: &Catalog, id: PhotoId, want: &str) -> bool {
     }
 }
 
+/// Whether photo `id` is what `want` says to Vignetting Calibration: `reference` (of a map in use) or `none` (not a
+/// reference; a withdrawn reference counts as none). Derived from the catalog's map table
+/// ([`Catalog::is_vignetting_reference`]), so it can't be stale. Unknown values match nothing.
+pub fn vignetting_reference_is(cat: &Catalog, id: PhotoId, want: &str) -> bool {
+    match want {
+        "reference" => cat.is_vignetting_reference(id),
+        "none" => !cat.is_vignetting_reference(id),
+        _ => false,
+    }
+}
+
 /// What [`Filter::prepare`] works out once for a pass over many photos.
 pub(crate) struct Prepared {
     root: Option<String>,
@@ -967,6 +982,13 @@ impl Filter {
         if let Some(fcs) = &self.faces {
             v.push(format!("faces {fcs}"));
         }
+        if let Some(r) = &self.vignetting_reference {
+            v.push(match r.as_str() {
+                "reference" => "vignetting reference".to_string(),
+                "none" => "not a vignetting reference".to_string(),
+                other => format!("vignetting reference {other}"),
+            });
+        }
         if !self.text.trim().is_empty() {
             v.push(format!("“{}”", self.text.trim()));
         }
@@ -1074,6 +1096,11 @@ impl Filter {
         }
         if let Some(want) = &self.immich
             && !immich_state_is(cat, p.id, want)
+        {
+            return false;
+        }
+        if let Some(want) = &self.vignetting_reference
+            && !vignetting_reference_is(cat, p.id, want)
         {
             return false;
         }

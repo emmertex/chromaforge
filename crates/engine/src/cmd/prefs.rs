@@ -224,15 +224,19 @@ fn set_import_default(s: &mut Session, p: &Value) -> Result<Value> {
                 None => return Err(bad(c, "the preset vanished while it was being updated")),
             };
             let fresh = Preset::from_settings(&pid, &name, &group, &d, &groups);
+            // (presets serve every catalog: a flat-field map goes with the preset)
+            let settings = s.portable(&fresh.settings);
             match s.presets.get_mut(i) {
-                Some(x) => x.settings = fresh.settings,
+                Some(x) => x.settings = settings,
                 None => return Err(bad(c, "the preset vanished while it was being updated")),
             }
             pid
         }
         None => {
             let pid = format!("user.{}.{}", s.presets.len(), name.to_lowercase().replace(' ', "-"));
-            s.presets.push(Preset::from_settings(&pid, &name, "User Presets", &d, &groups));
+            let mut fresh = Preset::from_settings(&pid, &name, "User Presets", &d, &groups);
+            s.portable_settings(&mut fresh.settings);
+            s.presets.push(fresh);
             pid
         }
     };

@@ -156,6 +156,9 @@ pub mod update;
 pub mod upright_jobs;
 pub mod video;
 mod view;
+pub mod vignetting_calibration_io;
+pub mod vignetting_calibration_library;
+pub mod vignetting_calibration_placement;
 pub mod walk;
 pub mod xmp_look;
 
@@ -466,8 +469,17 @@ pub struct Session {
     pub(crate) focus_scan: focus_scan::FocusScan,
     /// Photo ▸ Enhance jobs on worker threads (`enhance.rawDetails`, `enhance.superResolution`, `enhance.pump`).
     pub(crate) enhance: enhance::EnhanceJobs,
-    /// Copied develop settings (partial JSON) for Paste.
+    /// Copied develop settings (partial JSON, portable: a flat-field map goes with them) for Paste.
     pub clipboard: Option<Value>,
+    /// Flat-field maps that came in with settings (a paste, a preset, an agent's partial) and wait for the edit that
+    /// uses them to store them ([`vignetting_calibration_io`]).
+    pub(crate) incoming_vignetting_maps: std::collections::BTreeMap<lcc_develop::VignettingMapId, lcc_develop::EmbeddedVignettingMap>,
+    /// Where each raw's picture sits on its sensor, read from its header for flat-field matching
+    /// ([`Session::photo_placement`]); in the app, by a worker thread ([`vignetting_calibration_placement`]).
+    pub vignetting_calibration_placements: vignetting_calibration_placement::Placements,
+    /// The flat-field library's folder when it isn't the usual one ([`vignetting_calibration_library::dir`]): `Some(None)` for
+    /// none (tests, tools).
+    pub vignetting_calibration_dir_override: Option<Option<std::path::PathBuf>>,
     /// The photo [`Session::clipboard`] was copied from: Paste links its masks with the pasted
     /// copies.
     pub clipboard_from: Option<PhotoId>,
@@ -857,6 +869,9 @@ impl Session {
             focus_scan: Default::default(),
             enhance: Default::default(),
             clipboard: None,
+            incoming_vignetting_maps: Default::default(),
+            vignetting_calibration_placements: Default::default(),
+            vignetting_calibration_dir_override: None,
             clipboard_from: None,
             meta_clipboard: None,
             browse: None,
@@ -1165,7 +1180,8 @@ impl Session {
     /// itself is refused here, whichever command, task or caller asked ([`Catalog::apply_new`]);
     /// undo, redo and opening a library bring back what was and are not held to that.
     pub fn commit(&mut self, label: &str, op: Op) -> Result<()> {
-        let mut op = op;
+        // the flat-field maps the edit's settings came with go in first (`vignetting_calibration_io`)
+        let mut op = self.with_vignetting_maps(op);
         self.mark_batch(&mut op);
         let fwd = op.clone();
         let inv = self.apply_through(op, Catalog::apply_new)?;
@@ -1194,6 +1210,7 @@ impl Session {
         self.upright_after(&upright);
         // photos whose Smooth Skin now wants the skin found get it
         self.skin_after(&upright);
+        self.vignetting_after(&upright);
         Ok(())
     }
 
@@ -1307,6 +1324,7 @@ impl Session {
         }
         self.drop_gone_from_selection();
         self.reconcile_view();
+        self.vignetting_after(&e.op);
         // Dropping the queued step, rather than logging its reversal after it, keeps a write cut short (a crash, a full
         // disk) from saving the step without its reversal: each op is its own record in the log.
         match step.pending.filter(|at| at.saturating_add(1) == self.pending_log.len()) {
@@ -1488,6 +1506,7 @@ impl Session {
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
+        self.vignetting_after(&applied);
         Ok(e.label)
     }
 
@@ -1536,6 +1555,7 @@ impl Session {
         });
         // a step that brings back Smooth Skin without its skin gets it again (kept for the session: no model runs)
         self.skin_after(&applied);
+        self.vignetting_after(&applied);
         Ok(e.label)
     }
 
@@ -2896,6 +2916,12 @@ mod tests_upright_jobs;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_video_posters;
+#[cfg(test)]
+mod tests_vignetting_calibration_commands;
+#[cfg(test)]
+mod tests_vignetting_calibration_portable;
+#[cfg(test)]
+mod tests_vignetting_calibration_render;
 /// The turn or flip that takes orientation `from` to `to` (`None` when they are the same): what the
 /// masks, on the oriented photo, must follow ([`lcc_pipeline::mask_space::turn`]).
 pub(crate) fn orientation_change(from: lcc_geom::Orientation, to: lcc_geom::Orientation) -> Option<lcc_geom::Orientation> {

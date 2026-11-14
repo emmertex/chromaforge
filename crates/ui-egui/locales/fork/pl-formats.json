@@ -139,6 +139,7 @@
   "Version {new} is older than the installed version {installed}": "Wersja {new} jest starsza niż zainstalowana wersja {installed}",
   "Version {version} is available.": "Dostępna jest wersja {version}.",
   "Video in {dir}": "Wideo w {dir}",
+  "Vignetting calibration not applied to {n} photos: no reference for their camera, lens and aperture": "Kalibracji winietowania nie zastosowano do {n} zdjęć: brak odniesienia dla ich aparatu, obiektywu i przysłony",
   "Waiting to export {total} photo{}": "Oczekuje na eksport: zdjęcia {total}{:.0}",
   "What {name} does with it:": "Co {name} z tym robi:",
   "Where should the Capture One catalog “{catalog}” go?": "Dokąd zaimportować katalog Capture One „{catalog}”?",

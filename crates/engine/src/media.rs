@@ -346,6 +346,8 @@ impl DecodedSource {
                 generated: header.generated,
                 avoid: header.avoid,
                 identity: header.identity.or(info.identity),
+                // (the catalog's maps, as the session knows them: the decoder doesn't)
+                vignetting_maps: header.vignetting_maps,
                 ..info.clone()
             },
             None => SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header },
@@ -2337,9 +2339,18 @@ fn header_info(p: &Photo) -> SourceInfo {
 }
 
 impl crate::Session {
-    /// What a render of `p` is interpreted against: [`source_info`] and the photo's generated patches.
+    /// What a render of `p` is interpreted against: [`source_info`], the photo's generated patches and the catalog's
+    /// flat-field maps its settings use.
     pub fn job_info(&self, p: &Photo) -> SourceInfo {
-        SourceInfo { generated: self.genfill_store(p), ..source_info(p) }
+        SourceInfo { generated: self.genfill_store(p), vignetting_maps: self.vignetting_calibration_store(p), ..source_info(p) }
+    }
+
+    /// The catalog's flat-field maps photo `p` uses (its settings, History steps, Versions, Before), for its renders;
+    /// `None` when it uses none.
+    pub fn vignetting_calibration_store(&self, p: &Photo) -> Option<lcc_pipeline::vignetting_calibration::VignettingMapStore> {
+        let maps: std::collections::BTreeMap<lcc_develop::VignettingMapId, Arc<lcc_develop::EmbeddedVignettingMap>> =
+            p.vignetting_map_ids().filter_map(|id| self.catalog.vignetting_map(id).map(|r| (id.clone(), Arc::new(r.map.clone())))).collect();
+        (!maps.is_empty()).then(|| lcc_pipeline::vignetting_calibration::VignettingMapStore(Arc::new(maps)))
     }
 
     /// Build a render job for `id` fitting `max_w × max_h`. `before` renders the unedited look.

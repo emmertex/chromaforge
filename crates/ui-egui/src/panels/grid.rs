@@ -1312,7 +1312,7 @@ fn cell(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool,
         let marks = bar.shrink2(vec2(if square { 8.0 } else { 3.0 }, 1.0));
         register(ui.ctx(), format!("cellmarks:{}", id.0), marks);
         if show_badges || photo.label.is_some() {
-            paint_badges(p, &t, marks, &photo, false);
+            paint_badges(p, &t, marks, &photo, false, app.session.catalog.is_vignetting_reference(photo.id));
         }
     }
     let badge_bar = Rect::from_min_max(pos2(img_rect.left(), img_rect.bottom() - 24.0), img_rect.right_bottom());
@@ -1506,7 +1506,7 @@ fn paint_outlined(p: &egui::Painter, rect: Rect, icon: Icon, colour: Color32) {
 /// A photo's culling marks along `bar` (the strip under a Compact thumbnail): its flag and stars
 /// from the left, its colour label and edited mark from the right, sized to the bar's height so
 /// they read at a glance. `on_photo`: drawn over the picture (white marks) rather than on the panel.
-pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool) {
+pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalog::Photo, on_photo: bool, reference: bool) {
     let h = bar.height().clamp(10.0, 40.0);
     let y = bar.center().y;
     let star = (h * 0.62).round().max(8.0);
@@ -1553,6 +1553,13 @@ pub fn paint_badges(p: &egui::Painter, t: &Tokens, bar: Rect, photo: &lcc_catalo
         let s = (h * 0.5).round();
         let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
         paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Share, colour);
+        right -= s + 4.0;
+    }
+    // a Vignetting Calibration reference in use
+    if reference {
+        let s = (h * 0.5).round();
+        let colour = if on_photo { Color32::from_gray(220) } else { t.text_label };
+        paint(p, Rect::from_min_size(pos2(right - s, y - s / 2.0), vec2(s, s)), Icon::Radial, colour);
     }
 }
 

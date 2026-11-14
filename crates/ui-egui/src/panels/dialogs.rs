@@ -306,6 +306,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
         Dialog::DeleteEffects { .. } => "Delete Effect Presets",
         Dialog::DeleteRejected { .. } => "Delete Rejected Photos",
         Dialog::StopWaiting { .. } => "Stop Waiting",
+        Dialog::VignettingCreateAnyway { .. } | Dialog::VignettingReplace { .. } => "Vignetting Calibration",
         Dialog::RemoveFolder { disk: true, .. } => "Remove Disk from Catalog",
         Dialog::RemoveFolder { .. } => "Remove Folder from Catalog",
         Dialog::SynchronizeFolder { .. } => "Synchronize Folder",
@@ -1344,6 +1345,17 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     ui.label(crate::i18n::tr_format!("Stop waiting: {task}?", task = task));
                     crate::dialog_frame::note(ui, egui::RichText::new(warning.as_str()).color(t.text_dim));
                 }
+                Dialog::VignettingReplace { question, .. } => {
+                    ui.label(question.as_str());
+                    crate::dialog_frame::note(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr("Photos that use the old reference keep it.")).color(t.text_dim),
+                    );
+                }
+                Dialog::VignettingCreateAnyway { reasons, .. } => {
+                    ui.label(crate::i18n::tr("This photo doesn't look like a flat-field reference. Create the vignetting calibration anyway?"));
+                    crate::dialog_frame::note(ui, egui::RichText::new(reasons.as_str()).color(t.text_dim));
+                }
                 Dialog::DeleteRejected { count, recycle } => {
                     ui.label(crate::i18n::tr_format!("Delete the {n} rejected photos of this view?", n = count));
                     ui.add_space(6.0);
@@ -1631,6 +1643,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     Dialog::DeleteRejected { recycle: true, .. } => "Move to Trash",
                     Dialog::DeleteRejected { .. } => "Remove",
                     Dialog::StopWaiting { .. } => "Stop Waiting",
+                    Dialog::VignettingCreateAnyway { .. } => "Create Anyway",
+                    Dialog::VignettingReplace { .. } => "Replace",
                     Dialog::LightroomCatalog { .. } => "Import Lightroom Catalog…",
                     d @ Dialog::LightroomDestination { .. } => crate::lightroom_destination::ok_label(d),
                     Dialog::SynchronizeFolder { .. } if informational => "Close",
@@ -2450,6 +2464,8 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             crate::panels::activity::cancel(app, *id);
             Ok(serde_json::Value::Null)
         }
+        Dialog::VignettingCreateAnyway { photo, .. } => crate::panels::edit::create_vignetting_calibration_anyway(app, *photo),
+        Dialog::VignettingReplace { photo, .. } => crate::panels::edit::replace_vignetting_calibration(app, *photo),
         Dialog::DeleteRejected { recycle, .. } => {
             let r = app.run("library.deleteRejected", json!({"files": if *recycle { "recycle" } else { "keep" }, "confirm": true}));
             if let Ok(v) = &r {
@@ -4226,7 +4242,9 @@ pub fn confirm_style(dlg: &Dialog) -> ConfirmStyle {
         | Dialog::DeleteEffects { .. }
         | Dialog::RemoveFolder { .. }
         | Dialog::DeleteRejected { .. }
-        | Dialog::StopWaiting { .. } => ConfirmStyle::Plain,
+        | Dialog::StopWaiting { .. }
+        | Dialog::VignettingCreateAnyway { .. }
+        | Dialog::VignettingReplace { .. } => ConfirmStyle::Plain,
         _ if only_shows(dlg) => ConfirmStyle::Plain,
         _ => ConfirmStyle::Primary,
     }

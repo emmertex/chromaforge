@@ -2147,3 +2147,69 @@ fn dithered_gradients_match_in_phase() {
         assert!(share < 0.05, "{:.1} % of the pixels differ: the dither is out of phase", share * 100.0);
     }
 }
+
+/// A flat-field map (Capture One LCC "Uniform Light", `lcc_pipeline::vignetting_calibration`): the GPU's `warp_gain` samples
+/// the same field as `Warp::gain`. On a raw source whose 5:4 image area sits inside a 3:2 map's window, turned by
+/// the user; with manual vignetting on top; with a lens profile's vignetting (stepping aside) and distortion; at the
+/// largest amount; and in a preview window with the joint colour NR on, whose noise model samples the whole frame
+/// in tiles (`Frame::sample_windows`).
+#[test]
+fn vignetting_calibration_matches() {
+    if !gpu() {
+        return;
+    }
+    use lcc_develop::{EmbeddedLens, EmbeddedVignette, EmbeddedVignettingMap, EmbeddedWarp};
+    use lcc_raw::SensorWindow;
+    use lcc_raw::gaintable::SourcePlacement;
+    // a 960 × 640 sensor; the photo's 800 × 640 image area at (80, 0) on it
+    let sensor = [960usize, 640];
+    let grid = [48usize, 32];
+    let ev: Vec<f64> = (0..grid[0] * grid[1])
+        .map(|i| {
+            let (dx, dy) = (((i % grid[0]) as f64 + 0.5) / grid[0] as f64 - 0.53, (((i / grid[0]) as f64 + 0.5) / grid[1] as f64 - 0.48) / 1.5);
+            let d2 = (dx * dx + dy * dy) / (0.25 + 0.25 / 2.25);
+            1.3 * d2 * d2 + 0.25 * d2
+        })
+        .collect();
+    let map = EmbeddedVignettingMap::from_ev(sensor, grid, Some([960, 640, 0, 0, 960, 640]), Default::default(), &ev).unwrap();
+    let win = SensorWindow { sensor, origin: [80, 0], size: [800, 640] };
+    let rect = [4.0 / 800.0, 2.0 / 640.0, 792.0 / 800.0, 636.0 / 640.0];
+    let placement = SourcePlacement { active_size: Some(win.size), window: Some(win), ..SourcePlacement::new(rect, Orientation::Normal) };
+    let vignetting_maps = Some(lcc_pipeline::vignetting_calibration::VignettingMapStore::of([map.clone()]));
+    let info = SourceInfo { raw: true, placement: Some(placement), vignetting_maps, ..Default::default() };
+    let id = lcc_develop::VignettingMapId::of(&map);
+    let src = scene(3, 792, 636);
+    let mut s = DevelopSettings::default();
+    s.optics.vignetting_calibration = Some(id.clone());
+    s.orientation = Orientation::Rotate90;
+    assert!(lcc_pipeline::frame_for(&src, &info, &s, true).warp.is_some_and(|w| w.field.is_some()), "the map applies");
+    check("flat field 5:4 rotated", &src, &info, &s, &RenderRequest::fit(700, 700));
+    // the GPU really applies it: its corner is brighter than without the map
+    let req = RenderRequest::fit(700, 700);
+    let with = lcc_gpu::render(&src, &info, &s, &req, None).expect("gpu render").image;
+    let without = lcc_gpu::render(&src, &info, &DevelopSettings { orientation: Orientation::Rotate90, ..Default::default() }, &req, None)
+        .expect("gpu render")
+        .image;
+    let corner = |i: &Rgba8| (0..3).map(|c| u32::from(i.data[i.width * 5 + 5][c])).sum::<u32>();
+    assert!(corner(&with) > corner(&without) + 20, "{} vs {}", corner(&with), corner(&without));
+    s.optics.vignetting = -40.0;
+    check("flat field + manual vignetting", &src, &info, &s, &RenderRequest::fit(700, 700));
+    let lens = EmbeddedLens {
+        warp: Some(EmbeddedWarp { planes: [[1.0, -0.03, 0.01, 0.0, 0.0, 0.0]; 3], center: Point::new(0.5, 0.5), radius: 0.6 }),
+        vignette: Some(EmbeddedVignette { k: [0.5, -0.1, 0.0, 0.0, 0.0], center: Point::new(0.5, 0.5), radius: 0.6 }),
+        stages: Default::default(),
+    };
+    let lensed = SourceInfo { lens: Some(lens), ..info.clone() };
+    s.optics.lens_profile = true;
+    check("flat field + lens profile", &src, &lensed, &s, &RenderRequest::fit(700, 700));
+    s.optics.vignetting_calibration_amount = 120.0;
+    check("flat field at 120", &src, &lensed, &s, &RenderRequest::fit(700, 700));
+    // a preview level of a large original with the joint colour NR, and a zoomed window of it
+    let mut s = DevelopSettings { process: Process::V8.version(), orientation: Orientation::Rotate90, ..Default::default() };
+    s.optics.vignetting_calibration = Some(id);
+    s.detail.nr_color = 60.0;
+    let preview = SourceInfo { native_long: Some(8000), ..info.clone() };
+    check("flat field + colour NR preview", &src, &preview, &s, &RenderRequest::fit(636, 792));
+    let w = lcc_pipeline::PixelWindow { x: 0, y: 500, w: 300, h: 260 };
+    check("flat field + colour NR window", &src, &info, &s, &RenderRequest { window: Some(w), ..RenderRequest::fit(636, 792) });
+}

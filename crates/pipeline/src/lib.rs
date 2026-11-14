@@ -58,6 +58,7 @@ pub mod spots;
 pub mod tone;
 pub mod transform;
 pub mod upright;
+pub mod vignetting_calibration;
 pub mod visualize;
 
 pub use curve::{PARAM_AMOUNTS, PARAM_LUT, ParametricCurve};
@@ -158,6 +159,12 @@ pub struct SourceInfo {
     /// renders share one run. `None`: they are kept by the pixels (a source of another size
     /// runs them again).
     pub identity: Option<SourceIdentity>,
+    /// Raw sources: where the developed picture sits in the active area and on the sensor (the same placement the
+    /// raw's gain table uses), for a flat-field map ([`vignetting_calibration::field_for`]). `None`: not a raw.
+    pub placement: Option<lcc_raw::gaintable::SourcePlacement>,
+    /// The flat-field maps the settings may reference by id (`lcc_develop::Optics::vignetting_calibration`), from the catalog: the
+    /// session fills it as it fills `generated`. `None`: no map renders.
+    pub vignetting_maps: Option<vignetting_calibration::VignettingMapStore>,
 }
 
 /// Hot, dead and stuck pixels corrected on a raw's mosaic while it was decoded.
@@ -202,6 +209,8 @@ impl Default for SourceInfo {
             avoid: None,
             pixels: None,
             identity: None,
+            placement: None,
+            vignetting_maps: None,
         }
     }
 }
@@ -432,6 +441,8 @@ pub fn native_output_size(src_w: usize, src_h: usize, s: &DevelopSettings) -> (f
 /// The geometric frame `render` uses for `src` (lens data, automatic CA estimate included).
 pub fn frame_for(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, apply_crop: bool) -> geometry::Frame {
     let mut frame = geometry::Frame::with_lens(src.width, src.height, s, apply_crop, info.lens.as_ref());
+    // (in every frame of the render: the noise model's tiles, masks, spots and Upright see the corrected light too)
+    frame.add_vignetting_calibration(vignetting_calibration::field_for(info, s, frame.orient));
     if s.optics.remove_ca && s.section_enabled("optics") {
         frame.add_lateral_ca(optics::estimate_lateral_ca(src));
         if apply_crop {

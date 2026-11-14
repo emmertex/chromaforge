@@ -169,6 +169,10 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
         if *g == SettingsGroup::SmoothSkin && !out.contains_key("skin") {
             out.insert("skin".into(), serde_json::to_value(crate::SkinSmoothing::default()).unwrap_or(Value::Null));
         }
+        // (the flat-field amount isn't written at 100 %: copying it still sets it where it is pasted)
+        if *g == SettingsGroup::Optics {
+            with_vignetting_calibration_amount(&mut out, s);
+        }
         if *g == SettingsGroup::SmoothSkin && !out.contains_key("retouch") {
             out.insert("retouch".into(), serde_json::to_value(crate::Retouch::default()).unwrap_or(Value::Null));
         }
@@ -249,6 +253,7 @@ const OPTICS_ITEMS: &[SettingItem] = &[
     ),
     item("optics.distortion", "Manual Distortion", &["optics.distortion"]),
     item("optics.vignetting", "Manual Vignetting", &["optics.vignetting", "optics.vignetting_midpoint"]),
+    item("optics.vignettingCalibration", "Vignetting Calibration", &["optics.vignetting_calibration", "optics.vignetting_calibration_amount"]),
 ];
 const GEOMETRY_ITEMS: &[SettingItem] = &[
     item("geometry.upright", "Upright", &["geometry.upright", "geometry.guides", "geometry.upright_transform", "geometry.lrc_upright"]),
@@ -440,6 +445,9 @@ impl SettingsPick {
             if it.paths.contains(&"hdr") && !o.contains_key("hdr") {
                 o.insert("hdr".into(), serde_json::to_value(crate::Hdr::default()).unwrap_or(Value::Null));
             }
+            if it.paths.contains(&"optics.vignetting_calibration_amount") {
+                with_vignetting_calibration_amount(o, s);
+            }
         }
         out
     }
@@ -463,6 +471,15 @@ impl SettingsPick {
             }
         }
         SettingsPick::from_ids(&ids)
+    }
+}
+
+/// Put `s`'s flat-field amount into the partial `out`'s `optics` when it isn't there (it isn't written at the
+/// default, but a copy of it must still set it).
+fn with_vignetting_calibration_amount(out: &mut Map<String, Value>, s: &DevelopSettings) {
+    let optics = out.entry("optics").or_insert_with(|| Value::Object(Map::new()));
+    if let Some(o) = optics.as_object_mut() {
+        o.entry("vignetting_calibration_amount").or_insert_with(|| Value::from(s.optics.vignetting_calibration_amount));
     }
 }
 
@@ -535,16 +552,21 @@ fn scale_patch(base: &Value, patch: &Value, t: f64) -> Value {
             });
             let other_scale = (p.contains_key("temp") || p.contains_key("tint"))
                 && p.get("scale").and_then(Value::as_str).unwrap_or("legacy") != b.get("scale").and_then(Value::as_str).unwrap_or("legacy");
+            // a flat-field map (an id: a choice, taken whole) that is new fades in from no correction
+            let new_map = p.get("vignetting_calibration").is_some_and(|pm| !pm.is_null() && b.get("vignetting_calibration") != Some(pm));
             let zero = Value::from(0.0);
             let mut out = Map::new();
             for (k, pv) in p {
                 let bv = match b.get(k) {
                     Some(Value::Number(_)) if choice_changed && k == "amount" => &zero,
+                    _ if new_map && k == "vignetting_calibration_amount" => &zero,
                     Some(bv) => bv,
                     None if choice_changed && k == "amount" && pv.is_number() => &zero,
                     None => &Value::Null,
                 };
-                let v = if other_scale && t > 0.0 && (k == "temp" || k == "tint") { pv.clone() } else { scale_patch(bv, pv, t) };
+                // (a portable partial's map, `optics.vignetting_calibration_map`, is taken whole too: its numbers aren't settings)
+                let whole = k == crate::vignetting_calibration::PORTABLE_MAP_KEY || (other_scale && t > 0.0 && (k == "temp" || k == "tint"));
+                let v = if whole { pv.clone() } else { scale_patch(bv, pv, t) };
                 out.insert(k.clone(), v);
             }
             Value::Object(out)
@@ -639,6 +661,9 @@ pub fn apply_partial(s: &DevelopSettings, partial: &Value, amount: f64) -> Devel
     if amount <= 0.0 {
         return s.clone();
     }
+    // (a map named without an amount comes at 100 %, which the strength then blends: `DevelopSettings::merged`)
+    let partial = crate::vignetting_calibration::complete_partial(partial);
+    let partial = partial.as_ref();
     let patch = if (amount - 1.0).abs() < 1e-9 { Cow::Borrowed(partial) } else { Cow::Owned(scale_patch(&blend_base(s), partial, amount)) };
     // (a white balance without a scale keeps its old meaning: `DevelopSettings::merged`)
     s.merged(&patch).unwrap_or_else(|_| s.clone())
@@ -1137,6 +1162,10 @@ mod tests {
         s.hdr.enabled = true;
         // only written when an XMP carried Lightroom's Upright matrix
         s.geometry.lrc_upright = Some(lcc_geom::Homography::IDENTITY);
+        // only written while the photo has one (and the amount only off its default)
+        s.optics.vignetting_calibration = crate::EmbeddedVignettingMap::from_ev([4, 4], [2, 2], None, Default::default(), &[0.0, 0.5, 0.5, 1.0])
+            .map(|m| crate::VignettingMapId::of(&m));
+        s.optics.vignetting_calibration_amount = 80.0;
         let full = s.to_json();
         for g in SettingsGroup::ALL {
             if g.items().is_empty() {
