@@ -13,12 +13,15 @@
 //! 6 min left · 2 failed". Its per-photo rows fold under it ("Show each photo"), and when it ends its summary shows
 //! once as a message ("AI Denoise: 198 done, 2 failed: why").
 //!
+//! A continuous job with `controls` (the face scan, search indexing) has a pause button (resume while paused: it stays
+//! on the stack, saying "Paused") and a gear that opens its Settings page; they run the job's own commands.
+//!
 //! A task whose stop throws work away (`stopWarning`: a plug-in's wait for a program) has no ✕ anywhere. The list and
 //! the Modern card give it "Stop Waiting…", which asks first ([`Dialog::StopWaiting`]); its confirm button runs
 //! `activity.cancel`.
 
 use egui::{Align, Layout, Margin, Rect, RichText, Sense, Stroke, pos2, vec2};
-use lcc_engine::activity::{BatchSummary, TaskInfo, Unit, fill};
+use lcc_engine::activity::{BatchSummary, Controls, TaskInfo, Unit, fill};
 use serde_json::json;
 
 use crate::LccApp;
@@ -217,17 +220,73 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     }
 }
 
-/// What a click in the rows asked for: ✕ on a task, Stop Waiting… on one, or a batch's photos opened or folded.
+/// What a click in the rows asked for: ✕ on a task, Stop Waiting… on one, a batch's photos opened or folded, or a
+/// job's pause, resume or gear.
 #[derive(Default)]
 struct Picked {
     cancel: Option<u64>,
     stop: Option<(u64, String, String)>,
     fold: Option<u64>,
+    control: Option<(Controls, Control)>,
+}
+
+/// A click on a job's controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    /// Pause, or resume when paused.
+    Toggle,
+    /// The gear: its Settings page.
+    Settings,
+}
+
+/// Run what a click on a job's controls asked for: its pause or resume command, or Settings at its page.
+fn control(app: &mut LccApp, c: &Controls, what: Control) {
+    let r = match what {
+        Control::Toggle => app.run(if c.paused { c.resume } else { c.pause }, json!({})),
+        Control::Settings => match c.settings_section {
+            Some(section) => app.run("app.settings", json!({"section": section})),
+            None => app.run("app.settings", json!({"tab": c.settings_tab})),
+        },
+    };
+    if let Err(e) = r {
+        app.ui.status = e;
+    }
+}
+
+/// The pause (or resume) button and the gear of a task with `controls`, at the right of its name; which was clicked.
+fn control_icons(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo) -> Option<Control> {
+    let c = task.controls.as_ref()?;
+    let mut clicked = None;
+    let (icon, name, id) = if c.paused { (Icon::Play, "Resume", "resume") } else { (Icon::Pause, "Pause", "pause") };
+    let (rect, r) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
+    crate::widgets::announce(&r, tr(name));
+    paint(ui.painter(), rect.shrink(2.0), icon, if r.hovered() { t.text } else { t.icon });
+    register(ui.ctx(), format!("activity:{id}:{}", task.id), rect);
+    if r.on_hover_text(tr(name)).clicked() {
+        clicked = Some(Control::Toggle);
+    }
+    let (rect, r) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
+    crate::widgets::announce(&r, tr("Settings"));
+    paint(ui.painter(), rect.shrink(2.0), Icon::Gear, if r.hovered() { t.text } else { t.icon });
+    register(ui.ctx(), format!("activity:settings:{}", task.id), rect);
+    if r.on_hover_text(tr("Settings")).clicked() {
+        clicked = Some(Control::Settings);
+    }
+    clicked
+}
+
+/// The room the icons at the right of a task's name take: ✕ (`cross`) and the pause button and gear.
+fn icons_width(task: &TaskInfo, cross: bool) -> f32 {
+    let n = usize::from(cross) + if task.controls.is_some() { 2 } else { 0 };
+    n as f32 * (CROSS + 6.0)
 }
 
 fn apply(app: &mut LccApp, picked: Picked) {
     if let Some(id) = picked.cancel {
         cancel(app, id);
+    }
+    if let Some((c, what)) = picked.control {
+        control(app, &c, what);
     }
     // ask first; another dialog open (it takes the clicks anyway) is left alone
     if let Some((id, task, warning)) = picked.stop
@@ -270,6 +329,9 @@ fn rows(ui: &mut egui::Ui, t: &Tokens, tasks: &[(&TaskInfo, u8, usize)], open: &
             }
             if clicked.fold {
                 picked.fold = Some(task.id);
+            }
+            if let (Some(what), Some(c)) = (clicked.control, &task.controls) {
+                picked.control = Some((c.clone(), what));
             }
         }
     });
@@ -345,6 +407,7 @@ pub fn plate(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
     let resp = resp.on_hover_text(tr("Show running tasks"));
     let list_open = app.activity_list;
     let mut cancel = None;
+    let mut controlled = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(area).layout(Layout::top_down(Align::Min)), |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
         let width = area.width();
@@ -354,11 +417,19 @@ pub fn plate(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
                 // the list, while open, has the task's ✕ (and its widget id)
                 // a task whose stop throws work away is stopped from the list, after a question
                 let cross = task.cancellable && !task.cancelling && !list_open && task.stop_warning.is_none();
-                let label_w = if cross { width - CROSS - 6.0 } else { width };
+                // the list, while open, has the pause button and the gear too
+                let icons = if list_open { 0.0 } else { icons_width(task, cross) };
+                let label_w = width - icons;
                 ui.allocate_ui_with_layout(vec2(label_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
                     ui.set_width(label_w);
                     ui.add(egui::Label::new(RichText::new(label_text(task)).font(t.font(12.0)).color(t.text)).truncate().selectable(false));
                 });
+                if !list_open
+                    && let Some(what) = control_icons(ui, &t, task)
+                    && let Some(c) = &task.controls
+                {
+                    controlled = Some((c.clone(), what));
+                }
                 if cross {
                     let (rect, r) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
                     crate::widgets::announce(&r, crate::i18n::tr("Cancel"));
@@ -389,6 +460,8 @@ pub fn plate(app: &mut LccApp, ui: &mut egui::Ui, area: Rect) {
     });
     if let Some(id) = cancel {
         self::cancel(app, id);
+    } else if let Some((c, what)) = controlled {
+        control(app, &c, what);
     } else if resp.clicked()
         && let Err(e) = app.run("view.activityList", serde_json::json!({}))
     {
@@ -445,6 +518,7 @@ struct RowClicks {
     cross: bool,
     stop: bool,
     fold: bool,
+    control: Option<Control>,
 }
 
 /// One task: name and ✕, the bar, the detail line, Stop Waiting… for a task whose stop throws work away (instead of
@@ -453,17 +527,19 @@ fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, 
     let mut clicked = false;
     let mut stop = false;
     let mut fold = false;
+    let mut control = None;
     let stoppable = task.cancellable && !task.cancelling;
     let r = ui.vertical(|ui| {
         ui.set_width(width);
         ui.horizontal(|ui| {
             let cross = stoppable && task.stop_warning.is_none();
-            let label_w = if cross { width - CROSS - 6.0 } else { width };
+            let label_w = width - icons_width(task, cross);
             ui.allocate_ui_with_layout(vec2(label_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
                 // the whole width, so the cross lands at the right edge however short the name
                 ui.set_width(label_w);
                 ui.add(egui::Label::new(RichText::new(label_text(task)).font(t.font(12.5)).color(t.text)).truncate());
             });
+            control = control_icons(ui, t, task);
             if cross {
                 let (rect, resp) = ui.allocate_exact_size(vec2(CROSS, CROSS), Sense::click());
                 crate::widgets::announce(&resp, crate::i18n::tr("Cancel"));
@@ -491,7 +567,7 @@ fn row(ui: &mut egui::Ui, t: &Tokens, task: &TaskInfo, width: f32, kids: usize, 
         }
     });
     register(ui.ctx(), format!("activity:row:{}", task.id), r.response.rect);
-    RowClicks { cross: clicked, stop, fold }
+    RowClicks { cross: clicked, stop, fold, control }
 }
 
 /// The progress bar, named after its task for screen readers; while the amount of work isn't

@@ -92,8 +92,13 @@ fn search(app: &mut LccApp, ui: &egui::Ui, area: Rect) {
         if chip(ui, "stars", "★ 3+", stars) {
             change = Some(if stars { json!({"rating": 0}) } else { json!({"rating": 3, "ratingOp": "atLeast"}) });
         }
+        // semantic search switched off (Settings ▸ AI Models): no AI chip, the field searches the text
+        let semantic_on = app.session.semantic_search_on();
+        if !semantic_on {
+            app.ui.semantic_search = false;
+        }
         let current = if app.ui.semantic_search { app.session.filter.semantic.clone().unwrap_or_default() } else { app.session.filter.text.clone() };
-        if chip(ui, "ai", "AI", app.ui.semantic_search) {
+        if semantic_on && chip(ui, "ai", "AI", app.ui.semantic_search) {
             app.ui.semantic_search = !app.ui.semantic_search;
             if !current.trim().is_empty() {
                 change = Some(if app.ui.semantic_search {

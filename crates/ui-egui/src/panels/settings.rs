@@ -23,7 +23,7 @@ use crate::theme::Tokens;
 use crate::widgets::register;
 
 /// Sections `app.settings {section}` can open, with their tab.
-pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import")];
+pub const SECTIONS: &[(&str, &str)] = &[("lensProfiles", "import"), ("autoImport", "import"), ("semanticSearch", "ai")];
 
 /// (id, label) of the tabs, in the order of the Settings window's one row of tabs (OneSlips,
 /// LR-PREF-WINDOW): the settings used most first, the editing helpers and the AI next, the
