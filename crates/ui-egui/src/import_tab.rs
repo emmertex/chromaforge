@@ -865,13 +865,7 @@ fn bar_layout(row: &egui::Ui, import_label: &str, name: Option<&str>, folder: Op
     let show_w = crate::widgets::segments_width(row, &SHOW_LABELS) + gap;
     let take_w = crate::widgets::segments_width(row, &TAKE_LABELS) + gap;
     let mut l = BarLayout { take: wide, show: browsing, room: 0.0, name_w };
-    let right = |l: &BarLayout| {
-        import_w
-            + develop_w
-            + if l.show { show_w } else { 0.0 }
-            + if l.take { take_w } else { 0.0 }
-            + gap
-    };
+    let right = |l: &BarLayout| import_w + develop_w + if l.show { show_w } else { 0.0 } + if l.take { take_w } else { 0.0 } + gap;
     let fits = |l: &BarLayout| avail - right(l) >= name_w + crumb_min;
     for step in 0..2 {
         if fits(&l) {
