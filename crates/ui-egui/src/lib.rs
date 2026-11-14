@@ -227,8 +227,6 @@ mod tests_dialog_settings;
 #[cfg(test)]
 mod tests_dialog_tab;
 #[cfg(test)]
-mod tests_help_links;
-#[cfg(test)]
 mod tests_dialog_width;
 #[cfg(test)]
 mod tests_dialogs;
@@ -270,6 +268,8 @@ mod tests_grid_style;
 mod tests_guided_guides;
 #[cfg(test)]
 mod tests_hdr_zoom_cache;
+#[cfg(test)]
+mod tests_help_links;
 #[cfg(test)]
 mod tests_histogram_drag;
 #[cfg(test)]

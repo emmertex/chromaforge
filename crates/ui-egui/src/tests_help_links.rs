@@ -48,7 +48,8 @@ fn settings_help_links_name_known_topics_and_open_the_manual() {
         shown.extend(on_tab);
     }
     // And the significant groups have one (a few depend on what this build or computer has)
-    let conditional = ["autoImport", "folderPolling", "xmpSidecars", "importMetadata", "smartPreviews", "sam3", "semanticSearch", "faceScan", "denoiseModels"];
+    let conditional =
+        ["autoImport", "folderPolling", "xmpSidecars", "importMetadata", "smartPreviews", "sam3", "semanticSearch", "faceScan", "denoiseModels"];
     for (topic, _) in crate::help_link::TOPICS {
         if !conditional.contains(topic) {
             assert!(shown.contains(*topic), "no Settings page shows the help link {topic}; shown: {shown:?}");
