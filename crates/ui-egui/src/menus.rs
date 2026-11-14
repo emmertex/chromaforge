@@ -3166,11 +3166,13 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     parts.push(msg);
                 }
-                // Show the new presets where they live, in Develop's left column, unfolded (issue
-                // #469). Outside Develop the import leaves the screen as it is: the toast says
-                // what came in.
+// Show the new presets where they live, in Develop's left column, unfolded (issue
+                // #469). Outside Develop the screen is left as it is: the panel is unfolded where
+                // it lives for Develop's next visit, and the toast says what came in (issue #875).
                 if n > 0 && app.ui.module == crate::module::ModuleId::Develop {
                     let _ = crate::panels::presets::reveal(app);
+                } else if n > 0 && !crate::panels::presets::shown(app) {
+                    crate::panels::presets::set_shown(app, true);
                 }
             }
             let mut msg = parts.join(" · ");
