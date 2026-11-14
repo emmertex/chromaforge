@@ -194,6 +194,16 @@ pub fn normalize_iso(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// [`normalize_iso`], keeping what follows the seconds as typed: a fraction of a second and a UTC
+/// offset (`2026-07-10T08:47:46+01:00`), as an import from Exif keeps them. Edit Capture Time
+/// uses it so a corrected time can carry its zone. `None` if it isn't a valid date.
+pub fn normalize_iso_keeping_zone(s: &str) -> Option<String> {
+    let out = normalize_iso(s)?;
+    let s = s.trim();
+    let tail = s.get(tail_start(s)?..)?;
+    Some(format!("{out}{tail}"))
+}
+
 /// Granularity of the grid's date headers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
