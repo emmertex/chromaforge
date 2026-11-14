@@ -39,6 +39,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("slideshow", "Slideshow"),
     ("faces", "Faces"),
     ("profiles", "Profiles"),
+    ("develop", "Develop"),
     ("denoise", "AI Denoise"),
     ("ai", "AI Models"),
     ("genfill", "Generative Fill"),
@@ -363,6 +364,7 @@ pub(crate) fn tab_body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, tab: &st
         "ai" => super::ai_models::settings_tab(app, ui, t),
         "genfill" => super::genfill::settings_tab(app, ui, t),
         "profiles" => super::settings_profiles::settings_tab(app, ui, t),
+        "develop" => super::settings_develop::settings_tab(app, ui, t),
         "shortcuts" => shortcuts_tab(app, ui, t),
         "controls" => super::controls::settings_tab(app, ui, t),
         #[cfg(not(target_arch = "wasm32"))]

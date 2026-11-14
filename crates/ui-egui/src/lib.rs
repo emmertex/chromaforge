@@ -134,6 +134,7 @@ pub mod text_field;
 pub mod theme;
 pub mod timelapse_ui;
 pub mod titlebar;
+pub mod tool_profiles;
 pub mod video_ui;
 pub mod video_view;
 pub mod view_state;
@@ -391,8 +392,6 @@ mod tests_print;
 #[cfg(test)]
 mod tests_profile_manager;
 #[cfg(test)]
-mod tests_profile_menu;
-#[cfg(test)]
 mod tests_profiles_layout;
 #[cfg(test)]
 mod tests_progress;
@@ -460,6 +459,8 @@ mod tests_titlebar;
 mod tests_tool_overlay;
 #[cfg(test)]
 mod tests_tool_pan;
+#[cfg(test)]
+mod tests_tool_profiles;
 #[cfg(test)]
 mod tests_tool_row;
 #[cfg(test)]

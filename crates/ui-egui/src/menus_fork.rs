@@ -29,6 +29,7 @@ pub(super) fn commands() -> impl Iterator<Item = &'static UiCommand> {
         .chain(crate::modern_library::COMMANDS)
         .chain(crate::modern_sheets::COMMANDS)
         .chain(GRADING_COMMANDS)
+        .chain(crate::tool_profiles::COMMANDS)
         .chain(crate::quick_bar::COMMANDS)
         .chain(crate::lrc_menus::SOON_COMMANDS.iter())
 }
@@ -75,6 +76,9 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
         return Some(r);
     }
     if let Some(r) = crate::catalog_ui::run(app, id, p) {
+        return Some(r);
+    }
+    if let Some(r) = crate::tool_profiles::run(app, id, p) {
         return Some(r);
     }
     if let Some(r) = crate::modern::run(app, id, p) {
