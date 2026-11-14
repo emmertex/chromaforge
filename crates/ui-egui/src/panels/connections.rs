@@ -406,7 +406,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     key_storage(app, ui, t);
-    super::settings::heading(ui, t, "Immich servers");
+    super::settings::heading_help(ui, t, "Immich servers", "connections");
     let st = app.session.execute("immich.status", &json!({})).unwrap_or_default();
     // a background connect that finished
     if app.immich.awaiting_connect && st["connecting"] == false {

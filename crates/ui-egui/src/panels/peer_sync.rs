@@ -172,7 +172,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         app.peer_sync.name_loaded = true;
     }
 
-    super::settings::heading(ui, t, "This Device");
+    super::settings::heading_help(ui, t, "This Device", "sync");
     let mut rename = false;
     super::settings::row(ui, t, "Name", |ui| {
         let r = crate::text_field::TextField::singleline("field:syncDeviceName", &mut app.peer_sync.name).width(240.0).show(ui);
