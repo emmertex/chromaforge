@@ -458,37 +458,39 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         // (issue #148: the two checkboxes above reset on every photo, so a batch wants a default).
         // One quiet line under the lens controls (issue #346: it used to split them from the sliders).
         if shown_here(app, ui, "option:newPhotoDefault") {
-        egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
-            ui,
-            |ui| {
-                let photo_camera = app.session.catalog.photo(id).map(|p| p.meta.camera.trim().to_string()).unwrap_or_default();
-                let current = {
-                    let defaults = &app.session.import_defaults;
-                    if defaults.per_camera && !photo_camera.is_empty() {
-                        defaults.cameras.iter().find(|c| c.camera.eq_ignore_ascii_case(&photo_camera)).and_then(|c| c.preset.clone())
-                    } else {
-                        defaults.raw_preset.clone()
-                    }
-                };
-                // the preset the default points at: its name for the row, and — when it is one of the
-                // user's own — the name the naming dialog starts from (a built-in's would make a twin)
-                let (starts_from, suggested) = match current.as_deref().and_then(|pid| app.session.presets.iter().find(|p| p.id == pid)) {
-                    Some(p) => (crate::i18n::builtin_label(&p.name, p.builtin).to_string(), if p.builtin { String::new() } else { p.name.clone() }),
-                    None => (crate::i18n::tr("{app} Default").to_string(), String::new()),
-                };
-                // which photos it reaches, said on hover rather than as a line of its own
-                let reach = crate::i18n::tr("Photos imported from now on; photos already in the catalog keep theirs.");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(crate::i18n::tr("New photos start from")).small().weak()).on_hover_text(reach);
-                    ui.label(RichText::new(starts_from).small()).on_hover_text(reach);
-                    // "Save as…": the name is the user's, so several named optics defaults can live side
-                    // by side (one per camera, say) instead of one fixed entry
-                    if text_button(ui, "opticsNewPhotoDefault", "Save as…", false).on_hover_text(reach).clicked() {
-                        app.ui.dialog = Some(crate::state::Dialog::NewPhotoDefault { name: suggested });
-                    }
-                });
-            },
-        );
+            egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
+                ui,
+                |ui| {
+                    let photo_camera = app.session.catalog.photo(id).map(|p| p.meta.camera.trim().to_string()).unwrap_or_default();
+                    let current = {
+                        let defaults = &app.session.import_defaults;
+                        if defaults.per_camera && !photo_camera.is_empty() {
+                            defaults.cameras.iter().find(|c| c.camera.eq_ignore_ascii_case(&photo_camera)).and_then(|c| c.preset.clone())
+                        } else {
+                            defaults.raw_preset.clone()
+                        }
+                    };
+                    // the preset the default points at: its name for the row, and — when it is one of the
+                    // user's own — the name the naming dialog starts from (a built-in's would make a twin)
+                    let (starts_from, suggested) = match current.as_deref().and_then(|pid| app.session.presets.iter().find(|p| p.id == pid)) {
+                        Some(p) => {
+                            (crate::i18n::builtin_label(&p.name, p.builtin).to_string(), if p.builtin { String::new() } else { p.name.clone() })
+                        }
+                        None => (crate::i18n::tr("{app} Default").to_string(), String::new()),
+                    };
+                    // which photos it reaches, said on hover rather than as a line of its own
+                    let reach = crate::i18n::tr("Photos imported from now on; photos already in the catalog keep theirs.");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(crate::i18n::tr("New photos start from")).small().weak()).on_hover_text(reach);
+                        ui.label(RichText::new(starts_from).small()).on_hover_text(reach);
+                        // "Save as…": the name is the user's, so several named optics defaults can live side
+                        // by side (one per camera, say) instead of one fixed entry
+                        if text_button(ui, "opticsNewPhotoDefault", "Save as…", false).on_hover_text(reach).clicked() {
+                            app.ui.dialog = Some(crate::state::Dialog::NewPhotoDefault { name: suggested });
+                        }
+                    });
+                },
+            );
         }
         sub_title(ui, crate::i18n::tr("Manual"));
         for c in ["optics.distortion", "optics.vignetting"] {
@@ -622,8 +624,16 @@ fn tool_profile_row(app: &mut LccApp, ui: &mut egui::Ui) {
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::widgets::icon_button(ui, "toolProfileSettings", Icon::Gear, vec2(gear, gear), false, true, crate::i18n::tr("Edit Tool Profiles…"))
-                    .clicked()
+                if crate::widgets::icon_button(
+                    ui,
+                    "toolProfileSettings",
+                    Icon::Gear,
+                    vec2(gear, gear),
+                    false,
+                    true,
+                    crate::i18n::tr("Edit Tool Profiles…"),
+                )
+                .clicked()
                 {
                     let _ = app.run("app.settings", json!({"tab": "develop"}));
                 }
@@ -671,8 +681,16 @@ fn treatment_row(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSe
             ui.set_height(crate::widgets::DENSE_ROW_H - 2.0);
             if browse {
                 let size = if dense { 20.0 } else { 24.0 };
-                if crate::widgets::icon_button(ui, "profileBrowser", Icon::ProfileGrid, vec2(size, size), false, true, crate::i18n::tr("Browse Profiles"))
-                    .clicked()
+                if crate::widgets::icon_button(
+                    ui,
+                    "profileBrowser",
+                    Icon::ProfileGrid,
+                    vec2(size, size),
+                    false,
+                    true,
+                    crate::i18n::tr("Browse Profiles"),
+                )
+                .clicked()
                 {
                     let _ = app.run("panel.profiles", json!({}));
                 }
@@ -2537,49 +2555,60 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
     let t = Tokens::get(ui.ctx());
     // White balance row
     if shown_here(app, ui, "option:wbSelector") {
-    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }, 2, 2)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            // Lightroom Classic: the selector on the left, then "WB:" and the preset menu
-            let active = app.ui.tool == "wbPicker";
-            // (Compact: the profile row's sizes, so the two rows line up)
-            let dense = t.dense;
-            let icon = if dense { 20.0 } else { 28.0 };
-            if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(icon, icon), active, true, "White Balance Selector (W)").clicked() {
-                if active {
-                    app.ui.tool.clear();
-                } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
-                    // the same as W: from Compare, Survey or the grid it opens the photo in Detail
-                    app.toast(ui.ctx(), e);
-                }
-            }
-            if active {
-                // how many pixels a click averages (#644), as Lightroom's selector toolbar offers
-                let n = app.ui.wb_sample;
-                let r = crate::widgets::dropdown(ui, "wbSample", &format!("{n}×{n}"), t.font(13.0), t.text_label)
-                    .on_hover_text(crate::i18n::tr("Sample size: the square of pixels the selector averages"));
-                egui::Popup::menu(&r).show(|ui| {
-                    for s in crate::panels::detail::WB_SAMPLES {
-                        if ui.selectable_label(n == s, format!("{s}×{s}")).clicked() {
-                            app.ui.wb_sample = s;
+        egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 2 }, 2, 2)).show(
+            ui,
+            |ui| {
+                ui.horizontal(|ui| {
+                    // Lightroom Classic: the selector on the left, then "WB:" and the preset menu
+                    let active = app.ui.tool == "wbPicker";
+                    // (Compact: the profile row's sizes, so the two rows line up)
+                    let dense = t.dense;
+                    let icon = if dense { 20.0 } else { 28.0 };
+                    if crate::widgets::icon_button(ui, "wbPicker", Icon::Picker, vec2(icon, icon), active, true, "White Balance Selector (W)")
+                        .clicked()
+                    {
+                        if active {
+                            app.ui.tool.clear();
+                        } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
+                            // the same as W: from Compare, Survey or the grid it opens the photo in Detail
+                            app.toast(ui.ctx(), e);
                         }
                     }
+                    if active {
+                        // how many pixels a click averages (#644), as Lightroom's selector toolbar offers
+                        let n = app.ui.wb_sample;
+                        let r = crate::widgets::dropdown(ui, "wbSample", &format!("{n}×{n}"), t.font(13.0), t.text_label)
+                            .on_hover_text(crate::i18n::tr("Sample size: the square of pixels the selector averages"));
+                        egui::Popup::menu(&r).show(|ui| {
+                            for s in crate::panels::detail::WB_SAMPLES {
+                                if ui.selectable_label(n == s, format!("{s}×{s}")).clicked() {
+                                    app.ui.wb_sample = s;
+                                }
+                            }
+                        });
+                    }
+                    ui.label(egui::RichText::new(crate::i18n::tr("WB:")).font(t.font(if dense { 11.0 } else { 13.0 })).color(t.text_dim));
+                    let r = crate::widgets::dropdown(
+                        ui,
+                        "wbMode",
+                        crate::i18n::tr(d.wb.mode.label()),
+                        t.font(if dense { 12.5 } else { 14.0 }),
+                        t.text_label,
+                    );
+                    egui::Popup::menu(&r).show(|ui| {
+                        for m in WbMode::ALL {
+                            if m == WbMode::Custom {
+                                continue;
+                            }
+                            if ui.selectable_label(d.wb.mode == m, crate::i18n::tr(m.label())).clicked() {
+                                let mode = serde_json::to_value(m).unwrap_or_default();
+                                let _ = app.run("develop.wb", json!({"mode": mode}));
+                            }
+                        }
+                    });
                 });
-            }
-            ui.label(egui::RichText::new(crate::i18n::tr("WB:")).font(t.font(if dense { 11.0 } else { 13.0 })).color(t.text_dim));
-            let r = crate::widgets::dropdown(ui, "wbMode", crate::i18n::tr(d.wb.mode.label()), t.font(if dense { 12.5 } else { 14.0 }), t.text_label);
-            egui::Popup::menu(&r).show(|ui| {
-                for m in WbMode::ALL {
-                    if m == WbMode::Custom {
-                        continue;
-                    }
-                    if ui.selectable_label(d.wb.mode == m, crate::i18n::tr(m.label())).clicked() {
-                        let mode = serde_json::to_value(m).unwrap_or_default();
-                        let _ = app.run("develop.wb", json!({"mode": mode}));
-                    }
-                }
-            });
-        });
-    });
+            },
+        );
     }
     // (the Kelvin scale for a raw, the relative one for a rendered file)
     for c in ["wb.temp", "wb.tint"] {

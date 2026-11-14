@@ -47,7 +47,10 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     });
     crate::dialog_frame::control_row(ui, |ui| {
-        if text_button(ui, "toolProfileNew", crate::i18n::tr("New"), false).on_hover_text(crate::i18n::tr("A new profile showing every group")).clicked() {
+        if text_button(ui, "toolProfileNew", crate::i18n::tr("New"), false)
+            .on_hover_text(crate::i18n::tr("A new profile showing every group"))
+            .clicked()
+        {
             edit(app, &ctx, json!({"op": "new"}));
         }
         if text_button(ui, "toolProfileDuplicate", crate::i18n::tr("Duplicate"), false)
@@ -101,36 +104,42 @@ fn custom_group(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, profile: &crate
         crate::dialog_frame::control_row(ui, |ui| {
             ui.label(format!("{}. {} · {}", i + 1, crate::i18n::tr(spec.label), crate::i18n::tr(group)));
             let size = egui::vec2(20.0, 20.0);
-            if crate::widgets::icon_button(ui, &format!("toolCustomUp:{c}"), Icon::ChevronUp, size, false, i > 0, crate::i18n::tr("Move Up")).clicked() {
+            if crate::widgets::icon_button(ui, &format!("toolCustomUp:{c}"), Icon::ChevronUp, size, false, i > 0, crate::i18n::tr("Move Up"))
+                .clicked()
+            {
                 edit(app, &ctx, json!({"op": "custom", "id": id, "up": c}));
             }
             let last = i + 1 == profile.custom.len();
-            if crate::widgets::icon_button(ui, &format!("toolCustomDown:{c}"), Icon::ChevronDown, size, false, !last, crate::i18n::tr("Move Down")).clicked() {
+            if crate::widgets::icon_button(ui, &format!("toolCustomDown:{c}"), Icon::ChevronDown, size, false, !last, crate::i18n::tr("Move Down"))
+                .clicked()
+            {
                 edit(app, &ctx, json!({"op": "custom", "id": id, "down": c}));
             }
-            if crate::widgets::icon_button(ui, &format!("toolCustomRemove:{c}"), Icon::Close, size, false, true, crate::i18n::tr("Remove")).clicked() {
+            if crate::widgets::icon_button(ui, &format!("toolCustomRemove:{c}"), Icon::Close, size, false, true, crate::i18n::tr("Remove")).clicked()
+            {
                 edit(app, &ctx, json!({"op": "custom", "id": id, "remove": c}));
             }
         });
     }
     row(ui, t, "Add a slider", |ui| {
         let mut add: Option<String> = None;
-        let combo = crate::widgets::combo_box("toolCustomAdd").width(260.0).height(360.0).selected_text(crate::i18n::tr("Choose…")).show_ui(ui, |ui| {
-            for (g, title) in GROUPS {
-                let sliders: Vec<_> = sliders_of(g).filter(|s| !profile.custom.iter().any(|c| c == s.id)).collect();
-                if sliders.is_empty() {
-                    continue;
-                }
-                ui.label(egui::RichText::new(crate::i18n::tr(title)).small().weak());
-                for s in sliders {
-                    let r = ui.selectable_label(false, crate::i18n::tr(s.label));
-                    register(ui.ctx(), format!("toolCustomAdd:{}", s.id), r.rect);
-                    if r.clicked() {
-                        add = Some(s.id.to_string());
+        let combo =
+            crate::widgets::combo_box("toolCustomAdd").width(260.0).height(360.0).selected_text(crate::i18n::tr("Choose…")).show_ui(ui, |ui| {
+                for (g, title) in GROUPS {
+                    let sliders: Vec<_> = sliders_of(g).filter(|s| !profile.custom.iter().any(|c| c == s.id)).collect();
+                    if sliders.is_empty() {
+                        continue;
+                    }
+                    ui.label(egui::RichText::new(crate::i18n::tr(title)).small().weak());
+                    for s in sliders {
+                        let r = ui.selectable_label(false, crate::i18n::tr(s.label));
+                        register(ui.ctx(), format!("toolCustomAdd:{}", s.id), r.rect);
+                        if r.clicked() {
+                            add = Some(s.id.to_string());
+                        }
                     }
                 }
-            }
-        });
+            });
         register(ui.ctx(), "combo:toolCustomAdd", combo.response.rect);
         if let Some(s) = add {
             edit(app, &ctx, json!({"op": "custom", "id": id, "add": s}));

@@ -215,11 +215,7 @@ impl<'de> Deserialize<'de> for ToolProfiles {
 
 impl ToolProfiles {
     pub fn from_value(v: &Value) -> Self {
-        let user = v
-            .get("user")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(ToolProfile::from_value).collect())
-            .unwrap_or_default();
+        let user = v.get("user").and_then(Value::as_array).map(|a| a.iter().filter_map(ToolProfile::from_value).collect()).unwrap_or_default();
         let active = v.get("active").and_then(Value::as_str).unwrap_or_default().to_string();
         let mut out = ToolProfiles { active, user };
         out.sanitize();
@@ -309,8 +305,11 @@ pub fn item_shown(app: &LccApp, item: &str) -> bool {
 }
 
 /// The tool profile commands: pick one (also the Edit panel's row), and change the user's own.
-pub const COMMANDS: &[UiCommand] =
-    &[("view.toolProfile", "Tool Profile", None, ""), ("view.toolProfileEdit", "Edit Tool Profiles", None, ""), ("section.custom", "Custom", None, "")];
+pub const COMMANDS: &[UiCommand] = &[
+    ("view.toolProfile", "Tool Profile", None, ""),
+    ("view.toolProfileEdit", "Edit Tool Profiles", None, ""),
+    ("section.custom", "Custom", None, ""),
+];
 
 pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String>> {
     Some(match id {
