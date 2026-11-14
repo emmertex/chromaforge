@@ -47,7 +47,6 @@ pub mod comments_ui {
 }
 pub mod control;
 pub mod creations_ui;
-pub mod credits;
 pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
@@ -417,6 +416,8 @@ mod tests_sam_setup;
 mod tests_scroll;
 #[cfg(test)]
 mod tests_settings_back;
+#[cfg(test)]
+mod tests_settings_categories;
 #[cfg(test)]
 mod tests_settings_profiles;
 #[cfg(test)]

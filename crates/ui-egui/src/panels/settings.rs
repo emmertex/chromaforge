@@ -56,7 +56,7 @@ pub(crate) const SLIDESHOW_W: f32 = SLIDESHOW_COLUMN_W + 12.0 + super::slide_lay
 const CACHE_SIZES: [u32; 5] = [512, 1024, 2048, 4096, 8192];
 
 /// The label column of the Settings window's rows (it gives up room in a narrow window).
-pub(super) const LABEL_W: f32 = 170.0;
+pub(crate) const LABEL_W: f32 = 170.0;
 /// The label column of the same rows outside the dialog (the slideshow panels).
 const PANEL_LABEL_W: f32 = 150.0;
 
@@ -553,20 +553,21 @@ fn shortcuts_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 // ------------------------------------------------------------------------------------- General
 
 fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
-    // Modern (Android's default), Classic or Compact (Classic drawn denser); on each, this row switches back
+    // Classic, Compact (Classic drawn denser) or Modern (Android's default), Classic and its denser
+    // twin first; on each, this row switches back (`button:settingsLayout-{0,1,2}`)
     row(ui, t, crate::i18n::tr("Layout"), |ui| {
         let now = if app.ui.modern.enabled {
-            1
-        } else if app.compact() {
             2
+        } else if app.compact() {
+            1
         } else {
             0
         };
         let mut layout = now;
-        if choices(ui, "settingsLayout", &[(0, "Classic – Advanced"), (1, "Modern – Simple"), (2, "Compact – Dense")], &mut layout) {
+        if choices(ui, "settingsLayout", &[(0, "Classic – Advanced"), (1, "Compact – Dense"), (2, "Modern – Simple")], &mut layout) {
             let _ = match layout {
-                1 => app.run("view.modernLayout", json!({"on": true})),
-                2 => app.run("view.compactLayout", json!({"on": true})),
+                2 => app.run("view.modernLayout", json!({"on": true})),
+                1 => app.run("view.compactLayout", json!({"on": true})),
                 _ => {
                     let _ = app.run("view.modernLayout", json!({"on": false}));
                     app.run("view.compactLayout", json!({"on": false}))
@@ -574,6 +575,16 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             };
         }
     });
+    // where the Settings window lists its categories: Classic and Compact each keep their own
+    // (Modern always lists them down the left of its full-window sheet: no choice there)
+    if let Some(mut now) = crate::settings_screen::categories(app) {
+        use crate::state::SettingsCategories as C;
+        row(ui, t, crate::i18n::tr("Settings Categories"), |ui| {
+            if choices(ui, "settingsCategories", &[(C::Left, "Left"), (C::Top, "Top")], &mut now) {
+                crate::settings_screen::set_categories(app, now);
+            }
+        });
+    }
     // the Edit panel's colour tools: Lightroom Classic's panels, or the colourist's Witchcraft
     // layout (Window ▸ Grading Mode and Ctrl+Shift+G switch it too)
     row(ui, t, crate::i18n::tr("Grading Mode"), |ui| {
@@ -2025,7 +2036,8 @@ fn shared_store(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 
 fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let system = app.system_theme(ui.ctx());
-    appearance(ui, t, &mut app.ui.settings, system);
+    let forced = forced_slider_layout(app);
+    appearance(ui, t, &mut app.ui.settings, system, forced);
     heading(ui, t, crate::i18n::tr("Filmstrip"));
     check(ui, "settings.filmNames", &mut app.ui.settings.film_names, "Show file names");
     check(ui, "settings.filmBadges", &mut app.ui.settings.film_badges, "Show ratings, flags and edit badges");
@@ -2303,8 +2315,15 @@ fn playback_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
 
 /// Appearance Mode (`button:settingsAppearance-{0,1,2}`: Auto, Dark, Light) above the light and
 /// dark theme cards (`radio:theme-{id}`), each with a preview of the chosen theme. The card in
-/// use is outlined. Applied on the next frame ([`LccApp::sync_theme`]).
-fn appearance(ui: &mut egui::Ui, t: &Tokens, s: &mut crate::state::AppSettings, system: Option<egui::Theme>) {
+/// use is outlined. Applied on the next frame ([`LccApp::sync_theme`]). Then the font size and the
+/// slider rows that apply to the layout drawn (`forced`: [`forced_slider_layout`]).
+fn appearance(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &mut crate::state::AppSettings,
+    system: Option<egui::Theme>,
+    forced: Option<crate::theme::SliderLayout>,
+) {
     use crate::state::{AppearanceMode as M, DarkTheme, LightTheme};
     heading(ui, t, crate::i18n::tr("Appearance"));
     row(ui, t, crate::i18n::tr("Appearance Mode"), |ui| {
@@ -2330,19 +2349,53 @@ fn appearance(ui: &mut egui::Ui, t: &Tokens, s: &mut crate::state::AppSettings, 
         let options = crate::theme::UiFontSize::ALL.map(|size| (size, size.label()));
         choices(ui, "settingsFontSize", &options, &mut s.ui_font_size);
     });
-    row(ui, t, crate::i18n::tr("Sliders"), |ui| {
-        let options = crate::theme::SliderLayout::ALL.map(|layout| (layout, layout.label()));
-        choices(ui, "settingsSliderLayout", &options, &mut s.slider_layout);
-    });
+    let rows = SliderRows::for_layout(forced, s.slider_layout);
+    if rows.layout {
+        row(ui, t, crate::i18n::tr("Sliders"), |ui| {
+            let options = crate::theme::SliderLayout::ALL.map(|layout| (layout, layout.label()));
+            choices(ui, "settingsSliderLayout", &options, &mut s.slider_layout);
+        });
+    }
+    // (the choice may have just changed what the rows below apply to)
+    let rows = SliderRows::for_layout(forced, s.slider_layout);
     row(ui, t, crate::i18n::tr("Slider text"), |ui| {
         let options = crate::theme::SliderText::ALL.map(|size| (size, size.label()));
         choices(ui, "settingsSliderText", &options, &mut s.slider_text);
     });
-    row(ui, t, crate::i18n::tr("Slider control"), |ui| {
-        let options = crate::theme::SliderControl::ALL.map(|c| (c, c.label()));
-        choices(ui, "settingsSliderControl", &options, &mut s.slider_control);
-    });
+    if rows.control {
+        row(ui, t, crate::i18n::tr("Slider control"), |ui| {
+            let options = crate::theme::SliderControl::ALL.map(|c| (c, c.label()));
+            choices(ui, "settingsSliderControl", &options, &mut s.slider_control);
+        });
+    }
+    // (every slider, pills too)
+    hint(ui, t, crate::i18n::tr("Hold Shift for fine control"));
     ui.add_space(2.0);
+}
+
+/// Which of Settings ▸ Interface's slider rows apply, and so show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SliderRows {
+    /// Sliders (One Row, Two Rows, Pill): only where the layout doesn't choose for itself (the
+    /// Classic layout; Modern always draws pills, Compact always one dense row).
+    pub layout: bool,
+    /// Slider control (acceleration): only for sliders with a thumb, which a pill has not.
+    pub control: bool,
+}
+
+impl SliderRows {
+    /// `forced`: the slider layout the interface layout always uses (Modern: pills, Compact: one
+    /// row; `None` in Classic, which uses `chosen`, the Sliders setting).
+    pub(crate) fn for_layout(forced: Option<crate::theme::SliderLayout>, chosen: crate::theme::SliderLayout) -> SliderRows {
+        let drawn = forced.unwrap_or(chosen);
+        SliderRows { layout: forced.is_none(), control: drawn != crate::theme::SliderLayout::Pill }
+    }
+}
+
+/// The slider layout the interface layout drawn now always uses, whatever Settings ▸ Interface ▸
+/// Sliders says: pills in Modern, one dense row in Compact, `None` (the setting) in Classic.
+pub(crate) fn forced_slider_layout(app: &LccApp) -> Option<crate::theme::SliderLayout> {
+    if app.ui.modern.enabled || app.compact() { Some(app.slider_layout()) } else { None }
 }
 
 /// One family's card: its title (and "Active" when it is the one shown), a preview of the

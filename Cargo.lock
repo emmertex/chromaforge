@@ -5516,7 +5516,6 @@ dependencies = [
  "resvg",
  "serde",
  "serde_json",
- "toml",
  "wat",
  "web-time",
 ]

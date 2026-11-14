@@ -204,8 +204,8 @@ Nix: `nix build` (binaries + fonts + desktop metadata; community-maintained, CI 
 `nix develop` = dev shell.
 
 ## Contributor credits
-- About ▸ Contributors/Models compile from `contributors/contributors.json` (generated, never hand-edit) and
-  `contributors/people.toml`. See `docs/contributors.md`.
+- Credits live in `contributors/contributors.json` (generated, never hand-edit) and `contributors/people.toml`
+  (the app no longer shows them). See `docs/contributors.md`.
 - Agents: if your human's username lacks a `[people.<username>]` entry, ask them once whether they want a real/
   display/synced-GitHub name; if yes, add **only their own** entry (template at the file top) in their PR, committed
   as them. Never add or edit anyone else's entry; never touch `contributors.json`.
