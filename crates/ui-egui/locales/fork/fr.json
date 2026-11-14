@@ -1202,8 +1202,6 @@
   "Its photos show here without being added: cull them (P picks, X rejects), then import the picks, the selection or all of them.": "Ses photos s'affichent ici sans être ajoutées : triez-les (P retient, X rejette), puis importez les retenues, la sélection ou toutes.",
   "JPEG Quality": "Qualité JPEG",
   "JPEG copies with their edits, sRGB, without the location; then a new message opens in your mail program.": "Copies JPEG avec leurs modifications, sRGB, sans la position ; un nouveau message s'ouvre ensuite dans votre programme de messagerie.",
-  "JPEG quality {q} to fit the size limit": "Qualité JPEG {q} pour respecter la limite de taille",
-  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Qualité JPEG {q} pour respecter la limite de taille (une taille plus petite ou une limite plus grande conserve plus de qualité)",
   "JPEG with the same name (`IMG_0001.CR3` + `IMG_0001.JPG`) no longer share one sidecar: the raw keeps `IMG_0001.xmp`,": "JPEG de même nom (`IMG_0001.CR3` + `IMG_0001.JPG`) ne partagent plus un seul fichier annexe : le raw garde `IMG_0001.xmp`,",
   "Job Title": "Fonction",
   "Join the Discord": "Rejoindre le Discord",

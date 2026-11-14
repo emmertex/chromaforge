@@ -77,6 +77,8 @@
   "Installing it will {action}.": "Al instalarla se hará lo siguiente: {action}.",
   "Its manifest has fields this version doesn't know, which it ignores: {fields}": "Su manifiesto tiene campos que esta versión no conoce y que ignora: {fields}",
   "Its manifest has values this version can't use, which it leaves out: {values}": "Su manifiesto tiene valores que esta versión no puede usar y que omite: {values}",
+  "JPEG quality {q} to fit the size limit": "Calidad JPEG {q} para ajustarse al límite de tamaño",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Calidad JPEG {q} para ajustarse al límite de tamaño (un tamaño menor o un límite mayor conserva más calidad)",
   "Last checked {when}": "Última comprobación: {when}",
   "Location {n}": "Ubicación {n}",
   "Making the denoised picture… {}%": "Generando la imagen sin ruido… {}%",

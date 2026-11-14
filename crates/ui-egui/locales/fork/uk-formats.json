@@ -74,6 +74,8 @@
   "Installing it will {action}.": "Під час встановлення: {action}.",
   "Its manifest has fields this version doesn't know, which it ignores: {fields}": "У його маніфесті є поля, яких ця версія не знає й пропускає: {fields}",
   "Its manifest has values this version can't use, which it leaves out: {values}": "У його маніфесті є значення, які ця версія не може використати й пропускає: {values}",
+  "JPEG quality {q} to fit the size limit": "Якість JPEG {q}, щоб вкластися в обмеження розміру",
+  "JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)": "Якість JPEG {q}, щоб вкластися в обмеження розміру (менший розмір або більше обмеження зберігають більше якості)",
   "Last checked {when}": "Остання перевірка: {when}",
   "Location {n}": "Місце {n}",
   "Measured as part of a roll of {n}": "Виміряно як частину плівки (кадрів: {n})",
