@@ -636,6 +636,9 @@ pub struct AppSettings {
     /// the same photo; a value this version doesn't know reads as the default.
     #[serde(deserialize_with = "lenient")]
     pub grading_mode: GradingMode,
+    /// The Develop tool profiles (Settings ▸ Develop, `view.toolProfile`): which of the Edit panel's
+    /// groups and sliders show. Read leniently: unknown ids in a stored profile are dropped.
+    pub tool_profiles: crate::tool_profiles::ToolProfiles,
     /// Auto Sync (Edit ▸ Auto Sync, `develop.autoSync`), remembered app-wide: it stays as left
     /// whichever library is open and after a restart.
     pub auto_sync: bool,
@@ -820,6 +823,7 @@ impl Default for AppSettings {
             slider_layout: Default::default(),
             compact_layout: false,
             grading_mode: GradingMode::Witchcraft,
+            tool_profiles: Default::default(),
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
