@@ -164,35 +164,6 @@ impl Drop for Writer {
     }
 }
 
-/// Tests hold a sidecar's write as a share that stopped answering would (a FIFO no longer does: sidecar reads
-/// refuse anything but a regular file), and let it go when the share "answers".
-#[cfg(test)]
-pub(crate) mod stall {
-    use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, PoisonError};
-
-    static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-
-    fn held() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
-        HELD.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The write of the sidecar at `path` waits until [`release`].
-    pub(crate) fn hold(path: &Path) {
-        held().push(path.to_path_buf());
-    }
-
-    pub(crate) fn release(path: &Path) {
-        held().retain(|p| p != path);
-    }
-
-    pub(super) fn wait(path: &Path) {
-        while held().iter().any(|p| p == path) {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-}
-
 fn run(shared: &Shared, activity: &crate::activity::Activity) {
     // the batch's row: no ✕, since a write left unmade would leave its sidecar behind the edit (a failed one waits for a
     // retry anyway)
@@ -219,7 +190,7 @@ fn run(shared: &Shared, activity: &crate::activity::Activity) {
             }
         };
         // a panic here must not end the thread with its job counted as busy forever
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         stall::wait(&job.preferred);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::sidecar::write_job(&job)))
             .unwrap_or_else(|_| Err(format!("{}: writing the sidecar failed", job.preferred.display())));
@@ -332,5 +303,34 @@ mod tests {
         assert!(std::fs::symlink_metadata(&sidecar).is_ok_and(|m| m.is_file()), "the queued write landed");
         assert!(std::fs::read_to_string(&sidecar).is_ok_and(|s| s.contains("xmpmeta")), "the queued write was made");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Tests hold a sidecar's write as a share that stopped answering would (a FIFO no longer does: sidecar reads
+/// refuse anything but a regular file), and let it go when the share "answers".
+#[cfg(all(test, unix))]
+pub(crate) mod stall {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError};
+
+    static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    fn held() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+        HELD.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The write of the sidecar at `path` waits until [`release`].
+    pub(crate) fn hold(path: &Path) {
+        held().push(path.to_path_buf());
+    }
+
+    pub(crate) fn release(path: &Path) {
+        held().retain(|p| p != path);
+    }
+
+    pub(super) fn wait(path: &Path) {
+        while held().iter().any(|p| p == path) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 }
