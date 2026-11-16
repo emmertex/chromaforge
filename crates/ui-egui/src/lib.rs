@@ -97,6 +97,7 @@ mod modern_input;
 mod modern_library;
 mod modern_menu;
 pub mod modern_sheets;
+mod modern_sources;
 pub mod module;
 pub mod motion;
 pub mod overlay;
@@ -452,6 +453,8 @@ mod tests_surface;
 mod tests_switch_library;
 #[cfg(test)]
 mod tests_sync;
+#[cfg(test)]
+mod tests_sync_onboarding;
 #[cfg(test)]
 mod tests_tallies;
 #[cfg(test)]
@@ -940,6 +943,8 @@ pub struct LccApp {
     /// the one now on screen: the background preparation goes their way ([`lcc_engine::prep`]).
     pub prep_at: Option<(lcc_catalog::PhotoId, usize)>,
     pub prep_backward: bool,
+    /// The module the last frame showed: entering Develop makes room for editing ([`Self::background_prep`]).
+    pub prep_module: module::ModuleId,
     /// The loupe's video frames (playback worker, paused still).
     pub video_view: video_view::VideoView,
     /// The zoomed view the loupe asked tiles for last (see [`region`]): the frame, the part its
@@ -1041,6 +1046,10 @@ pub struct LccApp {
     /// Say once, when the GPU device has been tried, that no graphics processor was found
     /// ([`panels::notices::gpu_notice`]). The desktop app sets it; headless sessions and tests don't.
     pub gpu_notice: bool,
+    /// Fonts the package carries that were missing or damaged, said once
+    /// ([`panels::notices::font_notice`]). The desktop app sets it from
+    /// [`lcc_engine::fonts::craft_font_problems`]; headless sessions don't.
+    pub font_problems: Option<&'static [lcc_engine::fonts::FontProblem]>,
     /// This host may run the start-up update check (when the user turned it on): the desktop app
     /// with a settings folder of its own sets it. Headless sessions (the test harness, `snapshot`,
     /// MCP), `--memory` and `<PREFIX>_NO_PREFS` runs don't, so they never check at start.
@@ -1131,6 +1140,12 @@ impl LccApp {
         if self.session.interaction.is_some() {
             lcc_engine::prep::foreground();
         }
+        // entering Develop under a small memory budget (a phone): the background build stops and what browsing held is
+        // let go, so the photo being edited has the memory (the grid's pictures come back from the disk cache)
+        if self.ui.module == module::ModuleId::Develop && self.prep_module != module::ModuleId::Develop && self.session.make_room_for_editing() {
+            self.renderer.evict_thumbs(&std::collections::HashSet::new(), 0);
+        }
+        self.prep_module = self.ui.module;
         let mode = panels::detail::prep_mode(self);
         let loupe = self.ui.fullscreen || self.ui.view == state::ViewMode::Detail;
         let at = if loupe { self.session.active() } else { None };
@@ -1299,6 +1314,7 @@ impl LccApp {
             pictures_missing_pass: None,
             prep_at: None,
             prep_backward: false,
+            prep_module: module::ModuleId::Library,
             video_view: Default::default(),
             region_view: None,
             region_before_view: None,
@@ -1351,6 +1367,7 @@ impl LccApp {
             gpu_cards_applied: None,
             ml_device_applied: None,
             gpu_notice: false,
+            font_problems: None,
             startup_update_check: false,
             hdr_display_sdr: false,
             hdr_headroom: None,
