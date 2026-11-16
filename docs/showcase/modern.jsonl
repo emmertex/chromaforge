@@ -1,0 +1,35 @@
+# Touch layout screenshots for the README, from the procedural demo library. Run from the repository root:
+#   cargo run --release -p lcc-cli -- snapshot --demo --script docs/showcase/touch.jsonl --size 1280x800
+# then convert the PNGs in docs/images/touch/ to JPEG (see docs/showcase/README.md).
+# tablet-export: the folder line under Export (the machine's home path) is painted over before converting.
+{"method":"ui.resize","params":{"width":1280,"height":800}}
+{"method":"engine.execute","params":{"command":"view.modernLayout","params":{"on":true}}}
+{"method":"engine.execute","params":{"command":"library.select","params":{"ids":[3]}}}
+{"method":"engine.execute","params":{"command":"module.develop"}}
+{"method":"engine.execute","params":{"command":"view.detail"}}
+{"method":"engine.execute","params":{"command":"modern.chrome","params":{"on":true}}}
+{"method":"engine.execute","params":{"command":"activity.cancel","params":{"all":true}}}
+{"method":"ui.settle","params":{"timeoutMs":8000}}
+{"method":"ui.screenshot","params":{"path":"docs/images/touch/tablet-develop.png","headless":true}}
+{"method":"engine.execute","params":{"command":"develop.set","params":{"values":{"light.shadows":35,"light.highlights":-40}}}}
+{"method":"engine.execute","params":{"command":"modern.tool","params":{"tool":"basic","control":"light.shadows"}}}
+{"method":"engine.execute","params":{"command":"activity.cancel","params":{"all":true}}}
+{"method":"ui.settle","params":{"timeoutMs":8000}}
+{"method":"ui.screenshot","params":{"path":"docs/images/touch/tablet-adjust.png","headless":true}}
+{"method":"engine.execute","params":{"command":"modern.done"}}
+{"method":"engine.execute","params":{"command":"modern.exportSheet","params":{"on":true}}}
+{"method":"engine.execute","params":{"command":"activity.cancel","params":{"all":true}}}
+{"method":"ui.settle","params":{"timeoutMs":8000}}
+{"method":"ui.screenshot","params":{"path":"docs/images/touch/tablet-export.png","headless":true}}
+{"method":"engine.execute","params":{"command":"modern.exportSheet","params":{"on":false}}}
+{"method":"engine.execute","params":{"command":"app.settings","params":{"tab":"general"}}}
+{"method":"engine.execute","params":{"command":"activity.cancel","params":{"all":true}}}
+{"method":"ui.settle","params":{"timeoutMs":8000}}
+{"method":"ui.screenshot","params":{"path":"docs/images/touch/tablet-settings.png","headless":true}}
+{"method":"engine.execute","params":{"command":"modern.back"}}
+{"method":"engine.execute","params":{"command":"modern.back"}}
+{"method":"ui.resize","params":{"width":400,"height":860}}
+{"method":"engine.execute","params":{"command":"modern.chrome","params":{"on":true}}}
+{"method":"engine.execute","params":{"command":"activity.cancel","params":{"all":true}}}
+{"method":"ui.settle","params":{"timeoutMs":8000}}
+{"method":"ui.screenshot","params":{"path":"docs/images/touch/phone-library.png","headless":true}}

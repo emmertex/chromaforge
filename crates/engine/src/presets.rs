@@ -1,0 +1,801 @@
+//! Built-in presets and profiles (all values are our own; no third-party preset content), and
+//! preset files: our `.lcpreset` JSON (import + export, groups preserved) and XMP presets
+//! (`crs:` fields, read only — see [`crate::crs`]).
+
+use std::path::Path;
+
+use lcc_catalog::PhotoId;
+use lcc_develop::{DevelopSettings, Preset};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::Session;
+
+/// File extension of the app's preset files (legacy extensions are read too, see [`lcc_brand::preset_exts`]).
+pub const LCPRESET_EXT: &str = lcc_brand::PRESET_EXT;
+/// The `format` tag of a `.lcpreset` file.
+pub const LCPRESET_FORMAT: &str = crate::legacy::PRESET_FORMAT;
+
+/// A `.lcpreset` file: one or more presets with their groups.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PresetFile {
+    pub format: String,
+    pub version: u32,
+    pub presets: Vec<Preset>,
+}
+
+/// The session's presets (built-in, then the user's) with a generation that changes on every
+/// mutable access, so saving and the UI's caches skip their O(presets) work while the list is
+/// untouched: a Lightroom collection imported whole is 10 000+ presets and ~40 MB of JSON.
+///
+/// Reads go through `Deref` (`iter`, `len`, `find`…) and keep the generation; `push`, `iter_mut`,
+/// `remove`… go through `DerefMut` and bump it, whether or not anything is then changed.
+/// Generations are unique across all lists in the process.
+///
+/// The items are shared copy-on-write: [`PresetList::snapshot`] hands the list to a background
+/// save without copying 40 MB on the UI thread; the next change then copies it once.
+#[derive(Clone, Debug)]
+pub struct PresetList {
+    items: std::sync::Arc<Vec<Preset>>,
+    generation: u64,
+}
+
+static PRESET_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    PRESET_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl PresetList {
+    pub fn new(items: Vec<Preset>) -> PresetList {
+        PresetList { items: std::sync::Arc::new(items), generation: next_generation() }
+    }
+
+    /// The presets as they are now, shared (no copy): a later change copies the list for itself.
+    pub fn snapshot(&self) -> std::sync::Arc<Vec<Preset>> {
+        self.items.clone()
+    }
+
+    /// Changes whenever the list may have changed.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Mark the list as changed (bumps the generation).
+    pub fn bump(&mut self) {
+        self.generation = next_generation();
+    }
+}
+
+impl Default for PresetList {
+    fn default() -> PresetList {
+        PresetList::new(Vec::new())
+    }
+}
+
+impl std::ops::Deref for PresetList {
+    type Target = Vec<Preset>;
+    fn deref(&self) -> &Vec<Preset> {
+        &self.items
+    }
+}
+
+impl std::ops::DerefMut for PresetList {
+    fn deref_mut(&mut self) -> &mut Vec<Preset> {
+        self.generation = next_generation();
+        std::sync::Arc::make_mut(&mut self.items)
+    }
+}
+
+impl<'a> IntoIterator for &'a PresetList {
+    type Item = &'a Preset;
+    type IntoIter = std::slice::Iter<'a, Preset>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut PresetList {
+    type Item = &'a mut Preset;
+    type IntoIter = std::slice::IterMut<'a, Preset>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.generation = next_generation();
+        std::sync::Arc::make_mut(&mut self.items).iter_mut()
+    }
+}
+
+/// Lower-case ASCII slug for ids (`"Warm & Soft"` → `warm-soft`).
+pub fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    if out.is_empty() { "preset".into() } else { out }
+}
+
+/// Serialise presets as a `.lcpreset` file (favourite/built-in flags are not exported).
+pub fn to_lcpreset(presets: &[Preset]) -> String {
+    let presets = presets.iter().map(|p| Preset { favorite: false, builtin: false, ..p.clone() }).collect();
+    serde_json::to_string_pretty(&PresetFile { format: LCPRESET_FORMAT.into(), version: 1, presets }).unwrap_or_default()
+}
+
+/// Read a preset file by name: `.lcpreset` (a [`PresetFile`], a bare preset object or an array of
+/// presets) or `.xmp` (a `crs:` preset).
+pub fn parse_preset_file(name: &str, bytes: &[u8]) -> Result<Vec<Preset>, String> {
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Preset".into());
+    let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_start_matches('\u{feff}');
+    if ext == "xmp" || (!lcc_brand::preset_exts().any(|e| e == ext) && text.trim_start().starts_with('<')) {
+        return crate::crs::preset_from_xmp(text, &stem).map(|p| vec![p]).ok_or_else(|| "no develop settings in this XMP file".into());
+    }
+    let v: Value = serde_json::from_str(text).map_err(|e| format!("not a preset file: {e}"))?;
+    let list = match &v {
+        Value::Object(o) if o.contains_key("presets") => {
+            let f: PresetFile = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+            if f.format != LCPRESET_FORMAT {
+                return Err(format!("unknown preset format `{}`", f.format));
+            }
+            f.presets
+        }
+        Value::Array(_) => serde_json::from_value(v).map_err(|e| e.to_string())?,
+        _ => vec![serde_json::from_value(v).map_err(|e| e.to_string())?],
+    };
+    let mut out = Vec::new();
+    for mut p in list {
+        if !p.settings.is_object() {
+            return Err(format!("preset `{}` has no settings object", p.name));
+        }
+        p.builtin = false;
+        p.favorite = false;
+        if p.name.trim().is_empty() {
+            p.name = stem.clone();
+        }
+        if p.group.trim().is_empty() {
+            p.group = "Imported Presets".into();
+        }
+        out.push(p);
+    }
+    Ok(out)
+}
+
+/// Expand files/folders (recursively, bounded: see [`crate::walk`]) into preset files
+/// (`.lcpreset`, `.xmp`).
+pub fn expand_preset_paths(paths: &[String]) -> Vec<String> {
+    let preset_file = |p: &Path| {
+        let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        lcc_brand::preset_exts().any(|e| e == ext)
+            || [
+                "xmp",
+                "lrtemplate",
+                "zip",
+                "lmp",
+                "mplumpack",
+                crate::cmd::mask_effect_files::EFFECT_EXT,
+                crate::cmd::metadata_files::META_EXT,
+                crate::cmd::export_preset_files::EXPORT_PRESET_EXT,
+            ]
+            .contains(&ext.as_str())
+    };
+    let mut out = Vec::new();
+    for p in paths {
+        let path = Path::new(p);
+        if path.is_dir() {
+            let w = crate::walk::files_in(path, None, crate::walk::Limits::default(), preset_file);
+            out.extend(w.files.into_iter().map(|f| f.to_string_lossy().to_string()));
+        } else {
+            out.push(p.clone());
+        }
+    }
+    out
+}
+
+impl Session {
+    /// The settings after applying `preset` to photo `id` at `amount` (1.0 = 100 %). Each setting the
+    /// preset names is blended from the photo's import look ([`lcc_catalog::Photo::import_defaults`])
+    /// when a default preset recorded one (`import_look`); a photo without one (its settings came from
+    /// an XMP sidecar or a catalog import, which record none) blends from its current settings, since
+    /// the camera defaults are not its import state. Either way the settings the preset does not name
+    /// keep the photo's values. A preset naming one white balance number is resolved on the photo's
+    /// scale first (issue #2910). The `preset.apply` command and the Presets panel's previews share
+    /// this, so hovering shows what a click commits (adapted from upstream #2207). `None` for an
+    /// unknown photo.
+    pub fn preset_applied(&self, id: PhotoId, preset: &Preset, amount: f64) -> Option<DevelopSettings> {
+        let current = self.develop_of(id)?;
+        let photo = self.catalog.photo(id)?;
+        // a hand-written preset may name one white balance number only, and then it means the same as
+        // a partial: bring the photo onto that scale first, with its own as-shot white, and put the
+        // result back on the scale the photo is edited on (issue #2910) — the merge `develop.merge` uses.
+        // (The source's facts are read only then: the panel asks for every visible row on every frame.)
+        let info = crate::cmd::develop::wb_partial_names_one_number(&preset.settings).then(|| self.source_info(id));
+        let prepare =
+            |d: &DevelopSettings| info.as_ref().and_then(|info| crate::cmd::develop::prepare_photo_for_wb_partial(d, &preset.settings, info));
+        let prepared = prepare(&current);
+        let base: &DevelopSettings = prepared.as_ref().unwrap_or(&current);
+        // the import look is read only below or above 100 %: at 100 % the preset's values apply as they are
+        let imported = (photo.import_look.is_some() && (amount - 1.0).abs() >= 1e-9).then(|| {
+            let d = photo.import_defaults();
+            prepare(&d).unwrap_or(d)
+        });
+        let mut next = preset.apply_on(base, imported.as_ref().unwrap_or(base), amount);
+        if let Some(info) = info.as_ref().filter(|i| prepared.is_some() && i.raw && !i.relative_wb) {
+            lcc_pipeline::local::normalize_wb(&mut next, info);
+        }
+        Some(next)
+    }
+
+    /// Add imported presets. Identical presets (same name, group and settings) already present are
+    /// skipped; id clashes get a fresh id. Returns the ids added.
+    pub fn add_presets(&mut self, presets: Vec<Preset>) -> Vec<String> {
+        self.add_presets_each(presets).into_iter().flatten().collect()
+    }
+
+    /// [`Self::add_presets`] reporting per preset, in order: its id, or `None` when it was skipped
+    /// as already present. One call indexes the library once, so an importer adds a whole file's
+    /// presets through it rather than one at a time.
+    pub fn add_presets_each(&mut self, presets: Vec<Preset>) -> Vec<Option<String>> {
+        use std::collections::{HashMap, HashSet};
+        // indexed: a collection of 10 000+ presets was quadratic (minutes) to import
+        let mut ids: HashSet<String> = self.presets.iter().map(|q| q.id.clone()).collect();
+        // (name, group, settings): a preset is looked up rather than compared with every namesake.
+        // Every number is keyed as an f64 with -0.0 folded into 0.0: `0` and `0.0` are unequal
+        // `Value`s with equal hashes, so a crafted file of them would pile into one bucket (upstream #3680).
+        // shortcut: integers past 2^53 lose precision in the key, so two such presets are one
+        let key_of = |p: &Preset| (p.name.clone(), p.group.clone(), canonical_numbers(&p.settings));
+        let mut present: HashSet<(String, String, serde_json::Value)> = self.presets.iter().map(key_of).collect();
+        // the next suffix to try per generated id, so a batch of clashes doesn't probe from 2 each time
+        let mut next_suffix: HashMap<String, u32> = HashMap::new();
+        let mut added = Vec::with_capacity(presets.len());
+        for mut p in presets {
+            if !present.insert(key_of(&p)) {
+                added.push(None);
+                continue;
+            }
+            if p.id.trim().is_empty() || p.id.starts_with("lc.") || ids.contains(&p.id) {
+                let base = format!("user.{}", slug(&format!("{}-{}", p.group, p.name)));
+                let mut id = base.clone();
+                let n = next_suffix.entry(base.clone()).or_insert(2);
+                while ids.contains(&id) {
+                    id = format!("{base}-{n}");
+                    *n = n.saturating_add(1);
+                }
+                p.id = id;
+            }
+            p.builtin = false;
+            ids.insert(p.id.clone());
+            added.push(Some(p.id.clone()));
+            self.presets.push(p);
+        }
+        added
+    }
+}
+
+/// `v` with every number replaced by its f64 (`-0.0` as `0.0`), so equal numbers hash and compare alike.
+fn canonical_numbers(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Number(n) => n.as_f64().and_then(|f| serde_json::Number::from_f64(f + 0.0)).map_or_else(|| v.clone(), Value::Number),
+        Value::Array(a) => Value::Array(a.iter().map(canonical_numbers).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), canonical_numbers(x))).collect()),
+        _ => v.clone(),
+    }
+}
+
+fn p(group: &str, id: &str, name: &str, settings: serde_json::Value) -> Preset {
+    Preset { id: format!("lc.{id}"), name: name.into(), group: group.into(), settings, favorite: false, builtin: true }
+}
+
+pub fn builtin() -> Vec<Preset> {
+    vec![
+        p(
+            "Color",
+            "warm-glow",
+            "Warm Glow",
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 7200.0, "tint": 8.0}, "light": {"contrast": 8.0, "shadows": 12.0}, "color": {"vibrance": 18.0}}),
+        ),
+        p(
+            "Color",
+            "cool-morning",
+            "Cool Morning",
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 5600.0, "tint": -4.0}, "light": {"highlights": -20.0}, "color": {"vibrance": 10.0}, "grading": {"shadows": {"hue": 215.0, "sat": 12.0, "lum": 0.0}}}),
+        ),
+        p(
+            "Color",
+            "teal-orange",
+            "Teal & Orange",
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 195.0, "sat": 28.0, "lum": 0.0}, "highlights": {"hue": 35.0, "sat": 22.0, "lum": 0.0}, "balance": 10.0}, "color": {"vibrance": 12.0}, "light": {"contrast": 14.0}}),
+        ),
+        p(
+            "Color",
+            "vivid-pop",
+            "Vivid Pop",
+            json!({"treatment": "color", "color": {"vibrance": 40.0, "saturation": 8.0}, "light": {"contrast": 18.0, "whites": 10.0, "blacks": -10.0}, "effects": {"clarity": 12.0}}),
+        ),
+        p(
+            "Color",
+            "soft-pastel",
+            "Soft Pastel",
+            json!({"treatment": "color", "light": {"contrast": -25.0, "highlights": -30.0, "shadows": 35.0, "blacks": 20.0}, "color": {"saturation": -18.0, "vibrance": 10.0}, "curve": {"shadows": 25.0}}),
+        ),
+        p(
+            "Film",
+            "faded-matte",
+            "Faded Matte",
+            json!({"treatment": "color", "curve": {"shadows": 40.0, "highlights": -15.0}, "light": {"contrast": -10.0}, "color": {"saturation": -12.0}, "grain": {"amount": 18.0, "size": 25.0, "roughness": 50.0}}),
+        ),
+        p(
+            "Film",
+            "warm-film",
+            "Warm Film",
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 6900.0, "tint": 5.0}, "curve": {"shadows": 22.0}, "grading": {"highlights": {"hue": 45.0, "sat": 15.0, "lum": 0.0}}, "grain": {"amount": 22.0, "size": 30.0, "roughness": 55.0}, "vignette": {"amount": -12.0}}),
+        ),
+        p(
+            "Film",
+            "muted-film",
+            "Muted Film",
+            json!({"treatment": "color", "color": {"saturation": -25.0, "vibrance": 5.0}, "light": {"contrast": 10.0}, "curve": {"shadows": 18.0}, "grain": {"amount": 15.0}}),
+        ),
+        p(
+            "B&W",
+            "bw-high-contrast",
+            "High Contrast B&W",
+            json!({"treatment": "bw", "light": {"contrast": 45.0, "whites": 20.0, "blacks": -25.0}, "effects": {"clarity": 20.0}, "bw_mix": {"blue": -30.0, "red": 15.0}}),
+        ),
+        p("B&W", "bw-soft", "Soft B&W", json!({"treatment": "bw", "light": {"contrast": -15.0, "shadows": 25.0}, "curve": {"shadows": 15.0}})),
+        p(
+            "B&W",
+            "bw-selenium",
+            "Selenium Tone",
+            json!({"treatment": "bw", "light": {"contrast": 20.0}, "grading": {"shadows": {"hue": 285.0, "sat": 18.0, "lum": 0.0}, "highlights": {"hue": 40.0, "sat": 10.0, "lum": 0.0}}}),
+        ),
+        p(
+            "Landscape",
+            "crisp-landscape",
+            "Crisp Landscape",
+            json!({"treatment": "color", "light": {"highlights": -45.0, "shadows": 30.0, "contrast": 12.0}, "effects": {"clarity": 22.0, "dehaze": 12.0, "texture": 15.0}, "color": {"vibrance": 25.0}}),
+        ),
+        p(
+            "Landscape",
+            "golden-hour",
+            "Golden Hour",
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 7600.0, "tint": 12.0}, "light": {"highlights": -35.0, "shadows": 20.0}, "grading": {"highlights": {"hue": 38.0, "sat": 25.0, "lum": 5.0}}, "vignette": {"amount": -15.0}}),
+        ),
+        p(
+            "Landscape",
+            "blue-hour",
+            "Blue Hour Boost",
+            json!({"treatment": "color", "wb": {"mode": "custom", "temp": 5200.0, "tint": 6.0}, "light": {"shadows": 25.0, "exposure": 0.2}, "mixer": {"blue": {"hue": 0.0, "sat": 25.0, "lum": 0.0}, "purple": {"hue": 0.0, "sat": 15.0, "lum": 0.0}}}),
+        ),
+        p(
+            "Portrait",
+            "soft-skin",
+            "Soft Skin",
+            json!({"treatment": "color", "effects": {"texture": -25.0, "clarity": -10.0}, "light": {"contrast": -5.0, "shadows": 15.0}, "mixer": {"orange": {"hue": 0.0, "sat": -8.0, "lum": 10.0}}}),
+        ),
+        p(
+            "Portrait",
+            "bright-airy",
+            "Bright & Airy",
+            json!({"treatment": "color", "light": {"exposure": 0.45, "contrast": -15.0, "highlights": -40.0, "shadows": 40.0, "whites": 15.0}, "color": {"vibrance": 8.0, "saturation": -8.0}}),
+        ),
+        p(
+            "Style",
+            "moody",
+            "Moody",
+            json!({"treatment": "color", "light": {"exposure": -0.3, "contrast": 20.0, "highlights": -30.0, "blacks": -15.0}, "color": {"saturation": -20.0}, "grading": {"shadows": {"hue": 200.0, "sat": 15.0, "lum": -5.0}}, "vignette": {"amount": -30.0}}),
+        ),
+        p(
+            "Style",
+            "cinematic",
+            "Cinematic",
+            json!({"treatment": "color", "curve": {"shadows": 20.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 190.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 30.0, "sat": 18.0, "lum": 0.0}}, "light": {"contrast": 15.0}, "vignette": {"amount": -20.0}}),
+        ),
+        // ---- Portrait
+        p(
+            "Portrait",
+            "moody-portrait",
+            "Moody Portrait",
+            json!({"treatment": "color", "light": {"exposure": -0.25, "contrast": 20.0, "highlights": -30.0, "blacks": -12.0}, "color": {"saturation": -15.0}, "vignette": {"amount": -25.0, "midpoint": 40.0}, "mixer": {"orange": {"sat": 6.0}}}),
+        ),
+        p(
+            "Portrait",
+            "golden-glow",
+            "Golden Glow",
+            json!({"treatment": "color", "grading": {"highlights": {"hue": 40.0, "sat": 18.0, "lum": 0.0}, "midtones": {"hue": 35.0, "sat": 8.0, "lum": 0.0}}, "light": {"shadows": 15.0}, "effects": {"clarity": -8.0}}),
+        ),
+        p(
+            "Portrait",
+            "clean-studio",
+            "Clean Studio",
+            json!({"treatment": "color", "light": {"contrast": 10.0, "whites": 15.0, "blacks": -8.0}, "effects": {"texture": -10.0}, "color": {"vibrance": 5.0}}),
+        ),
+        // ---- Landscape
+        p(
+            "Landscape",
+            "crisp-vista",
+            "Crisp Vista",
+            json!({"treatment": "color", "effects": {"dehaze": 15.0, "clarity": 18.0, "texture": 12.0}, "light": {"contrast": 12.0, "highlights": -25.0, "shadows": 18.0}, "color": {"vibrance": 20.0}}),
+        ),
+        p(
+            "Landscape",
+            "deep-sky",
+            "Deep Sky",
+            json!({"treatment": "color", "mixer": {"blue": {"lum": -25.0, "sat": 15.0}, "aqua": {"lum": -10.0}}, "light": {"highlights": -30.0}, "effects": {"dehaze": 10.0}}),
+        ),
+        p(
+            "Landscape",
+            "lush-greens",
+            "Lush Greens",
+            json!({"treatment": "color", "mixer": {"green": {"hue": 12.0, "sat": 18.0, "lum": 8.0}, "yellow": {"hue": 10.0, "sat": 10.0}}, "color": {"vibrance": 12.0}, "effects": {"clarity": 8.0}}),
+        ),
+        p(
+            "Landscape",
+            "desert-warmth",
+            "Desert Warmth",
+            json!({"treatment": "color", "mixer": {"orange": {"sat": 15.0, "lum": 5.0}, "yellow": {"hue": -8.0, "sat": 10.0}, "blue": {"sat": -10.0}}, "grading": {"highlights": {"hue": 38.0, "sat": 12.0, "lum": 0.0}}, "light": {"contrast": 10.0}}),
+        ),
+        p(
+            "Landscape",
+            "misty-morning",
+            "Misty Morning",
+            json!({"treatment": "color", "effects": {"dehaze": -18.0, "clarity": -12.0}, "light": {"contrast": -18.0, "highlights": -10.0}, "grading": {"shadows": {"hue": 210.0, "sat": 10.0, "lum": 0.0}}, "color": {"saturation": -10.0}}),
+        ),
+        // ---- Urban
+        p(
+            "Urban",
+            "gritty-street",
+            "Gritty Street",
+            json!({"treatment": "color", "effects": {"clarity": 35.0, "texture": 20.0}, "light": {"contrast": 25.0, "blacks": -15.0}, "color": {"saturation": -30.0}, "vignette": {"amount": -18.0}}),
+        ),
+        p(
+            "Urban",
+            "neon-night",
+            "Neon Night",
+            json!({"treatment": "color", "mixer": {"magenta": {"sat": 20.0}, "purple": {"sat": 18.0}, "blue": {"sat": 12.0}, "aqua": {"sat": 15.0}}, "light": {"contrast": 18.0, "blacks": -12.0}, "color": {"vibrance": 15.0}, "grading": {"shadows": {"hue": 250.0, "sat": 15.0, "lum": 0.0}}}),
+        ),
+        p(
+            "Urban",
+            "concrete-cool",
+            "Concrete Cool",
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 205.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 200.0, "sat": 6.0, "lum": 0.0}}, "color": {"saturation": -20.0}, "light": {"contrast": 12.0}, "effects": {"clarity": 15.0}}),
+        ),
+        p(
+            "Urban",
+            "faded-urban",
+            "Faded Urban",
+            json!({"treatment": "color", "curve": {"shadows": 30.0}, "color": {"saturation": -22.0}, "light": {"contrast": -8.0}, "grain": {"amount": 12.0, "size": 25.0, "roughness": 45.0}}),
+        ),
+        // ---- Food
+        p(
+            "Food",
+            "fresh-bright",
+            "Fresh & Bright",
+            json!({"treatment": "color", "light": {"exposure": 0.25, "shadows": 20.0, "whites": 10.0}, "color": {"vibrance": 22.0}, "effects": {"texture": 15.0}}),
+        ),
+        p(
+            "Food",
+            "warm-table",
+            "Warm Table",
+            json!({"treatment": "color", "grading": {"midtones": {"hue": 32.0, "sat": 10.0, "lum": 0.0}}, "mixer": {"orange": {"sat": 10.0}, "red": {"sat": 8.0}}, "light": {"contrast": 8.0}}),
+        ),
+        p(
+            "Food",
+            "dark-moody-food",
+            "Dark & Moody",
+            json!({"treatment": "color", "light": {"exposure": -0.3, "contrast": 22.0, "highlights": -20.0, "blacks": -15.0}, "effects": {"texture": 18.0}, "vignette": {"amount": -22.0}}),
+        ),
+        // ---- Seasons
+        p(
+            "Seasons",
+            "autumn-gold",
+            "Autumn Gold",
+            json!({"treatment": "color", "mixer": {"green": {"hue": -30.0, "sat": -10.0}, "yellow": {"hue": -15.0, "sat": 15.0}, "orange": {"sat": 18.0}}, "grading": {"highlights": {"hue": 40.0, "sat": 10.0, "lum": 0.0}}}),
+        ),
+        p(
+            "Seasons",
+            "winter-blue",
+            "Winter Blue",
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 215.0, "sat": 18.0, "lum": 0.0}, "highlights": {"hue": 205.0, "sat": 8.0, "lum": 0.0}}, "color": {"saturation": -12.0}, "light": {"whites": 12.0}}),
+        ),
+        p(
+            "Seasons",
+            "spring-fresh",
+            "Spring Fresh",
+            json!({"treatment": "color", "mixer": {"green": {"hue": 10.0, "sat": 12.0, "lum": 10.0}, "magenta": {"sat": 10.0}}, "light": {"shadows": 15.0}, "color": {"vibrance": 15.0}}),
+        ),
+        p(
+            "Seasons",
+            "summer-haze",
+            "Summer Haze",
+            json!({"treatment": "color", "effects": {"dehaze": -12.0}, "curve": {"shadows": 18.0}, "grading": {"highlights": {"hue": 45.0, "sat": 14.0, "lum": 0.0}}, "light": {"contrast": -10.0}}),
+        ),
+        // ---- Vintage
+        p(
+            "Vintage",
+            "instant-70s",
+            "Instant ’70s",
+            json!({"treatment": "color", "curve": {"shadows": 28.0, "highlights": -18.0}, "grading": {"shadows": {"hue": 170.0, "sat": 14.0, "lum": 0.0}, "highlights": {"hue": 45.0, "sat": 18.0, "lum": 0.0}}, "color": {"saturation": -10.0}, "vignette": {"amount": -15.0}, "grain": {"amount": 20.0, "size": 30.0, "roughness": 55.0}}),
+        ),
+        p(
+            "Vintage",
+            "cross-process",
+            "Cross Process",
+            json!({"treatment": "color", "grading": {"shadows": {"hue": 230.0, "sat": 25.0, "lum": 0.0}, "highlights": {"hue": 60.0, "sat": 25.0, "lum": 0.0}}, "light": {"contrast": 22.0}, "color": {"saturation": 10.0}}),
+        ),
+        p(
+            "Vintage",
+            "bleach-bypass",
+            "Bleach Bypass",
+            json!({"treatment": "color", "color": {"saturation": -40.0}, "light": {"contrast": 35.0, "highlights": -15.0}, "effects": {"clarity": 15.0}}),
+        ),
+        // ---- B&W toners
+        p(
+            "B&W",
+            "bw-sepia",
+            "Sepia Tone",
+            json!({"treatment": "bw", "grading": {"shadows": {"hue": 32.0, "sat": 22.0, "lum": 0.0}, "highlights": {"hue": 42.0, "sat": 18.0, "lum": 0.0}}, "curve": {"shadows": 10.0}}),
+        ),
+    ]
+    .into_iter()
+    // AI-mask recipes: Sun Kissed, Recover Blue Suit, Bring Sky Down…
+    .chain(crate::presets_smart::smart())
+    .collect()
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProfileInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub group: &'static str,
+}
+
+/// Our base profiles (rendering looks). Implemented in the pipeline.
+pub const PROFILES: &[ProfileInfo] = &[
+    ProfileInfo { id: "lc.color", name: "Craft Colour", group: "Basic" },
+    ProfileInfo { id: "lc.eboda", name: "Eboda Colour", group: "Basic" },
+    ProfileInfo { id: "lc.neutral", name: "Neutral", group: "Basic" },
+    ProfileInfo { id: "lc.vivid", name: "Vivid", group: "Basic" },
+    ProfileInfo { id: "lc.landscape", name: "Landscape", group: "Basic" },
+    ProfileInfo { id: "lc.portrait", name: "Portrait", group: "Basic" },
+    ProfileInfo { id: "lc.mono", name: "Monochrome", group: "Basic" },
+    ProfileInfo { id: "lc.film.warm-print", name: "Warm Print", group: "Film" },
+    ProfileInfo { id: "lc.film.cool-fade", name: "Cool Fade", group: "Film" },
+    ProfileInfo { id: "lc.film.golden-hour", name: "Golden Hour", group: "Film" },
+    ProfileInfo { id: "lc.film.faded-slide", name: "Faded Slide", group: "Film" },
+    ProfileInfo { id: "lc.cine.teal-amber", name: "Teal & Amber", group: "Cinematic" },
+    ProfileInfo { id: "lc.cine.night-blue", name: "Night Blue", group: "Cinematic" },
+    ProfileInfo { id: "lc.cine.desert-heat", name: "Desert Heat", group: "Cinematic" },
+    ProfileInfo { id: "lc.cine.neon-dusk", name: "Neon Dusk", group: "Cinematic" },
+    ProfileInfo { id: "lc.muted.matte-soft", name: "Matte Soft", group: "Muted" },
+    ProfileInfo { id: "lc.muted.bleached", name: "Bleached", group: "Muted" },
+    ProfileInfo { id: "lc.muted.pastel-haze", name: "Pastel Haze", group: "Muted" },
+    ProfileInfo { id: "lc.muted.quiet-green", name: "Quiet Green", group: "Muted" },
+    ProfileInfo { id: "lc.bw.mono-rich", name: "Mono Rich", group: "B&W" },
+    ProfileInfo { id: "lc.bw.red-filter", name: "Mono Red Filter", group: "B&W" },
+    ProfileInfo { id: "lc.bw.soft", name: "Mono Soft", group: "B&W" },
+    ProfileInfo { id: "lc.bw.sepia", name: "Sepia Tone", group: "B&W" },
+];
+
+/// Profile groups in menu/browser order.
+pub fn profile_groups() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for p in PROFILES {
+        if !out.contains(&p.group) {
+            out.push(p.group);
+        }
+    }
+    out
+}
+
+/// A profile by id.
+pub fn profile(id: &str) -> Option<&'static ProfileInfo> {
+    PROFILES.iter().find(|p| p.id == id)
+}
+
+/// How many recently used profiles the profile menu lists.
+pub const RECENT_PROFILES: usize = 5;
+
+impl Session {
+    /// A profile by id, looking up built-in profiles first and imported LUT profiles second.
+    pub fn profile_info(&self, id: &str) -> Option<(&str, &str)> {
+        let (name, group) = match profile(id) {
+            Some(p) => (p.name, p.group),
+            None => self.lut_profiles.iter().find(|p| p.id == id).map(|p| (p.name.as_str(), p.group.as_str()))?,
+        };
+        // the Profile Manager's name and group for it
+        let name = self.profile_edits.names.get(id).map(String::as_str).unwrap_or(name);
+        let group = self.profile_edits.groups.get(id).map(String::as_str).unwrap_or(group);
+        Some((name, group))
+    }
+
+    /// Remember `id` as the most recently applied profile.
+    pub fn note_profile_used(&mut self, id: &str) {
+        self.profile_recent.retain(|p| p != id);
+        self.profile_recent.insert(0, id.to_string());
+        self.profile_recent.truncate(RECENT_PROFILES);
+    }
+
+    /// The profile menu: favourites, recent, then every group (`profiles.menu`).
+    pub fn profile_menu(&self) -> Value {
+        let item =
+            |p: &ProfileInfo| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.iter().any(|f| f == p.id)});
+        let lut_item = |id: &str| {
+            self.lut_profiles
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.contains(&p.id), "imported": true}))
+        };
+        let shown = |id: &str| !self.profile_hidden.iter().any(|h| h == id) && !self.profile_edits.removed.iter().any(|r| r == id);
+        let renamed = |mut v: Value| {
+            if let Some(n) = v.get("id").and_then(Value::as_str).and_then(|id| self.profile_edits.names.get(id)).cloned() {
+                v["name"] = json!(n);
+            }
+            v
+        };
+        let list = |ids: &[String]| {
+            ids.iter().filter(|id| shown(id)).filter_map(|id| profile(id).map(item).or_else(|| lut_item(id))).map(renamed).collect::<Vec<_>>()
+        };
+        // (profiles the Profile Manager hides or removed are left out; a group left empty goes too)
+        let groups: Vec<Value> = self
+            .shown_groups()
+            .into_iter()
+            .map(|g| {
+                let profiles: Vec<Value> = g
+                    .profiles
+                    .iter()
+                    .map(|p| {
+                        let mut v =
+                            json!({"id": p.id, "name": p.name, "group": p.group, "favorite": self.profile_favorites.iter().any(|f| f == &p.id)});
+                        if p.kind == "lut" {
+                            v["imported"] = json!(true);
+                        }
+                        v
+                    })
+                    .collect();
+                let mut v = json!({"name": g.name, "profiles": profiles});
+                if g.imported {
+                    v["imported"] = json!(true);
+                }
+                v
+            })
+            .collect();
+        json!({
+            "favorites": list(&self.profile_favorites),
+            "recent": list(&self.profile_recent),
+            "groups": groups,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_presets_parse_and_apply() {
+        let base = lcc_develop::DevelopSettings::default();
+        let mut ids = std::collections::HashSet::new();
+        for pr in builtin() {
+            assert!(ids.insert(pr.id.clone()));
+            let out = pr.apply(&base, 1.0);
+            assert_ne!(out, base, "{} had no effect", pr.id);
+        }
+    }
+
+    #[test]
+    fn every_profile_has_a_look_and_ids_are_unique() {
+        let looks = crate::pipeline::profiles::LOOK_IDS;
+        let mut ids = std::collections::HashSet::new();
+        for p in PROFILES {
+            assert!(ids.insert(p.id), "{}", p.id);
+            assert!(p.id == "lc.color" || looks.contains(&p.id), "{} has no look", p.id);
+        }
+        assert!(PROFILES.len() >= 22);
+        assert_eq!(profile_groups(), ["Basic", "Film", "Cinematic", "Muted", "B&W"]);
+    }
+
+    #[test]
+    fn creative_profiles_render_without_moving_the_sliders() {
+        let mut s = Session::with_demo();
+        let id = s.active().unwrap();
+        s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.4})).unwrap();
+        let before = s.develop_of(id).unwrap();
+        let plain = s.render_now(id, 96, 96).unwrap().image;
+        s.execute("develop.profile", &json!({"id": "lc.cine.teal-amber", "amount": 150})).unwrap();
+        let after = s.develop_of(id).unwrap();
+        assert_eq!((after.profile.id.as_str(), after.profile.amount), ("lc.cine.teal-amber", 150.0));
+        let mut same = (*after).clone();
+        same.profile = before.profile.clone();
+        assert_eq!(same, *before, "only the profile changed");
+        let looked = s.render_now(id, 96, 96).unwrap().image;
+        assert_ne!(plain.as_bytes(), looked.as_bytes());
+    }
+
+    fn dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("lc-presets-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn lcpreset_export_import_roundtrip_keeps_groups() {
+        let d = dir("rt");
+        let mut s = Session::with_demo();
+        s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.6})).unwrap();
+        s.execute("preset.create", &json!({"name": "Bright", "group": "Travel"})).unwrap();
+        s.execute("develop.set", &json!({"control": "effects.clarity", "value": 30})).unwrap();
+        s.execute("preset.create", &json!({"name": "Crisp", "group": "Street"})).unwrap();
+        let mine: Vec<Preset> = s.presets.iter().filter(|p| !p.builtin).cloned().collect();
+        assert_eq!(mine.len(), 2);
+        let path = d.join("mine");
+        let r = s.execute("preset.export", &json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(r["count"], 2);
+        let file = d.join(format!("mine.{}", lcc_brand::PRESET_EXT));
+        assert!(file.is_file());
+        let one = d.join("travel.lcpreset");
+        s.execute("preset.export", &json!({"path": one.to_string_lossy(), "group": "Travel"})).unwrap();
+        assert!(s.execute("preset.export", &json!({"path": one.to_string_lossy(), "group": "Nope"})).is_err());
+
+        // a fresh session imports both files from the folder; the duplicate is skipped
+        let mut t = Session::new();
+        let r = t.execute("preset.import", &json!({"paths": [d.to_string_lossy()]})).unwrap();
+        assert_eq!(r["imported"].as_array().unwrap().len(), 2, "{r}");
+        assert_eq!(r["skipped"], 1, "{r}");
+        for p in &mine {
+            let q = t.presets.iter().find(|q| q.name == p.name).unwrap();
+            assert_eq!((&q.group, &q.settings, q.builtin), (&p.group, &p.settings, false));
+        }
+        // importing into the session that has them: everything is skipped, nothing duplicated
+        let n = s.presets.len();
+        let r = s.execute("preset.import", &json!({"paths": [file.to_string_lossy()]})).unwrap();
+        assert_eq!((r["skipped"].as_u64(), s.presets.len()), (Some(2), n));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn id_clashes_get_fresh_ids_and_bad_files_are_reported() {
+        let d = dir("clash");
+        let builtin = builtin().remove(0);
+        let mut clash = builtin.clone();
+        clash.settings = json!({"light": {"exposure": 1.0}});
+        std::fs::write(d.join("a.lcpreset"), serde_json::to_string(&clash).unwrap()).unwrap();
+        std::fs::write(d.join("b.lcpreset"), "{not json").unwrap();
+        std::fs::write(d.join("c.lcpreset"), r#"{"format": "other", "version": 1, "presets": []}"#).unwrap();
+        std::fs::write(d.join("notes.txt"), "ignored inside folders").unwrap();
+        let mut s = Session::new();
+        let r = s.execute("preset.import", &json!({"paths": [d.to_string_lossy()]})).unwrap();
+        assert_eq!(r["failed"].as_array().unwrap().len(), 2, "{r}");
+        let id = r["imported"][0]["id"].as_str().unwrap();
+        assert_ne!(id, builtin.id);
+        assert!(id.starts_with("user."));
+        assert!(s.presets.iter().find(|p| p.id == builtin.id).unwrap().builtin, "built-in untouched");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn xmp_preset_file_imports_and_applies() {
+        let d = dir("xmp");
+        // Hand-written for this test (not a third-party preset).
+        let x = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+            crs:PresetType="Normal" crs:Exposure2012="+0.30" crs:Shadows2012="+20" crs:GrainAmount="12">
+            <crs:Group><rdf:Alt><rdf:li xml:lang="x-default">Test Group</rdf:li></rdf:Alt></crs:Group>
+          </rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        std::fs::write(d.join("Soft Lift.xmp"), x).unwrap();
+        let mut s = Session::with_demo();
+        let r = s.execute("preset.import", &json!({"paths": [d.join("Soft Lift.xmp").to_string_lossy()]})).unwrap();
+        let id = r["imported"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(r["imported"][0]["name"], "Soft Lift", "file name when crs:Name is missing");
+        assert_eq!(r["imported"][0]["group"], "Test Group");
+        s.execute("preset.apply", &json!({"id": id})).unwrap();
+        let dv = s.develop_of(s.active().unwrap()).unwrap();
+        assert_eq!((dv.light.exposure, dv.light.shadows, dv.grain.amount), (0.3, 20.0, 12.0));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

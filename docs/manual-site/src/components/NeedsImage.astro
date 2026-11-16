@@ -1,0 +1,23 @@
+---
+// Placeholder for a picture that can't be captured headless (hardware, a network service, a model,
+// a native dialog). Say what the picture should show, so it can be added later.
+interface Props { what: string }
+const { what } = Astro.props;
+---
+<figure class="needs-image" role="img" aria-label={`Needs image: ${what}`}>
+  <strong>Needs Image</strong>
+  <figcaption>{what}</figcaption>
+</figure>
+<style>
+  .needs-image {
+    margin: 1rem 0;
+    padding: 1.25rem 1rem;
+    border: 2px dashed var(--sl-color-gray-3);
+    border-radius: 6px;
+    text-align: center;
+    color: var(--sl-color-gray-2);
+    background: var(--sl-color-gray-6);
+  }
+  .needs-image strong { display: block; font-size: var(--sl-text-lg); color: var(--sl-color-text-accent); }
+  .needs-image figcaption { margin-top: 0.25rem; font-size: var(--sl-text-sm); }
+</style>

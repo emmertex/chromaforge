@@ -1,0 +1,23 @@
+[package]
+name = "lcc-android-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Android host (L0): the app's calls into its Android activity over JNI (system pickers, links) and the answers back. One of the crates allowed `unsafe` (adopting the activity's JVM handles)."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the single
+# `jvm` module below; every other crate root has `#![forbid(unsafe_code)]`. See CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+log = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# pure Rust (MIT/Apache-2.0); the same versions eframe's winit already brings in
+android-activity = { version = "0.6", default-features = false, features = ["native-activity"] }
+jni = "0.21"

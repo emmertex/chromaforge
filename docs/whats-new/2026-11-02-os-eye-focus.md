@@ -1,0 +1,3 @@
+### Eye focus for culling
+- View ▸ Eye Focus Strip shows each person's sharper eye at 100 % across the top of the loupe, with a dot for how sharp it is and a mark for closed or half-closed eyes and sunglasses; a big group wraps into rows, the people to look at first. A click shows that eye at 100 %. It is on at first while browsing a folder to cull, off in the library. It uses the MediaPipe faces model (Apache-2.0), downloaded from AI Models….
+- The results are kept in the preview cache, so a photo looked at once shows its eyes at once, also after a restart. `eyes.analyze` finds a folder's eyes ahead of culling, and `photo.rejectEyes` rejects the photos where a main subject has closed or blurry eyes, in one undo step. Ported from OneSlips' fork.

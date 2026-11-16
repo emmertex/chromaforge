@@ -1,0 +1,16 @@
+[package]
+name = "lcc-geom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Geom (L0)"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

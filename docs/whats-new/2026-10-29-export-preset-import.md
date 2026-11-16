@@ -1,0 +1,2 @@
+### Lightroom Classic export preset import
+- Importing Lightroom Classic `.lrtemplate` export presets now retains unprefixed settings (file format, quality, file-size limit, colour space, bit depth, resizing, output sharpening, metadata policy, file naming tokens, and export location), loads the imported preset into the Export dialog, and lists any unsupported settings that need to be configured manually.

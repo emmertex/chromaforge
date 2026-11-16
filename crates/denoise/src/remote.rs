@@ -1,0 +1,710 @@
+//! Remote denoise: run a model's tiles on another computer's graphics card over TCP. Meant for a LAN or a VPN such as
+//! Tailscale or WireGuard: the connection itself is not encrypted.
+//!
+//! [`Remote`] is a [`TileRunner`] that sends each tile to a server; [`serve`] runs one (`lcc-cli
+//! denoise-serve`). Both ends must run the same model, checked by its identity ([`ModelId`]) when they greet.
+//!
+//! Protocol (version 1). Each message is one JSON line (`\n`-terminated, ≤ 4 KiB), optionally followed by a payload of
+//! `bytes` bytes: the tile's samples as little-endian half floats, byte-shuffled (every sample's low byte, then every
+//! high byte) and deflated, which roughly halves what crosses a slow link.
+//!
+//! ```text
+//! → {"v":1,"token":"…","op":"hello"}
+//! ← {"ok":true,"v":1,"device":"GPU: …","model":{"id":"…","version":"…","sha256":"…"}}
+//! → {"v":1,"token":"…","op":"run","model":"<sha256>","tile":T,"bytes":N}   + N bytes (4 planes of T × T)
+//! ← {"ok":true,"tile":T,"bytes":N}                                        + N bytes (3 planes of 2T × 2T)
+//! ← {"ok":false,"error":"…"}                                              (any failure)
+//! ```
+//!
+//! A connection serves any number of requests. The server refuses a wrong token, another model than its own, tiles of
+//! another size, oversized headers and payloads (also ones that inflate past their tile), and caps concurrent
+//! connections; the client gives up on a server that keeps failing, so the computer's own runner does the rest.
+//!
+//! Before its token is accepted a connection has [`AUTH_TIMEOUT`] in all to send its first line, however slowly the
+//! bytes come (the per-read `timeout` applies only after), and an address that sent a bad token is turned away for a
+//! while, doubling with each one (issue #2133): peers without the token can neither hold the connection slots nor
+//! guess tokens at line rate.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::product::{from_f16, to_f16};
+use crate::run::{Error, TileRunner};
+
+pub const PROTOCOL: u64 = 1;
+pub const DEFAULT_PORT: u16 = 7990;
+const MAX_LINE: usize = 4096;
+/// Largest tile side in cells (a 1024-cell tile is a 2048 × 2048 pixel answer).
+pub const MAX_TILE: usize = 1024;
+/// Shortest token a server accepts.
+pub const MIN_TOKEN: usize = 16;
+/// How long a connection has, in all, to send a first line with a good token.
+pub const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an address is turned away after its first bad token; it doubles with each further one, up to
+/// [`MAX_BACKOFF`], and a good token clears it.
+const FIRST_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(300);
+/// Addresses remembered for back-off (expired ones are dropped first).
+const MAX_BACKOFF_ENTRIES: usize = 4096;
+
+/// Addresses that sent a bad token: how many in a row, and until when they are turned away.
+#[derive(Default)]
+struct Backoff(Mutex<HashMap<IpAddr, (u32, Instant)>>);
+
+impl Backoff {
+    fn blocked(&self, ip: IpAddr) -> bool {
+        let m = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        m.get(&ip).is_some_and(|&(_, until)| Instant::now() < until)
+    }
+
+    fn bad_token(&self, ip: IpAddr) {
+        let mut m = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        if m.len() >= MAX_BACKOFF_ENTRIES {
+            m.retain(|_, (_, until)| *until > now);
+            if m.len() >= MAX_BACKOFF_ENTRIES {
+                m.clear();
+            }
+        }
+        let e = m.entry(ip).or_insert((0, now));
+        e.0 = e.0.saturating_add(1);
+        let wait = FIRST_BACKOFF.saturating_mul(1u32 << (e.0 - 1).min(16)).min(MAX_BACKOFF);
+        e.1 = now + wait;
+    }
+
+    fn good_token(&self, ip: IpAddr) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).remove(&ip);
+    }
+}
+
+/// A stream whose reads, while `until` is set, together end at that instant: each read waits only for what is left,
+/// so trickling a byte at a time doesn't buy a peer more time.
+struct Deadline {
+    stream: TcpStream,
+    until: Option<Instant>,
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(until) = self.until {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no good token in time"));
+            }
+            self.stream.set_read_timeout(Some(left))?;
+        }
+        self.stream.read(buf)
+    }
+}
+
+/// Which model a server runs: both ends must agree before tiles cross.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ModelId {
+    pub id: String,
+    pub version: String,
+    /// SHA-256 of the model file (hex).
+    pub sha256: String,
+}
+
+fn bad(m: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, m.into())
+}
+
+fn read_line(r: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let n = r.by_ref().take(MAX_LINE as u64 + 1).read_until(b'\n', &mut buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.last() != Some(&b'\n') {
+        return Err(bad("message header too long or truncated"));
+    }
+    String::from_utf8(buf).map(Some).map_err(|_| bad("header is not UTF-8"))
+}
+
+/// Samples → half floats → byte-shuffled → deflated.
+pub fn pack(data: &[f32]) -> Vec<u8> {
+    let n = data.len();
+    let mut b = vec![0u8; n * 2];
+    let (lo, hi) = b.split_at_mut(n);
+    for ((v, l), h) in data.iter().zip(lo.iter_mut()).zip(hi.iter_mut()) {
+        [*l, *h] = to_f16(*v).to_le_bytes();
+    }
+    miniz_oxide::deflate::compress_to_vec(&b, 1)
+}
+
+/// The inverse of [`pack`] for exactly `n` samples; refuses anything that inflates to more.
+pub fn unpack(bytes: &[u8], n: usize) -> std::io::Result<Vec<f32>> {
+    let b = miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, n * 2).map_err(|_| bad("payload doesn't inflate to the tile size"))?;
+    if b.len() != n * 2 {
+        return Err(bad("payload size doesn't match the tile"));
+    }
+    let (lo, hi) = b.split_at(n);
+    Ok(lo.iter().zip(hi).map(|(l, h)| from_f16(u16::from_le_bytes([*l, *h]))).collect())
+}
+
+fn write_payload(w: &mut impl Write, mut header: Value, data: &[f32]) -> std::io::Result<()> {
+    let packed = pack(data);
+    header["bytes"] = json!(packed.len());
+    writeln!(w, "{header}")?;
+    w.write_all(&packed)
+}
+
+/// Read a `bytes`-byte payload holding `n` samples (`bytes` is capped by the tile, so a hostile header can't make us
+/// allocate more than an uncompressed tile plus slack).
+fn read_payload(r: &mut impl Read, bytes: usize, n: usize) -> std::io::Result<Vec<f32>> {
+    if bytes > n * 2 + 4096 {
+        return Err(bad("payload larger than its tile"));
+    }
+    let mut b = vec![0u8; bytes];
+    r.read_exact(&mut b)?;
+    unpack(&b, n)
+}
+
+fn field(v: &Value, k: &str) -> Option<usize> {
+    v.get(k).and_then(Value::as_u64).and_then(|x| usize::try_from(x).ok())
+}
+
+/// Constant-time comparison (the token must not leak through timing).
+fn same(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut d = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        d |= (a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0)) as usize;
+    }
+    d == 0
+}
+
+/// What a server runs a tile with: four planes of `tile × tile` cells in, three planes of `2·tile × 2·tile` out.
+pub type RunTile = Arc<dyn Fn(&[f32]) -> Result<Vec<f32>, Error> + Send + Sync>;
+
+/// A server's settings.
+#[derive(Clone, Debug)]
+pub struct ServerOptions {
+    /// Shared secret every request must carry (at least [`MIN_TOKEN`] characters).
+    pub token: String,
+    pub max_connections: usize,
+    /// Idle and transfer limit per connection, once its token is accepted.
+    pub timeout: Duration,
+    /// How long a connection has, in all, to send a first line with a good token ([`AUTH_TIMEOUT`]).
+    pub auth_timeout: Duration,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        ServerOptions { token: String::new(), max_connections: 8, timeout: Duration::from_secs(120), auth_timeout: AUTH_TIMEOUT }
+    }
+}
+
+/// Serve `model` (tiles of `tile` cells, run by `run` on `device`) until the listener fails. `log` gets one line per event.
+pub fn serve(
+    listener: TcpListener,
+    model: ModelId,
+    tile: usize,
+    device: String,
+    run: RunTile,
+    opts: ServerOptions,
+    log: Arc<dyn Fn(&str) + Send + Sync>,
+) -> Result<(), String> {
+    if opts.token.trim().chars().count() < MIN_TOKEN {
+        return Err(format!("the token must be at least {MIN_TOKEN} characters"));
+    }
+    if tile == 0 || tile > MAX_TILE {
+        return Err(format!("tile size {tile} is outside 1..={MAX_TILE}"));
+    }
+    let active = Arc::new(AtomicUsize::new(0));
+    let shared = Arc::new((model, device));
+    let backoff = Arc::new(Backoff::default());
+    for conn in listener.incoming() {
+        let Ok(stream) = conn else { continue };
+        let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".into());
+        if stream.peer_addr().is_ok_and(|a| backoff.blocked(a.ip())) {
+            let mut s = stream;
+            let _ = writeln!(s, "{}", json!({"ok": false, "error": "too many bad tokens from this address; try again later"}));
+            continue;
+        }
+        if active.load(Ordering::SeqCst) >= opts.max_connections.max(1) {
+            let mut s = stream;
+            let _ = writeln!(s, "{}", json!({"ok": false, "error": "server busy"}));
+            log(&format!("{peer}: refused (busy)"));
+            continue;
+        }
+        active.fetch_add(1, Ordering::SeqCst);
+        let (sh, r, o, l, n, b) = (shared.clone(), run.clone(), opts.clone(), log.clone(), active.clone(), backoff.clone());
+        let spawned = std::thread::Builder::new().name(format!("denoise {peer}")).spawn(move || {
+            if let Err(e) = handle(stream, &sh.0, tile, &sh.1, &*r, &o, &*l, &b) {
+                l(&format!("{peer}: {e}"));
+            }
+            n.fetch_sub(1, Ordering::SeqCst);
+        });
+        if spawned.is_err() {
+            active.fetch_sub(1, Ordering::SeqCst);
+            log("could not start a connection thread");
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle(
+    stream: TcpStream,
+    model: &ModelId,
+    tile: usize,
+    device: &str,
+    run: &dyn Fn(&[f32]) -> Result<Vec<f32>, Error>,
+    opts: &ServerOptions,
+    log: &dyn Fn(&str),
+    backoff: &Backoff,
+) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(opts.timeout.min(opts.auth_timeout)))?;
+    stream.set_write_timeout(Some(opts.timeout))?;
+    stream.set_nodelay(true)?;
+    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    let ip = stream.peer_addr().ok().map(|a| a.ip());
+    // the first line, with its token, must arrive within the auth timeout in all
+    let mut r = BufReader::new(Deadline { stream: stream.try_clone()?, until: Some(Instant::now() + opts.auth_timeout) });
+    let mut w = stream;
+    let mut tiles = 0usize;
+    let fail = |w: &mut TcpStream, msg: &str| writeln!(w, "{}", json!({"ok": false, "error": msg}));
+    while let Some(line) = read_line(&mut r)? {
+        let Ok(req) = serde_json::from_str::<Value>(&line) else {
+            fail(&mut w, "malformed request")?;
+            break;
+        };
+        if req.get("v").and_then(Value::as_u64) != Some(PROTOCOL) {
+            fail(&mut w, &format!("protocol version {PROTOCOL} only"))?;
+            break;
+        }
+        if !same(req.get("token").and_then(Value::as_str).unwrap_or(""), &opts.token) {
+            if let Some(ip) = ip {
+                backoff.bad_token(ip);
+            }
+            fail(&mut w, "bad token")?;
+            log(&format!("{peer}: bad token"));
+            break;
+        }
+        if r.get_ref().until.is_some() {
+            r.get_mut().until = None;
+            r.get_ref().stream.set_read_timeout(Some(opts.timeout))?;
+            if let Some(ip) = ip {
+                backoff.good_token(ip);
+            }
+        }
+        match req.get("op").and_then(Value::as_str) {
+            Some("hello") => writeln!(w, "{}", json!({"ok": true, "v": PROTOCOL, "device": device, "model": model, "tile": tile}))?,
+            Some("run") => {
+                let (Some(t), Some(bytes)) = (field(&req, "tile"), field(&req, "bytes")) else {
+                    fail(&mut w, "missing tile size or payload size")?;
+                    break;
+                };
+                if t != tile {
+                    fail(&mut w, &format!("this server runs {tile}-cell tiles, not {t}"))?;
+                    break;
+                }
+                // the payload is read before any refusal below, so the stream stays in step
+                let input = match read_payload(&mut r, bytes, 4 * t * t) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        fail(&mut w, &e.to_string())?;
+                        break;
+                    }
+                };
+                if req.get("model").and_then(Value::as_str) != Some(model.sha256.as_str()) {
+                    fail(&mut w, &format!("model mismatch: this server runs {} {}", model.id, model.version))?;
+                    continue;
+                }
+                match run(&input) {
+                    Ok(out) if out.len() == 3 * 4 * t * t && out.iter().all(|v| v.is_finite()) => {
+                        write_payload(&mut w, json!({"ok": true, "tile": t}), &out)?;
+                        tiles += 1;
+                    }
+                    Ok(_) => fail(&mut w, "the model's answer has the wrong size or numbers that are not finite")?,
+                    Err(e) => fail(&mut w, &e.to_string())?,
+                }
+            }
+            _ => {
+                fail(&mut w, "unknown op")?;
+                break;
+            }
+        }
+        w.flush()?;
+    }
+    if tiles > 0 {
+        log(&format!("{peer}: {tiles} tiles"));
+    }
+    Ok(())
+}
+
+/// What a server said in its greeting.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ServerInfo {
+    pub address: String,
+    pub device: String,
+    pub model: ModelId,
+    pub tile: usize,
+}
+
+/// Tiles the server may get wrong (an error, a broken connection) before it stops being used.
+pub const MAX_FAILURES: usize = 3;
+
+/// A server as a [`TileRunner`], for one model: keeps up to `slots` connections open and gives up on the server after
+/// [`MAX_FAILURES`] failed tiles (the caller runs those tiles itself).
+pub struct Remote {
+    address: String,
+    token: String,
+    model_sha256: String,
+    tile: usize,
+    slots: usize,
+    timeout: Duration,
+    busy: AtomicUsize,
+    failures: AtomicUsize,
+    last_error: Mutex<Option<String>>,
+    pool: Mutex<Vec<(BufReader<TcpStream>, TcpStream)>>,
+}
+
+impl Remote {
+    /// `address` as `host[:port]` (default port [`DEFAULT_PORT`]; `tcp://` and a trailing `/` are ignored).
+    pub fn new(address: &str, token: &str, model_sha256: &str, tile: usize) -> Remote {
+        let a = address.trim().trim_start_matches("tcp://").trim_end_matches('/');
+        let has_port = a.rsplit_once(':').is_some_and(|(h, p)| !h.is_empty() && !h.ends_with(':') && p.parse::<u16>().is_ok()) && !a.ends_with(']');
+        let address = if has_port { a.to_string() } else { format!("{a}:{DEFAULT_PORT}") };
+        Remote {
+            address,
+            token: token.into(),
+            model_sha256: model_sha256.to_ascii_lowercase(),
+            tile,
+            slots: 4,
+            timeout: Duration::from_secs(60),
+            busy: AtomicUsize::new(0),
+            failures: AtomicUsize::new(0),
+            last_error: Mutex::new(None),
+            pool: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn with_slots(mut self, n: usize) -> Remote {
+        self.slots = n.clamp(1, 16);
+        self
+    }
+
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// Tiles it can take at once.
+    pub fn slots(&self) -> usize {
+        self.slots
+    }
+
+    /// Still used (fewer than [`MAX_FAILURES`] failed tiles).
+    pub fn healthy(&self) -> bool {
+        self.failures.load(Ordering::Relaxed) < MAX_FAILURES
+    }
+
+    pub fn failures(&self) -> usize {
+        self.failures.load(Ordering::Relaxed)
+    }
+
+    /// Why the last tile failed.
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn err(&self, reason: impl std::fmt::Display) -> Error {
+        Error::Runtime(format!("remote {}: {reason}", self.address))
+    }
+
+    fn connect(&self) -> Result<(BufReader<TcpStream>, TcpStream), Error> {
+        let addr = self.address.to_socket_addrs().map_err(|e| self.err(e))?.next().ok_or_else(|| self.err("the address doesn't resolve"))?;
+        let s = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).map_err(|e| self.err(e))?;
+        s.set_read_timeout(Some(self.timeout)).map_err(|e| self.err(e))?;
+        s.set_write_timeout(Some(self.timeout)).map_err(|e| self.err(e))?;
+        s.set_nodelay(true).map_err(|e| self.err(e))?;
+        let r = BufReader::new(s.try_clone().map_err(|e| self.err(e))?);
+        Ok((r, s))
+    }
+
+    fn reply(&self, r: &mut BufReader<TcpStream>) -> Result<Value, Error> {
+        let line = read_line(r).map_err(|e| self.err(e))?.ok_or_else(|| self.err("the connection closed"))?;
+        let v: Value = serde_json::from_str(&line).map_err(|_| self.err("malformed reply"))?;
+        if v.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(self.err(v.get("error").and_then(Value::as_str).unwrap_or("request failed")));
+        }
+        Ok(v)
+    }
+
+    /// Greet the server: its device and model. Fails when it runs another model or tile size than this one.
+    pub fn hello(&self) -> Result<ServerInfo, Error> {
+        let (mut r, mut s) = self.connect()?;
+        writeln!(s, "{}", json!({"v": PROTOCOL, "token": self.token, "op": "hello"})).map_err(|e| self.err(e))?;
+        let v = self.reply(&mut r)?;
+        let m = v.get("model").cloned().unwrap_or_default();
+        let text = |o: &Value, k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let info = ServerInfo {
+            address: self.address.clone(),
+            device: text(&v, "device"),
+            model: ModelId { id: text(&m, "id"), version: text(&m, "version"), sha256: text(&m, "sha256") },
+            tile: field(&v, "tile").unwrap_or(0),
+        };
+        if !info.model.sha256.eq_ignore_ascii_case(&self.model_sha256) {
+            return Err(self.err(format!("it runs another model ({} {})", info.model.id, info.model.version)));
+        }
+        if info.tile != self.tile {
+            return Err(self.err(format!("it runs {}-cell tiles, this model {}", info.tile, self.tile)));
+        }
+        self.pool.lock().unwrap_or_else(PoisonError::into_inner).push((r, s));
+        Ok(info)
+    }
+
+    /// Run a tile if a slot is free right now; `None` when all are busy or the server was given up (the caller runs
+    /// the tile elsewhere). A failure counts towards giving up on the server.
+    pub fn try_run(&self, input: &[f32]) -> Option<Result<Vec<f32>, Error>> {
+        if !self.healthy() {
+            return None;
+        }
+        if self.busy.fetch_add(1, Ordering::SeqCst) >= self.slots {
+            self.busy.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        let r = self.run_now(input);
+        self.busy.fetch_sub(1, Ordering::SeqCst);
+        if let Err(e) = &r {
+            self.failures.fetch_add(1, Ordering::Relaxed);
+            *self.last_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+        }
+        Some(r)
+    }
+
+    fn run_now(&self, input: &[f32]) -> Result<Vec<f32>, Error> {
+        let t = self.tile;
+        if input.len() != 4 * t * t {
+            return Err(Error::Input(format!("a tile of {} samples for {t}-cell tiles", input.len())));
+        }
+        let pooled = self.pool.lock().unwrap_or_else(PoisonError::into_inner).pop();
+        let (mut r, mut s) = match pooled {
+            Some(c) => c,
+            None => self.connect()?,
+        };
+        let req = json!({"v": PROTOCOL, "token": self.token, "op": "run", "model": self.model_sha256, "tile": t});
+        write_payload(&mut s, req, input).map_err(|e| self.err(e))?;
+        s.flush().map_err(|e| self.err(e))?;
+        let v = self.reply(&mut r)?;
+        if field(&v, "tile") != Some(t) {
+            return Err(self.err("the answer is for another tile size"));
+        }
+        let bytes = field(&v, "bytes").ok_or_else(|| self.err("an answer without its size"))?;
+        let out = read_payload(&mut r, bytes, 3 * 4 * t * t).map_err(|e| self.err(e))?;
+        self.pool.lock().unwrap_or_else(PoisonError::into_inner).push((r, s));
+        // the other computer's numbers go straight into the render: NaN or infinity (an f16 can carry
+        // both) is a failed tile, which `Shared` runs here instead
+        if !out.iter().all(|v| v.is_finite()) {
+            return Err(self.err("the answer holds values that aren't finite"));
+        }
+        Ok(out)
+    }
+}
+
+/// Tiles on the server when one of its slots is free, else (and for any tile it fails) on `local`: the server adds
+/// speed to this computer's runner instead of replacing it.
+pub struct Shared<'a> {
+    pub remote: &'a Remote,
+    pub local: &'a dyn TileRunner,
+}
+
+impl TileRunner for Shared<'_> {
+    fn run(&self, input: &[f32]) -> Result<Vec<f32>, Error> {
+        match self.remote.try_run(input) {
+            Some(Ok(out)) => Ok(out),
+            Some(Err(_)) | None => self.local.run(input),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "0123456789abcdef-test";
+    const T: usize = 8;
+
+    /// A stand-in model: each output pixel is its cell's first plane, times `k`.
+    fn model(k: f32) -> RunTile {
+        Arc::new(move |input: &[f32]| {
+            let t = T;
+            let mut out = vec![0f32; 3 * 4 * t * t];
+            for c in 0..3 {
+                for y in 0..2 * t {
+                    for x in 0..2 * t {
+                        out[(c * 2 * t + y) * 2 * t + x] = input[(y / 2) * t + x / 2] * k;
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn id(sha: &str) -> ModelId {
+        ModelId { id: "test".into(), version: "1".into(), sha256: sha.into() }
+    }
+
+    fn start(sha: &str, run: RunTile) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let opts = ServerOptions { token: TOKEN.into(), ..Default::default() };
+        let m = id(sha);
+        std::thread::spawn(move || serve(l, m, T, "CPU (test)".into(), run, opts, Arc::new(|_| {})));
+        addr
+    }
+
+    struct Local(RunTile, AtomicUsize);
+    impl TileRunner for Local {
+        fn run(&self, input: &[f32]) -> Result<Vec<f32>, Error> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            (self.0)(input)
+        }
+    }
+
+    fn tile_input(seed: f32) -> Vec<f32> {
+        (0..4 * T * T).map(|i| (i as f32 * 0.37 + seed).sin() * 0.5 + 0.5).collect()
+    }
+
+    #[test]
+    fn remote_tiles_match_local_ones_within_half_float_rounding() {
+        let addr = start("aa11", model(2.0));
+        let remote = Remote::new(&addr, TOKEN, "AA11", T);
+        let info = remote.hello().unwrap();
+        assert_eq!((info.device.as_str(), info.tile), ("CPU (test)", T));
+        let input = tile_input(0.3);
+        let got = remote.try_run(&input).unwrap().unwrap();
+        let want = model(2.0)(&input).unwrap();
+        assert!(got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 2e-3));
+    }
+
+    #[test]
+    fn shared_runner_falls_back_and_gives_up_on_a_failing_server() {
+        let local = Local(model(2.0), AtomicUsize::new(0));
+        // nobody listening: every tile runs locally, and after a few the server is given up
+        let dead = Remote::new("127.0.0.1:1", TOKEN, "aa11", T);
+        let shared = Shared { remote: &dead, local: &local };
+        for i in 0..6 {
+            assert!(shared.run(&tile_input(i as f32)).is_ok());
+        }
+        assert_eq!(local.1.load(Ordering::SeqCst), 6);
+        assert!(!dead.healthy() && dead.last_error().is_some());
+        // a server with another model is refused at the greeting and per tile
+        let addr = start("bb22", model(2.0));
+        let other = Remote::new(&addr, TOKEN, "aa11", T);
+        assert!(other.hello().unwrap_err().to_string().contains("another model"));
+        assert!(other.try_run(&tile_input(0.0)).unwrap().unwrap_err().to_string().contains("model mismatch"));
+        // a wrong token
+        let addr = start("aa11", model(2.0));
+        assert!(Remote::new(&addr, "wrong-token-0000000", "aa11", T).hello().unwrap_err().to_string().contains("bad token"));
+        // all slots busy: the tile runs locally without waiting
+        let busy = Remote::new(&addr, TOKEN, "aa11", T).with_slots(1);
+        busy.busy.store(1, Ordering::SeqCst);
+        assert!(busy.try_run(&tile_input(0.0)).is_none());
+    }
+
+    #[test]
+    fn hostile_requests_are_refused_and_the_server_keeps_working() {
+        let addr = start("aa11", model(1.0));
+        let talk = |bytes: &[u8]| -> String {
+            let mut s = TcpStream::connect(&addr).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            s.write_all(bytes).unwrap();
+            let mut line = String::new();
+            let _ = BufReader::new(s).read_line(&mut line);
+            line
+        };
+        assert!(talk(b"not json\n").contains("malformed"));
+        let v2 = format!("{}\n", json!({"v": 2, "token": TOKEN, "op": "hello"}));
+        assert!(talk(v2.as_bytes()).contains("protocol"));
+        let big = format!("{}\n", json!({"v": 1, "token": TOKEN, "op": "run", "model": "aa11", "tile": 4096, "bytes": 10}));
+        assert!(talk(big.as_bytes()).contains("8-cell"));
+        // a payload that inflates past its tile
+        let bomb = miniz_oxide::deflate::compress_to_vec(&vec![0u8; 1 << 20], 9);
+        let hdr = format!("{}\n", json!({"v": 1, "token": TOKEN, "op": "run", "model": "aa11", "tile": T, "bytes": bomb.len()}));
+        assert!(talk(&[hdr.as_bytes(), &bomb].concat()).contains("false"));
+        assert!(Remote::new(&addr, TOKEN, "aa11", T).hello().is_ok());
+        assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "abcd"));
+        // a short token is refused when the server starts
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let opts = ServerOptions { token: "short".into(), ..Default::default() };
+        assert!(serve(l, id("aa11"), T, "x".into(), model(1.0), opts, Arc::new(|_| {})).is_err());
+    }
+
+    /// A peer without the token can't keep a slot by trickling its first line: the auth deadline counts all its reads
+    /// together, not each one (issue #2133).
+    #[test]
+    fn a_trickling_peer_is_cut_off_at_the_auth_deadline() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let opts = ServerOptions { token: TOKEN.into(), auth_timeout: Duration::from_millis(600), ..Default::default() };
+        std::thread::spawn(move || serve(l, id("aa11"), T, "x".into(), model(1.0), opts, Arc::new(|_| {})));
+        let mut s = TcpStream::connect(addr).unwrap();
+        let started = Instant::now();
+        let mut writer = s.try_clone().unwrap();
+        std::thread::spawn(move || {
+            // one byte every 100 ms: each read is quick, the line never ends
+            while writer.write_all(b"{").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+        assert!(started.elapsed() < Duration::from_secs(5), "closed after {:?}", started.elapsed());
+        // a client with the token is unaffected, and keeps its connection past the auth deadline
+        let r = Remote::new(&addr.to_string(), TOKEN, "aa11", T);
+        assert!(r.hello().is_ok());
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(r.try_run(&tile_input(0.0)).unwrap().is_ok());
+    }
+
+    /// After a bad token, the address is turned away for a while (doubling with each bad token), even with the right
+    /// token; a good token afterwards clears it (issue #2133).
+    #[test]
+    fn bad_tokens_back_off_the_address() {
+        let addr = start("aa11", model(1.0));
+        let wrong = || Remote::new(&addr, "wrong-token-0000000", "aa11", T).hello().unwrap_err().to_string();
+        let right = || Remote::new(&addr, TOKEN, "aa11", T).hello();
+        assert!(wrong().contains("bad token"));
+        let refused = right();
+        // refused at the accept (the message, or on Windows a reset: the hello is still unread when it closes)
+        assert!(refused.is_err(), "turned away even with the token: {refused:?}");
+        std::thread::sleep(FIRST_BACKOFF + Duration::from_millis(200));
+        assert!(right().is_ok(), "the first back-off is over");
+        // cleared by the good token: the next bad one waits the first back-off again, not twice it
+        assert!(wrong().contains("bad token"));
+        std::thread::sleep(FIRST_BACKOFF + Duration::from_millis(200));
+        assert!(right().is_ok());
+        // the waits double, up to the cap
+        let b = Backoff::default();
+        let ip: IpAddr = [10, 0, 0, 1].into();
+        for _ in 0..40 {
+            b.bad_token(ip);
+        }
+        let until = b.0.lock().unwrap()[&ip].1;
+        assert!(until <= Instant::now() + MAX_BACKOFF && until > Instant::now() + MAX_BACKOFF - Duration::from_secs(5));
+        b.good_token(ip);
+        assert!(!b.blocked(ip));
+    }
+
+    #[test]
+    fn packing_round_trips_and_addresses_are_normalised() {
+        let v: Vec<f32> = (0..4096).map(|i| 0.5 + ((i * 7919 % 101) as f32 - 50.0) * 0.002).collect();
+        let back = unpack(&pack(&v), v.len()).unwrap();
+        assert!(v.iter().zip(&back).all(|(a, b)| (a - b).abs() < 1e-3));
+        assert!(unpack(&pack(&v), v.len() + 1).is_err());
+        assert_eq!(Remote::new("tcp://100.1.2.3/", TOKEN, "a", T).address(), "100.1.2.3:7990");
+        assert_eq!(Remote::new("box:8000", TOKEN, "a", T).address(), "box:8000");
+        assert_eq!(Remote::new("[::1]", TOKEN, "a", T).address(), "[::1]:7990");
+    }
+}

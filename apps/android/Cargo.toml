@@ -1,0 +1,52 @@
+[package]
+name = "lcc-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The Android app: the shared UI and engine in a NativeActivity (packaged by `cargo xtask android package`, see docs/android.md)."
+
+# Opts out of the workspace lints only for `android_main`'s `#[unsafe(no_mangle)]` (the entry point
+# android-activity calls); everything else is in lcc-android-host. See CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[features]
+default = ["heif"]
+# Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default so the Android app
+# opens iPhone photos like the desktop builds do; distributors who must avoid HEVC (patents)
+# build with `--no-default-features`.
+heif = ["lcc-codecs/heif"]
+
+[lib]
+# the APK loads it as lib<name>.so; off Android the library is empty
+crate-type = ["cdylib"]
+name = "app"
+
+[target.'cfg(target_os = "android")'.dependencies]
+lcc-android-host = { workspace = true }
+lcc-brand = { workspace = true }
+lcc-catalog = { workspace = true }
+lcc-codecs = { workspace = true }
+lcc-engine = { workspace = true }
+lcc-raster = { workspace = true }
+lcc-sysmem = { workspace = true }
+lcc-ui-egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+egui = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+# checks a device font parses before egui sees it (egui panics on a bad face); the version egui uses
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# logcat (pure Rust, MIT/Apache-2.0; writes through the system's liblog)
+android_logger = { version = "0.15", default-features = false }
+
+# the host-independent parts (staging cleanup, copy rows) are unit-tested off Android
+[dev-dependencies]
+lcc-android-host = { workspace = true }
+lcc-engine = { workspace = true }
+log = { workspace = true }

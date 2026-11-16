@@ -1,0 +1,27 @@
+//! Face models: what a model is ([`ModelManifest`]), whether to trust a description of one
+//! ([`manifest::validate`]), the models we know by hash ([`known`]), and a probe that reads an unknown
+//! `.onnx` file's input and output shapes without running it ([`onnx`]), so installing a model of your
+//! own can be one drop and one licence prompt.
+//!
+//! Everything here treats model files and manifests as hostile input: sizes are capped, numbers must be
+//! finite and sane, and a malformed file is an error, never a panic. Detection and recognition run
+//! on the same checked, single-thread pure-Rust CPU interpreter; an [`net::Accelerator`] (the GPU, in `lcc-gpu`) can
+//! take its convolutions once it agrees with it.
+#![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+pub mod align;
+pub mod catalog;
+pub mod graph;
+pub mod hash;
+pub mod known;
+pub mod manifest;
+pub mod matching;
+pub mod net;
+pub mod onnx;
+pub mod runtime;
+pub mod suggest;
+pub mod synthetic;
+pub mod yunet;
+
+pub use manifest::{Colour, Commercial, InputSpec, Licence, ManifestError, ModelManifest, OutputSpec, Resize, Role, Thresholds};

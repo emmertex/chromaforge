@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "repo": "emmertex/lightcraft-classic",
+  "branch": "main",
+  "head": "b0d928d5d611edb7866657d8ddddc2c9461c20b0",
+  "head_date": "2026-10-18T09:37:46+11:00",
+  "commits": 789,
+  "unattributed_commits": 0,
+  "contributors": [
+    {
+      "login": "emmertex",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 114,
+      "commits": 1398,
+      "lines_added": 165335,
+      "lines_deleted": 13057,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-12T21:57:44Z",
+      "last_commit": "2026-10-17T22:37:46Z"
+    },
+    {
+      "login": "deunderscorepaul",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 19,
+      "commits": 65,
+      "lines_added": 10665,
+      "lines_deleted": 541,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-12T19:30:47Z",
+      "last_commit": "2026-10-17T21:26:16Z"
+    },
+    {
+      "login": "endthestart",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 17,
+      "commits": 31,
+      "lines_added": 2704,
+      "lines_deleted": 288,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-15T04:01:23Z",
+      "last_commit": "2026-10-17T21:26:16Z"
+    },
+    {
+      "login": "clydecbrown",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 8,
+      "commits": 41,
+      "lines_added": 5679,
+      "lines_deleted": 642,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-16T02:16:49Z",
+      "last_commit": "2026-10-17T21:53:13Z"
+    },
+    {
+      "login": "Kaan88",
+      "people_entry": false,
+      "github_name": null,
+      "prs": 2,
+      "commits": 3,
+      "lines_added": 147,
+      "lines_deleted": 3,
+      "binary_added": 0,
+      "binary_deleted": 0,
+      "first_commit": "2026-10-16T20:59:17Z",
+      "last_commit": "2026-10-17T10:52:59Z"
+    }
+  ],
+  "models": [
+    {
+      "id": "anthropic/claude-opus/5.5",
+      "company": "Anthropic",
+      "model": "Claude Opus",
+      "version": "5.5",
+      "commits": 700,
+      "lines_added": 0,
+      "lines_deleted": 0
+    },
+    {
+      "id": "anthropic/claude-haiku/5.5",
+      "company": "Anthropic",
+      "model": "Claude Haiku",
+      "version": "5.5",
+      "commits": 1,
+      "lines_added": 0,
+      "lines_deleted": 0
+    }
+  ]
+}

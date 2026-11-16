@@ -1,0 +1,30 @@
+---
+title: Size, colour, sharpening
+description: Colour space, HDR, sizing and output sharpening.
+sidebar:
+  order: 4
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+## Colour space
+- **Color space**: sRGB, P3, Adobe RGB, ProPhoto, Rec.2020. Pixels are converted and the profile embedded.
+- JPEG XL lossy files in Adobe RGB / ProPhoto are written as Rec. 2020.
+
+## HDR output
+- 🟡 **HDR output** checkbox in File Settings: gain-map JPEG, PQ or HLG AVIF, PQ PNG, PQ JPEG XL, float TIFF.
+- No HDR export presets yet.
+
+<Shot name="export-hdr" alt="HDR output checked in File Settings" menu="☰ ▸ Shortcuts ▸ Export…" />
+
+## Image Sizing
+- **Full size**: the cropped native size; never upscaled.
+- **Resize to**: **Dimensions**, **Width & Height**, **Long Edge**, **Short Edge**, **Megapixels**, **Percentage**.
+- **Don't enlarge** stops small photos growing.
+- **Resolution (ppi)** is written into the file.
+- Limits: 65,535 px an edge; enlargements stop at 512 megapixels and are refused if memory is short.
+
+## Output Sharpening
+- **Sharpen**: None, **Screen**, **Matte**, **Glossy**.

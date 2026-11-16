@@ -1,0 +1,6 @@
+{
+  "isElevated": false,
+  "password": true,
+  "pinCode": true,
+  "pinExpiresAt": null
+}

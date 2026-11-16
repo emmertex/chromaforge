@@ -1,0 +1,14 @@
+### More hardening and small fixes
+- On Windows, the title bar takes the app's colours as soon as the window has focus, so its title is no longer unreadable when the app's theme differs from Windows'.
+- The CLI's `calibrate` walks folders with the bounded walk, so folders of links pointing back at their parents no longer take forever.
+- Preset archives share one unpack budget across the packs inside them, brush masks have one stamp budget in all, and Defringe is faster on large radii.
+- Raw files with absurd preview tables, shared tile payloads or opcode lists are refused or capped instead of using gigabytes of memory.
+- The web app caps its render workers and plans a library restore before writing; `web --serve` only serves plain files inside the site.
+- Exporting to one explicit file path now follows the Conflict setting (unique by default, so an existing file is no longer replaced unless you ask): sidecars keep the chosen name, and a folder or a catalogued original as the path is refused.
+- A JPEG that carries its develop settings in embedded XMP (and has no sidecar) now imports with them; Find Similar decodes the library in parallel; very long, narrow images resize without using gigabytes; and Lightroom catalogs with huge XMP packets or keyword lists are read within limits.
+- Exporting an Original with Remove Location now refuses a file whose embedded XMP still holds GPS coordinates, even malformed ones.
+- A smart album viewed with "no stars" in the filter bar keeps that rating rule, Sync Settings with the Crop group puts a crop on each photo as what it means on that photo's frame, and the automatic memory budget no longer exceeds a small container's memory limit.
+- A `--memory` session writes no panic log.
+- A library the settings remember that isn't there at launch (an unmounted drive) is reported with Try Again instead of being created empty, and only `--library` creates one at launch.
+- The MCP `render_photo` tool returns the image in the reply, so it also works against an app on another machine, and more of the app is translated into Russian.
+- Settings can choose how many of a person's faces a name suggestion is based on (`faces.matching`).

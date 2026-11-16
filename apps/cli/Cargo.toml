@@ -1,0 +1,73 @@
+[package]
+name = "lcc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Command-line tool: headless render, command listing and the MCP server"
+
+[[bin]]
+name = "app-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-engine = { workspace = true }
+lcc-denoise = { workspace = true }
+lcc-camdb = { workspace = true }
+lcc-colourfit = { workspace = true }
+lcc-raw = { workspace = true }
+lcc-meta = { workspace = true }
+lcc-hash = { workspace = true }
+lcc-geom = { workspace = true }
+lcc-pipeline = { workspace = true }
+lcc-develop = { workspace = true }
+chrono = { workspace = true }
+lcc-sysmem = { workspace = true }
+lcc-mcp = { workspace = true }
+log = { workspace = true }
+lcc-ui-egui = { workspace = true }
+lcc-codecs = { workspace = true }
+lcc-raster = { workspace = true }
+lcc-merge = { workspace = true }
+lcc-genfill = { workspace = true, features = ["cloud"] }
+lcc-inpaint = { workspace = true }
+serde_json = { workspace = true }
+dhat = { workspace = true, optional = true }
+
+[features]
+default = ["denoise", "heif"]
+denoise = ["lcc-engine/denoise"]
+rawnind-model = ["denoise", "lcc-engine/rawnind-model"]
+realesrgan-model = ["denoise", "lcc-engine/realesrgan-model"]
+own-model = ["denoise", "lcc-engine/own-model"]
+# Heap profiling: `cargo run --release -p lcc-cli --features dhat-heap -- snapshot …` counts
+# every allocation (live/peak bytes in `library.memory` / `ui.inspect`) and writes dhat-heap.json
+# (open it in DHAT's viewer: allocation sites by bytes at the peak). Slows allocation-heavy work.
+dhat-heap = ["dep:dhat"]
+
+# Open HEIC/HEIF photos (the lcc-heif crate, pure Rust). On by default, as in the app;
+# `--no-default-features --features denoise` leaves HEVC out.
+heif = ["lcc-codecs/heif"]
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
+# the SIL harness (tests/sil.rs) generates its test photos
+lcc-scenes = { workspace = true }
+# (the flat-field scenario writes Bayer DNGs)
+lcc-color = { workspace = true }
+
+# P4.7 end-to-end session (tests/session_e2e.rs): an in-process SFTP server, SHA-1s for a fake Immich.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+lcc-hash = { workspace = true }
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+russh-sftp = "3"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
+
+# M14: end-to-end video tests encode a synthetic clip in-test and re-decode the export
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.lcc-video]
+workspace = true
+features = ["test-util"]

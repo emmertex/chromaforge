@@ -1,0 +1,1200 @@
+//! Synchronize Folder: bring a library folder up to date with what is on disk (see
+//! [`crate::sync`]).
+//!
+//! Scenarios, in the words of someone whose folder changed outside the app:
+//!
+//! * Given a folder of the library, when files were added to it (or to a folder inside it), the
+//!   scan lists them as new; files the library already has, by path or by content, are not new.
+//! * When a photo's file was deleted or moved away, the scan lists the photo as missing.
+//! * When another app saved a photo's XMP sidecar after the photo came into the library, and the
+//!   sidecar says something the library doesn't, the scan lists a metadata update; a sidecar older
+//!   than that, or one that agrees with the library, is not an update.
+//! * Scanning changes nothing.
+//! * Synchronizing imports the new files; it removes missing photos (to Recently Deleted) and
+//!   reads metadata updates only when asked. Whatever it does is one undo step.
+//! * Only a folder of the library can be synchronized, never the whole startup disk.
+
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use serde_json::{Value, json};
+
+use crate::Session;
+
+/// A scratch folder that goes away with the test, however it ends.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("lc-sync-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+    fn path(&self, rel: &str) -> String {
+        // Fixtures use `/`; rebuild components so expected paths match the native separators
+        // returned by directory scans, including for files that have already been removed.
+        self.0.join(rel).components().collect::<PathBuf>().to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A small procedural PNG (distinct per seed).
+fn write_png(path: &str, seed: u8) {
+    let (w, h) = (24usize, 16usize);
+    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % w * 9) as u8, (i / w * 13) as u8, seed, 255]).collect();
+    let img = lcc_raster::Rgba8 { width: w, height: h, data };
+    let bytes = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    std::fs::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+fn sidecar(rating: u8) -> String {
+    format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="{rating}"/>
+</rdf:RDF></x:xmpmeta>"#
+    )
+}
+
+/// Write `a.xmp` beside `a.png`, dated `age` before now.
+fn write_sidecar(png: &str, rating: u8, age: Duration) {
+    let xmp = Path::new(png).with_extension("xmp");
+    std::fs::write(&xmp, sidecar(rating)).unwrap();
+    let f = std::fs::File::options().write(true).open(&xmp).unwrap();
+    f.set_modified(SystemTime::now() - age).unwrap();
+}
+
+/// A library holding `trip/a.png` and `trip/day1/b.png`, the session clock at a fixed past time.
+fn library(dir: &Scratch) -> Session {
+    write_png(&dir.path("trip/a.png"), 1);
+    write_png(&dir.path("trip/day1/b.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [dir.path("trip")]})).unwrap();
+    assert_eq!(s.catalog.len(), 2);
+    s
+}
+
+fn paths(v: &Value, key: &str) -> Vec<String> {
+    let mut out: Vec<String> = v[key].as_array().unwrap().iter().map(|c| c["path"].as_str().unwrap().to_string()).collect();
+    out.sort();
+    out
+}
+
+/// What the library holds: each photo's file, whether it is in the library, and its rating.
+fn holdings(s: &Session) -> Vec<(String, bool, u8)> {
+    let mut v: Vec<(String, bool, u8)> = s.catalog.photos().map(|p| (p.file_name.clone(), p.in_library(), p.rating)).collect();
+    v.sort();
+    v
+}
+
+fn scan(s: &mut Session, path: &str) -> Value {
+    s.execute("folder.scanChanges", &json!({"path": path})).unwrap()
+}
+
+#[test]
+fn an_unchanged_folder_has_no_changes() {
+    let dir = Scratch::new("none");
+    let mut s = library(&dir);
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "new").is_empty() && paths(&r, "missing").is_empty() && paths(&r, "metadata").is_empty(), "{r}");
+}
+
+#[cfg(windows)]
+#[test]
+fn importing_and_synchronizing_with_different_windows_separators_keeps_photo_identity() {
+    for forward_import in [true, false] {
+        for import_folder in [true, false] {
+            let dir = Scratch::new(&format!("separators-{forward_import}-{import_folder}"));
+            let folder = dir.path("trip");
+            let a = dir.path("trip/a.png");
+            let b = dir.path("trip/day1/b.png");
+            write_png(&a, 1);
+            write_png(&b, 2);
+            let spelling = |path: &str, forward: bool| if forward { path.replace('\\', "/") } else { path.to_string() };
+            let import_path = spelling(&folder, forward_import);
+            let sync_path = spelling(&folder, !forward_import);
+            assert_ne!(import_path, sync_path, "exercise distinct Windows path spellings");
+            let inputs = if import_folder { vec![import_path.clone()] } else { vec![spelling(&a, forward_import), spelling(&b, forward_import)] };
+            let mut s = Session::new().with_fs();
+            let imported = s.execute("library.import", &json!({"paths": inputs})).unwrap();
+            assert_eq!(imported["imported"].as_array().unwrap().len(), 2, "{imported}");
+            let before = s.execute("catalog.query", &json!({})).unwrap();
+            let photos = before["photos"].as_array().unwrap();
+            let a_id = photos.iter().find(|p| p["fileName"] == "a.png").unwrap()["id"].clone();
+            let b_id = photos.iter().find(|p| p["fileName"] == "b.png").unwrap()["id"].clone();
+
+            let duplicate = s.execute("library.import", &json!({"paths": [sync_path]})).unwrap();
+            assert!(duplicate["imported"].as_array().unwrap().is_empty(), "{duplicate}");
+            assert_eq!(duplicate["duplicates"].as_array().unwrap().len(), 2, "{duplicate}");
+            assert_eq!(s.execute("catalog.query", &json!({})).unwrap(), before, "reimport preserves the photos and their ids");
+
+            std::fs::remove_file(&b).unwrap();
+            let c = dir.path("trip/day2/c.png");
+            write_png(&c, 3);
+            let changes = scan(&mut s, &sync_path);
+            assert_eq!(changes["new"].as_array().unwrap().len(), 1, "{changes}");
+            assert_eq!(Path::new(changes["new"][0]["path"].as_str().unwrap()), Path::new(&c));
+            assert_eq!(changes["missing"].as_array().unwrap().len(), 1, "{changes}");
+            assert_eq!(changes["missing"][0]["id"], b_id, "the missing photo keeps its id");
+            assert!(changes["moved"].as_array().unwrap().is_empty(), "{changes}");
+
+            // Switching spelling again must consume the confirmed scan of this same folder.
+            let synced = s.execute("folder.synchronize", &json!({"path": import_path, "scanned": true, "removeMissing": true})).unwrap();
+            assert_eq!(
+                (synced["imported"].as_u64(), synced["removed"].as_u64(), synced["relinked"].as_u64()),
+                (Some(1), Some(1), Some(0)),
+                "{synced}"
+            );
+            assert!(synced["failed"].as_array().unwrap().is_empty(), "{synced}");
+            let after = s.execute("catalog.query", &json!({})).unwrap();
+            let photos = after["photos"].as_array().unwrap();
+            assert_eq!(photos.len(), 2, "{after}");
+            assert!(photos.iter().any(|p| p["id"] == a_id && p["fileName"] == "a.png"), "{after}");
+            assert!(photos.iter().any(|p| p["fileName"] == "c.png" && p["id"] != a_id && p["id"] != b_id), "{after}");
+            for path in [&import_path, &sync_path] {
+                let changes = scan(&mut s, path);
+                for kind in ["new", "missing", "moved", "metadata"] {
+                    assert!(changes[kind].as_array().unwrap().is_empty(), "{path}: {changes}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn files_added_to_the_folder_or_a_folder_inside_it_are_new() {
+    let dir = Scratch::new("new");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    write_png(&dir.path("trip/day2/d.png"), 4);
+    // the same bytes as a photo the library has: not new
+    std::fs::copy(dir.path("trip/a.png"), dir.path("trip/a-copy.png")).unwrap();
+    let before = s.catalog.to_snapshot();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "new"), vec![dir.path("trip/c.png"), dir.path("trip/day2/d.png")], "{r}");
+    assert_eq!(paths(&r, "duplicates"), vec![dir.path("trip/a-copy.png")], "{r}");
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").map(|p| p.id.0);
+    assert_eq!(r["duplicates"][0]["existing"].as_u64(), a, "with the photo it has the content of: {r}");
+    assert_eq!(s.catalog.to_snapshot(), before, "scanning changes nothing");
+}
+
+/// A library organized by folder can hold the same picture in two of them (a set filed under two
+/// topics). "Don't import files already in the catalog" is on until the person turns it off:
+///
+/// * Given a file with the bytes of a photo in another folder of the library, when the folder is
+///   synchronized, the copy is left out and said to be already in the library.
+/// * With the setting off, the copy comes in as a photo of its own, in its own folder; so do two
+///   copies of one new picture.
+/// * The setting is the library's (Synchronize Folder's), and stays as it was left.
+/// * A copy of a photo in Recently Deleted stays out, setting or not: synchronizing this folder
+///   never restores a photo of another folder (restoring it is for Recently Deleted to do).
+/// * The two photos stay apart: renamed on disk, each follows its own file.
+#[test]
+fn copies_of_photos_the_library_has_come_in_only_when_the_person_says_so() {
+    let dir = Scratch::new("copies");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/topic/new.png"), 9);
+    std::fs::copy(dir.path("trip/a.png"), dir.path("trip/topic/a.png")).unwrap();
+    std::fs::copy(dir.path("trip/topic/new.png"), dir.path("trip/topic/new-again.png")).unwrap();
+    // the default: left out
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 1, "only the one new picture: {r}");
+    assert_eq!(s.catalog.len(), 3);
+    // turned off, and remembered: the next synchronize brings the copies in
+    s.execute("library.preferences", &json!({"import": {"importDuplicates": true}})).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    // (the library's copy of a.png, and whichever of the two new copies came second)
+    let left_out = paths(&r, "duplicates");
+    assert!(left_out.len() == 2 && left_out.contains(&dir.path("trip/topic/a.png")), "still told apart: {r}");
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap();
+    assert_eq!(r["imported"], 2, "{r}");
+    let in_topic: Vec<String> = s
+        .catalog
+        .photos()
+        .filter(|p| matches!(&p.source, lcc_catalog::Source::File { path } if path.contains("topic")))
+        .map(|p| p.file_name.clone())
+        .collect();
+    assert_eq!(in_topic.len(), 3, "the topic folder shows all three: {in_topic:?}");
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "new").is_empty() && paths(&r, "duplicates").is_empty(), "nothing left to bring in: {r}");
+    // twins renamed on disk: each photo follows its own file
+    std::fs::rename(dir.path("trip/a.png"), dir.path("trip/first.png")).unwrap();
+    std::fs::rename(dir.path("trip/topic/a.png"), dir.path("trip/topic/second.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(r["moved"].as_array().map(Vec::len), Some(2), "{r}");
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap();
+    assert_eq!(r["relinked"], 2, "{r}");
+    let mut files: Vec<String> = s
+        .catalog
+        .photos()
+        .filter_map(|p| match &p.source {
+            lcc_catalog::Source::File { path } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    assert_eq!(files.len(), 5, "five photos, five files: {files:?}");
+    // a copy of a photo in Recently Deleted stays out, and that photo stays where it is
+    let b = s.catalog.photos().find(|p| p.file_name == "b.png").map(|p| p.id).unwrap();
+    s.execute("photo.delete", &json!({"ids": [b.0]})).unwrap();
+    std::fs::copy(dir.path("trip/day1/b.png"), dir.path("trip/topic/b copy.png")).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip/topic")})).unwrap();
+    assert_eq!(r["imported"], 0, "{r}");
+    assert!(s.catalog.photo(b).is_some_and(|p| p.deleted), "still in Recently Deleted");
+    // turned back on: a further copy is left out again
+    s.execute("library.preferences", &json!({"import": {"importDuplicates": false}})).unwrap();
+    std::fs::copy(dir.path("trip/first.png"), dir.path("trip/topic/third.png")).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 0, "{r}");
+}
+
+#[test]
+fn a_photo_whose_file_is_gone_is_missing() {
+    let dir = Scratch::new("missing");
+    let mut s = library(&dir);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "missing"), vec![dir.path("trip/day1/b.png")], "{r}");
+    assert!(r["missing"][0]["id"].is_u64());
+}
+
+#[test]
+fn a_sidecar_saved_by_another_app_is_a_metadata_update() {
+    let dir = Scratch::new("meta");
+    let mut s = library(&dir);
+    // saved now: after the photo came in (the session clock says 2026-09-30)
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::ZERO);
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "metadata"), vec![dir.path("trip/a.png")], "{r}");
+}
+
+#[test]
+fn an_old_sidecar_or_one_that_agrees_is_no_update() {
+    let dir = Scratch::new("meta-old");
+    let mut s = library(&dir);
+    // older than the import: whatever it says, the library has had its say since
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(400 * 24 * 3600));
+    // new, but says what the library already knows
+    write_sidecar(&dir.path("trip/day1/b.png"), 0, Duration::ZERO);
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "metadata").is_empty(), "{r}");
+}
+
+/// A sidecar's date is compared with the library's stamp as moments, not as wall clocks: the stamp
+/// carries its zone, and the file's date has none.
+#[test]
+fn a_sidecars_date_is_compared_with_the_stamps_zone() {
+    let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let stamped = |dir: &Scratch, secs: i64, zone: i64, suffix: &str| {
+        write_png(&dir.path("trip/a.png"), 1);
+        let stamp = format!("{}{suffix}", lcc_catalog::dates::civil(secs + zone * 3600));
+        let mut s = Session::new().with_fs();
+        s.clock = Box::new(move || stamp.clone());
+        s.execute("library.import", &json!({"paths": [dir.path("trip")]})).unwrap();
+        s
+    };
+    // imported just now, far west of UTC: the wall clock reads hours behind the sidecar saved an hour ago
+    let dir = Scratch::new("zone-west");
+    let mut s = stamped(&dir, now, -11, "-11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "metadata").is_empty(), "{r}");
+    // imported two hours ago, far east of UTC: the wall clock reads hours ahead of the sidecar saved since
+    let dir = Scratch::new("zone-east");
+    let mut s = stamped(&dir, now - 7200, 11, "+11:00");
+    write_sidecar(&dir.path("trip/a.png"), 4, Duration::from_secs(3600));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "metadata"), vec![dir.path("trip/a.png")], "{r}");
+}
+
+#[test]
+fn synchronizing_imports_new_files_and_leaves_the_rest_unless_asked() {
+    let dir = Scratch::new("sync");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    write_sidecar(&dir.path("trip/a.png"), 5, Duration::ZERO);
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!((r["imported"].as_u64(), r["removed"].as_u64(), r["read"].as_u64()), (Some(1), Some(0), Some(0)), "{r}");
+    assert_eq!(s.catalog.photos().filter(|p| p.in_library()).count(), 3, "the missing photo stays");
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap();
+    assert_eq!(a.rating, 0, "metadata is read only when asked");
+}
+
+#[test]
+fn synchronizing_everything_is_one_undo_step() {
+    let dir = Scratch::new("sync-all");
+    let mut s = library(&dir);
+    let before = holdings(&s);
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    write_sidecar(&dir.path("trip/a.png"), 5, Duration::ZERO);
+    let r =
+        s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "importNew": true, "removeMissing": true, "readMetadata": true})).unwrap();
+    assert_eq!((r["imported"].as_u64(), r["removed"].as_u64(), r["read"].as_u64()), (Some(1), Some(1), Some(1)), "{r}");
+    let library: Vec<String> = s.catalog.photos().filter(|p| p.in_library()).map(|p| p.file_name.clone()).collect();
+    assert_eq!(library.len(), 2, "b went to Recently Deleted: {library:?}");
+    assert_eq!(s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().rating, 5, "the sidecar was read");
+    let undo = s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(undo["undone"], "Synchronize Folder");
+    assert_eq!(holdings(&s), before, "one undo step puts everything back");
+}
+
+#[test]
+fn a_folder_with_no_changes_synchronizes_without_an_undo_step() {
+    let dir = Scratch::new("sync-none");
+    let mut s = library(&dir);
+    let steps = s.undo.len();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "removeMissing": true, "readMetadata": true})).unwrap();
+    assert_eq!((r["imported"].as_u64(), r["removed"].as_u64(), r["read"].as_u64()), (Some(0), Some(0), Some(0)), "{r}");
+    assert_eq!(s.undo.len(), steps);
+}
+
+#[test]
+fn only_a_folder_of_the_library_is_synchronized() {
+    let dir = Scratch::new("refused");
+    let mut s = library(&dir);
+    std::fs::create_dir_all(dir.0.join("elsewhere")).unwrap();
+    for (cmd, p, why) in [
+        ("folder.scanChanges", json!({}), "missing path"),
+        ("folder.scanChanges", json!({"path": "  "}), "blank path"),
+        ("folder.scanChanges", json!({"path": dir.path("elsewhere")}), "no photo was imported from it"),
+        ("folder.scanChanges", json!({"path": "/"}), "the startup disk"),
+        ("folder.synchronize", json!({"path": dir.path("elsewhere")}), "no photo was imported from it"),
+        ("folder.synchronize", json!({"path": "/"}), "the startup disk"),
+    ] {
+        assert!(s.execute(cmd, &p).is_err(), "{cmd}: {why}");
+    }
+}
+
+#[test]
+fn synchronizing_acts_on_the_changes_just_scanned() {
+    let dir = Scratch::new("cached");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "new").len(), 1);
+    // arrived after the scan the person was shown: not part of what they agreed to
+    write_png(&dir.path("trip/d.png"), 4);
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 1, "{r}");
+    // the scan is used once; the next synchronize looks again
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 1, "d.png now: {r}");
+}
+
+#[test]
+fn a_scan_is_stale_once_the_library_changed() {
+    let dir = Scratch::new("stale");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    scan(&mut s, &dir.path("trip"));
+    // c.png comes in some other way between the scan and the synchronize
+    s.execute("library.import", &json!({"paths": [dir.path("trip/c.png")]})).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 0, "the library changed: it looked again: {r}");
+}
+
+#[test]
+fn a_cancelled_scan_stops_checking_files() {
+    let dir = Scratch::new("cancel");
+    let mut s = library(&dir);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let input = crate::sync::SyncInput::new(&mut s, &dir.path("trip"), false).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    progress.files.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let c = crate::sync::scan_with(input, &progress);
+    assert!(c.missing.is_empty() && c.metadata.is_empty(), "{c:?}");
+}
+
+/// While the folder is listed, before a single photo can be checked, the scan says how far the
+/// listing is: a folder tree on a network share takes minutes to list, and "0 of 64,085" all
+/// that while looks like a scan that has stopped.
+#[test]
+fn a_scan_says_how_many_folders_and_files_it_has_listed() {
+    let dir = Scratch::new("listed");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/day2/c.png"), 3);
+    std::fs::write(dir.path("trip/day2/notes.txt"), "not a photo").unwrap();
+    let input = crate::sync::SyncInput::new(&mut s, &dir.path("trip"), false).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    assert_eq!(progress.listing(), Some((0, 0)), "listing is the first thing a scan does");
+    crate::sync::scan_with(input, &progress);
+    assert_eq!(progress.listing(), None, "the listing is done once the scan is");
+    let (folders, files) =
+        (progress.folders_listed.load(std::sync::atomic::Ordering::Relaxed), progress.files_listed.load(std::sync::atomic::Ordering::Relaxed));
+    // trip, trip/day1, trip/day2; a.png, b.png, c.png and the note (every file is listed, photo or not)
+    assert_eq!((folders, files), (3, 4));
+}
+
+/// ✕ on a scan's row stops the listing too, not only the checks after it.
+#[test]
+fn a_cancelled_scan_stops_listing_the_folders() {
+    let dir = Scratch::new("cancel-listing");
+    let mut s = library(&dir);
+    for i in 0..20u8 {
+        write_png(&dir.path(&format!("trip/more/{i}/x.png")), i);
+    }
+    let input = crate::sync::SyncInput::new(&mut s, &dir.path("trip"), false).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    progress.files.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::sync::scan_with(input, &progress);
+    assert_eq!(progress.folders_listed.load(std::sync::atomic::Ordering::Relaxed), 1, "the walk stopped after the folder it was in");
+}
+
+#[test]
+fn many_photos_are_checked_in_parallel_with_the_same_answer() {
+    let dir = Scratch::new("many");
+    for i in 0..40u8 {
+        write_png(&dir.path(&format!("big/{i:02}.png")), i);
+    }
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [dir.path("big")]})).unwrap();
+    for i in (0..40u8).step_by(3) {
+        std::fs::remove_file(dir.path(&format!("big/{i:02}.png"))).unwrap();
+    }
+    for i in (1..40u8).step_by(5) {
+        write_sidecar(&dir.path(&format!("big/{i:02}.png")), 2, Duration::ZERO);
+    }
+    let r = scan(&mut s, &dir.path("big"));
+    let expect_missing: Vec<String> = (0..40u8).step_by(3).map(|i| dir.path(&format!("big/{i:02}.png"))).collect();
+    let expect_meta: Vec<String> = (1..40u8).step_by(5).filter(|i| i % 3 != 0).map(|i| dir.path(&format!("big/{i:02}.png"))).collect();
+    assert_eq!(paths(&r, "missing"), expect_missing);
+    assert_eq!(paths(&r, "metadata"), expect_meta);
+}
+
+#[test]
+fn a_folder_that_is_not_there_is_not_scanned_as_if_everything_went_missing() {
+    let dir = Scratch::new("offline");
+    let mut s = library(&dir);
+    // an unplugged disk, or a folder moved away whole
+    std::fs::rename(dir.0.join("trip"), dir.0.join("trip-elsewhere")).unwrap();
+    for cmd in ["folder.scanChanges", "folder.synchronize"] {
+        let e = s.execute(cmd, &json!({"path": dir.path("trip"), "removeMissing": true})).unwrap_err().to_string();
+        assert!(e.contains("not there"), "{cmd}: {e}");
+    }
+    assert_eq!(s.catalog.photos().filter(|p| p.in_library()).count(), 2, "nothing was removed");
+}
+
+#[test]
+fn a_whole_disk_or_a_folder_holding_disks_is_synchronized_only_on_request() {
+    let dir = Scratch::new("disks");
+    let mut s = library(&dir);
+    // a library photo on another disk makes the scratch folder's root look like it holds disks
+    let id = s.catalog.alloc_photo_id();
+    let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: "/Volumes/nas/x.jpg".into() }, "x.jpg", "JPEG", 6, 4, "2026-01-01");
+    s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    if std::path::Path::new("/Volumes").is_dir() {
+        let e = s.execute("folder.scanChanges", &json!({"path": "/Volumes"})).unwrap_err().to_string();
+        assert!(e.contains("disk: true"), "{e}");
+    }
+    // a folder inside one disk needs nothing more
+    assert!(s.execute("folder.scanChanges", &json!({"path": dir.path("trip")})).is_ok());
+}
+
+#[test]
+fn a_file_only_browsed_in_local_is_new_and_joins_the_library() {
+    let dir = Scratch::new("local");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    // looking at the folder in Local catalogues c.png as a browse record, not a library photo
+    s.execute("library.browse", &json!({"path": dir.path("trip")})).unwrap();
+    assert!(s.catalog.photos().any(|p| p.file_name == "c.png" && p.local));
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(paths(&r, "new"), vec![dir.path("trip/c.png")], "{r}");
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 1, "{r}");
+    assert!(s.catalog.photos().any(|p| p.file_name == "c.png" && p.in_library()));
+}
+
+#[test]
+fn a_file_renamed_or_moved_inside_the_folder_is_relinked_not_lost() {
+    let dir = Scratch::new("moved");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    std::fs::rename(dir.path("trip/a.png"), dir.path("trip/day1/a-renamed.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "missing").is_empty() && paths(&r, "new").is_empty(), "{r}");
+    assert_eq!(r["moved"][0]["id"], a.0, "{r}");
+    assert_eq!(r["moved"][0]["to"], dir.path("trip/day1/a-renamed.png"), "{r}");
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "removeMissing": true})).unwrap();
+    assert_eq!((r["relinked"].as_u64(), r["removed"].as_u64(), r["imported"].as_u64()), (Some(1), Some(0), Some(0)), "{r}");
+    let p = s.catalog.photo(a).unwrap();
+    assert!(p.in_library() && p.rating == 4, "the same photo, edits and all");
+    assert_eq!(p.source, lcc_catalog::Source::File { path: dir.path("trip/day1/a-renamed.png") });
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(a).unwrap().source, lcc_catalog::Source::File { path: dir.path("trip/a.png") });
+}
+
+#[test]
+fn synchronizing_is_one_undo_step_even_with_a_full_undo_history() {
+    let dir = Scratch::new("full-undo");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    // a long session: the history is at its limit and drops its oldest steps
+    for i in 0..1005u32 {
+        s.execute("photo.rate", &json!({"ids": [a.0], "rating": i % 5})).unwrap();
+    }
+    let before = holdings(&s);
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "removeMissing": true})).unwrap();
+    assert_eq!((r["imported"].as_u64(), r["removed"].as_u64()), (Some(1), Some(1)), "{r}");
+    let undo = s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(undo["undone"], "Synchronize Folder");
+    assert_eq!(holdings(&s), before, "one step undoes the import and the removal");
+}
+
+#[test]
+fn a_scan_stays_current_while_only_other_folders_change() {
+    let dir = Scratch::new("current");
+    let mut s = library(&dir);
+    write_png(&dir.path("other/x.png"), 9);
+    s.execute("library.import", &json!({"paths": [dir.path("other")]})).unwrap();
+    write_png(&dir.path("trip/c.png"), 3);
+    scan(&mut s, &dir.path("trip"));
+    // something elsewhere in the library changes while the dialog is open (a background import…)
+    let x = s.catalog.photos().find(|p| p.file_name == "x.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [x.0], "rating": 3})).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap();
+    assert_eq!(r["imported"], 1, "{r}");
+}
+
+/// Work on the folder's photos while it is scanned (a rating, keywords, an edit) changes nothing
+/// about what the scan found: a scan of a big folder on a slow disk takes minutes, and the
+/// dialog says to go on working. Synchronize does what it showed.
+#[test]
+fn working_on_the_folders_photos_meanwhile_leaves_the_scan_current() {
+    let dir = Scratch::new("worked-on");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    scan(&mut s, &dir.path("trip"));
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.selection = crate::Selection::single(a);
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 2})).unwrap();
+    s.execute("photo.setMeta", &json!({"ids": [a.0], "addKeywords": ["Trips|Alps", "snow"], "title": "A"})).unwrap();
+    s.execute("photo.label", &json!({"ids": [a.0], "label": "red"})).unwrap();
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.5})).unwrap();
+    s.execute("photo.virtualCopy", &json!({"ids": [a.0]})).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap();
+    assert_eq!(r["imported"], 1, "what the scan showed is done: {r}");
+    assert_eq!(s.catalog.photo(a).unwrap().rating, 2, "and the work stays");
+}
+
+/// What the scan found is no longer true once the folder holds other photos: then it is refused,
+/// never redone on the spot.
+#[test]
+fn a_change_to_which_photos_the_folder_holds_makes_the_scan_stale() {
+    let dir = Scratch::new("stale-folder");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    scan(&mut s, &dir.path("trip"));
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.selection = crate::Selection::single(a);
+    // one of its photos goes to Recently Deleted
+    s.execute("photo.delete", &json!({"ids": [a.0]})).unwrap();
+    let e = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap_err().to_string();
+    assert!(e.contains("scan again"), "{e}");
+    assert_eq!(s.catalog.photos().filter(|p| p.in_library()).count(), 1, "nothing was done");
+    // an agent that just asks to synchronize gets a fresh scan
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["imported"], 1, "{r}");
+}
+
+/// A virtual copy made, meanwhile, of a photo whose file the scan found missing would be left
+/// behind by removing the photo (the scan acts on exact ids): that scan is refused.
+#[test]
+fn a_virtual_copy_of_a_missing_photo_made_meanwhile_makes_the_scan_stale() {
+    let dir = Scratch::new("stale-copy-of-missing");
+    let mut s = library(&dir);
+    let b = s.catalog.photos().find(|p| p.file_name == "b.png").unwrap().id;
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    scan(&mut s, &dir.path("trip"));
+    s.selection = crate::Selection::single(b);
+    s.execute("photo.virtualCopy", &json!({"ids": [b.0]})).unwrap();
+    let e = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true, "removeMissing": true})).unwrap_err().to_string();
+    assert!(e.contains("scan again"), "{e}");
+}
+
+/// A photo whose sidecar the scan found news in, changed here since: what the sidecar says would
+/// go over that work, which the person was not shown. That scan is refused.
+#[test]
+fn a_change_to_a_photo_whose_sidecar_has_news_makes_the_scan_stale() {
+    let dir = Scratch::new("stale-sidecar");
+    let mut s = library(&dir);
+    write_sidecar(&dir.path("trip/a.png"), 5, Duration::ZERO);
+    let found = scan(&mut s, &dir.path("trip"));
+    assert_eq!(found["metadata"].as_array().map(Vec::len), Some(1), "{found}");
+    let (a, b) = (s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id, s.catalog.photos().find(|p| p.file_name == "b.png").unwrap().id);
+    s.selection = crate::Selection::single(b);
+    s.execute("photo.rate", &json!({"ids": [b.0], "rating": 1})).unwrap();
+    assert!(s.folder_changes.is_some());
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 2})).unwrap();
+    let e = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true, "readMetadata": true})).unwrap_err().to_string();
+    assert!(e.contains("scan again"), "{e}");
+    assert_eq!(s.catalog.photo(a).unwrap().rating, 2, "nothing was read over it");
+}
+
+#[test]
+fn the_progress_counts_the_photos_checked_too() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let dir = Scratch::new("progress");
+    let mut s = library(&dir);
+    let input = crate::sync::SyncInput::new(&mut s, &dir.path("trip"), false).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    crate::sync::scan_with(input, &progress);
+    assert_eq!((progress.checked.load(Relaxed), progress.to_check.load(Relaxed)), (2, 2));
+    let (done, total) = progress.counts();
+    assert!(done == total && total >= 2, "{done}/{total}");
+}
+
+#[test]
+fn a_sidecar_the_library_wrote_itself_is_no_update() {
+    let dir = Scratch::new("autowrite");
+    let mut s = library(&dir);
+    s.execute("library.xmpPreferences", &json!({"autoWrite": true})).unwrap();
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 3})).unwrap();
+    s.execute("photo.label", &json!({"ids": [a.0], "label": "green"})).unwrap();
+    assert!(Path::new(&dir.path("trip/a.xmp")).exists(), "auto-write wrote the sidecar");
+    let r = scan(&mut s, &dir.path("trip"));
+    assert!(paths(&r, "metadata").is_empty(), "{r}");
+}
+
+#[test]
+fn a_renamed_photo_with_no_content_hash_is_relinked_when_its_file_is_unmistakable() {
+    // as photos taken over from a Lightroom catalog are: no hash on record
+    let dir = Scratch::new("nohash");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let mut p = (**s.catalog.photo(a).unwrap()).clone();
+    p.content_hash = None;
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: a }).unwrap();
+    s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    std::fs::rename(dir.path("trip/a.png"), dir.path("trip/a-renamed.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(r["moved"][0]["to"], dir.path("trip/a-renamed.png"), "{r}");
+    assert!(paths(&r, "missing").is_empty() && paths(&r, "new").is_empty(), "{r}");
+}
+
+#[test]
+fn a_file_replaced_after_the_scan_is_not_relinked_to_the_photo() {
+    // a scan of a big folder takes minutes before it is confirmed: what stands at the new path by
+    // then may no longer be the photo's content
+    let dir = Scratch::new("replaced-after-scan");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    std::fs::rename(dir.path("trip/a.png"), dir.path("trip/day1/a-renamed.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(r["moved"][0]["to"], dir.path("trip/day1/a-renamed.png"), "{r}");
+    write_png(&dir.path("trip/day1/a-renamed.png"), 9);
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true, "removeMissing": false})).unwrap();
+    assert_eq!(r["relinked"], 0, "{r}");
+    assert_eq!(s.catalog.photo(a).unwrap().source, lcc_catalog::Source::File { path: dir.path("trip/a.png") });
+}
+
+#[test]
+fn renamed_duplicates_are_each_relinked() {
+    let dir = Scratch::new("dups");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.execute("photo.duplicate", &json!({"ids": [a.0]})).unwrap();
+    assert!(Path::new(&dir.path("trip/a-copy.png")).exists());
+    std::fs::rename(dir.path("trip/a.png"), dir.path("trip/one.png")).unwrap();
+    std::fs::rename(dir.path("trip/a-copy.png"), dir.path("trip/two.png")).unwrap();
+    let r = scan(&mut s, &dir.path("trip"));
+    assert_eq!(r["moved"].as_array().map(Vec::len), Some(2), "{r}");
+    assert!(paths(&r, "missing").is_empty(), "{r}");
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip")})).unwrap();
+    assert_eq!(r["relinked"], 2, "{r}");
+}
+
+#[test]
+fn face_regions_found_meanwhile_leave_the_scan_current() {
+    let dir = Scratch::new("faces");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    scan(&mut s, &dir.path("trip"));
+    // background face search adds a region to a photo of the folder
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let mut meta = s.catalog.photo(a).unwrap().meta.clone();
+    meta.regions.push(lcc_meta::Region { rect: Default::default(), kind: lcc_meta::RegionKind::Face, name: None, description: None });
+    s.catalog.apply(lcc_catalog::Op::SetMeta { id: a, meta: Box::new(meta) }).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "scanned": true})).unwrap();
+    assert_eq!(r["imported"], 1, "{r}");
+}
+
+/// Synchronizing in halves, as the app does it: readied on the UI thread without touching the
+/// disk, the work (every file read) on a worker, each step committed back on the UI thread.
+fn sync_in_halves(s: &mut Session, path: &str, choice: crate::sync::SyncChoice) -> crate::sync::SyncReport {
+    let changes = crate::sync::scan(s, path, false).unwrap();
+    let (work, mut commit) = crate::sync::SyncJob::start(s, changes, choice).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || work.run(&progress, |step| tx.send(step).is_ok())).join().unwrap();
+    for step in rx {
+        commit.apply(s, step);
+    }
+    commit.finish(s)
+}
+
+#[test]
+fn the_work_of_synchronizing_runs_apart_from_its_commits() {
+    let dir = Scratch::new("halves");
+    let mut s = library(&dir);
+    let before = holdings(&s);
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    write_sidecar(&dir.path("trip/a.png"), 5, Duration::ZERO);
+    let choice = crate::sync::SyncChoice { import_new: true, relink_moved: true, remove_missing: true, read_metadata: true, ..Default::default() };
+    let r = sync_in_halves(&mut s, &dir.path("trip"), choice);
+    assert_eq!((r.imported, r.removed, r.read), (1, 1, 1), "{r:?}");
+    assert_eq!(s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().rating, 5);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(holdings(&s), before, "still one undo step");
+}
+
+#[test]
+fn the_work_checks_again_that_a_new_file_is_still_there() {
+    let dir = Scratch::new("ready");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    // the file goes away between readying (UI thread) and the work (worker): the work finds out
+    let (work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    std::fs::remove_file(dir.path("trip/c.png")).unwrap();
+    let mut steps = Vec::new();
+    work.run(&crate::sync::SyncProgress::default(), |step| {
+        steps.push(step);
+        true
+    });
+    for step in steps {
+        commit.apply(&mut s, step);
+    }
+    let r = commit.finish(&mut s);
+    assert_eq!(r.imported, 0, "{r:?}");
+    assert_eq!(r.failed.len(), 1, "{r:?}");
+}
+
+#[test]
+fn a_cancelled_synchronize_does_nothing_more() {
+    let dir = Scratch::new("cancel-run");
+    let mut s = library(&dir);
+    let steps_before = s.undo.len();
+    write_png(&dir.path("trip/c.png"), 3);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (work, commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    let progress = crate::sync::SyncProgress::default();
+    progress.files.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut sent = 0;
+    work.run(&progress, |_| {
+        sent += 1;
+        true
+    });
+    assert_eq!(sent, 0);
+    let r = commit.finish(&mut s);
+    assert_eq!((r.imported, s.undo.len()), (0, steps_before));
+}
+
+/// Do the work of synchronizing a new file that grew after the scan, so the work reads it again
+/// instead of reusing the scan's probe; `during` runs as the file is read. How many steps it
+/// handed over; `progress` says how far it got.
+fn sync_work_rereading_a_file(tag: &str, progress: &crate::sync::SyncProgress, during: impl Fn() + Send + Sync + 'static) -> usize {
+    let dir = Scratch::new(tag);
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let mut file = std::fs::OpenOptions::new().append(true).open(dir.path("trip/c.png")).unwrap();
+    std::io::Write::write_all(&mut file, b"\0").unwrap();
+    s.media.file_probe = Some(std::sync::Arc::new(move |_: &str| {
+        during();
+        Ok(crate::media::ProbeInfo { format: "PNG".into(), ..Default::default() })
+    }));
+    let (work, _commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    let mut sent = 0;
+    work.run(progress, |_| {
+        sent += 1;
+        true
+    });
+    sent
+}
+
+#[test]
+fn a_batch_that_cancel_cut_short_is_not_counted_as_done() {
+    let progress = crate::sync::SyncProgress::default();
+    let cancel = progress.files.cancel.clone();
+    // Cancel while the work reads the batch's file
+    sync_work_rereading_a_file("cut-short", &progress, move || cancel.store(true, std::sync::atomic::Ordering::Relaxed));
+    let (done, total) = progress.counts();
+    assert!(done < total, "the file was left undone: {done} of {total}");
+}
+
+#[test]
+fn a_batch_that_ran_to_its_end_is_counted_as_done() {
+    let progress = crate::sync::SyncProgress::default();
+    let sent = sync_work_rereading_a_file("whole-batch", &progress, || {});
+    let (done, total) = progress.counts();
+    assert!(done >= total && sent >= 1, "{done} of {total}, {sent} steps");
+}
+
+/// Ready a synchronize of the trip folder and do its work, keeping the steps for the test to
+/// commit when it likes.
+fn readied(s: &mut Session, dir: &Scratch, choice: crate::sync::SyncChoice) -> (Vec<crate::sync::SyncStep>, crate::sync::SyncCommit) {
+    let changes = crate::sync::scan(s, &dir.path("trip"), false).unwrap();
+    let (work, commit) = crate::sync::SyncJob::start(s, changes, choice).unwrap();
+    let mut steps = Vec::new();
+    work.run(&crate::sync::SyncProgress::default(), |step| {
+        steps.push(step);
+        true
+    });
+    (steps, commit)
+}
+
+#[test]
+fn steps_for_a_library_that_was_closed_meanwhile_are_not_applied() {
+    let dir = Scratch::new("switched");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let choice = crate::sync::SyncChoice { remove_missing: true, ..Default::default() };
+    let (steps, mut commit) = readied(&mut s, &dir, choice);
+    // File › Open Library while the work runs: another catalog, whose photo ids mean other photos
+    s.library_identity = std::sync::Arc::new(());
+    let before = holdings(&s);
+    let undo = s.undo.len();
+    for step in steps {
+        commit.apply(&mut s, step);
+    }
+    let r = commit.finish(&mut s);
+    assert_eq!(holdings(&s), before, "nothing landed in the other library");
+    assert_eq!(s.undo.len(), undo);
+    assert_eq!((r.imported, r.removed), (0, 0), "{r:?}");
+    assert!(!r.failed.is_empty(), "and the report says why: {r:?}");
+}
+
+#[test]
+fn an_undo_pressed_while_synchronizing_is_not_folded_into_it() {
+    let dir = Scratch::new("undo-mid");
+    let mut s = library(&dir);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    write_png(&dir.path("trip/c.png"), 3);
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let choice = crate::sync::SyncChoice { remove_missing: true, ..Default::default() };
+    let (mut steps, mut commit) = readied(&mut s, &dir, choice);
+    assert!(steps.len() >= 2, "an import step and a remove step");
+    let first = steps.remove(0);
+    commit.apply(&mut s, first);
+    // the person presses Undo between two steps of the run
+    s.execute("edit.undo", &json!({})).unwrap();
+    for step in steps {
+        commit.apply(&mut s, step);
+    }
+    commit.finish(&mut s);
+    // undoing the run's last step never takes the rating with it
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.catalog.photo(a).unwrap().rating, 4, "the earlier, unrelated step stays");
+}
+
+/// A library with `n` more photos (files that need not exist: the steps below never read them).
+fn with_extra_photos(s: &mut Session, n: usize) -> Vec<lcc_catalog::PhotoId> {
+    (0..n)
+        .map(|i| {
+            let id = s.catalog.alloc_photo_id();
+            let name = format!("extra-{i}.png");
+            let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: format!("/gone/{name}") }, &name, "X", 6, 4, "2026-01-01");
+            s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            id
+        })
+        .collect()
+}
+
+fn extras_in_library(s: &Session) -> usize {
+    s.catalog.photos().filter(|p| p.file_name.starts_with("extra-") && p.in_library()).count()
+}
+
+/// The history keeps 1,000 steps; a synchronize of a big folder makes thousands (one per few
+/// photos). Undo must take back all of it, never only the last 1,000 steps.
+#[test]
+fn undoing_a_synchronize_of_more_than_a_thousand_steps_takes_back_all_of_it() {
+    let dir = Scratch::new("big-undo");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let before = holdings(&s);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    let r = commit.finish(&mut s);
+    assert_eq!(r.removed, ids.len(), "{r:?}");
+    assert_eq!(extras_in_library(&s), 0);
+    assert_eq!(s.undo.last().map(|e| e.label.as_str()), Some("Synchronize Folder"));
+    assert!(s.undo.len() <= crate::UNDO_STEPS, "the history is bounded again: {}", s.undo.len());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(holdings(&s), before, "one Undo takes back the whole run");
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(extras_in_library(&s), 0, "and Redo does it all again");
+}
+
+/// What the person did before the run still counts toward the bound: the oldest go, as ever.
+#[test]
+fn a_synchronize_keeps_the_history_bounded_and_drops_the_oldest_earlier_step() {
+    let dir = Scratch::new("big-bound");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    for i in 0..crate::UNDO_STEPS - 1 {
+        s.execute("photo.rate", &json!({"ids": [a.0], "rating": i % 5 + 1})).unwrap();
+    }
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    assert!(s.undo.len() > crate::UNDO_STEPS, "the run's steps are all held until it ends: {}", s.undo.len());
+    commit.finish(&mut s);
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS);
+    assert_eq!(s.undo.last().map(|e| e.label.as_str()), Some("Synchronize Folder"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(extras_in_library(&s), ids.len(), "still the whole run");
+}
+
+/// Runs that overlap share the hold: the history is cut only once the last of them is done.
+#[test]
+fn overlapping_runs_hold_the_history_until_the_last_lets_go() {
+    let dir = Scratch::new("big-overlap");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let first = s.hold_undo();
+    let second = s.hold_undo();
+    drop(second);
+    for id in &ids {
+        s.run_step(|s| s.commit("Remove", lcc_catalog::Op::SetDeleted { id: *id, deleted: true })).unwrap();
+    }
+    assert!(s.undo.len() > crate::UNDO_STEPS, "the first run still holds: {}", s.undo.len());
+    drop(first);
+    s.trim_undo();
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS);
+}
+
+/// Opening another library clears its history, and a run of the old one no longer holds it.
+#[test]
+fn opening_another_library_ends_the_hold_of_a_run_of_the_old_one() {
+    let dir = Scratch::new("big-open");
+    let mut s = library(&dir);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, _commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    assert!(s.undo_hold.upgrade().is_some(), "the run holds the history");
+    s.open_library(dir.path("other"), false).unwrap();
+    assert!(s.undo_hold.upgrade().is_none(), "the new library's history is its own");
+}
+
+/// A run nobody finishes (its task dropped) doesn't leave the history growing without bound.
+#[test]
+fn a_synchronize_dropped_without_finishing_leaves_the_history_bounded() {
+    let dir = Scratch::new("big-dropped");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    drop(commit);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 2})).unwrap();
+    assert!(s.undo.len() <= crate::UNDO_STEPS, "{}", s.undo.len());
+}
+
+/// An edit made while the run's worker is between steps ends the hold at once: the history is
+/// bounded when the edit lands, not when the next step comes, and nothing is folded around it.
+#[test]
+fn an_edit_while_the_run_waits_for_its_next_step_bounds_the_history_at_once() {
+    let dir = Scratch::new("big-stalled");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    assert!(s.undo.len() > crate::UNDO_STEPS, "the run holds its steps: {}", s.undo.len());
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS, "no step came after the edit, yet the history is cut");
+    commit.finish(&mut s);
+    assert_ne!(s.undo.last().map(|e| e.label.as_str()), Some("Synchronize Folder"), "not folded around the edit");
+}
+
+/// An edit that fills the history to the bound looks, by length alone, like no edit at all (the
+/// oldest step goes as the edit comes): the run still sees it and folds nothing around it.
+#[test]
+fn an_edit_that_leaves_the_history_as_long_as_it_was_is_still_seen_by_the_run() {
+    let dir = Scratch::new("big-same-length");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in ids.iter().take(crate::UNDO_STEPS - s.undo.len()) {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS);
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS);
+    let edit_label = s.undo.last().map(|e| e.label.clone()).unwrap();
+    commit.finish(&mut s);
+    assert_eq!(s.undo.last().map(|e| e.label.as_str()), Some(edit_label.as_str()), "the edit stays its own step");
+}
+
+/// An edit made before the run's first step is not between its steps: the run still holds the
+/// history, so a run of more than 1,000 steps is one whole step.
+#[test]
+fn an_edit_before_the_first_step_of_a_big_synchronize_leaves_it_whole() {
+    let dir = Scratch::new("big-early-edit");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    let before = holdings(&s);
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    commit.finish(&mut s);
+    assert_eq!(s.undo.last().map(|e| e.label.as_str()), Some("Synchronize Folder"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(holdings(&s), before, "one Undo takes back the whole run, and not the edit before it");
+}
+
+/// An Undo pressed mid-run ends the run's hold; the history is cut then, even when the step that
+/// sees it commits nothing (a failed batch).
+#[test]
+fn an_undo_seen_by_a_step_that_commits_nothing_still_bounds_the_history() {
+    let dir = Scratch::new("big-undo-no-commit");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let changes = crate::sync::scan(&mut s, &dir.path("trip"), false).unwrap();
+    let (_work, mut commit) = crate::sync::SyncJob::start(&mut s, changes, crate::sync::SyncChoice::default()).unwrap();
+    for id in &ids {
+        commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![*id]));
+    }
+    assert!(s.undo.len() > crate::UNDO_STEPS, "the run holds its steps: {}", s.undo.len());
+    s.execute("edit.undo", &json!({})).unwrap();
+    // photos that are gone already: nothing to commit
+    commit.apply(&mut s, crate::sync::SyncStep::Remove(vec![ids[0]]));
+    assert!(s.undo.len() <= crate::UNDO_STEPS, "cut at the step that saw the Undo: {}", s.undo.len());
+}
+
+/// A step that panics (caught higher up) must not leave the session thinking every later commit
+/// belongs to a run.
+#[test]
+fn a_panic_in_a_run_step_does_not_leave_the_session_marked() {
+    let dir = Scratch::new("big-panic");
+    let mut s = library(&dir);
+    let ids = with_extra_photos(&mut s, 1_100);
+    let a = s.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id;
+    let _hold = s.hold_undo();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.run_step(|_| panic!("a step that fails"))));
+    assert!(caught.is_err());
+    for id in &ids {
+        s.run_step(|s| s.commit("Remove", lcc_catalog::Op::SetDeleted { id: *id, deleted: true })).unwrap();
+    }
+    s.execute("photo.rate", &json!({"ids": [a.0], "rating": 4})).unwrap();
+    assert_eq!(s.undo.len(), crate::UNDO_STEPS, "an edit after the run's steps ends the hold");
+}
+
+#[test]
+fn sidecar_namings_for_many_photos_agree_with_one_at_a_time() {
+    let dir = Scratch::new("namings");
+    let mut s = library(&dir);
+    // a raw beside its JPEG: the raw owns IMG_1.xmp, the JPEG's is IMG_1.JPG.xmp
+    for name in ["IMG_1.CR3", "IMG_1.JPG", "IMG_2.JPG"] {
+        let id = s.catalog.alloc_photo_id();
+        let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: dir.path(&format!("trip/{name}")) }, name, "X", 6, 4, "2026-01-01");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+    }
+    let ids: Vec<lcc_catalog::PhotoId> = s.catalog.photos().map(|p| p.id).collect();
+    let one_by_one: Vec<_> = ids.iter().map(|id| s.sidecar_naming(*id)).collect();
+    assert_eq!(s.sidecar_namings(&ids), one_by_one);
+    assert!(one_by_one.contains(&crate::sidecar::SidecarNaming::Full), "the case that matters is there");
+}
+
+/// The grid's thumbnail badges name a sidecar for every visible cell, every frame, so
+/// [`Session::sidecar_naming`] keeps the stems' owner table built and rebuilds it only when the
+/// catalog's revision changes (issue #742): a stem shared with a file that arrives later, or
+/// whose rival leaves, is named by the table as the catalog now stands, not by the one first
+/// built.
+#[test]
+fn sidecar_naming_follows_the_catalog_past_the_owner_table_it_caches() {
+    let dir = Scratch::new("naming-cache");
+    let mut s = library(&dir);
+    let add = |s: &mut Session, name: &str| {
+        let id = s.catalog.alloc_photo_id();
+        let p = lcc_catalog::Photo::new(id, lcc_catalog::Source::File { path: dir.path(&format!("trip/{name}")) }, name, "X", 6, 4, "2026-01-01");
+        s.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(p) }).unwrap();
+        id
+    };
+    // alone, the JPEG owns its stem (this call builds and caches the owner table)
+    let jpg = add(&mut s, "IMG_1.JPG");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem);
+    // the raw that arrives after the table was built takes the stem over: the table kept built
+    // must not keep naming the JPEG as the stem's owner
+    let raw = add(&mut s, "IMG_1.CR3");
+    assert_eq!(s.sidecar_naming(raw), crate::sidecar::SidecarNaming::Stem, "a raw owns its stem");
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Full, "the JPEG now writes IMG_1.JPG.xmp");
+    let ids = [jpg, raw];
+    let one_by_one: Vec<_> = ids.iter().map(|id| s.sidecar_naming(*id)).collect();
+    assert_eq!(s.sidecar_namings(&ids), one_by_one, "the table kept built agrees with a pass over the catalog");
+    // the raw gone, the JPEG has its stem back
+    s.catalog.apply(lcc_catalog::Op::RemovePhoto { id: raw }).unwrap();
+    assert_eq!(s.sidecar_naming(jpg), crate::sidecar::SidecarNaming::Stem, "the last file of a stem owns it again");
+}
+
+/// ✕ set after the listing, while the scan goes through the files: the probes a preceding scan
+/// kept are not checked against the disk one by one (a round trip per file on a network share);
+/// the files not reached come back as errors.
+#[test]
+fn a_cancelled_scan_does_not_check_the_cached_probes_against_the_disk() {
+    let dir = Scratch::new("cancel-cached");
+    let mut s = library(&dir);
+    write_png(&dir.path("trip/new.png"), 9);
+    let found = crate::import::scan(&mut s, &[dir.path("trip")]);
+    assert!(found.iter().any(|c| c.name == "new.png" && c.error.is_none()), "{found:?}");
+    assert!(!s.import_probes.is_empty(), "the scan kept the new file's probe");
+    let (input, paths) = crate::import::ScanInput::new(&mut s, &[dir.path("trip")]);
+    let progress = crate::import::ScanProgress::default();
+    progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    let out = crate::import::scan_with(input, &paths, &progress);
+    let new = out.candidates.iter().find(|c| c.name == "new.png").expect("new.png is a candidate");
+    assert!(new.error.is_some(), "the cached probe was used after ✕: {new:?}");
+}
+
+#[test]
+fn removing_missing_photos_takes_them_out_of_their_stacks() {
+    let dir = Scratch::new("remove-stacked");
+    let mut s = library(&dir);
+    let id = |s: &Session, name: &str| s.catalog.photos().find(|p| p.file_name == name).unwrap().id;
+    let (a, b) = (id(&s, "a.png"), id(&s, "b.png"));
+    let group = s.catalog.group_ops(a, &[b], true).unwrap();
+    s.catalog.apply(group).unwrap();
+    assert!(s.catalog.stack_of(b).is_some());
+    std::fs::remove_file(dir.path("trip/day1/b.png")).unwrap();
+    let r = s.execute("folder.synchronize", &json!({"path": dir.path("trip"), "removeMissing": true})).unwrap();
+    assert_eq!(r["removed"].as_u64(), Some(1), "{r}");
+    assert!(s.catalog.photo(b).unwrap().deleted);
+    assert!(s.catalog.stack_of(b).is_none(), "like photo.delete, a removed photo leaves its stack: {:?}", s.catalog.stack_of(b));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.catalog.stack_of(b).is_some(), "one undo step puts b back in its stack");
+}

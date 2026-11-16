@@ -1,0 +1,17 @@
+[package]
+name = "lcc-color"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Color (L0)"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+serde = { workspace = true }
+lcc-geom = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,0 +1,226 @@
+This software is dual-licensed (maintainer decision 2026-11-10): you may use it under the MIT
+License (LICENSE) or, at your option, the GNU General Public License version 3 or later
+(LICENSE-GPL-3.0.txt). crates/segment and crates/fetch additionally remain available under the
+Apache License 2.0 inherited from upstream (see LICENSE-APACHE in each of those crate folders).
+
+Upstream attribution
+
+This project is a fork of LightCraft (https://github.com/storytold/lightcraft),
+Copyright (c) 2026 ArtCraft Team and the LightCraft contributors, licensed under the MIT
+License or the Apache License, Version 2.0. It also includes code from PhotoCraft,
+Copyright (c) the PhotoCraft contributors. Code inherited from these projects is used here
+under the MIT License; the upstream copyright notices are kept in LICENSE and in this file.
+
+The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and are not part of
+this project. The upstream LightCraft app icon in assets/app-icon/ is covered by its own
+licence file (assets/app-icon/LICENSE.txt).
+
+Third-party material
+
+This product bundles third-party material under its own licenses, listed below. The per-file
+list (author, source, license) is in assets/ATTRIBUTION.md.
+
+Some raw decoders in crates/raw were translated from, or written with reference to, functions of
+dcraw.c (https://www.dechifro.org/dcraw/), Copyright 1997-2018 by Dave Coffin, outside its
+RESTRICTED (Foveon) block, which its header releases "free for all uses". Each such module names
+the dcraw revision and functions in its documentation.
+
+vendor/egui-wgpu is egui-wgpu 0.36.2 (https://github.com/emilk/egui), Copyright (c) 2018-2021
+Emil Ernerfeldt and the egui contributors, licensed under the MIT License or the Apache License,
+Version 2.0 (vendor/egui-wgpu/LICENSE-MIT, vendor/egui-wgpu/LICENSE-APACHE), with local changes
+for HDR display output described in vendor/README.md.
+
+Inter (assets/fonts/Inter-*.ttf) — SIL Open Font License 1.1. See assets/fonts/OFL-Inter.txt.
+
+crates/ui-egui/src/icons.rs draws some UI icons from path data of Lucide (https://lucide.dev,
+lucide-static 0.460.0; the arms that call `lucide!`), scaled onto the app's icon grid. Lucide is
+licensed under the ISC License (assets/licenses/ISC-Lucide.txt):
+
+  ISC License
+
+  Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT).
+  All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+
+  Permission to use, copy, modify, and/or distribute this software for any purpose with or without
+  fee is hereby granted, provided that the above copyright notice and this permission notice appear
+  in all copies.
+
+  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+  SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+  AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+  NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+  OF THIS SOFTWARE.
+
+crates/raw/src/spectral_table.rs (lightcraft-raw) holds camera colour matrices derived from the
+camera spectral sensitivities, training reflectances and model alias list of rawtoaces-data
+(https://github.com/AcademySoftwareFoundation/rawtoaces-data, v1.1.0), an Academy Software
+Foundation project licensed under the Apache License 2.0, and from the CIE 1931 colour-matching
+functions it ships (CIE, CC-BY-4.0). The matrices were fitted by the LightCraft contributors
+(2026) with tools/spectral_camera_table.py. See assets/ATTRIBUTION.md.
+
+crates/surface (lightcraft-surface), the control-surface support in crates/ui-egui and
+apps/lightcraft, and the icons in assets/surface-icons port TactileBridge, Portions Copyright (c)
+2026 RAD Films - Roman Alurkoff, contributed under the MIT License: its control-surface engine
+(dial acceleration and tuning, coalescing, echo suppression, tool-following layouts, Auto Sync),
+its settings design and defaults, its curated layouts and profiles, and its hand-drawn icon pack
+(assets/surface-icons/LICENSE.txt). Each ported file says so. No Capture One material is included.
+
+crates/inpaint (lightcraft-inpaint) ports the inpainting (PatchMatch completion) and Poisson membrane
+fill code of PhotoCraft (https://github.com/storytold/photocraft, crates/algo/src/inpaint.rs and
+poisson.rs), Copyright the PhotoCraft contributors, licensed under the MIT License or the Apache
+License 2.0, at your option. The port was modified by the LightCraft contributors (2026); each
+ported file says so.
+
+crates/raw/src/vc5.rs (lcc-raw) ports the VC-5 decoder of GoPro's GPR SDK
+(https://github.com/gopro/gpr, source/lib/vc5_common and source/lib/vc5_decoder, including its codebook 17
+table), Copyright 2018 GoPro Inc., licensed under the Apache License 2.0 or the MIT License, at your
+option. The port was modified by the upstream contributors (2026): translated from C to Rust and
+restructured; the file says so. crates/raw/tests/data/gpr-table17.inc is a verbatim, unmodified copy of the SDK's
+source/lib/vc5_common/table17.inc (same copyright and licence), used by a test to check the port's codebook.
+
+crates/segment (lightcraft-segment) ports the SAM 3 model code of Hugging Face Transformers
+(https://github.com/huggingface/transformers, src/transformers/models/sam3 and sam3_tracker),
+Copyright The HuggingFace Team and Meta Platforms, Inc., licensed under the Apache License 2.0.
+The port was modified by the upstream contributors (2026): translated from Python/PyTorch to
+Rust on candle and restructured; each ported file says so. Because of this, crates/segment is
+licensed under the Apache License 2.0 only (crates/segment/LICENSE-APACHE), not under MIT.
+crates/fetch is likewise licensed under the Apache License 2.0 only (crates/fetch/LICENSE-APACHE).
+
+The SAM 3 weights are not part of this software and are never distributed with it. A user downloads
+the facebook/sam3 checkpoint only when they choose to (in the app, or by hand), under Meta's SAM
+License (https://github.com/facebookresearch/sam3/blob/main/LICENSE), a separate, non-OSI
+licence. See docs/ai-masks.md.
+
+crates/segment/src/birefnet.rs is built from the BiRefNet paper (Zheng et al., arXiv 2401.03407)
+and its reference implementation (https://github.com/ZhengPeng7/BiRefNet), Copyright (c) 2024
+ZhengPeng, licensed under the MIT License; translated to Rust on candle and restructured. The
+BiRefNet_lite weights (MIT) are not part of this software: the app downloads them from the author's
+Hugging Face repository (ZhengPeng7/BiRefNet_lite) only when the user asks for them.
+
+crates/segment/src/hiera.rs and sam2.rs (ported by OneSlips, 2026) port the SAM 2 model code of
+Hugging Face Transformers (src/transformers/models/sam2), Copyright The HuggingFace Team and Meta
+Platforms, Inc., licensed under the Apache License 2.0, modified the same way. The SAM 2.1 weights
+(facebook/sam2.1-hiera-tiny, Apache License 2.0) are not part of this software; the app downloads
+them from Meta's Hugging Face repository only when the user asks for them.
+
+crates/segment/src/owl.rs and describe.rs (ported by OneSlips, 2026) port the OWLv2 model and
+image-processor code of Hugging Face Transformers (src/transformers/models/owlv2:
+modeling_owlv2.py, image_processing_owlv2.py, processing_owlv2.py), Copyright The HuggingFace Team
+and Google, licensed under the Apache License 2.0, modified the same way. The OWLv2 weights
+(google/owlv2-base-patch16-ensemble, Apache License 2.0) are not part of this software; the app
+downloads them from Google's Hugging Face repository only when the user asks for them.
+
+crates/segment/src/dino.rs, depth.rs and grid.rs (ported by OneSlips, 2026) port the DINOv2,
+Depth Anything and DPT image-processor code of Hugging Face Transformers (models/dinov2,
+depth_anything and dpt), Copyright The HuggingFace Team, Meta Platforms, Inc. and the model
+authors, licensed under the Apache License 2.0, modified the same way. The Depth Anything V2 Small
+weights (depth-anything/Depth-Anything-V2-Small-hf, by Lihe Yang et al., Apache License 2.0),
+which compute Depth Range masks, are not part of this software; the app downloads them from the
+authors' Hugging Face repository only when the user asks for them.
+
+crates/segment/src/scene.rs (ported by OneSlips, 2026) ports the EoMT model and image-processor
+code of Hugging Face Transformers (models/eomt), Copyright The HuggingFace Team and the EoMT
+authors (Tommie Kerssies et al., "Your ViT is Secretly an Image Segmentation Model", CVPR 2025),
+licensed under the Apache License 2.0, modified the same way. The EoMT-S COCO panoptic weights
+(tue-mps/coco_panoptic_eomt_small_640_2x, MIT License, Copyright the EoMT authors) are not part
+of this software; the app downloads them from the authors' Hugging Face repository only when the
+user asks for them. The model was trained on the COCO dataset (https://cocodataset.org): COCO
+annotations Copyright the COCO Consortium, licensed under the Creative Commons Attribution 4.0
+License (CC BY 4.0).
+
+The lens profile database of the lensfun project (https://github.com/lensfun/lensfun, data/db,
+Copyright the lensfun contributors) is not part of this software and is never distributed with it.
+A user downloads it only when they choose to (Settings ▸ Import ▸ Lens profiles ▸ Download, which
+keeps just the data/db XML files of the project's source archive), under the Creative Commons
+Attribution-ShareAlike 3.0 licence (https://creativecommons.org/licenses/by-sa/3.0/); the
+section names it. No lensfun code is used.
+
+AI denoise weights are not part of this software and are never distributed with it.
+The desktop app (own-model feature) offers the upstream project's own Bayer denoise model
+0.1.0 as an optional download after the user accepts its terms: a U-Net trained by
+OneSlips (https://github.com/OneSlips) with the tools in tools/denoise-train on CC0 raw
+samples from raw.pixls.us, its weights licensed MIT OR Apache-2.0, served by
+radfilms.com.au (the trainer's site) and pinned by size and SHA-256.
+The library's default build offers user-supplied models only. The optional rawnind-model
+feature offers a separately downloaded RawNIND UtNet2 Bayer checkpoint
+("RawNIND" by Benoit Brummer), after the user accepts its terms. Its author
+dual-licenses the weights under GPL-3.0 and CC BY 4.0
+(https://github.com/trougnouf/rawnind_jddc); this software uses them under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/), which allows any use, commercial use
+included, with credit to the author. The same feature offers darktable-ai's NIND U-Net
+for finished pictures (JPEG, PNG, TIFF), "denoise-nind.dtmodel"
+(https://github.com/darktable-org/darktable-ai/tree/master/models/denoise-nind, trained on
+the NIND dataset, images CC BY 4.0 and CC0), downloaded only at the user's request; its
+weights are licensed under the GNU General Public License v3
+(https://www.gnu.org/licenses/gpl-3.0.html) and are used under that licence. Enabling these
+offers in releases remains a maintainer decision. The optional realesrgan-model feature offers Real-ESRGAN General v3
+("realesr-general-x4v3", Copyright (c) 2021 Xintao Wang, https://github.com/xinntao/Real-ESRGAN),
+a 4x upscaler for AI Super Resolution and AI Sharpen, as a separate download at the user's
+request; its code and weights are licensed under the BSD 3-Clause licence, whose notice is shown
+with the model's terms and kept with the downloaded file. The ONNX reader and CPU/GPU executor are our Rust implementation;
+no darktable, RawSpeed, LibRaw or other GPL decoder/runtime code is included.
+
+Builds made with craft-fonts (the optional CRAFT_FONTS_DIR build input; all official releases)
+also embed the fonts listed in https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md
+(BIZ UDPGothic, BIZ UDMincho, Shippori Mincho, Noto Sans CJK SC, Noto Sans Arabic, Noto Sans
+Thai, Noto Sans Georgian, Noto Sans Hebrew, NanumGothic, Noto Sans Symbols and Noto Sans Symbols 2),
+under the SIL Open Font License 1.1. The web build embeds BIZ UDPGothic Regular, Noto Sans Thai,
+Noto Sans Georgian and Noto Sans Hebrew Regular, and loads Noto Sans CJK SC separately. Release packages include each font's
+licence as OFL-<family>.txt; Windows installers include their texts in FONT-LICENCES.txt.
+
+Place names for reverse geocoding (Photo > Fill Location from GPS) are not part of LightCraft and
+are never distributed with it. On the user's request (Photo > Download Place Names) the app
+downloads cities15000.zip, admin1CodesASCII.txt and countryInfo.txt from GeoNames
+(https://download.geonames.org/export/dump/) into the settings folder. GeoNames data is licensed
+under Creative Commons Attribution 4.0 (https://creativecommons.org/licenses/by/4.0/);
+attribution: "GeoNames, geonames.org". The lookup code (crates/geocode) is our own.
+
+Linux Wayland window decorations
+-------------------------------
+sctk-adwaita 0.10.1 (https://github.com/PolyMeilex/sctk-adwaita,
+commit d5f343c45c04d4a026db57f76760819b7325db00) is used by winit on Linux
+for vector window controls. Its title-font features are disabled: no Cantarell
+font is embedded by this dependency and no font file is added to this repo.
+
+sctk-adwaita's MIT licence:
+
+MIT License
+
+Copyright (c) 2022 Bartłomiej Maryńczak
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+crates/tflite (lcc-tflite, Apache License 2.0) — a TensorFlow Lite interpreter written by OneSlips
+in 2026 from the TensorFlow Lite model schema (schema.fbs: field order, enum values, option
+defaults; Copyright The TensorFlow Authors, Apache License 2.0) and the documented behaviour of
+its builtin operators; no TensorFlow code was copied. Its MediaPipe landmark index lists are data
+from MediaPipe's face_landmarks_connections (Copyright 2023 The MediaPipe Authors, Apache License
+2.0). Ported into Chromaforge from OneSlips' fork.
+
+crates/camprof (lcc-camprof) ports the camera-profiling engine of RADcamProfiles
+(https://github.com/OneSlips/RADcamProfiles, commit dd8003f, crates/engine), Copyright (c) 2026 RAD Films -
+Roman Alurkoff (@OneSlips), licensed under the MIT License and relicensed under the MIT License or the
+Apache License 2.0 by its author. It is clean-room, own work, confirmed by the author 2026-11-03: no DCamProf
+or other GPL code was used, and its data is public or the author's own. The port was modified by the
+Chromaforge contributors (2026); each ported file says so. It carries the CIE 1931 2-degree colour-matching
+functions and the CIE standard illuminants A, D50, D55, D65, D75 and E (CIE 015:2018 / ISO/CIE 11664
+published tables), and the published reference values (CIELAB D50) of the X-Rite ColorChecker 24 as made
+before November 2014. See assets/ATTRIBUTION.md.

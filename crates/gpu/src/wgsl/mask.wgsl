@@ -1,0 +1,213 @@
+// Mask evaluation (`lcc_pipeline::masks`): one component shape → `c`, then combined into
+// the mask's alpha plane. Bindings: img (rgb, pre-exposure), log_l, aux (shape data), c, alpha.
+
+// Position of output pixel (x, y) in long-edge units: P[4..10] = affine (a, b, c, d, e, f).
+fn pos(x: u32, y: u32) -> vec2<f32> {
+    let px = f32(x) + 0.5;
+    let py = f32(y) + 0.5;
+    return vec2<f32>(pf(4u) * px + pf(6u) * py + pf(8u), pf(5u) * px + pf(7u) * py + pf(9u));
+}
+
+// P: w, h, kind, invert, affine[6], then per kind:
+//   0 linear: a.xy, d.xy, |d|²         1 radial: centre.xy, cos, sin, rx, ry, feather, invert
+//   2 luminance range: lo, hi, lo feather, hi feather, ev
+//   3 colour range: tol, gain, sample count (OkLab triples in aux)
+//   4 brush: stroke count (stroke records + dabs in aux)
+// `masks::chromaticity` of pixel i.
+fn chroma_at(i: u32) -> vec3<f32> {
+    let c = vec3<f32>(img[3u * i], img[3u * i + 1u], img[3u * i + 2u]);
+    return c / max(lum2020(c), 1e-6);
+}
+
+// `masks::auto_similarity`.
+fn auto_similarity(l: f32, ch: vec3<f32>, rl: f32, rch: vec3<f32>) -> f32 {
+    let dl = (l - rl) / AUTO_TOL_EV;
+    let dc = length(ch - rch) / AUTO_TOL_CHROMA;
+    return 1.0 - sstep(0.5, 1.0, sqrt(dl * dl + dc * dc));
+}
+
+// `masks::auto_similarity_lrc_scaled` (a Lightroom-model stroke; `scale`: its Auto Mask range).
+fn auto_similarity_lrc(l: f32, ch: vec3<f32>, rl: f32, rch: vec3<f32>, scale: f32) -> f32 {
+    var k = 1.0;
+    if (scale > 0.0 && scale < 1e30) {
+        k = 1.0 / scale;
+    }
+    let dl = abs(l - rl) * k;
+    let dc = length(ch - rch) * k;
+    return (1.0 - sstep(AUTO_LRC_EV0, AUTO_LRC_EV1, dl)) * (1.0 - sstep(AUTO_LRC_CH0, AUTO_LRC_CH1, dc));
+}
+
+@compute @workgroup_size(16, 16)
+fn shape(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let i = g.y * w + g.x;
+    let kind = pu(2u);
+    var v = 0.0;
+    if (kind == 0u) {
+        let p = pos(g.x, g.y);
+        let a = vec2<f32>(pf(10u), pf(11u));
+        let d = vec2<f32>(pf(12u), pf(13u));
+        let t = dot(p - a, d) / pf(14u);
+        v = 1.0 - sstep(0.0, 1.0, t);
+    } else if (kind == 1u) {
+        let p = pos(g.x, g.y);
+        let d = p - vec2<f32>(pf(10u), pf(11u));
+        let co = pf(12u);
+        let s = pf(13u);
+        let x = d.x * co - d.y * s;
+        let y = d.x * s + d.y * co;
+        let qx = x / pf(14u);
+        let qy = y / pf(15u);
+        let r = sqrt(qx * qx + qy * qy);
+        let f = pf(16u);
+        v = 1.0 - sstep(1.0 - max(f, 0.01), 1.0, r);
+        if (pu(17u) != 0u) {
+            v = 1.0 - v;
+        }
+    } else if (kind == 2u) {
+        let lo = pf(10u);
+        let hi = pf(11u);
+        let y = clamp((log_l[i] + pf(14u) + 8.0) / 12.0, 0.0, 1.0);
+        v = sstep(lo - pf(12u), lo, y) * (1.0 - sstep(hi, hi + pf(13u), y));
+    } else if (kind == 3u) {
+        let tol = pf(10u);
+        let gain = pf(11u);
+        let c = vec3<f32>(img[3u * i], img[3u * i + 1u], img[3u * i + 2u]) * gain;
+        let lab = oklab(c / (1.0 + c));
+        var best = 3.402823e38;
+        for (var k = 0u; k < pu(12u); k++) {
+            let s = vec3<f32>(aux[3u * k], aux[3u * k + 1u], aux[3u * k + 2u]);
+            let da = lab.y - s.y;
+            let db = lab.z - s.z;
+            let dl = lab.x - s.x;
+            best = min(best, sqrt(da * da + db * db + 0.25 * (dl * dl)));
+        }
+        v = 1.0 - sstep(tol * 0.5, tol, best);
+    } else if (kind == 4u) {
+        // stroke record (20 words): dab offset, dab count, r, hard, flow, density, erase,
+        // bbox x0 y0 x1 y1, auto, Lightroom model (1/0), its dab profile's a and p, Auto Mask range
+        // scale, tile table offset, tiles across, tiles down, tile size. A tile's entry (start, count)
+        // lists the dabs that reach it, in stroke order.
+        let px = f32(g.x) + 0.5;
+        let py = f32(g.y) + 0.5;
+        let lp = log_l[i];
+        let chp = chroma_at(i);
+        for (var k = 0u; k < pu(10u); k++) {
+            let o = 20u * k;
+            let lrc = aux[o + 12u] != 0.0;
+            let pa = aux[o + 13u];
+            let pp = aux[o + 14u];
+            let auto_mask = aux[o + 11u] != 0.0;
+            if (px < aux[o + 7u] || py < aux[o + 8u] || px > aux[o + 9u] || py > aux[o + 10u]) {
+                continue;
+            }
+            let off = u32(aux[o]);
+            let r = aux[o + 2u];
+            let hard = aux[o + 3u];
+            let flow = aux[o + 4u];
+            let tiles_x = u32(aux[o + 17u]);
+            let ts = aux[o + 19u];
+            let tx = min(g.x / u32(ts), tiles_x - 1u);
+            let ty = min(g.y / u32(ts), u32(aux[o + 18u]) - 1u);
+            let cell = u32(aux[o + 16u]) + 2u * (ty * tiles_x + tx);
+            let first = u32(aux[cell]);
+            let cnt = u32(aux[cell + 1u]);
+            var keep = 1.0;
+            let density = aux[o + 5u];
+            for (var q = 0u; q < cnt; q++) {
+                // painted up to the density: the dabs left can't change it
+                if (1.0 - keep >= density) {
+                    break;
+                }
+                let j = u32(aux[first + q]);
+                let dx = px - aux[off + 2u * j];
+                let dy = py - aux[off + 2u * j + 1u];
+                let dd = sqrt(dx * dx + dy * dy);
+                if (dd > r) {
+                    continue;
+                }
+                var a = 1.0;
+                if (lrc) {
+                    // `masks::lrc_dab_alpha`: exp(−(dd/a)^p) up to r
+                    a = exp(-pow(max(dd / pa, 1e-20), pp));
+                } else if (dd > hard) {
+                    a = 1.0 - sstep(hard, r, dd);
+                }
+                if (auto_mask) {
+                    let rx = min(u32(max(floor(aux[off + 2u * j]), 0.0)), w - 1u);
+                    let ry = min(u32(max(floor(aux[off + 2u * j + 1u]), 0.0)), h - 1u);
+                    let ri = ry * w + rx;
+                    if (lrc) {
+                        a *= auto_similarity_lrc(lp, chp, log_l[ri], chroma_at(ri), aux[o + 15u]);
+                    } else {
+                        a *= auto_similarity(lp, chp, log_l[ri], chroma_at(ri));
+                    }
+                }
+                keep *= 1.0 - a * flow;
+            }
+            let sa = min(1.0 - keep, density);
+            // `masks::combine_stroke`
+            if (aux[o + 6u] != 0.0) {
+                v = v * (1.0 - sa);
+            } else if (lrc) {
+                v = max(v, min(v + sa - v * sa, density));
+            } else {
+                v = max(v, sa);
+            }
+        }
+    }
+    if (pu(3u) != 0u) {
+        v = 1.0 - v;
+    }
+    c[i] = v;
+}
+
+// Combine `c` into mask plane P[2]: P[3] = 0 copy, 1 add (max), 2 subtract, 3 intersect, 4 add up
+// to the density P[1] (a Lightroom-model brush stroke, `masks::combine_stroke`).
+@compute @workgroup_size(256)
+fn combine(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    let n = pu(0u);
+    if (i >= n) {
+        return;
+    }
+    let j = pu(2u) * n + i;
+    let op = pu(3u);
+    let a = alpha[j];
+    let v = c[i];
+    if (op == 0u) {
+        alpha[j] = v;
+    } else if (op == 1u) {
+        alpha[j] = max(a, v);
+    } else if (op == 2u) {
+        alpha[j] = a * (1.0 - v);
+    } else if (op == 4u) {
+        alpha[j] = max(a, min(a + v - a * v, pf(1u)));
+    } else {
+        alpha[j] = a * v;
+    }
+}
+
+// Finish mask plane P[2]: P[3] = invert, P[4] = amount (applied when ≠ 1).
+@compute @workgroup_size(256)
+fn finalize(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    let n = pu(0u);
+    if (i >= n) {
+        return;
+    }
+    let j = pu(2u) * n + i;
+    var a = alpha[j];
+    if (pu(3u) != 0u) {
+        a = 1.0 - a;
+    }
+    let amt = pf(4u);
+    if (abs(amt - 1.0) > 1e-6) {
+        a = a * amt;
+    }
+    alpha[j] = a;
+}

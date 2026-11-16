@@ -1,0 +1,18 @@
+[package]
+name = "lcc-winmsi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windows Installer lookup (L0): asks Windows Installer where an installed component's key file is, so the updater can tell an MSI install from a copy unpacked from a zip. One of the crates allowed `unsafe` (one msi.dll call); reports unsupported elsewhere."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the single
+# `win` module below; every other crate root has `#![forbid(unsafe_code)]`. See CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_ApplicationInstallationAndServicing"] } # MIT OR Apache-2.0

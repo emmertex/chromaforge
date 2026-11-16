@@ -1,0 +1,239 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*", "xtask"]
+# vendored third-party crates patched for the app (see vendor/README.md), and the plug-in SDK (each crate in
+# sdk/ is its own workspace; lcc-plugins tests against sdk/stamp): not workspace members
+exclude = ["vendor", "sdk"]
+
+[workspace.package]
+version = "26.47.1"
+edition = "2024"
+license = "MIT OR GPL-3.0-or-later"
+rust-version = "1.95"
+repository = "https://example.invalid/repo"
+
+[workspace.dependencies]
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "4dc543cb449cc232e4c3d58f78a05c1ab169db9e", features = ["serde"] }
+craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "4dc543cb449cc232e4c3d58f78a05c1ab169db9e" }
+# internal
+lcc-brand = { path = "crates/brand" }
+lcc-notes = { path = "crates/notes" }
+lcc-denoise-core = { path = "crates/denoise-core" }
+lcc-denoise = { path = "crates/denoise", default-features = false }
+lcc-geom = { path = "crates/geom" }
+lcc-faces = { path = "crates/faces" }
+lcc-sysmem = { path = "crates/sysmem" }
+lcc-hdrmeta = { path = "crates/hdrmeta" }
+lcc-gpumem = { path = "crates/gpumem" }
+lcc-winspool = { path = "crates/winspool" }
+lcc-winmsi = { path = "crates/winmsi" }
+lcc-android-host = { path = "crates/android-host" }
+lcc-peer = { path = "crates/peer" }
+lcc-sync = { path = "crates/sync" }
+lcc-audio-out = { path = "crates/audio-out" }
+lcc-color = { path = "crates/color" }
+lcc-raster = { path = "crates/raster" }
+lcc-video = { path = "crates/video" }
+lcc-video-export = { path = "crates/video-export" }
+lcc-tiff = { path = "crates/tiff" }
+lcc-raw = { path = "crates/raw" }
+lcc-camdb = { path = "crates/camdb" }
+lcc-camprof = { path = "crates/camprof" }
+lcc-colourfit = { path = "crates/colourfit" }
+lcc-codecs = { path = "crates/codecs" }
+lcc-meta = { path = "crates/meta" }
+lcc-develop = { path = "crates/develop" }
+lcc-lensdb = { path = "crates/lensdb" }
+lcc-scenes = { path = "crates/scenes" }
+lcc-pipeline = { path = "crates/pipeline" }
+lcc-gpu = { path = "crates/gpu" }
+lcc-catalog = { path = "crates/catalog" }
+lcc-preview = { path = "crates/preview" }
+lcc-merge = { path = "crates/merge" }
+lcc-engine = { path = "crates/engine" }
+lcc-ui-egui = { path = "crates/ui-egui" }
+lcc-mcp = { path = "crates/mcp" }
+lcc-surface = { path = "crates/surface" }
+lcc-fetch = { path = "crates/fetch" }
+lcc-net = { path = "crates/net" }
+lcc-updater = { path = "crates/updater" }
+lcc-credentials = { path = "crates/credentials" }
+lcc-hash = { path = "crates/hash" }
+lcc-filters = { path = "crates/filters" }
+lcc-fuzzkit = { path = "crates/fuzzkit" }
+lcc-layout = { path = "crates/layout" }
+lcc-immich = { path = "crates/immich" }
+lcc-geo = { path = "crates/geo" }
+lcc-plugins = { path = "crates/plugins" }
+lcc-publish = { path = "crates/publish" }
+lcc-tether = { path = "crates/tether" }
+lcc-webgallery = { path = "crates/webgallery" }
+lcc-heif = { path = "crates/heif" }
+lcc-segment = { path = "crates/segment" }
+lcc-tflite = { path = "crates/tflite" }
+lcc-text = { path = "crates/text" }
+lcc-inpaint = { path = "crates/inpaint" }
+lcc-genfill = { path = "crates/genfill", default-features = false }
+lcc-pdf = { path = "crates/pdf" }
+lcc-print = { path = "crates/print" }
+lcc-psd = { path = "crates/psd" }
+lcc-actions = { path = "crates/actions" }
+lcc-book = { path = "crates/book" }
+lcc-geocode = { path = "crates/geocode" }
+lcc-slideshow = { path = "crates/slideshow" }
+lcc-classic-slideshow = { path = "crates/classic-slideshow" }
+lcc-ml = { path = "crates/ml" }
+lcc-testkit = { path = "crates/testkit" }
+
+# foundation
+thiserror = "2"
+sha2 = "0.10"
+# update signatures (crates/updater, xtask update-key): the 2.x the TLS stack already builds, no `fast`
+# tables, so no second copy and no new feature
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+log = "0.4"
+# the control port token (`apps/app`)
+getrandom = "0.3"
+# All date/time conversion goes through chrono (no hand-rolled calendar code beyond the 400-year range extension; CLAUDE.md).
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+rayon = "1"
+winapi-util = "0.1" # lcc-catalog reads a file's volume serial number and file index with it on Windows
+proptest = "1"
+bytemuck = { version = "1", features = ["derive"] }
+half = { version = "2", default-features = false } # f32 → f16 for the HDR loupe texture
+crc32fast = "1"
+siphasher = "1"
+redb = "4.3" # catalog storage v4 (crates/catalog/src/db.rs): pure Rust, MIT OR Apache-2.0
+libc = "0.2" # dev-only: process CPU time in benches
+dhat = "0.3" # opt-in heap profiling (lcc-cli --features dhat-heap) and heap tests; never in product builds
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] } # move files to system Recycle Bin / Trash (Delete from Disk)
+
+# formats
+quick-xml = "0.41"
+miniz_oxide = "0.8"
+rustix = { version = "1", default-features = false, features = ["std", "fs"] } # free disk space (statvfs), pure Rust on Linux
+
+# codecs
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
+zune-jpeg = { version = "0.5", default-features = false, features = ["std", "x86", "neon"] }
+zune-core = { version = "0.5", default-features = false, features = ["std"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
+ab_glyph = { version = "0.2", default-features = false, features = ["std"] }  # Apache-2.0, pure Rust glyph rasterizer (export watermarks)
+png = "0.18"
+tiff = "0.11"
+image-webp = "0.2"
+moxcms = { version = "0.9", default-features = false, features = ["lut"] }
+jxl-oxide = { version = "0.12", default-features = false }
+jixel = "=0.3.4" # BSD-3-Clause OR Apache-2.0, pure-Rust JPEG XL encoder (export; port of libjxl-tiny)
+oxideav-jpegxs = { version = "0.0.8", default-features = false } # MIT, pure Rust entropy/DWT primitives for Nikon HE
+zune-jpegxl = { version = "0.5", default-features = false, features = ["std"] } # MIT/Apache-2.0/Zlib lossless JXL encoder (test fixtures only)
+ravif = { version = "0.13", default-features = false, features = ["threading"] } # no "asm": it needs nasm (non-Rust)
+# HDR AVIF (PQ): ravif fixes the sRGB transfer curve, so HDR files drive its rav1e + avif-serialize directly
+rav1e = { version = "0.8.1", default-features = false, features = ["threading"] }
+avif-serialize = "0.8.6"
+
+# gpu (crates/gpu; native backends only, no GL: everything stays pure Rust)
+# SAM 3 inference (lcc-segment). 0.9.2: later releases pull `tokenizers` with the
+# Oniguruma C library into candle-core, and the product is pure Rust.
+candle-core = { version = "=0.9.2", default-features = false }
+candle-nn = { version = "=0.9.2", default-features = false }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "dx12", "wgsl"] }
+pollster = "1"
+
+# ui
+egui = "0.36"
+# control-surface icons in Settings > Controls and the readout (pure Rust; no text, no raster images)
+resvg = { version = "0.45", default-features = false }
+egui_extras = { version = "0.36", default-features = false }
+eframe = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+rfd = "0.17"
+muda = { version = "0.21", default-features = false } # native menu bar (macOS: objc2/AppKit, pure Rust; no GTK)
+# macOS: the profile of the screen showing the window (safe AppKit bindings; muda and wgpu use the same)
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSColorSpace", "NSResponder", "NSScreen", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData"] }
+# Linux: the desktop's dark/light setting from the XDG settings portal (Settings ▸ Interface ▸
+# Appearance Mode ▸ Auto). Pure Rust; the version accesskit already brings in, pinned to it.
+zbus = "=5.19.0"
+web-time = "1"
+# MIDI controller input (Windows: WinMM, macOS: CoreMIDI; no C code compiled). Not built on Linux: its ALSA backend is C.
+midir = "0.10"
+toml = "1"
+
+# web (apps/web)
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+needless_range_loop = "allow"
+type_complexity = "allow"
+excessive_precision = "allow"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.release]
+debug = "line-tables-only"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+debug = false
+
+# `cargo xtask web`: the browser build. Size matters more than build time: fat LTO, one codegen
+# unit, no symbols, abort on panic (wasm32 can't unwind anyway), size-optimized code — except the
+# crates that do per-pixel work, which stay at opt-level 3 (opt-level "s"/"z" there costs ~50 %/
+# ~130 % render time; measured in docs/web.md → Bundle size).
+[profile.web]
+inherits = "release"
+debug = false
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "s"
+
+[profile.web.package]
+lcc-pipeline = { opt-level = 3 }
+lcc-raster = { opt-level = 3 }
+lcc-color = { opt-level = 3 }
+lcc-develop = { opt-level = 3 }
+lcc-geom = { opt-level = 3 }
+lcc-raw = { opt-level = 3 }
+lcc-codecs = { opt-level = 3 }
+lcc-scenes = { opt-level = 3 }
+lcc-preview = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-core = { opt-level = 3 }
+jpeg-decoder = { opt-level = 3 }
+jpeg-encoder = { opt-level = 3 }
+png = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+
+[patch.crates-io]
+# candle-core 0.9.2 + zip 9 (vendor/candle-core): upstream pins zip 7.x, whose extract-to-disk
+# advisories (RUSTSEC-2026-0367/68/69) have no fixed 7.x release. Same 0.9.2 sources; only the
+# zip dependency version and its API breaks (vendor/candle-core/src/{npy,pickle}.rs) change.
+candle-core = { path = "vendor/candle-core" }
+# egui-wgpu 0.36.2 + HDR display output (an Rgba16Float / extended-linear surface, the display's
+# HDR facts, egui's output scaled to SDR white): see vendor/README.md
+egui-wgpu = { path = "vendor/egui-wgpu" }

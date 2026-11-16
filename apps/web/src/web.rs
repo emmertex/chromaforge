@@ -1,0 +1,901 @@
+//! Browser host: opens the library in browser storage, starts the render workers and eframe on
+//! `<canvas id="app_canvas">`, wires the file picker and drag-and-drop, and turns exports
+//! into downloads.
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use lcc_engine::Session;
+use lcc_engine::catalog::Source;
+use lcc_engine::library::LibraryStores;
+use lcc_ui_egui::{ControlRequest, LccApp, Services, UiState};
+use serde_json::json;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
+
+use crate::backend::Backend;
+use crate::backup::{ACTIVE_LIBRARY, DEFAULT_LIBRARY_DIR, valid_library_dir};
+use crate::bench::Bench;
+use crate::files::{Files, FlushOp, LIBRARY_FILES};
+use crate::safety::{self, notice};
+use crate::store::{Originals, content_hash, download_name, storage_key};
+use crate::wire::ThumbIndex;
+use crate::workers::{THUMB_INDEX, Workers};
+
+/// The web picker's accept list, derived from the engine's import extensions (both
+/// cases) so no format the engine can import is silently filtered out of the dialog.
+fn accept_list() -> String {
+    lcc_engine::import::accept_list()
+}
+
+/// After a failed save, wait this long before trying again (ms).
+const SAVE_RETRY_MS: f64 = 2000.0;
+
+/// How long a notice stays on screen (s).
+const NOTICE_SECS: f64 = 8.0;
+
+/// How often view state, UI prefs and the thumbnail index are saved (ms).
+const SAVE_EVERY_MS: f64 = 1000.0;
+
+/// The page's window (`None` only outside a browser page, e.g. in a worker).
+fn window() -> Option<web_sys::Window> {
+    web_sys::window()
+}
+
+/// Milliseconds since navigation start.
+fn perf_now() -> f64 {
+    window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
+}
+
+fn set_status(text: &str) {
+    if let Some(el) = window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("app_status")) {
+        el.set_text_content(Some(text));
+    }
+}
+
+/// Storage key of library file `name` in library folder `dir`.
+fn library_key(dir: &str, name: &str) -> String {
+    format!("{dir}/{name}")
+}
+
+/// Repaint the app (notices from async tasks).
+pub(crate) fn request_repaint() {
+    CTX.with(|c| {
+        if let Some(c) = c.borrow().as_ref() {
+            c.request_repaint();
+        }
+    });
+}
+
+/// URL options (`?bench&store=idb&workers=2&reset`).
+struct Options {
+    bench: bool,
+    /// "opfs" (default: OPFS, falling back to IndexedDB), "idb" or "memory".
+    store: String,
+    workers: Option<usize>,
+    reset: bool,
+}
+
+impl Options {
+    fn from_url() -> Options {
+        let q = window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+        let params: Vec<(String, String)> = q
+            .trim_start_matches('?')
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| match p.split_once('=') {
+                Some((k, v)) => (k.to_string(), v.to_string()),
+                None => (p.to_string(), String::new()),
+            })
+            .collect();
+        let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let bench = get("bench").is_some();
+        Options {
+            bench,
+            // the benchmark edits the first photo it finds: a link with `?bench` must never reach the library in
+            // browser storage, so it always runs on the demo photos in an unsaved library (upstream #3646)
+            store: if bench { "memory".into() } else { get("store").filter(|s| s == "idb" || s == "memory").unwrap_or_else(|| "opfs".into()) },
+            workers: get("workers").and_then(|v| v.parse().ok()).map(|n: usize| n.min(crate::workers::MAX_WORKERS)),
+            reset: get("reset").is_some(),
+        }
+    }
+}
+
+/// Store a picked/dropped file (bytes into browser storage, then queue its import).
+async fn store_file(originals: Originals, backend: Option<Backend>, name: String, bytes: Vec<u8>, ctx: egui::Context) {
+    let hash = content_hash(&bytes);
+    if let Some(b) = &backend
+        && let Err(e) = b.write(&storage_key(&hash), &bytes).await
+    {
+        // a photo whose bytes aren't stored would be gone after a reload: don't add it
+        notice(format!("{name} was not added: browser storage refused it ({e}). Free up space or back up and clear old photos."));
+        return;
+    }
+    originals.added(&name, &hash, Arc::from(bytes));
+    ctx.request_repaint();
+}
+
+/// Read a browser `File` into storage.
+async fn read_file(originals: Originals, backend: Option<Backend>, file: web_sys::File, ctx: egui::Context) {
+    match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+        Ok(buf) => store_file(originals, backend, file.name(), js_sys::Uint8Array::new(&buf).to_vec(), ctx).await,
+        Err(e) => log::warn!("reading {}: {e:?}", file.name()),
+    }
+}
+
+/// Show the browser's open dialog; picked files are imported asynchronously.
+fn open_picker(originals: Originals, backend: Option<Backend>, ctx: egui::Context) {
+    let Some(doc) = window().and_then(|w| w.document()) else { return };
+    let Ok(input) = doc.create_element("input").map(|e| e.unchecked_into::<web_sys::HtmlInputElement>()) else { return };
+    input.set_type("file");
+    input.set_multiple(true);
+    input.set_accept(&accept_list());
+    let inp = input.clone();
+    let on_change = Closure::<dyn FnMut()>::new(move || {
+        if let Some(files) = inp.files() {
+            for i in 0..files.length() {
+                if let Some(f) = files.get(i) {
+                    wasm_bindgen_futures::spawn_local(read_file(originals.clone(), backend.clone(), f, ctx.clone()));
+                }
+            }
+        }
+    });
+    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
+    on_change.forget();
+    input.click();
+}
+
+/// Offer `bytes` as a download named after `path`.
+fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let e = |e: JsValue| format!("download failed: {e:?}");
+    let arr = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let opts = web_sys::BlobPropertyBag::new();
+    let name = download_name(path);
+    opts.set_type(crate::store::mime_for(name));
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&arr, &opts).map_err(e)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(e)?;
+    let doc = window().and_then(|w| w.document()).ok_or("no document")?;
+    let a: web_sys::HtmlAnchorElement = doc.create_element("a").map_err(e)?.unchecked_into();
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    // revoke once the click has been handled
+    let revoke = Closure::once_into_js(move || {
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
+    if let Some(w) = window() {
+        let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 5000);
+    }
+    log::info!("exported {name} ({} bytes)", bytes.len());
+    Ok(())
+}
+
+fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen: Rc<Cell<bool>>, ctx: egui::Context) -> Services {
+    let (backup_backend, backup_files) = (backend.clone(), files);
+    let restore_backend = backend.clone();
+    Services {
+        picker: None,
+        dialog_errors: None,
+        pick_display_profile: None,
+        screen_profile: None,
+        backup_library: Some(Box::new(move |session: &mut Session| {
+            let Some(b) = backup_backend.clone() else { return Err("nothing is stored in this browser session (?store=memory)".into()) };
+            if let Some(why) = crate::backup::unsaved_refusal(session.unsaved()) {
+                return Err(why);
+            }
+            // the photos' own names for the originals in the zip
+            let names: std::collections::HashMap<String, String> = session
+                .catalog
+                .photos()
+                .filter_map(|p| match &p.source {
+                    Source::File { path } => crate::store::hash_of_path(path).map(|h| (h.to_string(), p.file_name.clone())),
+                    _ => None,
+                })
+                .collect();
+            let files = backup_files.clone();
+            notice("Backing up the catalog… (the download starts when it's ready)");
+            wasm_bindgen_futures::spawn_local(async move {
+                match safety::backup(files, b, names).await {
+                    Ok((n, bytes)) => notice(format!(
+                        "Catalog backed up: {n} original{} ({:.1} MB). Keep the file somewhere safe.",
+                        if n == 1 { "" } else { "s" },
+                        bytes / 1e6
+                    )),
+                    Err(e) => notice(format!("Backup failed: {e}")),
+                }
+            });
+            Ok(json!({"started": true}))
+        })),
+        restore_library: Some(Box::new(move |_session: &mut Session| {
+            let Some(b) = restore_backend.clone() else { return Err("nothing is stored in this browser session (?store=memory)".into()) };
+            let frozen = frozen.clone();
+            // once the backup is in place, stop saving the old library (the page reloads)
+            safety::pick_and_restore(b, move || frozen.set(true));
+            Ok(json!({"started": true}))
+        })),
+        pick_files: Some(Box::new(move || {
+            open_picker(originals.clone(), backend.clone(), ctx.clone());
+            Vec::new() // files arrive asynchronously and are imported on a later frame
+        })),
+        pick_denoise_model: None,
+        // Preset files: browser pickers are asynchronous; not wired on the web yet.
+        pick_preset_files: None,
+        pick_tracklog: None,
+        pick_lightroom_catalog: None,
+        // Face models need a folder to live in; the web has none.
+        pick_model_file: None,
+        save_preset_file: None,
+        pick_keyword_list: None,
+        save_keyword_list: None,
+        pick_curve_preset_files: None,
+        save_curve_preset_file: None,
+        pick_list_file: None,
+        save_list_file: None,
+        pick_slideshow_templates: None,
+        save_slideshow_template: None,
+        pick_print_templates: None,
+        save_print_template: None,
+        write: Some(Box::new(download)),
+        // downloads happen on the main thread: exports run in the foreground on the web
+        write_shared: None,
+        png: Some(Box::new(|img: &lcc_raster::Rgba8| {
+            lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(img), &lcc_codecs::EncodeMeta::default()).unwrap_or_default()
+        })),
+        reveal: None,
+        log_file: None,
+        open_with: None,
+        open_all_with: None,
+        check_editor: None,
+        storage_access: None,
+        camera_roll: None,
+        save_to_gallery: None,
+        open_url: Some(Box::new(|url: &str| {
+            let w = web_sys::window().ok_or("no window")?;
+            w.open_with_url_and_target(url, "_blank").map(|_| ()).map_err(|_| "the browser blocked the new tab".to_string())
+        })),
+        pick_folder: None,
+        // the browser reports prefers-color-scheme to egui
+        system_theme: None,
+        // video is native-only
+        video_gpu: None,
+        hdr_output: None,
+        // no control surfaces in the browser
+        surface_store: None,
+        pick_surface_file: None,
+        save_surface_file: None,
+        surface_listener: None,
+        surface_plugin: None,
+    }
+}
+
+/// Write dirty library files to storage, in order, until none are left. A failure (quota,
+/// storage cleared) is recorded in `files` — the catalog then reports changes as unsaved instead
+/// of accepting them silently — and retried after [`SAVE_RETRY_MS`].
+async fn flush(files: Files, backend: Backend, dir: String, flushing: Rc<Cell<bool>>, failed_at: Rc<Cell<f64>>) {
+    'outer: loop {
+        let ops = files.take_dirty();
+        if ops.is_empty() {
+            if files.error().is_some() {
+                log::info!("app: saving works again");
+            }
+            files.set_error(None);
+            break;
+        }
+        for (i, op) in ops.iter().enumerate() {
+            let r = match op {
+                FlushOp::Write { name, data } => backend.write(&library_key(&dir, name), data).await,
+                FlushOp::Append { name, offset, data } => backend.write_at(&library_key(&dir, name), Some(*offset), data).await,
+            };
+            if let Err(e) = r {
+                log::error!("saving {} failed: {e}", op.name());
+                files.failed(&ops[i..]);
+                files.set_error(Some(e));
+                failed_at.set(perf_now());
+                break 'outer;
+            }
+        }
+    }
+    flushing.set(false);
+    // the page title drops its unsaved • now, even when nothing else wakes the page
+    request_repaint();
+}
+
+/// Everything loaded before the UI starts.
+struct Boot {
+    opts: Options,
+    backend: Option<Backend>,
+    files: Files,
+    index: ThumbIndex,
+    /// The library folder in storage (`library`, or a restored backup's).
+    lib_dir: String,
+    /// Library files that exist but couldn't be read (#1507): the library isn't opened and
+    /// nothing is saved, so the stored copy stays as it was.
+    load_error: Option<String>,
+}
+
+async fn boot(opts: Options) -> Boot {
+    let t0 = perf_now();
+    let backend = if opts.store == "memory" {
+        None
+    } else {
+        match Backend::open(opts.store == "idb").await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                log::error!("no browser storage ({e}); this session won't be saved");
+                None
+            }
+        }
+    };
+    let files = Files::default();
+    let mut index = ThumbIndex::default();
+    let mut lib_dir = DEFAULT_LIBRARY_DIR.to_string();
+    let mut load_error = None;
+    if let Some(b) = &backend {
+        if opts.reset {
+            // everything this site keeps in the browser, photos included: never without asking
+            let ok = safety::confirm(&lcc_brand::fill(
+                "?reset deletes the {app} library stored in this browser, including every imported photo. \
+                 This can't be undone. Delete it?",
+            ));
+            if ok {
+                match b.clear().await {
+                    Ok(()) => log::info!("app: storage cleared (?reset)"),
+                    Err(e) => log::error!("clearing storage: {e}"),
+                }
+            } else {
+                log::info!("app: ?reset declined; storage kept");
+            }
+        }
+        // a restored backup lives in its own folder (see `backup`)
+        match b.read(ACTIVE_LIBRARY).await {
+            Ok(Some(d)) => {
+                let d = String::from_utf8_lossy(&d).trim().to_string();
+                if valid_library_dir(&d) {
+                    lib_dir = d;
+                }
+            }
+            Ok(None) => {}
+            // not knowing which library is in use, any library opened could be the wrong one
+            Err(e) => load_error = Some(format!("couldn't read which catalog is in use from browser storage ({e})")),
+        }
+        if load_error.is_none() {
+            let mut reads = Vec::new();
+            for name in LIBRARY_FILES {
+                reads.push((name, b.read(&library_key(&lib_dir, name)).await));
+            }
+            if let Err(e) = crate::files::preload_library(&files, reads) {
+                log::error!("{e}");
+                load_error = Some(e);
+            }
+        }
+        let index_read = b.read(THUMB_INDEX).await;
+        match &index_read {
+            Ok(Some(j)) => index = ThumbIndex::from_json(j),
+            Ok(None) => {}
+            Err(e) => log::warn!("reading the thumbnail index: {e}"),
+        }
+        crate::backend::request_persistence(|granted| {
+            if !granted {
+                notice(&lcc_brand::fill(
+                    "This browser may delete {app}'s library when it runs short of space (persistent storage wasn't granted). \
+                     Keep your original photos elsewhere and use File ▸ Back Up Library… now and then.",
+                ));
+            }
+        });
+        // thumbnails stored without an index entry (index saved late, or lost): delete them; not
+        // when the index couldn't be read, which would make every thumbnail look unindexed
+        let b2 = b.clone();
+        let known: std::collections::HashSet<String> = b
+            .list("thumbs")
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n.ends_with(".jpg"))
+            .map(|n| n.trim_end_matches(".jpg").to_string())
+            .collect();
+        let orphans: Vec<String> = if index_read.is_ok() { known.into_iter().filter(|k| !index.contains(k)).collect() } else { Vec::new() };
+        if !orphans.is_empty() {
+            wasm_bindgen_futures::spawn_local(async move {
+                for k in &orphans {
+                    let _ = b2.remove(&crate::wire::thumb_storage_key(k)).await;
+                }
+                log::info!("thumbnail cache: removed {} unindexed files", orphans.len());
+            });
+        }
+    }
+    log::info!(
+        "app: storage {} opened in {:.0} ms ({} thumbnails indexed, {:.1} MB)",
+        backend.as_ref().map_or("memory", |b| b.kind()),
+        perf_now() - t0,
+        index.len(),
+        index.total() as f64 / 1e6
+    );
+    Boot { opts, backend, files, index, lib_dir, load_error }
+}
+
+struct WebApp {
+    app: LccApp,
+    originals: Originals,
+    files: Files,
+    backend: Option<Backend>,
+    workers: Option<Workers>,
+    flushing: Rc<Cell<bool>>,
+    /// When the last save to storage failed (ms; 0 = never).
+    flush_failed_at: Rc<Cell<f64>>,
+    /// Saving stopped (a restored backup is about to replace this library: the page reloads).
+    frozen: Rc<Cell<bool>>,
+    lib_dir: String,
+    bench: Option<Bench>,
+    first_frame_logged: bool,
+    /// The page title last set (`document.title`), so it is written only when it changes.
+    title: String,
+    last_save: f64,
+    ui_written: Vec<u8>,
+}
+
+impl WebApp {
+    fn new(cc: &eframe::CreationContext<'_>, boot: Boot, chinese_font: Vec<u8>) -> Self {
+        let Boot { opts, backend, files, index, lib_dir, load_error } = boot;
+        let originals = Originals::default();
+        let t = perf_now();
+        let mut session = Session::new();
+        originals.install(&mut session);
+        let stores = LibraryStores {
+            dir: format!("browser:{}/{lib_dir}", backend.as_ref().map_or("memory", |b| b.kind())).into(),
+            catalog: Box::new(files.store()),
+            files: Box::new(files.store()),
+            on_disk: false,
+        };
+        let mut problem = None;
+        // a library that couldn't be read is not opened: it would show incomplete, then save over the stored copy
+        let read_failed = load_error.is_some();
+        let opened = match load_error {
+            Some(e) => Err(format!("{e}. Nothing was changed in storage")),
+            None => session.open_library_in(stores, true).cloned().map_err(|e| e.to_string()),
+        };
+        match opened {
+            Ok(r) => log::info!(
+                "app: library {} in {:.0} ms ({} photos; snapshot seq {}, {} ops replayed)",
+                if r.created { "created" } else { "loaded" },
+                perf_now() - t,
+                session.catalog.len(),
+                r.snapshot_seq,
+                r.replayed
+            ),
+            Err(e) => {
+                // never a silent demo session (issue #100): an empty one, and the window says why
+                log::error!("opening the catalog failed: {e}");
+                session = Session::new();
+                originals.install(&mut session);
+                problem = Some(lcc_ui_egui::panels::library_problem::LibraryProblem {
+                    can_retry: false,
+                    ..lcc_ui_egui::panels::library_problem::LibraryProblem::new(
+                        "the browser's storage for this page",
+                        format!("{e}. Reload the page to try again."),
+                    )
+                });
+            }
+        }
+        // `?bench` never has storage (see `Options::from_url`): it measures the generated demo photos
+        if opts.bench && backend.is_none() && session.catalog.is_empty() {
+            lcc_engine::demo::load(&mut session);
+        }
+        if backend.is_some() {
+            notice(&lcc_brand::fill(
+                "{app} in the browser is experimental. Your library is kept in this browser's storage: keep your original photos \
+                 elsewhere and back up with File ▸ Back Up Library….",
+            ));
+        }
+        // previews are large (≤ 2560 px, f32): keep few in a 32-bit address space
+        session.media.preview_capacity = 3;
+        // nothing is saved while the stored library couldn't be read
+        let frozen = Rc::new(Cell::new(read_failed));
+        let mut app = LccApp::new(session, services(originals.clone(), backend.clone(), files.clone(), frozen.clone(), cc.egui_ctx.clone()))
+            .with_chinese_font(chinese_font);
+        // The page's control channel ([`request`]).
+        let (control_tx, control_rx) = std::sync::mpsc::channel();
+        CONTROL.with(|c| *c.borrow_mut() = Some(control_tx));
+        app = app.with_control(control_rx);
+        let ui_written = files.get("ui.json").unwrap_or_default();
+        if let Ok(ui) = serde_json::from_slice::<UiState>(&ui_written) {
+            app.ui = ui;
+        }
+        app.ui = app.ui.sanitized();
+        app.library_problem = problem;
+        let n = opts.workers.unwrap_or_else(|| {
+            let cores = window().map_or(1, |w| w.navigator().hardware_concurrency() as usize);
+            cores.saturating_sub(1).clamp(1, 4)
+        });
+        let cache = app.session.media.rendered.clone();
+        let workers = (n > 0).then(|| {
+            Workers::start(
+                n,
+                backend.as_ref().map_or("memory", |b| b.kind()),
+                backend.clone(),
+                index,
+                &cache,
+                app.session.cache_bytes(),
+                cc.egui_ctx.clone(),
+            )
+        });
+        if let Some(w) = &workers {
+            app.renderer.set_offload(Box::new(w.clone()));
+        }
+        log::info!("app: {n} render workers");
+        CTX.with(|c| *c.borrow_mut() = Some(cc.egui_ctx.clone()));
+        let origin = lcc_ui_egui::now_ms() - perf_now();
+        WebApp {
+            app,
+            originals,
+            files,
+            backend,
+            workers,
+            flushing: Rc::new(Cell::new(false)),
+            flush_failed_at: Rc::new(Cell::new(0.0)),
+            frozen,
+            lib_dir,
+            bench: opts.bench.then(|| Bench::new(origin)),
+            first_frame_logged: false,
+            title: String::new(),
+            last_save: 0.0,
+            ui_written,
+        }
+    }
+
+    fn import_dropped(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        // a dialog is on screen (the card said so while the files hovered): nothing is read or imported
+        // (files read from an earlier drop still finish below)
+        if !dropped.is_empty() && self.app.ui.dialog.is_some() {
+            self.app.toast(ctx, lcc_ui_egui::i18n::tr("Close the open dialog, then drop the files again"));
+            return;
+        }
+        for f in dropped {
+            let (originals, backend, ctx) = (self.originals.clone(), self.backend.clone(), ctx.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                let name = f.path().to_string_lossy().to_string();
+                match f.bytes_async().await {
+                    Ok(bytes) => store_file(originals, backend, name, bytes, ctx).await,
+                    Err(e) => notice(lcc_ui_egui::i18n::dropped_file_unreadable(&name, &e.to_string())),
+                }
+            });
+        }
+        let paths = self.originals.take_pending();
+        if !paths.is_empty() {
+            match self.app.run("library.import", json!({"paths": paths})) {
+                // what the import did, not what was submitted: duplicates and unsupported files add nothing,
+                // a drop that only finds duplicates says nothing (as the desktop import's toast does when it
+                // shows where they are), and one whose files could not be read says so
+                Ok(report) => {
+                    if let Some(notice) = lcc_ui_egui::i18n::dropped_photos_outcome(&report) {
+                        self.app.toast(ctx, notice);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("import: {e}");
+                    self.app.toast(ctx, lcc_ui_egui::i18n::dropped_import_failed(&e));
+                }
+            }
+        }
+    }
+
+    /// Load originals the main thread asked for (and the active photo's, ahead of time).
+    fn load_originals(&mut self, ctx: &egui::Context) {
+        if let Some(id) = self.app.session.selection.active
+            && let Some(Source::File { path }) = self.app.session.catalog.photo(id).map(|p| &p.source)
+            && !self.originals.contains(path)
+        {
+            self.originals.prefetch(path);
+        }
+        let Some(b) = &self.backend else { return };
+        for hash in self.originals.take_wanted() {
+            let (b, originals, ctx) = (b.clone(), self.originals.clone(), ctx.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                match b.read(&storage_key(&hash)).await {
+                    Ok(Some(bytes)) => {
+                        originals.insert(&hash, Arc::from(bytes));
+                        ctx.request_repaint();
+                    }
+                    Ok(None) => {
+                        log::warn!("original {hash} is not in browser storage");
+                        originals.load_failed(&hash);
+                    }
+                    Err(e) => {
+                        log::warn!("loading original {hash}: {e}");
+                        originals.load_failed(&hash);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Save view state, UI prefs and the thumbnail index now and then; flush dirty files.
+    fn save(&mut self) {
+        if self.frozen.get() {
+            return;
+        }
+        let now = perf_now();
+        if now - self.last_save >= SAVE_EVERY_MS {
+            self.last_save = now;
+            self.app.session.save_view();
+            if let Ok(ui) = serde_json::to_vec_pretty(&self.app.ui)
+                && ui != self.ui_written
+            {
+                self.files.write("ui.json", &ui);
+                self.ui_written = ui;
+            }
+            if let (Some(w), Some(b)) = (&self.workers, &self.backend)
+                && let Some(index) = w.take_index_if_dirty()
+            {
+                let b = b.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(e) = b.write(THUMB_INDEX, &index).await {
+                        log::warn!("saving the thumbnail index: {e}");
+                    }
+                });
+            }
+        }
+        // after a failure, retry every couple of seconds rather than every frame
+        let backing_off = self.files.error().is_some() && now - self.flush_failed_at.get() < SAVE_RETRY_MS;
+        if let Some(b) = &self.backend
+            && self.files.is_dirty()
+            && !self.flushing.get()
+            && !backing_off
+        {
+            self.flushing.set(true);
+            let (files, dir, flushing, failed_at) = (self.files.clone(), self.lib_dir.clone(), self.flushing.clone(), self.flush_failed_at.clone());
+            wasm_bindgen_futures::spawn_local(flush(files, b.clone(), dir, flushing, failed_at));
+        }
+    }
+}
+
+type Reply = (js_sys::Function, js_sys::Function);
+
+thread_local! {
+    /// Commands from JavaScript ([`command`]), run on the next frame.
+    static INBOX: std::cell::RefCell<Vec<(String, String, Reply)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CTX: std::cell::RefCell<Option<egui::Context>> = const { std::cell::RefCell::new(None) };
+    /// The control channel for [`request`], and the replies its callers still wait for.
+    static CONTROL: std::cell::RefCell<Option<std::sync::mpsc::Sender<ControlRequest>>> = const { std::cell::RefCell::new(None) };
+    static WAITING: std::cell::RefCell<Vec<(std::sync::mpsc::Receiver<serde_json::Value>, Reply)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run a command by id from JavaScript (automation, tests): `await command("library.info", "{}")`
+/// resolves to the result as JSON text, or rejects with the error. Besides every engine/UI
+/// command, `web.stats` reports the browser host's state (storage, workers, originals in memory).
+#[wasm_bindgen]
+pub fn command(id: String, params: String) -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, reject| {
+        INBOX.with(|q| q.borrow_mut().push((id.clone(), params.clone(), (resolve, reject))));
+        CTX.with(|c| c.borrow().as_ref().map(|c| c.request_repaint()));
+    })
+}
+
+/// Call a control method from JavaScript (`docs/control-protocol.md`, the methods the desktop control
+/// server and MCP use): `await request("ui.inspect", {})` resolves to the method's `result` and
+/// rejects with an `Error` carrying its message. `params` is an object, or JSON text as for
+/// [`command`]; anything else rejects and runs nothing. VectorCraft's and PhotoCraft's pages take the
+/// same calls, so one agent or host app can drive them all.
+#[wasm_bindgen]
+pub fn request(method: String, params: JsValue) -> js_sys::Promise {
+    // Params that have no JSON (a cyclic object, a function, a throwing `toJSON`) reject: as `{}` they
+    // would run the method with its defaults.
+    let text = if params.is_undefined() || params.is_null() {
+        Ok(String::new())
+    } else if let Some(s) = params.as_string() {
+        Ok(s)
+    } else {
+        js_sys::JSON::stringify(&params)
+            .ok()
+            .and_then(|s| s.as_string())
+            .ok_or_else(|| "params are not JSON (a cyclic object or a function?)".to_string())
+    };
+    js_sys::Promise::new(&mut |resolve, reject| {
+        let sent = text.clone().and_then(|text| crate::automation::params(&text)).map_err(|e| format!("{method}: {e}")).and_then(|params| {
+            let (req, rx) = ControlRequest::new(method.clone(), params);
+            let sent = CONTROL.with(|c| c.borrow().as_ref().is_some_and(|tx| tx.send(req).is_ok()));
+            if sent { Ok(rx) } else { Err("the app is not running yet".to_string()) }
+        });
+        match sent {
+            Ok(rx) => WAITING.with(|w| w.borrow_mut().push((rx, (resolve, reject)))),
+            Err(e) => {
+                let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new(&e));
+            }
+        }
+        CTX.with(|c| c.borrow().as_ref().map(|c| c.request_repaint()));
+    })
+}
+
+/// Settle the promises of [`request`]s the app has answered (every frame).
+fn settle_requests() {
+    WAITING.with(|w| {
+        w.borrow_mut().retain(|(rx, (resolve, reject))| match rx.try_recv() {
+            Ok(v) => {
+                if v.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                    let result = v.get("result").map_or(JsValue::NULL, |r| js_sys::JSON::parse(&r.to_string()).unwrap_or(JsValue::NULL));
+                    let _ = resolve.call1(&JsValue::NULL, &result);
+                } else {
+                    let msg = v.get("error").and_then(serde_json::Value::as_str).unwrap_or("error");
+                    let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new(msg));
+                }
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                let _ = reject.call1(&JsValue::NULL, &js_sys::Error::new("request dropped"));
+                false
+            }
+        });
+    });
+}
+
+impl WebApp {
+    fn web_stats(&self) -> serde_json::Value {
+        let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
+        let (orig_n, orig_bytes) = self.originals.usage();
+        json!({
+            "storage": self.backend.as_ref().map_or("memory", |b| b.kind()),
+            "library": self.lib_dir,
+            "dirty": self.files.is_dirty(),
+            "flushing": self.flushing.get(),
+            "saveError": self.files.error(),
+            "workers": {"alive": alive, "ready": ready, "remoteJobs": remote, "inlineJobs": inline},
+            "originalsInMemory": orig_n,
+            "originalBytesInMemory": orig_bytes,
+            "renderQueue": self.app.renderer.queued(),
+            "rendersInFlight": self.app.renderer.in_flight(),
+            "thumbTextures": self.app.renderer.thumb_textures(),
+        })
+    }
+
+    fn run_inbox(&mut self) {
+        let inbox = INBOX.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        for (id, params, (resolve, reject)) in inbox {
+            let r = match crate::automation::params(&params) {
+                Err(e) => Err(format!("{id}: {e}")),
+                Ok(_) if id == "web.stats" => Ok(self.web_stats()),
+                Ok(params) => self.app.run(&id, params),
+            };
+            let _ = match r {
+                Ok(v) => resolve.call1(&JsValue::NULL, &v.to_string().into()),
+                Err(e) => reject.call1(&JsValue::NULL, &e.into()),
+            };
+        }
+    }
+}
+
+impl eframe::App for WebApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        for text in safety::take_notices() {
+            let now = ctx.input(|i| i.time);
+            self.app.ui.show_toast((text, now + NOTICE_SECS, None));
+        }
+        self.run_inbox();
+        settle_requests();
+        self.import_dropped(ctx);
+        self.load_originals(ctx);
+        if let Some(w) = &self.workers {
+            // `library.preferences ▸ cacheMb` is read by the session; the worker index prunes on
+            // its own thread, so it gets the budget every frame and applies it on the next store.
+            w.set_budget(self.app.session.cache_bytes());
+        }
+        self.app.logic(ctx);
+        // Replies the app sent just now (its control requests run in `logic`).
+        settle_requests();
+        self.save();
+        if let Some(b) = self.bench.as_mut()
+            && let Some(report) = b.step(&mut self.app)
+        {
+            log::info!("app-bench {report}");
+            if let Some((alive, ready, remote, inline)) = self.workers.as_ref().map(Workers::stats) {
+                log::info!("app-workers {{\"alive\":{alive},\"ready\":{ready},\"remote_jobs\":{remote},\"inline_jobs\":{inline}}}");
+            }
+            set_status(&format!("bench: {report}"));
+            self.bench = None;
+        }
+        if self.bench.is_some() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.app.raw_input_hook(raw);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.app.ui(ui);
+        // eframe's web runner ignores `ViewportCommand::Title`: name the open photo in the page title
+        let title = self.app.page_title(self.files.is_dirty() || self.flushing.get());
+        if title != self.title
+            && let Some(doc) = window().and_then(|w| w.document())
+        {
+            doc.set_title(&title);
+            self.title = title;
+        }
+        if !self.first_frame_logged && !self.app.widgets.is_empty() {
+            self.first_frame_logged = true;
+            log::info!("app first UI frame at {:.0} ms after navigation start", perf_now());
+        }
+    }
+}
+
+/// "Auto" follows the browser's languages (issue #2085): the first of `navigator.languages` (else
+/// `navigator.language`) that the app ships becomes the UI's default. Every step is fallible
+/// (as in [`crate::safety::acquire_tab_lock`]): without a usable navigator Auto stays English,
+/// as before.
+fn install_browser_language() {
+    let Ok(navigator) = js_sys::Reflect::get(&js_sys::global(), &"navigator".into()) else { return };
+    let mut tags: Vec<String> = Vec::new();
+    if let Ok(languages) = js_sys::Reflect::get(&navigator, &"languages".into())
+        && let Some(languages) = languages.dyn_ref::<js_sys::Array>()
+    {
+        for tag in languages.iter() {
+            if let Some(tag) = tag.as_string() {
+                tags.push(tag);
+            }
+        }
+    }
+    if tags.is_empty()
+        && let Ok(language) = js_sys::Reflect::get(&navigator, &"language".into())
+        && let Some(language) = language.as_string()
+    {
+        tags.push(language);
+    }
+    if let Some(language) = lcc_ui_egui::i18n::locale_from_tags(&tags) {
+        lcc_ui_egui::i18n::set_default_language(language);
+        log::info!("app: default language {language:?} from the browser's languages");
+    }
+}
+
+/// Start the app with the separately fetched Simplified Chinese font (empty in font-free builds).
+#[wasm_bindgen]
+pub fn start(chinese_font: Vec<u8>) {
+    eframe::WebLogger::init(log::LevelFilter::Info).ok();
+    safety::install_panic_hook();
+    install_browser_language();
+    log::info!("app: wasm instantiated at {:.0} ms", perf_now());
+    // index.html is static: the page title and loading text come from the brand
+    if let Some(doc) = window().and_then(|w| w.document()) {
+        doc.set_title(lcc_brand::DISPLAY_NAME);
+        if let Some(el) = doc.get_element_by_id("app_loading") {
+            el.set_text_content(Some(&format!("Loading {}…", lcc_brand::DISPLAY_NAME)));
+        }
+    }
+    if chinese_font.is_empty() {
+        log::warn!("app: no Simplified Chinese font supplied; Chinese-only glyphs will show as boxes");
+    }
+    let opts = Options::from_url();
+    wasm_bindgen_futures::spawn_local(async move {
+        // one tab per library: two would each keep their own copy and overwrite each other's saves
+        if opts.store != "memory" && safety::acquire_tab_lock().await == Some(false) {
+            safety::show_blocking(&lcc_brand::fill(
+                "{app} is already open in another tab or window of this browser.\n\n\
+                 Switch to that tab, or close it and reload this page. (Two tabs would overwrite each other's changes.)",
+            ));
+            return;
+        }
+        let Some(canvas) = window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("app_canvas"))
+            .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        else {
+            log::error!("missing <canvas id=\"app_canvas\">");
+            return;
+        };
+        let boot = boot(opts).await;
+        let runner = eframe::WebRunner::new();
+        let r = runner.start(canvas, eframe::WebOptions::default(), Box::new(move |cc| Ok(Box::new(WebApp::new(cc, boot, chinese_font))))).await;
+        match r {
+            Ok(()) => {
+                if let Some(el) = window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("app_loading")) {
+                    el.remove();
+                }
+            }
+            Err(e) => {
+                log::error!("{} failed to start: {e:?}", lcc_brand::DISPLAY_NAME);
+                set_status(&format!("{} failed to start: {e:?}", lcc_brand::DISPLAY_NAME));
+            }
+        }
+    });
+}

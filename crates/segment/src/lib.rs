@@ -1,0 +1,370 @@
+//! SAM 3 (Segment Anything with Concepts, Meta, 2025) inference in pure Rust on candle.
+//!
+//! - **Point prompts** ([`Sam3::segment_clicks`]): positive and negative clicks select one
+//!   object, via SAM 3's interactive (SAM 2 style) prompt encoder and mask decoder.
+//! - **Text prompts** ([`Sam3::segment_text`]): a noun phrase ("the red car", "sky") selects
+//!   every instance of that concept, via the CLIP text encoder and the DETR detector.
+//!
+//! The expensive part, the 32-layer ViT over the 1008 × 1008 input, runs once per image
+//! ([`Sam3::encode`]); each click or prompt then reuses the [`Encoded`] features.
+//!
+//! On macOS the model runs on the GPU through Metal; elsewhere (for now) on the CPU. The
+//! weights are not part of the app: they are the `facebook/sam3` checkpoint (SAM License),
+//! read from a directory the user downloads them to ([`Sam3::load`]).
+//!
+//! Ported from the Hugging Face `transformers` implementation (Apache-2.0); see `NOTICE`.
+//! This crate is therefore licensed under the Apache License 2.0 only (not the MIT option of
+//! the rest of the app). No UI dependencies (L3).
+//!
+//! [`fetch`] downloads the model, only when the user asks for it (from configurable mirrors,
+//! verified before use). Nothing in the app requires the model: without it, AI masks report
+//! that it isn't installed and everything else works.
+//!
+//! [`owl`] runs OWLv2 (`google/owlv2-base-patch16-ensemble`, Apache-2.0), an open-vocabulary
+//! detector: with SAM 2.1's box prompts it gives Describe without SAM 3 ([`describe`]).
+//!
+//! Modified work (Apache License 2.0, §4(b)): ported by the project contributors in 2026 from
+//! the Python/PyTorch SAM 3 and OWLv2 code of Hugging Face Transformers (`src/transformers/models/sam3`, `sam3_tracker` and `owlv2`), Copyright The HuggingFace
+//! Team, Meta Platforms, Inc. and Google; translated to Rust on candle and restructured. See NOTICE.
+#![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod birefnet;
+#[cfg(not(target_arch = "wasm32"))]
+mod clip;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod concept;
+#[cfg(not(target_arch = "wasm32"))]
+mod cpu;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod depth;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod describe;
+#[cfg(not(target_arch = "wasm32"))]
+mod detector;
+#[cfg(not(target_arch = "wasm32"))]
+mod dino;
+#[cfg(not(target_arch = "wasm32"))]
+mod feat;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
+mod grid;
+#[cfg(not(target_arch = "wasm32"))]
+mod hiera;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod identity;
+pub mod mask;
+/// Matte refinement on coverage grids (People masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod matte;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod models;
+#[cfg(not(target_arch = "wasm32"))]
+mod neck;
+#[cfg(not(target_arch = "wasm32"))]
+mod nn;
+/// OWLv2, an open-vocabulary detector: with SAM 2.1's box prompts it gives Describe without SAM 3 ([`describe`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod owl;
+/// People masks from MediaPipe's models, run by `lcc-tflite`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod people;
+/// MediaPipe's pre- and post-processing (faces, landmarks), for the eye finder.
+#[cfg(not(target_arch = "wasm32"))]
+pub use lcc_tflite::mediapipe;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod remote;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2;
+#[cfg(not(target_arch = "wasm32"))]
+mod sam2_kernels;
+/// Scene understanding: EoMT-S COCO panoptic segmentation (Sky, People, Landscape masks).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scene;
+pub mod tokenizer;
+#[cfg(not(target_arch = "wasm32"))]
+mod tracker;
+#[cfg(not(target_arch = "wasm32"))]
+mod vit;
+#[cfg(not(target_arch = "wasm32"))]
+mod weights;
+
+use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+use candle_core::{DType, Device, Tensor};
+#[cfg(not(target_arch = "wasm32"))]
+use candle_nn::VarBuilder;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use owl::{Owl, OwlEncoded, is_owl_dir};
+#[cfg(not(target_arch = "wasm32"))]
+pub use sam2::{SAM2_INPUT, SAM2_MASK_SIDE, Sam2, Sam2Encoded, is_sam2_dir};
+#[cfg(not(target_arch = "wasm32"))]
+pub use tracker::{Click, Decoded};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("SAM 3 model: {0}")]
+    Model(String),
+    #[error("SAM 3 model files not found in {0} (expected model.safetensors, vocab.json, merges.txt)")]
+    Missing(PathBuf),
+    /// An error that names its model itself (the depth model).
+    #[error("{0}")]
+    Message(String),
+    #[error("SAM 2 model: {0}")]
+    Sam2(String),
+    #[error("SAM 2 model files not found in {0} (expected model.safetensors and config.json)")]
+    Sam2Missing(PathBuf),
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    Candle(#[from] candle_core::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Side of the square model input.
+pub const INPUT: usize = 1008;
+/// Most clicks one Object selection may carry (the engine's `MAX_CLICKS`).
+pub const MAX_CLICKS: usize = 64;
+/// Side of the low-resolution masks the model predicts.
+pub const MASK_SIDE: usize = 288;
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = assert!(MASK_SIDE == tracker::LOW_RES && INPUT == vit::IMAGE);
+
+/// The files of a model directory.
+pub const WEIGHTS_FILE: &str = "model.safetensors";
+
+/// Whether `dir` holds a usable checkpoint.
+pub fn is_model_dir(dir: &Path) -> bool {
+    dir.join(WEIGHTS_FILE).is_file() && dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Whether [`best_device`] can be a GPU in this build (Metal on macOS). Where it can, a caller that
+/// sees the model fail there can load it again with [`Sam3::load_cpu`].
+pub const GPU_BUILD: bool = cfg!(target_os = "macos");
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The best device here: Metal on macOS (when a GPU is available), else the CPU.
+pub fn best_device() -> Device {
+    #[cfg(target_os = "macos")]
+    if let Ok(d) = Device::new_metal(0) {
+        return d;
+    }
+    Device::Cpu
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// A loaded model. The vision backbone loads with it; the point and text heads load on first use.
+pub struct Sam3 {
+    dir: PathBuf,
+    device: Device,
+    weights: Arc<weights::Weights>,
+    backbone: vit::Vit,
+    tracker_neck: Option<neck::Neck>,
+    tracker: Option<tracker::Tracker>,
+    detector: Option<detector::Detector>,
+    tokenizer: Option<tokenizer::Tokenizer>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// An image run through the backbone, with the head-specific features computed on demand.
+pub struct Encoded {
+    backbone: Tensor,
+    tracker: Option<tracker::Features>,
+    detector: Option<detector::Features>,
+}
+
+/// A predicted mask: `MASK_SIDE²` logits over the model's square input (which the image was
+/// stretched to), and a confidence 0..1.
+#[derive(Clone, Debug)]
+pub struct Prediction {
+    pub logits: Vec<f32>,
+    pub score: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Sam3 {
+    /// Load from a directory holding `model.safetensors` (the `facebook/sam3` checkpoint in
+    /// Hugging Face format), `vocab.json` and `merges.txt`.
+    pub fn load(dir: &Path) -> Result<Self> {
+        Self::load_on(dir, best_device())
+    }
+
+    /// [`Sam3::load`] on the CPU, whatever GPU there is.
+    pub fn load_cpu(dir: &Path) -> Result<Self> {
+        Self::load_on(dir, Device::Cpu)
+    }
+
+    pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
+        if !is_model_dir(dir) {
+            return Err(Error::Missing(dir.to_path_buf()));
+        }
+        let weights = weights::Weights::open(&dir.join(WEIGHTS_FILE))?;
+        hugging_face_format(&weights)?;
+        let backbone = vit::Vit::new(Self::vb(&weights, &device).pp("detector_model.vision_encoder.backbone"))?;
+        Ok(Self { dir: dir.to_path_buf(), device, weights, backbone, tracker_neck: None, tracker: None, detector: None, tokenizer: None })
+    }
+
+    fn vb<'a>(w: &Arc<weights::Weights>, device: &Device) -> VarBuilder<'a> {
+        VarBuilder::from_backend(Box::new(weights::Backend(w.clone())), DType::F32, device.clone())
+    }
+
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// Run the backbone on an RGB image (8-bit, row-major, `w × h`), stretched to the square
+    /// input like the reference preprocessing.
+    pub fn encode(&self, rgb: &[u8], w: usize, h: usize) -> Result<Encoded> {
+        let pixels = mask::preprocess(rgb, w, h, INPUT)?;
+        let pixels = Tensor::from_vec(pixels, (1, 3, INPUT, INPUT), &self.device)?;
+        self.encode_pixels(&pixels)
+    }
+
+    /// Run the backbone on preprocessed pixels `[1, 3, 1008, 1008]` (−1..1).
+    pub fn encode_pixels(&self, pixels: &Tensor) -> Result<Encoded> {
+        Ok(Encoded { backbone: self.backbone.forward(&pixels.to_device(&self.device)?)?, tracker: None, detector: None })
+    }
+
+    fn tracker_parts(&mut self) -> Result<(&neck::Neck, &tracker::Tracker)> {
+        if self.tracker_neck.is_none() {
+            self.tracker_neck = Some(neck::Neck::new(Self::vb(&self.weights, &self.device).pp("tracker_neck"))?);
+        }
+        if self.tracker.is_none() {
+            self.tracker = Some(tracker::Tracker::new(Self::vb(&self.weights, &self.device).pp("tracker_model"))?);
+        }
+        match (&self.tracker_neck, &self.tracker) {
+            (Some(n), Some(t)) => Ok((n, t)),
+            _ => Err(Error::Model("tracker failed to load".into())),
+        }
+    }
+
+    /// Compute the click decoder's features for `enc` now (so the first click is fast).
+    pub fn prepare_clicks(&mut self, enc: &mut Encoded) -> Result<()> {
+        let (neck, tracker) = self.tracker_parts()?;
+        if enc.tracker.is_none() {
+            let levels = neck.forward(&enc.backbone, 3)?;
+            enc.tracker = Some(tracker.features(&levels)?);
+        }
+        Ok(())
+    }
+
+    /// Segment one object from clicks (positions normalized to the image, 0..1).
+    pub fn segment_clicks(&mut self, enc: &mut Encoded, clicks: &[Click]) -> Result<Prediction> {
+        if clicks.is_empty() {
+            return Err(Error::Model("no clicks".into()));
+        }
+        // the prompt grows with every click: the editor takes at most this many (the engine's `MAX_CLICKS`)
+        if clicks.len() > MAX_CLICKS {
+            return Err(Error::Model(format!("at most {MAX_CLICKS} clicks, not {}", clicks.len())));
+        }
+        let (neck, tracker) = self.tracker_parts()?;
+        if enc.tracker.is_none() {
+            let levels = neck.forward(&enc.backbone, 3)?;
+            enc.tracker = Some(tracker.features(&levels)?);
+        }
+        let f = enc.tracker.as_ref().ok_or_else(|| Error::Model("tracker features".into()))?;
+        // one click: SAM's three alternatives, best by predicted IoU; more: the single mask
+        let p = tracker.predict(f, clicks, clicks.len() == 1)?;
+        Ok(Prediction { logits: p.logits, score: p.iou * sigmoid(p.object_score) })
+    }
+
+    fn detector_parts(&mut self) -> Result<(&detector::Detector, &tokenizer::Tokenizer)> {
+        if self.detector.is_none() {
+            self.detector = Some(detector::Detector::new(Self::vb(&self.weights, &self.device).pp("detector_model"))?);
+        }
+        if self.tokenizer.is_none() {
+            self.tokenizer = Some(tokenizer::Tokenizer::load(&self.dir)?);
+        }
+        match (&self.detector, &self.tokenizer) {
+            (Some(d), Some(t)) => Ok((d, t)),
+            _ => Err(Error::Model("detector failed to load".into())),
+        }
+    }
+
+    /// Segment every instance of the concept `text` names. Instances scoring above
+    /// `threshold` (0..1, 0.5 is the reference default) are merged into one mask; `None` when
+    /// nothing matches.
+    pub fn segment_text(&mut self, enc: &mut Encoded, text: &str, threshold: f32) -> Result<Option<Prediction>> {
+        let (det, tok) = self.detector_parts()?;
+        if enc.detector.is_none() {
+            enc.detector = Some(det.features(&enc.backbone)?);
+        }
+        let f = enc.detector.as_ref().ok_or_else(|| Error::Model("detector features".into()))?;
+        let (ids, valid) = tok.encode(text);
+        let out = det.predict(f, &ids, &valid)?;
+        Ok(detector::merge(&out, threshold))
+    }
+
+    /// Raw detector outputs for `text` (tests and tools).
+    pub fn detect(&mut self, enc: &mut Encoded, text: &str) -> Result<detector::Output> {
+        let (det, tok) = self.detector_parts()?;
+        if enc.detector.is_none() {
+            enc.detector = Some(det.features(&enc.backbone)?);
+        }
+        let f = enc.detector.as_ref().ok_or_else(|| Error::Model("detector features".into()))?;
+        let (ids, valid) = tok.encode(text);
+        det.predict(f, &ids, &valid)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Encoded {
+    /// The backbone output `[1, 1024, 72, 72]` (tests).
+    pub fn backbone(&self) -> &Tensor {
+        &self.backbone
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Meta's original checkpoint (`sam3.pt`, or a `sam3.safetensors` conversion of it as on community
+/// mirrors) names its tensors differently: say so, rather than name the first tensor it lacks.
+fn hugging_face_format(weights: &weights::Weights) -> Result<()> {
+    let first = "detector_model.vision_encoder.backbone.embeddings.patch_embeddings.projection.weight";
+    if !weights.contains(first) && (weights.has_prefix("detector.backbone.") || weights.has_prefix("tracker.")) {
+        return Err(Error::Model(format!(
+            "{WEIGHTS_FILE} is Meta's original checkpoint (sam3.pt, or a sam3.safetensors conversion of it as on community mirrors); \
+             the app needs the Hugging Face format: {WEIGHTS_FILE} from facebook/sam3"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use detector::Output as DetectorOutput;
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Wait for queued GPU work to finish (benchmarks).
+pub fn sync(model: &Sam3) -> Result<()> {
+    Ok(model.device.synchronize()?)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meta_original_checkpoint_is_named_as_such() {
+        // a community mirror's `sam3.safetensors` (Meta's key names, C64 RoPE tables) saved as model.safetensors
+        let dir = std::env::temp_dir().join(format!("lc-sam3-original-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = r#"{"detector.backbone.vision_backbone.trunk.blocks.0.attn.freqs_cis":{"dtype":"C64","shape":[2],"data_offsets":[0,16]},"tracker.sam_mask_decoder.iou_token.weight":{"dtype":"F32","shape":[2],"data_offsets":[16,24]}}"#;
+        std::fs::rename(weights::tests::write("original", header, 24), dir.join(WEIGHTS_FILE)).unwrap();
+        std::fs::write(dir.join("vocab.json"), "{}").unwrap();
+        std::fs::write(dir.join("merges.txt"), "").unwrap();
+        let err = Sam3::load_cpu(&dir).err().unwrap().to_string();
+        assert!(err.contains("Meta's original checkpoint") && err.contains("facebook/sam3"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

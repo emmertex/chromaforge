@@ -1,0 +1,270 @@
+//! People: a card per person named on faces (read from XMP): a close-up of their face and how many photos they are in
+//! (a small number on the picture). A click opens that person's page (`person.rs`): only their cropped faces, and the
+//! faces that look like them. Below the people, the faces nobody has named yet (`unnamed.rs`), to be named a group at a
+//! time.
+//!
+//! The thumbnail-size slider in the bottom bar sizes the faces here too (with its own smaller and larger limits), and
+//! every face is cut from the same kind of box (the detector's, once the scan has looked at it), so faces are shown
+//! equally close. Only the rows on screen ask for a face render (the engine caches them, memory and disk).
+
+use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
+use lcc_catalog::Person;
+use serde_json::json;
+
+use crate::LccApp;
+use crate::theme::Tokens;
+use crate::widgets::register;
+
+const GAP: f32 = 14.0;
+pub(super) const PAD: f32 = 20.0;
+const HEADER_H: f32 = 44.0;
+/// The name under a card's picture.
+const NAME_H: f32 = 26.0;
+/// The unnamed-faces heading and its hints.
+const SECTION_H: f32 = 70.0;
+/// The search box at the right of the header (points wide).
+const SEARCH_W: f32 = 240.0;
+
+/// `thumb` (the thumbnail slider, 90 to 480) as a position between `low` and `high`.
+fn between(thumb: f32, low: f32, high: f32) -> f32 {
+    let f = (thumb - 90.0) / (480.0 - 90.0);
+    low + if f.is_finite() { f.clamp(0.0, 1.0) } else { 0.4 } * (high - low)
+}
+
+/// A person card's face picture (points) for the thumbnail slider's value.
+pub fn card_edge(thumb: f32) -> f32 {
+    between(thumb, 84.0, 260.0)
+}
+
+/// A face tile's picture (points), for the unnamed faces and a person's page.
+pub fn tile_edge(thumb: f32) -> f32 {
+    between(thumb, 56.0, 180.0)
+}
+
+/// How many `edge`-wide cells (with the gap between them) fit across `width`.
+pub(super) fn columns(width: f32, edge: f32) -> usize {
+    (((width - PAD * 2.0 + GAP) / (edge + GAP)).floor() as usize).max(1)
+}
+
+pub(super) const TILE_GAP: f32 = GAP;
+
+/// `text` shortened with "…" until it is no wider than `max_w` in `font` (measured, not guessed).
+pub(super) fn fit(painter: &egui::Painter, text: &str, font: egui::FontId, max_w: f32) -> String {
+    let width = |s: &str| painter.layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE).size().x;
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    (1..chars.len()).rev().map(|n| chars[..n].iter().collect::<String>() + "…").find(|s| width(s) <= max_w).unwrap_or_else(|| "…".to_string())
+}
+
+pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
+    if let Some(name) = app.ui.person_page.clone() {
+        return super::person::show(app, ui, &name);
+    }
+    let t = Tokens::get(ui.ctx());
+    let now = ui.input(|i| i.time);
+    let thumb = app.ui.thumb_size;
+    // what the view shows: its source (folder, collection, Missing Photos…) and the filter bar (issue #1131)
+    let scope = app.session.people_filter();
+    let people = app.caches.people(&app.session.catalog, &scope);
+    // the search box, at the right of the header: the cards below keep only the names that hold what is typed
+    // (case aside); emptied, every person is back
+    let query = app.ui.people_search.trim().to_lowercase();
+    let listed: Vec<&Person> = people.iter().filter(|p| query.is_empty() || p.name.to_lowercase().contains(&query)).collect();
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEADER_H), Sense::hover());
+    let search = Rect::from_min_size(pos2(head.right() - PAD - SEARCH_W, head.center().y - 13.0), vec2(SEARCH_W, 26.0));
+    let title =
+        ui.painter().text(pos2(head.left() + PAD, head.center().y), Align2::LEFT_CENTER, crate::i18n::tr("Named People"), t.semibold(15.0), t.text);
+    // the person page last left (a face opened from it, or its back button): one click returns to it, as long as it
+    // stays on the header's side of the search box
+    if let Some(last) = app.ui.last_person.clone().filter(|n| people.iter().any(|p| &p.name == n)) {
+        // its label plus the button's arrow and margins stay clear of the search box
+        let room = (search.left() - 66.0 - (title.right() + 14.0)).clamp(48.0, 224.0);
+        let label = fit(ui.painter(), &last, t.font(13.0), room);
+        let width = ui.painter().layout_no_wrap(label.clone(), t.font(13.0), Color32::WHITE).size().x + 44.0;
+        let r = Rect::from_min_size(pos2(title.right() + 14.0, head.center().y - 12.0), vec2(width, 24.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r));
+        let b = crate::widgets::arrow_button(&mut child, RichText::new(label).font(t.font(13.0)), crate::icons::Icon::ChevronRight, false);
+        register(ui.ctx(), "people:last", b.rect);
+        if b.on_hover_text(crate::i18n::tr("Back to this person")).clicked() {
+            let _ = app.run("view.person", json!({"name": last}));
+        }
+    }
+    // how many cards the search lets through (of all of them, while it narrows them)
+    let count_text = if query.is_empty() { people.len().to_string() } else { format!("{} / {}", listed.len(), people.len()) };
+    let count = ui.painter().text(pos2(search.left() - 16.0, head.center().y), Align2::RIGHT_CENTER, count_text, t.font(13.0), t.text_dim);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(search));
+    crate::text_field::TextField::singleline("field:peopleSearch", &mut app.ui.people_search)
+        .hint(crate::i18n::tr("Search People"))
+        .label(crate::i18n::tr("Search People"))
+        .width(SEARCH_W - 12.0)
+        .font(t.font(13.0))
+        .margin(egui::Margin::symmetric(8, 4))
+        .show(&mut child);
+    // faces the user ignored: one click brings them all back (one undo step)
+    let ignored = app.caches.ignored_faces(&app.session.catalog);
+    if !ignored.is_empty() {
+        let label = if ignored.len() == 1 { "Restore 1 ignored face".to_string() } else { format!("Restore {} ignored faces", ignored.len()) };
+        let w = ui.painter().layout_no_wrap(label.clone(), t.font(12.5), Color32::WHITE).size().x + 20.0;
+        let r = Rect::from_min_size(pos2(count.left() - 16.0 - w, head.center().y - 12.0), vec2(w, 24.0));
+        let b = ui.put(r, egui::Button::new(RichText::new(label).font(t.font(12.5))));
+        register(ui.ctx(), "people:restoreIgnored", b.rect);
+        if b.clicked() {
+            let list: Vec<serde_json::Value> = ignored.iter().map(|(photo, index)| json!({"photo": photo, "index": index})).collect();
+            let _ = app.run("faces.ignore", json!({"faces": list, "ignored": false}));
+        }
+    }
+    // until face recognition is set up: what it takes, and a button that does the next step
+    super::faces::setup_banner(app, ui);
+    // the filters narrowing the list (a date, a keyword…), removable here
+    let chips = lcc_engine::filter_chips(&app.session.filter, &app.session.catalog);
+    super::chips::show(app, ui, &chips);
+    // what is selected below, and the box to name it with
+    super::unnamed::naming_bar(app, ui);
+    let unnamed = super::unnamed::faces(app, now);
+    if people.is_empty() && unnamed.faces.is_empty() {
+        let (title, body) = if chips.is_empty() {
+            ("No people yet", "Face names written to XMP by Lightroom and other apps show up here, and faces found in your photos can be named.")
+        } else {
+            ("No named people in these photos", "Remove a filter above, or choose Clear all")
+        };
+        super::empty_message(ui, ui.available_rect_before_wrap(), title, body);
+        return;
+    }
+    let ppp = ui.ctx().pixels_per_point();
+    let active = app.session.filter.person.clone();
+    let (edge, tile) = (card_edge(thumb), tile_edge(thumb));
+    egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
+        let width = ui.available_width();
+        let cols = columns(width, edge);
+        let row_h = edge + NAME_H + GAP;
+        let rows = listed.len().div_ceil(cols);
+        let named_h = if listed.is_empty() { 40.0 } else { PAD + rows as f32 * row_h };
+        let (tile_cols, tile_row) = (columns(width, tile), tile + GAP);
+        let tile_rows = unnamed.faces.len().div_ceil(tile_cols);
+        let section_top = named_h + 6.0;
+        let (area, _) = ui.allocate_exact_size(vec2(width, section_top + SECTION_H + tile_rows as f32 * tile_row + PAD), Sense::hover());
+        let visible = |top: f32, rows: usize, row_h: f32| {
+            let first = ((viewport.top() - top) / row_h).floor().max(0.0) as usize;
+            let last = (((viewport.bottom() - top) / row_h).ceil().max(0.0) as usize).min(rows);
+            first..last
+        };
+        if listed.is_empty() {
+            // nothing to show where the cards go: because nobody is named yet, or because the search box holds a
+            // name no one has (the unnamed faces below stay)
+            let message = if query.is_empty() {
+                crate::i18n::tr("No named people yet. Name the faces below to start.").to_string()
+            } else {
+                crate::i18n::tr("No people match. Clear the search box to see everyone again.").to_string()
+            };
+            ui.painter().text(pos2(area.left() + PAD, area.top() + 24.0), Align2::LEFT_CENTER, message, t.font(13.0), t.text_dim);
+        }
+        let mut shown = 0;
+        for row in visible(PAD, rows, row_h) {
+            for col in 0..cols {
+                let Some(&person) = listed.get(row * cols + col) else { break };
+                shown += 1;
+                let min = area.min + vec2(PAD + col as f32 * (edge + GAP), PAD + row as f32 * row_h);
+                let selected = active.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(&person.name));
+                card(app, ui, person, Rect::from_min_size(min, vec2(edge, edge + NAME_H)), edge, ppp, selected);
+            }
+        }
+        // the faces nobody has named
+        let top = area.top() + section_top;
+        ui.painter().line_segment([pos2(area.left() + PAD, top), pos2(area.right() - PAD, top)], Stroke::new(1.0, t.button_border));
+        super::unnamed::section_header(app, ui, &unnamed, pos2(area.left() + PAD, top + 14.0), area.right() - PAD);
+        let grid_top = section_top + SECTION_H;
+        for row in visible(grid_top, tile_rows, tile_row) {
+            for col in 0..tile_cols {
+                let i = row * tile_cols + col;
+                let Some(face) = unnamed.faces.get(i) else { break };
+                shown += 1;
+                let min = area.min + vec2(PAD + col as f32 * (tile + GAP), grid_top + row as f32 * tile_row);
+                super::unnamed::tile(app, ui, &unnamed, i, Rect::from_min_size(min, vec2(tile, tile)), face, ppp);
+            }
+        }
+        // the picture cache keeps all of them (a fixed budget would evict and re-request the same few every frame)
+        app.renderer.want_variants(shown);
+    });
+}
+
+/// A person's number of photos as the card shows it on their picture: in full (a library from Lightroom passes 1 000
+/// quickly), so no line under the name has to repeat it.
+fn badge(count: usize) -> String {
+    count.to_string()
+}
+
+fn card(app: &mut LccApp, ui: &mut egui::Ui, person: &Person, r: Rect, edge: f32, ppp: f32, selected: bool) {
+    let t = Tokens::get(ui.ctx());
+    let face = Rect::from_min_size(r.min, vec2(edge, edge));
+    let resp = ui.interact(r, egui::Id::new(("person-card", &person.name)), Sense::click());
+    crate::widgets::announce(&resp, person.name.clone());
+    register(ui.ctx(), format!("person:{}", person.name), r);
+    let view = app.session.face_view(person.photo, person.face);
+    let p = ui.painter();
+    p.rect_filled(face, 3.0, t.canvas);
+    if let Some(job) = app.session.face_job(person.photo, view, (edge * ppp).ceil() as usize)
+        && let Some(tex) = app.renderer.variant(job)
+    {
+        p.image(tex.id(), face, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    // how many photos they are in, on the picture
+    let g = p.layout_no_wrap(badge(person.count), t.font(11.5), Color32::WHITE);
+    let pill = Rect::from_min_size(pos2(face.right() - g.size().x - 14.0, face.bottom() - g.size().y - 11.0), g.size() + vec2(10.0, 6.0));
+    p.rect_filled(pill, 4.0, Color32::from_black_alpha(175));
+    p.galley(pill.min + vec2(5.0, 3.0), g, Color32::WHITE);
+    if selected {
+        super::grid::selection_ring(p, &t, face, lcc_engine::SelectionState::Active);
+    } else if resp.hovered() {
+        p.rect_stroke(face, 3.0, Stroke::new(1.0, t.text_dim), StrokeKind::Outside);
+    }
+    // a long name must not run past the card
+    let name = fit(p, &person.name, t.semibold(13.0), edge);
+    p.text(pos2(r.left() + 2.0, face.bottom() + 14.0), Align2::LEFT_CENTER, name, t.semibold(13.0), t.text);
+    let resp = resp.on_hover_text(crate::i18n::tr_format!("{}: show their photos", person.name));
+    let full = person.name.clone();
+    crate::widgets::context_menu(&resp, |ui| {
+        let r = ui.button(crate::i18n::tr("Rename Person…"));
+        register(ui.ctx(), "personMenu:rename", r.rect);
+        if r.clicked() {
+            open_rename(app, &full);
+        }
+    });
+    if resp.clicked() {
+        let _ = app.run("view.person", json!({"name": person.name}));
+    }
+}
+
+/// The Rename Person dialog, prefilled with the name the card shows.
+pub(crate) fn open_rename(app: &mut LccApp, name: &str) {
+    app.ui.dialog = Some(crate::state::Dialog::RenamePerson { from: name.to_string(), to: name.to_string(), merge: false });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faces_follow_the_thumbnail_slider_within_their_own_limits() {
+        assert_eq!((card_edge(90.0), card_edge(480.0)), (84.0, 260.0));
+        assert_eq!((tile_edge(90.0), tile_edge(480.0)), (56.0, 180.0));
+        // between, growing with the slider; beyond its ends, held at the limits; nonsense, a middle size
+        assert!(card_edge(220.0) > card_edge(150.0) && tile_edge(300.0) > tile_edge(220.0));
+        assert_eq!((card_edge(-5.0), card_edge(10_000.0)), (84.0, 260.0));
+        assert!(card_edge(f32::NAN) > 84.0 && card_edge(f32::NAN) < 260.0);
+        // there is always at least one column, whatever the width
+        assert_eq!((columns(0.0, 260.0), columns(-50.0, 260.0), columns(f32::NAN, 100.0)), (1, 1, 1));
+        assert!(columns(1400.0, 84.0) > columns(1400.0, 260.0));
+    }
+
+    /// #3251: the number on a card's picture is the person's full count, past 999 too ("999+" said less than the line
+    /// under the name, now gone).
+    #[test]
+    fn a_cards_badge_shows_the_full_count() {
+        assert_eq!(
+            (badge(1), badge(999), badge(1000), badge(6110), badge(123_456)),
+            ("1".into(), "999".into(), "1000".into(), "6110".into(), "123456".into())
+        );
+    }
+}

@@ -1,0 +1,597 @@
+use super::*;
+
+/// A synthetic database in the lensfun format (made-up coefficients, not lensfun data).
+const DB: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<lensdatabase version="2">
+  <mount><name>Test Mount</name></mount>
+  <camera>
+    <maker>Testcam Corporation</maker>
+    <model>TC-1</model>
+    <mount>Test Mount</mount>
+    <cropfactor>1.5</cropfactor>
+  </camera>
+  <camera>
+    <maker>Testcam</maker>
+    <model>TC-FF</model>
+    <mount>Test Mount</mount>
+    <cropfactor>1</cropfactor>
+  </camera>
+  <lens>
+    <maker>Testcam</maker>
+    <model>Testcam 24-70mm f/2.8 &amp; Co</model>
+    <model lang="de">Testcam 24-70mm f/2.8 Zoom</model>
+    <mount>Test Mount</mount>
+    <cropfactor>1</cropfactor>
+    <calibration>
+      <distortion model="ptlens" focal="24" a="0.01" b="-0.04" c="0" />
+      <distortion model="poly3" focal="70" k1="0.01" />
+      <tca model="linear" focal="24" kr="1.0004" kb="0.9997" />
+      <tca model="poly3" focal="70" vr="1.0001" vb="0.9999" cr="0" cb="0" br="0.0001" bb="-0.0001" />
+      <vignetting model="pa" focal="24" aperture="2.8" distance="1000" k1="-0.6" k2="0.2" k3="-0.05" />
+      <vignetting model="pa" focal="24" aperture="8" distance="1000" k1="-0.2" k2="0" k3="0" />
+      <vignetting model="pa" focal="70" aperture="2.8" distance="1000" k1="-0.3" k2="0" k3="0" />
+    </calibration>
+  </lens>
+  <lens>
+    <maker>Testcam</maker>
+    <model>Testcam 50mm f/1.8</model>
+    <mount>Other Mount</mount>
+    <cropfactor>1</cropfactor>
+    <calibration>
+      <distortion model="poly5" focal="50" k1="-0.02" k2="0.0003" />
+    </calibration>
+  </lens>
+  <lens>
+    <maker>Fishco</maker>
+    <model>Fishco 8mm f/3.5 Fisheye</model>
+    <type>equisolid</type>
+    <cropfactor>1</cropfactor>
+    <calibration>
+      <distortion model="poly3" focal="8" k1="0.5" />
+    </calibration>
+  </lens>
+  <lens><maker>Broken</maker><model>Broken 1mm</model><calibration><distortion model="poly3" focal="nan" k1="1"/></calibration></lens>
+</lensdatabase>"#;
+
+fn db() -> LensDb {
+    LensDb::parse(DB).unwrap()
+}
+
+fn shot(focal: f64) -> Shot {
+    Shot { focal, aperture: Some(2.8), distance: None, crop_factor: Some(1.0), width: 6000.0, height: 4000.0 }
+}
+
+/// The DNG `WarpRectilinear` source position (the pipeline's formula, radial part).
+fn dng_source(wp: &EmbeddedWarp, ch: usize, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
+    let (cx, cy) = (wp.center.x * w, wp.center.y * h);
+    let m = wp.radius * w.max(h);
+    let (dx, dy) = ((x - cx) / m, (y - cy) / m);
+    let r2 = dx * dx + dy * dy;
+    let [k0, k1, k2, k3, ..] = wp.planes[ch];
+    let f = k0 + r2 * (k1 + r2 * (k2 + r2 * k3));
+    (cx + dx * f * m, cy + dy * f * m)
+}
+
+#[test]
+fn invalid_entries_are_skipped_and_valid_ones_load() {
+    let db = db();
+    assert!(!db.cameras.is_empty());
+    assert!(db.lenses.iter().all(|l| l.maker != "Broken"), "a lens without valid calibration is dropped");
+    let z = db.find_lens(Some("Testcam"), "Testcam 24-70mm f/2.8 & Co", None).expect("valid lens still loads");
+    assert!(!z.distortion.is_empty() && !z.tca.is_empty() && !z.vignetting.is_empty());
+}
+
+#[test]
+fn rejects_mismatched_xml_closing_tags() {
+    assert!(LensDb::parse("<lensdatabase><lens><maker>X</lensdatabase><model>L</model></lens>").is_err());
+}
+
+#[test]
+fn malformed_documents_are_errors_not_panics() {
+    assert!(LensDb::parse("").is_err());
+    assert!(LensDb::parse("<lensdatabase><lens><maker>").is_ok_and(|d| d.lenses.is_empty()));
+    assert!(LensDb::parse("<other/>").is_err());
+    let deep = "<a>".repeat(100);
+    assert_eq!(LensDb::parse(&deep), Err(Error::TooLarge));
+}
+
+#[test]
+fn finds_cameras_by_exif_strings() {
+    let db = db();
+    assert_eq!(db.find_camera("TESTCAM CORPORATION", "TC-1").unwrap().crop_factor, Some(1.5));
+    assert_eq!(db.find_camera("Testcam", "tc-ff").unwrap().crop_factor, Some(1.0));
+    assert!(db.find_camera("Testcam", "TC-2").is_none());
+    assert!(db.find_camera("Other", "TC-1").is_none());
+}
+
+#[test]
+fn finds_lenses_by_exif_model_with_or_without_the_maker() {
+    let db = db();
+    let cam = db.find_camera("Testcam", "TC-FF");
+    let l = db.find_lens(None, "24-70mm F2.8 Zoom", cam).unwrap();
+    assert_eq!(l.maker, "Testcam");
+    assert!(db.find_lens(Some("Testcam"), "Testcam 50mm F1.8", cam).is_some());
+    assert!(db.find_lens(None, "24-105mm F4", cam).is_none(), "focal lengths must agree");
+    assert!(db.find_lens(Some("Otherco"), "24-70mm f/2.8 Zoom", cam).is_none(), "lens maker must agree");
+    assert!(db.find_lens(None, "", cam).is_none());
+}
+
+#[test]
+fn lens_names_with_maker_designation_codes_match_exif_names_without_them() {
+    // Issue #671: lensfun names Tamron's 16-300mm "… Macro B016"; Sony A77 II EXIF reports the name
+    // without the maker's code. Its digits ("016" of "B016") must not fail the number match, and the
+    // long qualifier tail must not push the score below the match threshold.
+    let xml = r#"<lensdatabase>
+  <camera><maker>Sony</maker><model>ILCA-77M2</model><mount>Sony Alpha</mount><cropfactor>1.534</cropfactor></camera>
+  <lens><maker>Tamron</maker><model>Tamron 16-300mm f/3.5-6.3 Di II VC PZD Macro B016</model>
+    <mount>Sony Alpha</mount><cropfactor>1.534</cropfactor>
+    <calibration><distortion model="ptlens" focal="16" a="0.02" b="-0.07" c="0.03"/><distortion model="ptlens" focal="300" a="0" b="0.006" c="0"/></calibration></lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    let cam = db.find_camera("SONY", "ILCA-77M2");
+    let found = |mk: Option<&str>, lm: &str| db.find_lens(mk, lm, cam).map(|l| l.maker.clone());
+    assert_eq!(found(None, "16-300mm F3.5-6.3").as_deref(), Some("Tamron"), "short Sony A-mount name");
+    assert_eq!(found(None, "16-300mm F3.5-6.3 Di II VC PZD").as_deref(), Some("Tamron"), "without the code");
+    assert_eq!(found(Some("TAMRON"), "16-300mm F3.5-6.3 Di II VC PZD").as_deref(), Some("Tamron"));
+    assert_eq!(found(None, "Tamron 16-300mm f/3.5-6.3 Di II VC PZD Macro B016").as_deref(), Some("Tamron"), "the full name");
+    assert!(found(None, "16-300mm F4-5.6").is_none(), "apertures must agree");
+    assert!(found(None, "17-300mm F3.5-6.3").is_none(), "focal lengths must agree");
+}
+
+#[test]
+fn a_compacts_built_in_lens_wins_over_a_same_numbers_name_match_off_its_mount() {
+    // Issue #671: the Sony RX100 VII's lensfun profile is named "fixed lens"; EXIF reports only
+    // "9.0-72.0 mm f/2.8-4.5". A same-maker lens on another mount that shares the EXIF numbers ("72mm
+    // f/2.8") must not win the name match over the camera's own built-in lens.
+    let xml = r#"<lensdatabase>
+  <camera><maker>Sony</maker><model>DSC-RX100M7</model><mount>sonyRX100VI</mount><cropfactor>2.66</cropfactor></camera>
+  <lens><maker>Sony</maker><model>DSC-RX100 VI &amp; compatibles</model><model lang="en">fixed lens</model>
+    <mount>sonyRX100VI</mount><cropfactor>2.66</cropfactor>
+    <calibration><distortion model="ptlens" focal="9.0" a="0.037" b="-0.131" c="-0.005"/><distortion model="ptlens" focal="72.0" a="0" b="0.005" c="0"/></calibration></lens>
+  <lens><maker>Sony</maker><model>Sony 72mm f/2.8</model><mount>Sony E</mount>
+    <calibration><distortion model="poly3" focal="72" k1="0.01"/></calibration></lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    let cam = db.find_camera("SONY", "DSC-RX100M7");
+    let l = db.find_lens(Some("SONY"), "9.0-72.0 mm f/2.8-4.5", cam).unwrap();
+    assert_eq!(l.mounts, ["sonyRX100VI"]);
+    // without the camera the name match finds nothing (no profile is named like the spec)
+    assert!(db.find_lens(Some("SONY"), "9.0-72.0 mm f/2.8-4.5", None).is_none());
+}
+
+#[test]
+fn distortion_matches_the_model_within_half_a_pixel_on_a_grid() {
+    let db = db();
+    let lens = &db.lenses[0];
+    let (w, h) = (6000.0, 4000.0);
+    for focal in [24.0, 40.0, 70.0] {
+        let wp = lens.correction(&shot(focal)).unwrap().warp.unwrap();
+        // lensfun normalisation: r = 1 at half the shorter side (full frame, 3:2)
+        let n = h / 2.0;
+        let mut worst: f64 = 0.0;
+        for gy in 0..=20 {
+            for gx in 0..=30 {
+                let (x, y) = (gx as f64 * w / 30.0, gy as f64 * h / 20.0);
+                let (sx, sy) = dng_source(&wp, 1, x, y, w, h);
+                let (dx, dy) = ((x - w / 2.0) / n, (y - h / 2.0) / n);
+                let r = dx.hypot(dy);
+                let k = lens.distortion_ratio(focal, r);
+                let (ex, ey) = (w / 2.0 + dx * k * n, h / 2.0 + dy * k * n);
+                worst = worst.max((sx - ex).hypot(sy - ey));
+            }
+        }
+        assert!(worst < 0.5, "{focal} mm: {worst} px");
+    }
+}
+
+#[test]
+fn straight_lines_stay_straight_after_correction() {
+    // A synthetic barrel-distorted chart: the camera recorded straight scene lines at r_d = r_u·ratio(r_u).
+    // Correcting means: for each output point of a straight line, the warp fetches the recorded point, which must
+    // be that line's recorded (curved) image. So sample the curved recorded line by inverting the model, then
+    // check the warp sends straight output points onto it.
+    let db = db();
+    let lens = &db.lenses[0];
+    let (w, h) = (6000.0, 4000.0);
+    let wp = lens.correction(&shot(24.0)).unwrap().warp.unwrap();
+    let n = h / 2.0;
+    let y_line = 300.0; // a horizontal line near the top edge
+    let mut dev: f64 = 0.0;
+    for i in 0..=60 {
+        let x = i as f64 * w / 60.0;
+        let (sx, sy) = dng_source(&wp, 1, x, y_line, w, h);
+        // undo the recorded distortion of (sx, sy): find r_u with r_u·ratio(r_u) = r_d (bisection)
+        let (dx, dy) = ((sx - w / 2.0) / n, (sy - h / 2.0) / n);
+        let rd = dx.hypot(dy);
+        let (mut lo, mut hi) = (0.0, 3.0);
+        for _ in 0..80 {
+            let mid = (lo + hi) / 2.0;
+            if mid * lens.distortion_ratio(24.0, mid) < rd {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let s = if rd > 0.0 { lo / rd } else { 1.0 };
+        let uy = h / 2.0 + dy * s * n;
+        dev = dev.max((uy - y_line).abs());
+    }
+    assert!(dev < 0.5, "line bent by {dev} px");
+}
+
+#[test]
+fn tca_scales_red_and_blue_planes() {
+    let db = db();
+    let wp = db.lenses[0].correction(&shot(24.0)).unwrap().warp.unwrap();
+    let (w, h) = (6000.0, 4000.0);
+    let (rx, _) = dng_source(&wp, 0, w, h / 2.0, w, h);
+    let (gx, _) = dng_source(&wp, 1, w, h / 2.0, w, h);
+    let (bx, _) = dng_source(&wp, 2, w, h / 2.0, w, h);
+    assert!(((rx - w / 2.0) / (gx - w / 2.0) - 1.0004).abs() < 1e-5, "{rx} {gx}");
+    assert!(((bx - w / 2.0) / (gx - w / 2.0) - 0.9997).abs() < 1e-5, "{bx} {gx}");
+}
+
+#[test]
+fn vignetting_interpolates_in_aperture_and_focal() {
+    let db = db();
+    let l = &db.lenses[0];
+    let at = |f: f64, n: f64| l.vignetting_attenuation(f, Some(n), None, 1.0).unwrap();
+    assert!((at(24.0, 2.8) - 0.55).abs() < 1e-12);
+    assert!((at(24.0, 8.0) - 0.8).abs() < 1e-12);
+    let mid = at(24.0, 2.8 * 2f64.powf((8f64 / 2.8).log2() / 2.0));
+    assert!((mid - 0.675).abs() < 1e-9, "{mid}");
+    assert!((at(47.0, 2.8) - 0.625).abs() < 1e-9);
+    // the gain undoes the falloff at the corner
+    let v = l.correction(&shot(24.0)).unwrap().vignette.unwrap();
+    let g: f64 = 1.0 + v.k.iter().enumerate().map(|(i, k)| k * 1f64.powi(2 * (i as i32 + 1))).sum::<f64>();
+    assert!((g * 0.55 - 1.0).abs() < 0.01, "{g}");
+}
+
+#[test]
+fn crop_factor_scales_the_profile() {
+    // On a 1.5× body the image covers the centre of the full-frame calibration: much less distortion at its corner.
+    let db = db();
+    let l = &db.lenses[1];
+    let ff = l.correction(&shot(50.0)).unwrap().warp.unwrap();
+    let aps = l.correction(&Shot { crop_factor: Some(1.5), ..shot(50.0) }).unwrap().warp.unwrap();
+    let corner = |wp: &EmbeddedWarp| dng_source(wp, 1, 0.0, 0.0, 6000.0, 4000.0);
+    let (a, b) = (corner(&ff), corner(&aps));
+    let r = |(x, y): (f64, f64)| (x - 3000.0).hypot(y - 2000.0);
+    let rc = 3000f64.hypot(2000.0);
+    assert!((r(a) - rc).abs() > (r(b) - rc).abs() * 1.5, "{} {}", r(a) - rc, r(b) - rc);
+}
+
+#[test]
+fn fisheyes_get_no_rectilinear_warp_and_bad_shots_none() {
+    let db = db();
+    assert!(db.lenses[2].correction(&shot(8.0)).is_none());
+    assert!(db.lenses[0].correction(&Shot { width: f64::NAN, ..shot(24.0) }).is_none());
+    assert!(db.lenses[0].correction(&Shot { focal: 0.0, ..shot(24.0) }).is_none());
+}
+
+#[test]
+fn load_dir_reads_xml_files_and_reports_bad_ones() {
+    let dir = std::env::temp_dir().join(format!("lensdb-test-{}", std::process::id()));
+    // exclusive: an existing (possibly planted) entry fails the test instead of being written through
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("a.xml"), DB).unwrap();
+    std::fs::write(dir.join("b.xml"), "<lensdatabase").unwrap();
+    std::fs::write(dir.join("c.txt"), "ignored").unwrap();
+    let (db, errs) = LensDb::load_dir(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(db.lenses.len(), 3);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(LensDb::load_dir(Path::new("/nonexistent/lensdb")).is_err());
+}
+
+#[test]
+fn built_in_lens_matches_by_camera_mount_and_focal_range() {
+    let xml = r#"<lensdatabase>
+  <camera><maker>Canon</maker><model>Canon PowerShot S5 IS</model><model lang="en">PowerShot S5 IS</model><mount>canonS5</mount><cropfactor>6.0</cropfactor></camera>
+  <lens><maker>Canon</maker><model>Canon PowerShot S5 IS &amp; compatibles</model><mount>canonS5</mount><cropfactor>6.0</cropfactor>
+    <calibration><distortion model="poly3" focal="6" k1="0.01" /><distortion model="poly3" focal="72" k1="0.0" /></calibration></lens>
+  <lens><maker>Canon</maker><model>Canon EF 50mm f/1.8</model><mount>Canon EF</mount>
+    <calibration><distortion model="poly3" focal="50" k1="0.01" /></calibration></lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    let cam = db.find_camera("Canon", "Canon PowerShot S5 IS");
+    assert!(cam.is_some());
+    assert!(db.find_camera("Canon", "PowerShot S5 IS").is_some());
+    let l = db.find_lens(None, "6.0-72.0 mm f/2.7-3.5", cam).unwrap();
+    assert_eq!(l.mounts, ["canonS5"]);
+    assert!(db.find_lens(None, "6.0-72.0 mm f/2.7-3.5", None).is_none());
+    // a file with no make still finds the camera by its full model name
+    assert!(db.find_camera("", "Canon PowerShot S5 IS").is_some());
+    // the exact-name lookup never falls back to the camera's mount
+    assert!(db.find_lens_named(None, "6.0-72.0 mm f/2.7-3.5", cam).is_none());
+    // a DNG that records only the specification finds the built-in lens through the camera's mount
+    let spec = spec_name([6.0, 72.0, 2.7, 3.5]);
+    assert_eq!(db.find_built_in_lens(&spec, cam.unwrap()).map(|l| l.mounts.clone()), Some(vec!["canonS5".to_string()]));
+    let ef = db.find_camera("Canon", "Canon EOS 5D");
+    assert!(ef.is_none_or(|c| db.find_built_in_lens(&spec, c).is_none()));
+    // a focal length that overflows to infinity is ignored, not taken as an unbounded range
+    let huge = format!("6.0-{}9 mm f/2.7-3.5", "9".repeat(400));
+    assert_eq!(db.find_lens(None, &huge, cam).unwrap().mounts, ["canonS5"]);
+    assert_eq!(exif_focal_range(&tokens(&huge)), Some((6.0, 6.0)));
+}
+
+/// A hand-edited or corrupt database may carry any number: infinities, NaN, enormous or negative
+/// coefficients, absurd crop factors and aspect ratios. Whatever loads must give corrections that
+/// are `None` or entirely finite, for any shot including nonsense ones; names of any shape find
+/// nothing rather than panic.
+#[test]
+fn hostile_numbers_give_finite_corrections_or_none() {
+    let values = ["inf", "-inf", "NaN", "1e300", "-1e300", "1e-300", "0", "-1", "1e6", "99999"];
+    let mut cases = 0;
+    for v in values {
+        for xml in [
+            format!(
+                r#"<lens><maker>M</maker><model>M 1</model><cropfactor>{v}</cropfactor><aspect-ratio>{v}</aspect-ratio><calibration><distortion model="poly3" focal="24" k1="0.01"/><vignetting model="pa" focal="24" aperture="2.8" k1="-0.3"/></calibration></lens>"#
+            ),
+            format!(
+                r#"<lens><maker>M</maker><model>M 1</model><calibration cropfactor="{v}" aspect-ratio="{v}"><distortion model="ptlens" focal="24" a="{v}" b="{v}" c="{v}"/><tca model="poly3" focal="24" vr="{v}" vb="{v}" cr="{v}" cb="{v}" br="{v}" bb="{v}"/></calibration></lens>"#
+            ),
+            format!(
+                r#"<lens><maker>M</maker><model>M 1</model><calibration><distortion model="poly5" focal="{v}" k1="{v}" k2="{v}"/><distortion model="poly3" focal="50" k1="{v}"/><vignetting model="pa" focal="{v}" aperture="{v}" distance="{v}" k1="{v}" k2="{v}" k3="{v}"/><tca model="linear" focal="{v}" kr="{v}" kb="{v}"/></calibration></lens>"#
+            ),
+        ] {
+            let Ok(db) = LensDb::parse(&format!("<lensdatabase>{xml}</lensdatabase>")) else { continue };
+            for p in &db.lenses {
+                for focal in [f64::NAN, f64::INFINITY, -1.0, 0.0, 1e-9, 8.0, 24.0, 50.0, 1e9] {
+                    for (w, h) in [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (6000.0, 4000.0), (1e9, 1.0), (f64::NAN, 10.0), (f64::INFINITY, 4000.0)] {
+                        for aperture in [None, Some(f64::NAN), Some(-2.0), Some(0.0), Some(2.8), Some(1e9)] {
+                            for crop in [None, Some(0.0), Some(f64::NAN), Some(-1.0), Some(1.5), Some(1e9)] {
+                                let shot = Shot { focal, aperture, distance: Some(f64::NAN), crop_factor: crop, width: w, height: h };
+                                cases += 1;
+                                let Some(c) = p.correction(&shot) else { continue };
+                                let planes =
+                                    c.warp.iter().flat_map(|wp| wp.planes.iter().flatten().copied().chain([wp.radius, wp.center.x, wp.center.y]));
+                                let vig = c.vignette.iter().flat_map(|vg| vg.k.iter().copied().chain([vg.radius, vg.center.x, vg.center.y]));
+                                assert!(planes.chain(vig).all(f64::is_finite), "{v}: focal {focal} {w}x{h} {aperture:?} {crop:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(cases > 1000);
+
+    let db = db();
+    let long = "x".repeat(100_000);
+    for s in ["", " ", "\t\n", "\0", "ß İ ǅ", "....", "1.2.3.4mm", "-mm", long.as_str()] {
+        let _ = db.find_camera(s, s);
+        let _ = db.find_lens(Some(s), s, db.cameras.first());
+        let _ = db.find_lens(None, s, None);
+    }
+    assert!(db.find_camera("", "").is_none());
+    assert!(db.find_lens(None, "  ", None).is_none());
+}
+
+#[test]
+fn spec_names_read_like_lens_names() {
+    assert_eq!(spec_name([24.0, 70.0, 2.8, 2.8]), "24-70mm f/2.8");
+    assert_eq!(spec_name([18.0, 55.0, 3.5, 5.6]), "18-55mm f/3.5-5.6");
+    assert_eq!(spec_name([85.0, 85.0, 1.8, 1.8]), "85mm f/1.8");
+    assert_eq!(spec_name([10.5, 10.5, 2.8, 2.8]), "10.5mm f/2.8");
+}
+
+#[test]
+fn spec_names_need_an_exact_profile_name() {
+    let db = db();
+    let lens = db.find_lens(None, "24-70mm f/2.8", None).expect("a partial match");
+    // the profile's names carry more words than the specification, so the maker-less name is not confirmed
+    assert!(!lens.names_exactly("24-70mm f/2.8"));
+    assert!(lens.names_exactly("testcam 24-70MM F/2.8 zoom"), "case and punctuation don't matter");
+    assert!(!lens.names_exactly("24-70mm f/2.8 Zoom"), "the maker's words count: another maker's lens isn't this one");
+    let mut aliased = lens.clone();
+    aliased.models.push("24-70mm f/2.8".into());
+    assert!(aliased.names_exactly(&spec_name([24.0, 70.0, 2.8, 2.8])));
+    assert!(!aliased.names_exactly("24-105mm f/4"));
+}
+
+/// Another maker's lens with the same specification scores as high as the aliased one; coming first in the
+/// database it must not hide the profile named for the specification.
+#[test]
+fn a_named_profile_is_found_behind_a_tie() {
+    let lens = |maker: &str, models: &str| {
+        format!(
+            r#"<lens><maker>{maker}</maker>{models}<mount>Test Mount</mount><cropfactor>1</cropfactor>
+              <calibration><distortion model="poly3" focal="18" k1="-0.01" /></calibration></lens>"#
+        )
+    };
+    let xml = format!(
+        r#"<lensdatabase version="2">{}{}</lensdatabase>"#,
+        lens("Otherco", "<model>Otherco 18-55mm f/3.5-5.6</model>"),
+        lens("Testcam", "<model>Testcam 18-55mm f/3.5-5.6 VR</model><model>18-55mm f/3.5-5.6</model>"),
+    );
+    let db = LensDb::parse(&xml).unwrap();
+    let name = spec_name([18.0, 55.0, 3.5, 5.6]);
+    assert_eq!(db.find_lens(None, &name, None).unwrap().maker, "Otherco", "a plain lookup keeps the first of a tie");
+    assert_eq!(db.find_lens_named(None, &name, None).unwrap().maker, "Testcam");
+    assert!(db.find_lens_named(None, "70-200mm f/4", None).is_none());
+}
+
+fn crop_xml(parent: &str, calibration: &str) -> String {
+    format!(
+        r#"<lensdatabase><lens><maker>Test</maker><model>Test 50mm</model>{parent}
+          <calibration {calibration}><distortion model="poly3" focal="50" k1="-0.01" /></calibration>
+        </lens></lensdatabase>"#
+    )
+}
+
+#[test]
+fn unknown_calibration_crop_is_not_assumed_full_frame() {
+    for parent in [
+        "",
+        "<cropfactor/>",
+        "<cropfactor>bad</cropfactor>",
+        "<cropfactor>NaN</cropfactor>",
+        "<cropfactor>inf</cropfactor>",
+        "<cropfactor>0</cropfactor>",
+        "<cropfactor>-1</cropfactor>",
+        "<cropfactor>0.049</cropfactor>",
+        "<cropfactor>21</cropfactor>",
+    ] {
+        let db = LensDb::parse(&crop_xml(parent, "")).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, None, "{parent}");
+        assert!(db.lenses[0].correction(&shot(50.0)).is_none(), "unknown calibration crop: {parent}");
+    }
+}
+
+#[test]
+fn invalid_calibration_override_does_not_inherit_parent_crop() {
+    for value in ["", "bad", "NaN", "inf", "0", "-1", "0.049", "21"] {
+        let db = LensDb::parse(&crop_xml("<cropfactor>1.5</cropfactor>", &format!(r#"cropfactor="{value}""#))).unwrap();
+        assert_eq!(db.lenses[0].crop_factor, None, "{value}");
+        assert!(db.lenses[0].correction(&shot(50.0)).is_none(), "invalid calibration override: {value}");
+    }
+}
+
+#[test]
+fn calibration_crop_inherits_only_when_omitted_and_accepts_valid_overrides() {
+    let inherited = LensDb::parse(&crop_xml("<cropfactor>1.5</cropfactor>", "")).unwrap();
+    assert_eq!(inherited.lenses[0].crop_factor, Some(1.5));
+    assert!(inherited.lenses[0].correction(&shot(50.0)).is_some());
+    for parent in ["", "<cropfactor>bad</cropfactor>", "<cropfactor>1.5</cropfactor>"] {
+        for value in ["0.05", "1", "2", "20"] {
+            let db = LensDb::parse(&crop_xml(parent, &format!(r#"cropfactor="{value}""#))).unwrap();
+            assert_eq!(db.lenses[0].crop_factor, value.parse().ok());
+            // With no shot crop the valid calibration supplies the scale, even at the range boundaries.
+            assert!(db.lenses[0].correction(&Shot { crop_factor: None, ..shot(50.0) }).is_some());
+        }
+    }
+}
+
+#[test]
+fn camera_crop_preserves_unknown_and_explicit_full_frame() {
+    for (crop, expected) in [
+        ("", None),
+        ("bad", None),
+        ("NaN", None),
+        ("inf", None),
+        ("0", None),
+        ("-1", None),
+        ("0.049", None),
+        ("21", None),
+        ("0.05", Some(0.05)),
+        ("1", Some(1.0)),
+        ("20", Some(20.0)),
+    ] {
+        let xml = format!(r#"<lensdatabase><camera><maker>Test</maker><model>Body</model><cropfactor>{crop}</cropfactor></camera></lensdatabase>"#);
+        let db = LensDb::parse(&xml).unwrap();
+        assert_eq!(db.cameras[0].crop_factor, expected, "{crop}");
+    }
+    let db = LensDb::parse("<lensdatabase><camera><maker>Test</maker><model>Body</model></camera></lensdatabase>").unwrap();
+    assert_eq!(db.cameras[0].crop_factor, None);
+}
+
+#[test]
+fn direct_profile_api_rejects_invalid_calibration_and_preserves_shot_fallback() {
+    let mut profile = db().lenses[0].clone();
+    for crop in [None, Some(f64::NAN), Some(f64::INFINITY), Some(0.0), Some(-1.0), Some(0.049), Some(21.0)] {
+        profile.crop_factor = crop;
+        assert!(profile.correction(&shot(24.0)).is_none(), "{crop:?}");
+    }
+    profile.crop_factor = Some(1.0);
+    let expected = profile.correction(&shot(24.0)).unwrap();
+    for crop in [None, Some(f64::NAN), Some(f64::INFINITY), Some(0.0), Some(-1.0)] {
+        assert_eq!(profile.correction(&Shot { crop_factor: crop, ..shot(24.0) }).unwrap(), expected);
+    }
+}
+
+#[test]
+fn teleconverter_combo_does_not_inherit_base_profile() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<lensdatabase version="2">
+  <lens>
+    <maker>Nikon</maker>
+    <model>NIKKOR Z 400mm f/4.5 VR S</model>
+    <mount>Z</mount>
+    <calibration>
+      <distortion model="poly3" focal="400" k1="0.001" />
+    </calibration>
+  </lens>
+</lensdatabase>"#;
+    let db = LensDb::parse(xml).unwrap();
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S", None).is_some());
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S Z TC", None).is_none());
+    assert!(db.find_lens(Some("Nikon"), "NIKKOR Z 400mm f/4.5 VR S Z TC-1.4x", None).is_none());
+}
+
+#[test]
+fn calibrations_past_the_shared_copy_budget_are_left_out() {
+    let name = "x".repeat(400_000);
+    let cal = "<calibration focal=\"50\"><distortion model=\"poly3\" focal=\"50\" k1=\"0.01\"/></calibration>";
+    let xml = format!("<lensdatabase><lens><maker>M</maker><model>{name}</model>{}</lens></lensdatabase>", cal.repeat(2000));
+    let db = LensDb::parse(&xml).unwrap();
+    assert!(!db.lenses.is_empty());
+    assert!(db.lenses.len() * 400_000 <= MAX_PROFILE_COPY_BYTES);
+}
+
+/// Unusable calibrations (nothing to apply) are not copied or charged, so they can't use up the
+/// budget a later usable one of the same lens needs.
+#[test]
+fn unusable_calibrations_do_not_spend_the_copy_budget() {
+    let name = "x".repeat(8 << 20);
+    let empty = "<calibration focal=\"50\"></calibration>";
+    let good = "<calibration focal=\"50\"><distortion model=\"poly3\" focal=\"50\" k1=\"0.01\"/></calibration>";
+    let xml = format!("<lensdatabase><lens><maker>M</maker><model>{name}</model>{}{good}</lens></lensdatabase>", empty.repeat(4));
+    let db = LensDb::parse(&xml).unwrap();
+    assert_eq!(db.lenses.len(), 1, "the usable calibration after the empty ones is kept");
+}
+
+#[cfg(unix)]
+#[test]
+fn load_dir_refuses_a_non_regular_xml_entry() {
+    let dir = std::env::temp_dir().join(format!("lensdb-test-dev-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    std::os::unix::fs::symlink("/dev/zero", dir.join("z.xml")).unwrap();
+    let (db, errs) = LensDb::load_dir(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(db.is_empty());
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}
+
+/// Of two equally good lens matches, the one whose calibration crop is known wins: the other
+/// cannot be converted to the shot's frame at all, so file order must not decide.
+#[test]
+fn tied_lens_matches_prefer_a_known_calibration_crop() {
+    let name = spec_name([50.0, 50.0, 1.8, 1.8]);
+    let known = r#"cropfactor="1""#;
+    let unknown = r#"cropfactor="bad""#;
+    for (first, second) in [(unknown, known), (known, unknown)] {
+        let calibration = |attributes: &str| format!(r#"<calibration {attributes}><distortion model="poly3" focal="50" k1="-0.01" /></calibration>"#);
+        let xml = format!(
+            "<lensdatabase><lens><maker>Test</maker><model>{name}</model>{}{}</lens></lensdatabase>",
+            calibration(first),
+            calibration(second)
+        );
+        let db = LensDb::parse(&xml).unwrap();
+        assert_eq!(db.lenses.len(), 2);
+        assert_eq!(db.lenses.iter().filter(|p| p.crop_factor.is_none()).count(), 1);
+        for profile in [db.find_lens(None, &name, None), db.find_lens_named(None, &name, None)] {
+            let profile = profile.unwrap();
+            assert_eq!(profile.crop_factor, Some(1.0), "{first}, {second}");
+            assert!(profile.correction(&shot(50.0)).is_some());
+        }
+    }
+}
+
+/// A FIFO named `*.xml` is refused without opening it: opening a FIFO for reading blocks until a writer appears.
+#[cfg(unix)]
+#[test]
+fn load_dir_refuses_a_fifo_without_blocking() {
+    let dir = std::env::temp_dir().join(format!("lensdb-test-fifo-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let fifo = dir.join("f.xml");
+    let made = std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|s| s.success());
+    if !made {
+        std::fs::remove_dir_all(&dir).unwrap();
+        return;
+    }
+    let (db, errs) = LensDb::load_dir(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(db.is_empty());
+    assert_eq!(errs.len(), 1, "{errs:?}");
+}

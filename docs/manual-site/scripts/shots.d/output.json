@@ -1,0 +1,360 @@
+[
+ {
+  "name": "export-dialog",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "dialog.export"
+    }
+   }
+  ]
+ },
+ {
+  "name": "export-tiff",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "button:exportFormat-2"
+    }
+   }
+  ]
+ },
+ {
+  "name": "export-hdr",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "button:exportFormat-0"
+    }
+   },
+   {
+    "only": [
+     "classic"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 714,
+     "y": 423
+    }
+   },
+   {
+    "only": [
+     "compact"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 712,
+     "y": 362
+    }
+   }
+  ]
+ },
+ {
+  "name": "export-watermark",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "only": [
+     "classic"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 714,
+     "y": 423
+    }
+   },
+   {
+    "only": [
+     "compact"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 712,
+     "y": 362
+    }
+   },
+   {
+    "only": [
+     "classic"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 714,
+     "y": 899
+    }
+   },
+   {
+    "only": [
+     "compact"
+    ],
+    "method": "ui.click",
+    "params": {
+     "x": 712,
+     "y": 763
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 760,
+     "y": 500
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -1500
+    }
+   }
+  ]
+ },
+ {
+  "name": "print-module",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.dialog.cancel",
+    "params": {}
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.print"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "print-contact-sheet",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "print:template:4×5 Contact Sheet"
+    }
+   }
+  ]
+ },
+ {
+  "name": "print-job",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 500
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -1500
+    }
+   }
+  ]
+ },
+ {
+  "name": "slideshow-module",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.dialog.cancel",
+    "params": {}
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.slideshow"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "slideshow-template",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "slideshowTemplate:Caption and Rating"
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 500
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -1500
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 700,
+     "y": 850
+    }
+   }
+  ]
+ },
+ {
+  "name": "web-module",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.dialog.cancel",
+    "params": {}
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.web"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "web-export",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 500
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -1500
+    }
+   }
+  ]
+ },
+ {
+  "name": "book-module",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.dialog.cancel",
+    "params": {}
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.book"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "book:autoLayout"
+    }
+   }
+  ]
+ },
+ {
+  "name": "map-module",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.dialog.cancel",
+    "params": {}
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.map"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "leftPanel": true
+    }
+   }
+  ]
+ }
+]

@@ -1,0 +1,875 @@
+//! Detached Lightroom catalog preparation and owner-thread commit.
+//!
+//! `LightroomJob::new` takes only an in-memory session snapshot.  `prepare` owns all catalog
+//! reading, probing and archive staging, while `commit_prepared` only applies catalog operations
+//! to the session that created the job.  Archive index bytes are returned for a worker to finish
+//! after the owner has accepted the catalog operation.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
+use serde_json::Value;
+
+use crate::import::{ImportJob, ImportMode, ImportOptions, Prepared};
+use crate::lightroom_catalog::{self, CatalogImport, ImportIndex};
+
+const COMMAND: &str = "library.importLightroom";
+const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
+
+fn error(message: impl Into<String>) -> crate::EngineError {
+    crate::EngineError::BadParams { cmd: COMMAND.into(), msg: message.into() }
+}
+
+/// The import was cancelled ([`crate::ErrorKind::Cancelled`]: not a failure). The message is the
+/// one it always had, so control-channel and MCP clients see the same `error` text.
+fn cancelled() -> crate::EngineError {
+    crate::EngineError::Cancelled(error("Lightroom import cancelled").to_string())
+}
+
+/// Save the recovery archive. It is best-effort: nothing reads it back during import, so an archive
+/// that can't be saved (a drive that refuses the write, #3114) costs the archive, with a warning
+/// naming the folder, not the import. A folder the import index can't be written to is refused
+/// first, before anything changes. The warning goes first: the result window lists only the first
+/// few, and catalog warnings (one per unreadable record) can be many.
+fn stage_archive(archive_dir: Option<&Path>, data: &mut CatalogImport) -> crate::Result<Option<PathBuf>> {
+    use crate::lightroom_archive::{Kept, MAX_ARCHIVE_BYTES};
+    let Some(dir) = archive_dir else { return Ok(None) };
+    // The import index, unlike the archive, is required, and it is written only after the photos
+    // are imported: refuse a folder it can't be written to here, rather than import and then fail
+    // (a retry could duplicate virtual copies).
+    require_index_folder(dir).map_err(|e| crate::EngineError::Other(format!("cannot import into this catalog: {e}")))?;
+    let limit = MAX_ARCHIVE_BYTES >> 20;
+    // the warning names the program the catalog comes from
+    let program = if crate::capture_one_catalog::is_capture_one(Path::new(&data.source)) { "Capture One" } else { "Lightroom" };
+    let kept = match crate::lightroom_archive::store_best_effort(dir, data) {
+        Ok(kept) => kept,
+        Err(e) => {
+            data.warnings.insert(0, format!("{program} source archive not saved in {}: {e}; archive skipped", dir.display()));
+            return Ok(None);
+        }
+    };
+    Ok(match kept {
+        Kept::All(stored) => Some(note_cleanup(stored, dir, data, program)),
+        Kept::WithoutSettings(stored) => {
+            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archived without history-step and snapshot settings"));
+            Some(note_cleanup(stored, dir, data, program))
+        }
+        Kept::Nothing => {
+            data.warnings.push(format!("{program} source archive exceeded {limit} MiB; archive skipped"));
+            None
+        }
+    })
+}
+
+/// The saved archive's path. Cleanup that failed after it was published is a warning of its own, first
+/// in the list; the archive itself still counts as saved.
+fn note_cleanup(stored: crate::lightroom_archive::Stored, dir: &Path, data: &mut CatalogImport, program: &str) -> PathBuf {
+    if let Some(problem) = stored.cleanup_failed {
+        data.warnings
+            .insert(0, format!("{program} source archive saved as {}, but cleaning up {} failed: {problem}", stored.path.display(), dir.display()));
+    }
+    stored.path
+}
+
+/// Check that `lightroom-index.json` can be written in `dir` (creating the folder, as the archive
+/// would): a real folder, not a link or a file, in which a file can be created and removed. The
+/// probe is a plain exclusive create, never a hard link, so volumes without them (exFAT) pass.
+fn require_index_folder(dir: &Path) -> Result<(), String> {
+    if let Err(e) = std::fs::symlink_metadata(dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("cannot read {}: {e}", dir.display()));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create the folder {}: {e}", dir.display()))?;
+    }
+    crate::lightroom_archive::require_real_directory(dir)?;
+    let unwritable = |e: std::io::Error| format!("the import index can't be written in {} ({e}); make the folder writable", dir.display());
+    let pid = std::process::id();
+    for slot in 0..64 {
+        let probe = dir.join(format!(".lightroom-index-probe-{pid}-{slot}.tmp"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                return std::fs::remove_file(&probe).map_err(unwritable);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(unwritable(e)),
+        }
+    }
+    Err(format!("no free name to check that {} is writable", dir.display()))
+}
+
+/// Memory identity of the library which owns a prepared completion.
+///
+/// Each successful open/close refreshes session identity, including reopening the same path.
+/// The owner check deliberately does not compare catalog revisions: ordinary edits while preparation
+/// runs must survive and are merged by the owner commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LightroomLibraryToken {
+    library_dir: Option<PathBuf>,
+    identity: Arc<()>,
+}
+
+impl LightroomLibraryToken {
+    fn capture(s: &crate::Session) -> Self {
+        Self {
+            library_dir: s.library.as_ref().filter(|library| library.on_disk).map(|library| library.dir.clone()),
+            identity: Arc::clone(&s.library_identity),
+        }
+    }
+
+    /// Whether `s` still refers to the library which started preparation.
+    pub fn matches(&self, s: &crate::Session) -> bool {
+        Arc::ptr_eq(&self.identity, &s.library_identity)
+            && self.library_dir == s.library.as_ref().filter(|library| library.on_disk).map(|library| library.dir.clone())
+    }
+
+    pub fn library_dir(&self) -> Option<&Path> {
+        self.library_dir.as_deref()
+    }
+}
+
+/// Filesystem-free result of catalog preparation.
+pub struct PreparedLightroom {
+    pub(crate) data: CatalogImport,
+    pub(crate) normal: Prepared,
+    pub(crate) index: ImportIndex,
+    pub(crate) archive_path: Option<PathBuf>,
+    pub(crate) token: LightroomLibraryToken,
+    pub(crate) missing_sources: HashSet<String>,
+    pub(crate) update_existing: bool,
+    pub(crate) now: String,
+    cancelled: bool,
+}
+
+impl PreparedLightroom {
+    pub fn source(&self) -> &str {
+        &self.data.source
+    }
+
+    pub fn photo_count(&self) -> usize {
+        self.data.photos.len()
+    }
+
+    pub fn token(&self) -> &LightroomLibraryToken {
+        &self.token
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    /// Roll back any normal-import filesystem placement held by this prepared value.
+    pub fn rollback(&self) {
+        self.normal.rollback();
+    }
+}
+
+/// Index write returned by owner commit.  `finish` is intended for a worker after the owner has
+/// returned, and performs the only archive-index filesystem operation in this pipeline.
+pub struct LightroomArchiveFinalization {
+    path: Option<PathBuf>,
+    bytes: Option<Vec<u8>>,
+}
+
+impl LightroomArchiveFinalization {
+    pub fn finish(self) -> crate::Result<()> {
+        let (Some(path), Some(bytes)) = (self.path, self.bytes) else { return Ok(()) };
+        if bytes.len() > MAX_INDEX_BYTES {
+            return Err(error("Lightroom import index exceeds 16 MiB"));
+        }
+        let failed = |e: &dyn std::fmt::Display| crate::EngineError::Other(format!("could not write the import index {}: {e}", path.display()));
+        // the archive refuses a linked folder; now that its failure no longer stops the import, the
+        // index must refuse it too, or it would be written outside the library
+        if let Some(dir) = path.parent() {
+            crate::lightroom_archive::require_real_directory(dir).map_err(|e| failed(&e))?;
+        }
+        lcc_catalog::safe_file::write_atomic(&path, &bytes).map_err(|e| failed(&e))
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+/// Owner-thread catalog result.  The report is ready for the UI immediately; index finalization
+/// can remain on the worker while its task stays alive.
+pub struct LightroomCompletion {
+    pub report: Value,
+    pub finalization: LightroomArchiveFinalization,
+}
+
+/// Alias used by hosts that call the result a commit.
+pub type LightroomCommit = LightroomCompletion;
+
+/// The step of preparing a Lightroom import that is under way ([`LightroomProgress::step`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightroomStep {
+    /// Reading the catalog's tables.
+    Catalog,
+    /// Reading the photos the catalog names (headers, content hash): nearly all of the time.
+    ReadPhotos,
+    /// Readying the photos that were read for the catalog.
+    AddPhotos,
+}
+
+/// Progress of [`LightroomJob::prepare`] step by step, shared with the thread that runs it.
+#[derive(Clone, Default)]
+pub struct LightroomProgress {
+    /// Catalog tables to read and read so far ([`lightroom_catalog::read_with_progress`]).
+    pub catalog_total: Arc<AtomicUsize>,
+    pub catalog_done: Arc<AtomicUsize>,
+    read_total: Arc<AtomicUsize>,
+    read_done: Arc<AtomicUsize>,
+    add_total: Arc<AtomicUsize>,
+    add_done: Arc<AtomicUsize>,
+    /// The catalog is read: the photos are next.
+    photos: Arc<AtomicBool>,
+}
+
+impl LightroomProgress {
+    /// Reading the photos is nearly all of an import's time; the catalog and readying the photos
+    /// take the rest of [`LightroomProgress::fraction`].
+    const CATALOG_SHARE: f32 = 0.05;
+    const READ_SHARE: f32 = 0.85;
+
+    /// The step under way, with how much of it is done and its total (0 while not yet known).
+    pub fn step(&self) -> (LightroomStep, usize, usize) {
+        let load = |n: &AtomicUsize| n.load(Ordering::Relaxed);
+        if !self.photos.load(Ordering::Relaxed) {
+            return (LightroomStep::Catalog, load(&self.catalog_done), load(&self.catalog_total));
+        }
+        let (read_done, read_total) = (load(&self.read_done), load(&self.read_total));
+        let (add_done, add_total) = (load(&self.add_done), load(&self.add_total));
+        // nothing to read (every photo is already in the library) goes straight to adding
+        if read_done < read_total || (read_total == 0 && add_done == 0) {
+            (LightroomStep::ReadPhotos, read_done, read_total)
+        } else {
+            (LightroomStep::AddPhotos, add_done, add_total)
+        }
+    }
+
+    /// The whole preparation, 0..=1.
+    pub fn fraction(&self) -> f32 {
+        let (step, done, total) = self.step();
+        let part = if total == 0 { 0.0 } else { (done as f32 / total as f32).clamp(0.0, 1.0) };
+        match step {
+            LightroomStep::Catalog => Self::CATALOG_SHARE * part,
+            LightroomStep::ReadPhotos => Self::CATALOG_SHARE + Self::READ_SHARE * part,
+            LightroomStep::AddPhotos => Self::CATALOG_SHARE + Self::READ_SHARE + (1.0 - Self::CATALOG_SHARE - Self::READ_SHARE) * part,
+        }
+    }
+}
+
+/// A Lightroom import detached from the owner thread.
+pub struct LightroomJob {
+    path: PathBuf,
+    update_existing: bool,
+    import: ImportJob,
+    token: LightroomLibraryToken,
+    archive_dir: Option<PathBuf>,
+    progress: LightroomProgress,
+}
+
+impl LightroomJob {
+    /// Snapshot session state only.  This constructor performs no filesystem work.
+    pub fn new(s: &mut crate::Session, path: PathBuf, update_existing: bool) -> crate::Result<Self> {
+        // a photo deleted here stays deleted: the catalog's record is matched, not restored
+        let opts = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+        let import = ImportJob::new(s, opts)?;
+        let archive_dir = s.library.as_ref().filter(|library| library.on_disk).map(|library| library.dir.join("Interop"));
+        let progress = LightroomProgress {
+            read_total: Arc::clone(&import.read_total),
+            read_done: Arc::clone(&import.read_done),
+            add_total: Arc::clone(&import.total),
+            add_done: Arc::clone(&import.done),
+            ..LightroomProgress::default()
+        };
+        Ok(Self { path, update_existing, import, token: LightroomLibraryToken::capture(s), archive_dir, progress })
+    }
+
+    /// The job's progress, to watch from another thread while [`LightroomJob::prepare`] runs.
+    pub fn progress(&self) -> LightroomProgress {
+        self.progress.clone()
+    }
+
+    pub fn token(&self) -> &LightroomLibraryToken {
+        &self.token
+    }
+
+    /// Finish an owner commit's deferred archive-index write on a worker.
+    pub fn finish_archive(finalization: LightroomArchiveFinalization) -> crate::Result<()> {
+        finalization.finish()
+    }
+
+    /// Read/probe/stage all source data off the owner thread.
+    pub fn prepare(&mut self, cancel: &AtomicBool) -> crate::Result<PreparedLightroom> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        // (reading stops with a message when `cancel` is set: the flag says it was cancelled)
+        let mut data = lightroom_catalog::read_with_progress(&self.path, cancel, &self.progress.catalog_total, &self.progress.catalog_done)
+            .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { error(e) })?;
+        lightroom_catalog::validate_for_job(&data).map_err(error)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let (paths, missing_sources) = original_paths(&data, cancel)?;
+        // Catalog entries name files, never folders. Missing originals already have enough
+        // catalog metadata for placeholders; probing them again only adds failed I/O and errors.
+        // Complete the catalog step before the separate read/add photo progress starts.
+        self.progress.catalog_done.fetch_add(1, Ordering::Relaxed);
+        self.progress.photos.store(true, Ordering::Relaxed);
+        self.import.total.fetch_add(paths.len(), Ordering::Relaxed);
+        let normal = self.import.prepare_files(paths, cancel);
+        if cancel.load(Ordering::Relaxed) {
+            normal.rollback();
+            return Err(cancelled());
+        }
+        let archive_path = stage_archive(self.archive_dir.as_deref(), &mut data)?;
+        let index_path = self.archive_dir.as_ref().map(|dir| dir.join("lightroom-index.json"));
+        let index = lightroom_catalog::load_index(index_path.as_deref())?;
+        Ok(PreparedLightroom {
+            data,
+            normal,
+            index,
+            archive_path,
+            token: self.token.clone(),
+            missing_sources,
+            update_existing: self.update_existing,
+            now: self.import.now().to_string(),
+            cancelled: cancel.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// Apply prepared data on the owner thread.  No source, archive or index filesystem work occurs.
+pub fn commit_prepared(s: &mut crate::Session, mut prepared: PreparedLightroom) -> crate::Result<LightroomCompletion> {
+    if prepared.cancelled {
+        prepared.normal.rollback();
+        return Err(cancelled());
+    }
+    if !prepared.token.matches(s) {
+        prepared.normal.rollback();
+        return Err(error("Lightroom import belongs to a different open catalog"));
+    }
+    // A command-scoped Lightroom import must never rewrite source XMP sidecars.  Direct depth-0
+    // callers do not set this transient flag, so they cannot affect a later command.
+    if s.depth > 0 {
+        s.skip_auto_write = true;
+    }
+
+    let undo0 = s.undo.len();
+    prepared.normal.revalidate_add(s);
+    let options = ImportOptions { mode: ImportMode::Add, on_deleted: crate::import::OnDeleted::Skip, ..ImportOptions::default() };
+    let now = prepared.now.clone();
+    let before = s.before_step();
+    let files = crate::import::commit_prepared(s, &options, &now, prepared.normal)?;
+    let file_step = s.committed_step(before);
+    let applied = match lightroom_catalog::apply_prepared(
+        s,
+        prepared.data,
+        lightroom_catalog::ApplyPrepared {
+            update_existing: prepared.update_existing,
+            files,
+            index: &mut prepared.index,
+            archive_path: prepared.archive_path,
+            missing_sources: &prepared.missing_sources,
+            undo0,
+        },
+    ) {
+        Ok(applied) => applied,
+        // The file step has made the catalog's originals records, and photos browsed in Local the library's. A catalog
+        // the import then can't apply (a capture time that isn't a full date, collections it can't match safely, an
+        // album id it can't give) must not leave them so, without the catalog's ratings, flags, edits or collections,
+        // while it reports only the error: take that step back. It is records only: Add moves and copies no file.
+        Err(e) => {
+            let Some(step) = file_step else { return Err(e) };
+            return Err(match s.take_back(step) {
+                Ok(()) => e,
+                Err(back) => crate::EngineError::Other(format!("{e}; the photos it added could not be taken back: {back}")),
+            });
+        }
+    };
+    let path = prepared.token.library_dir().map(|dir| dir.join("Interop/lightroom-index.json"));
+    let bytes = if path.is_some() { Some(serde_json::to_vec(&applied.index).map_err(|e| error(e.to_string()))?) } else { None };
+    Ok(LightroomCompletion { report: applied.report, finalization: LightroomArchiveFinalization { path, bytes } })
+}
+
+fn original_paths(data: &CatalogImport, cancel: &AtomicBool) -> crate::Result<(Vec<String>, HashSet<String>)> {
+    let mut paths = Vec::new();
+    let mut missing = HashSet::new();
+    let mut seen = HashSet::new();
+    for photo in &data.photos {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        if lightroom_catalog::number_for_job(&photo.image, "masterImage") != 0 {
+            continue;
+        }
+        let key = normalize(&photo.path);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if photo.original_is_file() {
+            paths.push(photo.path.clone());
+        } else {
+            missing.insert(key);
+        }
+    }
+    Ok((paths, missing))
+}
+
+fn normalize(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if cfg!(windows) { path.to_lowercase() } else { path }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_data() -> CatalogImport {
+        CatalogImport {
+            source: "fixture.lrcat".into(),
+            photos: Vec::new(),
+            collections: Vec::new(),
+            members: Vec::new(),
+            collection_content: Vec::new(),
+            stacks: Vec::new(),
+            warnings: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+
+    fn cancelled_prepared(s: &crate::Session) -> PreparedLightroom {
+        PreparedLightroom {
+            data: empty_data(),
+            normal: Prepared::default(),
+            index: ImportIndex::default(),
+            archive_path: None,
+            token: LightroomLibraryToken::capture(s),
+            missing_sources: HashSet::new(),
+            update_existing: false,
+            now: "2026-01-01T00:00:00".into(),
+            cancelled: true,
+        }
+    }
+
+    fn prepared_for(s: &crate::Session, path: &str, rating: i64) -> PreparedLightroom {
+        let mut image = std::collections::BTreeMap::new();
+        image.insert("id_local".into(), serde_json::json!(1));
+        image.insert("rating".into(), serde_json::json!(rating));
+        image.insert("pick".into(), serde_json::json!(0));
+        image.insert("fileFormat".into(), serde_json::json!("JPG"));
+        image.insert("fileWidth".into(), serde_json::json!(1));
+        image.insert("fileHeight".into(), serde_json::json!(1));
+        PreparedLightroom {
+            data: CatalogImport {
+                source: "fixture.lrcat".into(),
+                photos: vec![lightroom_catalog::CatalogPhoto {
+                    source_id: 1,
+                    uuid: "fixture-photo".into(),
+                    path: path.into(),
+                    image,
+                    settings: String::new(),
+                    xmp: String::new(),
+                    keywords: Vec::new(),
+                    history: Vec::new(),
+                    snapshots: Vec::new(),
+                    original: lightroom_catalog::Original::Local,
+                    as_shot_white: None,
+                    capture_one: None,
+                }],
+                collections: Vec::new(),
+                members: Vec::new(),
+                collection_content: Vec::new(),
+                stacks: Vec::new(),
+                warnings: Vec::new(),
+                skipped: Vec::new(),
+            },
+            normal: Prepared::default(),
+            index: ImportIndex::default(),
+            archive_path: None,
+            token: LightroomLibraryToken::capture(s),
+            missing_sources: [normalize(path)].into_iter().collect(),
+            update_existing: false,
+            now: "2026-01-01T00:00:00".into(),
+            cancelled: false,
+        }
+    }
+
+    /// One count for the whole import read "14 of 24554" while the photos were read, then twice
+    /// the number of photos: each step has its own count, and the whole only moves forward.
+    #[test]
+    fn progress_names_each_step_with_its_own_count() {
+        let p = LightroomProgress::default();
+        let set = |n: &AtomicUsize, v: usize| n.store(v, Ordering::Relaxed);
+        assert_eq!(p.step(), (LightroomStep::Catalog, 0, 0));
+        assert_eq!(p.fraction(), 0.0);
+        set(&p.catalog_total, 14);
+        set(&p.catalog_done, 7);
+        assert_eq!(p.step(), (LightroomStep::Catalog, 7, 14));
+        let mut last = p.fraction();
+        assert!(last > 0.0);
+        let mut forward = |p: &LightroomProgress| {
+            let f = p.fraction();
+            assert!(f >= last && f <= 1.0, "{f} after {last}");
+            last = f;
+        };
+        set(&p.catalog_done, 14);
+        p.photos.store(true, Ordering::Relaxed);
+        assert_eq!(p.step(), (LightroomStep::ReadPhotos, 0, 0), "the photos are not counted yet");
+        forward(&p);
+        set(&p.add_total, 100);
+        set(&p.read_total, 100);
+        set(&p.read_done, 40);
+        assert_eq!(p.step(), (LightroomStep::ReadPhotos, 40, 100));
+        forward(&p);
+        set(&p.read_done, 100);
+        set(&p.add_done, 25);
+        assert_eq!(p.step(), (LightroomStep::AddPhotos, 25, 100));
+        forward(&p);
+        set(&p.add_done, 100);
+        forward(&p);
+        assert!(p.fraction() > 0.999);
+        // every photo already in the library: nothing to read
+        let known = LightroomProgress::default();
+        known.photos.store(true, Ordering::Relaxed);
+        set(&known.add_total, 5);
+        set(&known.add_done, 5);
+        assert_eq!(known.step(), (LightroomStep::AddPhotos, 5, 5));
+    }
+
+    #[test]
+    fn cancellation_before_commit_leaves_owner_catalog_unchanged() {
+        let mut session = crate::Session::new();
+        let before = session.catalog.to_snapshot();
+        let prepared = cancelled_prepared(&session);
+        let Err(e) = commit_prepared(&mut session, prepared) else { panic!("a cancelled import commits nothing") };
+        assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+        assert_eq!(session.catalog.to_snapshot(), before);
+        assert!(session.undo.is_empty());
+    }
+
+    /// Cancelling while the catalog is read is [`crate::ErrorKind::Cancelled`] whatever the message
+    /// says, and a failure that is not a cancellation is not one, even when its text says "cancelled".
+    #[test]
+    fn a_cancelled_read_is_cancelled_by_kind() {
+        let mut session = crate::Session::new();
+        let mut job = LightroomJob::new(&mut session, PathBuf::from("/nonexistent/cancelled.lrcat"), false).unwrap();
+        let Err(e) = job.prepare(&AtomicBool::new(true)) else { panic!("cancelled before it started") };
+        assert_eq!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+        // the `error` text clients see is unchanged
+        assert_eq!(e.to_string(), "invalid parameters for `library.importLightroom`: Lightroom import cancelled");
+        let Err(e) = job.prepare(&AtomicBool::new(false)) else { panic!("no such catalog") };
+        assert_ne!(e.kind(), crate::ErrorKind::Cancelled, "{e}");
+    }
+
+    #[test]
+    fn library_identity_rejects_late_completion_after_reopen() {
+        let mut session = crate::Session::new();
+        let token = LightroomLibraryToken::capture(&session);
+        assert!(token.matches(&session));
+        session.library_identity = Arc::new(());
+        assert!(!token.matches(&session));
+    }
+
+    #[test]
+    fn prepared_reimport_preserves_current_edit_and_uses_one_undo_per_import() {
+        let mut session = crate::Session::new();
+        let path = "/missing/lightroom-job-edit.jpg";
+        let prepared = prepared_for(&session, path, 4);
+        let first = commit_prepared(&mut session, prepared).unwrap();
+        assert_eq!(first.report["mapping"]["1"].as_u64(), Some(1));
+        assert_eq!(session.undo.len(), 1);
+        let id = lcc_catalog::PhotoId(1);
+        let mut personal = lcc_develop::DevelopSettings::default();
+        personal.light.exposure = 1.5;
+        session.set_develop(id, personal, "Personal").unwrap();
+        let before = session.catalog.photo(id).map(|photo| photo.develop.clone());
+        let prepared = prepared_for(&session, path, 5);
+        commit_prepared(&mut session, prepared).unwrap();
+        assert_eq!(session.catalog.photo(id).map(|photo| photo.develop.clone()), before);
+        assert_eq!(session.catalog.photo(id).map(|photo| photo.rating), Some(5));
+        assert_eq!(session.undo.len(), 3);
+    }
+
+    /// 5,000 photos with 8 KiB each of history settings (`in_history`) or develop settings: about 40 MiB of JSON. An
+    /// archive too big with its history settings is kept without them; one too big even then is skipped. Either
+    /// way the import goes on and says so.
+    #[test]
+    fn oversized_archive_keeps_prepared_import_successful_with_warning() {
+        for (in_history, warning, archived) in [
+            (true, "Lightroom source archive exceeded 32 MiB; archived without history-step and snapshot settings", true),
+            (false, "Lightroom source archive exceeded 32 MiB; archive skipped", false),
+        ] {
+            let archive_dir = std::env::temp_dir().join(format!("app-lr-prepared-scale-{in_history}-{}", std::process::id()));
+            let mut data = empty_data();
+            data.photos = (0..5_000)
+                .map(|source_id| {
+                    let image = std::collections::BTreeMap::from([
+                        ("id_local".into(), serde_json::json!(source_id)),
+                        ("fileFormat".into(), serde_json::json!("JPG")),
+                        ("fileWidth".into(), serde_json::json!(1)),
+                        ("fileHeight".into(), serde_json::json!(1)),
+                    ]);
+                    let bulk = format!("history-{source_id}-{}", "x".repeat(8 * 1024));
+                    lightroom_catalog::CatalogPhoto {
+                        source_id,
+                        uuid: format!("scale-{source_id}"),
+                        path: format!("/missing/scale-{source_id}.jpg"),
+                        image,
+                        settings: if in_history { String::new() } else { bulk.clone() },
+                        xmp: String::new(),
+                        keywords: Vec::new(),
+                        history: vec![std::collections::BTreeMap::from([(
+                            "text".into(),
+                            serde_json::json!(if in_history { bulk } else { String::new() }),
+                        )])],
+                        snapshots: Vec::new(),
+                        original: lightroom_catalog::Original::Local,
+                        as_shot_white: None,
+                        capture_one: None,
+                    }
+                })
+                .collect();
+            let archive_path = stage_archive(Some(&archive_dir), &mut data).unwrap();
+            assert_eq!(archive_path.is_some(), archived, "{warning}");
+            let mut session = crate::Session::new();
+            let token = LightroomLibraryToken::capture(&session);
+            let prepared = PreparedLightroom {
+                data,
+                normal: Prepared::default(),
+                index: ImportIndex::default(),
+                archive_path,
+                token,
+                missing_sources: HashSet::new(),
+                update_existing: false,
+                now: "2026-01-01T00:00:00".into(),
+                cancelled: false,
+            };
+            let completion = commit_prepared(&mut session, prepared).unwrap();
+            assert_eq!(completion.report["photos"], 5_000);
+            assert!(
+                completion.report["warnings"].as_array().is_some_and(|warnings| warnings.iter().any(|w| w == warning)),
+                "the report should say: {warning}"
+            );
+            assert_eq!(session.catalog.len(), 5_000);
+            std::fs::remove_dir_all(archive_dir).unwrap();
+        }
+    }
+
+    /// A 7,984-photo Lightroom catalog sat for minutes after its tables were read: each photo's
+    /// XMP stamp worked out the whole catalog's sidecar owners again (quadratic). A large import
+    /// stamps its photos in time proportional to its size.
+    #[test]
+    fn a_large_import_stamps_its_photos_in_linear_time() {
+        let mut data = empty_data();
+        data.photos = (0..20_000)
+            .map(|source_id| lightroom_catalog::CatalogPhoto {
+                source_id,
+                uuid: format!("large-{source_id}"),
+                path: format!("/missing/large/IMG_{source_id:06}.jpg"),
+                image: std::collections::BTreeMap::from([
+                    ("id_local".into(), serde_json::json!(source_id)),
+                    ("fileFormat".into(), serde_json::json!("JPG")),
+                    ("fileWidth".into(), serde_json::json!(1)),
+                    ("fileHeight".into(), serde_json::json!(1)),
+                ]),
+                settings: String::new(),
+                xmp: String::new(),
+                keywords: Vec::new(),
+                history: Vec::new(),
+                snapshots: Vec::new(),
+                original: lightroom_catalog::Original::NotHere,
+                as_shot_white: None,
+                capture_one: None,
+            })
+            .collect();
+        let mut session = crate::Session::new();
+        let token = LightroomLibraryToken::capture(&session);
+        let prepared = PreparedLightroom {
+            data,
+            normal: Prepared::default(),
+            index: ImportIndex::default(),
+            archive_path: None,
+            token,
+            missing_sources: HashSet::new(),
+            update_existing: false,
+            now: "2026-01-01T00:00:00".into(),
+            cancelled: false,
+        };
+        let completion = commit_prepared(&mut session, prepared).unwrap();
+        assert_eq!(completion.report["photos"], 20_000);
+        // the photos' originals found at import start in step with their sidecars
+        let ids: Vec<_> = session.catalog.photos().map(|p| p.id).collect();
+        let started = std::time::Instant::now();
+        session.record_xmp_stamps(&ids, true);
+        // quadratic took minutes here even in release; linear is well under a second
+        assert!(started.elapsed() < std::time::Duration::from_secs(90), "{:?}", started.elapsed());
+        // Read Metadata from File over all of them works the sidecar owners out once too
+        session.selection.ids = ids.to_vec();
+        let started = std::time::Instant::now();
+        let read =
+            session.execute("photo.readMetadataFromFile", &serde_json::json!({ "ids": ids.iter().map(|id| id.0).collect::<Vec<_>>() })).unwrap();
+        assert_eq!(read["failed"].as_array().map(Vec::len), Some(20_000), "no file has a sidecar here");
+        assert!(started.elapsed() < std::time::Duration::from_secs(90), "{:?}", started.elapsed());
+    }
+
+    /// The archive is best-effort: a folder it can't be written to costs the archive, not the import.
+    #[test]
+    fn an_archive_that_cannot_be_written_is_a_warning_naming_its_folder() {
+        let dir = std::env::temp_dir().join(format!("lcc-lr-archive-unwritable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let interop = dir.join("Interop");
+        std::fs::create_dir_all(&interop).unwrap();
+        // more entries than the archive scans, so storing it fails while the folder stays writable
+        for i in 0..=1024 {
+            std::fs::write(interop.join(format!("other-{i}")), b"").unwrap();
+        }
+        let mut data = empty_data();
+        data.warnings = (0..10).map(|i| format!("record {i}: unreadable XMP")).collect();
+        assert_eq!(stage_archive(Some(&interop), &mut data).unwrap(), None);
+        assert_eq!(data.warnings.len(), 11);
+        assert!(data.warnings[0].contains("source archive not saved in "), "{}", data.warnings[0]);
+        assert!(data.warnings[0].contains(&*interop.to_string_lossy()), "{}", data.warnings[0]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A failed index write is an error naming the file.
+    #[test]
+    fn an_index_write_failure_names_the_index_file() {
+        let path = std::env::temp_dir().join(format!("lcc-lr-index-missing-{}", std::process::id())).join("lightroom-index.json");
+        let e = LightroomArchiveFinalization { path: Some(path.clone()), bytes: Some(b"{}".to_vec()) }.finish().unwrap_err();
+        assert!(e.to_string().contains(&*path.to_string_lossy()), "{e}");
+    }
+
+    /// A linked folder must not receive the index, and the import is refused before it changes anything.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_write_refuses_a_linked_interop_folder() {
+        let root = std::env::temp_dir().join(format!("lcc-lr-index-linked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (library, outside) = (root.join("library"), root.join("outside"));
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("lightroom-index.json"), b"not ours").unwrap();
+        std::os::unix::fs::symlink(&outside, library.join("Interop")).unwrap();
+        let path = library.join("Interop/lightroom-index.json");
+        let e = LightroomArchiveFinalization { path: Some(path), bytes: Some(b"{}".to_vec()) }.finish().unwrap_err();
+        assert!(e.to_string().contains("is a link or a file, not a folder"), "{e}");
+        assert_eq!(std::fs::read(outside.join("lightroom-index.json")).unwrap(), b"not ours");
+        let mut data = empty_data();
+        let e = stage_archive(Some(&library.join("Interop")), &mut data).unwrap_err();
+        assert!(e.to_string().contains("is a link or a file, not a folder"), "{e}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn album_step(s: &mut crate::Session, name: &str) -> lcc_catalog::AlbumId {
+        let id = s.catalog.alloc_album_id();
+        s.commit(name, lcc_catalog::Op::AddAlbum { album: lcc_catalog::Album::new(id, name) }).unwrap();
+        id
+    }
+
+    fn undo_labels(s: &crate::Session) -> Vec<String> {
+        s.undo.iter().map(|e| e.label.clone()).collect()
+    }
+
+    /// The take-back a failed import uses reverses its own step and nothing older: a step committed, merged or undone
+    /// after it means the top of the undo stack may be someone else's, and it refuses.
+    #[test]
+    fn a_take_back_refuses_once_its_step_is_no_longer_the_last() {
+        type Change = fn(&mut crate::Session);
+        let changes: [(&str, Change); 3] = [
+            ("committed", |s| {
+                album_step(s, "later");
+            }),
+            ("merged", |s| s.merge_undo(2, "merged")),
+            ("undone", |s| {
+                s.undo_step().unwrap();
+            }),
+        ];
+        for (what, change) in changes {
+            let mut s = crate::Session::new();
+            album_step(&mut s, "mine");
+            let before = s.before_step();
+            album_step(&mut s, "import");
+            let step = s.committed_step(before).unwrap();
+            change(&mut s);
+            let (albums, undo) = (s.catalog.albums().count(), undo_labels(&s));
+            let e = s.take_back(step).unwrap_err();
+            assert!(e.to_string().contains("no longer the last one"), "{what}: {e}");
+            assert_eq!((s.catalog.albums().count(), undo_labels(&s)), (albums, undo), "{what}: nothing was taken back");
+        }
+        // no step, or two, since: nothing to take back
+        let mut s = crate::Session::new();
+        let before = s.before_step();
+        assert!(s.committed_step(before).is_none());
+        album_step(&mut s, "one");
+        album_step(&mut s, "two");
+        assert!(s.committed_step(before).is_none());
+    }
+
+    /// The step leaves the queue for the library's log when it hasn't been written, so neither it nor its reversal
+    /// reaches the disk; once written, its reversal is logged after it, as an undo's is.
+    #[test]
+    fn a_take_back_drops_an_unwritten_step_and_logs_the_reversal_of_a_written_one() {
+        for written in [false, true] {
+            let mut s = crate::Session::new();
+            album_step(&mut s, "mine");
+            let before = s.before_step();
+            let id = album_step(&mut s, "import");
+            let step = s.committed_step(before).unwrap();
+            let log = if written { s.drain_log() } else { Vec::new() };
+            s.take_back(step).unwrap();
+            assert!(s.catalog.album(id).is_none());
+            assert_eq!(undo_labels(&s), ["mine"], "written: {written}");
+            assert!(s.redo.is_empty(), "nothing to redo");
+            let queued = s.drain_log();
+            if written {
+                assert_eq!(log.len(), 2);
+                assert!(matches!(queued.as_slice(), [lcc_catalog::Op::RemoveAlbum { id: removed }] if *removed == id), "{queued:?}");
+            } else {
+                assert!(matches!(queued.as_slice(), [lcc_catalog::Op::AddAlbum { album }] if album.name == "mine"), "{queued:?}");
+            }
+        }
+    }
+
+    /// A step whose reversal the catalog refuses stays on the undo stack, and the error says why.
+    #[test]
+    fn a_step_that_cannot_be_taken_back_stays_on_the_undo_stack() {
+        let mut s = crate::Session::new();
+        let before = s.before_step();
+        let id = album_step(&mut s, "import");
+        let step = s.committed_step(before).unwrap();
+        // the album goes behind the step's back: its reversal (removing it) has nothing to remove
+        s.apply_system(lcc_catalog::Op::RemoveAlbum { id }).unwrap();
+        assert!(s.take_back(step).is_err());
+        assert_eq!(undo_labels(&s), ["import"]);
+    }
+
+    #[test]
+    fn execute_fn_import_does_not_rewrite_source_sidecar() {
+        let dir = std::env::temp_dir().join(format!("app-lr-job-sidecar-{}", std::process::id()));
+        let path = dir.join("source.jpg");
+        let sidecar = dir.join("source.xmp");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, b"fixture").unwrap();
+        std::fs::write(&sidecar, b"original sidecar").unwrap();
+        let original = std::fs::read(&sidecar).unwrap();
+        let mut session = crate::Session::new();
+        session.xmp.auto_write = true;
+        let result = session.execute_fn("library.importLightroom", |s| {
+            let prepared = prepared_for(s, &path.to_string_lossy(), 5);
+            let completion = commit_prepared(s, prepared)?;
+            Ok(completion.report)
+        });
+        assert!(result.is_ok());
+        assert_eq!(std::fs::read(&sidecar).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

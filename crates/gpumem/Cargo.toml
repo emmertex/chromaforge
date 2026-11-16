@@ -1,0 +1,34 @@
+[package]
+name = "lcc-gpumem"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU memory (L0): how much memory a wgpu adapter offers (Vulkan heaps, the DXGI budget, Metal's working set), read through wgpu-hal. One of the crates allowed `unsafe` (wgpu-hal calls)."
+
+# Opts out of the workspace lints only to keep `unsafe_code = "deny"` overridable for the backend
+# modules below; every other crate root has `#![forbid(unsafe_code)]`. See CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+wgpu = { workspace = true }
+
+[target.'cfg(any(windows, all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32"))))'.dependencies]
+wgpu-hal = { version = "30", default-features = false, features = ["vulkan"] }
+ash = { version = "0.38", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+wgpu-hal = { version = "30", default-features = false, features = ["vulkan", "dx12"] }
+windows = { version = "0.62", default-features = false, features = ["Win32_Graphics_Dxgi"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu-hal = { version = "30", default-features = false, features = ["metal"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLDevice"] }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
+pollster = { workspace = true }

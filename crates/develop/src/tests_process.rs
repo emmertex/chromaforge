@@ -1,0 +1,240 @@
+//! Process versions: settings saved before they existed stay on V1, new settings get the latest,
+//! and numbers this build doesn't know load without harm.
+
+use serde_json::{Value, json};
+
+use crate::*;
+
+/// Complete settings as the app wrote them before process versions existed (main at 8f924a9:
+/// `serde_json::to_string` of a raw photo with tone, colour, curve, grading, effects and a radial
+/// mask), one top-level key per line. There is no `process` field.
+const LEGACY: &str = r#"
+{
+  "version": 1,
+  "profile": {"id": "lc.color", "amount": 100.0},
+  "treatment": "color",
+  "wb": {"mode": "asShot", "temp": 5200.0, "tint": 4.0},
+  "light": {"exposure": 0.4, "contrast": 30.0, "highlights": -60.0, "shadows": 40.0, "whites": 15.0, "blacks": -20.0},
+  "curve": {"highlights": -10.0, "lights": 0.0, "darks": 10.0, "shadows": 0.0, "split_shadows": 25.0, "split_mid": 50.0, "split_highlights": 75.0, "master": [{"x": 0.0, "y": 0.05}, {"x": 0.5, "y": 0.55}, {"x": 1.0, "y": 0.95}], "red": [], "green": [], "blue": [], "refine_saturation": 100.0},
+  "color": {"vibrance": 20.0, "saturation": -5.0},
+  "mixer": {"red": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "orange": {"hue": 0.0, "sat": 0.0, "lum": 15.0}, "yellow": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "green": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "aqua": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "blue": {"hue": 0.0, "sat": -30.0, "lum": 0.0}, "purple": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "magenta": {"hue": 0.0, "sat": 0.0, "lum": 0.0}},
+  "point_colors": [],
+  "bw_mix": {"red": 0.0, "orange": 0.0, "yellow": 0.0, "green": 0.0, "aqua": 0.0, "blue": 0.0, "purple": 0.0, "magenta": 0.0},
+  "grading": {"shadows": {"hue": 220.0, "sat": 20.0, "lum": -5.0}, "midtones": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "highlights": {"hue": 40.0, "sat": 15.0, "lum": 5.0}, "global": {"hue": 0.0, "sat": 0.0, "lum": 0.0}, "blending": 50.0, "balance": 0.0},
+  "effects": {"texture": 20.0, "clarity": 25.0, "dehaze": 15.0},
+  "vignette": {"amount": -25.0, "midpoint": 50.0, "roundness": 0.0, "feather": 50.0, "highlights": 0.0, "style": "highlightPriority"},
+  "grain": {"amount": 20.0, "size": 25.0, "roughness": 50.0, "seed": 0},
+  "detail": {"sharpen_amount": 40.0, "sharpen_radius": 1.0, "sharpen_detail": 25.0, "sharpen_masking": 0.0, "nr_luminance": 20.0, "nr_detail": 50.0, "nr_contrast": 0.0, "nr_color": 25.0, "nr_color_detail": 50.0, "nr_color_smoothness": 50.0},
+  "optics": {"remove_ca": false, "lens_profile": false, "profile_distortion": 100.0, "profile_vignetting": 100.0, "defringe_purple_amount": 0.0, "defringe_purple_hue_lo": 30.0, "defringe_purple_hue_hi": 70.0, "defringe_green_amount": 0.0, "defringe_green_hue_lo": 40.0, "defringe_green_hue_hi": 60.0, "distortion": 0.0, "vignetting": 0.0, "vignetting_midpoint": 50.0, "ca_red": 0.0, "ca_blue": 0.0},
+  "geometry": {"upright": "off", "guides": [], "upright_transform": null, "vertical": 0.0, "horizontal": 0.0, "rotate": 0.0, "aspect": 0.0, "scale": 100.0, "offset_x": 0.0, "offset_y": 0.0, "constrain_crop": false},
+  "crop": {"geometry": {"rect": {"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}, "angle": 0.0}, "aspect": null, "flip_h": false, "flip_v": false},
+  "orientation": "Normal",
+  "masks": [{"id": 1, "name": "Mask 1", "visible": true, "invert": false, "components": [{"op": "add", "invert": false, "shape": {"kind": "radial", "center": {"x": 0.4, "y": 0.5}, "rx": 0.3, "ry": 0.2, "angle": 15.0, "feather": 60.0, "invert": false}}], "adjust": {"temp": 10.0, "tint": 0.0, "exposure": 0.5, "contrast": 0.0, "highlights": 0.0, "shadows": 0.0, "whites": 0.0, "blacks": 0.0, "texture": 0.0, "clarity": 30.0, "dehaze": 0.0, "hue": 0.0, "saturation": 0.0, "sharpness": 0.0, "noise": 0.0, "moire": 0.0, "defringe": 0.0, "color_hue": 0.0, "color_sat": 0.0, "amount": 100.0}}],
+  "spots": [],
+  "red_eye": [],
+  "lens_blur": {"enabled": false, "amount": 0.0, "focal_distance": 0.0, "focal_range": 0.0},
+  "enhance": {"denoise": 0.0, "raw_details": false, "super_resolution": false},
+  "calibration": {"shadows_tint": 0.0, "red_hue": 0.0, "red_sat": 0.0, "green_hue": 0.0, "green_sat": 0.0, "blue_hue": 0.0, "blue_sat": 0.0},
+  "disabled_sections": []
+}
+"#;
+
+fn legacy() -> Value {
+    serde_json::from_str(LEGACY).unwrap()
+}
+
+#[test]
+fn settings_saved_before_process_versions_load_as_v1() {
+    let v = legacy();
+    assert!(v.get("process").is_none(), "the fixture predates the field");
+    let s = DevelopSettings::from_json(&v).unwrap();
+    // V1 as a number, not `LATEST`: once a newer process is the latest, this is what keeps every
+    // existing catalog, sidecar and preset on the rendering it was made with
+    assert_eq!(s.process, ProcessVersion(1));
+    assert_eq!(s.process, ProcessVersion::legacy());
+    assert_eq!((s.light.exposure, s.light.highlights, s.masks.len(), s.detail.sharpen_amount), (0.4, -60.0, 1, 40.0));
+    // the smallest legacy file too, and settings nested in other records (history, versions)
+    assert_eq!(DevelopSettings::from_json(&json!({})).unwrap().process, ProcessVersion(1));
+    let nested: Vec<DevelopSettings> = serde_json::from_value(json!([{}, {"light": {"exposure": 1.0}}])).unwrap();
+    assert!(nested.iter().all(|s| s.process == ProcessVersion(1)));
+    // saved again, they gain no field: files and preview-cache keys (`hash64`) stay as they were
+    assert!(s.to_json().get("process").is_none());
+}
+
+#[test]
+fn processes_are_listed_oldest_first_and_round_trip() {
+    // the processes are listed oldest first, the latest last, each with its own number
+    let versions: Vec<u32> = Process::ALL.iter().map(|p| p.version().0).collect();
+    assert!(versions.windows(2).all(|w| w[0] < w[1]), "{versions:?}");
+    assert_eq!(Process::ALL.last(), Some(&Process::LATEST));
+    assert!(Process::ALL.iter().all(|p| p.version().process() == *p && p.version().is_known()));
+}
+
+#[test]
+fn v1_is_left_out_when_saving_and_other_processes_are_kept() {
+    let mut s = DevelopSettings::from_json(&legacy()).unwrap();
+    assert!(s.to_json().get("process").is_none());
+    let before = s.hash64();
+    s.process = ProcessVersion(2);
+    let v = s.to_json();
+    assert_eq!(v["process"], json!(2));
+    assert_eq!(DevelopSettings::from_json(&v).unwrap().process, ProcessVersion(2));
+    assert_ne!(s.hash64(), before, "another process is another preview");
+}
+
+#[test]
+fn unknown_process_numbers_load_and_render_with_the_newest_known() {
+    // written by a newer version of the app: kept as it is, rendered with the latest process this build has
+    let s = DevelopSettings::from_json(&json!({"process": LATEST_PLUS_ONE, "light": {"exposure": 0.5}})).unwrap();
+    assert_eq!(s.process, ProcessVersion(LATEST_PLUS_ONE));
+    assert_eq!(s.process.process(), Process::LATEST);
+    assert!(!s.process.is_known());
+    assert!(!s.process.is_outdated(), "never downgraded by Update to Current Process");
+    assert_eq!(s.to_json()["process"], json!(LATEST_PLUS_ONE));
+    assert_eq!(s.merged(&json!({"light": {"exposure": 1.0}})).unwrap().process, ProcessVersion(LATEST_PLUS_ONE));
+    // below V1 (no version of the app writes it): rendered as V1, and updatable
+    let zero = DevelopSettings::from_json(&json!({"process": 0})).unwrap().process;
+    assert_eq!((zero.process(), zero.is_known(), zero.is_outdated()), (Process::V1, false, true));
+    let max = DevelopSettings::from_json(&json!({"process": u32::MAX})).unwrap().process;
+    assert_eq!(max.process(), Process::LATEST);
+    // a whole number written as a float is that number
+    assert_eq!(DevelopSettings::from_json(&json!({"process": 2.0})).unwrap().process, ProcessVersion(2));
+}
+
+#[test]
+fn a_damaged_process_value_reads_as_v1_and_keeps_the_edits() {
+    let too_big = u64::from(u32::MAX) + 1;
+    for bad in [
+        json!(-1),
+        json!(1.5),
+        json!(-0.5),
+        json!(1e300),
+        json!(too_big),
+        json!(u64::MAX),
+        json!("2"),
+        json!(null),
+        json!(true),
+        json!([2]),
+        json!({"v": 2}),
+    ] {
+        let mut v = legacy();
+        v["process"] = bad.clone();
+        let s = DevelopSettings::from_json(&v).unwrap_or_else(|e| panic!("{bad}: {e}"));
+        assert_eq!(s.process, ProcessVersion::V1, "{bad}");
+        assert_eq!((s.light.exposure, s.masks.len(), s.curve.master.len()), (0.4, 1, 3), "{bad}: the rest of the settings load");
+        // nested in other records too (history, versions, the catalog)
+        let nested: Vec<DevelopSettings> = serde_json::from_value(json!([v])).unwrap();
+        assert_eq!(nested[0].process, ProcessVersion::V1);
+    }
+}
+
+#[test]
+fn the_process_is_not_an_edit_nor_part_of_copied_settings() {
+    let mut s = DevelopSettings { process: ProcessVersion(LATEST_PLUS_ONE), ..Default::default() };
+    assert!(s.is_unedited(), "a photo on another process is not edited for that");
+    s.light.exposure = 1.0;
+    assert!(!s.is_unedited());
+    // resetting a section or a slider leaves the process alone
+    s.reset_section(Section::Light);
+    assert_eq!(s.process, ProcessVersion(LATEST_PLUS_ONE));
+    // copy / paste / sync / presets: no group carries the process, so the target keeps its own
+    assert!(SettingsGroup::ALL.iter().all(|g| !g.keys().contains(&"process")));
+    s.light.exposure = 1.0;
+    let copied = extract_groups(&s, &SettingsGroup::ALL);
+    assert!(copied.get("process").is_none());
+    let target = DevelopSettings::from_json(&legacy()).unwrap();
+    let pasted = apply_partial(&target, &copied, 1.0);
+    assert_eq!((pasted.process, pasted.light.exposure), (ProcessVersion(1), 1.0));
+    // (at another amount, without Grain: its integer seed doesn't survive scaling, a separate issue)
+    let groups: Vec<SettingsGroup> = SettingsGroup::ALL.into_iter().filter(|g| *g != SettingsGroup::Grain).collect();
+    let preset = Preset::from_settings("p", "P", "User", &s, &groups);
+    let half = preset.apply(&target, 0.5);
+    assert_eq!((half.process, half.light.exposure), (ProcessVersion(1), 0.7));
+    // a partial that names a process explicitly (Apply Settings JSON) sets it
+    assert_eq!(target.merged(&json!({"process": LATEST_PLUS_ONE})).unwrap().process, ProcessVersion(LATEST_PLUS_ONE));
+}
+
+/// A process other than the latest: a newer version of the app's number (no older one than V1 exists).
+const LATEST_PLUS_ONE: u32 = ProcessVersion::LATEST.0 + 1;
+
+#[test]
+fn plugin_filters_absent_from_old_json_and_not_written_when_empty() {
+    let old = DevelopSettings::default();
+    let mut v = old.to_json();
+    assert!(v.get("plugin_filters").is_none(), "an empty stack is not written");
+    v.as_object_mut().unwrap().remove("plugin_filters");
+    let back = DevelopSettings::from_json(&v).unwrap();
+    assert!(back.plugin_filters.is_empty());
+    assert_eq!(back.hash64(), old.hash64());
+
+    let mut s = DevelopSettings::default();
+    s.plugin_filters.push(PluginFilter { uid: 1, plugin: "x.neg".into(), name: "Negative".into(), stage: FilterStage::Source, ..Default::default() });
+    let rt = DevelopSettings::from_json(&s.to_json()).unwrap();
+    assert_eq!(rt, s);
+    assert_ne!(s.hash64(), old.hash64());
+    assert_eq!(s.active_plugin_filters(FilterStage::Source).count(), 1);
+    s.set_section_enabled(PLUGIN_FILTERS_SECTION, false);
+    assert_eq!(s.active_plugin_filters(FilterStage::Source).count(), 0);
+    assert!(s.effective().plugin_filters.is_empty());
+    // Copying the group carries an empty stack too, so a paste clears the target's.
+    let empty = extract_groups(&DevelopSettings::default(), &[SettingsGroup::PluginFilters]);
+    assert_eq!(s.merged(&empty).unwrap().plugin_filters.len(), 0);
+}
+
+/// The fork's Lightroom Classic panels each switch off their own settings: Tone Curve the curve, Color Mixer the
+/// mixer (and point colour), Color Grading the grading; the others stay.
+#[test]
+fn lightroom_classic_panels_switch_off_their_own_settings() {
+    let mut s = DevelopSettings::default();
+    s.curve.highlights = 20.0;
+    s.mixer.red.hue = 30.0;
+    controls::set(&mut s, "grading.shadows.sat", 40.0);
+    let graded = controls::get(&s, "grading.shadows.sat");
+    for (section, curve, hue, grading) in [("curve", 0.0, 30.0, graded), ("mixer", 20.0, 0.0, graded), ("grading", 20.0, 30.0, Some(0.0))] {
+        let mut d = s.clone();
+        d.set_section_enabled(section, false);
+        let e = d.effective();
+        assert_eq!((e.curve.highlights, e.mixer.red.hue, controls::get(&e, "grading.shadows.sat")), (curve, hue, grading), "{section} off");
+    }
+}
+
+/// Denoise's response: V5 and older keep the straight mix, V6 eases it; every process goes from 0 to 1, rises with
+/// the slider and shrugs off hostile amounts.
+#[test]
+fn denoise_weight_is_straight_before_v6_and_eased_from_it() {
+    for p in Process::ALL {
+        if p < Process::V6 {
+            for a in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                assert_eq!(denoise_weight(p, a), a, "{p:?} at {a}");
+            }
+        }
+        assert_eq!(denoise_weight(p, 0.0), 0.0);
+        assert_eq!(denoise_weight(p, 1.0), 1.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -3.0, 7.0] {
+            let w = denoise_weight(p, bad);
+            assert!((0.0..=1.0).contains(&w), "{p:?} at {bad}");
+        }
+        let mut last = -1.0;
+        for i in 0..=100 {
+            let w = denoise_weight(p, i as f32 / 100.0);
+            assert!(w > last, "{p:?} rises at {i}");
+            last = w;
+        }
+    }
+    assert!(denoise_weight(Process::V6, 0.5) >= 0.7);
+    let mut s = DevelopSettings::default();
+    s.enhance.denoise_on = Some(true);
+    s.enhance.denoise = f64::NAN;
+    assert_eq!(s.denoise_amount(), 0.0);
+    s.enhance.denoise = 1e300;
+    assert_eq!(s.denoise_amount(), 1.0);
+}
+
+/// Grain saved before process V7's particle controls existed loads with their defaults (OneSlips).
+#[test]
+fn grain_saved_without_the_new_fields_loads_with_their_defaults() {
+    let s = DevelopSettings::from_json(&legacy()).unwrap();
+    let d = Grain::default();
+    assert_eq!((s.grain.amount, s.grain.size, s.grain.roughness, s.grain.seed), (20.0, 25.0, 50.0, 0));
+    assert_eq!((s.grain.color, s.grain.response, s.grain.size_variation, s.grain.clumping), (d.color, d.response, d.size_variation, d.clumping));
+}

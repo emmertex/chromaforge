@@ -1,0 +1,2 @@
+upstream-owned.txt merge=union
+crates/camdb/data/calibrations/*.json text eol=lf

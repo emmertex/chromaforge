@@ -1,0 +1,284 @@
+# Calibrating a camera against Lightroom
+
+> **Last updated:** 2026-10-25
+
+The app renders most raws close to Lightroom, but not the same: its camera colour is estimated (from the camera's
+own JPEG, spectral data or DNG matrices), not matched. `chromaforge-cli calibrate-lightroom` closes that gap one camera model at
+a time. You run it on **your own raws** and **Lightroom's exports of the same photos**. It fits the camera's colour
+model and one look per Lightroom profile you exported, and writes **one small file of numbers** that you send to the
+project. Once it is added, every user of that camera gets the matched colour, and catalogues imported from Lightroom
+pick the matching look for each photo's profile.
+
+`chromaforge-cli` is the command-line tool shipped with every release (next to the app).
+
+## Running the command-line tool
+
+The desktop app doesn't take commands: the fit runs in **`chromaforge-cli`**, the command-line tool every release ships
+next to it. The examples use release 26.43.7; use the version you downloaded. Each one ends with `--help`, which lists
+every subcommand: replace it with `calibrate-lightroom …` from the steps below. Folder names with spaces need quotes
+(`"My Photos"`).
+
+### Windows
+
+Open **PowerShell** (Start menu ▸ type *PowerShell*).
+
+- **Installer (`chromaforge-26.43.7-windows-x64.msi`)**: the tool is installed next to the app, by default in
+  `C:\Program Files\Chromaforge`:
+
+  ```powershell
+  & "C:\Program Files\Chromaforge\chromaforge-cli.exe" --help
+  ```
+
+  (If you chose another folder at install, use that one.)
+- **Portable (`chromaforge-26.43.7-windows-x64-portable.zip`)**: unzip it (right-click ▸ *Extract All…*), then in
+  PowerShell go to that folder and run the tool from it:
+
+  ```powershell
+  cd "$HOME\Downloads\chromaforge-26.43.7-windows-x64-portable"
+  .\chromaforge-cli.exe --help
+  ```
+
+On ARM PCs the files say `arm64` instead of `x64`.
+
+### macOS
+
+The tool is inside the app (`chromaforge-<version>-macos-universal.dmg`; earlier releases had it as a separate
+`chromaforge-cli-<version>-macos-universal.zip`). Open the app once first, so macOS knows you allowed it (the
+manual's Install page has the steps), then open **Terminal** (Applications ▸ Utilities) and run it from there:
+
+```sh
+/Applications/Chromaforge.app/Contents/MacOS/chromaforge-cli --help
+```
+
+To type just `chromaforge-cli`, link it onto your PATH once (the Install page has the details):
+`ln -sf /Applications/Chromaforge.app/Contents/MacOS/chromaforge-cli ~/.local/bin/chromaforge-cli`.
+
+### Linux
+
+Open a terminal.
+
+- **Debian/Ubuntu (`.deb`) or Fedora/openSUSE (`.rpm`)**: the package installs the tool on your PATH:
+
+  ```sh
+  chromaforge-cli --help
+  ```
+
+- **Tarball (`chromaforge-26.43.7-linux-x86_64.tar.gz`)**: unpack it and run the tool from its `bin` folder:
+
+  ```sh
+  tar xf chromaforge-26.43.7-linux-x86_64.tar.gz
+  ./chromaforge-26.43.7-linux-x86_64/bin/chromaforge-cli --help
+  ```
+
+- **AppImage**: starting the AppImage starts the app; the tool is inside it. Unpack it once and run the tool from the
+  unpacked folder:
+
+  ```sh
+  chmod +x chromaforge-26.43.7-linux-x86_64.AppImage
+  ./chromaforge-26.43.7-linux-x86_64.AppImage --appimage-extract
+  ./squashfs-root/usr/bin/chromaforge-cli --help
+  ```
+
+- **Flatpak**: run the tool inside the app's sandbox, giving it your home folder (where the raws and exports are):
+
+  ```sh
+  flatpak run --filesystem=home --command=chromaforge-cli com.emmertex.chromaforge --help
+  ```
+
+Every example below writes `chromaforge-cli`: put the path or prefix you used here in front of it.
+
+## What you need
+
+- 20 or more raws from **one camera model**, as varied as you can: daylight, shade, **tungsten / indoor light**,
+  saturated colours (foliage, sky, skin, flowers, signs). Both warm and cool light matter: the fit places two white
+  points, one for each.
+- Lightroom Classic (or Lightroom) with those raws in a catalogue.
+
+## Step by step
+
+1. **Write the baseline preset:**
+
+   ```sh
+   chromaforge-cli calibrate-lightroom preset -o Baseline.xmp
+   ```
+
+   It sets every Basic and Presence slider to 0, sharpening and noise reduction (colour too) to 0, turns lens
+   profile, chromatic aberration and vignetting corrections off, removes crops and keeps White Balance *As Shot*. It
+   picks no profile. Import it in Lightroom's Develop module (Presets ▸ Import Presets…).
+
+2. **Make virtual copies** of the photos (Photo ▸ Create Virtual Copy) so your own edits stay untouched, and apply
+   the baseline preset to the copies.
+
+3. **Choose a profile** on the copies (*Adobe Standard* is required; *Adobe Color*, *Camera Standard* and others are
+   optional extras, one export each) and **export** with:
+   - File format **TIFF**, **16 bits**, colour space **ProPhoto RGB**, no compression or ZIP;
+   - image sizing off (full size), output sharpening off;
+   - metadata **All** (the tool reads camera model, capture time and the profile name from it);
+   - into **one folder per profile**, named after it, e.g. `exports/Adobe Standard/`, `exports/Adobe Color/`. Folders
+     are searched with their subfolders, so you can pass just `exports` (each file's profile comes from its metadata,
+     else from the folder it is in).
+
+   Repeat step 3 for each profile you want matched.
+
+4. **Check the set** without fitting:
+
+   ```sh
+   chromaforge-cli calibrate-lightroom fit --raws ~/Pictures/raws --exports exports --dry-run
+   ```
+
+   It prints how many raw ↔ export pairs it found, each file it skipped and why (a different camera, a crop, a
+   non-zero slider, no matching raw), the white-balance range covered and the looks found. A narrow range means you
+   should add tungsten-lit or daylight photos.
+
+5. **Fit:**
+
+   ```sh
+   chromaforge-cli calibrate-lightroom fit --raws ~/Pictures/raws --exports exports -o out --contributor "Your Name"
+   ```
+
+   Progress goes to the terminal; a fit takes a few minutes. It writes:
+   - `out/<Make>_<Model>.json`: **the file to send**;
+   - `out/<Make>_<Model>.<look>.dcp`: one camera profile per look, **for your own testing only**. Import it in the
+     app (command `camera.importDcp`) to see the result on your photos. Don't send or publish these.
+
+   The tool lists exactly what the JSON holds and the held-out colour error (ΔE00 on photos the fit did not see)
+   with the app's current colour and with the calibration. If the calibration doesn't beat the current colour, it
+   says what failed (often: add photos under another light).
+
+6. **Send the JSON file** where `fit` tells you to: the project's calibration thread on Discord (the link is printed),
+   or an issue on the project's repository. `--contributor`
+   is optional; leave it out to stay anonymous.
+
+## Other editors: Capture One, darktable, RawTherapee, DxO PhotoLab
+
+The same fit works against another editor's exports, so people moving from it can open their raws in its look:
+
+```
+chromaforge-cli calibrate-lightroom fit --editor capture-one --raws RAWS --exports EXPORTS
+```
+
+`--editor` takes `capture-one`, `darktable`, `rawtherapee`, `dxo-photolab` or `lightroom` (the default). Prepare
+the exports as for Lightroom: the editor's default rendering of each raw with nothing adjusted, white balance As Shot,
+no crop, no lens correction, sharpening and noise reduction off where the editor allows. Export 16-bit TIFFs in a
+wide colour space with its ICC profile embedded, one folder per look (the folder's name names the look). Those other
+editors write no settings the fit could check, so it can't tell whether an export was adjusted: keep them at their
+defaults.
+
+What differs from a Lightroom calibration:
+
+- The file is `<Make>_<Model>_<editor>.json` and its looks are named after the editor ("Capture One Standard"), so
+  it sits beside a Lightroom calibration of the same camera without replacing it.
+- Only Lightroom gives its temperature and tint in the exports, so the white points come from the camera database's
+  matrices rather than from the editor.
+- Its looks are offered per photo (Profile ▸ Camera profile), never as the camera's default: only a Lightroom
+  calibration's first look starts every photo of the camera.
+
+## Privacy: what the file holds
+
+Only aggregate numbers: camera make and model, two colour and two forward matrices, optional hue/saturation maps,
+per look an exposure offset, tone curve and optional look table, and the evidence (number of photos and samples,
+photos per white-balance range, hue coverage, held-out ΔE00). The optional contributor name and the tool version.
+
+It holds **no image content, file names, dates, serial numbers, locations or lens data**. The file is checked against
+an allow-list of fields when written and again when added to the repository: a file with any other field is refused.
+Anything that contains your images (the `.dcp` files' test renders, a local report) stays on your computer.
+
+## Why this is allowed (data rules)
+
+Maintainer decision 2026-10-25: a black-box fit to Lightroom's **output images** of a contributor's own photos may
+ship, as aggregate statistics under MIT OR Apache-2.0. Adobe's own profile files (DCP, LCP), matrices read from
+Adobe-converted DNGs and Adobe-rendered pixels never ship.
+
+## For developers: adding a contribution
+
+```sh
+chromaforge-cli calibrate-lightroom add path/to/<Make>_<Model>.json [--repo .] [--contributor "Name"] [--lens "Lens model"] [--replace]
+```
+
+`add` parses and validates the file (format version, allow-listed fields, matrix and table bounds), optionally sets
+the contributor, writes the canonical form to `crates/camdb/data/calibrations/<Make>_<Model>.json` and adds (or
+replaces) its row in `assets/ATTRIBUTION.md`. Commit both, with the release notes. A file that fails validation is
+refused with the reason and nothing is written.
+
+**One file per camera, lens and editor.** A fit can be for one lens: `--lens` (on `fit` or `add`) records the
+photos' Exif lens model (`LensModel`, the model identifier only, never a serial number) and the file becomes
+`<Make>_<Model>_<Lens>.json`. A photo uses its own lens's calibration when there is one, else the camera's lens-less
+calibration, and never a calibration made for another lens; phones whose cameras share one Exif model (e.g. a main,
+wide and ultrawide module) need this. `add` refuses to overwrite a calibration already there for the same camera,
+lens and editor; pass `--replace` to replace it (the two fits are not merged).
+
+Before committing, try a contribution in a debug build without adding it: point
+`CHROMAFORGE_CAMERA_CALIBRATIONS` at a folder holding the JSON and open that camera's raws. `chromaforge-cli calibrate-lightroom
+list` prints the calibrations built into a binary, their looks (`cal:<id>`) and their held-out ΔE00.
+
+### Probe DNGs and slider sweeps: `probe`, `probe-check`
+
+Natural photos rarely show a camera's most saturated colours, which is where profiles differ most. A **probe** fills
+that in, and its **slider sweeps** measure how Lightroom's sliders respond, so the import of Lightroom edits can be
+tuned to match.
+
+```
+chromaforge-cli calibrate-lightroom probe -o probes --like IMG_0001.ARW
+```
+
+1. **Write the probes.** This writes `probe_base.dng`, a grid of 384 flat colour patches spread through the camera's
+   RGB (a cube, a grey ramp and saturated primaries and secondaries). It also writes one copy per sweep step with a
+   single Lightroom setting embedded in its XMP: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Dehaze,
+   Vibrance, Saturation, and the eight colours' Hue, Saturation and Luminance, at a few values each. The probes
+   carry your camera's make and model (`--like` copies them from one of its raws; else `--make` and `--model`) and a
+   colour matrix from the camera database. They also set `UniqueCameraModel` (override with `--unique-model`), which
+   Lightroom uses to offer its own profiles for the camera.
+2. **Render them in Lightroom.** Import the folder; Lightroom applies each probe's embedded setting on import. If
+   the probes show unedited, select them all and choose Metadata ▸ Read Metadata from Files. Check that the base
+   probe's profile is the one you want calibrated (Adobe Color by default), then export every probe as a 16-bit
+   ProPhoto RGB TIFF, keeping the file names.
+3. **Check them:**
+   ```
+   chromaforge-cli calibrate-lightroom probe-check --probes probes --exports probe-exports
+   ```
+   It prints the default render's ΔE00 between Lightroom and the app over the patches. For every sweep step it
+   prints the app control the import maps that setting to, the value the import uses, and the app value whose change
+   from the base probe matches Lightroom's change best, each with its error. It compares changes rather than colours,
+   so the difference between the two default looks doesn't bias the slider answer. `--json` and `-o FILE` give the
+   full report.
+4. **Feed the base probe to `fit`.** Add the probe folder to `fit --raws` and the folder holding `probe_base`'s
+   export to `--exports`, next to your own raws and exports. It pairs by name like any raw. The sweep exports aren't
+   at the baseline and are skipped.
+
+The probes are synthetic: they contain no photo of yours and no Adobe data, and Lightroom only renders them.
+
+### Checking edited photos: `verify`
+
+`chromaforge-cli calibrate-lightroom verify --raws DIR… --exports DIR…` answers "will my edited photos look the same
+after the move?". Export your *edited* photos from Lightroom as 16-bit TIFFs (any profile, crop or slider settings,
+**Include: All Metadata** so the export carries its develop settings). Point `verify` at the raws and at those
+exports. For each pair (matched by camera model and capture time, else by file name) it does three things:
+
+1. Imports the raw as the app would: it reads the raw's XMP sidecar, or, when the export carries its own `crs:`
+   settings, uses those instead, since they are exactly what was exported.
+2. Renders it in the colour space the export was written in (sRGB, Adobe RGB, Display P3, ProPhoto…), so both are
+   clipped to the same gamut.
+3. Measures the render against the export with `compare` (CIEDE2000).
+
+It prints one line per photo, then a table by **group of controls** the edits used: light, tone curve, presence,
+colour mixer, colour grading, white balance, profile, effects, lens, crop, masks, black & white, or default. A group
+whose error stands out is the part of the import to look at. `--report DIR` writes `verify.json` and a ΔE00 map per
+photo; `--json` prints the report; `--max N` checks the first N pairs; `--size N` sets the long edge compared. The
+exports are only read, never changed or sent anywhere.
+
+### Measuring a render against another editor: `compare`
+
+`chromaforge-cli compare REFERENCE TEST` measures how far one render of a photo is from another, from any editor or
+camera (JPEG, TIFF, PNG, … read through their embedded colour profiles). It lines the two up (scale and shift, so a
+small lens-correction or crop difference is fine), then prints CIEDE2000 mean, median, p95 and p99 overall, by tone
+band (by the reference's L*) and by hue sector, with the test's mean lightness, chroma and hue bias. `--diff MAP.png`
+writes a false-colour ΔE00 map, `--json` the full report, `--size N` sets the long edge compared (default 512) and
+`--no-align` compares pixel for pixel. Use it to check a calibration on photos it did not see, or the app's render of
+an edited photo against the edited export from the editor you are moving from:
+
+```
+chromaforge-cli render IMG_0001.CR3 -o ours.tif
+chromaforge-cli compare lightroom/IMG_0001.tif ours.tif --diff map.png
+```
+
+Sources: own design; DNG specification 1.7 chapter 6 (profile model); CIEDE2000 (Sharma, Wu, Dalal 2005).

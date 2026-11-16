@@ -1,0 +1,2 @@
+### Lens profiles fit cropped image areas
+- Raws shot in a smaller image area of a full-frame Nikon (5:4, 1:1, 16:9 or DX) get the lens profile's correction for their part of the sensor. Before, the whole full-frame profile was stretched over the smaller frame, so the corners were brightened too much (up to half a stop at f/1.8 in 5:4) and distortion was slightly off. Photos shot in the normal 3:2 area don't change. Previews of affected photos update when they are next rendered.

@@ -1,0 +1,190 @@
+# Quality gates (docs/ci.md).
+# PRs and pushes to main run the FAST gate: Linux `cargo xtask ci --fast` (fmt, brand, docs, clippy, heif
+# clippy, parity, layers, assets, deny, wasm; no unit-test run) plus the SIL suite when it exists; macOS
+# and Windows clippy only. A push to main whose tree a green PR run already tested is skipped (`tested`).
+# Manual dispatch runs the FULL gate (before a release, on the commit that goes to `release`):
+# `cargo xtask ci` with every test on Linux, and the workspace tests on macOS and Windows. A push to
+# `release` runs no CI: the dispatched run tested that commit. FreeBSD has its own workflow (freebsd.yml).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # A manual (full) run has its own group: GitHub keeps one waiting run per group, so a push to the same
+  # ref would otherwise replace a dispatched pre-release run that is still waiting for a runner.
+  group: ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'full' || 'push' }}
+  # On main every push keeps its run (a newer push waits behind it), so a run of merges still gets
+  # a result; on other refs a newer push replaces the older run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+  # Fonts (optional build input): the CJK font tests run instead of skipping.
+  CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+  CRAFT_FONTS_REQUIRED: "1"
+  # full test runs only on manual dispatch (before a release)
+  FULL_CI: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+
+jobs:
+  # A push to main usually merges a PR whose run already tested exactly this tree (GitHub's PR run
+  # checks out the same merge of the PR into main). Each green PR run leaves a `ci-tree-<tree>`
+  # marker artifact; when the pushed commit's tree has one, the push run skips its jobs. If main moved
+  # after the PR run, the merge has a new tree and everything runs.
+  tested:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Linux, X64, lcc]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      hit: ${{ steps.marker.outputs.hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+      - run: bash .github/scripts/install-gh.sh
+      - id: marker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=ci-tree-$tree&per_page=10"             --jq '[.artifacts[] | select(.expired | not)] | length' || echo 0)
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "hit=true" >>"$GITHUB_OUTPUT"
+            echo "::notice::tree $tree already passed CI in its PR run; the push run is skipped"
+          else
+            echo "hit=false" >>"$GITHUB_OUTPUT"
+          fi
+
+  linux:
+    name: Linux (cargo xtask ci)
+    needs: tested
+    # runs on PRs and dispatches (`tested` is skipped there) and on pushes with a new tree
+    if: ${{ !cancelled() && needs.tested.outputs.hit != 'true' }}
+    # Every job runs on the maintainer's self-hosted runners (docs/ci.md). Runs for outside
+    # contributors' PRs wait for approval, given after the maintainer has read the PR's code.
+    runs-on: [self-hosted, Linux, X64, lcc]
+    defaults:
+      run:
+        # low priority: the runner machines are also used interactively
+        shell: nice -n 19 bash -e {0}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: b4ce3ee090ea4b06791e9501ea2f8e6f746d5cd3 # same pin as release.yml / freebsd.yml
+          path: craft-fonts
+      - name: Keep the build cache between runs
+        # One cache per runner instance (several can share a machine and run at once); a runner's
+        # .env may set CARGO_TARGET_DIR itself.
+        run: echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/lcc-ci-target-$RUNNER_NAME}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/sccache
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          # x86_64-linux-android: the full run checks both ABIs the release ships (docs/android.md)
+          targets: wasm32-unknown-unknown, aarch64-linux-android, x86_64-linux-android
+          components: rustfmt, clippy
+      - name: Android NDK (for `cargo xtask android check`)
+        run: .github/scripts/install-android-ndk.sh
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-nextest
+      # full run (CI=true): the test stage runs cargo-nextest with retries and ci/quarantine.toml (docs/ci.md)
+      - name: cargo xtask ci (--fast unless a release / manual run)
+        shell: bash
+        run: |
+          if [ -n "$FULL_CI" ]; then cargo xtask ci; else cargo xtask ci --fast; fi
+      # Software-in-the-loop suite (docs/testing-sil.md); skipped until `cargo xtask sil` exists.
+      - name: SIL suite
+        shell: bash
+        run: |
+          if grep -q 'Some("sil")' xtask/src/main.rs; then cargo xtask sil; else echo "SIL suite not present yet; skipped"; fi
+      # the marker the `tested` job of the push to main looks for (PR runs only, after every step passed)
+      - name: Mark this tree as tested
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          mkdir -p "$RUNNER_TEMP/ci-tree"
+          echo "$GITHUB_SHA" >"$RUNNER_TEMP/ci-tree/sha"
+          echo "CI_TREE=$tree" >>"$GITHUB_ENV"
+      - if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-tree-${{ env.CI_TREE }}
+          path: ${{ runner.temp }}/ci-tree/sha
+          retention-days: 14
+          overwrite: true
+
+  test:
+    name: ${{ matrix.name }} (clippy; build + tests before a release)
+    needs: tested
+    if: ${{ !cancelled() && needs.tested.outputs.hit != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the maintainer's self-hosted runners (docs/ci.md)
+          - name: macOS
+            runner: '["self-hosted", "macOS", "ARM64", "lcc"]'
+          - name: Windows
+            runner: '["self-hosted", "Windows", "X64", "lcc"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: b4ce3ee090ea4b06791e9501ea2f8e6f746d5cd3 # same pin as release.yml / freebsd.yml
+          path: craft-fonts
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy
+      - name: Low priority
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) powershell -NoProfile -Command "Get-Process -Name Runner.Worker | ForEach-Object { \$_.PriorityClass = 'BelowNormal' }" || true ;;
+            macOS) renice -n 19 -p $PPID >/dev/null ;;  # nice only: taskpolicy -b confines work to the efficiency cores
+          esac
+      - uses: taiki-e/install-action@v2
+        if: env.FULL_CI == '1'
+        with:
+          tool: cargo-nextest
+      # A full run's debug test binaries fill mac0's disk (ld: errno 28, before 26.44.1); start clean when space is low.
+      - name: Free disk space
+        if: env.FULL_CI == '1' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          dir="${CARGO_TARGET_DIR:-target}"
+          free_gb=$(df -g "$HOME" | awk 'NR==2 {print $4}')
+          echo "free: ${free_gb} GB; target dir: $dir ($(du -sh "$dir" 2>/dev/null | cut -f1))"
+          if [ "${free_gb:-0}" -lt 40 ]; then
+            rm -rf "$dir/debug"
+            echo "removed $dir/debug; free now: $(df -g "$HOME" | awk 'NR==2 {print $4}') GB"
+          fi
+      # clippy --all-targets already compiles everything the fast gate needs; the full run builds for the tests
+      - name: build
+        if: env.FULL_CI == '1'
+        run: cargo build --workspace --locked
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # nextest with retries; quarantined tests (ci/quarantine.toml) run apart and only warn (docs/ci.md)
+      - name: test
+        if: env.FULL_CI == '1'
+        run: cargo xtask quarantine test

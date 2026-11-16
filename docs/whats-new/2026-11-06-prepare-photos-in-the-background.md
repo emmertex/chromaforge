@@ -1,0 +1,5 @@
+### Photos are prepared in the background
+- Settings ▸ Performance ▸ Prepare photos in the background: while you go through photos in the loupe, the photos each side of the one on screen are made ready before you reach them (Photos ahead: Off, 3, 5, 10 or 20), their eyes are found ahead (Eye focus ahead), and once you have stepped through a few photos the previews of every photo in view are built in the computer's spare time.
+- Separate settings for culling a folder before import, the library and editing, and "Which photos": every photo, only picks and rated or labelled photos, or only the photo on screen.
+- "Use different settings for this library" keeps a library's own choices: a timelapse library can prepare nothing while a wedding library prepares everything.
+- The photo on screen always comes first: the background work waits while it is being made, pauses while you export or import, and shows as one row in the activity list ("Preparing photos in the background"), where it can be stopped. Photos whose previews are there already are skipped, and photos whose settings changed off screen (Sync, Auto Sync, paste, presets) are made again once the edits settle.

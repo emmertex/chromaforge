@@ -1,0 +1,389 @@
+//! Dependency layering rules (plan/architecture.md §3).
+//!
+//! The rule engine works on a small, metadata-independent model so it can be
+//! unit-tested; `from_metadata` builds that model from `cargo metadata`.
+
+use serde_json::Value;
+
+/// Where a workspace crate sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    /// Regular layered crate.
+    Layer(u8),
+    /// Layer 0, and additionally may depend on no workspace crate at all.
+    Standalone,
+    /// Test tooling: may depend on anything up to L5 (it sits at L6 for rule
+    /// purposes); other crates may use it only as a dev-dependency.
+    Testkit,
+    /// Binaries and build tooling: exempt from the rules.
+    Exempt,
+}
+
+impl Class {
+    fn layer(self) -> Option<u8> {
+        match self {
+            Class::Layer(l) => Some(l),
+            Class::Standalone => Some(0),
+            Class::Testkit => Some(5),
+            Class::Exempt => None,
+        }
+    }
+}
+
+/// The layering table. Names are package names without the `lcc-`
+/// prefix.
+pub const TABLE: &[(&str, Class)] = &[
+    ("brand", Class::Layer(0)),
+    ("geom", Class::Layer(0)),
+    ("color", Class::Layer(0)),
+    ("raster", Class::Layer(0)),
+    ("tiff", Class::Layer(0)),
+    ("sysmem", Class::Layer(0)),
+    ("hdrmeta", Class::Layer(0)),
+    ("gpumem", Class::Layer(0)),
+    ("winspool", Class::Layer(0)),
+    ("winmsi", Class::Layer(0)),
+    ("android-host", Class::Layer(0)),
+    ("peer", Class::Layer(0)),
+    ("sync", Class::Layer(0)),
+    ("audio-out", Class::Layer(0)),
+    ("fetch", Class::Layer(0)),
+    ("net", Class::Layer(0)),
+    ("updater", Class::Layer(0)),
+    ("credentials", Class::Layer(0)),
+    ("hash", Class::Layer(0)),
+    ("notes", Class::Standalone),
+    ("psd", Class::Standalone),
+    ("actions", Class::Standalone),
+    ("plugins", Class::Layer(1)),
+    ("filters", Class::Layer(1)),
+    ("denoise-core", Class::Layer(1)),
+    ("denoise", Class::Layer(1)),
+    ("heif", Class::Layer(0)),
+    ("raw", Class::Layer(1)),
+    ("camdb", Class::Layer(1)),
+    ("camprof", Class::Layer(1)),
+    ("codecs", Class::Layer(1)),
+    ("meta", Class::Layer(1)),
+    ("develop", Class::Layer(1)),
+    ("lensdb", Class::Layer(2)),
+    ("inpaint", Class::Layer(1)),
+    ("genfill", Class::Layer(1)),
+    ("faces", Class::Layer(1)),
+    // the pure-Rust TFLite interpreter and MediaPipe pre/post-processing (People masks, Faces)
+    ("tflite", Class::Layer(1)),
+    ("geocode", Class::Layer(1)),
+    ("scenes", Class::Layer(1)),
+    ("text", Class::Layer(1)),
+    ("inpaint", Class::Layer(1)),
+    ("pdf", Class::Layer(1)),
+    ("pipeline", Class::Layer(2)),
+    ("geo", Class::Layer(2)),
+    ("gpu", Class::Layer(3)),
+    ("catalog", Class::Layer(3)),
+    ("immich", Class::Layer(3)),
+    ("publish", Class::Layer(3)),
+    ("tether", Class::Layer(3)),
+    ("webgallery", Class::Layer(1)),
+    ("preview", Class::Layer(3)),
+    ("export", Class::Layer(3)),
+    ("layout", Class::Layer(3)),
+    ("print", Class::Layer(3)),
+    ("book", Class::Layer(3)),
+    ("merge", Class::Layer(3)),
+    ("video-export", Class::Layer(3)),
+    ("segment", Class::Layer(3)),
+    // the shared AI backend (#491): device choice and the one job queue; models join it later
+    ("ml", Class::Layer(3)),
+    ("video", Class::Layer(3)),
+    ("engine", Class::Layer(4)),
+    ("classic-slideshow", Class::Layer(4)),
+    // slide layout and the CPU slide composer (upstream's crate; the Classic module is `classic-slideshow`)
+    ("slideshow", Class::Layer(1)),
+    ("ui-egui", Class::Layer(5)),
+    ("mcp", Class::Layer(5)),
+    ("surface", Class::Layer(2)),
+    ("colourfit", Class::Layer(5)),
+    ("testkit", Class::Testkit),
+    ("fuzzkit", Class::Testkit),
+    // L6 apps and tooling
+    ("app", Class::Exempt),
+    ("cli", Class::Exempt),
+    ("web", Class::Exempt),
+    ("android", Class::Exempt),
+    ("xtask", Class::Exempt),
+];
+
+/// Explicit orderings *within* a layer (earlier may be used by later).
+/// L0: `raster` builds on `color` and `geom`; `color` uses `geom` for matrices.
+/// L1: `raw` and `codecs` read metadata through `meta`; `develop` uses `meta` for XMP.
+pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
+    // `brand` (the product name) has no dependencies and may be used by every L0 crate
+    &["brand", "geom"],
+    &["brand", "color"],
+    &["brand", "raster"],
+    &["brand", "tiff"],
+    &["brand", "sysmem"],
+    &["brand", "fetch"],
+    &["brand", "net"],
+    // the updater reads the release feed over the network crate, for the brand's repository
+    &["brand", "net", "updater"],
+    // the updater asks Windows Installer whether the MSI installed the running program
+    &["winmsi", "updater"],
+    &["brand", "credentials"],
+    &["brand", "peer"],
+    &["brand", "heif"],
+    &["brand", "audio-out"],
+    &["geom", "color", "raster"],
+    &["tiff", "raster"],
+    &["denoise-core", "denoise"],
+    // the MediaPipe models run on the face models' device program and accelerator (the GPU)
+    &["faces", "tflite"],
+    &["meta", "raw"],
+    &["meta", "codecs"],
+    &["meta", "develop"],
+    &["develop", "scenes"],
+    &["codecs", "raw"],
+    // camdb organises the colour data the raw decoder uses
+    &["raw", "camdb"],
+    &["raw", "camprof"],
+    // the PDF writer embeds fonts laid out by the type engine
+    &["text", "pdf"],
+    // L3: the Immich client writes remote links into the catalog
+    &["catalog", "immich"],
+    &["catalog", "publish"],
+    // L3: the print back end lays out pages with `layout`
+    &["layout", "print"],
+    // L4: the Slideshow module renders and encodes through the engine
+    &["engine", "classic-slideshow"],
+    // L3: books are laid out with the shared page model
+    &["layout", "book"],
+    // IMM-PUBLISH: the Immich publish service implements the publish trait
+    &["publish", "immich"],
+    // M14.8: clip export decodes through the video crate
+    &["video", "video-export"],
+];
+
+fn intra_layer_allowed(from: &str, to: &str) -> bool {
+    let (from, to) = (short_name(from), short_name(to));
+    INTRA_LAYER_ORDER.iter().any(|chain| match (chain.iter().position(|n| *n == from), chain.iter().position(|n| *n == to)) {
+        (Some(f), Some(t)) => t < f,
+        _ => false,
+    })
+}
+
+/// External crates that constitute a UI toolkit / windowing dependency.
+/// Entries ending in `*` are prefixes.
+pub const UI_CRATES: &[&str] = &["craft-ui", "egui", "eframe", "winit", "egui_kittest", "rfd", "bevy*"];
+
+/// First layer allowed to use UI crates.
+pub const UI_MIN_LAYER: u8 = 5;
+
+pub fn short_name(pkg: &str) -> &str {
+    pkg.strip_prefix("lcc-").unwrap_or(pkg)
+}
+
+pub fn classify(pkg: &str) -> Option<Class> {
+    let s = short_name(pkg);
+    TABLE.iter().find(|(n, _)| *n == s).map(|(_, c)| *c)
+}
+
+fn is_ui_crate(name: &str) -> bool {
+    UI_CRATES.iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => name == *p,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DepKind {
+    Normal,
+    Dev,
+    Build,
+}
+
+#[derive(Debug, Clone)]
+pub struct Dep {
+    pub name: String,
+    pub kind: DepKind,
+    /// `true` if the dependency is a workspace member.
+    pub workspace: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Crate {
+    pub name: String,
+    pub deps: Vec<Dep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Violation {
+    Unregistered { krate: String },
+    Upward { krate: String, dep: String, from: u8, to: u8, kind: DepKind },
+    StandaloneHasWorkspaceDep { krate: String, dep: String },
+    TestkitAsNormalDep { krate: String },
+    UiBelowL5 { krate: String, dep: String, layer: u8 },
+}
+
+impl std::fmt::Display for Violation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Violation::Unregistered { krate } => {
+                write!(f, "{krate}: unknown workspace crate; register it in xtask/src/layers.rs TABLE (see plan/architecture.md §3)")
+            }
+            Violation::Upward { krate, dep, from, to, kind } => {
+                write!(f, "{krate} (L{from}) -> {dep} (L{to}) [{kind:?}]: may only depend on strictly lower layers")
+            }
+            Violation::StandaloneHasWorkspaceDep { krate, dep } => {
+                write!(f, "{krate}: standalone crate must not depend on workspace crate {dep}")
+            }
+            Violation::TestkitAsNormalDep { krate } => {
+                write!(f, "{krate}: lcc-testkit may only be a dev-dependency")
+            }
+            Violation::UiBelowL5 { krate, dep, layer } => {
+                write!(f, "{krate} (L{layer}) depends on UI crate `{dep}`; UI toolkits are only allowed in L5+")
+            }
+        }
+    }
+}
+
+/// Check all rules. Returns violations sorted for stable output.
+pub fn check(crates: &[Crate]) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for c in crates {
+        let Some(class) = classify(&c.name) else {
+            out.push(Violation::Unregistered { krate: c.name.clone() });
+            continue;
+        };
+        if class == Class::Exempt {
+            continue;
+        }
+        let layer = class.layer().unwrap_or(0);
+        for d in &c.deps {
+            // Self dev-dependencies (e.g. to enable features in tests) are fine.
+            if d.name == c.name {
+                continue;
+            }
+            if d.workspace {
+                if class == Class::Standalone {
+                    out.push(Violation::StandaloneHasWorkspaceDep { krate: c.name.clone(), dep: d.name.clone() });
+                    continue;
+                }
+                match classify(&d.name) {
+                    // Unregistered deps are reported on their own entry.
+                    None => {}
+                    Some(Class::Testkit) if d.kind != DepKind::Dev => out.push(Violation::TestkitAsNormalDep { krate: c.name.clone() }),
+                    Some(Class::Testkit) => {}
+                    Some(dc) => {
+                        let to = dc.layer().unwrap_or(u8::MAX);
+                        if to >= layer && !(to == layer && intra_layer_allowed(&c.name, &d.name)) {
+                            out.push(Violation::Upward {
+                                krate: c.name.clone(),
+                                dep: d.name.clone(),
+                                from: layer,
+                                to: if to == u8::MAX { 7 } else { to },
+                                kind: d.kind,
+                            });
+                        }
+                    }
+                }
+            } else if layer < UI_MIN_LAYER && is_ui_crate(&d.name) {
+                out.push(Violation::UiBelowL5 { krate: c.name.clone(), dep: d.name.clone(), layer });
+            }
+        }
+    }
+    out.sort_by_key(|v| v.to_string());
+    out.dedup();
+    out
+}
+
+/// Build the model from `cargo metadata --format-version 1 --no-deps`.
+pub fn from_metadata(meta: &Value) -> Result<Vec<Crate>, String> {
+    let pkgs = meta["packages"].as_array().ok_or("metadata: no packages array")?;
+    let members: Vec<&str> = pkgs.iter().filter_map(|p| p["name"].as_str()).collect();
+    let mut out = Vec::new();
+    for p in pkgs {
+        let name = p["name"].as_str().ok_or("package without name")?.to_owned();
+        let mut deps = Vec::new();
+        for d in p["dependencies"].as_array().into_iter().flatten() {
+            let dname = d["name"].as_str().unwrap_or_default().to_owned();
+            let kind = match d["kind"].as_str() {
+                Some("dev") => DepKind::Dev,
+                Some("build") => DepKind::Build,
+                _ => DepKind::Normal,
+            };
+            let workspace = members.contains(&dname.as_str()) || d["path"].is_string();
+            deps.push(Dep { name: dname, kind, workspace });
+        }
+        out.push(Crate { name, deps });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+pub fn describe(class: Option<Class>) -> String {
+    match class {
+        Some(Class::Layer(l)) => format!("L{l}"),
+        Some(Class::Standalone) => "L0 standalone".into(),
+        Some(Class::Testkit) => "testkit".into(),
+        Some(Class::Exempt) => "exempt".into(),
+        None => "UNREGISTERED".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn c(name: &str, deps: &[(&str, DepKind, bool)]) -> Crate {
+        Crate { name: name.into(), deps: deps.iter().map(|(n, k, w)| Dep { name: (*n).into(), kind: *k, workspace: *w }).collect() }
+    }
+    use DepKind::*;
+
+    #[test]
+    fn clean_downward_graph_passes() {
+        let g = [
+            c("lcc-geom", &[("serde", Normal, false)]),
+            c("lcc-develop", &[("lcc-geom", Normal, true)]),
+            c("lcc-engine", &[("lcc-develop", Normal, true), ("lcc-testkit", Dev, true)]),
+            c("lcc-ui-egui", &[("lcc-engine", Normal, true), ("egui", Normal, false)]),
+            c("lcc-cli", &[("lcc-ui-egui", Normal, true)]),
+        ];
+        assert!(check(&g).is_empty(), "{:?}", check(&g));
+    }
+
+    #[test]
+    fn upward_and_sideways_dependencies_are_flagged() {
+        let v = check(&[c("lcc-develop", &[("lcc-engine", Normal, true)])]);
+        assert!(matches!(v[..], [Violation::Upward { from: 1, to: 4, .. }]));
+        let v = check(&[c("lcc-catalog", &[("lcc-preview", Normal, true)])]);
+        assert!(matches!(v[..], [Violation::Upward { from: 3, to: 3, .. }]));
+        // the L0 chain is allowed one way only
+        assert!(check(&[c("lcc-raster", &[("lcc-color", Normal, true)])]).is_empty());
+        assert!(!check(&[c("lcc-color", &[("lcc-raster", Normal, true)])]).is_empty());
+    }
+
+    #[test]
+    fn ui_crates_forbidden_below_l5() {
+        for dep in ["craft-ui", "egui", "eframe", "winit", "rfd"] {
+            let v = check(&[c("lcc-engine", &[(dep, Normal, false)])]);
+            assert!(matches!(v[..], [Violation::UiBelowL5 { .. }]), "{dep}");
+        }
+        assert!(check(&[c("lcc-mcp", &[("winit", Normal, false)])]).is_empty());
+    }
+
+    #[test]
+    fn unregistered_and_testkit_rules() {
+        let v = check(&[c("lcc-mystery", &[])]);
+        assert!(matches!(&v[..], [Violation::Unregistered { krate }] if krate == "lcc-mystery"));
+        assert!(!check(&[c("lcc-pipeline", &[("lcc-testkit", Normal, true)])]).is_empty());
+        assert!(check(&[c("lcc-pipeline", &[("lcc-testkit", Dev, true)])]).is_empty());
+    }
+
+    #[test]
+    fn apps_exempt() {
+        for app in ["lcc-app", "lcc-cli", "lcc-web", "xtask"] {
+            assert!(check(&[c(app, &[("egui", Normal, false), ("lcc-ui-egui", Normal, true)])]).is_empty());
+        }
+    }
+}

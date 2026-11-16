@@ -1,0 +1,32 @@
+*~
+# Planning documents are local-only (not published)
+/plan/
+/plans/
+/PLAN.md
+/play-store/
+/PLAN_phase_*.md
+/android-ui-preview/
+/target
+/target-*/
+/dist
+# Play Store bundles and signing notes, built locally for a manual upload
+/play-store/
+/corpus
+/log
+.DS_Store
+.claude/
+/craft-fonts
+# nix build / nix develop
+/result
+/result-*
+# model weights are never committed (SAM 3: docs/ai-masks.md)
+*.safetensors
+*.safetensors.part
+
+# aider
+.aider*
+__pycache__/
+# manual site (docs/manual-site)
+/docs/manual-site/node_modules
+/docs/manual-site/dist
+/docs/manual-site/.astro

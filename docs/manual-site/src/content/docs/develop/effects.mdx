@@ -1,0 +1,22 @@
+---
+title: Effects
+description: Texture, clarity, dehaze, vignette and grain.
+sidebar:
+  order: 9
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="effects-section" alt="The Effects section with vignette and grain controls" />
+
+- **Texture**, **Clarity**, **Dehaze**: in Basic and in the Effects dock card.
+- **Vignette**: **Vignette** amount, **Midpoint**, **Roundness**, **Feather**, **Highlights**; style **Highlight**, **Color**, **Paint**. Post-crop: it follows the crop.
+- **Grain**: amount, **Size**, **Size Variation**, **Roughness**, **Clumping**, **Color**, **Response**, **Seed**. From process V7, irregular particles that do not change with the picture's size. See [Process versions](../process-versions/).
+- Dehaze from V3 keeps shadows from going black.
+- The eye on a section header turns its adjustments off for comparison.
+
+<Aside type="note" title="Modern layout">
+  **Effects** in the dock: Texture, Clarity, Dehaze, Vignette, Grain.
+</Aside>

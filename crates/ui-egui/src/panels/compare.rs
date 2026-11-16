@@ -1,0 +1,603 @@
+//! Culling views: **Compare** (the "select" and a "candidate" side by side, with synced zoom and
+//! pan) and **Survey** (the selected photos tiled). Rating, flag and label keys act on the active
+//! photo only here, and with Auto Advance on they move to the next candidate / photo.
+
+use egui::{Align2, Color32, Rect, Sense, Stroke, pos2, vec2};
+use lcc_catalog::{Flag, PhotoId};
+use serde_json::{Value, json};
+
+use crate::LccApp;
+use crate::icons::{Icon, paint};
+use crate::render::Slot;
+use crate::state::{ViewMode, Zoom};
+use crate::theme::Tokens;
+use crate::widgets::register;
+
+/// Most photos a survey shows.
+pub const SURVEY_MAX: usize = 48;
+
+/// Compare or Survey.
+pub fn culling(app: &LccApp) -> bool {
+    matches!(app.ui.view, ViewMode::Compare | ViewMode::Survey)
+}
+
+/// The (select, candidate) pair, repaired or chosen if needed: the active photo against the next
+/// selected photo, else against its neighbour in the view.
+/// A photo that can be shown or pinned: in the catalog and not in Recently Deleted.
+pub fn live(app: &LccApp, id: PhotoId) -> bool {
+    app.session.catalog.photo(id).is_some_and(|p| !p.deleted)
+}
+
+pub fn compare_pair(app: &mut LccApp) -> Option<(PhotoId, PhotoId)> {
+    if let Some((a, b)) = app.ui.compare {
+        let (a, b) = (PhotoId(a), PhotoId(b));
+        if a != b && live(app, a) && live(app, b) {
+            return Some((a, b));
+        }
+    }
+    let vis = app.session.visible_cloned();
+    let sel = app.session.active().or(vis.first().copied())?;
+    let cand = app.session.selection.ids.iter().copied().find(|x| *x != sel).or_else(|| {
+        let i = vis.iter().position(|x| *x == sel)?;
+        vis.get(i + 1).or(i.checked_sub(1).and_then(|j| vis.get(j))).copied()
+    })?;
+    app.ui.compare = Some((sel.0, cand.0));
+    Some((sel, cand))
+}
+
+/// Enter Compare with the current selection (the active photo becomes the select).
+pub fn enter_compare(app: &mut LccApp) -> Result<Value, String> {
+    app.ui.compare = None;
+    let (a, b) = compare_pair(app).ok_or("Compare needs at least two photos")?;
+    app.leave_fullscreen_preview();
+    app.ui.view = ViewMode::Compare;
+    // the candidate is active: rating/flag keys judge it against the select
+    select_pair(app, a, b, b);
+    Ok(json!({"select": a.0, "candidate": b.0}))
+}
+
+fn select_pair(app: &mut LccApp, a: PhotoId, b: PhotoId, active: PhotoId) {
+    app.ui.compare = Some((a.0, b.0));
+    let _ = app.session.execute("library.select", &json!({"ids": [a.0, b.0], "active": active.0}));
+}
+
+/// Move the candidate `d` photos through the view (skipping the select); it becomes active.
+pub fn compare_step(app: &mut LccApp, d: isize) -> Result<Value, String> {
+    let (sel, cand) = compare_pair(app).ok_or("nothing to compare")?;
+    let vis: Vec<PhotoId> = app.session.visible_cloned().into_iter().filter(|x| *x != sel).collect();
+    let Some(i) = vis.iter().position(|x| *x == cand).or(if vis.is_empty() { None } else { Some(0) }) else { return Ok(Value::Null) };
+    let j = (i as isize + d).clamp(0, vis.len() as isize - 1) as usize;
+    select_pair(app, sel, vis[j], vis[j]);
+    Ok(json!({"candidate": vis[j].0}))
+}
+
+pub fn swap(app: &mut LccApp) -> Result<Value, String> {
+    let (a, b) = compare_pair(app).ok_or("nothing to compare")?;
+    let active = app.session.active().unwrap_or(b);
+    select_pair(app, b, a, active);
+    Ok(Value::Null)
+}
+
+/// Show photo `id` on one side of the pair: `side` "select" or "candidate", else the side that is
+/// active (the one the Edit panel and the rating keys act on). A photo already on the other side
+/// swaps the two. The photo becomes the active one, so what is edited is always on screen.
+pub fn set_photo(app: &mut LccApp, id: PhotoId, side: Option<&str>) -> Result<Value, String> {
+    if app.session.catalog.photo(id).is_none_or(|p| p.deleted) {
+        return Err(format!("no photo {}", id.0));
+    }
+    let (sel, cand) = compare_pair(app).ok_or("nothing to compare")?;
+    let to_select = match side {
+        Some("select") => true,
+        Some("candidate") => false,
+        Some(other) => return Err(format!("unknown side `{other}` (select or candidate)")),
+        None => app.session.active() == Some(sel),
+    };
+    let (a, b) = match (to_select, id == sel, id == cand) {
+        (true, _, true) | (false, true, _) => (cand, sel),
+        (_, true, _) | (_, _, true) => (sel, cand),
+        (true, false, false) => (id, cand),
+        (false, false, false) => (sel, id),
+    };
+    select_pair(app, a, b, id);
+    Ok(json!({"select": a.0, "candidate": b.0}))
+}
+
+/// A ⌘/Ctrl-click (`range: false`, toggles the photo) or Shift-click (`range: true`, extends
+/// from the active photo) on the filmstrip in Compare: the selection changes as it does in the
+/// grid, but the two photos shown stay selected and the active one stays active, so the photo the
+/// rating keys act on is still on screen (#744). A plain click is [`set_photo`].
+pub fn select_with_modifier(app: &mut LccApp, id: PhotoId, range: bool) -> Result<Value, String> {
+    if app.session.catalog.photo(id).is_none_or(|p| p.deleted) {
+        return Err(format!("no photo {}", id.0));
+    }
+    let (sel, cand) = compare_pair(app).ok_or("nothing to compare")?;
+    let mut next = app.session.selection.clone();
+    if range {
+        next.extend_to(id, &app.session.visible_cloned());
+    } else {
+        next.toggle(id);
+    }
+    for shown in [sel, cand] {
+        if !next.contains(shown) {
+            next.ids.push(shown);
+        }
+    }
+    let active = app.session.selection.active.filter(|a| next.contains(*a)).unwrap_or(cand);
+    let ids: Vec<u64> = next.ids.iter().map(|p| p.0).collect();
+    app.session.execute("library.select", &json!({"ids": ids, "active": active.0})).map_err(|e| e.to_string())
+}
+
+/// The candidate becomes the select; the next photo becomes the candidate.
+pub fn make_select(app: &mut LccApp) -> Result<Value, String> {
+    let (_, b) = compare_pair(app).ok_or("nothing to compare")?;
+    let vis = app.session.visible_cloned();
+    let i = vis.iter().position(|x| *x == b).unwrap_or(0);
+    let next = vis.iter().skip(i + 1).chain(vis.iter().take(i).rev()).copied().find(|x| *x != b).ok_or("no next photo")?;
+    select_pair(app, b, next, next);
+    Ok(json!({"select": b.0, "candidate": next.0}))
+}
+
+/// The photos a survey shows: the selection (in view order), or the active photo alone.
+pub fn survey_photos(app: &mut LccApp) -> Vec<PhotoId> {
+    let vis = app.session.visible_cloned();
+    let sel = &app.session.selection;
+    let mut v: Vec<PhotoId> = vis.iter().copied().filter(|x| sel.contains(*x)).collect();
+    // selected photos hidden in the view (e.g. inside a collapsed stack) come last
+    let hidden: Vec<PhotoId> = sel.ids.iter().copied().filter(|x| !v.contains(x) && app.session.catalog.photo(*x).is_some()).collect();
+    v.extend(hidden);
+    if v.is_empty() {
+        v.extend(app.session.active());
+    }
+    v.truncate(SURVEY_MAX);
+    v
+}
+
+/// Move the active photo `d` steps within the survey.
+pub fn survey_step(app: &mut LccApp, d: isize) -> Result<Value, String> {
+    let v = survey_photos(app);
+    if v.is_empty() {
+        return Ok(Value::Null);
+    }
+    let i = app.session.selection.active.and_then(|a| v.iter().position(|x| *x == a)).unwrap_or(0);
+    let j = (i as isize + d).clamp(0, v.len() as isize - 1) as usize;
+    app.session.selection.active = Some(v[j]);
+    Ok(json!({"active": v[j].0}))
+}
+
+/// After rating/flagging with Auto Advance: next candidate (Compare), next photo in the survey,
+/// else the next photo in the view. `was` is the active photo before the rating: a rating that took
+/// it out of the view made the photo after it active already, and that is the next one (#2312).
+pub fn advance(app: &mut LccApp, was: Option<PhotoId>) {
+    let _ = match app.ui.view {
+        ViewMode::Compare => compare_step(app, 1),
+        ViewMode::Survey => survey_step(app, 1),
+        _ if app.session.active() != was => Ok(Value::Null),
+        _ => app.session.execute("library.next", &json!({})).map_err(|e| e.to_string()),
+    };
+}
+
+/// A right-click on a selected photo of Compare or Survey (a tile or its filmstrip thumbnail) makes it the active
+/// one, so the rating, flag and label rows of its menu judge the photo that was clicked, as the keys judge the
+/// active photo. The selection stays (upstream #3716).
+pub fn activate_on_right_click(app: &mut LccApp, resp: &egui::Response, id: PhotoId) {
+    if resp.secondary_clicked() && culling(app) && app.session.active() != Some(id) && app.session.selection.contains(id) {
+        let ids: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+        let _ = app.run("library.select", json!({"ids": ids, "active": id.0}));
+    }
+}
+
+/// In the culling views, point a photo command at the active photo only (not the whole selection).
+pub fn target_active(app: &LccApp, params: &mut Value) {
+    if culling(app)
+        && params.get("ids").is_none()
+        && let Some(a) = app.session.active()
+    {
+        params["ids"] = json!([a.0]);
+    }
+}
+
+fn area_and_filmstrip(app: &mut LccApp, ui: &mut egui::Ui) -> Rect {
+    let full = ui.max_rect();
+    let film = crate::module::edge_visible(app, crate::module::Edge::Bottom);
+    let film_h = if film { app.ui.film_height() } else { 0.0 };
+    let canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
+    app.canvas_rect = Some(canvas);
+    if film {
+        super::detail::filmstrip(app, ui, Rect::from_min_max(pos2(full.left(), canvas.bottom()), full.max));
+    }
+    canvas
+}
+
+/// Draw one photo fitted into `area` (rendered at its display size into `slot`), with its caption
+/// strip below. Returns the image rect and the click/drag response.
+fn photo_tile(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, slot: Slot, area: Rect, label: &str, zoom: Zoom) -> (Rect, egui::Response) {
+    let t = Tokens::get(ui.ctx());
+    let ppp = ui.ctx().pixels_per_point();
+    let resp = ui.interact(area, egui::Id::new(("cull-tile", slot_index(slot), id.0)), Sense::click_and_drag());
+    crate::widgets::announce(&resp, app.session.catalog.photo(id).map(|p| p.file_name.clone()).unwrap_or_default());
+    let Some(photo) = app.session.catalog.photo(id).cloned() else { return (area, resp) };
+    let caption_h = 26.0;
+    let img_area = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - caption_h));
+    let frame = lcc_pipeline::geometry::Frame::with_lens(
+        photo.width.max(1) as usize,
+        photo.height.max(1) as usize,
+        &photo.develop,
+        true,
+        photo.embedded_lens.as_deref(),
+    );
+    let aspect = frame.aspect() as f32;
+    let native = super::detail::output_px(&frame);
+    let mut img = super::detail::fit_rect(img_area, aspect, zoom, native, ppp, app.ui.pan);
+    let side_by_side = matches!(app.ui.view, ViewMode::Compare | ViewMode::Reference);
+    let mut gesturing = false;
+    if side_by_side {
+        if super::detail::navigate_gesture(app, ui, &resp, img_area, img, native) {
+            gesturing = true;
+            img = super::detail::fit_rect(img_area, aspect, app.ui.zoom, native, ppp, app.ui.pan);
+        } else if resp.dragged() {
+            super::detail::pan_image(app, img_area, img, resp.drag_delta());
+        }
+    }
+    let want = (img.width().max(img.height()).min(img_area.width().max(img_area.height()) * 4.0) * ppp)
+        .min(2560.0_f32.min(super::detail::texture_side(ui.ctx()) as f32)) as usize;
+    let (rw, rh) = if aspect >= 1.0 { (want, (want as f32 / aspect) as usize) } else { ((want as f32 * aspect) as usize, want) };
+    let hdr_view = match slot {
+        Slot::Compare(i) => crate::render::HDR_COMPARE.saturating_add(i),
+        _ => crate::render::HDR_COMPARE,
+    };
+    let mut hdr_key = None;
+    if let Some(job) = app.session.render_job(id, rw.max(8), rh.max(8), false, true) {
+        // an HDR edit on an HDR display: also its HDR render, drawn over the 8-bit one (not in a
+        // pinch; in a slider drag, a draft only for the photo being edited)
+        if !gesturing {
+            hdr_key = super::detail::request_hdr(app, hdr_view, job.clone(), true, 58);
+        }
+        super::detail::upload_hdr_views(app);
+        // (while a drag shows its HDR frames here, no 8-bit render of each step under them)
+        let hdr_drafts = super::detail::editing(app, id) && super::detail::hdr_texture(app, hdr_view, id, hdr_key).is_some();
+        if !hdr_drafts || app.renderer.textures.get(&slot).is_none_or(|t| t.photo != id) {
+            app.renderer.request(slot, job, 60);
+        }
+    }
+    super::detail::upload_hdr_views(app);
+    if let Some(job) = app.session.thumb_job(id, 256) {
+        app.renderer.request(Slot::Thumb(id), job, 30);
+    }
+    let p = ui.painter_at(img_area);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    let mut display = img;
+    let mut own_aspect = None;
+    if let Some(tex) = app.renderer.textures.get(&slot).filter(|x| x.photo == id) {
+        let texture_aspect = tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32;
+        display = super::detail::fit_rect(img_area, texture_aspect, zoom, native, ppp, app.ui.pan);
+        p.image(tex.id(), display, uv, Color32::WHITE);
+        own_aspect = Some(texture_aspect);
+        if let Some(h) = super::detail::hdr_texture(app, hdr_view, id, hdr_key) {
+            p.image(h.tex, display, uv, Color32::WHITE);
+        }
+    } else if let Some(tex) = app.renderer.textures.get(&Slot::Thumb(id)) {
+        let texture_aspect = tex.size[0].max(1) as f32 / tex.size[1].max(1) as f32;
+        display = super::detail::fit_rect(img_area, texture_aspect, zoom, native, ppp, app.ui.pan);
+        p.image(tex.id(), display, uv, Color32::WHITE);
+    } else {
+        p.rect_filled(img.intersect(img_area), 0.0, t.skeleton);
+    }
+    // zoomed in: the tiles on screen at up to 100 %, sharp like the loupe's (Compare, Reference)
+    if side_by_side && let Slot::Compare(i) = slot {
+        let pane = crate::render::PANE_COMPARE.saturating_add(i);
+        zoomed_tiles(app, ui.ctx(), &p, id, pane, photo.develop.hash64(), aspect, native, display, img_area, own_aspect, gesturing);
+    }
+    if photo.flag == Flag::Reject {
+        p.rect_filled(display, 0.0, Color32::from_black_alpha(110));
+    }
+    if app.ui.settings.focus_point {
+        super::detail::draw_focus_point(&p, display, &photo, &format!("compare:focusPoint:{}", id.0));
+    }
+    let active = app.session.selection.active == Some(id);
+    if active {
+        super::grid::selection_ring(&p, &t, display.intersect(img_area.shrink(3.0)), lcc_engine::SelectionState::Active);
+    }
+    // Compare and Reference are where sharpness is judged: as in the loupe, say when what is on
+    // screen isn't the render on its way (a thumbnail, the last render after an edit, a magnified
+    // frame under its window), or when that render failed
+    if matches!(app.ui.view, ViewMode::Compare | ViewMode::Reference) {
+        let i = slot_index(slot);
+        let r = &app.renderer;
+        let mine = |s: Slot| r.textures.get(&s).filter(|t| t.photo == id).map(|t| t.key);
+        let waits = |s: Slot| r.is_pending(s) && !r.retrying(s);
+        // a slider drag on this photo: Compare has no drafts, so its render can't keep up until the drag ends
+        let dragging = app.session.interaction.is_some() && app.session.selection.active == Some(id);
+        // (the fork's zoomed panes draw cached tiles, not a window render: only the pane's own render counts)
+        let coming = waits(slot) && !dragging;
+        let keys = [mine(slot), None, None, None];
+        let now = ui.input(|i| i.time);
+        // (the wait belongs to the photo in the pane: one moved in starts its own)
+        let rendering = ui.ctx().data_mut(|d| {
+            let state = d.get_temp_mut_or(egui::Id::new(("compare-rendering", i)), (id, None));
+            super::detail::rendering_overdue_for(state, id, keys, coming, now, super::detail::RENDERING_AFTER_SECS)
+        });
+        let failed = (!rendering && mine(slot).is_none() && (!r.is_pending(slot) || r.retrying(slot))).then(|| r.failure_of(slot, id)).flatten();
+        let over = display.intersect(img_area);
+        let over = if over.is_positive() { over } else { img_area };
+        if let Some(e) = failed {
+            super::detail::failed_pill(ui, app, &photo, img_area, over, None, &format!("compare:renderFailed:{i}"), e);
+        } else if rendering {
+            super::detail::loupe_pill(ui, img_area, over, None, &format!("compare:rendering:{i}"), crate::i18n::tr("Rendering…"), false);
+        }
+    }
+    // caption: label · file name · stars · flag · colour label
+    // caption right under the image (at the bottom when zoomed in)
+    let cap_top = (display.bottom() + 2.0).min(img_area.bottom());
+    let cap = Rect::from_min_max(pos2(img.left().max(area.left()), cap_top), pos2(area.right(), cap_top + caption_h));
+    let pt = ui.painter();
+    let mut x = cap.left() + 4.0;
+    if !label.is_empty() {
+        let g = pt.layout_no_wrap(crate::i18n::tr(label).to_string(), t.semibold(12.0), if active { t.text } else { t.text_label });
+        pt.galley(pos2(x, cap.center().y - g.size().y / 2.0), g.clone(), t.text);
+        x += g.size().x + 10.0;
+    }
+    let name = photo.virtual_copy_name().map(|c| format!("{} ({c})", photo.file_name)).unwrap_or(photo.file_name.clone());
+    let g = pt.layout_no_wrap(name, t.font(11.5), t.text_dim);
+    let name_w = g.size().x;
+    if x + name_w + 110.0 < cap.right() {
+        pt.galley(pos2(x, cap.center().y - g.size().y / 2.0), g, t.text_dim);
+        x += name_w + 10.0;
+    }
+    for i in 0..5u8 {
+        let filled = i < photo.rating;
+        let r = Rect::from_min_size(pos2(x + i as f32 * 13.0, cap.center().y - 6.0), vec2(12.0, 12.0));
+        if r.right() < cap.right() {
+            crate::rating::paint_star(pt, r, filled, if filled { t.star } else { t.icon.gamma_multiply(0.6) });
+        }
+    }
+    x += 5.0 * 13.0 + 4.0;
+    let fr = Rect::from_min_size(pos2(x, cap.center().y - 7.0), vec2(14.0, 14.0));
+    match photo.flag {
+        Flag::Pick if fr.right() < cap.right() => paint(pt, fr, Icon::FlagPickFilled, t.pick),
+        Flag::Reject if fr.right() < cap.right() => paint(pt, fr, Icon::FlagReject, t.reject),
+        _ => {}
+    }
+    // the colour label as a dot, so labelling while culling shows on the photo (#2398)
+    let lr = Rect::from_min_size(pos2(fr.right() + 6.0, cap.center().y - 5.0), vec2(10.0, 10.0));
+    if let Some(l) = photo.label
+        && lr.right() < cap.right()
+    {
+        pt.circle_filled(lr.center(), 5.0, super::grid::label_color(l));
+        register(ui.ctx(), format!("cull:{}:label", id.0), lr);
+    }
+    register(ui.ctx(), format!("cull:{}", id.0), display);
+    (display, resp)
+}
+
+fn slot_index(s: Slot) -> u8 {
+    match s {
+        Slot::Compare(i) => i,
+        _ => 255,
+    }
+}
+
+/// Per frame, before the central view is shown: Compare and Reference keep two photos' originals
+/// decoded (their tiles are cut from both); other views keep one. The Detail view's photo keeps its
+/// original even over the memory budget (a zoomed 64 MP raw).
+pub fn prepare(app: &mut LccApp) {
+    let shown = if app.ui.view == ViewMode::Detail { app.session.active() } else { None };
+    app.session.media.set_on_screen(shown);
+    // Reference with no live pin draws no panes: release them as other views do.
+    let reference_shown = app.ui.reference.is_some_and(|r| live(app, PhotoId(r)));
+    if app.ui.view == ViewMode::Reference && !reference_shown {
+        // the reference (pane 0) and the active photo beside it (pane 1)
+        app.renderer.release(Slot::Compare(0));
+        app.renderer.release(Slot::Compare(1));
+    }
+    let n = if app.ui.view == ViewMode::Compare || (app.ui.view == ViewMode::Reference && reference_shown) { 2 } else { 1 };
+    app.session.media.set_full_capacity(n);
+}
+
+pub fn show_compare(app: &mut LccApp, ui: &mut egui::Ui) {
+    let canvas = area_and_filmstrip(app, ui);
+    let Some((sel, cand)) = compare_pair(app) else {
+        super::empty_message(ui, canvas, "Nothing to compare", "Select two photos, then choose View → Compare (Shift+C)");
+        return;
+    };
+    let area = canvas.shrink(18.0);
+    let half = (area.width() - 16.0) / 2.0;
+    let panes = [
+        (sel, Rect::from_min_size(area.min, vec2(half, area.height())), "Select", 0u8),
+        (cand, Rect::from_min_size(pos2(area.right() - half, area.top()), vec2(half, area.height())), "Candidate", 1u8),
+    ];
+    let zoom = app.ui.zoom;
+    for (id, r, label, i) in panes {
+        let (img, resp) = photo_tile(app, ui, id, Slot::Compare(i), r, label, zoom);
+        if i == 1 {
+            app.image_rect = Some(img);
+        }
+        if resp.clicked() {
+            select_pair(app, sel, cand, id);
+        }
+        if resp.double_clicked() {
+            app.ui.zoom = if app.ui.zoom == Zoom::Fit { Zoom::Percent(100.0) } else { Zoom::Fit };
+        }
+        activate_on_right_click(app, &resp, id);
+        crate::widgets::context_menu(&resp, |ui| {
+            if ui.button(crate::i18n::tr("Swap")).clicked() {
+                let _ = swap(app);
+            }
+            if ui.button(crate::i18n::tr("Make Candidate the Select")).clicked() {
+                let _ = make_select(app);
+            }
+            ui.separator();
+            super::grid::context_menu(app, ui, id);
+        });
+    }
+    let mid = area.center().x;
+    ui.painter().line_segment([pos2(mid, area.top()), pos2(mid, area.bottom())], Stroke::new(1.0, Tokens::get(ui.ctx()).divider));
+}
+
+/// Columns for `n` tiles of aspect ~3:2 in `area`, maximizing the tile size.
+pub fn survey_columns(n: usize, area: Rect) -> usize {
+    let mut best = (1, 0.0f32);
+    for cols in 1..=n.max(1) {
+        let rows = n.div_ceil(cols);
+        let w = area.width() / cols as f32;
+        let h = area.height() / rows as f32;
+        let s = w.min(h * 1.5);
+        if s > best.1 {
+            best = (cols, s);
+        }
+    }
+    best.0
+}
+
+pub fn show_survey(app: &mut LccApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let canvas = area_and_filmstrip(app, ui);
+    let photos = survey_photos(app);
+    if photos.is_empty() {
+        super::empty_message(ui, canvas, "Nothing to survey", "Select photos, then choose View → Survey (N)");
+        return;
+    }
+    let area = canvas.shrink(14.0);
+    let cols = survey_columns(photos.len(), area);
+    let rows = photos.len().div_ceil(cols);
+    let (cw, ch) = (area.width() / cols as f32, area.height() / rows as f32);
+    for (i, id) in photos.iter().enumerate() {
+        let (c, r) = (i % cols, i / cols);
+        let cell = Rect::from_min_size(pos2(area.left() + c as f32 * cw, area.top() + r as f32 * ch), vec2(cw, ch)).shrink(6.0);
+        let (img, resp) = photo_tile(app, ui, *id, Slot::Compare(i as u8), cell, "", Zoom::Fit);
+        if app.session.selection.active == Some(*id) {
+            app.image_rect = Some(img);
+        }
+        if resp.clicked() {
+            app.session.selection.active = Some(*id);
+        }
+        if resp.double_clicked() {
+            let _ = app.run("library.select", json!({"ids": [id.0]}));
+            app.ui.view = ViewMode::Detail;
+        }
+        // remove from the survey (deselect) on hover. `contains_pointer`, not `hovered`: the ✕ sits
+        // over the tile and takes the hover from it, and must stay to take its click (issue #264)
+        if resp.contains_pointer() && photos.len() > 1 {
+            let xr = Rect::from_min_size(pos2(img.right() - 26.0, img.top() + 6.0), vec2(20.0, 20.0));
+            let xresp = ui.interact(xr, egui::Id::new(("survey-x", id.0)), Sense::click()).on_hover_text(crate::i18n::tr("Remove from survey"));
+            crate::widgets::announce(&xresp, crate::i18n::tr("Remove from survey"));
+            crate::widgets::register(ui.ctx(), format!("surveyRemove:{}", id.0), xr);
+            ui.painter().circle_filled(xr.center(), 10.0, Color32::from_black_alpha(if xresp.hovered() { 230 } else { 160 }));
+            paint(ui.painter(), xr.shrink(4.0), Icon::Close, t.text);
+            if xresp.clicked() {
+                let _ = app.run("library.select", json!({"ids": [id.0], "mode": "toggle"}));
+            }
+        }
+        activate_on_right_click(app, &resp, *id);
+        crate::widgets::context_menu(&resp, |ui| super::grid::context_menu(app, ui, *id));
+    }
+    let n = photos.len();
+    let msg = if app.session.selection.ids.len() > SURVEY_MAX {
+        crate::i18n::tr_format!("Showing {n} of {}", app.session.selection.ids.len(), n = n)
+    } else {
+        String::new()
+    };
+    if !msg.is_empty() {
+        ui.painter().text(pos2(canvas.right() - 16.0, canvas.top() + 10.0), Align2::RIGHT_TOP, msg, t.font(12.0), t.text_dim);
+    }
+}
+
+/// Reference view: the reference photo (left, fixed) beside the active photo (right) — the one
+/// the Edit panel works on, so a look can be matched by eye.
+pub fn show_reference(app: &mut LccApp, ui: &mut egui::Ui) {
+    let canvas = area_and_filmstrip(app, ui);
+    let reference = app.ui.reference.map(PhotoId).filter(|r| live(app, *r));
+    let (Some(r), Some(active)) = (reference, app.session.active()) else {
+        super::empty_message(
+            ui,
+            canvas,
+            "No reference photo",
+            "Right-click a photo and choose Set as Reference Photo, then View → Reference View (Shift+R)",
+        );
+        return;
+    };
+    let area = canvas.shrink(18.0);
+    let half = (area.width() - 16.0) / 2.0;
+    let zoom = app.ui.zoom;
+    let left = Rect::from_min_size(area.min, vec2(half, area.height()));
+    let right = Rect::from_min_size(pos2(area.right() - half, area.top()), vec2(half, area.height()));
+    let (_, lresp) = photo_tile(app, ui, r, Slot::Compare(0), left, "Reference", zoom);
+    let (img, _) = photo_tile(app, ui, active, Slot::Compare(1), right, "Active", zoom);
+    app.image_rect = Some(img);
+    crate::widgets::context_menu(&lresp, |ui| {
+        if ui.button(crate::i18n::tr("Clear Reference")).clicked() {
+            app.ui.reference = None;
+            app.ui.view = ViewMode::Detail;
+        }
+    });
+    let mid = area.center().x;
+    ui.painter().line_segment([pos2(mid, area.top()), pos2(mid, area.bottom())], Stroke::new(1.0, Tokens::get(ui.ctx()).divider));
+}
+
+/// A Compare / Reference photo zoomed past what its whole-frame render holds: the tiles on screen
+/// (and a drag window while its sliders drag) over it, as the loupe has (see
+/// [`super::detail::request_window`]). `shown_aspect` is the aspect of the picture drawn: tiles
+/// are cut from the frame, so they go only over a picture that is the frame.
+#[allow(clippy::too_many_arguments)]
+fn zoomed_tiles(
+    app: &mut LccApp,
+    ctx: &egui::Context,
+    p: &egui::Painter,
+    id: PhotoId,
+    pane: u8,
+    look: u64,
+    aspect: f32,
+    native: [usize; 2],
+    img: Rect,
+    area: Rect,
+    shown_aspect: Option<f32>,
+    holding: bool,
+) {
+    use super::detail::{WindowCtx, WindowView};
+    let ppp = ctx.pixels_per_point();
+    let texture_side = super::detail::texture_side(ctx);
+    let sizes = crate::region::ViewSizes {
+        drawn_long: img.width().max(img.height()) * ppp,
+        canvas_long: area.width().max(area.height()) * ppp,
+        native_long: native[0].max(native[1]),
+        texture_side,
+        draft: None,
+        windows: true,
+    };
+    let frame_edge = crate::region::plan(&app.ui.settings, sizes)
+        .window_edge
+        .filter(|edge| app.window_refused != Some((id, look, *edge)))
+        .filter(|_| shown_aspect.is_some_and(|a| crate::region::same_aspect(a, aspect)));
+    let memory_id = egui::Id::new(("cull-region", pane));
+    let c = WindowCtx {
+        id,
+        frame_edge,
+        aspect,
+        texture_side,
+        crop_tool: false,
+        // (sliders edit the active photo: in the Reference view, its pane drafts while they drag)
+        interacting: app.session.interaction.is_some() && app.session.active() == Some(id),
+        look,
+        holding,
+        overlay: lcc_pipeline::Overlay::None,
+        proof: None,
+        full_preview: None,
+    };
+    let v = WindowView { pane, before: false, img, target: img, visible: area };
+    let prev = ctx.data(|d| d.get_temp::<crate::region::RegionView>(memory_id));
+    let mut wanted = Vec::new();
+    let view = super::detail::request_window(app, &c, &v, prev, &mut wanted, ctx);
+    if !holding {
+        app.renderer.cancel_tiles(|s| !matches!(s, Slot::Tile { pane: q, .. } if q == pane) || wanted.contains(&s));
+    }
+    match view {
+        Some(view) => {
+            ctx.data_mut(|d| d.insert_temp(memory_id, view));
+            super::detail::draw_window(p, app, &c, &v, &view);
+        }
+        None => {
+            ctx.data_mut(|d| d.remove::<crate::region::RegionView>(memory_id));
+            app.renderer.tiles.retain(|k| k.pane != pane);
+            app.renderer.release(Slot::Window(pane));
+        }
+    }
+}

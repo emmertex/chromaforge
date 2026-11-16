@@ -1,0 +1,795 @@
+//! Photo metadata: EXIF (TIFF/raw files, JPEG APP1, PNG `eXIf`, WebP `EXIF`, HEIF `Exif` items), XMP packets
+//! (read + write, standard namespaces plus our own `lc:` namespace) and basic IPTC-IIM.
+//!
+//! Entry points:
+//! - [`read_exif`] — a TIFF-structured Exif block → [`Metadata`]; [`from_tiff`] for an already parsed stream.
+//! - [`embedded`] / [`jpeg_segments`] / [`png_chunks`] / [`webp_chunks`] — locate Exif / XMP / ICC / IPTC blocks.
+//! - [`parse_xmp`] / [`write_xmp`] — XMP packets (interchange fields + the opaque `lc:settings` JSON).
+//! - [`parse_iptc`] — IPTC-IIM record 2 datasets.
+//! - [`parse_gpx`] — GPS track logs (GPX) for geotagging by capture time.
+//! - [`extract`] — all of the above for a whole file (JPEG, PNG, WebP, TIFF/DNG/raw, PSD/PSB, Canon CR3, HEIF/HEIC/AVIF).
+//! - [`cr3`] — the Canon CR3 container (metadata blocks, XMP, the JPEG and raw tracks).
+#![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+mod container;
+pub mod cr3;
+mod datetime;
+mod exif;
+pub mod focus;
+mod focus_canon;
+mod focus_read;
+mod fuji;
+mod gpx;
+mod heif;
+mod iptc;
+pub mod jxl;
+mod legacy;
+pub mod mrw;
+mod psd;
+pub mod tags;
+mod xmp;
+mod xmp_merge;
+
+pub use container::{Embedded, embedded, jpeg_segments, jpeg_segments_with_all_xmp, png_chunks, webp_chunks};
+pub use datetime::{DatePrecision, DateTime};
+pub use exif::{from_tiff, read_exif, strip_exif_header, try_read_exif, try_read_exif_with, write_exif};
+pub use focus::FocusPoint;
+pub use fuji::{FujiRecipe, FujiRow, read_recipe_file, recipe_from_bytes, recipe_from_exif};
+pub use gpx::{GpxError, Match, TrackPoint, Tracklog, parse_gpx};
+pub use iptc::parse_iptc;
+pub use lcc_geom::{Orientation, Rect};
+pub use tags::{TagRow, file_tag_rows, tag_rows};
+pub use xmp::{
+    CRS_NS, FILTERS_PREFIX, LC_NS, MAX_FILTER_PART, VIDEO_PREFIX, XmpData, XmpError, XmpPluginFilter, XmpValue, parse_xmp, plugin_fields,
+    plugin_fields_ns, plugin_filters, plugin_filters_ns, video_ns, write_xmp, write_xmp_ext, write_xmp_filters, write_xmp_lc, write_xmp_video,
+};
+pub use xmp_merge::{MergeRules, merge_xmp};
+
+use serde::{Deserialize, Serialize};
+
+/// GPS position (WGS 84). Latitude/longitude in signed decimal degrees (north / east positive).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Gps {
+    pub latitude: f64,
+    pub longitude: f64,
+    /// Metres above sea level (negative below).
+    pub altitude: Option<f64>,
+}
+
+/// Exif `Flash` value decoded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Flash {
+    pub fired: bool,
+    /// The raw Exif `Flash` bit field.
+    pub raw: u16,
+}
+
+/// A named region of interest on a photo (MWG Region Guidelines, `mwg-rs:Regions`): most often a face,
+/// drawn by Lightroom, digiKam, Picasa or similar tools. Read-only for now — the app does not write
+/// regions yet (see `docs/xmp-interop.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Region {
+    /// Normalized to the image's full, oriented frame (`Metadata::width`/`height`), y-down, 0..1 on
+    /// both axes — MWG's own convention, and what `AppliedToDimensions` areas are converted to.
+    pub rect: Rect,
+    pub kind: RegionKind,
+    /// `mwg-rs:Name` (e.g. the person's name).
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+/// `mwg-rs:Type`. Unrecognised values are kept verbatim rather than dropped.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RegionKind {
+    Face,
+    /// A face the user chose to ignore (a blurry crop, a false detection): kept in the catalog so it is not
+    /// detected again and can be restored, left out of people, matching and the face gallery. Catalog-only:
+    /// regions are never written to XMP.
+    IgnoredFace,
+    Pet,
+    Focus,
+    BarCode,
+    /// `mwg-rs:Type` was missing, empty, or a value we don't recognise.
+    Other(String),
+}
+
+/// The creator's contact details (IPTC Core `Iptc4xmpCore:CreatorContactInfo`) and job title
+/// (`photoshop:AuthorsPosition`). Empty strings are "not set".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CreatorContact {
+    pub job_title: String,
+    pub address: String,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub phone: String,
+    pub email: String,
+    pub website: String,
+}
+
+impl CreatorContact {
+    /// The `photo.setMeta` / metadata-preset keys of the fields, in display order.
+    pub const KEYS: &'static [&'static str] = &[
+        "creatorJobTitle",
+        "creatorAddress",
+        "creatorCity",
+        "creatorState",
+        "creatorPostalCode",
+        "creatorCountry",
+        "creatorPhone",
+        "creatorEmail",
+        "creatorWebsite",
+    ];
+
+    /// Every field empty (after trimming).
+    pub fn is_empty(&self) -> bool {
+        Self::KEYS.iter().all(|k| self.get(k).is_none_or(|v| v.trim().is_empty()))
+    }
+
+    /// The field a [`CreatorContact::KEYS`] key names.
+    pub fn get(&self, key: &str) -> Option<&String> {
+        Some(match key {
+            "creatorJobTitle" => &self.job_title,
+            "creatorAddress" => &self.address,
+            "creatorCity" => &self.city,
+            "creatorState" => &self.state,
+            "creatorPostalCode" => &self.postal_code,
+            "creatorCountry" => &self.country,
+            "creatorPhone" => &self.phone,
+            "creatorEmail" => &self.email,
+            "creatorWebsite" => &self.website,
+            _ => return None,
+        })
+    }
+
+    /// The field a [`CreatorContact::KEYS`] key names, to change.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut String> {
+        Some(match key {
+            "creatorJobTitle" => &mut self.job_title,
+            "creatorAddress" => &mut self.address,
+            "creatorCity" => &mut self.city,
+            "creatorState" => &mut self.state,
+            "creatorPostalCode" => &mut self.postal_code,
+            "creatorCountry" => &mut self.country,
+            "creatorPhone" => &mut self.phone,
+            "creatorEmail" => &mut self.email,
+            "creatorWebsite" => &mut self.website,
+            _ => return None,
+        })
+    }
+}
+
+/// Everything the app shows or searches about a photo. All fields are optional; unknown = `None`/empty.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Metadata {
+    // camera
+    pub make: Option<String>,
+    pub model: Option<String>,
+    pub serial_number: Option<String>,
+    pub software: Option<String>,
+    // lens
+    pub lens_make: Option<String>,
+    pub lens_model: Option<String>,
+    pub lens_serial_number: Option<String>,
+    /// Min/max focal length (mm) and min/max f-number at those, as in Exif `LensSpecification`.
+    pub lens_spec: Option<[f64; 4]>,
+    /// Image stabilisation (vibration reduction) at capture: on, off, or not recorded. Nikon: the maker note's
+    /// VRInfo (`0x001F`), the camera's VR setting for in-body and lens VR alike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stabilization: Option<bool>,
+    // capture
+    pub capture_time: Option<DateTime>,
+    /// Seconds.
+    pub exposure_time: Option<f64>,
+    pub f_number: Option<f64>,
+    pub iso: Option<u32>,
+    /// Millimetres.
+    pub focal_length: Option<f64>,
+    pub focal_length_35mm: Option<f64>,
+    pub flash: Option<Flash>,
+    /// EV.
+    pub exposure_bias: Option<f64>,
+    /// Exif `ExposureProgram` code.
+    pub exposure_program: Option<u16>,
+    /// Exif `MeteringMode` code.
+    pub metering_mode: Option<u16>,
+    /// Exif `WhiteBalance` (0 auto, 1 manual).
+    pub white_balance: Option<u16>,
+    pub orientation: Option<Orientation>,
+    pub gps: Option<Gps>,
+    /// Pixel dimensions as recorded (not oriented).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    // descriptive / user
+    pub artist: Option<String>,
+    pub copyright: Option<String>,
+    /// Copyright status (`xmpRights:Marked`): `true` = copyrighted, `false` = public domain, `None` = unknown.
+    pub copyright_marked: Option<bool>,
+    /// Rights usage terms (`xmpRights:UsageTerms`).
+    pub usage_terms: Option<String>,
+    /// Copyright info URL (`xmpRights:WebStatement`).
+    pub copyright_url: Option<String>,
+    pub title: Option<String>,
+    /// The headline (IPTC Core `photoshop:Headline`, IPTC-IIM 2:105): a brief publishable synopsis.
+    pub headline: Option<String>,
+    pub caption: Option<String>,
+    /// Who wrote the caption (`photoshop:CaptionWriter`, IPTC-IIM 2:122).
+    pub description_writer: Option<String>,
+    /// The legacy category code (`photoshop:Category`, IPTC-IIM 2:15; at most three characters).
+    pub category: Option<String>,
+    /// Accessibility text (`Iptc4xmpCore:AltTextAccessibility`).
+    pub alt_text: Option<String>,
+    /// Long accessibility description (`Iptc4xmpCore:ExtDescrAccessibility`).
+    pub extended_description: Option<String>,
+    /// Place within the city (`Iptc4xmpCore:Location`).
+    pub sublocation: Option<String>,
+    /// `photoshop:City`, `photoshop:State`, `photoshop:Country`.
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    /// The ISO 3166-1 alpha-2 country code (`Iptc4xmpCore:CountryCode`).
+    pub country_code: Option<String>,
+    /// The creator's contact details and job title (IPTC Core).
+    #[serde(default, skip_serializing_if = "CreatorContact::is_empty")]
+    pub contact: CreatorContact,
+    pub keywords: Vec<String>,
+    /// The other (supplemental) categories (`photoshop:SupplementalCategories`, IPTC-IIM 2:20).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supplemental_categories: Vec<String>,
+    /// The IPTC subject codes (`Iptc4xmpCore:SubjectCode`, the reference number of IPTC-IIM 2:12): each
+    /// a numeric code from the IPTC Subject Reference System (e.g. `01001000`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_code: Vec<String>,
+    /// Hierarchical keywords, `|`-separated paths (`lr:hierarchicalSubject` convention).
+    pub hierarchical_keywords: Vec<String>,
+    /// -1 = rejected, 0 = unrated, 1..=5 stars.
+    pub rating: Option<i8>,
+    /// Colour label name (e.g. "Red").
+    pub label: Option<String>,
+    /// Face/pet/focus/barcode regions (`mwg-rs:Regions`), read from XMP only.
+    pub regions: Vec<Region>,
+    /// Where the camera focused, from its maker notes ([`focus`]; Sony only for now), on the upright photo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<FocusPoint>,
+    /// Fujifilm in-camera film recipe from the MakerNote. Not written back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuji_recipe: Option<FujiRecipe>,
+}
+
+macro_rules! fill {
+    ($self:ident, $o:ident, $($f:ident),*) => { $( if $self.$f.is_none() { $self.$f = $o.$f.clone(); } )* };
+}
+macro_rules! overlay {
+    ($self:ident, $o:ident, $($f:ident),*) => { $( if $o.$f.is_some() { $self.$f = $o.$f.clone(); } )* };
+}
+
+impl Metadata {
+    /// Fill every empty field of `self` from `other`.
+    pub fn fill_missing(&mut self, other: &Metadata) {
+        fill!(
+            self,
+            other,
+            make,
+            model,
+            serial_number,
+            software,
+            lens_make,
+            lens_model,
+            lens_serial_number,
+            lens_spec,
+            capture_time,
+            exposure_time,
+            f_number,
+            iso,
+            focal_length,
+            focal_length_35mm,
+            flash,
+            exposure_bias,
+            exposure_program,
+            metering_mode,
+            white_balance,
+            orientation,
+            gps,
+            width,
+            height,
+            artist,
+            copyright,
+            copyright_marked,
+            usage_terms,
+            copyright_url,
+            title,
+            headline,
+            caption,
+            description_writer,
+            category,
+            alt_text,
+            extended_description,
+            sublocation,
+            city,
+            state,
+            country,
+            rating,
+            label
+        );
+        if self.keywords.is_empty() {
+            self.keywords = other.keywords.clone();
+        }
+        if self.supplemental_categories.is_empty() {
+            self.supplemental_categories = other.supplemental_categories.clone();
+        }
+        if self.subject_code.is_empty() {
+            self.subject_code = other.subject_code.clone();
+        }
+        if self.contact.is_empty() {
+            self.contact.clone_from(&other.contact);
+        }
+        if self.hierarchical_keywords.is_empty() {
+            self.hierarchical_keywords = other.hierarchical_keywords.clone();
+        }
+        if self.regions.is_empty() {
+            self.regions = other.regions.clone();
+        }
+        if self.focus.is_none() {
+            self.focus.clone_from(&other.focus);
+        }
+        if self.fuji_recipe.is_none() {
+            self.fuji_recipe.clone_from(&other.fuji_recipe);
+        }
+    }
+
+    /// Replace the user-editable fields (rating, label, title, caption, artist, copyright, keywords, GPS) with
+    /// `other`'s where `other` has them — the XMP-over-EXIF precedence rule.
+    pub fn overlay_user_fields(&mut self, other: &Metadata) {
+        overlay!(
+            self,
+            other,
+            rating,
+            label,
+            title,
+            headline,
+            caption,
+            description_writer,
+            category,
+            artist,
+            copyright,
+            copyright_marked,
+            usage_terms,
+            copyright_url,
+            gps
+        );
+        if !other.keywords.is_empty() {
+            self.keywords = other.keywords.clone();
+        }
+        if !other.supplemental_categories.is_empty() {
+            self.supplemental_categories = other.supplemental_categories.clone();
+        }
+        if !other.subject_code.is_empty() {
+            self.subject_code = other.subject_code.clone();
+        }
+        if !other.contact.is_empty() {
+            self.contact.clone_from(&other.contact);
+        }
+        if !other.hierarchical_keywords.is_empty() {
+            self.hierarchical_keywords = other.hierarchical_keywords.clone();
+        }
+        if !other.regions.is_empty() {
+            self.regions = other.regions.clone();
+        }
+    }
+
+    /// Exposure time formatted like cameras show it: `1/250`, `0.3571`, `2″`, `1.3″` (see [`exposure_display_of`]).
+    pub fn exposure_display(&self) -> Option<String> {
+        exposure_display_of(self.exposure_time?)
+    }
+
+    /// Human name of the metering mode.
+    pub fn metering_name(&self) -> Option<&'static str> {
+        Some(match self.metering_mode? {
+            1 => "Average",
+            2 => "Center-weighted average",
+            3 => "Spot",
+            4 => "Multi-spot",
+            5 => "Pattern",
+            6 => "Partial",
+            255 => "Other",
+            _ => "Unknown",
+        })
+    }
+
+    /// Human name of the exposure program.
+    pub fn exposure_program_name(&self) -> Option<&'static str> {
+        Some(match self.exposure_program? {
+            1 => "Manual",
+            2 => "Program AE",
+            3 => "Aperture-priority AE",
+            4 => "Shutter speed priority AE",
+            5 => "Creative (slow speed)",
+            6 => "Action (high speed)",
+            7 => "Portrait",
+            8 => "Landscape",
+            9 => "Bulb",
+            _ => "Not defined",
+        })
+    }
+}
+
+/// How far (relative) a duration may be from an exact `1/n` second and still be shown as `1/n`: absorbs decimal
+/// EXIF rationals such as `3333/10000` for 1/3 s without turning 0.3 s or 1/2.8 s into a reciprocal they aren't.
+pub const RECIPROCAL_TOLERANCE: f64 = 1e-3;
+
+/// The one shutter-speed formatter for display, without a unit: a near-exact `1/n` second as `1/n` (`1/3`,
+/// `1/250`), anything else rounded to four significant digits with trailing zeros dropped (`0.3`, `0.3571`, `2.5`,
+/// `30`) — never the raw f64 (`0.35714285714285715`). Display only: export writes the exact duration. `None` for a
+/// time that isn't positive and finite.
+pub fn format_exposure_time(t: f64) -> Option<String> {
+    if !t.is_finite() || t <= 0.0 {
+        return None;
+    }
+    let n = (1.0 / t).round();
+    if n >= 2.0 && n.is_finite() && (1.0 / (n * t) - 1.0).abs() <= RECIPROCAL_TOLERANCE {
+        return Some(format!("1/{n}"));
+    }
+    // four significant digits; whole seconds never lose digits (log10 of a positive finite f64 stays within ±400)
+    let decimals = usize::try_from((3 - t.log10().floor() as i32).clamp(0, 400)).unwrap_or(0);
+    let text = format!("{t:.decimals$}");
+    Some(if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text })
+}
+
+/// An exposure time in seconds, written the way cameras show it: `1/250`, `1/3`, `0.4`, `0.3571`, `2″`, `1.3″`
+/// ([`format_exposure_time`] plus `″` from one second up). `″` marks a whole second, so a reader showing the string
+/// beside " s" must not add a second unit. `None` for anything that isn't a positive, finite time.
+pub fn exposure_display_of(t: f64) -> Option<String> {
+    format_exposure_time(t).map(|text| if t >= 1.0 { format!("{text}\u{2033}") } else { text })
+}
+
+/// Read everything we understand from a whole file (JPEG, PNG, WebP, TIFF-based incl. DNG/raw).
+/// Precedence: EXIF, then IPTC fills gaps, then XMP overrides user fields and fills the rest.
+pub fn extract(bytes: &[u8]) -> Metadata {
+    let e = embedded(bytes);
+    let exif = with_cr3_focus(bytes, e.exif.as_deref().map(read_exif).unwrap_or_default());
+    let xmp = e.xmp.as_deref().and_then(|xmp| parse_xmp(xmp).ok());
+    extract_embedded(e, exif, xmp)
+}
+
+/// Read metadata while reporting malformed PSD/PSB containers, embedded EXIF, or embedded XMP instead of treating
+/// them as empty. Other container formats retain [`extract`]'s best-effort behavior.
+pub fn try_extract(bytes: &[u8]) -> Result<Metadata, ExtractError> {
+    let e = container::try_embedded(bytes)?;
+    let is_psd = bytes.starts_with(b"8BPS");
+    let exif = match e.exif.as_deref() {
+        Some(exif) if is_psd => try_read_exif(exif).map_err(|_| ExtractError::MalformedPsd)?,
+        Some(exif) => read_exif(exif),
+        None => Metadata::default(),
+    };
+    let exif = with_cr3_focus(bytes, exif);
+    let xmp = match e.xmp.as_deref() {
+        Some(xmp) if is_psd => Some(parse_xmp(xmp).map_err(|_| ExtractError::MalformedPsd)?),
+        Some(xmp) => parse_xmp(xmp).ok(),
+        None => None,
+    };
+    Ok(extract_embedded(e, exif, xmp))
+}
+
+/// A CR3 keeps its maker note in a block of its own (`CMT3`), apart from the merged Exif: read its focus point.
+fn with_cr3_focus(bytes: &[u8], mut m: Metadata) -> Metadata {
+    if m.focus.is_none() && cr3::is_cr3(bytes) {
+        m.focus = focus::cr3_focus(bytes, m.make.as_deref(), m.orientation);
+    }
+    m
+}
+
+fn extract_embedded(e: Embedded, mut m: Metadata, xmp: Option<XmpData>) -> Metadata {
+    if let Some(i) = e.iptc.as_deref() {
+        m.fill_missing(&parse_iptc(i));
+    }
+    // a JPEG's extended XMP holds what did not fit in the main packet: it fills what that left out
+    let extended = e.xmp_extended.as_deref().and_then(|x| parse_xmp(x).ok());
+    if let Some(xmp) = xmp {
+        m.overlay_user_fields(&xmp.metadata);
+        m.fill_missing(&xmp.metadata);
+        if let Some(ext) = &extended {
+            m.overlay_user_fields(&ext.metadata);
+            m.fill_missing(&ext.metadata);
+        }
+        // boxes another app drew on the photo as stored go where the upright photo has them (#2674)
+        if let (Some(drawn_on), Some(orientation), Some(w), Some(h)) = (xmp.regions_drawn_on(), m.orientation, m.width, m.height) {
+            upright_regions(&mut m.regions, drawn_on, orientation, (w, h));
+        }
+    }
+    if let Some(exif) = e.exif.as_deref() {
+        m.fuji_recipe = fuji::recipe_from_exif(exif);
+    }
+    m
+}
+
+/// Does the file embed GPS or a place name anywhere it can be read from? Export's "remove location"
+/// asks before copying an original byte for byte. For HEIF, HEIC and AVIF that is any EXIF or XMP
+/// item, whichever image it describes (a thumbnail's too), and an item that can't be read counts
+/// as a location; for other files, what [`extract`] reads.
+pub fn embeds_location(bytes: &[u8]) -> bool {
+    heif::embeds_location(bytes).unwrap_or_else(|| has_location(&extract(bytes)))
+}
+
+/// Location includes the place names removed by export, as well as GPS coordinates.
+fn has_location(metadata: &Metadata) -> bool {
+    metadata.gps.is_some()
+        || [metadata.sublocation.as_deref(), metadata.city.as_deref(), metadata.state.as_deref(), metadata.country.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.trim().is_empty())
+}
+
+/// Turn regions drawn on a photo as it is stored onto the upright photo. MWG gives each box as a fraction of
+/// `AppliedToDimensions` (`drawn_on`); for a photo whose Exif `orientation` turns it a quarter turn, some apps give the
+/// stored, sideways size there and boxes on the stored pixels to match (Lightroom says so per box with
+/// `mwg-rs:Rotation` instead, which [`parse_xmp`] reads). When `drawn_on` has the shape of the photo as stored
+/// (`stored`, before `orientation`) rather than the upright one, every box is turned with `orientation`. Returns
+/// whether they were. A square photo or `drawn_on` looks the same both ways, and a half turn or a mirror doesn't
+/// change the shape: their boxes are left as they are.
+pub fn upright_regions(regions: &mut [Region], drawn_on: (f64, f64), orientation: Orientation, stored: (u32, u32)) -> bool {
+    let ((dw, dh), (sw, sh)) = (drawn_on, stored);
+    if regions.is_empty() || !orientation.swaps_axes() || sw == sh || dw == dh || (dw > dh) != (sw > sh) {
+        return false;
+    }
+    for r in regions.iter_mut() {
+        r.rect = orientation.map_norm_rect(r.rect);
+    }
+    true
+}
+
+/// A container-level error reported by [`try_extract`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtractError {
+    /// The PSD/PSB header, image-resource section, or embedded EXIF/XMP structure is malformed.
+    MalformedPsd,
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedPsd => f.write_str("malformed PSD/PSB header, image-resource section, or embedded EXIF/XMP structure"),
+        }
+    }
+}
+
+impl std::error::Error for ExtractError {}
+
+/// A lens name from its focal and aperture range (Exif LensSpecification, or a Nikon maker note's Lens), written the
+/// way Lightroom shows a lens it has no name for: `50.0 mm f/1.8`, `18.0-135.0 mm f/3.5-5.6`.
+pub fn lens_spec_name(spec: [f64; 4]) -> Option<String> {
+    let [short, long, wide, narrow] = spec;
+    if ![short, long, wide, narrow].iter().all(|v| v.is_finite() && *v > 0.0) || long < short {
+        return None;
+    }
+    let focal = if (long - short).abs() < 0.05 { format!("{short:.1}") } else { format!("{short:.1}-{long:.1}") };
+    let aperture = if (narrow - wide).abs() < 0.05 { format!("{wide:.1}") } else { format!("{wide:.1}-{narrow:.1}") };
+    Some(format!("{focal} mm f/{aperture}"))
+}
+
+/// Lenient number parsing used by XMP/IPTC: `"28/10"`, `"2.8"`, `"+0.7"`.
+pub(crate) fn parse_number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Some((n, d)) = s.split_once('/') {
+        let (n, d) = (n.trim().parse::<f64>().ok()?, d.trim().parse::<f64>().ok()?);
+        return (d != 0.0).then_some(n / d).filter(|v| v.is_finite());
+    }
+    s.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lens_names_from_a_spec_read_like_lightroom() {
+        assert_eq!(lens_spec_name([50.0, 50.0, 1.8, 1.8]).as_deref(), Some("50.0 mm f/1.8"));
+        assert_eq!(lens_spec_name([18.0, 135.0, 3.5, 5.6]).as_deref(), Some("18.0-135.0 mm f/3.5-5.6"));
+        assert_eq!(lens_spec_name([24.0, 70.0, 2.8, 2.8]).as_deref(), Some("24.0-70.0 mm f/2.8"));
+        assert_eq!(lens_spec_name([70.0, 210.0, 4.0, 5.6]).as_deref(), Some("70.0-210.0 mm f/4.0-5.6"));
+        assert_eq!(lens_spec_name([0.0, 0.0, 0.0, 0.0]), None);
+        assert_eq!(lens_spec_name([200.0, 80.0, 2.8, 2.8]), None);
+        assert_eq!(lens_spec_name([f64::NAN, 50.0, 1.8, 1.8]), None);
+    }
+
+    #[test]
+    fn numbers() {
+        assert_eq!(parse_number("28/10"), Some(2.8));
+        assert_eq!(parse_number(" +0.7 "), Some(0.7));
+        assert_eq!(parse_number("1/0"), None);
+        assert_eq!(parse_number("abc"), None);
+        assert_eq!(parse_number("inf"), None);
+    }
+
+    /// The third-stop speeds between 1/4 s and 4 s keep their step, written as cameras show them (issue
+    /// #1619): 0.4 s is "0.4", not "1/2" (1/0.4 = 2.5, rounded to 2), and a whole second carries the ″.
+    #[test]
+    fn exposure_times_keep_their_step() {
+        for (t, want) in [
+            (1.0 / 250.0, "1/250"),
+            (0.3, "0.3"),
+            (0.4, "0.4"),
+            (0.5, "1/2"),
+            (1.0 / 3.0, "1/3"),
+            (1.0 / 2.8, "0.3571"),
+            (0.625, "0.625"),
+            (0.8, "0.8"),
+            (1.0, "1\u{2033}"),
+            (1.3, "1.3\u{2033}"),
+            (2.5, "2.5\u{2033}"),
+            (30.0, "30\u{2033}"),
+        ] {
+            assert_eq!(exposure_display_of(t).as_deref(), Some(want), "{t} s");
+            assert_eq!(Metadata { exposure_time: Some(t), ..Default::default() }.exposure_display().as_deref(), Some(want), "{t} s");
+        }
+        for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(exposure_display_of(t), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn exposure_time_formats_reciprocals_and_significant_digits() {
+        for (t, want) in [
+            (1.0 / 3.0, "1/3"),
+            (1.0 / 250.0, "1/250"),
+            (1.0 / 8000.0, "1/8000"),
+            (0.5, "1/2"),
+            (0.3, "0.3"),
+            (1.0 / 2.8, "0.3571"),
+            (0.003, "0.003"),
+            (1.0, "1"),
+            (9.99996, "10"),
+            (1800.0, "1800"),
+        ] {
+            assert_eq!(format_exposure_time(t).as_deref(), Some(want), "{t}");
+        }
+        // extremes format without panicking
+        assert!(format_exposure_time(f64::MIN_POSITIVE).is_some() && format_exposure_time(f64::MAX).is_some());
+        for t in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(format_exposure_time(t), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn exposure_time_reciprocal_tolerance() {
+        // a camera's decimal rational for 1/3 s
+        assert_eq!(format_exposure_time(3333.0 / 10000.0).as_deref(), Some("1/3"));
+        assert_eq!(format_exposure_time(1.0 / 8000.0 * (1.0 + 1e-5)).as_deref(), Some("1/8000"));
+        for n in [3.0, 10.0, 250.0] {
+            let (inside, outside) = (0.9 * RECIPROCAL_TOLERANCE, 1.1 * RECIPROCAL_TOLERANCE);
+            let want = format!("1/{n}");
+            assert_eq!(format_exposure_time(1.0 / n * (1.0 + inside)).as_deref(), Some(want.as_str()), "{n} +inside");
+            assert_eq!(format_exposure_time(1.0 / n * (1.0 - inside)).as_deref(), Some(want.as_str()), "{n} -inside");
+            assert_ne!(format_exposure_time(1.0 / n * (1.0 + outside)).as_deref(), Some(want.as_str()), "{n} +outside");
+            assert_ne!(format_exposure_time(1.0 / n * (1.0 - outside)).as_deref(), Some(want.as_str()), "{n} -outside");
+        }
+    }
+
+    #[test]
+    fn try_extract_keeps_non_psd_exif_best_effort() {
+        let payload = b"Exif\0\0not a TIFF stream";
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend_from_slice(payload);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+
+        assert!(matches!(try_extract(&jpeg), Ok(metadata) if metadata == Metadata::default()));
+    }
+
+    #[test]
+    fn merge_rules() {
+        let mut a = Metadata { make: Some("A".into()), rating: Some(1), ..Default::default() };
+        let b = Metadata { make: Some("B".into()), model: Some("M".into()), rating: Some(4), keywords: vec!["k".into()], ..Default::default() };
+        a.fill_missing(&b);
+        assert_eq!(a.make.as_deref(), Some("A"));
+        assert_eq!(a.model.as_deref(), Some("M"));
+        assert_eq!(a.rating, Some(1));
+        a.overlay_user_fields(&b);
+        assert_eq!(a.rating, Some(4));
+        assert_eq!(a.make.as_deref(), Some("A"));
+        assert_eq!(a.keywords, vec!["k".to_string()]);
+    }
+
+    /// An MWG regions packet with one face, its box centred at (0.25, 0.4) and 0.1 × 0.15 of `AppliedToDimensions`
+    /// `w` × `h`; `extra` goes on the region (e.g. Lightroom's `mwg-rs:Rotation`).
+    fn regions_packet(w: u32, h: u32, extra: &str) -> String {
+        format!(
+            r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+                xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#" xmlns:stDim="http://ns.adobe.com/xap/1.0/sType/Dimensions#">
+              <mwg-rs:Regions rdf:parseType="Resource">
+                <mwg-rs:AppliedToDimensions rdf:parseType="Resource" stDim:w="{w}" stDim:h="{h}" stDim:unit="pixel"/>
+                <mwg-rs:RegionList><rdf:Bag>
+                  <rdf:li rdf:parseType="Resource" mwg-rs:Name="Hannah" mwg-rs:Type="Face"{extra}>
+                    <mwg-rs:Area rdf:parseType="Resource" stArea:x="0.25" stArea:y="0.4" stArea:w="0.1" stArea:h="0.15" stArea:unit="normalized"/>
+                  </rdf:li>
+                </rdf:Bag></mwg-rs:RegionList>
+              </mwg-rs:Regions>
+            </rdf:Description></rdf:RDF></x:xmpmeta>"#
+        )
+    }
+
+    fn near(r: Rect, b: [f64; 4]) -> bool {
+        [r.x0 - b[0], r.y0 - b[1], r.x1 - b[2], r.y1 - b[3]].iter().all(|d| d.abs() < 1e-9)
+    }
+
+    /// The face's box as drawn: on the photo as stored, or on the upright one by apps that draw there.
+    const DRAWN: [f64; 4] = [0.2, 0.325, 0.3, 0.475];
+    /// The same box on the photo turned upright by Exif orientation 6 (a quarter turn clockwise).
+    const TURNED_6: [f64; 4] = [0.525, 0.2, 0.675, 0.3];
+
+    #[test]
+    fn boxes_drawn_on_the_stored_photo_turn_with_its_orientation() {
+        let region = || Region {
+            rect: Rect { x0: DRAWN[0], y0: DRAWN[1], x1: DRAWN[2], y1: DRAWN[3] },
+            kind: RegionKind::Face,
+            name: None,
+            description: None,
+        };
+        let turned = |o: Orientation, drawn_on: (f64, f64), stored: (u32, u32)| {
+            let mut regions = [region()];
+            let did = upright_regions(&mut regions, drawn_on, o, stored);
+            (did, regions[0].rect)
+        };
+        // drawn on the 6000 × 4000 photo as stored: every quarter turn and its mirror image land elsewhere
+        for (o, want) in [
+            (Orientation::Rotate90, TURNED_6),
+            (Orientation::Rotate270, [0.325, 0.7, 0.475, 0.8]),
+            (Orientation::Transpose, [0.325, 0.2, 0.475, 0.3]),
+            (Orientation::Transverse, [0.525, 0.7, 0.675, 0.8]),
+        ] {
+            let (did, r) = turned(o, (6000.0, 4000.0), (6000, 4000));
+            assert!(did && near(r, want), "{o:?}: {r:?}");
+            // a smaller copy of the photo as stored is the same frame
+            assert!(near(turned(o, (1500.0, 1000.0), (6000, 4000)).1, want), "{o:?} on a smaller size");
+        }
+        // drawn on the upright photo (MWG's own frame), or where the shape can't tell the two apart: as they are
+        for (o, drawn_on, stored) in [
+            (Orientation::Rotate90, (4000.0, 6000.0), (6000, 4000)),
+            (Orientation::Rotate90, (4000.0, 4000.0), (6000, 4000)),
+            (Orientation::Rotate90, (4000.0, 4000.0), (4000, 4000)),
+            (Orientation::Rotate180, (6000.0, 4000.0), (6000, 4000)),
+            (Orientation::FlipH, (6000.0, 4000.0), (6000, 4000)),
+            (Orientation::Normal, (6000.0, 4000.0), (6000, 4000)),
+        ] {
+            let (did, r) = turned(o, drawn_on, stored);
+            assert!(!did && near(r, DRAWN), "{o:?} drawn on {drawn_on:?} of {stored:?}: {r:?}");
+        }
+    }
+
+    /// Issue #2674: an app that doesn't say how the photo was turned (no `mwg-rs:Rotation`) drew the faces of a photo
+    /// with Exif orientation 6 on its stored pixels, with the stored 6000 × 4000 as `AppliedToDimensions`. The boxes
+    /// land on the faces of the upright photo, not where the stored photo had them.
+    #[test]
+    fn regions_drawn_on_the_stored_photo_are_read_onto_the_upright_one() {
+        let jpeg = |packet: &str| {
+            let mut j = vec![0xff, 0xd8];
+            let mut seg = |payload: Vec<u8>| {
+                j.extend([0xff, 0xe1]);
+                j.extend(u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+                j.extend(payload);
+            };
+            // orientation 6, 6000 × 4000 as stored
+            seg([b"Exif\0\0".as_slice(), &crate::exif::tests::sample_exif(lcc_tiff::ByteOrder::Little)].concat());
+            seg([b"http://ns.adobe.com/xap/1.0/\0".as_slice(), packet.as_bytes()].concat());
+            j.extend([0xff, 0xd9]);
+            j
+        };
+        let read = |packet: &str| {
+            let m = extract(&jpeg(packet));
+            assert_eq!((m.orientation, m.width, m.height), (Some(Orientation::Rotate90), Some(6000), Some(4000)));
+            assert_eq!(try_extract(&jpeg(packet)).unwrap().regions, m.regions);
+            assert_eq!(m.regions.len(), 1);
+            m.regions[0].rect
+        };
+        let stored = read(&regions_packet(6000, 4000, ""));
+        assert!(near(stored, TURNED_6), "drawn on the photo as stored: {stored:?}");
+        let upright = read(&regions_packet(4000, 6000, ""));
+        assert!(near(upright, DRAWN), "drawn on the upright photo, MWG's way: {upright:?}");
+        // Lightroom's boxes say how the photo was turned: turned once, by that
+        let lightroom = read(&regions_packet(6000, 4000, r#" mwg-rs:Rotation="-1.57080""#));
+        assert!(near(lightroom, TURNED_6), "Lightroom's −π/2: {lightroom:?}");
+    }
+}

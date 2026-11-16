@@ -1,0 +1,39 @@
+[package]
+name = "lcc-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Library: photos, albums, ratings/flags, search/filter/sort, op-log persistence (L3)"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-camdb = { workspace = true }
+lcc-develop = { workspace = true }
+lcc-raw = { workspace = true }
+lcc-meta = { workspace = true }
+lcc-geo = { workspace = true }
+lcc-sysmem = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+crc32fast = { workspace = true }
+log = { workspace = true }
+chrono = { workspace = true, features = ["clock"] }
+web-time = { workspace = true }
+siphasher = { workspace = true }
+
+# catalog storage v4 (pure Rust, MIT OR Apache-2.0); the web app keeps the JSON snapshot
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+redb = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi-util = { workspace = true }
+
+[dev-dependencies]
+lcc-fuzzkit = { workspace = true }
+lcc-geom = { workspace = true }
+lcc-testkit = { workspace = true }
+proptest = { workspace = true }

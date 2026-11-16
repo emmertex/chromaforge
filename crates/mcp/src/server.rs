@@ -1,0 +1,287 @@
+//! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources methods.
+
+use std::io::{BufRead, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[path = "progress.rs"]
+mod progress;
+
+use serde_json::{Value, json};
+
+use crate::backend::Backend;
+use crate::policy::Policy;
+use crate::tools::{ToolResult, call_tool, check_args, doc_inspect, tool_definitions};
+
+/// The MCP revision we implement.
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Revisions we can speak; anything else negotiates down to [`PROTOCOL_VERSION`].
+const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2025-03-26", "2024-11-05"];
+
+const PARSE_ERROR: i64 = -32700;
+const INVALID_REQUEST: i64 = -32600;
+const METHOD_NOT_FOUND: i64 = -32601;
+const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
+const RESOURCE_NOT_FOUND: i64 = -32002;
+
+const INSTRUCTIONS: &str = "is a non-destructive photo library and raw developer (a Lightroom alternative). \
+Photos have integer ids; most editing acts on the *active* photo (`set_develop`, `crop` and `export` with an explicit photo id end the current edit interaction, replace the selection with that one photo and make it active; `get_develop` and `render_photo` do not change the selection). \
+Typical loop: query_photos → select_photos (or pass id) → list_controls → set_develop {values: {\"light.exposure\": 0.5}} → \
+render_preview to look at the result → export. Positions (crop rects, mask points, brush strokes) are normalized image \
+coordinates 0..1 with the origin at the top-left. Every action is a command: command_list shows ids and parameter \
+docs; command_run {id, params} runs any of them; command_batch runs steps in order. Inspect with doc_inspect. Edits are undoable (undo / redo).";
+
+/// Resource URIs.
+pub const DOCUMENT_URI: &str = "lcc://document";
+pub const COMMANDS_URI: &str = "lcc://commands";
+pub const LIBRARY_URI: &str = "lcc://library";
+pub const PHOTOS_URI: &str = "lcc://photos";
+pub const PHOTO_URI: &str = "lcc://photo/active";
+pub const DEVELOP_URI: &str = "lcc://develop/active";
+pub const CONTROLS_URI: &str = "lcc://controls";
+
+/// An MCP server bound to one backend.
+pub struct Server {
+    backend: Box<dyn Backend>,
+    initialized: bool,
+    command_tools: bool,
+    policy: Policy,
+    wire: Option<progress::Wire>,
+    current: Option<(Value, Option<Value>)>,
+    suppress: Arc<AtomicBool>,
+}
+
+fn response(id: Value, result: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
+}
+
+fn resource(uri: &str, name: &str, title: &str, description: &str) -> Value {
+    json!({"uri": uri, "name": name, "title": title, "description": description, "mimeType": "application/json"})
+}
+
+impl Server {
+    pub fn new(backend: Box<dyn Backend>) -> Self {
+        let policy = Policy::from_env();
+        if policy.is_active() {
+            log::info!("mcp policy active: {policy:?}");
+        }
+        Self { backend, initialized: false, command_tools: true, policy, wire: None, current: None, suppress: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// Replace the policy read from the `<PREFIX>_MCP_*` environment variables (tests, embedders).
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Whether `tools/list` includes one `cmd_*` tool per registered command (default true).
+    /// Off, every command stays reachable through `run_command`.
+    pub fn with_command_tools(mut self, on: bool) -> Self {
+        self.command_tools = on;
+        self
+    }
+
+    pub fn backend(&mut self) -> &mut dyn Backend {
+        self.backend.as_mut()
+    }
+
+    /// Whether the client has sent `notifications/initialized`.
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Serve newline-delimited JSON-RPC until `input` closes. Logs go to stderr only (stdout is
+    /// the protocol stream). The scoped input worker must reach EOF or an input error before
+    /// this returns, including on output failure: callers must unblock their own input.
+    /// For a process serving stdin, use [`Self::serve_stdio`] instead.
+    pub fn serve(&mut self, input: impl BufRead + Send, output: impl Write + Send) -> std::io::Result<()> {
+        self.serve_wire(input, output)
+    }
+
+    /// Handle one line; returns the reply line (None for notifications and blank lines).
+    pub fn handle_line(&mut self, line: &str) -> Option<String> {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        let reply = match serde_json::from_str::<Value>(line) {
+            Ok(Value::Array(batch)) => {
+                // Batches were removed in 2025-06-18; still answer older clients sensibly.
+                if batch.is_empty() {
+                    Some(error(Value::Null, INVALID_REQUEST, "empty batch"))
+                } else {
+                    let replies: Vec<Value> = batch.into_iter().filter_map(|m| self.handle(m)).collect();
+                    (!replies.is_empty()).then_some(Value::Array(replies))
+                }
+            }
+            Ok(msg) => self.handle(msg),
+            Err(e) => Some(error(Value::Null, PARSE_ERROR, format!("parse error: {e}"))),
+        };
+        reply.map(|r| r.to_string())
+    }
+
+    /// Handle one JSON-RPC message; `None` for notifications and responses.
+    pub fn handle(&mut self, msg: Value) -> Option<Value> {
+        let Value::Object(o) = &msg else { return Some(error(Value::Null, INVALID_REQUEST, "message must be an object")) };
+        let id = o.get("id").cloned();
+        let Some(method) = o.get("method").and_then(Value::as_str) else {
+            // A response to a server→client request (we send none) — ignore; anything else is invalid.
+            if o.contains_key("result") || o.contains_key("error") {
+                return None;
+            }
+            return Some(error(id.filter(|i| i.is_string() || i.is_number()).unwrap_or(Value::Null), INVALID_REQUEST, "missing `method`"));
+        };
+        let params = o.get("params").cloned().unwrap_or(Value::Null);
+        let Some(id) = id else {
+            self.notification(method, &params);
+            return None;
+        };
+        if !(id.is_string() || id.is_number()) {
+            return Some(error(Value::Null, INVALID_REQUEST, "`id` must be a string or number"));
+        }
+        if !(params.is_object() || params.is_null()) {
+            return Some(error(id, INVALID_PARAMS, "`params` must be an object"));
+        }
+        let token = params.get("_meta").and_then(|m| m.get("progressToken")).filter(|t| t.is_string() || t.is_number()).cloned();
+        self.current = Some((id.clone(), token));
+        self.suppress.store(false, Ordering::Relaxed);
+        let result = self.request(method, &params);
+        self.current = None;
+        if self.suppress.swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        Some(match result {
+            Ok(mut r) => {
+                modern_result_fields(method, &params, &mut r);
+                response(id, r)
+            }
+            Err((code, m)) => error(id, code, m),
+        })
+    }
+
+    fn notification(&mut self, method: &str, _params: &Value) {
+        match method {
+            "notifications/initialized" => self.initialized = true,
+            "notifications/cancelled" | "notifications/progress" | "notifications/roots/list_changed" => {}
+            other => log::debug!("ignoring notification {other}"),
+        }
+    }
+
+    fn request(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        match method {
+            "initialize" => {
+                let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
+                let version = if SUPPORTED_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSION };
+                Ok(json!({
+                    "protocolVersion": version,
+                    "capabilities": {"tools": {"listChanged": false}, "resources": {"subscribe": false, "listChanged": false}},
+                    "serverInfo": {"name": lcc_brand::MCP_SERVER, "title": lcc_brand::DISPLAY_NAME, "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": format!("{} {INSTRUCTIONS} Backend: {}.", lcc_brand::DISPLAY_NAME, self.backend.describe()),
+                }))
+            }
+            "ping" => Ok(json!({})),
+            "tools/list" => {
+                let command_tools = self.command_tools;
+                let tools = self.guarded(|b| tool_definitions(b, command_tools)).map_err(|e| (INTERNAL_ERROR, e))?;
+                let tools = self.policy.filter_tools(tools);
+                Ok(json!({"tools": tools}))
+            }
+            "tools/call" => {
+                let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing tool `name`".to_string()))?;
+                let mut args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                check_args(name, &args).map_err(|e| (INVALID_PARAMS, e))?;
+                // Policy is the one gate every execution path goes through (helpers, run_command,
+                // command_batch and cmd_*). A refusal is a tool error so the model can read why. The
+                // policy may rewrite `args` (safe mode pins `addToPhotos` to false), so run those.
+                if let Err(why) = self.policy.check_call(name, &mut args) {
+                    return Ok(ToolResult::error(format!("refused by policy: {why}")).to_value());
+                }
+                let long = matches!(name, "export" | "cmd_app_export")
+                    || (name == "command_run" && args["id"] == "app.export")
+                    || (name == "run_command" && args["command"] == "app.export");
+                let hook = if long && !self.backend.has_ui() { self.progress_hook() } else { None };
+                let result = self.guarded(|b| {
+                    b.set_progress(hook);
+                    call_tool(b, name, &args)
+                });
+                let clear = self.guarded(|b| b.set_progress(None));
+                let result = match (result, clear) {
+                    (Ok(result), Ok(())) => result,
+                    (Err(error), _) | (_, Err(error)) => ToolResult::error(error),
+                };
+                Ok(result.to_value())
+            }
+            "resources/list" => Ok(json!({"resources": [
+                resource(DOCUMENT_URI, "document", "Library document", "Library state and counts (same as doc_inspect)"),
+                resource(COMMANDS_URI, "commands", "Command catalog", "Every command (same as command_list)"),
+                resource(LIBRARY_URI, "library", "Library state", "Current source, filter, sort, selection, active photo/mask and undo/redo labels (library.state)"),
+                resource(PHOTOS_URI, "photos", "Photos in view", "The photos in the current view with ids, ratings, flags and metadata (catalog.query)"),
+                resource(PHOTO_URI, "active-photo", "Active photo", "Everything about the active photo: file, metadata, develop settings, collections, history (photo.inspect)"),
+                resource(DEVELOP_URI, "develop", "Develop settings", "The active photo's full develop settings JSON (develop.get)"),
+                resource(CONTROLS_URI, "controls", "Develop controls", "Every develop slider with id, range, default and current value (develop.controls)"),
+            ]})),
+            "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
+            "resources/read" => {
+                let uri = params.get("uri").and_then(Value::as_str).ok_or((INVALID_PARAMS, "missing `uri`".to_string()))?;
+                let cmd = match uri {
+                    DOCUMENT_URI | COMMANDS_URI => "",
+                    LIBRARY_URI => "library.state",
+                    PHOTOS_URI => "catalog.query",
+                    PHOTO_URI => "photo.inspect",
+                    DEVELOP_URI => "develop.get",
+                    CONTROLS_URI => "develop.controls",
+                    _ => return Err((RESOURCE_NOT_FOUND, format!("resource not found: {uri}"))),
+                };
+                // Reading a resource runs a command, so the deny list applies to it as it does to the tools.
+                if !cmd.is_empty() && self.policy.command_denied(cmd) {
+                    return Err((INVALID_PARAMS, format!("refused by policy: resource {uri} reads command `{cmd}`, which is denied by policy")));
+                }
+                let v = self
+                    .guarded(|b| match uri {
+                        DOCUMENT_URI => doc_inspect(b),
+                        COMMANDS_URI => b.call("engine.commands", json!({})),
+                        _ => b.call("engine.execute", json!({"command": cmd, "params": {}})),
+                    })
+                    .and_then(|v| v)
+                    .map_err(|e| (INTERNAL_ERROR, e))?;
+                Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": serde_json::to_string_pretty(&v).unwrap_or_default()}]}))
+            }
+            other => Err((METHOD_NOT_FOUND, format!("method not found: {other}"))),
+        }
+    }
+}
+
+impl Server {
+    /// Escaped backend panics become errors; subsequent requests can keep using the session.
+    fn guarded<T>(&mut self, f: impl FnOnce(&mut dyn Backend) -> T) -> Result<T, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self.backend.as_mut()))).map_err(|p| {
+            let message =
+                p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into());
+            format!("internal error: {message}")
+        })
+    }
+}
+
+/// Per-request protocol metadata leaves initialize-based clients' result shapes unchanged.
+fn modern_result_fields(method: &str, params: &Value, result: &mut Value) {
+    let modern = params.pointer("/_meta/io.modelcontextprotocol~1protocolVersion").and_then(Value::as_str).is_some_and(|v| v >= "2026-07-28");
+    let ttl = match method {
+        "tools/list" | "resources/list" | "resources/templates/list" => Some(600_000),
+        "resources/read" => Some(0),
+        "tools/call" => None,
+        _ => return,
+    };
+    let Some(obj) = result.as_object_mut().filter(|_| modern) else {
+        return;
+    };
+    obj.insert("resultType".into(), json!("complete"));
+    if let Some(ttl) = ttl {
+        obj.insert("ttlMs".into(), json!(ttl));
+        obj.insert("cacheScope".into(), json!("private"));
+    }
+}

@@ -1,0 +1,12 @@
+### Fixes from the upstream full scan
+- Malformed capture times are refused instead of being read as a nearby valid time: a one-digit minute in a UTC offset (`+08:5`), single-digit hours or minutes in an ISO time, an impossible UTC offset in a date rule (`+99:99`, `+18:01`), and an IPTC Time Created with extra digits or trailing text. A valid XMP or file-date fallback now applies in their place.
+- The photo information no longer shows a UTC offset's hours as the seconds of a capture time without seconds, and the `date:` search token matches the time part whatever its case.
+- Shutter speeds written as a fraction with a zero or negative part (`0/250`, `1/-250`) are no longer read as a shutter time.
+- A RW2 whose own Exif lacks ISO or other values reads them from its embedded full-size JPEG, keeping the raw's own values and size.
+- A fractional XMP orientation such as 6.9 is no longer read as orientation 6.
+- D1X raw files written with square resolution tags take their pixel shape from the embedded preview.
+- Decomposed Korean and Vietnamese text (as macOS writes file names) draws whole in export watermarks, contact-sheet captions and slideshow overlays.
+- Settings > Performance shows "counting…" while the preview cache's size is counted, instead of waiting for it on every frame.
+- Adding a gradient to a mask while the brush, the object tool or the colour-range eyedropper is armed disarms the tool, so the gradient's handles can be dragged.
+- A `.cube` look-up table with a non-numeric value is refused instead of being read with the value skipped.
+- A very large GPU memory-limit override no longer overflows; a histogram's low percentiles no longer read as black.

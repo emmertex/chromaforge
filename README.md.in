@@ -1,0 +1,296 @@
+<p align="center">
+  <img alt="" src="brand/logo.svg" width="128">
+</p>
+
+<h1 align="center">{{app}}</h1>
+
+<p align="center">
+  <b>Your photos. Your pixels. Your machine.</b><br>
+  A Lightroom Classic-style photo library and non-destructive raw developer, written in pure Rust.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="Licence: MIT" src="https://img.shields.io/badge/licence-MIT-blue"></a>
+  <img alt="Pure Rust" src="https://img.shields.io/badge/pure-Rust-orange">
+  <img alt="Platforms: macOS, Windows, Linux, web, Android" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20web%20%7C%20Android-lightgrey">
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> ·
+  <a href="#install">Install</a> ·
+  <a href="docs/manual/README.md">Manual</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="#licence-and-credits">Licence</a>
+</p>
+
+<p align="center">
+  <img src="docs/images/classic/library.jpg" alt="Library module: Grid view of the 24-photo demo library, with Navigator, Catalog, Folders and Collections on the left and the histogram, Quick Develop and Keywording on the right" width="100%">
+</p>
+
+> [!NOTE]
+> **New name.** The app was renamed {{app}} in v26.43.4: settings, libraries and updates carry over.
+
+## What it is
+
+{{app}} is one catalog and seven modules (Library, Develop, Map, Book, Slideshow, Print, Web) in the Lightroom
+Classic layout, with its own raw decoders, a scene-referred GPU/CPU develop pipeline and a command registry that the
+UI, the CLI, a control channel and an MCP server all share.
+
+- **Native** on macOS, Windows and Linux, **in the browser** via WebAssembly, and early on Android.
+- **Local-first:** no account, no cloud, no telemetry, no subscription. The network is used only for things you turn on.
+- **Non-destructive:** originals are never touched; edits live in the catalog and, if you like, in XMP sidecars.
+- **Drivable end to end by AI agents** over MCP, with undo for everything they do.
+- **Open source** (MIT). Chromaforge is a fork of an open-source project; its copyright notices are kept in [NOTICE](NOTICE)
+  and [LICENSE](LICENSE).
+
+## Contents
+
+- [Features](#features): [modules](#seven-modules-one-catalog) · [editing](#editing) · [masking](#masking) ·
+  [library & culling](#library-and-culling) · [video](#video) · [beyond the darkroom](#beyond-the-darkroom)
+- [Install](#install) · [Keyboard](#keyboard) · [Licence and credits](#licence-and-credits)
+- [Manual](docs/manual/README.md): [building from source and contributing](docs/manual/build-and-contribute.md) ·
+  [agents, MCP, performance and feature status](docs/manual/agents-and-status.md) ·
+  [roadmap](ROADMAP.md)
+
+# Features
+
+## Seven modules, one catalog
+
+Library and Develop are where you spend your day; Map, Book, Slideshow, Print and Web turn the same photos into
+places, books, shows, prints and websites without exporting first. Pick a module at the top right, from
+`Window → Modules`, or with ⌘⌥1–7.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/classic/develop.jpg" alt="Develop module: a lake photo in the loupe with Highlights -55 and Shadows +35 in the Basic panel, and the filmstrip below"><br><sub><b>Develop.</b> Non-destructive raw development, from white balance to masks.</sub></td>
+<td width="50%"><img src="docs/images/classic/map.jpg" alt="Map module: an OpenStreetMap world map with the location filter bar and Map Style, Saved Locations and Tracklog panels"><br><sub><b>Map.</b> Geotag by drag and drop, saved locations, GPX tracklogs, reverse geocoding.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/classic/book.jpg" alt="Book module: a multi-page view of a landscape book laid out automatically, with Book Settings on the right"><br><sub><b>Book.</b> Auto layout, templates, text cells and cover; exports a print-ready PDF.</sub></td>
+<td width="50%"><img src="docs/images/classic/slideshow.jpg" alt="Slideshow module: a sunset slide framed in the stage with Options, Layout, Overlays and Backdrop panels"><br><sub><b>Slideshow.</b> Play full screen (silently for now), or export the show as PDF or JPEGs.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/classic/print.jpg" alt="Print module: a contact sheet of four photos with rulers, and Layout Style, Image Settings, Layout and Margins panels"><br><sub><b>Print.</b> Single image, contact sheets and picture packages; colour-managed with printer profiles; print or save as PDF/JPEG.</sub></td>
+<td width="50%"><img src="docs/images/classic/web.jpg" alt="Web module: a grid gallery preview of the demo photos with Layout Style, Site Info, Color Palette and Appearance panels"><br><sub><b>Web.</b> Static HTML galleries, previewed live and uploaded over SFTP.</sub></td>
+</tr>
+</table>
+
+## Editing
+
+Every slider renders through a **scene-referred, wide-gamut, 32-bit float pipeline**: highlights roll off like film,
+shadows open up without halos, and colour stays clean from capture to export.
+
+| | |
+|---|---|
+| **Light** | Exposure, Contrast, Highlights, Shadows, Whites, Blacks, with edge-aware local tone mapping (a guided filter on log-luminance): −100 Highlights recovers a blown sky without grey halos. |
+| **Color** | White balance by temperature and tint (Kelvin for raw, relative for JPEG) with presets, Auto and a click-to-neutralise eyedropper; Vibrance that protects skin tones, Saturation, an 8-band Color Mixer and 3-way Color Grading, all computed in OkLCh. |
+| **Effects** | Texture, Clarity, Dehaze (dark-channel prior with guided refinement; negative adds atmosphere), post-crop Vignette with highlight priority, and resolution-independent film Grain. |
+| **Tone Curve** | Parametric region curve with movable splits plus point curves for RGB, Red, Green and Blue; monotone by construction, so no accidental tone inversions. |
+| **Crop & geometry** | Free or locked aspect ratios, drag-to-rotate straightening that keeps the largest crop inside the image, thirds / grid / golden-ratio overlays, flips, 90° rotations, manual transforms and Upright. |
+| **Black & White** | One key (<kbd>V</kbd>) to monochrome, an 8-band B&W Mix, then tone it with Color Grading for selenium, sepia or split-tone prints. |
+| **Presets & profiles** | Eighteen hand-built presets (*Golden Hour, Teal & Orange, Faded Matte, Selenium Tone, Crisp Landscape* and more), each with an Amount slider from 0 to 200 %; save your own, mark favourites, and copy, paste or sync exactly the groups you choose. |
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/classic/grading.jpg" alt="Develop module with the Color Grading panel open: Midtones, Shadows and Highlights wheels with warm highlights and cool shadows on a lake scene"><br><sub><b>Color Grading.</b> Warm highlights (42°) and cool shadows (215°), with blending and balance.</sub></td>
+<td width="50%"><img src="docs/images/classic/before-after.jpg" alt="Develop module in Before/After side by side: the original lake photo on the left, the edited one on the right"><br><sub><b>Before &amp; after.</b> Hold <kbd>\\</kbd> for the original, <kbd>Y</kbd> side by side, <kbd>Shift</kbd>+<kbd>Y</kbd> split.</sub></td>
+</tr>
+</table>
+
+### Histogram & scopes
+
+The histogram stays pinned at the top of the Edit panel while the controls scroll under it; drag across it to move
+Blacks, Shadows, Exposure, Highlights or Whites. Beside the RGB, Luminance, R/G/B and Chroma histograms it has a
+grading suite's scopes: **Waveform**, **RGB Parade** and **Vectorscope** with skin-tone line, on linear or
+logarithmic scales.
+
+<p align="center">
+  <img src="docs/images/classic/scopes.jpg" alt="The Edit panel's histogram in four modes: RGB histogram, RGB Parade, Waveform with red, green and blue overlaid, and Vectorscope with graticule and colour targets" width="70%">
+</p>
+
+## Masking
+
+Paint with a **Brush** (size, feather, flow, density, erase), drop **Linear** and **Radial Gradients** with draggable
+pins, or select by **Luminance Range**, **Color Range**, **Sky**, **Subject**, **Background** and **Object**.
+Combine components with **Add / Subtract / Intersect**, invert any of them, and dial in 15 local adjustments per mask
+(Temp, Tint, Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Texture, Clarity, Dehaze, Hue, Saturation,
+Sharpness, Noise) plus an overall Amount.
+
+<p align="center">
+  <img src="docs/images/classic/masking.jpg" alt="Develop module with the Masking panel: a linear Sky mask and a selected radial Sun glow mask, its ellipse and pins drawn over the sun on a lake scene" width="100%">
+  <br>
+  <sub>A radial "Sun glow" mask (Temp +40, Exposure +0.50) layered over a linear "Sky" mask.</sub>
+</p>
+
+## Library and culling
+
+The **Catalog** (All Photos, Quick Collection, Previous Import, Recently Added, Picks, Recently Deleted), **By
+Date**, **Folders** and **Collections** in sets, with smart collections. The filter bar takes several keywords,
+cameras or lenses at once. Rate with <kbd>0</kbd>–<kbd>5</kbd>, flag with <kbd>P</kbd> / <kbd>X</kbd> /
+<kbd>U</kbd>, colour-label with <kbd>6</kbd>–<kbd>9</kbd>. Search understands fields:
+`rating:>3 flag:pick iso:>800 camera:x2 date:2026-04 keyword:mountains`. Every view sorts by capture, import or edit
+date, name, rating, size or at random; albums also have a **Custom Order** (drag photos in the grid or filmstrip) that
+slideshows, books, prints, exports and Rename `{seq}` follow. The grids are virtualized, so they stay smooth with forty
+photos or forty thousand.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/classic/survey.jpg" alt="Library module in Survey view: four demo photos side by side with their ratings, Quick Develop and Keywording on the right"><br><sub><b>Survey</b> (<kbd>N</kbd>): narrow a selection down side by side.</sub></td>
+<td width="50%"><img src="docs/images/classic/compare.jpg" alt="Library module in Compare view: a Select photo of dunes beside a Candidate sunset photo"><br><sub><b>Compare</b> (<kbd>C</kbd>): Select against Candidate, with synced zoom.</sub></td>
+</tr>
+</table>
+
+## Video
+
+Clips live in the same library as your photos. MP4, MOV, MKV, WebM, MPEG-TS and MXF with H.264, HEVC, VP9, AV1,
+ProRes, DNxHR, APV or MPEG-2 decode in pure Rust. Play a clip in the loupe (<kbd>Space</kbd>, <kbd>←</kbd> /
+<kbd>→</kbd> for single frames), drag the trim handles, pick the poster frame the grid shows, and capture any frame as
+a photo. The Light and Color controls (and presets that use only them) grade every frame. Export writes H.264 MP4 or
+ProRes MOV with the trim, the grade and the sound (graded on the GPU for H.264); `<cli> render clip.mov -o out.mp4 --trim 2,8` does the same from
+the command line. Interlaced H.264 (AVCHD 1080i) is deinterlaced. Masks, spot removal, lens corrections and crop don't apply to video.
+See [docs/video.md](docs/video.md).
+
+
+## Beyond the darkroom
+
+| | |
+|---|---|
+| **Catalog** | Catalog v4: a redb store plus an operation log, several catalogs (New / Open Catalog), scheduled backups, integrity test, optimize; opens and migrates older library folders. |
+| **Immich** | Connect one or more Immich (v3+) servers (API key in the system keychain); link existing photos, import from Immich, two-way metadata and album sync, XMP sidecars both ways, People and smart search, Immich as a publish service ([docs/immich.md](docs/immich.md)). |
+| **Lightroom migration** | Imports a Lightroom Classic `.lrcat`: collections, smart collections, folder stacks, History and snapshots (as Versions). |
+| **Network drives** | Catalogs and photos on mapped drives, `\\server\share` UNC paths and SMB/NFS mounts load and import on every OS. |
+| **Tethering** | Studio capture (watched folder) and native PTP tethering over USB or Wi-Fi (PTP/IP). |
+| **Plug-ins** | WebAssembly plug-ins in a `wasmi` sandbox: menu commands, export post-processing and destinations, custom metadata fields, metadata suggestions, publish services (Lightroom Lua plug-ins do not run). |
+| **Output** | Publish services (Hard Drive, Immich, plug-ins), Edit In (copy with adjustments, TIFF / layered PSD), saved Actions, export presets, watermarks, HDR export, contact sheets. |
+| **Print** | Printer ICC profile with rendering intent and black point compensation, Print Adjustment, 16-bit output; print to IPP/CUPS printers (`ipps://` with certificate trust; paper type, tray, quality and two-sided from the driver) or save PDF/JPEG. |
+| **Updates** | A built-in updater checks this project's release feed, downloads and installs (off at start-up unless you turn it on). |
+
+# Install
+
+
+Release builds are listed on the project's releases page. `<ver>` in the file names is the version number,
+`<binary>`/`<cli>` are the brand binary names, and `SHA256SUMS.txt` lists a checksum for every file. Build them yourself
+with `cargo xtask package`.
+
+### Windows
+
+| Build | Installer | Portable |
+|---|---|---|
+| x64 (64-bit Intel/AMD) | `<binary>-<ver>-windows-x64.msi` | `<binary>-<ver>-windows-x64-portable.zip` |
+| arm64 (Snapdragon and other ARM PCs) | `<binary>-<ver>-windows-arm64.msi` | `<binary>-<ver>-windows-arm64-portable.zip` |
+
+The installers and executables are not code-signed, so Windows SmartScreen may warn the first time you run them (More info ▸ Run anyway). The installer asks where to install (`C:\Program Files\<app>` by
+default; upgrades stay in the folder you chose) and ends on a page confirming the app was installed, with an
+option to start it. For unattended installs: `msiexec /i <binary>-<ver>-windows-x64.msi /qn INSTALLFOLDER="D:\Apps\<app>\"`.
+
+**Update or uninstall asks for an old `.msi`, or stops with error 1612 or 1714?** Windows removes the installed version
+with its own cached copy of that version's installer; if the copy is gone, it asks for the original file and stops
+(an update then ends with error 1603). Download the release MSI of the version and build you have installed from the
+releases page and run `msiexec /fv "<path to that .msi>" /qb+ /norestart`, approving the permission prompt if Windows
+shows one. That restores the cached copy; then retry the update or uninstall. Opening the MSI, or choosing Repair or
+Uninstall on it, may still fail. Error 1603 has other causes too; if this doesn't help, open an issue with the error
+message.
+
+### macOS
+
+| Build | File | Notes |
+|---|---|---|
+| App, universal (Apple silicon + Intel) | `<binary>-<ver>-macos-universal.dmg` | Not signed or notarized: macOS asks you to allow it on first open ([how](docs/manual/getting-started.md#install)) |
+| Command-line tool | inside the app: `<app>.app/Contents/MacOS/<cli>` | Updates with the app; to run it from Terminal, link it onto `PATH` ([how](docs/manual/getting-started.md#install)) |
+
+### Linux
+
+| Format | x86_64 | Notes |
+|---|---|---|
+| AppImage | `<binary>-<ver>-linux-x86_64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
+| Flatpak | `<binary>-<ver>-linux-x86_64.flatpak` | Sandboxed; `flatpak install --user <file>` |
+| Debian/Ubuntu | `<binary>-<ver>-linux-x86_64.deb` | |
+| Fedora/RHEL/openSUSE | `<binary>-<ver>-linux-x86_64.rpm` | |
+| Tarball | `<binary>-<ver>-linux-x86_64.tar.gz` | Unpack anywhere |
+
+Linux ARM64 (aarch64) builds are paused; `packaging/linux/package.sh aarch64` still builds one locally.
+
+### Android (early: see [docs/android.md](docs/android.md))
+
+The Android app is the same app as the desktop one, with the same catalog, raw developer and edits, in a
+**touch layout** made first for tablets and foldables (it works on phones too). Develop shows the photo alone; tap
+it for a slim top bar and a tool strip, pick a tool (Basic, Colour, Tone, Detail, Optics, Effects) and drag on the
+photo to set one slider at a time, then Done or Cancel; hold the photo to see the original. Swipe to scroll,
+long-press to select several photos, and Back steps out one level at a time. Import photos, a folder or the camera
+roll; export from the Export sheet to Pictures or share to another app.
+
+The touch layout is on by default on Android and available on every platform: **Settings ▸ General ▸ Layout**
+switches between Touch and Desktop (the choice is remembered).
+
+The app collects nothing and works offline; see the [privacy policy](PRIVACY.md) for the few features that go
+online and what the Android permissions are for.
+
+<table>
+<tr>
+<td width="62%"><img src="docs/images/touch/tablet-develop.jpg" alt="Touch layout on a tablet in landscape: a sunset photo filling the screen, a slim top bar with undo, compare, filmstrip, history, panel and share buttons, and a tool strip at the bottom"><br><sub><b>Tablet.</b> Photo first, tools at the bottom.</sub></td>
+<td width="38%" rowspan="2"><img src="docs/images/touch/phone-library.jpg" alt="Touch layout on a phone in portrait: the Library grid with two columns of demo photos"><br><sub><b>Phone.</b> The Library grid.</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/touch/tablet-adjust.jpg" alt="Adjust mode: the Basic tool's sliders as chips under the photo, Shadows selected and shown as +35 at the top"><br><sub><b>Adjust.</b> Drag on the photo to set the chosen slider.</sub></td>
+</tr>
+<tr>
+<td><img src="docs/images/touch/tablet-settings.jpg" alt="Touch Settings with the Layout row (Touch / Desktop) at the top of General"><br><sub><b>Settings.</b> Layout switches Touch / Desktop.</sub></td>
+<td><img src="docs/images/touch/tablet-export.jpg" alt="The touch Export sheet: JPEG full size, JPEG 2048 px for sharing or TIFF, long edge and quality buttons, and an Export button"><br><sub><b>Export.</b> Save to Pictures or share.</sub></td>
+</tr>
+</table>
+
+Install from the release's APKs:
+
+| Build | File | Notes |
+|---|---|---|
+| Phones and tablets (arm64) | `<binary>-<ver>-android-arm64-v8a.apk` | Sideload: allow installs from your browser or file manager, then open the file |
+| Emulator and Chromebooks (x86_64) | `<binary>-<ver>-android-x86_64.apk` | |
+| Play Store bundle | `<binary>-<ver>-android-arm64-v8a-x86_64.aab` | For Play Console uploads, not for installing |
+
+Android 9 or newer. Until a release signing key is set up, the APKs carry a test signature: they install, but a
+build signed with the release key later will need the test build uninstalled first.
+
+### Web (WebAssembly)
+
+| Build | File | Notes |
+|---|---|---|
+| Static site | `<binary>-web-<ver>.zip` | Runs in a modern browser; host it on any static server |
+
+
+## Keyboard
+
+The Classic keymap is the default:
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| <kbd>G</kbd> | Grid | <kbd>E</kbd> | Loupe |
+| <kbd>D</kbd> | Develop | <kbd>C</kbd> / <kbd>N</kbd> | Compare / Survey |
+| <kbd>R</kbd> | Crop | <kbd>Shift</kbd>+<kbd>W</kbd> | Masking |
+| <kbd>\\</kbd> | Original | <kbd>Y</kbd> | Before/after |
+| <kbd>Tab</kbd> | Side panels | <kbd>L</kbd> | Lights out |
+| <kbd>F</kbd> | Full-screen preview | <kbd>F11</kbd> | Full screen |
+| <kbd>⌘L</kbd> | Enable filters | <kbd>⌘⌥1</kbd>–<kbd>7</kbd> | Modules |
+| <kbd>⌘Z</kbd> | Undo | <kbd>⌘/</kbd> | All shortcuts |
+
+Settings → Shortcuts → Keymap switches to the *Alternative* set.
+
+
+## Licence and credits
+
+The app is licensed under the [MIT License](LICENSE), except `crates/segment` and `crates/fetch`, which are
+Apache-2.0 only. It is a fork of an open-source project; that project's copyright notices and required
+third-party notices are in [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Privacy: the app collects no data; see [PRIVACY.md](PRIVACY.md).
+
+Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
+with its author, source and license in [assets/ATTRIBUTION.md](assets/ATTRIBUTION.md).
+
+The screenshots show the demo library, which the app generates procedurally. UI font:
+Inter (SIL OFL 1.1). Builds made with [craft-fonts](https://github.com/storytold/craft-fonts) (all official releases)
+also embed its Chinese and Japanese fonts (Noto Sans CJK SC, BIZ UDPGothic, BIZ UDMincho, Shippori Mincho; SIL OFL 1.1), listed in its
+[ATTRIBUTION.md](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md). All icons are original.
+
+
+<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. The app is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
+

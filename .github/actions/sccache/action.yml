@@ -1,0 +1,38 @@
+# Shares compiled crates between the jobs and runner instances of one machine (docs/ci.md → Build caches):
+# installs sccache, points it at a persistent folder on the runner and sets RUSTC_WRAPPER. gpu0 and gpu0-b
+# (two runner instances, one user) then compile each registry crate once instead of once per target dir,
+# and the throw-away brand build reuses what the CI job compiled. Best effort: when sccache can't be
+# installed or doesn't start, the job builds without it.
+name: sccache
+description: Use a persistent local sccache for rustc, when available
+runs:
+  using: composite
+  steps:
+    - uses: taiki-e/install-action@v2
+      continue-on-error: true
+      with:
+        tool: sccache
+    - name: Enable sccache
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          # Windows runners run as NETWORK SERVICE: a short, writable machine path (like C:\lcc-ci\target-*)
+          Windows) dir='C:\lcc-ci\sccache' ;;
+          *) dir="${XDG_CACHE_HOME:-$HOME/.cache}/sccache" ;;
+        esac
+        if ! command -v sccache >/dev/null 2>&1; then
+          echo "::notice::sccache is not available on $RUNNER_NAME; building without it"
+          exit 0
+        fi
+        export SCCACHE_DIR="${SCCACHE_DIR:-$dir}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-40G}"
+        mkdir -p "$SCCACHE_DIR"
+        if sccache --start-server >/dev/null 2>&1 || sccache --show-stats >/dev/null 2>&1; then
+          {
+            echo "SCCACHE_DIR=$SCCACHE_DIR"
+            echo "SCCACHE_CACHE_SIZE=$SCCACHE_CACHE_SIZE"
+            echo "RUSTC_WRAPPER=sccache"
+          } >>"$GITHUB_ENV"
+          echo "sccache on: $SCCACHE_DIR"
+        else
+          echo "::notice::sccache did not start on $RUNNER_NAME; building without it"
+        fi

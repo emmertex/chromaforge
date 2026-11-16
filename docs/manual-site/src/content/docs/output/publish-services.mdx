@@ -1,0 +1,25 @@
+---
+title: Publish services
+description: Keep a collection in sync with a folder, SFTP server or Immich.
+sidebar:
+  order: 7
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Publish Services** panel in Library's left column (Classic and Compact).
+- Services: **Hard Drive**, **SFTP**, **Immich**, and plug-in services. Set up and edit each with **Edit Settings…**.
+- A published collection groups its photos: **New Photos to Publish**, **Modified Photos to Re-Publish**, **Published Photos**, **Deleted Photos to Remove**.
+- **Publish** renders and sends; re-publishing replaces; removing a photo deletes it at the destination.
+- **Mark as Up-to-Date** clears a state without sending.
+- SFTP: one folder per collection; the host key is remembered on first use.
+- Immich: collections become albums; send renders, originals or both.
+- 🟡 No Flickr or SmugMug services.
+
+<NeedsImage what="The Publish Services panel with a Hard Drive service and a collection's New / Modified / Published sections" />
+
+<Aside type="note" title="Modern layout">
+  Modern has no Library side panels; publishing is under the ☰ menu's **Library** entries.
+</Aside>

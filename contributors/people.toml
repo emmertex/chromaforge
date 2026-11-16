@@ -1,0 +1,87 @@
+# Contributor names for the About window (docs/contributors.md; rules in AGENTS.md).
+#
+# Everyone who contributes is credited by GitHub username automatically. Anything more is up to
+# you: add YOUR OWN entry below, in your own PR (commit it yourself). Never add someone else; a
+# maintainer may add a person only when that person asked, recording where in consent_source.
+#
+#
+# Or copy this block, replacing your-github-username (every field is optional):
+#
+#   [people.your-github-username]
+#   real_name = "Your Name"        # shown when the viewer picks "Real name"
+#   display_name = "Nickname"      # shown when the viewer picks "Display name"
+#   sync_github_name = true        # or: use the name on your public GitHub profile as display name
+#
+# To remove your names, delete your entry (or set fields empty) in a PR. The next
+# contributors.py run, and the next build, drop them.
+
+[people.echelon]
+real_name = "Brandon Thomas"
+display_name = "Brandon Thomas"
+sync_github_name = false
+
+[people.rock-meister]
+sync_github_name = true
+
+[people.Th4nat0s]
+display_name = "Thanat0s"
+
+[people.sanyamsingh001]
+display_name = "sanyamsingh001"
+
+[people.ArekatlaNishanthchowdary]
+real_name = "Arekatla Nishanth Chowdary"
+sync_github_name = true
+
+[people.Losminek]
+sync_github_name = true
+
+[people.nicolasfalesy]
+sync_github_name = true
+
+[people.FooVoo]
+real_name = "Aleksandr Batyrev"
+sync_github_name = true
+
+[people.Silvertree2010]
+display_name = "Netter"
+sync_github_name = false
+
+[people.nledford]
+real_name = "Nathaniel Ledford"
+
+[people.marcoarnulfo]
+real_name = "Marco Arnulfo"
+display_name = "Marco Arnulfo"
+sync_github_name = false
+
+[people.egegl]
+real_name = "Ege Gursel"
+sync_github_name = true
+
+[people.valenfys]
+sync_github_name = true
+
+[people.mahmatias]
+display_name = "Márcio Matias de Andrade"
+sync_github_name = true
+
+[people.ronibalthazar]
+sync_github_name = true
+
+[people.Kaan88]
+sync_github_name = true
+
+
+[people.esli1283]
+real_name = "Aaron Lopez"
+sync_github_name = false
+
+[people.dotCooCoo]
+real_name = "Robert Lee"
+
+[people.samuelili]
+real_name = "Samuel Li"
+
+[people.hayone1]
+sync_github_name = true

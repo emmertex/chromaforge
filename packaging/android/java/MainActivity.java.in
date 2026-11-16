@@ -1,0 +1,1666 @@
+// The Android app's activity: a NativeActivity running the app's native library (libapp.so,
+// apps/android), plus what only Java can do for it (crates/android-host calls these methods):
+// the system pickers (Storage Access Framework), opening links, and the on-screen keyboard.
+//
+// Picked documents are copied into the app's own folders, so the native side only ever sees file
+// paths; a folder or file on the device's own storage the app may read ("All files access") is
+// answered with its real path instead, and copies are reused when the same document is picked
+// again (see the Storage section). For a save, the native side gets a path in the cache to write; a FileObserver copies the
+// file to the document the user chose once it has been written (the app writes atomically: a
+// temporary file renamed into place, so both "closed after writing" and "moved in" count).
+//
+// A picked folder stays linked to its copy: the activity keeps the picker's read grant
+// (takePersistableUriPermission) and, while the app is in front, rescans the folder every few seconds,
+// copying files that appeared since into the copy (never overwriting, never deleting). So a capture
+// session watching the copy of DCIM/Camera sees each new shot, with no photo permission. A file is
+// copied once its size held still between two scans, under a hidden name renamed into place.
+//
+// Every answer goes back through nativePicked (registered by the native side at start-up). Errors
+// never escape: a failed copy is logged and left out of the answer.
+package {{android_package}};
+
+import android.app.NativeActivity;
+import android.content.ClipData;
+import android.content.ClipDescription;
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
+import android.net.wifi.WifiManager;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.FileObserver;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.DocumentsContract;
+import android.provider.MediaStore;
+import android.provider.OpenableColumns;
+import android.provider.Settings;
+import android.text.InputType;
+import android.util.Log;
+import android.view.DragAndDropPermissions;
+import android.view.DragEvent;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.webkit.MimeTypeMap;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class MainActivity extends NativeActivity {
+    private static final String TAG = "{{binary}}";
+    private static final int FILES = 0, FILE = 1, FOLDER = 2, SAVE = 3;
+    /** Folders deeper than this inside a picked folder are not copied. */
+    private static final int MAX_DEPTH = 8;
+    /** How often linked folders are rescanned while the app is in front. */
+    private static final long RESCAN_MS = 4000;
+    /** Linked folders kept; picking another drops the oldest. */
+    private static final int MAX_LINKS = 16;
+    private static final String PREFS = "picked-folders", LINKS = "links";
+
+    /** First picker request code; a request code is FIRST_REQUEST + 4·n + kind, so a result that
+     *  reaches a new activity (the process was killed while the picker was up) still says its kind. */
+    private static final int FIRST_REQUEST = 1000;
+
+    /** Answers a picker (registered by crates/android-host). `paths` null = the pick failed (the
+     *  reason is in logcat); `id` ≤ 0 = an answer no native request is waiting for, of kind -id-1. */
+    private native void nativePicked(long id, String[] paths);
+
+    private static final class Pending {
+        final long id;
+        final int kind;
+        final String fileName;
+
+        Pending(long id, int kind, String fileName) {
+            this.id = id;
+            this.kind = kind;
+            this.fileName = fileName;
+        }
+    }
+
+    private final Map<Integer, Pending> pending = new HashMap<>();
+    private final List<FileObserver> saves = new ArrayList<>();
+    private int nextRequest = 0;
+    /** Set once the native side has registered nativePicked; answers before that wait here. */
+    private boolean nativeReady;
+    private final List<Object[]> held = new ArrayList<>();
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean scanning = new AtomicBoolean();
+    /** Source document → size at the previous scan (a file is copied once its size holds). */
+    private final Map<String, Long> lastSize = new HashMap<>();
+    private boolean resumed;
+    private final Runnable rescan = new Runnable() {
+        @Override
+        public void run() {
+            if (!resumed) return;
+            if (scanning.compareAndSet(false, true)) {
+                new Thread(() -> {
+                    try {
+                        syncLinks();
+                    } catch (Exception e) {
+                        Log.w(TAG, "rescan: " + e);
+                    } finally {
+                        scanning.set(false);
+                    }
+                }, "rescan").start();
+            }
+            ui.postDelayed(this, RESCAN_MS);
+        }
+    };
+    /** Peer sync discovers devices over mDNS: Wi-Fi drops multicast packets without this lock. */
+    private WifiManager.MulticastLock multicast;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        hideSystemBars();
+        addKeyboardView();
+        watchBackAndEdges();
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wifi != null) {
+                multicast = wifi.createMulticastLock(TAG + "-mdns");
+                multicast.setReferenceCounted(false);
+                multicast.acquire();
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "no multicast lock: " + e);
+        }
+        startReceiving(getIntent());
+        // "All files access" is asked once the native side has drawn its first frame
+        // (firstFrameShown): asking here covered the activity while the native thread was still
+        // creating its window and GPU surface, and on some devices the first backgrounding after
+        // that left the app frozen.
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        Log.i(TAG, "lifecycle: resume");
+        resumed = true;
+        ui.removeCallbacks(rescan);
+        ui.post(rescan);
+    }
+
+    @Override
+    protected void onPause() {
+        Log.i(TAG, "lifecycle: pause");
+        resumed = false;
+        ui.removeCallbacks(rescan);
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        Log.i(TAG, "lifecycle: stop");
+        super.onStop();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        Log.i(TAG, "lifecycle: start");
+    }
+
+    @Override
+    protected void onDestroy() {
+        Log.i(TAG, "lifecycle: destroy");
+        if (multicast != null && multicast.isHeld()) multicast.release();
+        super.onDestroy();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
+    }
+
+    /** The app draws its own menu bar at the top: the status bar would sit over it, so it is hidden
+     *  (a swipe from the edge shows it for a moment). The navigation bar stays. */
+    private void hideSystemBars() {
+        Window w = getWindow();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = w.getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.statusBars());
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            w.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        }
+    }
+
+    /** Shows a picker; the answer comes through nativePicked(id, …). */
+    public void startPick(final long id, final int kind, final String[] mimes, final String fileName) {
+        runOnUiThread(() -> {
+            Intent intent;
+            switch (kind) {
+                case FOLDER:
+                    intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    break;
+                case SAVE:
+                    intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType(mimes != null && mimes.length > 0 ? mimes[0] : "application/octet-stream");
+                    if (fileName != null) intent.putExtra(Intent.EXTRA_TITLE, fileName);
+                    break;
+                default:
+                    intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    if (mimes != null && mimes.length > 0) intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes);
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, kind == FILES);
+                    break;
+            }
+            int request = FIRST_REQUEST + 4 * (nextRequest++ % 100000) + kind;
+            pending.put(request, new Pending(id, kind, fileName));
+            try {
+                startActivityForResult(intent, request);
+            } catch (Exception e) {
+                Log.e(TAG, "no picker: " + e);
+                pending.remove(request);
+                answer(id, null);
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        Pending found = pending.remove(request);
+        if (found == null) {
+            if (request < FIRST_REQUEST) return;
+            // the process was killed while the picker was up (the system reclaims memory from apps
+            // in the background): this is a new activity, and the request died with the old one.
+            // Answer anyway, so the native side can finish the pick or say why it can't.
+            int kind = (request - FIRST_REQUEST) % 4;
+            Log.w(TAG, "picker answer for a request this activity didn't make (kind " + kind + "): the app was restarted while the picker was up");
+            if (kind == SAVE) return;
+            found = new Pending(-(kind + 1), kind, null);
+        }
+        final Pending p = found;
+        if (result != RESULT_OK || data == null) {
+            answer(p.id, new String[0]);
+            return;
+        }
+        // copies can take a while (a folder of raws): off the UI thread
+        new Thread(() -> {
+            String[] paths;
+            try {
+                paths = collect(p, data);
+            } catch (Exception e) {
+                Log.e(TAG, "picker: " + e);
+                paths = null;
+            }
+            answer(p.id, paths);
+        }, "picker").start();
+    }
+
+    private String[] collect(Pending p, Intent data) throws IOException {
+        List<String> out = new ArrayList<>();
+        switch (p.kind) {
+            case FOLDER: {
+                Uri tree = data.getData();
+                if (tree == null) break;
+                String docId = DocumentsContract.getTreeDocumentId(tree);
+                File real = readableInPlace(tree.getAuthority(), docId, true);
+                if (real != null) {
+                    out.add(real.getAbsolutePath());
+                    break;
+                }
+                File dest = stagedFolder(tree, docId);
+                try (CopyJob job = new CopyJob()) {
+                    copyTree(tree, docId, dest, 0, job);
+                }
+                // read in place, the folder sees new files itself; a copy is kept up to date
+                link(tree, dest);
+                out.add(dest.getAbsolutePath());
+                break;
+            }
+            case SAVE: {
+                Uri target = data.getData();
+                if (target == null) break;
+                out.add(watchSave(target, safeName(p.fileName, "export")).getAbsolutePath());
+                break;
+            }
+            default: {
+                List<Uri> uris = new ArrayList<>();
+                ClipData clip = data.getClipData();
+                if (clip != null) {
+                    for (int i = 0; i < clip.getItemCount(); i++) uris.add(clip.getItemAt(i).getUri());
+                } else if (data.getData() != null) {
+                    uris.add(data.getData());
+                }
+                try (CopyJob job = new CopyJob()) {
+                    job.total = uris.size();
+                    for (Uri uri : uris) {
+                        if (job.cancelled) break;
+                        try {
+                            out.add(stagedFile(uri, job).getAbsolutePath());
+                        } catch (IOException | RuntimeException e) {
+                            Log.e(TAG, "copy " + uri + ": " + e, e);
+                        }
+                    }
+                }
+                Log.i(TAG, "picker: answered " + out.size() + " of " + uris.size() + " documents");
+                if (!uris.isEmpty() && out.isEmpty()) throw new IOException("none of the " + uris.size() + " chosen documents could be copied");
+            }
+        }
+        return out.toArray(new String[0]);
+    }
+
+    private void answer(long id, String[] paths) {
+        synchronized (held) {
+            if (!nativeReady) {
+                // after a restart the result can come before the native side is up
+                held.add(new Object[]{id, paths});
+                return;
+            }
+        }
+        try {
+            nativePicked(id, paths);
+        } catch (Throwable t) {
+            Log.e(TAG, "nativePicked: " + t);
+        }
+    }
+
+    /** Called by the native side once nativePicked and nativeOpened are registered: delivers what waited. */
+    public void hostReady() {
+        List<Object[]> waiting;
+        synchronized (held) {
+            nativeReady = true;
+            waiting = new ArrayList<>(held);
+            held.clear();
+        }
+        for (Object[] a : waiting) answer((Long) a[0], (String[]) a[1]);
+        openedReady();
+        edgesReady();
+    }
+
+    /** Where picked documents are copied: the external files folder, beside the library. */
+    private File incoming() {
+        File base = getExternalFilesDir(null);
+        if (base == null) base = getFilesDir();
+        return new File(base, "Incoming");
+    }
+
+    /** Copies the folder `parentId` of `tree` into `dest`, which may hold an earlier copy: files of
+     *  the same name and size are kept, so picking the same folder again copies only what changed. */
+    private void copyTree(Uri tree, String parentId, File dest, int depth, CopyJob job) throws IOException {
+        if (depth > MAX_DEPTH || job.cancelled) return;
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId);
+        String[] cols = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE};
+        try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
+            if (c == null) return;
+            while (c.moveToNext() && !job.cancelled) {
+                String id = c.getString(0);
+                String mime = c.getString(2);
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                    File sub = new File(dest, safeName(c.getString(1), "item"));
+                    if (sub.mkdirs() || sub.isDirectory()) copyTree(tree, id, sub, depth + 1, job);
+                } else {
+                    String name = withExtension(safeName(c.getString(1), "item"), mime);
+                    long size = c.isNull(3) ? -1 : c.getLong(3);
+                    File f = new File(dest, name);
+                    if (size >= 0 && f.isFile() && f.length() == size) continue;
+                    try {
+                        job.step(name);
+                        copy(DocumentsContract.buildDocumentUriUsingTree(tree, id), f, job);
+                    } catch (IOException e) {
+                        Log.w(TAG, "copy " + name + ": " + e);
+                    }
+                }
+            }
+        }
+    }
+
+    /** Keeps the read grant on `tree` and links it to its copy `dest`, for the rescans. */
+    private void link(Uri tree, File dest) {
+        try {
+            getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "no lasting grant on " + tree + ": " + e);
+            return;
+        }
+        synchronized (this) {
+            List<String[]> links = links();
+            String key = tree.toString();
+            links.removeIf(l -> l[0].equals(key));
+            while (links.size() >= MAX_LINKS) release(links.remove(0)[0]);
+            links.add(new String[]{key, dest.getAbsolutePath(), Long.toString(System.currentTimeMillis())});
+            saveLinks(links);
+        }
+    }
+
+    /** The linked folders, oldest first: {tree uri, copy path, linked at}. */
+    private List<String[]> links() {
+        List<String[]> out = new ArrayList<>();
+        for (String s : getSharedPreferences(PREFS, MODE_PRIVATE).getStringSet(LINKS, new HashSet<>())) {
+            String[] l = s.split("\t");
+            if (l.length == 3) out.add(l);
+        }
+        out.sort((a, b) -> {
+            try {
+                return Long.compare(Long.parseLong(a[2]), Long.parseLong(b[2]));
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+        });
+        return out;
+    }
+
+    private void saveLinks(List<String[]> links) {
+        Set<String> set = new HashSet<>();
+        for (String[] l : links) set.add(l[0] + "\t" + l[1] + "\t" + l[2]);
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putStringSet(LINKS, set).apply();
+    }
+
+    private void release(String tree) {
+        try {
+            getContentResolver().releasePersistableUriPermission(Uri.parse(tree), Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "release " + tree + ": " + e);
+        }
+    }
+
+    /** Copies what appeared in each linked folder since the last scan. A link whose copy was
+     *  deleted, or whose grant is gone, is dropped. */
+    private void syncLinks() {
+        List<String[]> links;
+        synchronized (this) {
+            links = links();
+        }
+        Map<String, Long> seen = new HashMap<>();
+        List<String> dropped = new ArrayList<>();
+        try (CopyJob job = new CopyJob()) {
+            for (String[] l : links) {
+                File dest = new File(l[1]);
+                if (!dest.isDirectory()) {
+                    dropped.add(l[0]);
+                    continue;
+                }
+                try {
+                    Uri tree = Uri.parse(l[0]);
+                    syncTree(tree, DocumentsContract.getTreeDocumentId(tree), dest, 0, seen, job);
+                } catch (SecurityException e) {
+                    Log.w(TAG, "lost access to " + l[0] + ": " + e);
+                    dropped.add(l[0]);
+                } catch (Exception e) {
+                    Log.w(TAG, "rescan " + l[0] + ": " + e);
+                }
+            }
+        }
+        lastSize.clear();
+        lastSize.putAll(seen);
+        if (dropped.isEmpty()) return;
+        synchronized (this) {
+            List<String[]> now = links();
+            now.removeIf(l -> dropped.contains(l[0]));
+            saveLinks(now);
+        }
+        for (String t : dropped) release(t);
+    }
+
+    private void syncTree(Uri tree, String parentId, File dest, int depth, Map<String, Long> seen, CopyJob job) throws IOException {
+        if (depth > MAX_DEPTH) return;
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId);
+        String[] cols = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE};
+        try (Cursor c = getContentResolver().query(children, cols, null, null, null)) {
+            if (c == null) return;
+            while (c.moveToNext()) {
+                String id = c.getString(0);
+                String raw = c.getString(1);
+                // hidden files, the camera's half-written ".pending-…" shots among them
+                if (raw == null || raw.startsWith(".")) continue;
+                String name = safeName(raw, "item");
+                File target = new File(dest, name);
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2))) {
+                    if (target.isDirectory() || target.mkdirs()) syncTree(tree, id, target, depth + 1, seen, job);
+                    continue;
+                }
+                if (target.exists()) continue;
+                long size = c.isNull(3) ? -1 : c.getLong(3);
+                String key = tree + "|" + id;
+                seen.put(key, size);
+                Long before = lastSize.get(key);
+                if (size <= 0 || before == null || before != size) continue;
+                File part = new File(dest, "." + name + ".part");
+                job.total++;
+                job.step(name);
+                try {
+                    copy(DocumentsContract.buildDocumentUriUsingTree(tree, id), part, job);
+                    if (!part.renameTo(target)) {
+                        part.delete();
+                        Log.w(TAG, "can't move " + part + " to " + target);
+                    }
+                } catch (IOException e) {
+                    Log.w(TAG, "copy " + name + ": " + e);
+                }
+            }
+        }
+    }
+
+    /** A path in the cache to write; copied to `target` once the file has been written. */
+    private File watchSave(final Uri target, String name) throws IOException {
+        final File dir = unique(new File(getCacheDir(), "outgoing"), "save");
+        if (!dir.mkdirs() && !dir.isDirectory()) throw new IOException("can't create " + dir);
+        final File file = new File(dir, name);
+        final String fileName = file.getName();
+        final FileObserver[] holder = new FileObserver[1];
+        holder[0] = new FileObserver(dir, FileObserver.CLOSE_WRITE | FileObserver.MOVED_TO) {
+            @Override
+            public void onEvent(int event, String path) {
+                if (!fileName.equals(path)) return;
+                try (InputStream in = new FileInputStream(file); OutputStream out = getContentResolver().openOutputStream(target, "wt")) {
+                    if (out == null) throw new IOException("the document can't be written");
+                    pipe(in, out);
+                } catch (IOException e) {
+                    Log.w(TAG, "save to " + target + ": " + e);
+                } finally {
+                    stopWatching();
+                    synchronized (saves) {
+                        saves.remove(holder[0]);
+                    }
+                    file.delete();
+                    dir.delete();
+                }
+            }
+        };
+        synchronized (saves) {
+            saves.add(holder[0]);
+        }
+        holder[0].startWatching();
+        return file;
+    }
+
+    /** Opens a picked document. Some media providers fail the plain open with an exception from
+     *  their own side (Waydroid's MediaProvider throws a NullPointerException while deciding
+     *  whether to redact the photo's location); the same photo is then opened under its MediaStore
+     *  URI, which the picker's grant also covers, and through the application's resolver. */
+    private InputStream openDocument(Uri uri) throws IOException {
+        List<String> why = new ArrayList<>();
+        List<Uri> tries = new ArrayList<>();
+        tries.add(uri);
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                Uri media = MediaStore.getMediaUri(this, uri);
+                if (media != null && !media.equals(uri)) tries.add(media);
+            } catch (RuntimeException e) {
+                why.add("media uri: " + e);
+            }
+        }
+        for (Uri u : tries) {
+            for (ContentResolver r : new ContentResolver[]{getContentResolver(), getApplicationContext().getContentResolver()}) {
+                try {
+                    InputStream in = r.openInputStream(u);
+                    if (in != null) {
+                        if (!why.isEmpty()) Log.i(TAG, "opened " + u + " after: " + why);
+                        return in;
+                    }
+                    why.add(u + ": no stream");
+                } catch (IOException | RuntimeException e) {
+                    why.add(u + ": " + e);
+                }
+            }
+        }
+        throw new IOException("the document can't be read (" + String.join("; ", why) + ")");
+    }
+
+    private void copy(Uri uri, File dest, CopyJob job) throws IOException {
+        try (InputStream in = openDocument(uri); OutputStream out = new FileOutputStream(dest)) {
+            if (in == null) throw new IOException("the document can't be read");
+            byte[] buf = new byte[1 << 16];
+            int n;
+            long since = 0;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                since += n;
+                // a large file from a slow provider: ask about cancelling every few MB too
+                if (since >= (8 << 20)) {
+                    since = 0;
+                    if (job.poll()) throw new IOException("cancelled");
+                }
+            }
+        } catch (IOException e) {
+            dest.delete();
+            throw e;
+        }
+    }
+
+    private static void pipe(InputStream in, OutputStream out) throws IOException {
+        byte[] buf = new byte[1 << 16];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception e) {
+            Log.w(TAG, "name of " + uri + ": " + e);
+        }
+        return uri.getLastPathSegment();
+    }
+
+    /** A file name without path separators or control characters, never empty. */
+    private static String safeName(String name, String fallback) {
+        if (name == null) return fallback;
+        String s = name.replaceAll("[/\\\\\\u0000-\\u001f]", "_").trim();
+        if (s.isEmpty() || s.equals(".") || s.equals("..")) return fallback;
+        return s.length() > 200 ? s.substring(0, 200) : s;
+    }
+
+    /** `dir/name`, or `dir/name (2)` … when that exists. */
+    private static File unique(File dir, String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return f;
+        int dot = name.lastIndexOf('.');
+        String stem = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        for (int i = 2; i < 10000; i++) {
+            f = new File(dir, stem + " (" + i + ")" + ext);
+            if (!f.exists()) return f;
+        }
+        return new File(dir, stem + " " + System.nanoTime() + ext);
+    }
+
+    // ---- Storage (AND.5): reading in place, stable staged copies, copy progress, "All files access"
+
+    /** A copy's progress (registered by crates/android-host); answers whether to stop. */
+    private native boolean nativeCopyProgress(long task, long done, long total, String detail);
+
+    /** A copy is over (registered by crates/android-host). */
+    private native void nativeCopyEnded(long task);
+
+    private static final AtomicLong nextCopy = new AtomicLong(1);
+    private static final String STORAGE_PREFS = "storage";
+    private static final String ASKED_ALL_FILES = "askedAllFiles";
+    private static final int ASK_STORAGE = 77;
+
+    /** One picker answer's copies, in the activity stack from the first file really copied
+     *  (reused copies show nothing). Reports at most every 200 ms between files; `cancelled` once
+     *  the row's close button was pressed. */
+    private final class CopyJob implements AutoCloseable {
+        final long task = nextCopy.getAndIncrement();
+        long done, total, lastReport;
+        String detail = "";
+        boolean cancelled, started;
+
+        /** About to copy `name`. */
+        void step(String name) throws IOException {
+            done++;
+            detail = name;
+            started = true;
+            report(true);
+            if (cancelled) throw new IOException("cancelled");
+        }
+
+        /** Whether to stop (asks native code at most every 200 ms). */
+        boolean poll() {
+            report(false);
+            return cancelled;
+        }
+
+        private void report(boolean force) {
+            if (!started) return;
+            long now = System.currentTimeMillis();
+            if (!force && now - lastReport < 200) return;
+            lastReport = now;
+            try {
+                if (nativeCopyProgress(task, Math.max(0, done - 1), total, detail)) cancelled = true;
+            } catch (Throwable t) {
+                Log.w(TAG, "nativeCopyProgress: " + t);
+            }
+        }
+
+        @Override
+        public void close() {
+            if (!started) return;
+            try {
+                nativeCopyEnded(task);
+            } catch (Throwable t) {
+                Log.w(TAG, "nativeCopyEnded: " + t);
+            }
+        }
+    }
+
+    private SharedPreferences storagePrefs() {
+        return getSharedPreferences(STORAGE_PREFS, MODE_PRIVATE);
+    }
+
+    /** A document or tree on the device's own storage (the external storage provider's
+     *  `primary:<path>`), as a real path the app can read; null otherwise. */
+    private File readableInPlace(String authority, String docId, boolean folder) {
+        if (!"com.android.externalstorage.documents".equals(authority) || docId == null) return null;
+        int colon = docId.indexOf(':');
+        if (colon < 0 || !"primary".equals(docId.substring(0, colon))) return null;
+        String rel = docId.substring(colon + 1);
+        if (rel.contains("..")) return null;
+        try {
+            File base = Environment.getExternalStorageDirectory();
+            File f = rel.isEmpty() ? base : new File(base, rel);
+            // under scoped storage (Android 10+) a folder lists without "All files access", but
+            // only with the files this app made: its photos would be missing, so it is copied
+            if (folder && !hasAllFilesAccess()) return null;
+            if (folder ? (f.isDirectory() && f.list() != null) : (f.isFile() && f.canRead())) return f;
+        } catch (SecurityException e) {
+            Log.i(TAG, "not readable in place: " + rel);
+        }
+        return null;
+    }
+
+    /** The path for a picked file: its real path when readable in place, else the copy made the
+     *  last time the same document was picked (when its size still matches), else a new copy in
+     *  Incoming/Picked, remembered for next time. */
+    private File stagedFile(Uri uri, CopyJob job) throws IOException {
+        if (DocumentsContract.isDocumentUri(this, uri)) {
+            File real = readableInPlace(uri.getAuthority(), DocumentsContract.getDocumentId(uri), false);
+            if (real != null) return real;
+        }
+        String key = "file:" + uri;
+        long size = documentSize(uri);
+        String known = storagePrefs().getString(key, null);
+        File dest = known != null ? new File(known) : null;
+        if (dest != null && !inIncoming(dest)) dest = null;
+        if (dest != null && dest.isFile() && size >= 0 && dest.length() == size) return dest;
+        if (dest == null) {
+            File dir = new File(incoming(), "Picked");
+            if (!dir.mkdirs() && !dir.isDirectory()) throw new IOException("can't create " + dir);
+            dest = unique(dir, withExtension(safeName(displayName(uri), "photo"), getContentResolver().getType(uri)));
+        } else {
+            File parent = dest.getParentFile();
+            if (parent != null && !parent.mkdirs() && !parent.isDirectory()) throw new IOException("can't create " + parent);
+        }
+        job.step(dest.getName());
+        copy(uri, dest, job);
+        storagePrefs().edit().putString(key, dest.getAbsolutePath()).apply();
+        return dest;
+    }
+
+    /** The folder a picked tree is copied into: the same one as last time for the same tree. */
+    private File stagedFolder(Uri tree, String docId) throws IOException {
+        String key = "tree:" + tree;
+        String known = storagePrefs().getString(key, null);
+        File dest = known != null ? new File(known) : null;
+        if (dest == null || !inIncoming(dest)) {
+            dest = unique(incoming(), safeName(displayName(DocumentsContract.buildDocumentUriUsingTree(tree, docId)), "Folder"));
+            storagePrefs().edit().putString(key, dest.getAbsolutePath()).apply();
+        }
+        if (!dest.mkdirs() && !dest.isDirectory()) throw new IOException("can't create " + dest);
+        return dest;
+    }
+
+    /** Whether `f` is inside the staging folder (a remembered path is never trusted further). */
+    private boolean inIncoming(File f) {
+        try {
+            String base = incoming().getCanonicalPath() + File.separator;
+            return f.getCanonicalPath().startsWith(base);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private long documentSize(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.SIZE}, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getLong(0);
+        } catch (Exception e) {
+            Log.w(TAG, "size of " + uri + ": " + e);
+        }
+        return -1;
+    }
+
+    /** `name`, with an extension from `mime` when it has none (a provider that names documents
+     *  without one), so the app recognises the file. Raw types first: the platform knows few. */
+    static String withExtension(String name, String mime) {
+        int dot = name.lastIndexOf('.');
+        if ((dot > 0 && dot < name.length() - 1) || mime == null) return name;
+        String m = mime.toLowerCase(Locale.ROOT);
+        String ext;
+        switch (m) {
+            case "image/x-adobe-dng": case "image/dng": ext = "dng"; break;
+            case "image/x-canon-cr2": ext = "cr2"; break;
+            case "image/x-canon-cr3": ext = "cr3"; break;
+            case "image/x-canon-crw": ext = "crw"; break;
+            case "image/x-nikon-nef": ext = "nef"; break;
+            case "image/x-nikon-nrw": ext = "nrw"; break;
+            case "image/x-sony-arw": ext = "arw"; break;
+            case "image/x-fuji-raf": ext = "raf"; break;
+            case "image/x-olympus-orf": ext = "orf"; break;
+            case "image/x-panasonic-rw2": case "image/x-panasonic-raw": ext = "rw2"; break;
+            case "image/x-pentax-pef": ext = "pef"; break;
+            case "image/x-samsung-srw": ext = "srw"; break;
+            case "image/jpeg": ext = "jpg"; break;
+            case "image/heic": case "image/heif": ext = "heic"; break;
+            default: ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(m);
+        }
+        if (ext == null || ext.isEmpty()) return name;
+        return (dot == name.length() - 1 ? name.substring(0, dot) : name) + "." + ext;
+    }
+
+    private Boolean allFilesDeclared;
+
+    /** Whether this build's manifest asks for "All files access" (`MANAGE_EXTERNAL_STORAGE`): the
+     *  GitHub build does, the Play build doesn't (xtask/src/apk.rs, Store). Without it the app
+     *  never asks, and picked folders are copied. */
+    public boolean allFilesAccessDeclared() {
+        if (allFilesDeclared != null) return allFilesDeclared;
+        boolean declared = false;
+        try {
+            String[] requested = getPackageManager().getPackageInfo(getPackageName(), PackageManager.GET_PERMISSIONS).requestedPermissions;
+            if (requested != null) {
+                for (String p : requested) {
+                    if ("android.permission.MANAGE_EXTERNAL_STORAGE".equals(p)) declared = true;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "declared permissions: " + e);
+        }
+        allFilesDeclared = declared;
+        return declared;
+    }
+
+    /** Whether the app may read every file on shared storage (never in a build that doesn't
+     *  declare All files access: there the storage permission of Android 9-10 is only for photos). */
+    public boolean hasAllFilesAccess() {
+        try {
+            if (!allFilesAccessDeclared()) return false;
+            if (android.os.Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager();
+            return checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "storage access: " + e);
+            return false;
+        }
+    }
+
+    /** Asks for "All files access": the system's page for it on Android 11+, the storage
+     *  permission before. */
+    public void askAllFilesAccess() {
+        if (!allFilesAccessDeclared()) return;
+        runOnUiThread(() -> {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
+                    } catch (RuntimeException e) {
+                        // some devices only have the list of apps
+                        startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                    }
+                } else {
+                    requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE}, ASK_STORAGE);
+                }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "can't ask for storage access: " + e);
+            }
+        });
+    }
+
+    /** Called by the native side after its first frame: the first-start questions can cover the
+     *  activity now that its window and GPU surface exist. */
+    public void firstFrameShown() {
+        Log.i(TAG, "lifecycle: first frame");
+        runOnUiThread(this::askAllFilesAccessOnce);
+    }
+
+    /** Asks once, on the first start (remembered; Settings > Folders asks again). */
+    private void askAllFilesAccessOnce() {
+        try {
+            SharedPreferences prefs = storagePrefs();
+            if (!allFilesAccessDeclared() || prefs.getBoolean(ASKED_ALL_FILES, false) || hasAllFilesAccess()) return;
+            prefs.edit().putBoolean(ASKED_ALL_FILES, true).apply();
+            askAllFilesAccess();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "storage access: " + e);
+        }
+    }
+
+    // ---- Camera roll: the photos in DCIM/Camera, through MediaStore (the photo permission only)
+
+    /** The camera roll's answer (registered by crates/android-host): `paths` null = failed, with
+     *  the reason in `error`. */
+    private native void nativeCameraRoll(long id, String[] paths, String error);
+
+    private static final int ASK_PHOTOS = 78;
+    /** Listings waiting for the answer to the photo permission request. */
+    private final List<Long> rollWaiting = new ArrayList<>();
+
+    private static String photoPermission() {
+        return android.os.Build.VERSION.SDK_INT >= 33 ? "android.permission.READ_MEDIA_IMAGES" : android.Manifest.permission.READ_EXTERNAL_STORAGE;
+    }
+
+    /** "Selected photos" (Android 14+): the person allowed some photos only; MediaStore then lists
+     *  just those. */
+    private static final String SELECTED_PHOTOS = "android.permission.READ_MEDIA_VISUAL_USER_SELECTED";
+
+    /** The permissions to ask for: on Android 14+ also "selected photos", so the system offers it. */
+    private static String[] photoPermissions() {
+        if (android.os.Build.VERSION.SDK_INT >= 34) return new String[]{photoPermission(), SELECTED_PHOTOS};
+        return new String[]{photoPermission()};
+    }
+
+    /** Access to some photos only (Android 14+ "selected photos"). */
+    private boolean hasSelectedPhotosOnly() {
+        try {
+            return android.os.Build.VERSION.SDK_INT >= 34 && !hasPhotoAccess()
+                    && checkSelfPermission(SELECTED_PHOTOS) == PackageManager.PERMISSION_GRANTED;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private boolean hasPhotoAccess() {
+        try {
+            return hasAllFilesAccess() || checkSelfPermission(photoPermission()) == PackageManager.PERMISSION_GRANTED;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "photo access: " + e);
+            return false;
+        }
+    }
+
+    /** Lists the camera roll for `id`, asking for the photo permission first when needed. With
+     *  "selected photos" only, asks again, which lets the person change the selection, then lists
+     *  what is allowed. */
+    public void startCameraRoll(final long id) {
+        runOnUiThread(() -> {
+            if (hasPhotoAccess()) {
+                listCameraRoll(id);
+                return;
+            }
+            synchronized (rollWaiting) {
+                rollWaiting.add(id);
+                // a request is already up: its answer serves this one too
+                if (rollWaiting.size() > 1) return;
+            }
+            try {
+                requestPermissions(photoPermissions(), ASK_PHOTOS);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "can't ask for access to photos: " + e);
+                answerWaitingRolls(false);
+            }
+        });
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != ASK_PHOTOS) return;
+        boolean granted = hasPhotoAccess() || hasSelectedPhotosOnly();
+        answerWaitingRolls(granted);
+    }
+
+    private void answerWaitingRolls(boolean granted) {
+        List<Long> ids;
+        synchronized (rollWaiting) {
+            ids = new ArrayList<>(rollWaiting);
+            rollWaiting.clear();
+        }
+        for (long id : ids) {
+            if (granted) listCameraRoll(id);
+            else rollAnswer(id, null, "access to photos was not allowed (Android settings: Apps > {{display_name}} > Permissions > Photos)");
+        }
+    }
+
+    private void rollAnswer(long id, String[] paths, String error) {
+        try {
+            nativeCameraRoll(id, paths, error);
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeCameraRoll: " + t);
+        }
+    }
+
+    /** The photos in DCIM/Camera (and folders inside it): their real paths where the app can read
+     *  them, else copies in Incoming/Camera Roll (kept, so listing again copies only new ones). */
+    private void listCameraRoll(final long id) {
+        new Thread(() -> {
+            List<String> out = new ArrayList<>();
+            String error = null;
+            try (CopyJob job = new CopyJob()) {
+                boolean q = android.os.Build.VERSION.SDK_INT >= 29;
+                Uri collection = q ? MediaStore.Images.Media.getContentUri("external") : MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                String data = MediaStore.MediaColumns.DATA;
+                String[] cols = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE,
+                        MediaStore.MediaColumns.MIME_TYPE, data};
+                String selection = q ? "relative_path LIKE ?" : data + " LIKE ?";
+                String[] args = {q ? "DCIM/Camera/%" : "%/DCIM/Camera/%"};
+                List<Object[]> rows = new ArrayList<>();
+                try (Cursor c = getContentResolver().query(collection, cols, selection, args, null)) {
+                    if (c == null) throw new IOException("the media store did not answer");
+                    while (c.moveToNext()) {
+                        rows.add(new Object[]{c.getLong(0), c.getString(1), c.isNull(2) ? -1L : c.getLong(2), c.getString(3), c.getString(4)});
+                    }
+                }
+                rows.addAll(rawsNotIndexedAsImages(data, selection, args));
+                job.total = rows.size();
+                File dir = null;
+                for (Object[] r : rows) {
+                    if (job.cancelled) break;
+                    long mediaId = (Long) r[0];
+                    String path = (String) r[4];
+                    try {
+                        File real = path != null ? new File(path) : null;
+                        if (real != null && real.isFile() && real.canRead()) {
+                            out.add(real.getAbsolutePath());
+                            continue;
+                        }
+                    } catch (SecurityException e) {
+                        // not readable in place: copied below
+                    }
+                    if (dir == null) {
+                        dir = new File(incoming(), "Camera Roll");
+                        if (!dir.mkdirs() && !dir.isDirectory()) throw new IOException("can't create " + dir);
+                    }
+                    long size = (Long) r[2];
+                    String name = withExtension(safeName((String) r[1], "photo"), (String) r[3]);
+                    File dest = new File(dir, name);
+                    if (dest.isFile() && size >= 0 && dest.length() != size) dest = new File(dir, mediaId + "-" + name);
+                    if (dest.isFile() && (size < 0 || dest.length() == size)) {
+                        out.add(dest.getAbsolutePath());
+                        continue;
+                    }
+                    File part = new File(dir, "." + dest.getName() + ".part");
+                    try {
+                        job.step(dest.getName());
+                        Uri from = r.length > 5 ? (Uri) r[5] : collection;
+                        copy(android.content.ContentUris.withAppendedId(from, mediaId), part, job);
+                        if (part.renameTo(dest)) {
+                            out.add(dest.getAbsolutePath());
+                        } else {
+                            part.delete();
+                            Log.w(TAG, "can't move " + part + " to " + dest);
+                        }
+                    } catch (IOException e) {
+                        part.delete();
+                        if (job.cancelled) break;
+                        Log.w(TAG, "camera roll: copy " + name + ": " + e);
+                    }
+                }
+                Log.i(TAG, "camera roll: " + out.size() + " of " + rows.size() + " photos");
+                if (!rows.isEmpty() && out.isEmpty() && !job.cancelled) error = "none of the " + rows.size() + " photos could be read";
+            } catch (SecurityException e) {
+                error = "access to photos was not allowed";
+            } catch (Exception e) {
+                Log.e(TAG, "camera roll: " + e);
+                error = "the camera roll could not be read: " + e.getMessage();
+            }
+            rollAnswer(id, error == null ? out.toArray(new String[0]) : null, error);
+        }, "camera-roll").start();
+    }
+
+    /** Raw files the media store doesn't count as images (CR3 on most devices, other raws on some):
+     *  they're in its Files table under DCIM/Camera with another media type. Visible only with All
+     *  files access on Android 11+ (scoped storage hides other apps' non-media files), so in the Play
+     *  build this usually finds nothing; picking the folder (copied) brings them in. */
+    private List<Object[]> rawsNotIndexedAsImages(String data, String selection, String[] args) {
+        List<Object[]> rows = new ArrayList<>();
+        try {
+            Uri files = MediaStore.Files.getContentUri("external");
+            String[] cols = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE,
+                    MediaStore.MediaColumns.MIME_TYPE, data};
+            String sel = "(" + selection + ") AND " + MediaStore.Files.FileColumns.MEDIA_TYPE + " != " + MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE;
+            try (Cursor c = getContentResolver().query(files, cols, sel, args, null)) {
+                if (c == null) return rows;
+                while (c.moveToNext()) {
+                    String name = c.getString(1);
+                    if (name == null || !isRawName(name)) continue;
+                    rows.add(new Object[]{c.getLong(0), name, c.isNull(2) ? -1L : c.getLong(2), c.getString(3), c.getString(4), files});
+                }
+            }
+        } catch (Exception e) {
+            Log.i(TAG, "camera roll: raw files not listed: " + e);
+        }
+        return rows;
+    }
+
+    private static final String[] RAW_EXTENSIONS = {"dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf",
+            "rw2", "raw", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "dcr", "mrw", "mos", "rwl", "gpr"};
+
+    static boolean isRawName(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0) return false;
+        String ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        for (String r : RAW_EXTENSIONS) {
+            if (r.equals(ext)) return true;
+        }
+        return false;
+    }
+
+    /** Opens a web link in the browser. */
+    public void openUrl(final String url) {
+        runOnUiThread(() -> {
+            try {
+                Uri uri = Uri.parse(url);
+                String scheme = uri.getScheme();
+                if (!"https".equals(scheme) && !"http".equals(scheme) && !"mailto".equals(scheme)) {
+                    Log.w(TAG, "not opening " + scheme + " link");
+                    return;
+                }
+                startActivity(new Intent(Intent.ACTION_VIEW, uri));
+            } catch (Exception e) {
+                Log.w(TAG, "open " + url + ": " + e);
+            }
+        });
+    }
+
+    // ---- On-screen keyboard ----
+    //
+    // NativeActivity's own soft-input handling is unreliable (no input connection, so no
+    // composing, predictions or non-Latin text). A 1×1 transparent view over the native content
+    // takes focus while the app wants text; its input connection forwards what the keyboard sends
+    // to nativeIme, and the app turns it into text and editing keys. It is a plain View, not an
+    // EditText: no text of its own, so no system selection handles or cursor.
+
+    /** Keyboard input (registered by crates/android-host; codes decoded by ImeEvent::from_wire). */
+    private native void nativeIme(int kind, String text, int a, int b);
+
+    private static final int IME_COMMIT = 0, IME_PREEDIT = 1, IME_FINISH = 2, IME_DELETE = 3, IME_KEY = 4;
+    private static final int KEY_BACKSPACE = 0, KEY_ENTER = 1, KEY_DELETE = 2;
+
+    private KeyboardView keyboardView;
+
+    private void addKeyboardView() {
+        try {
+            keyboardView = new KeyboardView();
+            addContentView(keyboardView, new FrameLayout.LayoutParams(1, 1));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "no keyboard view: " + e);
+            keyboardView = null;
+        }
+    }
+
+    /** Shows the on-screen keyboard (the input view takes focus) or hides it. */
+    public void setKeyboard(final boolean show) {
+        runOnUiThread(() -> {
+            try {
+                KeyboardView v = keyboardView;
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (v == null || imm == null) return;
+                if (show) {
+                    v.setFocusable(true);
+                    v.setFocusableInTouchMode(true);
+                    v.requestFocus();
+                    imm.restartInput(v);
+                    imm.showSoftInput(v, 0);
+                } else {
+                    imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+                    v.clearFocus();
+                    v.setFocusable(false);
+                }
+            } catch (RuntimeException e) {
+                Log.w(TAG, "keyboard: " + e);
+            }
+        });
+    }
+
+    private void ime(int kind, CharSequence text, int a, int b) {
+        try {
+            nativeIme(kind, text == null ? null : text.toString(), a, b);
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeIme: " + t);
+        }
+    }
+
+    private final class KeyboardView extends View {
+        KeyboardView() {
+            super(MainActivity.this);
+            setBackgroundColor(0);
+            setFocusable(false);
+        }
+
+        @Override
+        public boolean onCheckIsTextEditor() {
+            return true;
+        }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo info) {
+            info.inputType = InputType.TYPE_CLASS_TEXT;
+            info.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_DONE;
+            info.initialSelStart = 0;
+            info.initialSelEnd = 0;
+            return new KeyboardConnection(this);
+        }
+    }
+
+    /** Forwards everything to the app and keeps no text: the app's field holds it. */
+    private final class KeyboardConnection extends BaseInputConnection {
+        KeyboardConnection(View view) {
+            super(view, false);
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            ime(IME_COMMIT, text, 0, 0);
+            return true;
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            ime(IME_PREEDIT, text, 0, 0);
+            return true;
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            ime(IME_FINISH, null, 0, 0);
+            return true;
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int before, int after) {
+            ime(IME_DELETE, null, before, after);
+            return true;
+        }
+
+        @Override
+        public boolean performEditorAction(int action) {
+            ime(IME_KEY, null, KEY_ENTER, 0);
+            return true;
+        }
+
+        @Override
+        public boolean sendKeyEvent(KeyEvent event) {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_DEL:
+                    ime(IME_KEY, null, KEY_BACKSPACE, 0);
+                    break;
+                case KeyEvent.KEYCODE_FORWARD_DEL:
+                    ime(IME_KEY, null, KEY_DELETE, 0);
+                    break;
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                    ime(IME_KEY, null, KEY_ENTER, 0);
+                    break;
+                default: {
+                    int c = event.getUnicodeChar();
+                    if (c > 0) ime(IME_COMMIT, new String(Character.toChars(c)), 0, 0);
+                }
+            }
+            return true;
+        }
+    }
+
+    // ---- Photos opened or shared from other apps, and dropped from them (AND.6) ----
+    //
+    // VIEW / SEND / SEND_MULTIPLE intents and drag and drop hand over content:// documents. They are
+    // staged like picked files (Incoming/Picked) off the UI thread and the paths go to nativeOpened, which opens the
+    // import review. The intent can arrive before the native side has registered nativeOpened, so
+    // paths wait in `opened` until hostReady() says it is there.
+
+    /** Paths opened from other apps (registered by crates/android-host). */
+    private native void nativeOpened(String[] paths);
+
+    private final List<String> opened = new ArrayList<>();
+    private boolean hostReady;
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        receive(intent);
+    }
+
+    /** onCreate: the launching intent, and drops from other apps from now on. */
+    private void startReceiving(Intent intent) {
+        // a recreated activity (after a configuration change) must not import the launching intent twice
+        if (intent != null && (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) receive(intent);
+        try {
+            getWindow().getDecorView().setOnDragListener((v, event) -> onDrag(event));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "no drag and drop: " + e);
+        }
+    }
+
+    /** Part of hostReady(): nativeOpened is registered, hand over what waited. */
+    private void openedReady() {
+        String[] waiting;
+        synchronized (opened) {
+            hostReady = true;
+            waiting = opened.toArray(new String[0]);
+            opened.clear();
+        }
+        if (waiting.length > 0) deliverOpened(waiting);
+    }
+
+    private void receive(Intent intent) {
+        final List<Uri> uris = new ArrayList<>();
+        try {
+            String action = intent.getAction();
+            if (Intent.ACTION_VIEW.equals(action)) {
+                if (intent.getData() != null) uris.add(intent.getData());
+            } else if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+                ClipData clip = intent.getClipData();
+                if (clip != null) {
+                    for (int i = 0; i < clip.getItemCount(); i++) {
+                        Uri u = clip.getItemAt(i).getUri();
+                        if (u != null) uris.add(u);
+                    }
+                }
+                if (uris.isEmpty()) {
+                    if (Intent.ACTION_SEND.equals(action)) {
+                        Uri u = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                        if (u != null) uris.add(u);
+                    } else {
+                        ArrayList<Uri> list = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                        if (list != null) for (Uri u : list) if (u != null) uris.add(u);
+                    }
+                }
+            } else {
+                return;
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "shared photos unreadable: " + e);
+            toast("Couldn't read the shared photos");
+            return;
+        }
+        // handled once: a later recreation of the activity sees a plain launch
+        intent.setAction(Intent.ACTION_MAIN);
+        receiveUris(uris, null);
+    }
+
+    private boolean onDrag(DragEvent event) {
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED: {
+                ClipDescription d = event.getClipDescription();
+                return d != null && (d.hasMimeType("image/*") || d.hasMimeType("application/octet-stream"));
+            }
+            case DragEvent.ACTION_DROP: {
+                ClipData clip = event.getClipData();
+                if (clip == null) return false;
+                DragAndDropPermissions perms = null;
+                try {
+                    perms = requestDragAndDropPermissions(event);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "drop permissions: " + e);
+                }
+                List<Uri> uris = new ArrayList<>();
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    Uri u = clip.getItemAt(i).getUri();
+                    if (u != null && ContentResolver.SCHEME_CONTENT.equals(u.getScheme())) uris.add(u);
+                }
+                receiveUris(uris, perms);
+                return !uris.isEmpty();
+            }
+            default:
+                return true;
+        }
+    }
+
+    /** Stages `uris` like picked files (stagedFile) off the UI thread, then hands the paths over. */
+    private void receiveUris(final List<Uri> uris, final DragAndDropPermissions perms) {
+        if (uris.isEmpty()) {
+            if (perms != null) perms.release();
+            return;
+        }
+        new Thread(() -> {
+            List<String> out = new ArrayList<>();
+            int failed = 0;
+            // the same staging as picked files: real paths where readable, reused copies, progress
+            try (CopyJob job = new CopyJob()) {
+                job.total = uris.size();
+                for (Uri uri : uris) {
+                    if (job.cancelled) break;
+                    try {
+                        out.add(stagedFile(uri, job).getAbsolutePath());
+                    } catch (Exception e) {
+                        failed++;
+                        Log.w(TAG, "copy " + uri + ": " + e);
+                    }
+                }
+            } catch (Exception e) {
+                failed = uris.size();
+                Log.w(TAG, "shared photos: " + e);
+            } finally {
+                if (perms != null) {
+                    try {
+                        perms.release();
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "release drop permissions: " + e);
+                    }
+                }
+            }
+            if (failed > 0) toast(failed == 1 ? "Couldn't copy 1 shared photo" : "Couldn't copy " + failed + " shared photos");
+            if (!out.isEmpty()) deliverOpened(out.toArray(new String[0]));
+        }, "shared").start();
+    }
+
+    private void deliverOpened(String[] paths) {
+        synchronized (opened) {
+            if (!hostReady) {
+                for (String p : paths) opened.add(p);
+                return;
+            }
+        }
+        try {
+            nativeOpened(paths);
+        } catch (Throwable t) {
+            Log.e(TAG, "nativeOpened: " + t);
+            toast("Couldn't open the shared photos");
+        }
+    }
+
+    // ------------------------------------------------------------------ exports: Pictures + share
+
+    /** Answers saveToGallery (registered by crates/android-host): the saved files' content URIs,
+     *  or null and the reason. */
+    private native void nativeGallerySaved(long id, String[] uris, String error);
+
+    private static String exportMime(String name) {
+        String n = name.toLowerCase(Locale.ROOT);
+        if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+        if (n.endsWith(".png")) return "image/png";
+        if (n.endsWith(".tif") || n.endsWith(".tiff")) return "image/tiff";
+        if (n.endsWith(".dng")) return "image/x-adobe-dng";
+        if (n.endsWith(".webp")) return "image/webp";
+        if (n.endsWith(".avif")) return "image/avif";
+        if (n.endsWith(".jxl")) return "image/jxl";
+        return "application/octet-stream";
+    }
+
+    /** Copies exported files (the app's own folder) into Pictures/<album> through MediaStore, so
+     *  the gallery shows them, then with `share` offers them to other apps (the share sheet). The
+     *  answer comes through nativeGallerySaved(id, …). */
+    public void saveToGallery(final long id, final String[] paths, final String album, final boolean share) {
+        new Thread(() -> {
+            List<Uri> saved = new ArrayList<>();
+            List<String> mimes = new ArrayList<>();
+            String error = null;
+            ContentResolver r = getContentResolver();
+            for (String path : paths == null ? new String[0] : paths) {
+                File src = new File(path);
+                String mime = exportMime(src.getName());
+                Uri uri = null;
+                try {
+                    android.content.ContentValues v = new android.content.ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, src.getName());
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    Uri collection;
+                    if (android.os.Build.VERSION.SDK_INT >= 29) {
+                        v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + album);
+                        v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                        collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+                    } else {
+                        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), album);
+                        if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("can't make " + dir);
+                        File dest = new File(dir, src.getName());
+                        for (int n = 1; dest.exists() && n < 10000; n++) {
+                            String name = src.getName();
+                            int dot = name.lastIndexOf('.');
+                            dest = new File(dir, (dot > 0 ? name.substring(0, dot) : name) + "-" + n + (dot > 0 ? name.substring(dot) : ""));
+                        }
+                        v.put(MediaStore.MediaColumns.DISPLAY_NAME, dest.getName());
+                        v.put(MediaStore.MediaColumns.DATA, dest.getAbsolutePath());
+                        collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                    }
+                    uri = r.insert(collection, v);
+                    if (uri == null) throw new IOException("the media store refused " + src.getName());
+                    try (InputStream in = new FileInputStream(src); OutputStream out = r.openOutputStream(uri)) {
+                        if (out == null) throw new IOException("can't write " + uri);
+                        pipe(in, out);
+                    }
+                    if (android.os.Build.VERSION.SDK_INT >= 29) {
+                        android.content.ContentValues done = new android.content.ContentValues();
+                        done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                        r.update(uri, done, null, null);
+                    }
+                    saved.add(uri);
+                    mimes.add(mime);
+                } catch (Exception e) {
+                    Log.w(TAG, "save " + path + " to Pictures: " + e);
+                    if (uri != null) {
+                        try {
+                            r.delete(uri, null, null);
+                        } catch (RuntimeException ignored) {
+                            // the half-written entry stays pending; the system removes it later
+                        }
+                    }
+                    error = src.getName() + ": " + e.getMessage();
+                    break;
+                }
+            }
+            if (error == null && share && !saved.isEmpty()) {
+                final List<Uri> uris = saved;
+                final String type = new HashSet<>(mimes).size() == 1 ? mimes.get(0) : "image/*";
+                runOnUiThread(() -> {
+                    try {
+                        Intent send;
+                        if (uris.size() == 1) {
+                            send = new Intent(Intent.ACTION_SEND);
+                            send.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+                        } else {
+                            send = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                            send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, new ArrayList<>(uris));
+                        }
+                        send.setType(type);
+                        ClipData clip = ClipData.newRawUri(null, uris.get(0));
+                        for (int i = 1; i < uris.size(); i++) clip.addItem(new ClipData.Item(uris.get(i)));
+                        send.setClipData(clip);
+                        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        startActivity(Intent.createChooser(send, null));
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "share: " + e);
+                        toast("Couldn't open the share sheet");
+                    }
+                });
+            }
+            String[] out = new String[saved.size()];
+            for (int i = 0; i < out.length; i++) out[i] = saved.get(i).toString();
+            try {
+                nativeGallerySaved(id, error == null ? out : null, error);
+            } catch (Throwable t) {
+                Log.e(TAG, "nativeGallerySaved: " + t);
+            }
+        }, "save-to-pictures").start();
+    }
+
+    private void toast(final String text) {
+        runOnUiThread(() -> {
+            try {
+                Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+            } catch (RuntimeException e) {
+                Log.w(TAG, "toast: " + e);
+            }
+        });
+    }
+
+    // ---- Back and the window's edges (crates/android-host: nativeBack, nativeInsets) ----------
+    // Back (the key, the gesture, and predictive back from Android 13, which the target SDK makes
+    // the only way the gesture arrives) goes to the native side, which closes what is open there;
+    // when nothing is, it calls goBackground(). The edges hidden by the camera cutout and the system
+    // bars go to the native side in pixels, again whenever they change, so the UI keeps clear of them.
+
+    /** Back was pressed (registered by crates/android-host). */
+    private native void nativeBack();
+
+    /** The window's insets in pixels (registered by crates/android-host). */
+    private native void nativeInsets(int left, int top, int right, int bottom);
+
+    private final Object edgesLock = new Object();
+    /** nativeBack and nativeInsets are registered (hostReady). */
+    private boolean edgesUp;
+    private int[] lastInsets;
+
+    private void watchBackAndEdges() {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            try {
+                getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                        android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::back);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "no back callback: " + e);
+            }
+        }
+        try {
+            View decor = getWindow().getDecorView();
+            decor.setOnApplyWindowInsetsListener((v, insets) -> {
+                reportInsets(insets);
+                return v.onApplyWindowInsets(insets);
+            });
+            decor.requestApplyInsets();
+        } catch (RuntimeException e) {
+            Log.w(TAG, "no window insets: " + e);
+        }
+    }
+
+    /** Before Android 13 (the Back key, when the native side lets it through). */
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        back();
+    }
+
+    private void back() {
+        synchronized (edgesLock) {
+            if (!edgesUp) {
+                goBackground();
+                return;
+            }
+        }
+        try {
+            nativeBack();
+        } catch (Throwable t) {
+            Log.w(TAG, "nativeBack: " + t);
+            goBackground();
+        }
+    }
+
+    /** The app had nothing left to close: to the background, as Back does at an app's root. */
+    public void goBackground() {
+        runOnUiThread(() -> {
+            try {
+                moveTaskToBack(true);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "moveTaskToBack: " + e);
+            }
+        });
+    }
+
+    @SuppressWarnings("deprecation")
+    private void reportInsets(WindowInsets in) {
+        int[] now = new int[4];
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets i = in.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                now = new int[]{i.left, i.top, i.right, i.bottom};
+            } else {
+                now = new int[]{in.getSystemWindowInsetLeft(), in.getSystemWindowInsetTop(), in.getSystemWindowInsetRight(), in.getSystemWindowInsetBottom()};
+                if (android.os.Build.VERSION.SDK_INT >= 28 && in.getDisplayCutout() != null) {
+                    android.view.DisplayCutout c = in.getDisplayCutout();
+                    now[0] = Math.max(now[0], c.getSafeInsetLeft());
+                    now[1] = Math.max(now[1], c.getSafeInsetTop());
+                    now[2] = Math.max(now[2], c.getSafeInsetRight());
+                    now[3] = Math.max(now[3], c.getSafeInsetBottom());
+                }
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "insets: " + e);
+        }
+        synchronized (edgesLock) {
+            lastInsets = now;
+            if (!edgesUp) return;
+        }
+        sendInsets(now);
+    }
+
+    /** Part of hostReady(): the native side can take Back and the insets now. */
+    private void edgesReady() {
+        int[] waiting;
+        synchronized (edgesLock) {
+            edgesUp = true;
+            waiting = lastInsets;
+        }
+        if (waiting != null) sendInsets(waiting);
+    }
+
+    private void sendInsets(int[] i) {
+        try {
+            nativeInsets(i[0], i[1], i[2], i[3]);
+        } catch (Throwable t) {
+            Log.w(TAG, "nativeInsets: " + t);
+        }
+    }
+}

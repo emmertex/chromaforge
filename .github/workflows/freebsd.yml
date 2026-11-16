@@ -1,0 +1,31 @@
+# FreeBSD build and package check in a QEMU VM.
+name: FreeBSD
+
+# The VM build is slow, so it runs nightly on main and on pushes to `release`, not on every pull
+# request: a drifted dependency still shows up within a day, and always before a release ships.
+# PRs that change the FreeBSD workflow or packaging itself still run it.
+on:
+  push:
+    branches: [release]
+  pull_request:
+    paths:
+      - .github/workflows/freebsd.yml
+      - packaging/freebsd/**
+  schedule:
+    - cron: "7 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  freebsd:
+    # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
+    uses: storytold/craft-common-actions/.github/workflows/freebsd.yml@main
+    with:
+      require-craft-fonts: true
+      craft-fonts-ref: b4ce3ee090ea4b06791e9501ea2f8e6f746d5cd3

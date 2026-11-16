@@ -1,0 +1,446 @@
+//! Pixel-filter plug-ins (PhotoCraft ABI, [`lcc_filters`]) in the develop pipeline.
+//!
+//! A photo's stack ([`DevelopSettings::plugin_filters`]) runs at two points:
+//!
+//! - **Source** filters run on the resampled source (after geometry, before white balance, local
+//!   tone and every other step) in linear light with sRGB primaries (`"encoding":"linear"`), so
+//!   e.g. a negative conversion sees the scan and every develop slider acts on its result. The
+//!   result is cached with the stage cache, keyed by the stack, so other sliders don't re-run it.
+//! - **Display** filters run on the finished, output-encoded `f32` image (sRGB curve, output
+//!   primaries, `"encoding":"srgb"`) before quantisation; on an HDR render, on its linear samples
+//!   (`"encoding":"linear"`).
+//!
+//! The pipeline doesn't own the installed filters: it asks a [`FilterHost`] (from
+//! [`crate::SourceInfo::filters`], else the process default set with [`set_default_host`]). A
+//! filter that isn't installed or fails is skipped and named in [`crate::Rendered::warnings`];
+//! a render never fails or panics because of one.
+//!
+//! Positions handed to a filter (`_image.x/y`, `canvasWidth/Height`) are in the whole output
+//! frame's pixels, so a zoomed window matches the full render at the same size.
+
+use std::borrow::Cow;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, PoisonError, RwLock};
+
+use lcc_develop::{DevelopSettings, FilterStage, PluginFilter};
+use lcc_raster::Rgb32f;
+use serde_json::Value;
+
+/// Resolves a stack entry to an installed filter.
+pub trait FilterHost: Send + Sync {
+    /// The installed filter with manifest id `plugin`, or why there is none. `module_hash` is the
+    /// build the entry was made with; a host may return another build of the same plug-in (the
+    /// pipeline then warns).
+    fn resolve(&self, plugin: &str, module_hash: &str) -> Result<Arc<lcc_filters::Filter>, String>;
+}
+
+/// A shared [`FilterHost`], compared by identity (so [`crate::SourceInfo`] stays `PartialEq`).
+#[derive(Clone)]
+pub struct FilterHostRef(pub Arc<dyn FilterHost>);
+
+impl std::fmt::Debug for FilterHostRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FilterHostRef")
+    }
+}
+
+impl PartialEq for FilterHostRef {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+static DEFAULT_HOST: RwLock<Option<Arc<dyn FilterHost>>> = RwLock::new(None);
+
+/// Sets the host renders use when their [`crate::SourceInfo::filters`] is `None` (the app's
+/// installed plug-ins). `None` clears it.
+pub fn set_default_host(host: Option<Arc<dyn FilterHost>>) {
+    *DEFAULT_HOST.write().unwrap_or_else(PoisonError::into_inner) = host;
+}
+
+fn host_for(info: &crate::SourceInfo) -> Option<Arc<dyn FilterHost>> {
+    info.filters.as_ref().map(|h| h.0.clone()).or_else(|| DEFAULT_HOST.read().unwrap_or_else(PoisonError::into_inner).clone())
+}
+
+/// Any enabled plug-in filter at either stage (the GPU renderer leaves these to the CPU).
+pub fn any_active(s: &DevelopSettings) -> bool {
+    s.active_plugin_filters(FilterStage::Source).next().is_some() || s.active_plugin_filters(FilterStage::Display).next().is_some()
+}
+
+/// One stage's stack, resolved against the host.
+pub struct Stack {
+    entries: Vec<(PluginFilter, Result<Arc<lcc_filters::Filter>, String>)>,
+    /// Identifies what the stack computes (ids, the builds that run, params, analysis).
+    pub key: u64,
+    /// `prefixes[k]`: the key of the stack's first `k` filters (`prefixes[len] == key`), so a
+    /// native run can start from what an earlier stack with those first filters made.
+    prefixes: Vec<u64>,
+}
+
+impl Stack {
+    /// The enabled filters of `stage` in `s`, resolved through `info`'s host.
+    pub fn resolve(info: &crate::SourceInfo, s: &DevelopSettings, stage: FilterStage) -> Stack {
+        let host = host_for(info);
+        let entries: Vec<_> = s
+            .active_plugin_filters(stage)
+            .map(|f| {
+                let r = match &host {
+                    Some(h) => h.resolve(&f.plugin, &f.module_hash),
+                    None => Err(format!("plug-in {:?} is not installed", f.plugin)),
+                };
+                (f.clone(), r)
+            })
+            .collect();
+        let descs: Vec<_> = entries
+            .iter()
+            .map(|(f, r)| {
+                let build = r.as_ref().map(|x| x.module_hash().to_string()).unwrap_or_default();
+                let analysis = f.analysis.as_ref().map(Value::to_string).unwrap_or_default();
+                (f.plugin.clone(), build, Value::Object(f.params.clone()).to_string(), analysis)
+            })
+            .collect();
+        // the stack runs on the source with its film dust filled in: a change there is a new input
+        let film = info
+            .infrared
+            .as_ref()
+            .filter(|_| s.film_dust.on())
+            .map(|ir| (ir.width, ir.height, s.film_dust.sensitivity.to_bits(), s.film_dust.expand.to_bits()));
+        let prefixes: Vec<u64> = (0..=descs.len()).map(|k| crate::hash_of((descs.get(..k).unwrap_or_default().to_vec(), film))).collect();
+        let key = prefixes.last().copied().unwrap_or_default();
+        Stack { entries, key, prefixes }
+    }
+
+    /// No filters.
+    pub fn empty() -> Stack {
+        Stack { entries: Vec::new(), key: 0, prefixes: vec![0] }
+    }
+
+    /// Number of filters.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// The key of the stack's first `k` filters ([`Self::key`] for all of them).
+    pub fn prefix_key(&self, k: usize) -> Option<u64> {
+        self.prefixes.get(k).copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Whether a filter of the stack reads neighbouring pixels (manifest `overlap` > 0): its look
+    /// depends on the pixel scale, so the pipeline runs it at the frame's native resolution
+    /// ([`crate::source_stage`]).
+    pub fn pixel_scale(&self) -> bool {
+        self.entries.iter().any(|(_, r)| r.as_ref().is_ok_and(|f| f.manifest().overlap > 0))
+    }
+
+    /// Whether a filter of the stack renders a finished picture (manifest `"baseTone": "neutral"`):
+    /// a raw then gets no base tone curve after it ([`crate::finish::base_tone`]).
+    pub fn neutral_base_tone(&self) -> bool {
+        self.entries.iter().any(|(_, r)| r.as_ref().is_ok_and(|f| f.manifest().base_tone == lcc_filters::BaseTone::Neutral))
+    }
+
+    /// Runs the stack on `img` (interleaved RGB as `encoding` says), in order; each filter that is
+    /// missing or fails leaves the image as it was and adds a warning.
+    /// Stops at the render's cancel ([`crate::with_cancel`]): the filters still to run are skipped
+    /// and the render is marked cut short.
+    pub fn apply(&self, img: &mut [[f32; 3]], w: usize, h: usize, frame: lcc_filters::FrameInfo, encoding: &str, warnings: &mut Vec<String>) {
+        let run = Run { give_way: &AtomicBool::new(false), start: 0, keep_at: None };
+        self.apply_run(img, w, h, frame, encoding, warnings, run);
+    }
+
+    /// [`Self::apply`] of the filters from `run.start` on, also stopped when `run.give_way` is set
+    /// (another render takes the run over): `gave_way` true then, and `img` is part-filtered, for
+    /// the caller to drop. With `run.keep_at`, a copy of the image as it stands before that filter
+    /// and the warnings so far come back too.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_run(
+        &self,
+        img: &mut [[f32; 3]],
+        w: usize,
+        h: usize,
+        frame: lcc_filters::FrameInfo,
+        encoding: &str,
+        warnings: &mut Vec<String>,
+        run: Run<'_>,
+    ) -> Ran {
+        let own = Arc::new(AtomicBool::new(false));
+        let cancel = crate::cancel_flag().unwrap_or(own);
+        let give_way = run.give_way;
+        let gave_way = || give_way.load(std::sync::atomic::Ordering::Relaxed);
+        let mut ran = Ran::default();
+        for (i, (f, r)) in self.entries.iter().enumerate().skip(run.start) {
+            if gave_way() {
+                ran.gave_way = true;
+                return ran;
+            }
+            if run.keep_at == Some(i) {
+                ran.kept = Some((img.to_vec(), warnings.clone()));
+            }
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::note_cut();
+                return ran;
+            }
+            let filter = match r {
+                Ok(x) => x,
+                Err(e) => {
+                    warnings.push(format!("{}skipped: {e}", warning_prefix(f)));
+                    continue;
+                }
+            };
+            if !f.module_hash.is_empty() && f.module_hash != filter.module_hash() {
+                warnings.push(format!("{}the installed build differs from the one this edit was made with", warning_prefix(f)));
+            }
+            let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
+                warnings.push(format!("{}skipped: image too large", warning_prefix(f)));
+                continue;
+            };
+            let params = filter_params(f, encoding);
+            let r = crate::timed(&format!("plug-in {}", f.plugin), || {
+                filter.apply_rgb_until(img.as_flattened_mut(), w32, h32, frame, &params, &[&cancel, give_way])
+            });
+            match r {
+                Err(lcc_filters::Error::Cancelled) if gave_way() => {
+                    ran.gave_way = true;
+                    return ran;
+                }
+                Err(lcc_filters::Error::Cancelled) => {
+                    crate::note_cut();
+                    return ran;
+                }
+                Err(e) => warnings.push(format!("{}skipped: {e}", warning_prefix(f))),
+                Ok(()) => {}
+            }
+        }
+        ran
+    }
+}
+
+/// How [`Stack::apply_run`] runs: from which filter, what stops it besides the render's cancel, and
+/// before which filter to keep a copy.
+#[derive(Clone, Copy)]
+pub(crate) struct Run<'a> {
+    pub give_way: &'a AtomicBool,
+    pub start: usize,
+    pub keep_at: Option<usize>,
+}
+
+/// What [`Stack::apply_run`] did besides filtering.
+#[derive(Default)]
+pub(crate) struct Ran {
+    /// It stopped for `give_way`.
+    pub gave_way: bool,
+    /// The image before filter `keep_at` (in the filters' encoding) and the warnings so far.
+    pub kept: Option<(Vec<[f32; 3]>, Vec<String>)>,
+}
+
+/// How a warning about stack entry `f` starts (`plug-in filter #3 "Negative" `): it names the entry
+/// for people and, by its uid, for [`warning_message`].
+pub fn warning_prefix(f: &PluginFilter) -> String {
+    format!("plug-in filter #{} {:?} ", f.uid, f.name)
+}
+
+/// The message of a render warning about entry `f` (without [`warning_prefix`]), or `None` when
+/// `warning` is about something else.
+pub fn warning_message<'a>(warning: &'a str, f: &PluginFilter) -> Option<&'a str> {
+    warning.strip_prefix(warning_prefix(f).as_str())
+}
+
+/// An entry's parameters as the module gets them: its values, `encoding`, and `_analysis`.
+pub fn filter_params(f: &PluginFilter, encoding: &str) -> Value {
+    let mut m = f.params.clone();
+    m.insert("encoding".into(), Value::from(encoding));
+    if let Some(a) = &f.analysis {
+        m.insert("_analysis".into(), a.clone());
+    }
+    Value::Object(m)
+}
+
+/// Linear Rec.2020 → linear sRGB primaries, and back.
+fn matrices() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
+    (lcc_color::REC2020.to_space(&lcc_color::SRGB).to_f32(), lcc_color::SRGB.to_space(&lcc_color::REC2020).to_f32())
+}
+
+fn mul(m: &[[f32; 3]; 3], c: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2])
+}
+
+/// Most pixels a draft runs Source filters on when it can't reuse a cached result: a drag of a
+/// filter's own parameter stays interactive, the full render after it is exact.
+pub const DRAFT_SOURCE_PIXELS: usize = 500_000;
+
+/// The Source stack on `img` (linear Rec.2020, in place): converted to linear sRGB primaries,
+/// filtered with `"encoding":"linear"`, converted back. `draft`: run on a reduced copy (at most
+/// [`DRAFT_SOURCE_PIXELS`]) and scale the result back up.
+pub fn apply_source(stack: &Stack, img: &mut Rgb32f, frame: lcc_filters::FrameInfo, draft: bool, warnings: &mut Vec<String>) {
+    if stack.is_empty() {
+        return;
+    }
+    let (to_srgb, to_2020) = matrices();
+    let n = img.width.saturating_mul(img.height);
+    if draft && n > DRAFT_SOURCE_PIXELS {
+        let k = (DRAFT_SOURCE_PIXELS as f64 / n as f64).sqrt();
+        let (sw, sh) = (((img.width as f64 * k) as usize).max(1), ((img.height as f64 * k) as usize).max(1));
+        let mut small = lcc_raster::resample::resize(img, sw, sh, lcc_raster::resample::Filter::Box);
+        small.data.iter_mut().for_each(|c| *c = mul(&to_srgb, *c));
+        let sframe = scale_frame(frame, k);
+        stack.apply(&mut small.data, sw, sh, sframe, "linear", warnings);
+        small.data.iter_mut().for_each(|c| *c = mul(&to_2020, *c));
+        *img = lcc_raster::resample::resize(&small, img.width, img.height, lcc_raster::resample::Filter::Bilinear);
+        return;
+    }
+    crate::for_rows(&mut img.data, img.width.max(1), |_, row| row.iter_mut().for_each(|c| *c = mul(&to_srgb, *c)));
+    let (w, h) = (img.width, img.height);
+    stack.apply(&mut img.data, w, h, frame, "linear", warnings);
+    crate::for_rows(&mut img.data, img.width.max(1), |_, row| row.iter_mut().for_each(|c| *c = mul(&to_2020, *c)));
+}
+
+/// The Source filters' encoding (linear sRGB primaries) of `img` (linear Rec.2020), in place.
+pub(crate) fn to_filter_space(img: &mut Rgb32f) {
+    let (to_srgb, _) = matrices();
+    crate::for_rows(&mut img.data, img.width.max(1), |_, row| row.iter_mut().for_each(|c| *c = mul(&to_srgb, *c)));
+}
+
+/// Back from [`to_filter_space`].
+pub(crate) fn from_filter_space(img: &mut Rgb32f) {
+    let (_, to_2020) = matrices();
+    crate::for_rows(&mut img.data, img.width.max(1), |_, row| row.iter_mut().for_each(|c| *c = mul(&to_2020, *c)));
+}
+
+/// A native run of `stack` on `img`, already in the filters' encoding ([`to_filter_space`]), as
+/// `run` says ([`Stack::apply_run`]).
+pub(crate) fn apply_native(stack: &Stack, img: &mut Rgb32f, frame: lcc_filters::FrameInfo, warnings: &mut Vec<String>, run: Run<'_>) -> Ran {
+    let (w, h) = (img.width, img.height);
+    stack.apply_run(&mut img.data, w, h, frame, "linear", warnings, run)
+}
+
+fn scale_frame(f: lcc_filters::FrameInfo, k: f64) -> lcc_filters::FrameInfo {
+    let s = |v: u32| ((v as f64 * k).round() as u32).max(1);
+    lcc_filters::FrameInfo { x: (f.x as f64 * k).round() as u32, y: (f.y as f64 * k).round() as u32, full_w: s(f.full_w), full_h: s(f.full_h) }
+}
+
+/// The Display stack on finished samples (`linear`: an HDR render's linear values; otherwise
+/// sRGB-curve encoded).
+pub fn apply_display(
+    stack: &Stack,
+    img: &mut [[f32; 3]],
+    w: usize,
+    h: usize,
+    frame: lcc_filters::FrameInfo,
+    linear: bool,
+    warnings: &mut Vec<String>,
+) {
+    if !stack.is_empty() {
+        stack.apply(img, w, h, frame, if linear { "linear" } else { "srgb" }, warnings);
+    }
+}
+
+/// `src` as the Source filters of `s` turn it (whole frame, downsized to at most `max_edge`), for
+/// whole-image helpers (auto tone and the like) that would otherwise read the unfiltered source.
+/// Borrowed unchanged when no Source filter is active.
+pub fn filtered_source<'a>(src: &'a Rgb32f, info: &crate::SourceInfo, s: &DevelopSettings, max_edge: usize) -> Cow<'a, Rgb32f> {
+    let stack = Stack::resolve(info, s, FilterStage::Source);
+    if stack.is_empty() {
+        return Cow::Borrowed(src);
+    }
+    let mut img = lcc_raster::resample::fit(src, max_edge.max(1), max_edge.max(1), lcc_raster::resample::Filter::Box);
+    let frame = lcc_filters::FrameInfo::whole(img.width as u32, img.height as u32);
+    let mut warnings = Vec::new();
+    apply_source(&stack, &mut img, frame, false, &mut warnings);
+    Cow::Owned(img)
+}
+
+/// [`analysis_input`] of the photo as `s`'s geometry frames it (orientation, crop, straighten, flips,
+/// lens profile and perspective: what the source stage sees, without a camera's embedded lens warp),
+/// for a filter whose manifest asks for `"analyzeArea": "crop"`.
+pub fn analysis_input_framed(src: &Rgb32f, s: &DevelopSettings, max_edge: usize) -> (Vec<f32>, usize, usize) {
+    let frame = crate::geometry::Frame::new(src.width, src.height, s, true);
+    // at most the crop's own resolution: a small crop isn't blown up
+    let (nw, nh) = frame.native_size();
+    let edge = (nw.max(nh).round() as usize).clamp(1, max_edge.max(1));
+    let (w, h) = frame.fit(edge, edge);
+    analysis_input(&frame.sample(src, w, h), max_edge)
+}
+
+/// The photo as the crop tool shows it before cropping (orientation, flips, lens and perspective;
+/// no crop, no straighten), downsized to a long edge of at most `max_edge` (never blown up), in
+/// linear sRGB primaries: `(samples, width, height)`. A point's position in it, normalized, is
+/// where `crop.set` puts that point of the photo, which is what a plug-in that finds a crop needs.
+pub fn uncropped_input(src: &Rgb32f, s: &DevelopSettings, max_edge: usize) -> (Vec<f32>, usize, usize) {
+    let frame = crate::geometry::Frame::new(src.width, src.height, s, false);
+    let (nw, nh) = frame.native_size();
+    let edge = (nw.max(nh).round() as usize).clamp(1, max_edge.max(1));
+    let (w, h) = frame.fit(edge, edge);
+    analysis_input(&frame.sample(src, w, h), max_edge)
+}
+
+/// A downsized whole frame (long edge at most `max_edge`) in linear sRGB primaries, interleaved,
+/// for a filter's `pc_analyze`: `(samples, width, height)`.
+pub fn analysis_input(src: &Rgb32f, max_edge: usize) -> (Vec<f32>, usize, usize) {
+    let img = lcc_raster::resample::fit(src, max_edge.max(1), max_edge.max(1), lcc_raster::resample::Filter::Box);
+    let (to_srgb, _) = matrices();
+    let data = img.data.iter().flat_map(|c| mul(&to_srgb, *c)).collect();
+    (data, img.width, img.height)
+}
+
+#[cfg(test)]
+mod tests_analysis_input {
+    use super::*;
+
+    /// A source dark on the left half and bright on the right.
+    fn halves(w: usize, h: usize) -> Rgb32f {
+        let mut img = Rgb32f::new(w, h);
+        for (i, px) in img.data.iter_mut().enumerate() {
+            let v = if i % w < w / 2 { 0.1 } else { 0.8 };
+            *px = [v, v, v];
+        }
+        img
+    }
+
+    fn mean(data: &[f32]) -> f64 {
+        data.iter().map(|v| f64::from(*v)).sum::<f64>() / data.len() as f64
+    }
+
+    #[test]
+    fn the_framed_input_is_the_crop_and_the_plain_one_the_whole_photo() {
+        let src = halves(400, 200);
+        let mut s = DevelopSettings::default();
+        s.crop.geometry.rect = lcc_geom::Rect::new(0.55, 0.1, 0.95, 0.9);
+        let (whole, ww, wh) = analysis_input(&src, 1024);
+        let (framed, fw, fh) = analysis_input_framed(&src, &s, 1024);
+        assert_eq!((ww, wh), (400, 200));
+        assert!((mean(&whole) - 0.45).abs() < 0.05, "the whole photo: both halves");
+        // the crop is 160 × 160 source pixels, all in the bright half
+        assert_eq!((fw, fh), (160, 160), "the crop, at its own resolution");
+        assert!((mean(&framed) - 0.8).abs() < 0.02, "only the bright half: {}", mean(&framed));
+        // no crop: the framed input is the whole photo too
+        let (plain, pw, ph) = analysis_input_framed(&src, &DevelopSettings::default(), 1024);
+        assert_eq!((pw, ph), (400, 200));
+        assert!((mean(&plain) - mean(&whole)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_uncropped_input_ignores_the_crop_but_follows_orientation_and_flips() {
+        let src = halves(400, 200);
+        let mut s = DevelopSettings::default();
+        s.crop.geometry.rect = lcc_geom::Rect::new(0.55, 0.1, 0.95, 0.9);
+        s.crop.geometry.angle = 5.0;
+        let (data, w, h) = uncropped_input(&src, &s, 1024);
+        assert_eq!((w, h), (400, 200), "the whole frame at its own resolution, crop ignored");
+        assert!((mean(&data) - 0.45).abs() < 0.05);
+        // never blown up, and shrunk to the long edge asked for
+        assert_eq!(uncropped_input(&src, &s, 100).1, 100);
+        // a flip is shown uncropped too: the bright half moves to the left
+        s.crop.flip_h = true;
+        let (flipped, w, _) = uncropped_input(&src, &s, 1024);
+        let left: f64 = (0..w / 4).map(|x| f64::from(flipped[3 * (100 * w + x)])).sum::<f64>() / (w / 4) as f64;
+        assert!(left > 0.6, "the left quarter is bright after a horizontal flip: {left}");
+        // a quarter turn swaps the sides
+        s.crop.flip_h = false;
+        s.orientation = lcc_geom::Orientation::Rotate90;
+        let (_, w, h) = uncropped_input(&src, &s, 1024);
+        assert_eq!((w, h), (200, 400));
+    }
+}

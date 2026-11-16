@@ -1,0 +1,79 @@
+[package]
+name = "lcc-ui-egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Egui frontend (Lightroom-style UI); swappable — nothing below depends on it (L5)"
+
+[lints]
+workspace = true
+
+[dependencies]
+craft-ui = { workspace = true }
+lcc-brand = { workspace = true }
+lcc-geom = { workspace = true }
+lcc-meta = { workspace = true }
+lcc-color = { workspace = true }
+lcc-raster = { workspace = true }
+lcc-develop = { workspace = true }
+lcc-pipeline = { workspace = true }
+lcc-catalog = { workspace = true }
+lcc-raw = { workspace = true }
+lcc-geo = { workspace = true }
+web-time = { workspace = true }
+lcc-engine = { workspace = true }
+# the device-sync pill (Settings ▸ Sync, grid cells, collection rows)
+lcc-sync = { workspace = true }
+lcc-layout = { workspace = true }
+lcc-pdf = { workspace = true }
+lcc-print = { workspace = true }
+lcc-preview = { workspace = true }
+lcc-slideshow = { workspace = true }
+lcc-classic-slideshow = { workspace = true }
+# the Book module (owned, Phase 3)
+lcc-book = { workspace = true }
+lcc-text = { workspace = true }
+lcc-webgallery = { workspace = true }
+lcc-surface = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lcc-immich = { workspace = true }
+lcc-publish = { workspace = true }
+lcc-codecs = { workspace = true }
+# identity plate graphic from an SVG (MIT/Apache-2.0, pure Rust); no text or system fonts
+resvg = { version = "0.45", default-features = false }
+
+[dev-dependencies]
+image = { workspace = true }
+# tests record why they skip (`cargo xtask ci` lists the skips)
+lcc-testkit = { workspace = true }
+# the GPU-drawn view test makes a wgpu device
+pollster = { workspace = true }
+egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
+lcc-denoise = { workspace = true, features = ["runtime"] }
+# the model-setup tests run denoise models; only the app/CLI enable this in builds. test-support: the
+# update tests stand in a throwaway update key for the brand's, and the Plug-in Manager tests install
+# a pixel filter in memory
+lcc-engine = { workspace = true, features = ["denoise", "test-support"] }
+lcc-codecs = { workspace = true }
+lcc-faces = { workspace = true }
+lcc-merge = { workspace = true }
+# the update tests offer a release the way a check would (native only, like the updater itself)
+lcc-updater = { workspace = true }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+wat = "1.228" # G19: a slow export-hook plug-in for the worker test
+# the Plug-in Manager test lists a module that didn't load
+lcc-plugins = { workspace = true }
+
+[build-dependencies]
+lcc-brand = { workspace = true }
+# What's New: joins docs/whats-new/ and docs/whats-new.md into $OUT_DIR/whats-new.md
+lcc-notes = { workspace = true }
+serde_json = { workspace = true }

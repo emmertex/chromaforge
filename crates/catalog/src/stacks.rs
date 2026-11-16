@@ -1,0 +1,513 @@
+//! Stacks: photos grouped under a top photo.
+//!
+//! A stack is catalog data ([`Stack`], changed by `AddStack` / `RemoveStack` / `SetStack` ops), so
+//! grouping is undoable and journaled like everything else. The helpers here build the ops for the
+//! usual gestures (group, ungroup, remove from stack, set top, collapse) and for programmatic
+//! grouping such as merge results stacked with their sources ([`Catalog::stack_with_ops`]).
+//! [`Catalog::arrange_stacks`] turns a query result into display order (members together,
+//! collapsed stacks reduced to one photo).
+
+use std::collections::{HashMap, HashSet};
+
+use crate::query::cmp_name;
+use crate::{Catalog, CatalogError, Op, PhotoId, Result, Stack, StackId};
+
+impl Catalog {
+    pub fn stack(&self, id: StackId) -> Option<&Stack> {
+        self.stacks.get(&id)
+    }
+    pub fn stacks(&self) -> impl Iterator<Item = &Stack> {
+        self.stacks.values()
+    }
+    /// The stack a photo belongs to.
+    pub fn stack_of(&self, photo: PhotoId) -> Option<&Stack> {
+        self.stack_id_of(photo).and_then(|id| self.stacks.get(&id))
+    }
+    /// Photo → (stack, position in the stack), for every stacked photo.
+    pub fn stack_index(&self) -> HashMap<PhotoId, (StackId, usize)> {
+        self.stacks.iter().flat_map(|(id, s)| s.photos.iter().enumerate().map(move |(i, p)| (*p, (*id, i)))).collect()
+    }
+
+    pub(crate) fn validate_stack(&self, id: StackId, photos: &[PhotoId]) -> Result<()> {
+        if photos.len() < 2 {
+            return Err(CatalogError::Invalid("a stack needs at least two photos".into()));
+        }
+        let mut seen = HashSet::new();
+        for p in photos {
+            if !seen.insert(*p) {
+                return Err(CatalogError::Invalid(format!("photo {p:?} twice in a stack")));
+            }
+            if !self.photos.contains_key(p) {
+                return Err(CatalogError::NoPhoto(*p));
+            }
+        }
+        if photos.iter().any(|p| self.stack_id_of(*p).is_some_and(|s| s != id)) {
+            return Err(CatalogError::Invalid("a photo can be in only one stack".into()));
+        }
+        Ok(())
+    }
+
+    /// Ops that put `top` and `members` into one stack with `top` on top. Stacks they already
+    /// belong to are merged into it (their other members follow, in order). `None` if fewer than
+    /// two photos would be in the stack.
+    pub fn group_ops(&mut self, top: PhotoId, members: &[PhotoId], collapsed: bool) -> Option<Op> {
+        let mut order: Vec<PhotoId> = Vec::new();
+        let push = |order: &mut Vec<PhotoId>, p: PhotoId| {
+            if !order.contains(&p) && self.photos.contains_key(&p) {
+                order.push(p);
+            }
+        };
+        push(&mut order, top);
+        for m in members {
+            push(&mut order, *m);
+        }
+        let mut touched: Vec<StackId> = Vec::new();
+        for p in order.clone() {
+            if let Some(s) = self.stack_of(p)
+                && !touched.contains(&s.id)
+            {
+                touched.push(s.id);
+            }
+        }
+        for sid in &touched {
+            for p in self.stacks.get(sid).map(|s| s.photos.clone()).unwrap_or_default() {
+                push(&mut order, p);
+            }
+        }
+        if order.len() < 2 || order.first() != Some(&top) {
+            return None;
+        }
+        let mut ops: Vec<Op> = touched.iter().skip(1).map(|id| Op::RemoveStack { id: *id }).collect();
+        match touched.first() {
+            Some(keep) => ops.push(Op::SetStack { id: *keep, photos: order, collapsed }),
+            None => {
+                let id = self.alloc_stack_id();
+                ops.push(Op::AddStack { stack: Stack { id, photos: order, collapsed } });
+            }
+        }
+        Some(Op::Batch { ops })
+    }
+
+    /// Stack `sources` under `result` (e.g. an HDR or panorama merge with the photos it was made
+    /// from), collapsed so the grid shows the result.
+    pub fn stack_with_ops(&mut self, result: PhotoId, sources: &[PhotoId]) -> Option<Op> {
+        self.group_ops(result, sources, true)
+    }
+
+    /// Put `new` into `anchor`'s stack directly above it (Lightroom's Edit In: the edited version
+    /// sits on the photo it was made from, inside the stack that photo already belongs to), or
+    /// stack `[new, anchor]` when `anchor` isn't stacked. `new` leaves any stack it was in first.
+    /// `collapsed` sets the stack's state. `None` when either photo is missing or they're the same.
+    pub fn insert_above_ops(&mut self, new: PhotoId, anchor: PhotoId, collapsed: bool) -> Option<Op> {
+        if new == anchor || !self.photos.contains_key(&new) || !self.photos.contains_key(&anchor) {
+            return None;
+        }
+        let mut ops: Vec<Op> = Vec::new();
+        if let Some(old) = self.stack_of(new).filter(|s| !s.photos.contains(&anchor)).cloned() {
+            let rest: Vec<PhotoId> = old.photos.iter().copied().filter(|p| *p != new).collect();
+            ops.push(if rest.len() < 2 {
+                Op::RemoveStack { id: old.id }
+            } else {
+                Op::SetStack { id: old.id, photos: rest, collapsed: old.collapsed }
+            });
+        }
+        match self.stack_of(anchor).cloned() {
+            Some(st) => {
+                let mut photos: Vec<PhotoId> = st.photos.iter().copied().filter(|p| *p != new).collect();
+                let at = photos.iter().position(|p| *p == anchor)?;
+                photos.insert(at, new);
+                ops.push(Op::SetStack { id: st.id, photos, collapsed });
+            }
+            None => {
+                let id = self.alloc_stack_id();
+                ops.push(Op::AddStack { stack: Stack { id, photos: vec![new, anchor], collapsed } });
+            }
+        }
+        Some(Op::Batch { ops })
+    }
+
+    /// Move `photo` `delta` places within its stack (towards the top for negative; index 0 is the
+    /// top). `None` when it isn't stacked or can't move.
+    pub fn move_in_stack_ops(&self, photo: PhotoId, delta: isize) -> Option<Op> {
+        let st = self.stack_of(photo)?;
+        let i = st.photos.iter().position(|p| *p == photo)?;
+        let to = (i as isize + delta).clamp(0, st.photos.len() as isize - 1) as usize;
+        if to == i {
+            return None;
+        }
+        let mut photos = st.photos.clone();
+        let p = photos.remove(i);
+        photos.insert(to, p);
+        Some(Op::SetStack { id: st.id, photos, collapsed: st.collapsed })
+    }
+
+    /// Split `photo`'s stack in two: the photos before it stay, it and the ones after it form a
+    /// new stack (topped by it). A part with a single photo is no longer stacked.
+    pub fn split_stack_ops(&mut self, photo: PhotoId) -> Option<Op> {
+        let st = self.stack_of(photo)?.clone();
+        let i = st.photos.iter().position(|p| *p == photo)?;
+        if i == 0 {
+            return None;
+        }
+        let (head, tail) = st.photos.split_at(i);
+        let mut ops = vec![if head.len() >= 2 {
+            Op::SetStack { id: st.id, photos: head.to_vec(), collapsed: st.collapsed }
+        } else {
+            Op::RemoveStack { id: st.id }
+        }];
+        if tail.len() >= 2 {
+            let id = self.alloc_stack_id();
+            ops.push(Op::AddStack { stack: Stack { id, photos: tail.to_vec(), collapsed: st.collapsed } });
+        }
+        Some(Op::Batch { ops })
+    }
+
+    /// Ops that dissolve every stack containing one of `photos`.
+    pub fn ungroup_ops(&self, photos: &[PhotoId]) -> Vec<Op> {
+        let ids: HashSet<StackId> = photos.iter().filter_map(|p| self.stack_id_of(*p)).collect();
+        self.stacks.values().filter(|s| ids.contains(&s.id)).map(|s| Op::RemoveStack { id: s.id }).collect()
+    }
+
+    /// Ops that take `photos` out of their stacks (a stack left with one photo is dissolved).
+    pub fn remove_from_stacks_ops(&self, photos: &[PhotoId]) -> Vec<Op> {
+        let ids: HashSet<StackId> = photos.iter().filter_map(|p| self.stack_id_of(*p)).collect();
+        let photos: HashSet<PhotoId> = photos.iter().copied().collect();
+        self.stacks
+            .values()
+            .filter(|s| ids.contains(&s.id))
+            .map(|s| {
+                let rest: Vec<PhotoId> = s.photos.iter().copied().filter(|p| !photos.contains(p)).collect();
+                if rest.len() < 2 { Op::RemoveStack { id: s.id } } else { Op::SetStack { id: s.id, photos: rest, collapsed: s.collapsed } }
+            })
+            .collect()
+    }
+
+    /// The op that moves `photo` to the top of its stack (`None` if unstacked or already on top).
+    pub fn set_top_ops(&self, photo: PhotoId) -> Option<Op> {
+        let s = self.stack_of(photo)?;
+        if s.top() == photo {
+            return None;
+        }
+        let mut photos = vec![photo];
+        photos.extend(s.photos.iter().copied().filter(|p| *p != photo));
+        Some(Op::SetStack { id: s.id, photos, collapsed: s.collapsed })
+    }
+
+    /// Ops that collapse or expand stacks.
+    pub fn set_collapsed_ops(&self, stacks: &[StackId], collapsed: bool) -> Vec<Op> {
+        stacks
+            .iter()
+            .filter_map(|id| self.stacks.get(id))
+            .filter(|s| s.collapsed != collapsed)
+            .map(|s| Op::SetStack { id: s.id, photos: s.photos.clone(), collapsed })
+            .collect()
+    }
+
+    /// Display order for a query result: a stack's members appear together (in stack order) where
+    /// its first member appears; a collapsed stack shows only its highest-ranked member in `ids` (the top,
+    /// unless the filter hides it).
+    pub fn arrange_stacks(&self, ids: &[PhotoId]) -> Vec<PhotoId> {
+        if self.stacks.is_empty() {
+            return ids.to_vec();
+        }
+        let index = self.stack_index();
+        let present: HashSet<PhotoId> = ids.iter().copied().collect();
+        let mut done: HashSet<StackId> = HashSet::new();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            match index.get(id) {
+                None => out.push(*id),
+                Some((sid, _)) => {
+                    if !done.insert(*sid) {
+                        continue;
+                    }
+                    let Some(s) = self.stacks.get(sid) else {
+                        out.push(*id);
+                        continue;
+                    };
+                    let members = s.photos.iter().copied().filter(|p| present.contains(p));
+                    if s.collapsed {
+                        out.extend(members.take(1));
+                    } else {
+                        out.extend(members);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Auto-stack by capture time: runs of `ids` (not deleted, not already stacked, with a
+    /// capture time) whose consecutive captures are at most `gap_secs` apart, in time order.
+    /// Only runs of two or more are returned.
+    pub fn auto_stack_groups(&self, ids: &[PhotoId], gap_secs: f64) -> Vec<Vec<PhotoId>> {
+        let index = self.stack_index();
+        let mut timed: Vec<(i64, PhotoId)> = ids
+            .iter()
+            .filter_map(|id| self.photos.get(id))
+            .filter(|p| !p.deleted && !index.contains_key(&p.id))
+            .filter_map(|p| Some((iso_seconds(p.captured.as_deref()?)?, p.id)))
+            .collect();
+        timed.sort();
+        timed.dedup_by_key(|(_, id)| *id);
+        let mut groups: Vec<Vec<PhotoId>> = Vec::new();
+        let mut last: Option<i64> = None;
+        for (t, id) in timed {
+            match (last, groups.last_mut()) {
+                (Some(l), Some(g)) if (t - l) as f64 <= gap_secs => g.push(id),
+                _ => groups.push(vec![id]),
+            }
+            last = Some(t);
+        }
+        groups.retain(|g| g.len() >= 2);
+        groups
+    }
+}
+
+impl Catalog {
+    /// The bracket sets among `ids`, an HDR merge each: every stack one of them is in (its photos, less earlier merge
+    /// results), then the unstacked ones in capture order, a set running while each starts within about a second of the
+    /// previous one's end (its shutter time; capture times are whole seconds). A run is a set when its exposures span at
+    /// least ½ EV: a burst at one exposure is no bracket. Photos without a capture time or shutter speed are left out.
+    pub fn bracket_sets(&self, ids: &[PhotoId]) -> Vec<Vec<PhotoId>> {
+        let merged = |p: &crate::Photo| crate::query::merged_kind(&p.file_name).is_some();
+        let mut sets: Vec<Vec<PhotoId>> = Vec::new();
+        let mut stacks = HashSet::new();
+        let mut loose = Vec::new();
+        for id in ids {
+            match self.stack_of(*id) {
+                Some(s) if stacks.insert(s.id) => {
+                    let set: Vec<PhotoId> = s.photos.iter().copied().filter(|p| self.photos.get(p).is_some_and(|p| !merged(p))).collect();
+                    if set.len() >= 2 {
+                        sets.push(set);
+                    }
+                }
+                Some(_) => {}
+                None => loose.push(*id),
+            }
+        }
+        // (capture second, file name, id, shutter seconds, EV)
+        let mut timed: Vec<(i64, &str, PhotoId, f64, f64)> = loose
+            .iter()
+            .filter_map(|id| self.photos.get(id))
+            .filter(|p| !p.deleted && !merged(p))
+            .filter_map(|p| {
+                let t = iso_seconds(p.captured.as_deref()?)?;
+                let s = p.meta.shutter_seconds()?;
+                let n = p.meta.aperture.filter(|n| n.is_finite() && *n > 0.0).unwrap_or(1.0) as f64;
+                let iso = p.meta.iso.filter(|i| *i > 0).unwrap_or(100) as f64;
+                Some((t, p.file_name.as_str(), p.id, s, (s * iso / (n * n)).log2()))
+            })
+            .collect();
+        timed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| cmp_name(a.1, b.1)).then(a.2.cmp(&b.2)));
+        timed.dedup_by_key(|x| x.2);
+        let mut runs: Vec<Vec<(i64, &str, PhotoId, f64, f64)>> = Vec::new();
+        for x in timed {
+            match runs.last_mut() {
+                Some(r) if r.last().is_some_and(|l| x.0.saturating_sub(l.0) as f64 <= l.3.ceil() + 1.0) => r.push(x),
+                _ => runs.push(vec![x]),
+            }
+        }
+        for r in runs {
+            let (lo, hi) = r.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(x.4), hi.max(x.4)));
+            if r.len() >= 2 && hi - lo >= 0.5 {
+                sets.push(r.iter().map(|x| x.2).collect());
+            }
+        }
+        sets
+    }
+}
+
+/// Seconds since 1970-01-01 for an ISO 8601 local time (`2026-04-01T10:00:00`, `2026-04-01 10:00`,
+/// `2026-04-01`; fractions and zone suffixes are ignored). `None` if it doesn't parse.
+pub fn iso_seconds(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let num = |a: usize, b: usize| -> Option<i64> { s.get(a..b).filter(|x| x.bytes().all(|c| c.is_ascii_digit())).and_then(|x| x.parse().ok()) };
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let (hh, mm, ss) =
+        if s.len() >= 16 { (num(11, 13)?, num(14, 16)?, if s.get(16..17) == Some(":") { num(17, 19).unwrap_or(0) } else { 0 }) } else { (0, 0, 0) };
+    if hh >= 24 || mm >= 60 || ss >= 60 {
+        return None;
+    }
+    // Days since 1970-01-01 (proleptic Gregorian). A day past the month's length rolls over the
+    // way the old Hinnant arithmetic did (e.g. 2026-02-30 → 2026-03-02), which `normalize_iso`
+    // relies on to reject impossible dates.
+    let first = chrono::NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, u32::try_from(m).ok()?, 1)?;
+    let date = first.checked_add_days(chrono::Days::new(u64::try_from(d - 1).ok()?))?;
+    let days = (date - chrono::NaiveDate::from_ymd_opt(1970, 1, 1)?).num_days();
+    Some(days * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Photo, Source};
+
+    fn cat(n: usize, times: &[&str]) -> (Catalog, Vec<PhotoId>) {
+        let mut c = Catalog::new();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let id = c.alloc_photo_id();
+            let mut p = Photo::new(id, Source::Demo { scene: 1 }, &format!("{i}.jpg"), "JPEG", 60, 40, "2026-01-01T00:00:00");
+            p.captured = times.get(i).map(|t| t.to_string());
+            c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            ids.push(id);
+        }
+        (c, ids)
+    }
+
+    #[test]
+    fn iso_seconds_parses() {
+        assert_eq!(iso_seconds("1970-01-01T00:00:00"), Some(0));
+        assert_eq!(iso_seconds("1970-01-02"), Some(86_400));
+        assert_eq!(iso_seconds("2026-04-01T10:00:05.123+02:00").unwrap() - iso_seconds("2026-04-01T10:00:00").unwrap(), 5);
+        assert_eq!(iso_seconds("2024-03-01").unwrap() - iso_seconds("2024-02-28").unwrap(), 2 * 86_400, "leap year");
+        assert_eq!(iso_seconds("2000-01-01T00:00:00"), Some(946_684_800));
+        assert_eq!(iso_seconds("garbage"), None);
+    }
+
+    #[test]
+    fn group_merge_set_top_remove_and_arrange() {
+        let (mut c, ids) = cat(6, &[]);
+        let [a, b, x, d, e, f] = ids[..] else { panic!("six ids") };
+        let op = c.group_ops(b, &[a, b, x], false).unwrap();
+        let inv = c.apply(op).unwrap();
+        let s = c.stack_of(a).unwrap().clone();
+        assert_eq!(s.photos, vec![b, a, x]);
+        // query order a b x d e f → stack shown where its first member appears, in stack order
+        assert_eq!(c.arrange_stacks(&ids), vec![b, a, x, d, e, f]);
+        // collapse: only the top
+        let ops = c.set_collapsed_ops(&[s.id], true);
+        c.apply(Op::Batch { ops }).unwrap();
+        assert_eq!(c.arrange_stacks(&ids), vec![b, d, e, f]);
+        // filtered-out top: first visible member stands in
+        assert_eq!(c.arrange_stacks(&[x, d, a]), vec![a, d]);
+        // grouping with another stack merges both
+        let op = c.group_ops(d, &[e], false).unwrap();
+        c.apply(op).unwrap();
+        let op = c.group_ops(f, &[a, e], true).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.stacks().count(), 1);
+        assert_eq!(c.stack_of(f).unwrap().photos, vec![f, a, e, b, x, d]);
+        // set top, remove from stack, ungroup
+        c.apply(c.set_top_ops(x).unwrap()).unwrap();
+        assert_eq!(c.stack_of(f).unwrap().top(), x);
+        assert!(c.set_top_ops(x).is_none());
+        c.apply(Op::Batch { ops: c.remove_from_stacks_ops(&[x, a, e, b]) }).unwrap();
+        assert_eq!(c.stack_of(f).unwrap().photos, vec![f, d]);
+        c.apply(Op::Batch { ops: c.remove_from_stacks_ops(&[d]) }).unwrap();
+        assert_eq!(c.stacks().count(), 0, "a one-photo stack dissolves");
+        // undo everything back to the first group's inverse state
+        let (mut c2, _) = cat(6, &[]);
+        let op = c2.group_ops(a, &[b], false).unwrap();
+        c2.apply(op).unwrap();
+        c2.apply(Op::Batch { ops: c2.ungroup_ops(&[b]) }).unwrap();
+        assert_eq!(c2.stacks().count(), 0);
+        let _ = inv;
+    }
+
+    #[test]
+    fn insert_above_joins_the_anchor_stack() {
+        let (mut c, ids) = cat(5, &[]);
+        let [a, b, x, n1, n2] = ids[..] else { panic!("five ids") };
+        // unstacked anchor: a new two-photo stack, the new version on top
+        let op = c.insert_above_ops(n1, b, false).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.stack_of(b).unwrap().photos, vec![n1, b]);
+        // anchor inside a stack: directly above it, the rest keep their order
+        let op = c.group_ops(a, &[a, n1, b, x], true).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.stack_of(a).unwrap().photos, vec![a, n1, b, x]);
+        let op = c.insert_above_ops(n2, x, false).unwrap();
+        c.apply(op).unwrap();
+        let st = c.stack_of(a).unwrap();
+        assert_eq!(st.photos, vec![a, n1, b, n2, x]);
+        assert!(!st.collapsed);
+        // moving within the same stack
+        let op = c.insert_above_ops(n2, a, false).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.stack_of(a).unwrap().photos, vec![n2, a, n1, b, x]);
+        assert_eq!(c.stacks().count(), 1);
+        assert!(c.insert_above_ops(a, a, false).is_none());
+        assert!(c.insert_above_ops(PhotoId(999), a, false).is_none());
+    }
+
+    #[test]
+    fn stack_validation_and_permanent_delete() {
+        let (mut c, ids) = cat(3, &[]);
+        let id = c.alloc_stack_id();
+        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0]], collapsed: false } }).is_err(), "one photo");
+        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[0]], collapsed: false } }).is_err(), "duplicate");
+        assert!(c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], PhotoId(99)], collapsed: false } }).is_err(), "missing");
+        c.apply(Op::AddStack { stack: Stack { id, photos: vec![ids[0], ids[1]], collapsed: true } }).unwrap();
+        let id2 = c.alloc_stack_id();
+        assert!(c.apply(Op::AddStack { stack: Stack { id: id2, photos: vec![ids[1], ids[2]], collapsed: false } }).is_err(), "one stack per photo");
+        // deleting a member permanently dissolves the 2-photo stack; undo restores it
+        let before = c.to_snapshot();
+        let inv = c.apply(c.delete_permanently_ops(ids[1])).unwrap();
+        assert!(c.stack_of(ids[0]).is_none());
+        c.apply(inv).unwrap();
+        assert_eq!(c.to_snapshot(), before);
+        // snapshot round trip keeps stacks and the id allocator
+        let back = Catalog::from_snapshot(&c.to_snapshot()).unwrap();
+        assert_eq!(back.stack(id), c.stack(id));
+        assert_eq!(back.clone().alloc_stack_id(), c.clone().alloc_stack_id());
+    }
+
+    #[test]
+    fn bracket_sets_by_time_and_exposure() {
+        // (time, shutter, ISO, file name)
+        let shots = [
+            ("2026-08-01T09:20:36", "1/125", 640, "A1.ARW"), // a handheld bracket
+            ("2026-08-01T09:20:36", "1/125", 200, "A2.ARW"),
+            ("2026-08-01T09:20:37", "1/125", 2000, "A3.ARW"),
+            ("2026-08-01T09:20:37", "", 0, "A3-HDR.dng"),    // an earlier merge of it
+            ("2026-08-01T09:20:44", "1/125", 800, "B1.ARW"), // 7 s later: the next bracket
+            ("2026-08-01T09:20:44", "1/125", 250, "B2.ARW"),
+            ("2026-08-01T09:20:50", "1/1000", 160, "C1.ARW"), // a burst at one exposure
+            ("2026-08-01T09:20:50", "1/1000", 160, "C2.ARW"),
+            ("2026-06-27T23:34:59", "2", 320, "N1.ARW"), // 2 s night frames, 2.1 s apart
+            ("2026-06-27T23:35:01", "2", 100, "N2.ARW"),
+            ("2026-06-27T23:35:04", "2", 800, "N3.ARW"),
+            ("2026-06-27T23:36:00", "1/40", 250, "S1.ARW"), // stacked by hand: merged whatever its times
+            ("2026-06-27T23:39:00", "1/40", 250, "S2.ARW"),
+        ];
+        let mut c = Catalog::new();
+        let mut ids = Vec::new();
+        for (t, sh, iso, name) in shots {
+            let id = c.alloc_photo_id();
+            let mut p = Photo::new(id, Source::Demo { scene: 1 }, name, "ARW", 60, 40, "2026-01-01T00:00:00");
+            p.captured = Some(t.into());
+            p.meta.shutter = sh.into();
+            p.meta.iso = Some(iso);
+            p.meta.aperture = Some(5.6);
+            c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+            ids.push(id);
+        }
+        let op = c.group_ops(ids[11], &[ids[12]], true).unwrap();
+        c.apply(op).unwrap();
+        let sets = c.bracket_sets(&ids);
+        assert_eq!(sets, vec![vec![ids[11], ids[12]], vec![ids[8], ids[9], ids[10]], vec![ids[0], ids[1], ids[2]], vec![ids[4], ids[5]]]);
+        // a stack's merge result on top is left out; a stack selected twice is merged once
+        let op = c.stack_with_ops(ids[3], &[ids[0], ids[1], ids[2]]).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.bracket_sets(&[ids[3], ids[0]]), vec![vec![ids[0], ids[1], ids[2]]]);
+    }
+
+    #[test]
+    fn auto_stack_by_capture_time() {
+        let times = ["2026-04-01T10:00:00", "2026-04-01T10:00:02", "2026-04-01T10:00:09", "2026-04-01T11:00:00", "2026-04-01T11:00:01"];
+        let (mut c, ids) = cat(6, &times);
+        let g = c.auto_stack_groups(&ids, 5.0);
+        assert_eq!(g, vec![vec![ids[0], ids[1]], vec![ids[3], ids[4]]]);
+        assert_eq!(c.auto_stack_groups(&ids, 10.0), vec![vec![ids[0], ids[1], ids[2]], vec![ids[3], ids[4]]]);
+        assert_eq!(c.auto_stack_groups(&ids, 3600.0).len(), 1);
+        // already stacked photos are skipped
+        let op = c.group_ops(ids[0], &[ids[1]], true).unwrap();
+        c.apply(op).unwrap();
+        assert_eq!(c.auto_stack_groups(&ids, 10.0), vec![vec![ids[3], ids[4]]]);
+    }
+}

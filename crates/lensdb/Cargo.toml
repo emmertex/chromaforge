@@ -1,0 +1,14 @@
+[package]
+name = "lcc-lensdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lens correction profiles: distortion, TCA and vignetting models, lensfun-format database loader (L2)"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-develop = { workspace = true }
+lcc-geom = { workspace = true }
+quick-xml = { workspace = true }

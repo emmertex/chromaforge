@@ -1,0 +1,27 @@
+[package]
+name = "lcc-video-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Video clip export (L3, native only): trimmed decode, per-frame grade, H.264+AAC MP4 or ProRes+PCM MOV via FilmCraft crates"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+lcc-brand = { workspace = true }
+lcc-raster = { workspace = true }
+lcc-video = { workspace = true }
+filmcraft-color = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-isobmff = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-h264enc = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-aac = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+filmcraft-prores = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+thiserror = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+filmcraft-matroska = { git = "https://github.com/emmertex/filmcraft", rev = "3f0cb5f2a906087e5fdc1cd0bb685527da717ba4" }
+lcc-testkit = { workspace = true }
+
+# Never `filmcraft-codecs` / `-media` / `-export`: they pull symphonia (MPL-2.0).
+

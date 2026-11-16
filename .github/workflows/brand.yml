@@ -1,0 +1,44 @@
+# The throw-away brand (PLAN_phase_0.md §0.2.4): `cargo xtask brand test` builds the CLI with
+# xtask/test-brand.toml ("Zzyzx Test") and checks its help, headless UI snapshot, MCP serverInfo and
+# config/log paths, so no product name is baked in outside brand.toml.
+# `cargo xtask brand check`, `cargo xtask docs --check` and `cargo deny` run in the required CI job
+# (`cargo xtask ci --fast`, ci.yml), so they are not repeated here. PRs only: the push to main would test the
+# same tree again (docs/ci.md).
+name: Brand
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brand-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+# Self-hosted Linux runners (docs/ci.md), at low priority.
+defaults:
+  run:
+    shell: nice -n 19 bash -e {0}
+
+jobs:
+  test-brand:
+    name: throw-away brand
+    runs-on: [self-hosted, Linux, X64, lcc]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Keep the build cache between runs
+        # The runner's persistent cache (as in ci.yml); the throw-away build goes to its brand-test
+        # subfolder. `target/` inside the checkout is wiped by every checkout.
+        run: echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/.cache/lcc-ci-target-$RUNNER_NAME}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/sccache
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: cargo xtask brand test
+        run: cargo xtask brand test

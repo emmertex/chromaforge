@@ -1,0 +1,2 @@
+The app icon (brand/icon.svg and every file derived from it in this directory) is original work by the
+project contributors, licensed under the MIT licence (see LICENSE at the repository root).

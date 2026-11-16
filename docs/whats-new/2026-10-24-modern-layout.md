@@ -1,0 +1,20 @@
+### Modern layout
+- Settings ▸ General ▸ Layout now offers **Classic – Advanced** and **Modern – Simple**. Modern replaces the touch layout (it is still Android's default) and works with a mouse as well as a finger.
+- In Develop the photo fills the window. A dock along the bottom holds the adjustment groups (Presets, Light, Colour, Tone, Detail, Optics, Effects) and, in their own colour, the tools (Crop, Masks, Heal, Dodge, Burn). Tap a group to open its card of sliders over the photo; tap it again, tap the photo, press Back or Esc to put it away.
+- The dock's last button moves it down the side as a rail, and back. On a small window it scrolls.
+- The ☰ button opens the whole menu bar across the top, starting with Shortcuts (Import, Export); every menu Classic has is there.
+- The histogram floats over the photo: tap it to switch between small and large (with the camera settings), drag it anywhere (it snaps to the corners), and long-press or right-click it for its menu, which can also hide it.
+- A Library / Develop switch sits at the top centre.
+- New **Pill** sliders: one rounded bar with the name and value inside it. Drag anywhere on it, double-click to reset, click the number to type one. Modern always uses them; Settings ▸ Interface ▸ Sliders offers them in Classic too.
+- **Settings** is one full-window screen in every layout: an icon rail of seven sections (General, Library, Import, Editing, Display & Speed, Sync, Shortcuts), a search field, and Back (‹, Esc or Android's Back) to leave. On a narrow window the rail shows icons while a section is open; Back shows the section names, and Back again closes.
+- **Import** is a full-window screen: sources down the left, the photos with All / New / Duplicates filters in the middle, and the options in one column with a big Import button. Add in place hides the options that only apply to copying.
+- **Export** is a full-window screen: every setting on one page in cards, a rail that jumps to each group, the presets beside it, the destination at the top and a bar that always says what will be written.
+- Every dialog now has the same look: rounded cards with the title inside, segmented choices, and the main action in the accent colour. Menus and submenus are see-through in the Modern layout.
+- While Crop, Masks, Heal, Dodge or Burn is open, its card sits at the right and the photo makes room, so a crop frame's handles are never under the dock.
+- Every develop setting is reachable in Modern. Each group's card has buttons for its full sections (Basic and Profile, Color Mixer and Point Color, Color Grading, Calibration, Tone Curve, Detail, Lens Corrections, Transform, Effects, Plug-in Filters). A slider with more settings behind it shows a small mark: long-press or right-click it to open them (for example Vignette's style, midpoint, feather, roundness and highlights). ‹ or Back returns to the sliders.
+- The "library is open elsewhere" window has the new card look, with its buttons wrapping on a narrow window.
+- While you drag a slider, a colour wheel or the tone curve in Modern, everything over the photo fades away except that control and the histogram, so you see the whole photo as it changes; it fades back when you let go.
+- In Modern's Library, a search pill floats over the grid (with ★ 3+ and Picks), and the Info card (the ⓘ button) shows the selected photos' details and edits their title, caption, keywords, creator, copyright, rating, flag and label at once; values that differ show as < mixed > and are only changed when you edit them.
+- The dock down the side starts below the ☰ button and its menu bar, so it never covers them.
+- Window ▸ Panels ▸ Info (I) shows and hides Modern's Info card; on a phone the card is a sheet along the bottom with a ✕.
+- The activity card ("Finding faces"…) sits centred under the top bar in Classic too, clear of windows that open at the top left; buttons in every window are softly rounded.

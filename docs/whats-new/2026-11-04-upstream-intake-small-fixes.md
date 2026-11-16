@@ -1,0 +1,15 @@
+### Small fixes
+- In Survey and Compare, ↑ and ↓ step through the photos on screen like → and ←, so the survey keeps all its photos.
+- After Convert to DNG, the photo and its virtual copies show the DNG's file size.
+- A lens profile for the bare lens is no longer used for the same lens with a teleconverter.
+- GPU compute devices now honour wgpu's environment variables, such as `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER` on WSL2.
+- Search values for `edited:`, `copy:`, `virtual:` and `video:` accept only yes/no or true/false; anything else matches nothing instead of behaving like "no".
+- Edit In on a photo whose earlier edit copy is unchanged opens that copy instead of failing and leaving a stray file.
+- The log file can no longer be given fake records by a file name or message containing line breaks.
+- Place-name downloads and XMP files with absurd contents (huge dump files, thousands of namespace declarations) are refused instead of slowing the app down.
+- A download whose secure connection is cut short is reported as an error instead of being treated as complete.
+- Lens databases, HEIC images and Object selections with absurd contents (huge name copies, thousands of tiles or clicks) are refused or capped instead of slowing the app down, and moving a photo no longer copies a sidecar that is really a link to another file.
+- The app no longer writes through a link planted under a temporary file name (denoise cache, camera profiles, slideshow export, drive check).
+- A folder given through a link to the library can no longer be moved out of it, and a render keeps at most as many mask planes as fit in 8 GB (at least 16 masks).
+- Lens databases, Luminar looks and photos with thousands of keywords or `&` characters in their metadata no longer make the app slow, and absurd image sizes are refused when encoding.
+- Files you name (ICC profiles, print and slideshow templates, watermarks, track logs, photos) are read only when they are regular files within a size limit, and a huge imported keyword list is refused instead of using gigabytes of memory.

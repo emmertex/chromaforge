@@ -1,0 +1,31 @@
+[package]
+name = "lcc-denoise-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Denoise model metadata, Bayer tiling and cache formats (L1; no inference backend)"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+rawnind-model = []
+# Offers the upstream project's own model for download (`known::own_bayer_url`, then `known::own_bayer_fallback_url`).
+own-model = []
+realesrgan-model = []
+
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-raster = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+miniz_oxide = { workspace = true }
+rayon = { workspace = true }
+web-time = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+dhat = { workspace = true }

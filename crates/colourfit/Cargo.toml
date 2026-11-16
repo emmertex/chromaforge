@@ -1,0 +1,29 @@
+[package]
+name = "lcc-colourfit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Fits Lightroom-matched camera calibrations from raws and their Lightroom exports (tooling, L5)"
+
+[lints]
+workspace = true
+
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-camdb = { workspace = true }
+lcc-color = { workspace = true }
+lcc-raw = { workspace = true }
+lcc-raster = { workspace = true }
+lcc-codecs = { workspace = true }
+lcc-meta = { workspace = true }
+lcc-develop = { workspace = true }
+lcc-pipeline = { workspace = true }
+lcc-engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+lcc-testkit = { workspace = true }
+lcc-scenes = { workspace = true }

@@ -1,0 +1,2 @@
+### Camera profiles from an older install
+- The camera profiles (.dcp) an older install of {app} kept on this computer come over with its presets, the first time a library opens or with File ▸ More Imports ▸ Import Presets from Older Installs: each is installed as Import Profiles & Presets installs it, and a camera body the older install started with one starts with it here too, so its raws show it as soon as they are browsed in Import. A profile there already is skipped, a damaged one is left out and named, and the older install's files are never changed.

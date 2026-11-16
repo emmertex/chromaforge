@@ -1,0 +1,257 @@
+[
+ {
+  "name": "ai-mask-types",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.select",
+     "params": {
+      "ids": [
+       1
+      ]
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.develop",
+     "params": {}
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "$masks"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-mask-object",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "maskNew:object"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-mask-people",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "maskNew:people"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-mask-remembered",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "maskNew:concept"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-models",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "app.settings",
+     "params": {
+      "tab": "ai"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-settings-denoise",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "app.settings",
+     "params": {
+      "tab": "denoise"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-settings-faces",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "app.settings",
+     "params": {
+      "tab": "faces"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-settings-genfill",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "app.settings",
+     "params": {
+      "tab": "genfill"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-enhance",
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "dialog.enhance",
+     "params": {}
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-remove",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.key",
+    "params": {
+     "key": "Escape"
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "icon:remove"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-denoise-detail",
+  "layouts": [
+   "classic",
+   "compact"
+  ],
+  "steps": [
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "icon:toolsEdit"
+    }
+   },
+   {
+    "method": "ui.hoverWidget",
+    "params": {
+     "id": "slider:light.exposure"
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -3000
+    }
+   },
+   {
+    "method": "ui.settle",
+    "params": {
+     "timeoutMs": 30000
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "section:retouch"
+    }
+   },
+   {
+    "method": "ui.settle",
+    "params": {
+     "timeoutMs": 30000
+    }
+   },
+   {
+    "method": "ui.clickWidget",
+    "params": {
+     "id": "section:detail"
+    }
+   },
+   {
+    "method": "ui.settle",
+    "params": {
+     "timeoutMs": 30000
+    }
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -3000
+    }
+   }
+  ]
+ },
+ {
+  "name": "ai-search",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "module.library",
+     "params": {}
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "library.filter",
+     "params": {
+      "semantic": "sunset"
+     }
+    }
+   }
+  ]
+ }
+]

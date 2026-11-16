@@ -1,0 +1,29 @@
+---
+title: Web gallery
+description: Build a web gallery from a collection; export a folder or upload by SFTP.
+sidebar:
+  order: 13
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **Web** in the module bar. The preview shows the gallery for the photos in the filmstrip.
+- **Layout Style**: **Grid**, **Square grid**, **Track**, **Single image** (own templates; the exported HTML is the reference).
+- **Site Info**: Site title, Collection title, Collection description, Contact info, Web or mail link.
+- **Color Palette**: Background, Text, Detail text, Cells, Rollover, Grid lines, Links.
+- **Appearance**: Columns, Thumbnail size, Show cell numbers, Photo borders and width, Image page size, Captions under thumbnails.
+- **Image Info**: title and caption from metadata tokens.
+- **Output**: large image size, JPEG quality, metadata (all or copyright only), watermark text, sharpen for screen.
+- **Export** to a folder, or **Upload** by SFTP: **Server name**, **Host**, **Port**, **User**, **Server path**, key file, **Save Server**; **Check Host Key** confirms the fingerprint before anything is sent. Passwords live in the keychain.
+- **Share via Immich**: create a share link for the gallery's photos (account, album, expiry, password, allow download).
+- **Saved Galleries**: **Save Gallery** keeps the settings as a collection.
+- 🟡 No plain FTP (deliberately) and no in-app browser view.
+
+<Shot name="web-module" alt="Web module with layout style, site info, palette and appearance" menu="Window ▸ Modules ▸ Web" />
+<Shot name="web-export" alt="Web module upload and share section" menu="Window ▸ Modules ▸ Web" />
+
+<Aside type="note" title="Modern layout">
+  Modern has no Web button. Use **Window ▸ Modules ▸ Web**.
+</Aside>

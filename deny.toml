@@ -1,0 +1,84 @@
+# `cargo deny check licenses` (run by `cargo xtask ci` and the CI workflow): only licences the project accepts may
+# reach the build (licence policy in AGENTS.md, maintainer decisions 2026-11-05 and 2026-11-10): anything that allows
+# derivatives, redistribution and commercial use — permissive licences and GPL/LGPL/AGPL share-alike alike. MPL and
+# CC BY-NC/ND ("non-commercial", "no derivatives") stay out. The workspace crates are MIT OR GPL-3.0-or-later;
+# crates/segment and crates/fetch are Apache-2.0 OR GPL-3.0-or-later (all allowed below).
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+# Everything not listed here is denied, GPL, LGPL, AGPL and MPL included.
+allow = [
+    "MIT",
+    "MIT-0",
+    # Share-alike with commercial use (licence policy 2026-11-05; workspace crates dual-licensed 2026-11-10):
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    # Permissive, non-copyleft licences of existing dependencies (not on PLAN.md's original list):
+    "BSL-1.0",              # Boost (clipboard-win, error-code: Windows clipboard)
+    "OFL-1.1",              # epaint_default_fonts (egui default fonts)
+    "Ubuntu-font-1.0",      # epaint_default_fonts
+    "IJG",                  # jpeg-encoder (derived from libjpeg)
+    "NCSA",                 # libfuzzer-sys (LLVM libFuzzer)
+    "CDLA-Permissive-2.0",  # Mozilla CA root data (webpki-roots)
+]
+confidence-threshold = 0.9
+
+# Workspace crates are checked like any other (publish = false must not exempt them).
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "allow"
+
+[advisories]
+# Advisories no lockfile bump can clear yet. Each entry names the only path that pulls the crate in and why
+# the issue does not reach the app; revisit when the upstream crate moves (`cargo deny check advisories`).
+ignore = [
+    # rustls-rustcrypto 0.0.2-alpha (lcc-fetch, lcc-net: pure-Rust TLS) pins crypto-bigint 0.5, rsa 0.9 and
+    # rustls-webpki 0.102 and has no newer release. The app is a TLS *client* only: no RSA private-key
+    # operations (Marvin), and constant-time issues need an attacker timing our own secret-key operations.
+    # The webpki CRL / name-constraint issues need a malicious CA in the trusted chain; we use no CRLs.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via rustls-rustcrypto (no update); client-side TLS only" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa: no fixed release exists; only public-key verification (TLS client, russh client auth uses user keys locally)" },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; no CRLs are used" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; needs a malicious constrained CA" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; needs a malicious constrained CA" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto; CRL parsing is never used" },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102 pinned by rustls-rustcrypto (0.103 path is updated); needs a distrusted intermediate" },
+    # Unmaintained (no fix to take): paste (faer/gemm proc-macro), ttf-parser (ab_glyph via egui), zbus_names /
+    # zvariant (accesskit's AT-SPI on Linux).
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro used at build time by faer/gemm" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, via egui's ab_glyph; fonts are bundled" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, via accesskit (Linux accessibility)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, via accesskit (Linux accessibility)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, via accesskit (Linux accessibility)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# the git dependencies the workspace takes on purpose; a crate from any other git repository fails
+# `cargo xtask deny` (`cargo deny check sources`)
+allow-git = [
+    "https://github.com/emmertex/filmcraft",
+    "https://github.com/storytold/craft-libs",
+]

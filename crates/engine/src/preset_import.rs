@@ -1,0 +1,1045 @@
+//! Importing other editors' presets: XMP preset files, classic `.lrtemplate` files (a Lua table
+//! literal), photos that carry their edits as an XMP packet ("DNG presets" from mobile apps,
+//! edited JPEG/TIFF), and zip bundles of any of these. Everything ends up as `crs:` properties
+//! mapped by [`crate::crs`]. Luminar looks (`.lmp`, `.mplumpack` collections) are read by
+//! [`crate::preset_luminar`].
+//!
+//! Written from the formats' public structure (Lua's table syntax, the ZIP application note,
+//! ISO 16684-1 XMP) and black-box observation; no third-party code or preset content was used.
+
+use std::path::Path;
+
+use lcc_develop::Preset;
+use serde_json::{Map, Value};
+
+use crate::crs::Props;
+
+/// One preset read from a file, with the settings we could not carry over.
+#[derive(Clone, Debug)]
+pub struct Imported {
+    pub preset: Preset,
+    /// Names of the other editor's settings that have no counterpart here (local masks, its own
+    /// profiles…).
+    pub unmapped: Vec<String>,
+}
+
+/// Extensions of files read as presets (beyond our own `.lcpreset`).
+pub const PRESET_EXTS: &[&str] = &["xmp", "lrtemplate", "zip", "dng", "lmp", "mplumpack"];
+
+// ------------------------------------------------------------------------------------- zip
+
+/// The most a preset zip entry may hold unpacked (a "DNG preset" photo is the largest kind, tens
+/// of MB): its stated size is the file's word, so a small archive could otherwise ask for 8 GB.
+pub const MAX_ZIP_ENTRY: usize = 256 << 20;
+/// The most a whole preset zip may hold unpacked.
+pub const MAX_ZIP_TOTAL: usize = 1 << 30;
+
+/// The files of a zip archive: (path inside the archive, bytes). Stored and deflated entries;
+/// directories, macOS resource forks and hidden files are skipped. An entry that unpacks past
+/// [`MAX_ZIP_ENTRY`], or an archive past [`MAX_ZIP_TOTAL`], is an error (a zip bomb would make
+/// the allocation fail, which ends the app).
+pub fn read_zip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    read_zip_limited(bytes, MAX_ZIP_ENTRY, MAX_ZIP_TOTAL)
+}
+
+pub(crate) fn read_zip_limited(bytes: &[u8], max_entry: usize, max_total: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    read_zip_spending(bytes, max_entry, max_total, &mut 0)
+}
+
+/// [`read_zip_limited`] that adds to `spent` the bytes of each entry as it is unpacked, so they
+/// are counted when a later entry fails; an entry that fails for size spends its whole limit.
+pub(crate) fn read_zip_spending(bytes: &[u8], max_entry: usize, max_total: usize, spent: &mut usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let u16_at = |o: usize| bytes.get(o..o.checked_add(2)?).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let u32_at = |o: usize| bytes.get(o..o.checked_add(4)?).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    // offsets from the file, added up without overflowing (a 32-bit build reads them too)
+    let add = |a: usize, b: usize| a.checked_add(b).ok_or("bad zip");
+    // end of central directory: the last "PK\x05\x06" within the trailing 64 KiB + 22 bytes
+    let tail = bytes.len().saturating_sub(65_557);
+    let eocd = (tail..bytes.len().saturating_sub(21)).rev().find(|&i| bytes[i..].starts_with(b"PK\x05\x06")).ok_or("not a zip file")?;
+    let count = u16_at(eocd + 10).ok_or("bad zip")?;
+    let mut at = u32_at(eocd + 16).ok_or("bad zip")?;
+    let mut out = Vec::new();
+    let total = spent;
+    for _ in 0..count {
+        if !bytes.get(at..).is_some_and(|b| b.starts_with(b"PK\x01\x02")) {
+            return Err("bad zip central directory".into());
+        }
+        let method = u16_at(add(at, 10)?).ok_or("bad zip")?;
+        let csize = u32_at(add(at, 20)?).ok_or("bad zip")?;
+        let usize_ = u32_at(add(at, 24)?).ok_or("bad zip")?;
+        let (nlen, xlen, clen) =
+            (u16_at(add(at, 28)?).ok_or("bad zip")?, u16_at(add(at, 30)?).ok_or("bad zip")?, u16_at(add(at, 32)?).ok_or("bad zip")?);
+        let local = u32_at(add(at, 42)?).ok_or("bad zip")?;
+        let name_at = add(at, 46)?;
+        let name = String::from_utf8_lossy(bytes.get(name_at..add(name_at, nlen)?).ok_or("bad zip")?).replace('\\', "/");
+        at = add(add(add(name_at, nlen)?, xlen)?, clen)?;
+        let skip = name.ends_with('/') || name.split('/').any(|p| p.starts_with('.') || p == "__MACOSX");
+        if skip {
+            continue;
+        }
+        if !bytes.get(local..).is_some_and(|b| b.starts_with(b"PK\x03\x04")) {
+            return Err(format!("{name}: bad local header"));
+        }
+        let data_at = add(add(add(local, 30)?, u16_at(add(local, 26)?).ok_or("bad zip")?)?, u16_at(add(local, 28)?).ok_or("bad zip")?)?;
+        let data = bytes.get(data_at..add(data_at, csize)?).ok_or_else(|| format!("{name}: truncated"))?;
+        let left = max_total.saturating_sub(*total);
+        let limit = max_entry.min(left);
+        let too_big = || format!("{name}: unpacks to more than {} MB, too much for a preset", limit >> 20);
+        let content = match method {
+            0 if data.len() > limit => {
+                *total = total.saturating_add(limit);
+                return Err(too_big());
+            }
+            0 => data.to_vec(),
+            8 => {
+                // the entry's own stated size, with slack, caps the inflate below `limit`
+                let cap = usize_.max(1).saturating_mul(2).saturating_add(1024);
+                match miniz_oxide::inflate::decompress_to_vec_with_limit(data, cap.min(limit)) {
+                    Ok(v) => v,
+                    Err(e) if matches!(e.status, miniz_oxide::inflate::TINFLStatus::HasMoreOutput) && cap < limit => {
+                        // not over the budget: only what was unpacked is spent
+                        *total = total.saturating_add(e.output.len());
+                        return Err(format!("{name}: unpacks to more than its stated size"));
+                    }
+                    Err(e) if matches!(e.status, miniz_oxide::inflate::TINFLStatus::HasMoreOutput) => {
+                        // past the budget (or the entry limit): its whole limit is spent
+                        *total = total.saturating_add(limit);
+                        return Err(too_big());
+                    }
+                    Err(e) => {
+                        // what a corrupt stream unpacked before failing was still unpacked: charge it
+                        *total = total.saturating_add(e.output.len());
+                        return Err(format!("{name}: {:?}", e.status));
+                    }
+                }
+            }
+            m => return Err(format!("{name}: unsupported compression method {m}")),
+        };
+        *total = total.saturating_add(content.len());
+        out.push((name, content));
+    }
+    Ok(out)
+}
+
+// ------------------------------------------------------------------------------- Lua tables
+
+/// A value of a Lua table literal (what `.lrtemplate` files contain).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lua {
+    Nil,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    /// Positional items and named fields, in file order.
+    Table(Vec<Lua>, Vec<(String, Lua)>),
+}
+
+impl Lua {
+    pub fn get(&self, key: &str) -> Option<&Lua> {
+        match self {
+            Lua::Table(_, m) => m.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    pub fn str(&self) -> Option<&str> {
+        match self {
+            Lua::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+struct LuaParser<'a> {
+    s: &'a [u8],
+    i: usize,
+    depth: usize,
+}
+
+impl LuaParser<'_> {
+    fn err<T>(&self, what: &str) -> Result<T, String> {
+        Err(format!("{what} at byte {}", self.i))
+    }
+    fn skip_ws(&mut self) {
+        loop {
+            while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
+                self.i += 1;
+            }
+            if self.s[self.i..].starts_with(b"--") {
+                self.i += 2;
+                if let Some(level) = self.long_bracket_level() {
+                    // an unterminated long comment runs to the end (as in Lua): going on past its
+                    // opening would search the rest of the file again for every such opening
+                    if self.long_string(level).is_err() {
+                        self.i = self.s.len();
+                    }
+                } else {
+                    while self.i < self.s.len() && self.s[self.i] != b'\n' {
+                        self.i += 1;
+                    }
+                }
+                continue;
+            }
+            break;
+        }
+    }
+    /// `[[` / `[==[` at the cursor: its level (number of `=`).
+    fn long_bracket_level(&self) -> Option<usize> {
+        let r = &self.s[self.i..];
+        if r.first() != Some(&b'[') {
+            return None;
+        }
+        let eq = r[1..].iter().take_while(|c| **c == b'=').count();
+        (r.get(1 + eq) == Some(&b'[')).then_some(eq)
+    }
+    fn long_string(&mut self, level: usize) -> Result<String, String> {
+        self.i += level + 2;
+        let close = format!("]{}]", "=".repeat(level));
+        let rest = &self.s[self.i..];
+        let end = rest.windows(close.len()).position(|w| w == close.as_bytes()).ok_or("unterminated long string")?;
+        let mut text = String::from_utf8_lossy(&rest[..end]).to_string();
+        if text.starts_with('\n') {
+            text.remove(0);
+        }
+        self.i += end + close.len();
+        Ok(text)
+    }
+    fn string(&mut self) -> Result<String, String> {
+        let q = self.s[self.i];
+        self.i += 1;
+        let mut out = Vec::new();
+        while self.i < self.s.len() {
+            let c = self.s[self.i];
+            self.i += 1;
+            match c {
+                c if c == q => return Ok(String::from_utf8_lossy(&out).to_string()),
+                b'\\' => {
+                    let e = *self.s.get(self.i).ok_or("bad escape")?;
+                    self.i += 1;
+                    match e {
+                        b'n' => out.push(b'\n'),
+                        b't' => out.push(b'\t'),
+                        b'r' => out.push(b'\r'),
+                        b'0'..=b'9' => {
+                            let mut v = (e - b'0') as u32;
+                            for _ in 0..2 {
+                                match self.s.get(self.i) {
+                                    Some(d @ b'0'..=b'9') => {
+                                        v = v * 10 + (d - b'0') as u32;
+                                        self.i += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            out.push(v.min(255) as u8);
+                        }
+                        b'\n' => out.push(b'\n'),
+                        other => out.push(other),
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+        self.err("unterminated string")
+    }
+    fn ident(&mut self) -> Option<String> {
+        let start = self.i;
+        while self.i < self.s.len() && (self.s[self.i].is_ascii_alphanumeric() || self.s[self.i] == b'_') {
+            self.i += 1;
+        }
+        (self.i > start && !self.s[start].is_ascii_digit()).then(|| String::from_utf8_lossy(&self.s[start..self.i]).to_string())
+    }
+    fn number(&mut self) -> Result<f64, String> {
+        let start = self.i;
+        if self.s[self.i..].starts_with(b"0x") || self.s[self.i..].starts_with(b"0X") {
+            self.i += 2;
+            let h = self.i;
+            while self.i < self.s.len() && self.s[self.i].is_ascii_hexdigit() {
+                self.i += 1;
+            }
+            return i64::from_str_radix(std::str::from_utf8(&self.s[h..self.i]).unwrap_or(""), 16).map(|v| v as f64).map_err(|e| e.to_string());
+        }
+        while self.i < self.s.len() && (self.s[self.i].is_ascii_digit() || matches!(self.s[self.i], b'.' | b'e' | b'E' | b'+' | b'-')) {
+            if matches!(self.s[self.i], b'+' | b'-') && self.i > start && !matches!(self.s[self.i - 1], b'e' | b'E') {
+                break;
+            }
+            self.i += 1;
+        }
+        std::str::from_utf8(&self.s[start..self.i]).ok().and_then(|t| t.parse().ok()).map_or_else(|| self.err("bad number"), Ok)
+    }
+    fn value(&mut self) -> Result<Lua, String> {
+        if self.depth >= 64 {
+            return self.err("Lua settings exceed nesting limit");
+        }
+        self.depth += 1;
+        let result = self.value_inner();
+        self.depth -= 1;
+        result
+    }
+    fn value_inner(&mut self) -> Result<Lua, String> {
+        self.skip_ws();
+        let Some(&c) = self.s.get(self.i) else { return self.err("unexpected end") };
+        match c {
+            b'{' => self.table(),
+            b'"' | b'\'' => self.string().map(Lua::Str),
+            b'[' if self.long_bracket_level().is_some() => {
+                let level = self.long_bracket_level().unwrap_or(0);
+                self.long_string(level).map(Lua::Str)
+            }
+            b'-' => {
+                self.i += 1;
+                self.skip_ws();
+                match self.value()? {
+                    Lua::Num(n) => Ok(Lua::Num(-n)),
+                    _ => self.err("bad negation"),
+                }
+            }
+            b'0'..=b'9' | b'.' => self.number().map(Lua::Num),
+            _ => match self.ident().as_deref() {
+                Some("true") => Ok(Lua::Bool(true)),
+                Some("false") => Ok(Lua::Bool(false)),
+                Some("nil") => Ok(Lua::Nil),
+                // a call with one string / table argument, e.g. ZSTR "…" (localisation helpers)
+                Some(_) => {
+                    self.skip_ws();
+                    match self.s.get(self.i) {
+                        Some(b'"' | b'\'' | b'{') => self.value(),
+                        Some(b'(') => self.call_args(),
+                        _ => Ok(Lua::Nil),
+                    }
+                }
+                None => self.err("unexpected character"),
+            },
+        }
+    }
+    fn table(&mut self) -> Result<Lua, String> {
+        self.i += 1; // {
+        let (mut arr, mut map) = (Vec::new(), Vec::new());
+        loop {
+            self.skip_ws();
+            match self.s.get(self.i) {
+                None => return self.err("unterminated table"),
+                Some(b'}') => {
+                    self.i += 1;
+                    return Ok(Lua::Table(arr, map));
+                }
+                Some(b',' | b';') => {
+                    self.i += 1;
+                    continue;
+                }
+                Some(b'[') if self.long_bracket_level().is_none() => {
+                    self.i += 1;
+                    let k = self.value()?;
+                    self.skip_ws();
+                    if self.s.get(self.i) != Some(&b']') {
+                        return self.err("expected ]");
+                    }
+                    self.i += 1;
+                    self.expect_eq()?;
+                    let v = self.value()?;
+                    match k {
+                        Lua::Str(s) => map.push((s, v)),
+                        Lua::Num(n) => map.push((format!("{n}"), v)),
+                        _ => {}
+                    }
+                }
+                _ => {
+                    // `name = value`, or a positional value
+                    let save = self.i;
+                    if let Some(name) = self.ident() {
+                        self.skip_ws();
+                        if self.s.get(self.i) == Some(&b'=') && self.s.get(self.i + 1) != Some(&b'=') {
+                            self.i += 1;
+                            let v = self.value()?;
+                            map.push((name, v));
+                            continue;
+                        }
+                    }
+                    self.i = save;
+                    arr.push(self.value()?);
+                }
+            }
+        }
+    }
+    /// The arguments of a call such as `ZSTR( "…" )`, `AgColor( 0, 0, 0, 1 )` or
+    /// `AgMutableRect( x1, y1, x2, y2 )`, the cursor on its `(`: one argument is that value (as
+    /// before), none is `nil`, several are a table of them in order.
+    fn call_args(&mut self) -> Result<Lua, String> {
+        self.i += 1; // (
+        let mut args = Vec::new();
+        loop {
+            self.skip_ws();
+            match self.s.get(self.i) {
+                None => return self.err("unterminated call"),
+                Some(b')') => {
+                    self.i += 1;
+                    break;
+                }
+                Some(b',') if !args.is_empty() => self.i += 1,
+                _ => args.push(self.value()?),
+            }
+        }
+        Ok(match args.len() {
+            0 => Lua::Nil,
+            1 => args.pop().unwrap_or(Lua::Nil),
+            _ => Lua::Table(args, Vec::new()),
+        })
+    }
+    fn expect_eq(&mut self) -> Result<(), String> {
+        self.skip_ws();
+        if self.s.get(self.i) == Some(&b'=') {
+            self.i += 1;
+            Ok(())
+        } else {
+            self.err("expected =")
+        }
+    }
+}
+
+/// Parse a Lua table literal, optionally preceded by `name =` or `return`.
+pub fn parse_lua(text: &str) -> Result<Lua, String> {
+    if text.len() > 16 << 20 {
+        return Err("Lua settings exceed 16 MiB".into());
+    }
+    let mut p = LuaParser { s: text.as_bytes(), i: 0, depth: 0 };
+    p.skip_ws();
+    let save = p.i;
+    match p.ident().as_deref() {
+        Some("return") => {}
+        Some(_) => {
+            p.skip_ws();
+            if p.s.get(p.i) == Some(&b'=') {
+                p.i += 1;
+            } else {
+                p.i = save;
+            }
+        }
+        None => {}
+    }
+    p.value()
+}
+
+/// A localisable string `"$$$/Key/Path=Default text"` → its default text.
+pub(crate) fn delocalize(s: &str) -> String {
+    match s.strip_prefix("$$$/") {
+        Some(rest) => rest.split_once('=').map_or(rest, |(_, t)| t).to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// The develop settings of an `.lrtemplate` as `crs:` properties (flat, and structured for local
+/// corrections), plus its title.
+pub fn lrtemplate_props(text: &str) -> Result<(Option<String>, Props, crate::crs_masks::Values), String> {
+    let root = parse_lua(text)?;
+    let title = root.get("title").or_else(|| root.get("internalName")).and_then(Lua::str).map(delocalize).filter(|t| !t.trim().is_empty());
+    let settings = root.get("value").and_then(|v| v.get("settings")).ok_or("no develop settings in this template")?;
+    let (props, values) = lua_settings_props(settings)?;
+    Ok((title, props, values))
+}
+
+/// Data-only Lua settings shared by preset and native catalog import. Never executes Lua.
+pub(crate) fn lua_settings_props(settings: &Lua) -> Result<(Props, crate::crs_masks::Values), String> {
+    let Lua::Table(_, fields) = settings else { return Err("no develop settings in this template".into()) };
+    let mut props = Props::new();
+    let mut values = crate::crs_masks::Values::new();
+    for (k, v) in fields {
+        let key = format!("crs:{k}");
+        // the profile a preset names: its fields as XMP's struct fields (`crs:Look/crs:Name`…)
+        if k == "Look"
+            && let Lua::Table(_, look) = v
+        {
+            for (f, fv) in look {
+                // the look's own settings (`Parameters`), as XMP's nested struct
+                // (`crs:Look/crs:Parameters/crs:ProfileGainTableMap`…)
+                if f == "Parameters"
+                    && let Lua::Table(_, params) = fv
+                {
+                    for (pf, pv) in params {
+                        let val = match pv {
+                            Lua::Num(n) => format!("{n}"),
+                            Lua::Str(s) => delocalize(s),
+                            Lua::Bool(b) => if *b { "True" } else { "False" }.to_string(),
+                            _ => continue,
+                        };
+                        props.insert(format!("crs:Look/crs:Parameters/crs:{pf}"), vec![val]);
+                    }
+                    continue;
+                }
+                let val = match fv {
+                    Lua::Num(n) => format!("{n}"),
+                    Lua::Str(s) => delocalize(s),
+                    _ => continue,
+                };
+                props.insert(format!("crs:Look/crs:{f}"), vec![val]);
+            }
+            continue;
+        }
+        // local corrections and spot removal (a catalog's develop text carries both)
+        if crate::crs_masks::CONTAINERS.contains(&key.as_str()) || crate::crs_masks::SPOT_CONTAINERS.contains(&key.as_str()) {
+            values.insert(key.clone(), crate::crs_masks::from_lua(v));
+        }
+        let vals: Vec<String> = match v {
+            Lua::Num(n) => vec![format!("{n}")],
+            Lua::Bool(b) => vec![if *b { "True" } else { "False" }.to_string()],
+            Lua::Str(s) => vec![delocalize(s)],
+            // point curves are flat lists x1, y1, x2, y2, …
+            Lua::Table(arr, map) if map.is_empty() && !arr.is_empty() && arr.iter().all(|a| matches!(a, Lua::Num(_))) => arr
+                .chunks(2)
+                .filter_map(|c| match c {
+                    [Lua::Num(x), Lua::Num(y)] => Some(format!("{x}, {y}")),
+                    _ => None,
+                })
+                .collect(),
+            Lua::Table(a, m) if a.is_empty() && m.is_empty() => continue,
+            // anything else (local corrections, retouch…) is only reported
+            Lua::Table(..) => vec!["(table)".into()],
+            Lua::Nil => continue,
+        };
+        props.insert(key, vals);
+    }
+    Ok((props, values))
+}
+
+// ------------------------------------------------------------------------------- XMP in files
+
+/// The XMP packet embedded in a file of any container (DNG, JPEG, TIFF…): the text from
+/// `<x:xmpmeta` to `</x:xmpmeta>`.
+pub fn embedded_xmp(bytes: &[u8]) -> Option<String> {
+    let start = bytes.windows(10).position(|w| w == b"<x:xmpmeta")?;
+    let end = bytes[start..].windows(12).position(|w| w == b"</x:xmpmeta>")? + start + 12;
+    Some(String::from_utf8_lossy(&bytes[start..end]).to_string())
+}
+
+// ----------------------------------------------------------------------------------- files
+
+/// A preset group named after the innermost folder of `dir` (a path inside the imported folder or
+/// bundle) that isn't a container named for an app or a format (`Lightroom Classic`, `XMP`,
+/// `Mobile (DNG)`, `Develop Presets`…).
+pub fn group_from_dir(dir: &str) -> Option<String> {
+    const FILLER: &[&str] = &[
+        "lightroom",
+        "lr",
+        "lrc",
+        "classic",
+        "cc",
+        "camera",
+        "raw",
+        "acr",
+        "photoshop",
+        "desktop",
+        "mobile",
+        "xmp",
+        "lrtemplate",
+        "lrtemplates",
+        "dng",
+        "dngs",
+        "preset",
+        "presets",
+        "settings",
+        "lcpreset",
+        crate::legacy::NAME_WORD,
+        "user",
+        "develop",
+        "files",
+        "for",
+        "and",
+        "version",
+        "versions",
+        "format",
+        "formats",
+        "new",
+        "old",
+        "adobe",
+        "luminar",
+        "skylum",
+        "looks",
+        "lmp",
+        "mplumpack",
+        "contents",
+        "resources",
+    ];
+    let generic = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).all(|w| FILLER.contains(&w) || w.chars().all(|c| c.is_ascii_digit()))
+    };
+    // a macOS bundle (`Look.lmp/Contents/…`) is a file, not a group
+    let bundle = |p: &str| p.to_ascii_lowercase().ends_with(".lmp");
+    dir.split(['/', '\\']).rev().find(|p| !p.is_empty() && !generic(p) && !bundle(p)).map(str::to_string)
+}
+
+pub(crate) fn build(props: &Props, values: &crate::crs_masks::Values, name: String, group: Option<String>, from_photo: bool) -> Option<Imported> {
+    let (mut settings, mut unmapped) = crate::crs::to_partial_report(props, Some(values), crate::crs::Target::Any, crate::crs_masks::DEFAULT_ASPECT);
+    // a preset we exported: its own complete settings win over the crs: reading
+    if let Some(own) =
+        props.get(crate::preset_xmp::LC_SETTINGS).and_then(|v| v.first()).and_then(|s| serde_json::from_str::<Value>(s).ok()).filter(Value::is_object)
+    {
+        settings = own;
+        unmapped.clear();
+    }
+    if from_photo && let Some(o) = settings.as_object_mut() {
+        // a photo's own framing and absolute white balance don't belong in a look
+        o.remove("crop");
+        o.remove("geometry");
+        let mode = o.get("wb").and_then(|w| w.get("mode")).and_then(Value::as_str);
+        if mode == Some("custom") {
+            unmapped.push("Temperature, Tint (custom white balance of a photo: not kept in a look)".into());
+        }
+        if mode.is_none_or(|m| m == "custom" || m == "asShot") {
+            o.remove("wb");
+        }
+    }
+    // the profile it names, resolved against the user's imported profiles by `preset.import`
+    if let Some(look) = crate::profile_refs::look_ref(props)
+        && let Some(o) = settings.as_object_mut()
+    {
+        // next to the profile settings the preset already sets (`camera_local_tone`), not in place of them (upstream #3752)
+        let profile = o.entry("profile").or_insert_with(|| serde_json::json!({}));
+        if let Some(p) = profile.as_object_mut() {
+            p.insert("look".into(), look);
+        } else {
+            *profile = serde_json::json!({"look": look});
+        }
+    }
+    if settings.as_object().is_none_or(Map::is_empty) {
+        return None;
+    }
+    let group = props
+        .get("crs:Group")
+        .and_then(|v| v.first())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(group)
+        .unwrap_or_else(|| "Imported Presets".into());
+    let uuid = props.get("crs:UUID").and_then(|v| v.first()).map(|u| u.to_ascii_lowercase());
+    let id = format!("user.xmp.{}", uuid.unwrap_or_else(|| crate::presets::slug(&format!("{group}-{name}"))));
+    Some(Imported { preset: Preset { id, name, group, settings, favorite: false, builtin: false }, unmapped })
+}
+
+/// Read the presets in file `name` (`bytes`); `group` names the group when the file doesn't
+/// (its folder). Zip bundles are read recursively.
+pub fn read_presets(name: &str, bytes: &[u8], group: Option<String>) -> Result<Vec<Imported>, String> {
+    let path = Path::new(name);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Preset".into());
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "zip" => {
+            let mut out = Vec::new();
+            let mut errors = Vec::new();
+            let entries = read_zip(bytes)?;
+            // what the archive's entries left of the unpack budget: the Luminar packs inside it
+            // (archives themselves) unpack within it, not each with a budget of its own
+            let mut budget = MAX_ZIP_TOTAL.saturating_sub(entries.iter().map(|(_, d)| d.len()).sum());
+            for (inner, data) in entries {
+                let iext = Path::new(&inner).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                if !(PRESET_EXTS.contains(&iext.as_str()) || iext == crate::presets::LCPRESET_EXT) || iext == "zip" {
+                    continue;
+                }
+                let dir_group =
+                    inner.rsplit_once('/').and_then(|(d, _)| group_from_dir(d)).or_else(|| group_from_dir(&stem)).or_else(|| group.clone());
+                let read = if iext == "mplumpack" {
+                    crate::preset_luminar::read_mplumpack_within(&inner, &data, &mut budget)
+                } else {
+                    read_presets(&inner, &data, dir_group)
+                };
+                match read {
+                    Ok(v) => out.extend(v),
+                    Err(e) => errors.push(format!("{inner}: {e}")),
+                }
+            }
+            if out.is_empty() {
+                return Err(if errors.is_empty() { "no presets in this archive".into() } else { errors.join("; ") });
+            }
+            Ok(out)
+        }
+        "lmp" => crate::preset_luminar::read_lmp(name, bytes, group).map(|i| vec![i]),
+        "mplumpack" => crate::preset_luminar::read_mplumpack(name, bytes),
+        "lrtemplate" => {
+            let text = String::from_utf8_lossy(bytes);
+            let (title, props, values) = lrtemplate_props(text.trim_start_matches('\u{feff}'))?;
+            build(&props, &values, title.unwrap_or(stem), group, false)
+                .map(|i| vec![i])
+                .ok_or_else(|| "no develop settings we can use in this template".into())
+        }
+        "xmp" => {
+            let text = String::from_utf8_lossy(bytes);
+            let d = lcc_meta::parse_xmp(text.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
+            let props = &d.properties;
+            let name = props.get("crs:Name").and_then(|v| v.first()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or(stem);
+            build(props, &d.values, name, group, false).map(|i| vec![i]).ok_or_else(|| "no develop settings in this XMP file".into())
+        }
+        // a photo carrying its edits (mobile "DNG presets", edited JPEG / TIFF)
+        "dng" | "jpg" | "jpeg" | "tif" | "tiff" => {
+            let xmp = embedded_xmp(bytes).ok_or("this photo carries no edits (no XMP)")?;
+            let d = lcc_meta::parse_xmp(&xmp).map_err(|e| e.to_string())?;
+            build(&d.properties, &d.values, stem, group, true).map(|i| vec![i]).ok_or_else(|| "this photo carries no edits we can use".into())
+        }
+        _ => crate::presets::parse_preset_file(name, bytes).map(|v| {
+            v.into_iter()
+                .map(|mut p| {
+                    if p.group == "Imported Presets"
+                        && let Some(g) = &group
+                    {
+                        p.group = g.clone();
+                    }
+                    Imported { preset: p, unmapped: Vec::new() }
+                })
+                .collect()
+        }),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A zip archive (`deflate`: compress entries) — enough of a writer for the tests.
+    pub(crate) fn zip(entries: &[(&str, &[u8])], deflate: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, data) in entries {
+            let (method, body) = if deflate { (8u16, miniz_oxide::deflate::compress_to_vec(data, 6)) } else { (0, data.to_vec()) };
+            let off = out.len() as u32;
+            let head = |sig: &[u8], out: &mut Vec<u8>, central: bool| {
+                out.extend_from_slice(sig);
+                if central {
+                    out.extend_from_slice(&20u16.to_le_bytes());
+                }
+                out.extend_from_slice(&20u16.to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+                out.extend_from_slice(&method.to_le_bytes());
+                out.extend_from_slice(&[0; 8]); // time, date, crc (not checked)
+                out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+            };
+            head(b"PK\x03\x04", &mut out, false);
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&body);
+            head(b"PK\x01\x02", &mut central, true);
+            central.extend_from_slice(&[0; 10]); // comment length, disk, internal + external attributes
+            central.extend_from_slice(&off.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let cd = out.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(b"PK\x05\x06\0\0\0\0");
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        out.extend_from_slice(&cd.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// A template in the classic Lua-table form (written for this test).
+    pub(crate) const TEMPLATE: &str = r#"s = {
+	id = "0D2F9C1E-TEST",
+	internalName = "Warm Fade",
+	title = "$$$/Test/Warm=Warm Fade",
+	type = "Develop",
+	value = {
+		settings = {
+			Exposure2012 = 0.35,
+			Contrast2012 = -20,
+			ConvertToGrayscale = false,
+			ToneCurvePV2012 = { 0, 20, 128, 128, 255, 240, },
+			SplitToningShadowHue = 210,
+			SplitToningShadowSaturation = 15,
+			HueAdjustmentOrange = -8,
+			CameraProfile = "Some Profile",
+			RetouchInfo = {},
+			ProcessVersion = "11.0",
+			-- a comment
+			EnableColorAdjustments = true,
+		},
+		uuid = "0D2F9C1E-TEST",
+	},
+	version = 0,
+}
+"#;
+
+    #[test]
+    fn lua_tables() {
+        let v = parse_lua(
+            r#"return { a = 1, ["b c"] = 'x\'y', -2.5e1, 0x10, t = { true, nil }, [[long
+text]], z = ZSTR "loc" }"#,
+        )
+        .unwrap();
+        assert_eq!(v.get("a"), Some(&Lua::Num(1.0)));
+        assert_eq!(v.get("b c"), Some(&Lua::Str("x'y".into())));
+        assert_eq!(v.get("z"), Some(&Lua::Str("loc".into())));
+        let Lua::Table(arr, _) = &v else { panic!() };
+        assert_eq!(arr[..2], [Lua::Num(-25.0), Lua::Num(16.0)]);
+        assert_eq!(arr[2], Lua::Str("long\ntext".into()));
+        assert!(parse_lua("s = { a = ").is_err());
+    }
+
+    /// Calls with several arguments (a saved print's `AgColor( r, g, b, a )`, `AgMutableRect( … )`) read as a table of
+    /// them; one argument stays that value, none is nil; an unterminated call is an error.
+    #[test]
+    fn lua_calls() {
+        let v =
+            parse_lua("s = { c = AgColor( 0, 0.5, 1, 1 ), r = AgMutableRect( 2.2737367544323e-13, -1, 3, 4 ), z = ZSTR( \"x\" ), n = F(), k = 1 }")
+                .unwrap();
+        assert_eq!(v.get("c"), Some(&Lua::Table(vec![Lua::Num(0.0), Lua::Num(0.5), Lua::Num(1.0), Lua::Num(1.0)], vec![])));
+        let Some(Lua::Table(r, _)) = v.get("r") else { panic!("{v:?}") };
+        assert_eq!(r[1..], [Lua::Num(-1.0), Lua::Num(3.0), Lua::Num(4.0)]);
+        assert_eq!(v.get("z"), Some(&Lua::Str("x".into())));
+        assert_eq!(v.get("n"), Some(&Lua::Nil));
+        assert_eq!(v.get("k"), Some(&Lua::Num(1.0)));
+        for bad in ["s = { c = AgColor( 0, 1 }", "s = { c = AgColor( 0, ", "s = F( ( ( ("] {
+            assert!(parse_lua(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn lrtemplate_maps_settings_and_reports_the_rest() {
+        let v = read_presets("Warm Fade.lrtemplate", TEMPLATE.as_bytes(), None).unwrap();
+        assert_eq!(v.len(), 1);
+        let p = &v[0].preset;
+        assert_eq!((p.name.as_str(), p.group.as_str()), ("Warm Fade", "Imported Presets"));
+        assert_eq!(p.settings["light"]["exposure"], json!(0.35));
+        assert_eq!(p.settings["light"]["contrast"], json!(-20.0));
+        assert_eq!(p.settings["treatment"], json!("color"));
+        assert_eq!(p.settings["grading"]["shadows"]["hue"], json!(210.0));
+        assert_eq!(p.settings["mixer"]["orange"]["hue"], json!(-8.0));
+        let c = p.settings["curve"]["master"].as_array().unwrap();
+        assert_eq!(c.len(), 3);
+        assert!((c[0]["y"].as_f64().unwrap() - 20.0 / 255.0).abs() < 1e-9);
+        assert_eq!(v[0].unmapped, vec!["CameraProfile".to_string()], "profiles are ours; the rest is mapped or bookkeeping");
+        // it parses into real develop settings
+        let d = lcc_develop::DevelopSettings::default().merged(&p.settings).expect("valid develop settings");
+        assert_eq!(d.light.exposure, 0.35);
+    }
+
+    /// A ProRAW preset keeps the camera local tone mapping its "Apple ProRaw" look turns on, next to the look it names.
+    #[test]
+    fn apple_proraw_preset_keeps_the_local_tone_mapping_with_its_look() {
+        let t = r#"s = { title = "ProRaw", value = { settings = { Exposure2012 = 0.2,
+            Look = { Name = "Apple ProRaw", Amount = 1, UUID = "D866CAE82BD24C3F896B6762BDDA6C50",
+                     Parameters = { Version = "18.5.1", ProfileGainTableMap = 100 } } } } }"#;
+        let v = read_presets("ProRaw.lrtemplate", t.as_bytes(), None).unwrap();
+        let profile = &v[0].preset.settings["profile"];
+        assert_eq!(profile["camera_local_tone"], true, "{profile}");
+        assert_eq!(profile["look"]["name"], "Apple ProRaw", "{profile}");
+    }
+
+    #[test]
+    fn lrtemplate_keeps_the_profile_it_names() {
+        let t = r#"s = { title = "Film", value = { settings = { Exposure2012 = 0.2,
+            Look = { Name = "Portra 400", Amount = 0.5, UUID = "ABCD", Group = "$$$/Pack=Film Pack", Parameters = { Version = "14.0" } } } } }"#;
+        let v = read_presets("Film.lrtemplate", t.as_bytes(), None).unwrap();
+        assert_eq!(
+            v[0].preset.settings["profile"],
+            serde_json::json!({"look": {"name": "Portra 400", "amount": 50.0, "group": "Film Pack", "uuid": "abcd"}})
+        );
+    }
+
+    #[test]
+    fn old_process_version_fields_are_approximated() {
+        let t = "s = { title = \"Old\", value = { settings = { Exposure = 0.5, Contrast = 50, FillLight = 20, HighlightRecovery = 30, Clarity = 10, ToneCurve = { 0, 0, 64, 50, 255, 255 } } } }";
+        let p = &read_presets("Old.lrtemplate", t.as_bytes(), None).unwrap()[0].preset;
+        assert_eq!(p.settings["light"]["exposure"], json!(0.5));
+        assert_eq!(p.settings["light"]["contrast"], json!(25.0), "relative to the old default of 25");
+        assert_eq!(p.settings["light"]["shadows"], json!(20.0));
+        assert_eq!(p.settings["light"]["highlights"], json!(-30.0));
+        assert_eq!(p.settings["effects"]["clarity"], json!(10.0));
+        assert_eq!(p.settings["curve"]["master"].as_array().unwrap().len(), 3);
+        // newer presets carry the old fields at their defaults: those must not shift anything
+        let t2 = "s = { value = { settings = { Contrast2012 = 10, Contrast = 25, Shadows = 5, Brightness = 50 } } }";
+        let p2 = &read_presets("New.lrtemplate", t2.as_bytes(), None).unwrap()[0];
+        assert_eq!(p2.preset.settings, json!({"light": {"contrast": 10.0}}));
+        assert!(p2.unmapped.is_empty(), "{:?}", p2.unmapped);
+    }
+
+    const XMP: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+ crs:Exposure2012="+0.50" crs:Vibrance="20" crs:WhiteBalance="As Shot" crs:Temperature="5600" crs:HasCrop="True" crs:CropLeft="0.1" crs:CropRight="0.9" crs:CropTop="0" crs:CropBottom="1"/>
+</rdf:RDF></x:xmpmeta>"#;
+
+    #[test]
+    fn photos_carrying_edits_become_looks() {
+        // a "DNG preset": any container with an XMP packet; framing and white balance stay behind
+        let mut file = b"II*\0 binary junk ".to_vec();
+        file.extend_from_slice(XMP.as_bytes());
+        file.extend_from_slice(b" more junk");
+        let v = read_presets("/x/Moody.dng", &file, None).unwrap();
+        let p = &v[0].preset;
+        assert_eq!(p.name, "Moody");
+        assert_eq!(p.settings, json!({"light": {"exposure": 0.5}, "color": {"vibrance": 20.0}}));
+        assert!(read_presets("plain.jpg", b"\xff\xd8 no xmp", None).is_err());
+    }
+
+    #[test]
+    fn photo_custom_white_balance_left_out_is_reported() {
+        // issue #2938: a photo's custom Kelvin that the look leaves out is reported
+        let photo = |wb: &str| {
+            let mut file = b"\xff\xd8\xff\xe1 http://ns.adobe.com/xap/1.0/\0".to_vec();
+            file.extend_from_slice(XMP.replace(r#"crs:WhiteBalance="As Shot" crs:Temperature="5600""#, wb).as_bytes());
+            read_presets("/x/repro.jpg", &file, None).unwrap().remove(0)
+        };
+        let custom = photo(r#"crs:WhiteBalance="Custom" crs:Temperature="8000" crs:Tint="+16""#);
+        assert!(custom.unmapped.iter().any(|u| u.starts_with("Temperature, Tint (")), "{:?}", custom.unmapped);
+        // a named white balance stays, unreported; As Shot is no loss
+        let daylight = photo(r#"crs:WhiteBalance="Daylight""#);
+        assert_eq!(daylight.preset.settings["wb"]["mode"], json!("daylight"));
+        assert!(daylight.unmapped.is_empty(), "{:?}", daylight.unmapped);
+        assert!(photo(r#"crs:WhiteBalance="As Shot""#).unmapped.is_empty());
+    }
+
+    #[test]
+    fn packs_inside_a_zip_share_its_unpack_budget() {
+        // two packs unpacking to 2 MB each on a 3 MB budget: the first spends it, the second is refused
+        let pad = vec![b' '; 2 << 20];
+        let pack = zip(&[("a.lmp", b"<plist/>"), ("pad.txt", &pad)], true);
+        let mut budget = 3 << 20;
+        let first = crate::preset_luminar::read_mplumpack_within("one.mplumpack", &pack, &mut budget).unwrap_err();
+        assert!(!first.contains("too much"), "{first}");
+        assert_eq!(budget, (1 << 20) - 8);
+        let second = crate::preset_luminar::read_mplumpack_within("two.mplumpack", &pack, &mut budget).unwrap_err();
+        assert!(second.contains("too much"), "{second}");
+    }
+
+    #[test]
+    fn a_pack_that_fails_part_way_still_spends_what_it_unpacked() {
+        // 2 MB unpacks, then an entry that does not fit the 3 MB budget: the next pack gets nothing
+        let pad = vec![b' '; 2 << 20];
+        let pack = zip(&[("a.txt", &pad), ("b.txt", &pad)], true);
+        let mut budget = 3 << 20;
+        let first = crate::preset_luminar::read_mplumpack_within("one.mplumpack", &pack, &mut budget).unwrap_err();
+        assert!(first.contains("too much"), "{first}");
+        assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn a_corrupt_deflate_entry_spends_what_it_unpacked() {
+        // 2 MB declared, the stream cut in half: it unpacks a part, then fails; the budget keeps the part
+        let pad = vec![b' '; 2 << 20];
+        let deflated = miniz_oxide::deflate::compress_to_vec(&pad, 6);
+        let mut pack = zip(&[("a.txt", &deflated[..deflated.len() / 2])], false);
+        let central = 30 + "a.txt".len() + deflated.len() / 2;
+        pack[8] = 8; // local header: method deflate
+        pack[central + 10] = 8; // central header: method deflate
+        pack[central + 24..central + 28].copy_from_slice(&(pad.len() as u32).to_le_bytes());
+        let mut budget = 3 << 20;
+        let err = crate::preset_luminar::read_mplumpack_within("one.mplumpack", &pack, &mut budget).unwrap_err();
+        assert!(!err.contains("too much"), "{err}");
+        assert!(budget < 3 << 20, "{budget}");
+    }
+
+    #[test]
+    fn an_unterminated_long_comment_ends_the_template() {
+        // 20 000 openings of a long comment that never closes: each used to search the rest of
+        // the file for its close (seconds to minutes); now the first ends the file
+        let text = format!("s = {{ a = 1 }} {}", "--[==[ ".repeat(20_000));
+        let t = std::time::Instant::now();
+        let _ = parse_lua(&text);
+        assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn an_entry_past_its_stated_size_spends_only_what_it_unpacked() {
+        // the stated size (1 byte) caps the inflate at 1026 bytes, far below the 1 MB limit
+        let mut lying = zip(&[("a.xmp", &vec![b' '; 10_000])], true);
+        let cd = lying.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        lying[cd + 24..cd + 28].copy_from_slice(&1u32.to_le_bytes());
+        let mut spent = 0;
+        let e = read_zip_spending(&lying, 1 << 20, 1 << 20, &mut spent).unwrap_err();
+        assert!(e.contains("stated size"), "{e}");
+        assert!(spent > 0 && spent <= 2048, "{spent}");
+    }
+
+    #[test]
+    fn zip_bombs_are_refused() {
+        // an entry unpacking past the limit (3 MB of zeros pack into a few kB): refused, named
+        let zeros = vec![0u8; 3 << 20];
+        let z = zip(&[("Pack/huge.xmp", &zeros)], true);
+        assert!(z.len() < 64 << 10, "a small archive: {} bytes", z.len());
+        let e = read_zip_limited(&z, 1 << 20, 1 << 30).unwrap_err();
+        assert!(e.contains("Pack/huge.xmp") && e.contains("more than 1 MB"), "{e}");
+        // the whole archive counts too
+        let two = zip(&[("a.xmp", &zeros[..1 << 20]), ("b.xmp", &zeros[..1 << 20])], true);
+        assert!(read_zip_limited(&two, 2 << 20, (3 << 20) / 2).is_err());
+        assert_eq!(read_zip_limited(&two, 2 << 20, 3 << 20).unwrap().len(), 2);
+        // and stored entries
+        let stored = zip(&[("s.xmp", &zeros[..2 << 20])], false);
+        assert!(read_zip_limited(&stored, 1 << 20, 1 << 30).is_err());
+        // the size an entry states (here 4 GB) no longer sets how much may be unpacked
+        let mut lying = zip(&[("a.xmp", b"<x:xmpmeta/>")], true);
+        let cd = lying.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        lying[cd + 24..cd + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(read_zip(&lying).unwrap()[0].1, b"<x:xmpmeta/>");
+        // offsets near the top of a u32 are an error, not an overflow
+        let mut far = zip(&[("a.xmp", b"x")], false);
+        let cd = far.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        far[cd + 42..cd + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(read_zip(&far).is_err());
+    }
+
+    #[test]
+    fn zip_bundles_with_folders_as_groups() {
+        for deflate in [false, true] {
+            let z = zip(
+                &[
+                    ("Pack/Film/Warm Fade.lrtemplate", TEMPLATE.as_bytes()),
+                    ("Pack/Film/Bright.xmp", XMP.as_bytes()),
+                    ("__MACOSX/Pack/._Bright.xmp", b"junk"),
+                    ("Pack/readme.txt", b"thanks for downloading"),
+                ],
+                deflate,
+            );
+            let v = read_presets("pack.zip", &z, None).unwrap();
+            let names: Vec<_> = v.iter().map(|i| (i.preset.name.as_str(), i.preset.group.as_str())).collect();
+            assert_eq!(names, [("Warm Fade", "Film"), ("Bright", "Film")], "deflate={deflate}");
+        }
+        assert!(read_presets("empty.zip", &zip(&[("a.txt", b"x")], true), None).is_err());
+        assert!(read_presets("bad.zip", b"not a zip", None).is_err());
+    }
+
+    #[test]
+    fn generic_folder_names_are_not_groups() {
+        assert_eq!(group_from_dir("Settings"), None);
+        assert_eq!(group_from_dir("Develop Presets/"), None);
+        assert_eq!(group_from_dir("Looks/My Film Looks"), Some("My Film Looks".into()));
+        // commercial packs nest by format: the pack's name wins
+        assert_eq!(group_from_dir("Film Pack/Lightroom Classic"), Some("Film Pack".into()));
+        assert_eq!(group_from_dir("Film Pack/Mobile (DNG)/"), Some("Film Pack".into()));
+        assert_eq!(group_from_dir("Film Pack/XMP Presets for Lightroom CC 7.3+"), Some("Film Pack".into()));
+        assert_eq!(group_from_dir("Sacred Light"), Some("Sacred Light".into()), "whole words only");
+    }
+
+    #[test]
+    fn import_command_reads_folders_bundles_and_applies() {
+        let dir = std::env::temp_dir().join(format!("lc-preset-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Looks/Film")).unwrap();
+        std::fs::write(dir.join("Looks/Film/Warm Fade.lrtemplate"), TEMPLATE).unwrap();
+        std::fs::write(dir.join("Looks/bundle.zip"), zip(&[("Street/Bright.xmp", XMP.as_bytes())], true)).unwrap();
+        std::fs::write(dir.join("Looks/notes.txt"), "not a preset").unwrap();
+        let mut s = crate::Session::with_demo();
+        let before = s.presets.len();
+        let paths = json!([dir.join("Looks").to_string_lossy()]);
+        // a dry run reports without adding
+        let r = s.execute("preset.import", &json!({"paths": paths, "dryRun": true})).unwrap();
+        assert_eq!(r["imported"].as_array().unwrap().len(), 2, "{r}");
+        assert_eq!(s.presets.len(), before);
+        let r = s.execute("preset.import", &json!({"paths": paths})).unwrap();
+        let got: Vec<(String, String)> =
+            r["imported"].as_array().unwrap().iter().map(|i| (i["name"].as_str().unwrap().into(), i["group"].as_str().unwrap().into())).collect();
+        assert_eq!(got, [("Warm Fade".to_string(), "Film".to_string()), ("Bright".into(), "Street".into())]);
+        assert_eq!(r["imported"][0]["unmapped"], json!(["CameraProfile"]));
+        assert_eq!(s.presets.len(), before + 2);
+        // importing again adds nothing
+        let r = s.execute("preset.import", &json!({"paths": paths})).unwrap();
+        assert_eq!((r["imported"].as_array().unwrap().len(), r["skipped"].as_u64()), (0, Some(2)));
+        // and the imported look applies
+        let id = s.catalog.photos().next().unwrap().id;
+        s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        let pid = s.presets.iter().find(|p| p.name == "Warm Fade").unwrap().id.clone();
+        s.execute("preset.apply", &json!({"id": pid})).unwrap();
+        let d = s.develop_of(id).unwrap();
+        assert_eq!((d.light.exposure, d.light.contrast), (0.35, -20.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

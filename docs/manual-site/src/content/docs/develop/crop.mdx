@@ -1,0 +1,31 @@
+---
+title: Crop and straighten
+description: Crop, aspect ratios, angle, auto straighten, rotate and flip.
+sidebar:
+  order: 4
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="crop-tool" alt="The Crop tool with a 16 by 9 frame and thirds overlay" />
+
+- **Open** the Crop tool from the tool strip under the histogram (`C`). **Close** or `Return` applies; double-click inside the box also applies.
+- **Crop box**: drag the edges and corners; drag inside to move. On a straightened photo a moved box slides along the tilt.
+- **Aspect**: menu in the panel. Original, Free, 1×1, 4×5, 5×7, 2×3, 4×3, 16×9, 16×10, 8.5×11. The lock keeps the shape.
+- **Your own ratios**: save, delete, reorder and hide aspect ratios in the menu. `X` swaps landscape and portrait.
+- **Constrain to Image** keeps the box inside the photo while you straighten.
+
+<Shot name="crop-angle" alt="The photo turned 5 degrees with the crop box fitted inside it" />
+
+- **Angle** slider, or type an exact value in the field under it. The crop refits inside the photo.
+- **Straighten tool**: drag a line along the horizon or a vertical.
+- **Auto**: levels from detected horizon and plumb lines. Partial: it needs at least three agreeing lines, turns by at most 10° and says so when it finds nothing.
+- **Rotate 90°** left and right, **Flip** horizontal and vertical: **Photo ▸ Rotate & Flip** and the buttons in the panel.
+- **Overlays** (`O` cycles): thirds, grid, golden ratio, diagonal, triangle, golden spiral; `⇧O` mirrors the spiral and triangle. **View ▸ Tool Overlay**.
+- **Reset** restores the uncropped photo. Zoom works while cropping.
+
+<Aside type="note" title="Modern layout">
+  **Crop** is in the dock at the bottom. Rotate and flip: **Photo ▸ Transform**.
+</Aside>

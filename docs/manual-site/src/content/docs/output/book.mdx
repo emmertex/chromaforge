@@ -1,0 +1,30 @@
+---
+title: Book module
+description: Lay out a photo book and export it as PDF or JPEG pages.
+sidebar:
+  order: 14
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **Book** in the module bar.
+- **Book Settings**: Name, **Book** PDF or JPEG, **Size** (six presets or custom), **Cover** type, **Paper** note, **JPEG Quality**, **File Resolution**, **Sharpening**, **Colour Profile** (sRGB only), **Bleed**.
+- **Auto Layout**: presets (one photo per page, left blank, with text, fill, two, four); **Auto Layout** places the selected or filmstrip photos, **Clear Layout** empties.
+- **Page**: **Add Page**, **Add Blank**, **Page Numbers** (position).
+- **Page Templates** (left): 26 templates sorted by photo count, text, blank and cover pages; ★ marks favourites.
+- **Guides**: bleed, text safe area, photo cells, filler text.
+- **Cell**: padding (linked or per side), zoom, pan, fill / fit; drag a cell to swap, or drag from the filmstrip.
+- **Text**: photo text (tokens or custom, above / below / over) and page text.
+- **Type**: font, style, size, opacity, colour, tracking, baseline, leading, kerning, columns, alignment; text presets.
+- **Background**: colour or a photo with opacity, global or per page.
+- Views: **Multi-Page**, **Spread**, **Single Page**, **Zoomed Page**.
+- **Export Book to PDF…**: one PDF with embedded fonts, sRGB profile, trim and bleed boxes; or a JPEG per page.
+- **Saved Books**: stored as a book collection, plus a lossless book file.
+
+<Shot name="book-module" alt="Book module after Auto Layout, with page templates on the left" menu="Window ▸ Modules ▸ Book" />
+
+<Aside type="note" title="Modern layout">
+  Modern has no Book button. Use **Window ▸ Modules ▸ Book**.
+</Aside>

@@ -1,0 +1,35 @@
+[package]
+name = "lcc-denoise"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AI denoise (L1): denoise-model manifests, Bayer packing, tiling and blending, the cache file, and pure-Rust CPU inference"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+runtime = ["dep:faer"]
+# Product-policy switch: absent by default; users may install their own model.
+rawnind-model = ["lcc-denoise-core/rawnind-model"]
+own-model = ["lcc-denoise-core/own-model"]
+realesrgan-model = ["lcc-denoise-core/realesrgan-model"]
+
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-denoise-core = { workspace = true }
+# Safe matrix views over the pure-Rust GEMM backend; no BLAS, cc/build scripts
+# or inner thread pool. Its dependencies include architecture-specific assembly.
+faer = { package = "faer-core", version = "=0.17.1", default-features = false, features = ["std"], optional = true }
+lcc-raster = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+miniz_oxide = { workspace = true }
+rayon = { workspace = true }
+web-time = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,0 +1,3 @@
+### Android: Folders ▸ + ▸ Add Folder…
+- The Folders panel's + menu now appears on Android too, with Add Folder… (the photos of the folder you pick open in the
+  import review). Add Folder… is greyed out while a Lightroom catalog import is running, as File ▸ Import from Folder… is.

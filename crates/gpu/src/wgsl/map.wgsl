@@ -1,0 +1,368 @@
+// Element-wise kernels (one thread per pixel, 1-D on a 2-D grid). Bindings: a, b, c (inputs), dst.
+// P[0] = pixel count; further parameters per kernel. Each mirrors a CPU expression in
+// `lcc_pipeline::local` (named in the comment).
+
+fn rgb_a(i: u32) -> vec3<f32> {
+    return vec3<f32>(a[3u * i], a[3u * i + 1u], a[3u * i + 2u]);
+}
+
+fn put_rgb(i: u32, v: vec3<f32>) {
+    dst[3u * i] = v.x;
+    dst[3u * i + 1u] = v.y;
+    dst[3u * i + 2u] = v.z;
+}
+
+// `log_lum` of an RGB image.
+@compute @workgroup_size(256)
+fn log_lum_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    dst[i] = log_lum(rgb_a(i));
+}
+
+// `dark_of`: the dark channel (dehaze).
+@compute @workgroup_size(256)
+fn dark_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let c = rgb_a(i);
+    dst[i] = min(min(c.x, c.y), c.z);
+}
+
+// Guided filter input pair (p, p²).
+@compute @workgroup_size(256)
+fn guided_pre(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let p = a[i];
+    dst[2u * i] = p;
+    dst[2u * i + 1u] = p * p;
+}
+
+// Guided filter coefficients (a, b) from blurred (mean, corr). P[1] = eps.
+@compute @workgroup_size(256)
+fn guided_ab(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let m = a[2u * i];
+    let c = a[2u * i + 1u];
+    let v = max(c - m * m, 0.0);
+    let k = v / (v + pf(1u));
+    dst[2u * i] = k;
+    dst[2u * i + 1u] = m - k * m;
+}
+
+// `q = a·p + b` (a: p, b: interleaved blurred coefficients).
+@compute @workgroup_size(256)
+fn guided_apply(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    dst[i] = b[2u * i] * a[i] + b[2u * i + 1u];
+}
+
+// Cross guided filter (`masks::guided_cross`), a: guide, b: input. P[1] = 0: (guide, input);
+// 1: (guide·input, guide²).
+@compute @workgroup_size(256)
+fn xguided_pre(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let gi = a[i];
+    let p = b[i];
+    if (pu(1u) == 0u) {
+        dst[2u * i] = gi;
+        dst[2u * i + 1u] = p;
+    } else {
+        dst[2u * i] = gi * p;
+        dst[2u * i + 1u] = gi * gi;
+    }
+}
+
+// Coefficients (a, b) from blurred means (a: guide, input) and correlations (b: guide·input,
+// guide²). P[1] = eps.
+@compute @workgroup_size(256)
+fn xguided_ab(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let mi = a[2u * i];
+    let mp = a[2u * i + 1u];
+    let v = max(b[2u * i + 1u] - mi * mi, 0.0);
+    let k = (b[2u * i] - mi * mp) / (v + pf(1u));
+    dst[2u * i] = k;
+    dst[2u * i + 1u] = mp - k * mi;
+}
+
+// q = clamp(a·guide + b, 0, 1) (a: guide, b: blurred coefficients, c: the input p), then
+// P[1] = 0: max(p, q) (Auto Mask strokes); 1: p + (q − p)·P[2] (Refine Edges).
+@compute @workgroup_size(256)
+fn xguided_apply(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let q = clamp(b[2u * i] * a[i] + b[2u * i + 1u], 0.0, 1.0);
+    if (pu(1u) == 0u) {
+        dst[i] = max(c[i], q);
+    } else {
+        dst[i] = c[i] + (q - c[i]) * pf(2u);
+    }
+}
+
+// White balance: 3×3 matrix (P[1] = has matrix, P[2..11] row-major), clamped at 0.
+@compute @workgroup_size(256)
+fn wb_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    var c = rgb_a(i);
+    if (pu(1u) != 0u) {
+        c = vec3<f32>(
+            pf(2u) * c.x + pf(3u) * c.y + pf(4u) * c.z,
+            pf(5u) * c.x + pf(6u) * c.y + pf(7u) * c.z,
+            pf(8u) * c.x + pf(9u) * c.y + pf(10u) * c.z,
+        );
+    }
+    put_rgb(i, max(c * 1.0, vec3<f32>(0.0)));
+}
+
+// Luminance NR: scale by 2^((f − l)·k) (a: image, b: log luminance l, c: filtered f). P[1] = k.
+@compute @workgroup_size(256)
+fn nr_lum(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let d = (c[i] - b[i]) * pf(1u);
+    put_rgb(i, rgb_a(i) * exp2(d));
+}
+
+// Chromaticity rgb / Y (local Moire / Noise plane).
+@compute @workgroup_size(256)
+fn chroma_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let c0 = rgb_a(i);
+    let y = max(lum2020(c0), 1e-6);
+    put_rgb(i, vec3<f32>(c0.x / y, c0.y / y, c0.z / y));
+}
+
+// The image clamped at 0 (blurred for colour NR's luminance-weighted chromaticity).
+@compute @workgroup_size(256)
+fn clamp0_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    put_rgb(i, max(rgb_a(i), vec3<f32>(0.0)));
+}
+
+// The chromaticity (rgb / Y of max(rgb, 0)) of pixel (x, y), edges clamped (`local::chroma_plane`).
+fn chroma_at(x: i32, y: i32, w: u32, h: u32) -> vec3<f32> {
+    let xx = u32(min(max(x, 0), i32(w) - 1));
+    let yy = u32(min(max(y, 0), i32(h) - 1));
+    let c = max(rgb_a(yy * w + xx), vec3<f32>(0.0));
+    return c / max(lum2020(c), 1e-6);
+}
+
+// One comparator of the median network: `a` takes the smaller, `b` the larger, per channel.
+fn cmp_swap(a: ptr<function, vec3<f32>>, b: ptr<function, vec3<f32>>) {
+    let lo = min(*a, *b);
+    *b = max(*a, *b);
+    *a = lo;
+}
+
+// Per-pixel chromaticity's 3 × 3 median, per channel: the plane colour NR's speckle median reads
+// (`local::median_chroma3x3`). P[1] = width. The median is a selection, so the 19-comparator
+// median-of-9 network on plain variables gives the CPU sort's fifth value. (An insertion sort over a
+// private array, as this was, came out wrong on Vulkan: issue #934 moved Windows' compute onto it.)
+@compute @workgroup_size(256)
+fn chroma_med(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let w = pu(1u);
+    let h = pu(0u) / w;
+    let x = i32(i % w);
+    let y = i32(i / w);
+    var p0 = chroma_at(x - 1, y - 1, w, h);
+    var p1 = chroma_at(x, y - 1, w, h);
+    var p2 = chroma_at(x + 1, y - 1, w, h);
+    var p3 = chroma_at(x - 1, y, w, h);
+    var p4 = chroma_at(x, y, w, h);
+    var p5 = chroma_at(x + 1, y, w, h);
+    var p6 = chroma_at(x - 1, y + 1, w, h);
+    var p7 = chroma_at(x, y + 1, w, h);
+    var p8 = chroma_at(x + 1, y + 1, w, h);
+    cmp_swap(&p1, &p2);
+    cmp_swap(&p4, &p5);
+    cmp_swap(&p7, &p8);
+    cmp_swap(&p0, &p1);
+    cmp_swap(&p3, &p4);
+    cmp_swap(&p6, &p7);
+    cmp_swap(&p1, &p2);
+    cmp_swap(&p4, &p5);
+    cmp_swap(&p7, &p8);
+    cmp_swap(&p0, &p3);
+    cmp_swap(&p5, &p8);
+    cmp_swap(&p4, &p7);
+    cmp_swap(&p3, &p6);
+    cmp_swap(&p1, &p4);
+    cmp_swap(&p2, &p5);
+    cmp_swap(&p4, &p7);
+    cmp_swap(&p4, &p2);
+    cmp_swap(&p6, &p4);
+    cmp_swap(&p4, &p2);
+    put_rgb(i, p4);
+}
+
+// Colour NR: blend chromaticity towards the luminance-weighted blurred one and re-apply luminance
+// (a: image, b: 3 × 3 median chromaticity, c: blurred max(rgb, 0)). P[1] = t, P[2] / P[3] = the
+// speckle deviation window (`local::SPECKLE_LO` / `SPECKLE_HI`): a channel that disagrees with all
+// nine of its 3 × 3 median samples at once is speckle and is pulled all the way in.
+@compute @workgroup_size(256)
+fn nr_col(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let p = rgb_a(i);
+    let yl = lum2020(p);
+    let t = pf(1u);
+    let lo = pf(2u);
+    let hi = pf(3u);
+    let c0 = p / max(yl, 1e-6);
+    let bl = vec3<f32>(c[3u * i], c[3u * i + 1u], c[3u * i + 2u]);
+    let cb = bl / max(lum2020(bl), 1e-6);
+    let md = vec3<f32>(b[3u * i], b[3u * i + 1u], b[3u * i + 2u]);
+    var out = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) {
+        var s = clamp((abs(c0[k] - md[k]) - lo) / max(hi - lo, 1e-6), 0.0, 1.0);
+        s = s * s * (3.0 - 2.0 * s);
+        let tk = t + (1.0 - t) * s;
+        out[k] = max((c0[k] + (cb[k] - c0[k]) * tk) * yl, 0.0);
+    }
+    put_rgb(i, out);
+}
+
+// Every P[1]-th value of `a` (airlight sampling). P[0] = output count.
+@compute @workgroup_size(256)
+fn subsample(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    dst[i] = a[i * pu(1u)];
+}
+
+// `redeye::eye_pixel` (a: image). P[1] = width, P[2] = eye count, then EYE_WORDS per eye:
+// cx, cy, r, darken, pet, has catchlight, catchlight x, y, r (output pixels).
+@compute @workgroup_size(256)
+fn redeye_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let w = pu(1u);
+    let x = f32(i % w) + 0.5;
+    let y = f32(i / w) + 0.5;
+    var c = rgb_a(i);
+    for (var e = 0u; e < pu(2u); e++) {
+        let o = 3u + e * EYE_WORDS;
+        let ex = x - pf(o);
+        let ey = y - pf(o + 1u);
+        let d = sqrt(ex * ex + ey * ey) / pf(o + 2u);
+        var m = 1.0 - sstep(1.0, 1.35, d);
+        if (pf(o + 4u) != 0.0) {
+            m = 1.0 - sstep(0.95, 1.2, d);
+        }
+        let darken = pf(o + 3u);
+        if (m > 0.0) {
+            if (pf(o + 4u) != 0.0) {
+                let k = min(lum2020(c), 0.04) * (1.0 - 0.85 * darken);
+                c = c + (vec3<f32>(k) - c) * m;
+            } else {
+                let red = (c.x - max(c.y, c.z)) / max(c.x, 1e-6);
+                let a = m * sstep(0.25, 0.5, red);
+                let n = 0.5 * (c.y + c.z) * (1.0 - 0.9 * darken);
+                c = c + (vec3<f32>(n) - c) * a;
+            }
+        }
+        if (pf(o + 5u) != 0.0) {
+            let lx = x - pf(o + 6u);
+            let ly = y - pf(o + 7u);
+            let dc = sqrt(lx * lx + ly * ly) / pf(o + 8u);
+            let mc = 1.0 - sstep(0.5, 1.0, dc);
+            if (mc > 0.0) {
+                c = c + (vec3<f32>(0.9) - c) * mc;
+            }
+        }
+    }
+    put_rgb(i, c);
+}
+
+// Defringe, first step (`optics::defringe`): OkLab of the clamped colour (a: image) → dst
+// (lightness, a, b interleaved).
+@compute @workgroup_size(256)
+fn fringe_lab(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    put_rgb(i, oklab(max(rgb_a(i), vec3<f32>(0.0))));
+}
+
+// `optics::hue_weight`: membership of hue h (deg) in [lo, hi] with 8° shoulders.
+fn fringe_hue_weight(h: f32, lo: f32, hi: f32) -> f32 {
+    let mid = (lo + hi) / 2.0;
+    let half = (hi - lo) / 2.0;
+    var d = abs(h - mid) % 360.0;
+    if (d > 180.0) {
+        d = 360.0 - d;
+    }
+    return 1.0 - sstep(half, half + 8.0, d);
+}
+
+// Defringe, last step: desaturate fringe colours at edges (a: OkLab, b / c: lightness min / max
+// around each pixel; dst: the image, written only where it changes, so it starts as a copy).
+// P[1..7] = purple lo, hi, green lo, hi, purple strength, green strength.
+@compute @workgroup_size(256)
+fn fringe_apply(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let edge = sstep(0.08, 0.25, c[i] - b[i]);
+    if (edge <= 0.0) {
+        return;
+    }
+    let lab = rgb_a(i);
+    let ch = sqrt(lab.y * lab.y + lab.z * lab.z);
+    let chroma_w = sstep(0.015, 0.05, ch);
+    if (chroma_w <= 0.0) {
+        return;
+    }
+    let hue = rem_euclid(degrees(atan2(lab.z, lab.y)), 360.0);
+    let k = max(pf(5u) * fringe_hue_weight(hue, pf(1u), pf(2u)), pf(6u) * fringe_hue_weight(hue, pf(3u), pf(4u))) * edge * chroma_w;
+    if (k <= 0.0) {
+        return;
+    }
+    let f = 1.0 - min(k, 1.0);
+    put_rgb(i, max(oklab_inv(vec3<f32>(lab.x, lab.y * f, lab.z * f)), vec3<f32>(0.0)));
+}

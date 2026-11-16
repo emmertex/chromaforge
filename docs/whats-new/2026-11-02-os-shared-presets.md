@@ -1,0 +1,2 @@
+### Presets shared by every library
+- Develop presets, imported profiles, local adjustment presets, export presets, print templates, the other saved presets and the slideshow settings now live in the app's settings folder, so every library has them, as in Lightroom Classic. Each library you open joins once (nothing in it is changed), and the presets of your recent libraries and their backups are gathered too. Based on work by @OneSlips.

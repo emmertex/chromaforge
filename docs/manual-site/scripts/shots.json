@@ -1,0 +1,70 @@
+{
+  "layouts": {
+    "classic": {
+      "size": "1600x1000",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.modernLayout",
+            "params": {
+              "on": false
+            }
+          }
+        },
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.compactLayout",
+            "params": {
+              "on": false
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "icon:masking",
+        "$colour": "",
+        "$presets": "",
+        "$profiles": ""
+      }
+    },
+    "modern": {
+      "size": "1280x800",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.modernLayout",
+            "params": {
+              "on": true
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "modern:group:masks"
+      }
+    },
+    "compact": {
+      "size": "1600x1000",
+      "steps": [
+        {
+          "method": "engine.execute",
+          "params": {
+            "command": "view.compactLayout",
+            "params": {
+              "on": true
+            }
+          }
+        }
+      ],
+      "vars": {
+        "$masks": "icon:masking",
+        "$colour": "",
+        "$presets": "",
+        "$profiles": ""
+      }
+    }
+  }
+}

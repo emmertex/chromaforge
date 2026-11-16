@@ -1,0 +1,27 @@
+---
+title: Print job and colour
+description: Print to a printer, PDF or JPEG with colour management.
+sidebar:
+  order: 10
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Print Job** panel (bottom of the right column): **Print to** Printer, **PDF File** or **JPEG File**.
+- **Draft Mode Printing**, **Print Resolution** 72–720 ppi, **Print Sharpening** (Low / Standard / High for Glossy or Matte), **16 Bit Output** (PDF; JPEG pages stay 8-bit and say so).
+- **Color Management**: **Profile** Managed by Printer or a printer / paper ICC profile (RGB only; CMYK is refused), **Intent** Perceptual or Relative with **Black Point Compensation**.
+- **Print Adjustment**: Brightness and Contrast of the print only, not your edits.
+- **Print to File…** writes the file; **Print One** prints a single copy; **Copies** up to 999.
+- Printers: **Find Printers** lists the system's (Windows spooler) and IPP / CUPS printers. `ipps://` works over TLS; a self-made certificate is shown with its fingerprint and a **Trust Certificate** button.
+- Per printer, when it reports them: Paper Type, Paper Tray, Two-Sided, Print Quality.
+- 🟡 Vendor-specific driver options are set in the printer's own preferences.
+- Runs in the background and shows in the activity stack.
+
+<Shot name="print-job" alt="Print Job panel at the bottom of the right column" menu="Window ▸ Modules ▸ Print" />
+<NeedsImage what="A real printed page or the PDF opened in a viewer" />
+
+<Aside type="note" title="Modern layout">
+  Open **Window ▸ Modules ▸ Print**, or **File ▸ Print…** for the dialog.
+</Aside>

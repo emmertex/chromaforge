@@ -1,0 +1,348 @@
+//! Format detection from leading bytes.
+
+use crate::exif::Tiff;
+use serde::{Deserialize, Serialize};
+
+/// Image container formats the app recognises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Format {
+    Jpeg,
+    Png,
+    /// Ordinary (non-camera-raw) TIFF, incl. BigTIFF.
+    Tiff,
+    WebP,
+    Avif,
+    /// HEIC / HEIF (ISO-BMFF with HEVC).
+    Heif,
+    /// JPEG XL (bare codestream or ISO-BMFF container).
+    Jxl,
+    Gif,
+    Bmp,
+    /// Photoshop PSD / PSB (merged composite).
+    Psd,
+    /// TIFF-structured camera raw (DNG, CR2, NEF, ARW, PEF, ORF, RW2, SRW, 3FR, IIQ, ERF, …):
+    /// route to `lcc-raw`.
+    RawTiffLike,
+    /// Non-TIFF camera raw containers (CR3, RAF, CRW, MRW, X3F): route to `lcc-raw`.
+    RawOther,
+}
+
+impl Format {
+    /// Canonical lowercase file extension.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Format::Jpeg => "jpg",
+            Format::Png => "png",
+            Format::Tiff => "tif",
+            Format::WebP => "webp",
+            Format::Avif => "avif",
+            Format::Heif => "heic",
+            Format::Jxl => "jxl",
+            Format::Gif => "gif",
+            Format::Bmp => "bmp",
+            Format::Psd => "psd",
+            Format::RawTiffLike => "dng",
+            Format::RawOther => "raw",
+        }
+    }
+
+    pub fn mime(self) -> &'static str {
+        match self {
+            Format::Jpeg => "image/jpeg",
+            Format::Png => "image/png",
+            Format::Tiff => "image/tiff",
+            Format::WebP => "image/webp",
+            Format::Avif => "image/avif",
+            Format::Heif => "image/heic",
+            Format::Jxl => "image/jxl",
+            Format::Gif => "image/gif",
+            Format::Bmp => "image/bmp",
+            Format::Psd => "image/vnd.adobe.photoshop",
+            Format::RawTiffLike | Format::RawOther => "image/x-raw",
+        }
+    }
+
+    /// Whether [`crate::decode`] can decode this format in this build.
+    pub fn can_decode(self) -> bool {
+        self.not_decodable().is_none()
+    }
+
+    /// Why [`crate::decode`] can't decode this format in this build (`None`: it can). The
+    /// [`crate::Error::Unsupported`] a decode returns carries the same reason.
+    pub fn not_decodable(self) -> Option<&'static str> {
+        match self {
+            #[cfg(not(feature = "jxl"))]
+            Format::Jxl => Some("built without the `jxl` feature"),
+            #[cfg(not(feature = "heif"))]
+            Format::Heif => Some(crate::heif::NOT_IN_BUILD),
+            #[cfg(target_arch = "wasm32")]
+            Format::Avif => Some("AVIF isn't decoded in the web build"),
+            Format::RawTiffLike | Format::RawOther => Some("camera raw: decode with lcc-raw"),
+            _ => None,
+        }
+    }
+
+    /// Camera raw formats (decode with `lcc-raw`).
+    pub fn is_raw(self) -> bool {
+        matches!(self, Format::RawTiffLike | Format::RawOther)
+    }
+}
+
+/// Detect the format from the first bytes of a file (a few KiB suffices; TIFF raw detection walks IFDs
+/// when more of the file is available).
+pub fn sniff(b: &[u8]) -> Option<Format> {
+    if b.len() < 4 {
+        return None;
+    }
+    if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(Format::Jpeg);
+    }
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(Format::Png);
+    }
+    if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        return Some(Format::Gif);
+    }
+    if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        return Some(Format::WebP);
+    }
+    if b.starts_with(&[0xFF, 0x0A]) || b.starts_with(&[0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A]) {
+        return Some(Format::Jxl);
+    }
+    if b.starts_with(b"8BPS") && b.len() >= 6 && matches!(u16::from_be_bytes([b[4], b[5]]), 1 | 2) {
+        return Some(Format::Psd);
+    }
+    if b.starts_with(b"FUJIFILMCCD-RAW") || b.starts_with(b"\0MRM") || b.starts_with(b"FOVb") {
+        return Some(Format::RawOther);
+    }
+    if b.len() >= 14 && &b[0..2] == b"II" && &b[6..14] == b"HEAPCCDR" {
+        return Some(Format::RawOther);
+    }
+    if b.len() >= 12 && &b[4..8] == b"ftyp" {
+        return sniff_bmff(b);
+    }
+    if b.starts_with(b"IIRO") || b.starts_with(b"IIRS") || b.starts_with(b"MMOR") || b.starts_with(b"IIU\0") {
+        // Olympus ORF / Panasonic RW2: TIFF-structured with a private magic.
+        return Some(Format::RawTiffLike);
+    }
+    if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
+        return Some(if tiff_is_raw(b) { Format::RawTiffLike } else { Format::Tiff });
+    }
+    if b.starts_with(b"II+\0") || b.starts_with(b"MM\0+") {
+        return Some(Format::Tiff);
+    }
+    if b.len() >= 26 && b.starts_with(b"BM") {
+        let dib = u32::from_le_bytes([b[14], b[15], b[16], b[17]]);
+        if matches!(dib, 12 | 16 | 40 | 52 | 56 | 64 | 108 | 124) {
+            return Some(Format::Bmp);
+        }
+    }
+    None
+}
+
+fn sniff_bmff(b: &[u8]) -> Option<Format> {
+    let size = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+    let end = size.clamp(12, b.len().min(4096));
+    let mut brands: Vec<&[u8]> = vec![&b[8..12]];
+    let mut p = 16;
+    while p + 4 <= end {
+        brands.push(&b[p..p + 4]);
+        p += 4;
+    }
+    let has = |x: &[u8]| brands.contains(&x);
+    if has(b"crx ") {
+        return Some(Format::RawOther);
+    }
+    if has(b"jxl ") {
+        return Some(Format::Jxl);
+    }
+    if has(b"avif") || has(b"avis") {
+        return Some(Format::Avif);
+    }
+    if [&b"heic"[..], b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"].iter().any(|x| has(x)) {
+        return Some(Format::Heif);
+    }
+    None
+}
+
+/// Heuristic camera-raw detection for classic TIFF: DNGVersion, the CR2 signature, CFA/LinearRaw
+/// photometric or raw-only compressions in IFD0 or its SubIFDs, or a camera Make with 10–16-bit data
+/// and no ordinary photometric.
+fn tiff_is_raw(b: &[u8]) -> bool {
+    if b.len() >= 10 && &b[8..10] == b"CR" {
+        return true;
+    }
+    let Some(t) = Tiff::new(b) else { return false };
+    let Some(ifd0) = t.first_ifd() else { return false };
+    let sony = t.ifd(ifd0).is_some_and(|(entries, _)| {
+        entries.iter().any(|e| e.tag == 0x010f && t.bytes(e).and_then(|v| v.get(..4)).is_some_and(|v| v.eq_ignore_ascii_case(b"SONY")))
+    });
+    let samsung = t.ifd(ifd0).is_some_and(|(entries, _)| {
+        entries.iter().any(|e| e.tag == 0x010f && t.bytes(e).and_then(|v| v.get(..7)).is_some_and(|v| v.eq_ignore_ascii_case(b"SAMSUNG")))
+    });
+    // The DSLR-A100 ARW: an old-style-JPEG IFD0 whose SubIFDs pointer addresses the raw data (same rule as lcc-raw).
+    let a100 = sony
+        && t.ifd(ifd0).is_some_and(|(entries, _)| {
+            let model = entries.iter().find(|e| e.tag == 0x0110).and_then(|e| t.bytes(e));
+            let model_is = model.is_some_and(|v| v.split(|&c| c == 0).next() == Some(&b"DSLR-A100"[..]));
+            let old_jpeg = entries.iter().find(|e| e.tag == 0x0103).and_then(|e| t.uint(e)) == Some(6);
+            model_is && old_jpeg && entries.iter().any(|e| e.tag == 0x014A)
+        });
+    if a100 {
+        return true;
+    }
+    let mut stack = vec![ifd0];
+    let mut seen = 0;
+    while let Some(pos) = stack.pop() {
+        seen += 1;
+        if seen > 16 {
+            break;
+        }
+        let Some((entries, _)) = t.ifd(pos) else { continue };
+        // Samsung reuses the ordinary TIFF PackBits value 32773 for its sensor coding.
+        // Require its Make and CFA tag so exported PackBits TIFFs remain ordinary TIFFs.
+        if samsung
+            && entries.iter().any(|e| e.tag == 0x828e)
+            && entries.iter().find(|e| e.tag == 0x0103).and_then(|e| t.uint(e)).is_some_and(|v| matches!(v, 32772 | 32773))
+        {
+            return true;
+        }
+        // Sony M/S lossless ARWs retain a dummy CFA pattern, but store linear YCbCr.
+        // Requiring the raw pattern plus this layout keeps ordinary Sony TIFFs as TIFFs.
+        let uint = |tag| entries.iter().find(|e| e.tag == tag).and_then(|e| t.uint(e));
+        if sony && entries.iter().any(|e| e.tag == 0x828e) && uint(0x0103) == Some(7) && uint(0x0106) == Some(6) && uint(0x0115) == Some(3) {
+            return true;
+        }
+        for e in &entries {
+            match e.tag {
+                0xC612 => return true, // DNGVersion
+                0x0106 if matches!(t.uint(e), Some(32803 | 34892)) => return true,
+                0x0103 if matches!(t.uint(e), Some(32767 | 32769 | 32770 | 34316 | 34713 | 65000 | 65535)) => return true,
+                0x014A => {
+                    // SubIFDs (LONG or IFD type): walk them.
+                    let n = e.count.min(8) as usize;
+                    if n == 1 {
+                        if let Some(p) = t.uint(e) {
+                            stack.push(p as usize);
+                        }
+                    } else if let Some(off) = t.u32_at(e.value_pos) {
+                        for i in 0..n {
+                            if let Some(p) = t.u32_at(off as usize + 4 * i) {
+                                stack.push(p as usize);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn magic_numbers() {
+        assert_eq!(sniff(b"\xFF\xD8\xFF\xE0\0\x10JFIF"), Some(Format::Jpeg));
+        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n...."), Some(Format::Png));
+        assert_eq!(sniff(b"GIF89a......"), Some(Format::Gif));
+        assert_eq!(sniff(b"RIFF\0\0\0\0WEBPVP8 "), Some(Format::WebP));
+        assert_eq!(sniff(b"\0\0\0\x1cftypavif\0\0\0\0avifmif1miaf"), Some(Format::Avif));
+        assert_eq!(sniff(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic"), Some(Format::Heif));
+        assert_eq!(sniff(b"\0\0\0\x18ftypcrx \0\0\0\x01crx isom"), Some(Format::RawOther));
+        assert_eq!(sniff(&[0xFF, 0x0A, 0xFA, 0x7F]), Some(Format::Jxl));
+        assert_eq!(sniff(b"8BPS\0\x01\0\0\0\0\0\0"), Some(Format::Psd));
+        assert_eq!(sniff(b"FUJIFILMCCD-RAW 0201"), Some(Format::RawOther));
+        assert_eq!(sniff(b"II*\0\x08\0\0\0\0\0"), Some(Format::Tiff));
+        assert_eq!(sniff(b"II*\0\x10\0\0\0CR\x02\0"), Some(Format::RawTiffLike));
+        assert_eq!(sniff(b"IIRO\x08\0\0\0"), Some(Format::RawTiffLike));
+        assert_eq!(sniff(b"nope"), None);
+        assert_eq!(sniff(b""), None);
+    }
+
+    #[test]
+    fn samsung_private_compressions_route_to_raw_in_root_and_subifd() {
+        fn entry(b: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32) {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&typ.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&value.to_le_bytes());
+        }
+        for compression in [32772u32, 32773] {
+            for subifd in [false, true] {
+                let mut b = b"II*\0\x08\0\0\0".to_vec();
+                let count = if subifd { 2u16 } else { 3 };
+                let make = 8 + 2 + u32::from(count) * 12 + 4;
+                b.extend_from_slice(&count.to_le_bytes());
+                entry(&mut b, 0x010f, 2, 8, make);
+                if subifd {
+                    entry(&mut b, 0x014a, 4, 1, make + 8);
+                    b.extend_from_slice(&0u32.to_le_bytes());
+                    b.extend_from_slice(b"SAMSUNG\0");
+                    b.extend_from_slice(&2u16.to_le_bytes());
+                }
+                entry(&mut b, 0x0103, 3, 1, compression);
+                let pattern = b.len();
+                entry(&mut b, 0x828e, 1, 4, 0x02010100);
+                b.extend_from_slice(&0u32.to_le_bytes());
+                if !subifd {
+                    b.extend_from_slice(b"SAMSUNG\0");
+                }
+                assert_eq!(sniff(&b), Some(Format::RawTiffLike), "compression {compression}, subifd {subifd}");
+                // The same compression without raw evidence must not capture ordinary TIFFs.
+                b[pattern..pattern + 2].copy_from_slice(&0x0100u16.to_le_bytes());
+                assert_eq!(sniff(&b), Some(Format::Tiff));
+            }
+        }
+    }
+
+    #[test]
+    fn dng_detected() {
+        // II*, IFD at 8 with a single DNGVersion entry.
+        let mut b = b"II*\0\x08\0\0\0".to_vec();
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0xC612u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&4u32.to_le_bytes());
+        b.extend_from_slice(&[1, 4, 0, 0]);
+        b.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(sniff(&b), Some(Format::RawTiffLike));
+    }
+
+    #[test]
+    fn sony_linear_ycbcr_subifd_is_raw_but_ordinary_tiff_is_not() {
+        fn fixture(compression: u32, pattern: bool) -> Vec<u8> {
+            let mut b = b"II*\0\x08\0\0\0".to_vec();
+            let entry = |b: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32| {
+                b.extend_from_slice(&tag.to_le_bytes());
+                b.extend_from_slice(&typ.to_le_bytes());
+                b.extend_from_slice(&count.to_le_bytes());
+                b.extend_from_slice(&value.to_le_bytes());
+            };
+            b.extend_from_slice(&2u16.to_le_bytes());
+            entry(&mut b, 0x010f, 2, 5, 38);
+            entry(&mut b, 0x014a, 4, 1, 44);
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(b"SONY\0\0");
+            b.extend_from_slice(&(if pattern { 4u16 } else { 3 }).to_le_bytes());
+            entry(&mut b, 0x0103, 3, 1, compression);
+            entry(&mut b, 0x0106, 3, 1, 6);
+            entry(&mut b, 0x0115, 3, 1, 3);
+            if pattern {
+                entry(&mut b, 0x828e, 1, 4, u32::MAX);
+            }
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b
+        }
+        let mut raw = fixture(7, true);
+        assert_eq!(sniff(&raw), Some(Format::RawTiffLike));
+        assert_eq!(sniff(&fixture(7, false)), Some(Format::Tiff));
+        assert_eq!(sniff(&fixture(1, true)), Some(Format::Tiff));
+        assert_eq!(sniff(&raw[..38]), Some(Format::Tiff));
+        raw[38..42].copy_from_slice(b"TEST");
+        assert_eq!(sniff(&raw), Some(Format::Tiff));
+    }
+}

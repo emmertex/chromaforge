@@ -1,0 +1,41 @@
+---
+title: Remove and heal
+description: Spot removal with Remove, Heal and Clone, dust, blemishes and red eye.
+sidebar:
+  order: 5
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="heal" alt="A heal spot with its source circle on a tree" />
+
+- **Open** the Remove tool (`H`) from the tool strip.
+- **Modes**: **Remove** (the app picks the source), **Heal**, **Clone**, **Content-Aware** (partial: rebuilt from patches of the surroundings), and **Generative**. `⌥⇧Q` cycles the selected spot's mode.
+- **Click or paint** on the blemish. The target circle and its **source** circle appear; drag either to move it. **Refresh source** picks another.
+- **Size**, **Feather**, **Opacity** sliders; `[` and `]` change the size.
+- **Select** a spot by clicking its pin; `Delete` removes it. **Delete all spots** is at the bottom.
+- **Visualize Spots** (`A`) shows a threshold view that makes dust and blemishes stand out; **Tool Overlay** (Auto / Always / Never).
+- **Remove Dust** finds soft dust shadows and adds spots for them. It can also run after import. See [Sensor and plug-ins](../sensor-and-plugins/).
+- **Infrared Dust Removal**, at the top of the panel for a scan from a film scanner with an infrared pass (VueScan "64-bit RGBI", SilverFast HDRi): one switch fills in the dust, hairs and scratches that pass shows, before the picture is converted, as the scanner's own infrared cleaning does, and keeps the film's grain in the filled areas. Dense dye lets a trace of the picture into the pass; that trace is measured against the red channel and taken out, so a zip, a wire or a sign's border in the photo is not taken for a hair. **View** shows the **Photo**, the **Infrared** pass in grey with what will be filled in red, or the **Mask** of what will be filled, white on black; the view stays while you drag **Strength** (how faint a mark still counts) and **Grow** (how far each mark is widened). **Edit as Mask** makes the same marks a mask of the photo: brush more in or out, then **Fill Selected Mask** or **Generate into Selected Mask** removes what it covers (a large fibre, say). A scan without the pass (a camera scan) doesn't show the section: clean it with **Remove Dust** and the brush, as any photo.
+- **Find Blemishes**: spots on skin in faces (beyond Lightroom). See [Retouch](../../ai/retouch/).
+- Spots are part of the photo's settings: they copy with **Copy Edit Settings** and sync to other photos.
+- Generative remove: [Generative remove](../../ai/generative-remove/).
+
+## Red eye
+
+<Shot name="redeye" alt="The Red Eye panel with Red Eye and Pet Eye buttons" menu="Window ▸ Edit Panels ▸ Red Eye" />
+
+- **Red Eye** tool: drag over an eye; the pupil is found automatically.
+- **Pet Eye** adds a catchlight control. Delete a correction by selecting it.
+
+## Dodge and burn
+
+<Shot name="dodge-burn" alt="A Dodge brush mask with exposure +0.35" menu="Heal, Dodge and Burn are in the dock" />
+
+- **Dodge** and **Burn** start a brush mask that lightens (+0.35 exposure) or darkens (−0.35). Paint, then adjust like any [mask](../masking/).
+
+<Aside type="note" title="Modern layout">
+  **Heal**, **Dodge** and **Burn** are in the dock. Red Eye: **Window ▸ Edit Sections** (or the tool strip in **Side**).
+</Aside>

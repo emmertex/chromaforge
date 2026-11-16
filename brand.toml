@@ -1,0 +1,78 @@
+# Changing anything in [product] is safe at any time: rebuild and repackage.
+[product]
+display_name   = "Chromaforge"                    # window title, menus, About, dialogs, docs
+short_name     = "Chromaforge"                    # macOS menu bar, taskbar, notifications
+tagline        = "Photo library and raw development"
+vendor         = "Chromaforge contributors"
+homepage       = "https://github.com/emmertex/chromaforge"
+repository     = "https://github.com/emmertex/chromaforge"
+# The web site (Help menu "<app> Website", About) and the user guide (Help menu "<app> Help"); leave
+# either out for `homepage` / `repository`. Not `homepage` itself: the video sidecar XMP namespace
+# (`lcc_meta::xmp::video_ns`) is built from that, and must not change.
+website        = "https://emmertex.github.io/chromaforge/"
+docs           = "https://emmertex.github.io/chromaforge/"
+# The repository the release manifest (latest.json) names its files under. Installed builds only
+# download files under their own `repository` or a [legacy] `repositories` entry, and GitHub
+# redirects a renamed repository's old URLs: so after a rename this stays the OLD repository
+# until every install runs a build that knows the new one. Empty: `repository`.
+release_repository = "https://github.com/emmertex/lightcraft-classic"
+discord        = "https://discord.gg/c3dfYATzsQ"  # community chat (Help menu, About); leave out for none
+calibration_discord = "https://discord.gg/Vvqg2QhQXk" # where contributors send camera calibrations; leave out for the repository
+calibration_thread  = "Chromaforge-colour"            # the Discord thread for them
+developer_id   = "com.emmertex.chromaforge"      # AppStream <developer id>: lowercase reverse-DNS of whoever ships it
+binary         = "chromaforge"                   # desktop executable name in packages
+cli_binary     = "chromaforge-cli"
+env_prefix     = "CHROMAFORGE"                   # <PREFIX>_LOG, <PREFIX>_GPU, …
+mcp_server     = "chromaforge"                   # MCP server id shown to agents
+icon_svg       = "brand/icon.svg"       # source for every generated icon
+logo_svg       = "brand/logo.svg"       # identity plate default, About box
+
+# Identifiers stored in users' files and OS registrations. Changing these is allowed, but the old
+# values MUST be appended to [legacy] in the same commit, so existing installs keep working.
+[identity]
+app_id          = "com.emmertex.chromaforge"         # reverse-DNS: bundle id, Flatpak id, MIME/desktop ids
+android_package = "com.emmertex.chromaforge"        # Android / Play Store package: permanent once on the Play Store
+settings_dir    = "Chromaforge"                      # ~/.config/<x>, ~/Library/Application Support/<x>, %APPDATA%\<x>
+library_default = "Chromaforge Library"              # default library folder name under Pictures
+catalog_ext     = "chromacat"
+preset_ext      = "chromapreset"
+url_scheme      = "chromaforge"                      # <scheme>:// deep links, OAuth redirects
+
+# Never derived from the product name: these stay valid across renames forever.
+[stable]
+xmp_namespace_uri    = "https://ns.example.invalid/develop/1.0/"
+xmp_namespace_prefix = "nnyd"
+catalog_magic        = "PHOTO-CATALOG"      # file-format magic; neutral on purpose
+
+# The key the in-app updater checks a release's SHA256SUMS.txt.sig against (ed25519 public key, base64;
+# `cargo xtask update-key new` prints it); two while the key is being rotated. Empty: this build checks for
+# updates and links to the release, but never downloads or installs one. A fork sets its own.
+# Changing it: docs/releasing.md → Update signing key.
+[updates]
+public_keys = ["PtE/NoJCHCje8yQ9XftBT1GN6aT/5TSu6URW9Vp1aaI="]
+
+# Previous identities, read on startup for migration (settings, catalogs, presets, env vars).
+[legacy]
+settings_dirs = ["NoNameYet", "LightCraft", "LightCraft Classic"]
+env_prefixes  = ["NONAMEYET", "LIGHTCRAFT", "LIGHTCRAFT_CLASSIC"]
+preset_exts   = ["nnypreset", "lcpreset", "lccpreset"]
+catalog_exts  = ["nnycat", "lccat"]
+# Repositories this app was released from before: their release files are still accepted as
+# updates (a renamed repository's URLs keep working through GitHub's redirect).
+repositories  = ["https://github.com/emmertex/lightcraft-classic"]
+# Earlier display names: while an entry exists here, the macOS disk image also carries a hidden
+# `<name>.app` copy under it, because the updater of a build released under that name looks for its own
+# name in the image (fork #411). Add an entry with the rename, remove it a few days after the first
+# release that has it, once installs have updated through it. Empty since 26.46.x: the LightCraft
+# Classic transition completed with v26.43.5+ → v26.46.0.
+app_ids       = ["org.example.NoNameYet", "org.example.LightCraftClassic", "com.emmertex.LightCraftClassic"]
+
+# The project this one is forked from, for docs that compare the two ({{upstream_name}}, … in `*.md.in`).
+[upstream]
+name       = "LightCraft"
+repository = "https://github.com/storytold/lightcraft"
+slug       = "storytold/lightcraft"
+
+# Ids of other applications the app looks for (not ours; never renamed with the brand).
+[third_party]
+photocraft_app_id = "ai.storyteller.photocraft"   # PhotoCraft's Flatpak / desktop-entry id (Photo > Edit In)

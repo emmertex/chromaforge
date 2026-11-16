@@ -1,0 +1,22 @@
+---
+title: Detail
+description: Sharpening, noise reduction and hot pixels.
+sidebar:
+  order: 8
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="detail-section" alt="The Detail section with sharpening and noise reduction sliders" />
+
+- **Sharpening**: **Amount**, **Radius**, **Detail**, **Masking**. Radius and Detail need process V4 or later: [Process versions](../process-versions/).
+- **Noise Reduction**: **Luminance**, **Detail**, **Contrast**; **Color**, **Detail**, **Smoothness**. Same look in grid, loupe, 1:1 and export.
+- **Hot pixel removal**: a box under Noise Reduction (outliers); raw hot, dead and stuck pixels are also fixed on decode. See [Sensor and plug-ins](../sensor-and-plugins/).
+- **AI Denoise** and **Super Resolution**, **Raw Details**: [Denoise](../../ai/denoise/), [Super resolution](../../ai/super-resolution/).
+- Local sharpness and noise belong to [masks](../masking/).
+
+<Aside type="note" title="Modern layout">
+  **Detail** in the dock holds Sharpening, Radius, Detail, Masking and both reductions; **Detail** under it opens the full section.
+</Aside>

@@ -1,0 +1,173 @@
+//! Active-filter chips under the grid header: one removable chip per constraint (search, rating,
+//! date, keyword…), "+N more" for what does not fit, and "Clear all". The count next to them says
+//! how many of the source's photos match, so an empty grid never looks like an empty folder.
+
+use egui::{Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use lcc_engine::FilterChip;
+use serde_json::json;
+
+use crate::LccApp;
+use crate::theme::Tokens;
+use crate::widgets::register;
+
+pub const HEIGHT: f32 = 32.0;
+const GAP: f32 = 6.0;
+/// Room kept for "+N more" and "Clear all".
+const TAIL: f32 = 170.0;
+
+/// "14 of 120 photos" when a filter narrows the source, else "14 photos".
+pub fn count_text(matching: usize, total: Option<usize>, filtering: bool) -> String {
+    match total {
+        // (a held view can show more than now match its source: no "3 of 2")
+        Some(t) if filtering && t > matching => crate::i18n::tr_format!("{matching} of {t} photos", matching = matching, t = t),
+        _ => crate::i18n::tr_format!("{matching} photos", matching = matching),
+    }
+}
+
+/// Width of a chip with `label` (text + the × button).
+fn chip_width(ui: &egui::Ui, label: &str, font: egui::FontId) -> f32 {
+    ui.painter().layout_no_wrap(label.to_string(), font, egui::Color32::WHITE).size().x + 12.0 + 22.0
+}
+
+/// Localise generated chip labels without rewriting search text or metadata values.
+pub(crate) fn display_label(chip: &FilterChip, filter: &lcc_catalog::Filter, catalog: &lcc_catalog::Catalog) -> String {
+    use crate::i18n::{date_group_label, rules_label, tr};
+    if crate::i18n::language() == crate::i18n::Locale::En {
+        return chip.label.clone();
+    }
+    if chip.clear.get("ruleSet").is_some()
+        && let Some(rules) = &filter.rule_set
+    {
+        return format!("{}: {}", tr("Rules"), rules_label(rules, catalog));
+    }
+    if chip.clear.get("label").is_some() {
+        let shown = filter.labels_shown().unwrap_or_default();
+        let name = |label: &lcc_catalog::ColorLabel| crate::i18n::color_label(catalog, *label);
+        let or = |labels: &[lcc_catalog::ColorLabel]| labels.iter().map(name).collect::<Vec<_>>().join(&format!(" {} ", tr("or")));
+        let names = if shown.is_empty() {
+            let plural = if filter.labels.len() > 1 { format!("({})", or(&filter.labels)) } else { or(&filter.labels) };
+            format!("{} {} {plural}", filter.label.as_ref().map(name).unwrap_or_default(), tr("and"))
+        } else {
+            or(&shown)
+        };
+        return format!("{}: {names}", tr("Label"));
+    }
+    if chip.clear.get("dateFrom").is_some() || chip.clear.get("dateTo").is_some() {
+        return match (&filter.date_from, &filter.date_to) {
+            (Some(from), Some(to)) => format!("{} {} – {}", tr("Captured"), date_group_label(from, false), date_group_label(to, false)),
+            (Some(from), None) => format!("{} {}", tr("Captured from"), date_group_label(from, false)),
+            (None, Some(to)) => format!("{} {}", tr("Captured until"), date_group_label(to, false)),
+            _ => chip.label.clone(),
+        };
+    }
+    if chip.clear.get("semantic").is_some()
+        && let Some(q) = &filter.semantic
+    {
+        return format!("{}: “{q}”", tr("AI search"));
+    }
+    if chip.clear.get("only").is_some() {
+        return format!("{} {}", tr("Only"), crate::i18n::tr_format!("{n} photos", n = if filter.only_none { 0 } else { filter.only.len() }));
+    }
+    if let Some((prefix, value)) = chip.label.split_once(": ") {
+        let value = if matches!(prefix, "Flag" | "Type") {
+            tr(value).to_string()
+        } else if prefix == "Date" {
+            filter.date.as_ref().map_or_else(|| value.to_string(), |date| date_group_label(date, false))
+        } else if prefix == "Imported" {
+            filter.imported.as_ref().map_or_else(|| value.to_string(), |date| date_group_label(date, false))
+        } else {
+            value.to_string()
+        };
+        return format!("{}: {value}", tr(prefix));
+    }
+    if let Some(value) = chip.label.strip_prefix("Rating ") {
+        return format!("{} {value}", tr("Rating"));
+    }
+    tr(&chip.label).to_string()
+}
+
+/// Draws the strip; does nothing without chips.
+pub fn show(app: &mut LccApp, ui: &mut egui::Ui, chips: &[FilterChip]) {
+    if chips.is_empty() {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+    ui.painter().rect_filled(bar, 0.0, t.canvas);
+    register(ui.ctx(), "filterchips", bar);
+    let font = t.font(12.0);
+    let right = bar.right() - 16.0;
+    let mut x = bar.left() + 20.0;
+    let mut shown = 0;
+    for (i, c) in chips.iter().enumerate() {
+        let label = display_label(c, &app.session.filter, &app.session.catalog);
+        let w = chip_width(ui, &label, font.clone());
+        // always show the first chip; keep room for the tail unless this is the last one that fits
+        let room = right - x - if i + 1 == chips.len() { 90.0 } else { TAIL };
+        if i > 0 && w > room {
+            break;
+        }
+        let r = Rect::from_min_size(pos2(x, bar.center().y - 11.0), vec2(w.min(right - x), 22.0));
+        ui.painter().rect(r, 11.0, t.field, Stroke::new(1.0, t.accent.gamma_multiply(0.6)), StrokeKind::Inside);
+        let text_r = Rect::from_min_max(r.min, pos2(r.right() - 22.0, r.max.y));
+        ui.painter().with_clip_rect(text_r).text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, &label, font.clone(), t.text);
+        let xr = Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(18.0, 18.0));
+        let resp = ui.interact(xr, egui::Id::new(("filter-chip-x", i)), Sense::click()).on_hover_text(crate::i18n::tr("Remove this filter"));
+        crate::widgets::announce(&resp, format!("{}: {label}", crate::i18n::tr("Remove this filter")));
+        register(ui.ctx(), format!("chip:{i}"), xr);
+        let col = if resp.hovered() { t.text } else { t.text_dim };
+        let m = 3.5;
+        let (a, b) = (xr.center() - vec2(m, m), xr.center() + vec2(m, m));
+        ui.painter().line_segment([a, b], Stroke::new(1.3, col));
+        ui.painter().line_segment([pos2(a.x, b.y), pos2(b.x, a.y)], Stroke::new(1.3, col));
+        if resp.clicked() {
+            let _ = app.run("library.filter", c.clear.clone());
+            if c.clear.get("text").is_some() || c.clear.get("semantic").is_some() {
+                app.ui.search.clear();
+            }
+        }
+        x = r.right() + GAP;
+        shown = i + 1;
+    }
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(pos2(x, bar.top() + 4.0), pos2(right, bar.bottom() - 4.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 8.0;
+    let hidden = &chips[shown..];
+    if !hidden.is_empty() {
+        let more = crate::widgets::text_button(&mut child, "chipsMore", &crate::i18n::tr_format!("+{} more", hidden.len()), false);
+        egui::Popup::menu(&more).show(|ui| {
+            for c in hidden {
+                if ui
+                    .button(format!("{}  ✕", display_label(c, &app.session.filter, &app.session.catalog)))
+                    .on_hover_text(crate::i18n::tr("Remove this filter"))
+                    .clicked()
+                {
+                    let _ = app.run("library.filter", c.clear.clone());
+                    if c.clear.get("text").is_some() || c.clear.get("semantic").is_some() {
+                        app.ui.search.clear();
+                    }
+                }
+            }
+        });
+    }
+    if crate::widgets::text_button(&mut child, "chipsClearAll", crate::i18n::tr("Clear all"), false).clicked() {
+        app.ui.search.clear();
+        let _ = app.run("library.clearFilter", json!({}));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::count_text;
+
+    #[test]
+    fn count_says_matching_of_total_only_when_a_filter_narrows() {
+        assert_eq!(count_text(0, Some(14), true), "0 of 14 photos");
+        assert_eq!(count_text(14, Some(14), true), "14 photos");
+        assert_eq!(count_text(5, Some(14), false), "5 photos");
+        assert_eq!(count_text(3, None, true), "3 photos");
+    }
+}

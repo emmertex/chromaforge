@@ -1,0 +1,28 @@
+---
+title: Video
+description: "Video clips: import, play, trim, grade and export."
+sidebar:
+  order: 16
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- **Import** clips like photos: MP4, MOV, M4V, MKV, WebM, MPEG-TS (.ts, .m2ts, .mts), MPEG (.mpg, .vob), MXF. The grid shows a poster frame; Info shows duration, frame rate, codec, resolution, audio.
+- Decoded: H.264, HEVC, VP9, AV1, ProRes, DNxHD / DNxHR, APV, MPEG-1/2. VP8 and MJPEG are listed but not played.
+- Search with `video:yes`.
+- **Play** in the loupe: Space plays / pauses, ← / → step a frame, drag the playhead to scrub. Sound plays on Linux, macOS and Windows.
+- **Trim**: drag the start and end handles; **Photo ▸ Video ▸ Reset Trim** restores the whole clip. 🟡
+- **Set Poster Frame** and **Capture Frame** (saves a graded JPEG stacked with the clip): **Photo ▸ Video**.
+- **Edit**: Light, Color, tone curve, Color Mixer, Color Grading and presets that only use those. Masks, spot removal, red eye, lens corrections, denoise and crop are greyed out ("Not available for video").
+- **Export**: the sheet's **Video** section: H.264 (MP4) or ProRes (MOV), quality, long edge. Keeps trim, grade and sound. **Original files** copies the clip.
+- **Timelapse Video…** (**File ▸ More Exports**) makes a movie from stills.
+- 🟡 No audio editing, no cuts or transitions between clips.
+
+<NeedsImage what="A video clip open in the loupe with the playhead, trim handles and Video panel" />
+<NeedsImage what="The Export sheet's Video section with a clip selected" />
+
+<Aside type="note" title="Modern layout">
+  Video commands are in the ☰ menu under **Photo ▸ Video**; the Export sheet is **☰ ▸ Shortcuts ▸ Export…**.
+</Aside>

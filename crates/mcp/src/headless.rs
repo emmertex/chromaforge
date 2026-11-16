@@ -1,0 +1,417 @@
+//! An in-process [`Session`] that answers the control-channel methods the MCP tools use, so the
+//! MCP server (and the CLI) work without a window.
+
+use std::path::Path;
+
+use lcc_engine::Session;
+use lcc_engine::catalog::PhotoId;
+use lcc_raster::Rgba8;
+use serde_json::{Value, json};
+
+use crate::backend::{Backend, ProgressHook};
+
+/// Headless backend: a [`Session`] with filesystem hooks.
+pub struct Headless {
+    pub session: Session,
+    progress: Option<ProgressHook>,
+    /// The caller is the user at a shell (`run`), not an agent (`mcp`): it may choose the program
+    /// Edit In starts. Off unless set.
+    pub trusted: bool,
+}
+
+impl Drop for Headless {
+    /// Snapshot a persistent library on exit (a no-op for in-memory sessions), after any Apple
+    /// Photos import still running (`export.addToPhotos {wait: false}`) has ended: the process
+    /// must not end in the middle of one, abandoning osascript and the import's result.
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.session.wait_for_photos_imports();
+        let _ = self.session.close_library();
+    }
+}
+
+impl Default for Headless {
+    fn default() -> Self {
+        Self::new(
+            Session::new()
+                .with_fs()
+                .with_default_denoise_models()
+                .with_default_genfill()
+                .with_system_clock()
+                .with_default_connections()
+                .with_default_face_models()
+                .with_default_ml_models()
+                .with_default_lens_profiles()
+                .with_default_sam3_model()
+                .with_default_slide_templates(),
+        )
+    }
+}
+
+impl Headless {
+    pub fn new(session: Session) -> Self {
+        Self { session, progress: None, trusted: false }
+    }
+
+    /// A headless session with the procedurally generated demo library.
+    pub fn demo() -> Self {
+        Self::new(
+            Session::with_demo()
+                .with_fs()
+                .with_default_denoise_models()
+                .with_default_genfill()
+                .with_system_clock()
+                .with_default_connections()
+                .with_default_face_models()
+                .with_default_ml_models()
+                .with_default_lens_profiles()
+                .with_default_sam3_model()
+                .with_default_slide_templates(),
+        )
+    }
+
+    fn photo_or_active(&self, p: &Value) -> Result<PhotoId, String> {
+        let given = match p.get("id") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(PhotoId(v.as_u64().ok_or_else(|| format!("`id` must be a non-negative integer photo id, got {v}"))?)),
+        };
+        given.or(self.session.active()).ok_or_else(|| "no photo (import one or pass `id`)".to_string())
+    }
+
+    /// Render `id` (or the active photo) so its long edge is at most `size` pixels.
+    pub fn render(&mut self, p: &Value, default_size: u64) -> Result<Rgba8, String> {
+        let id = self.photo_or_active(p)?;
+        let size = p.get("size").or(p.get("longEdge")).and_then(Value::as_u64).unwrap_or(default_size).clamp(16, 16384) as usize;
+        Ok(self.session.render_now(id, size, size)?.image)
+    }
+
+    /// The UI command `app.export`, emulated with the same parameters as the desktop app
+    /// (see `lcc_engine::export::ExportOptions::from_json`, plus `ids`, `dir`, `path`).
+    /// With `path` and no `format`, the format follows the path's extension.
+    fn export(&mut self, p: &Value) -> Result<Value, String> {
+        use lcc_engine::export::{Destination, ExportFormat, ExportOptions, Resize, prepare_batch, run_batch};
+        let p = &self.session.export_params_or(p, ExportFormat::Png)?;
+        // PNG for a `path` that names no format; `bitDepth` is checked against the format written
+        let mut opts = ExportOptions::from_params_or(p, ExportFormat::Png).map_err(|e| e.to_string())?;
+        if !ExportOptions::has_size_param(p) {
+            opts.resize = Some(Resize::long_edge(3000));
+        }
+        let exact = p.get("path").and_then(Value::as_str);
+        if let (Some(path), None) = (exact, p.get("format")) {
+            let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+            opts.format = ExportFormat::parse(&ext).unwrap_or(ExportFormat::Png);
+            // a movie path: the clip's movie format (the format stays a rendered one)
+            if let (None, Some(v)) = (p.get("videoFormat"), lcc_engine::export_video::VideoFormat::parse(&ext)) {
+                opts.video_format = v;
+            }
+        }
+        let ids: Vec<_> = match p.get("ids").and_then(Value::as_array) {
+            Some(a) => a
+                .iter()
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| format!("`ids` must be non-negative integer photo ids, got {v}")))
+                .collect::<Result<_, _>>()?,
+            // like the desktop app: the selection (in grid order), else the given / active photo
+            None if p.get("id").is_none() && self.session.selection.ids.len() > 1 => {
+                let sel: std::collections::HashSet<_> = self.session.selection.ids.iter().copied().collect();
+                self.session.visible_cloned().into_iter().filter(|id| sel.contains(id)).collect()
+            }
+            None => vec![self.photo_or_active(p)?],
+        };
+        let dir = p.get("dir").and_then(Value::as_str).unwrap_or("");
+        let write = &mut lcc_engine::export::write_file;
+        // Add to Apple Photos: refused before anything is written when it can't be done
+        let after = self.session.after_export(&opts)?;
+        let mut items = prepare_batch(&mut self.session, &ids, &opts)?;
+        let total = items.len();
+        // video clips: a row in the activity stack whose cancel stops the movie within a frame
+        let _video_row = items.iter().any(|i| i.is_video()).then(|| {
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let row = self.session.activity.start("export", "Exporting video", lcc_engine::activity::Cancel::Flag(cancel.clone()));
+            let h = row.handle();
+            let progress: lcc_engine::export_video::VideoProgress =
+                std::sync::Arc::new(move |name: &str, x: f64| h.detail(&format!("{name} {:.0}%", x.clamp(0.0, 1.0) * 100.0)));
+            lcc_engine::export::set_video_hooks(&mut items, &lcc_engine::export_video::VideoHooks { cancel, progress: Some(progress) });
+            row
+        });
+        let mut hook = self.progress.take();
+        let mut cancelled = false;
+        let files = run_batch(
+            items,
+            &opts,
+            &Destination { dir: dir.to_string(), exact: exact.map(str::to_string) },
+            write,
+            &|path| Path::new(path).exists(),
+            true,
+            &mut |done, name| {
+                cancelled = hook.as_mut().is_some_and(|h| !h(done, total, name));
+                !cancelled
+            },
+        )?;
+        if !cancelled && let Some(hook) = hook.as_mut() {
+            cancelled = !hook(total, total, "");
+        }
+        if cancelled {
+            return Err("cancelled".into());
+        }
+        lcc_engine::export::mark_exported(&mut self.session, &files);
+        // Single-photo exports also report path/width/height at the top level (back-compat).
+        let mut out = files.first().cloned().unwrap_or_else(|| json!({}));
+        if let Some(photos) = after.run(&files, false) {
+            out["applePhotos"] = photos;
+        }
+        // plug-in export hooks, then the plug-in destination the export named (if any)
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(r) = lcc_engine::cmd::plugins::after_export(&mut self.session, &files, p.get("pluginDestination")) {
+            out["plugins"] = json!(r);
+        }
+        out["files"] = json!(files);
+        Ok(out)
+    }
+}
+
+impl Backend for Headless {
+    fn set_progress(&mut self, hook: Option<ProgressHook>) {
+        self.progress = hook;
+    }
+
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let p = if params.is_null() { json!({}) } else { params };
+        match method {
+            "engine.execute" | "ui.menu.invoke" | "command" => {
+                let id = p.get("command").or(p.get("id")).and_then(Value::as_str).ok_or("missing `command`")?;
+                let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+                // an agent's request: the program comes only from what the user set up
+                if !self.trusted {
+                    lcc_engine::cmd::edit_in::refuse_program_choice(&mut self.session, id, &params)?;
+                }
+                if id == "app.export" {
+                    return self.export(&params);
+                }
+                self.session.execute(id, &params).map_err(|e| e.to_string())
+            }
+            "engine.commands" => {
+                let mut v: Vec<Value> = self.session.commands().into_iter().map(|c| serde_json::to_value(c).unwrap_or_default()).collect();
+                v.push(json!({"id": "app.export", "label": "Export Now", "menu": [], "shortcut": null,
+                    "params": "{path?: output file (.jpg/.png/.tif/.webp/.avif/.jxl/.psd/.dng) | dir?, ids?, preset?, format?: jpeg|png|tiff|webp|avif|jxl|psd|dng|original, longEdge?|shortEdge?|width?|height?|megapixels?|percent? (default longEdge 3000; longEdge 0 = full size), fit?: dimensions|widthHeight (with width + height: dimensions fits either orientation, widthHeight limits the width to `width` and the height to `height`), dontEnlarge?, ppi?, quality?: 1..100, jxlLossless?, jxlEffort?: fast|normal, jxlProgressive?, videoFormat?: h264|prores (video clips export as movies: trim + video edits), videoQuality?: 1..100, videoMaxSide?: px (0 = clip size), limitKb?, colorSpace?: srgb|displayP3|adobeRgb|proPhoto|rec2020, bitDepth?: 8|10|16|32, hdr? (HDR output for HDR edits: gain map JPEG, PQ AVIF / PNG / JPEG XL, float TIFF), sharpen?: none|screen|matte|glossy, sharpenAmount?: low|standard|high, metadata?: all|allExceptCamera|copyright|copyrightContact|none, removeLocation?, naming?, startNumber?, customText? (the {custom} token), destinationMode?: specificFolder|sameAsOriginal|chooseLater (sameAsOriginal = each photo into its original's folder, `dir` unused; chooseLater = the desktop app asks for the folder when the export starts, elsewhere `dir` as specificFolder), subfolder? (one folder name), conflict?: unique|overwrite|skip, tiffCompression?: none|lzw|zip, dngCompression?: lossless|deflate|uncompressed, addToPhotos?: bool (macOS: then add the files written to Apple Photos; outcome in `applePhotos`), photosAlbum?: top-level album name (made when missing), watermark?: text | {text?, vertical? (upright columns, right to left), size? (text height, 0.005..0.5 of the short edge; default 0.035), opacity? (0..1; 0.7), anchor?: topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight, insetX? (margin from the left/right edge, 0..0.4 of the short edge; 0.025), insetY? (from the top/bottom edge; 0.025), inset? (sets both), rotation?: 0|90|180|270 (degrees clockwise; 0), color? [r,g,b] sRGB, shadow?, image? (graphic drawn instead of the text), imageWidth? (0.01..1 of the photo's width; 0.2)}}: an unknown parameter, an out-of-range watermark size or a value of the wrong kind is an error, not a default",
+                    "enabled": self.session.active().is_some()}));
+                Ok(Value::Array(v))
+            }
+            "ui.render" => {
+                let img = self.render(&p, 1600)?;
+                match p.get("path").and_then(Value::as_str) {
+                    Some(path) => {
+                        self.session.check_write_target(path)?;
+                        write_image(Path::new(path), &img, 92)?;
+                        Ok(json!({"path": path, "width": img.width, "height": img.height}))
+                    }
+                    None if p.get("inline").and_then(Value::as_bool).unwrap_or(false) => {
+                        let png = encode_image("png", &img, 92)?;
+                        Ok(json!({"width": img.width, "height": img.height, "png": lcc_engine::base64::encode(&png)}))
+                    }
+                    None => Ok(json!({"width": img.width, "height": img.height})),
+                }
+            }
+            "app.export" => self.export(&p),
+            m if m.starts_with("ui.") || m == "app.quit" => {
+                Err(format!("`{m}` needs the desktop app: start `{} --control 7980` and run the MCP server with `--connect`", lcc_brand::BINARY))
+            }
+            other => Err(format!("unknown method `{other}`")),
+        }
+    }
+
+    fn has_ui(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        "headless".into()
+    }
+}
+
+/// Expand folders (recursively, sorted; bounded, see `lcc_engine::walk`) into photo files
+/// and make paths absolute. Folders take the extensions `library.import` takes
+/// (`lcc_engine::import::EXTENSIONS`), so the two can't drift apart (issue #1080).
+pub fn expand_paths(paths: &[String]) -> Vec<String> {
+    let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string();
+    let mut out = Vec::new();
+    for p in paths {
+        let path = Path::new(p);
+        if path.is_dir() {
+            let w = lcc_engine::walk::files_in(path, None, lcc_engine::walk::Limits::default(), lcc_engine::import::is_supported);
+            out.extend(w.files.iter().map(|f| absolute(f)));
+        } else {
+            // Explicit files are kept even with unknown extensions (the probe decides).
+            out.push(absolute(path));
+        }
+    }
+    out
+}
+
+/// Encode by extension: `.png` (default), `.jpg`/`.jpeg` (quality), `.tif`/`.tiff`, `.webp` (lossless),
+/// `.avif`, `.jxl` — via the shared export encoder (embeds an sRGB profile).
+pub fn encode_image(ext: &str, img: &Rgba8, quality: u8) -> Result<Vec<u8>, String> {
+    use lcc_engine::export::{ExportFormat, ExportOptions};
+    let format = ExportFormat::parse(ext).unwrap_or(ExportFormat::Png);
+    lcc_engine::export::encode_image(img, &ExportOptions { format, quality: quality.clamp(1, 100), ..Default::default() })
+}
+
+/// Encode by the path's extension and write the file.
+pub fn write_image(path: &Path, img: &Rgba8, quality: u8) -> Result<(), String> {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+    let bytes = encode_image(&ext, img, quality)?;
+    lcc_engine::export::write_file(&path.to_string_lossy(), &bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_discovery_matches_engine_extensions() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-discovery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // (one component at a time: `join("trip/day2")` keeps the `/` on Windows, where the scan reports `\`)
+        let nested = dir.join("trip").join("day2");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut expected = Vec::new();
+        for ext in lcc_engine::import::EXTENSIONS {
+            for (folder, name) in [(&dir, format!("lower.{ext}")), (&nested, format!("upper.{}", ext.to_ascii_uppercase()))] {
+                let path = folder.join(name);
+                std::fs::write(&path, b"discovery only, not a decoded photo").unwrap();
+                expected.push(path.to_string_lossy().into_owned());
+            }
+        }
+        std::fs::write(nested.join("notes.txt"), b"not a photo").unwrap();
+        let mut found = expand_paths(&[dir.to_string_lossy().into_owned()]);
+        expected.sort();
+        found.sort();
+        assert_eq!(found, expected);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An agent's request can't choose the program Edit In starts: it is refused and starts or
+    /// writes nothing, while a preset the user saved still opens by name.
+    #[test]
+    fn edit_in_takes_the_program_only_from_a_saved_preset() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-editin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[40, 3, 9, 255]; 64] };
+        let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+        std::fs::write(dir.join("a.png"), png).unwrap();
+        let mut session = Session::new().with_fs();
+        session.workflow = lcc_engine::cmd::actions::Workflow::in_dir(Some(dir.join("settings")));
+        let desktop = std::sync::Arc::new(lcc_engine::desktop::Recorder::default());
+        session.desktop = desktop.clone();
+        // the user's own preset, from the dialog or the command line
+        session.execute("editIn.savePreset", &json!({"name": "Mine", "app": "/opt/ed"})).unwrap();
+        let mut h = Headless::new(session);
+        h.call("engine.execute", json!({"command": "library.import", "params": {"paths": [dir.join("a.png").to_string_lossy()]}})).unwrap();
+        let files = || std::fs::read_dir(&dir).unwrap().count();
+        let (before, presets) = (files(), std::fs::read(dir.join("settings/editors.json")).unwrap());
+        for (command, params) in [
+            ("photo.editIn", json!({"mode": "copy", "app": "/bin/sh", "args": ["-c", "x"], "launch": true})),
+            ("photo.editIn", json!({"preset": "Mine", "args": ["-c", "x"], "launch": true})),
+            ("photo.openAsLayers", json!({"app": "/bin/sh", "launch": true})),
+            ("editIn.savePreset", json!({"name": "Mine", "app": "/bin/sh"})),
+        ] {
+            let e = h.call("engine.execute", json!({"command": command, "params": params})).unwrap_err();
+            assert!(e.contains("preset"), "{command}: {e}");
+        }
+        assert!(desktop.requests().is_empty(), "nothing started: {:?}", desktop.requests());
+        assert_eq!(files(), before, "no copy written");
+        assert_eq!(std::fs::read(dir.join("settings/editors.json")).unwrap(), presets, "presets unchanged");
+        // the saved preset opens its program
+        h.call("engine.execute", json!({"command": "photo.editIn", "params": {"preset": "Mine", "launch": true}})).unwrap();
+        let calls = desktop.requests();
+        assert!(
+            matches!(calls.as_slice(), [lcc_engine::desktop::Request::Launch(line)] if line.first().is_some_and(|a| a == "/opt/ed")),
+            "{calls:?}"
+        );
+        drop(h);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Headless sessions look for the SAM 3 model where the desktop app does, and `segment.model.status` reports it (issue #619).
+    #[test]
+    fn headless_sessions_get_the_sam3_model_folder() {
+        let dir = lcc_engine::config::default_sam3_dir();
+        assert_eq!(Headless::default().session.segmenter.dir, dir);
+        assert_eq!(Headless::demo().session.segmenter.dir, dir);
+        let dir = std::env::temp_dir().join("lc-mcp-sam3-dir");
+        let mut session = Session::new();
+        session.segmenter.dir = Some(dir.clone());
+        let mut h = Headless::new(session);
+        let r = h.call("engine.execute", json!({"command": "segment.model.status", "params": {}})).unwrap();
+        assert_eq!(r["dir"], json!(dir.display().to_string()), "{r}");
+    }
+
+    /// `--import <folder>` picks up every extension `library.import` takes, HEIC included (issue #1080).
+    #[test]
+    fn expand_paths_takes_the_engine_extensions() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-expand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for e in lcc_engine::import::EXTENSIONS {
+            std::fs::write(dir.join(format!("a.{e}")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("B.HEIC"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        let found = expand_paths(&[dir.to_string_lossy().to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let ext = |f: &String| Path::new(f).extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+        let mut got: Vec<String> = found.iter().map(ext).collect();
+        got.sort();
+        let mut want: Vec<String> = lcc_engine::import::EXTENSIONS.iter().map(|e| e.to_string()).chain(["HEIC".to_string()]).collect();
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    /// A headless session stamps imports and edits with the system clock, not the engine's fixed test clock.
+    #[test]
+    fn headless_uses_the_system_clock() {
+        const FIXED: &str = "2026-09-30T12:00:00";
+        assert_ne!((Headless::default().session.clock)(), FIXED);
+        assert_ne!((Headless::demo().session.clock)(), FIXED);
+    }
+
+    /// `app.export` without `ids` exports the selection (as the desktop app does), else the active photo.
+    #[test]
+    fn export_follows_the_selection() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut h = Headless::demo();
+        let ids: Vec<u64> = h.session.visible_cloned().iter().take(3).map(|p| p.0).collect();
+        h.call("engine.execute", json!({"command": "library.select", "params": {"ids": ids}})).unwrap();
+        let r = h
+            .call("engine.execute", json!({"command": "app.export", "params": {"dir": dir.to_string_lossy(), "longEdge": 64, "format": "png"}}))
+            .unwrap();
+        assert_eq!(r["files"].as_array().map(Vec::len), Some(3), "{r}");
+        // one photo selected: that one
+        h.call("engine.execute", json!({"command": "library.select", "params": {"ids": [ids[0]]}})).unwrap();
+        let r = h
+            .call("engine.execute", json!({"command": "app.export", "params": {"dir": dir.to_string_lossy(), "longEdge": 64, "format": "png"}}))
+            .unwrap();
+        assert_eq!(r["files"].as_array().map(Vec::len), Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The export file-name template takes the Rename Photos tokens.
+    #[test]
+    fn export_naming_tokens() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-export-naming-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut h = Headless::demo();
+        let ids: Vec<u64> = h.session.visible_cloned().iter().take(2).map(|p| p.0).collect();
+        for (id, title) in ids.iter().zip(["Harbour", "Hills"]) {
+            h.call("engine.execute", json!({"command": "photo.setMeta", "params": {"ids": [id], "title": title}})).unwrap();
+            h.call("engine.execute", json!({"command": "photo.rate", "params": {"ids": [id], "rating": 4}})).unwrap();
+        }
+        let params = json!({"dir": dir.to_string_lossy(), "ids": ids, "longEdge": 32, "format": "png", "naming": "{title}_{rating}star_{seq:2}", "startNumber": 5});
+        let r = h.call("engine.execute", json!({"command": "app.export", "params": params})).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        names.sort();
+        assert_eq!(names, ["Harbour_4star_05.png", "Hills_4star_06.png"], "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -1,0 +1,644 @@
+//! Background export: the Export dialog, File → Export with Preset and Export with Previous hand
+//! their batch to a worker thread so the window stays responsive. Photos are prepared on the UI
+//! thread ([`lcc_engine::export::prepare_export`]: cheap, needs the session) and rendered,
+//! encoded and written on the worker (several side by side: [`run_batch_cancellable`]); its row in the
+//! activity stack shows the count, the file in progress and ✕ (issue #345).
+//!
+//! Needs [`crate::Services::write_shared`] (a thread-safe writer); without it (web) the batch runs
+//! synchronously as before.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
+
+use lcc_engine::activity::{Cancel, TaskGuard};
+use lcc_engine::export::{AfterExport, Destination, ExportOptions, PreparedExport, run_batch_cancellable, set_video_hooks};
+use serde_json::{Value, json};
+
+use crate::LccApp;
+
+pub struct ExportTask {
+    pub total: usize,
+    /// Photos started so far and the file in progress.
+    pub progress: Arc<Mutex<(usize, String)>>,
+    pub cancel: Arc<AtomicBool>,
+    /// The files (per-photo results), what [`AfterExport`] did with them (`applePhotos`) and
+    /// whether the export was cancelled (as the worker saw it when the batch ended).
+    rx: Receiver<Result<(Vec<Value>, Option<Value>, bool), String>>,
+    /// The export's row in the activity stack (`activity.cancel` sets `cancel`).
+    guard: TaskGuard,
+    /// `app.export {pluginDestination}`: the plug-in export destination the files go to when done.
+    pub plugin_destination: Option<Value>,
+    /// The JPEG quality asked for when a file-size limit is set: the toast says when the limit
+    /// settled below it ([`limit_quality_note`]).
+    limit_from: Option<u8>,
+}
+
+impl ExportTask {
+    /// A task without a plug-in destination (contact sheets, timelapses).
+    pub(crate) fn new(
+        total: usize,
+        progress: Arc<Mutex<(usize, String)>>,
+        cancel: Arc<AtomicBool>,
+        rx: Receiver<Result<(Vec<Value>, Option<Value>, bool), String>>,
+        guard: TaskGuard,
+    ) -> Self {
+        Self { total, progress, cancel, rx, guard, plugin_destination: None, limit_from: None }
+    }
+
+    /// `{total, done, current}` for `ui.inspect`.
+    pub fn status(&self) -> Value {
+        let (done, current) = self.progress.lock().map(|g| g.clone()).unwrap_or_default();
+        json!({"total": self.total, "done": done, "current": current})
+    }
+}
+
+/// An image export asked for while another runs (issue #2965): it waits its turn instead of being refused, and
+/// starts when the exports before it have ended. Its photos are prepared when it is asked for, so it exports them
+/// as they were then. Its row in the activity stack says it is waiting; ✕ there drops it.
+pub struct Queued {
+    items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    /// What to do with the files; `None`: decided when it starts, so a running export that holds the Apple Photos
+    /// import doesn't stop this one from waiting for it.
+    after: Option<AfterExport>,
+    then: Option<Then>,
+    cancel: Arc<AtomicBool>,
+    /// The waiting row; dropped (gone from the stack) when the export starts or is dropped.
+    row: TaskGuard,
+    /// `app.export {pluginDestination}`, handed to the task when it starts.
+    pub plugin_destination: Option<Value>,
+}
+
+/// Start exporting `items` in the background, then do `after` with the files written (Add to Apple
+/// Photos; `None`: work it out from `opts` when the export starts). Errors per photo are collected, not fatal.
+/// While another export runs it is queued behind it ([`Queued`]); the result then says `queued: n`.
+pub fn start(
+    app: &mut LccApp,
+    items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: Option<AfterExport>,
+) -> Result<Value, String> {
+    start_then(app, items, opts, to, after, None)
+}
+
+/// What a worker does with the files once the batch has written them (File ▸ Email Photo… hands
+/// them to the mail program): its result is added to the batch's results as one more entry, and it
+/// is not run for a cancelled batch.
+pub type Then = Box<dyn FnOnce(&[Value]) -> Option<Value> + Send>;
+
+/// [`start`] with a step to run on the worker when the files are written ([`Then`]).
+pub fn start_then(
+    app: &mut LccApp,
+    items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: Option<AfterExport>,
+    then: Option<Then>,
+) -> Result<Value, String> {
+    if app.export.is_some() {
+        app.services.write_shared.as_ref().ok_or("no background writer")?;
+        let total = items.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let label = crate::i18n::tr_format!("Waiting to export {total} photo{}", if total == 1 { "" } else { "s" }, total = total);
+        let row = app.session.activity.start("export", &label, Cancel::Flag(cancel.clone()));
+        row.progress(0, total as u64);
+        app.export_queue.push_back(Queued { items, opts, to, after, then, cancel, row, plugin_destination: None });
+        return Ok(json!({"background": true, "total": total, "queued": app.export_queue.len()}));
+    }
+    start_now(app, items, opts, to, after, then)
+}
+
+/// The next queued export that hasn't been dropped, started now. One that adds to Apple Photos waits while another
+/// import holds Photos ([`poll`] tries again). The library may have grown while it waited, so what it writes is
+/// checked against the originals as they are now. One that can't start says why, on screen for longer, and the one
+/// after it is tried.
+fn start_next(app: &mut LccApp, ctx: &egui::Context) {
+    app.export_queue.retain(|q| !q.cancel.load(Ordering::Relaxed));
+    while let Some(q) = app.export_queue.front() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let photos_busy = q.opts.add_to_photos && app.session.apple_photos_imports.running().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let photos_busy = false;
+        if photos_busy {
+            q.row.detail(crate::i18n::tr("waiting for Apple Photos"));
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+        let Some(Queued { mut items, opts, to, after, then, plugin_destination, .. }) = app.export_queue.pop_front() else { return };
+        let guard = Arc::new(app.session.original_guard());
+        for item in &mut items {
+            item.use_guard(guard.clone());
+        }
+        match start_now(app, items, opts, to, after, then) {
+            Ok(_) => {
+                if let Some(t) = app.export.as_mut() {
+                    t.plugin_destination = plugin_destination;
+                }
+                return;
+            }
+            Err(e) => app.toast_for(ctx, crate::i18n::tr_format!("A waiting export could not start: {e}", e = e), 15.0),
+        }
+    }
+}
+
+fn start_now(
+    app: &mut LccApp,
+    mut items: Vec<PreparedExport>,
+    opts: ExportOptions,
+    to: Destination,
+    after: Option<AfterExport>,
+    then: Option<Then>,
+) -> Result<Value, String> {
+    // a queued export reserves Apple Photos now, when the one before it has let go of it
+    let after = match after {
+        Some(after) => after,
+        None => app.session.after_export(&opts)?,
+    };
+    let write = app.services.write_shared.clone().ok_or("no background writer")?;
+    let total = items.len();
+    let limit_from = opts.limit_kb.map(|_| opts.quality);
+    let progress = Arc::new(Mutex::new((0, String::new())));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = channel();
+    let (p, c) = (progress.clone(), cancel.clone());
+    // one batch row: the photos done, the time left; the export says how it went itself
+    let guard = app.session.activity.start_batch("export", "Exporting", Cancel::Flag(cancel.clone()));
+    guard.reports_itself();
+    guard.progress(0, total as u64);
+    let row = guard.handle();
+    // video clips stop within a frame on ✕ and show how far the movie is
+    if items.iter().any(PreparedExport::is_video) {
+        let r = row.clone();
+        let progress: lcc_engine::export_video::VideoProgress =
+            Arc::new(move |name: &str, x: f64| r.detail(&format!("{name} {:.0}%", x.clamp(0.0, 1.0) * 100.0)));
+        set_video_hooks(&mut items, &lcc_engine::export_video::VideoHooks { cancel: cancel.clone(), progress: Some(progress) });
+    }
+    // translated here: the language is the UI thread's, and the worker would show English
+    let adding = crate::i18n::tr("Adding to Apple Photos…").to_string();
+    let work = move || {
+        let mut w = |path: &str, bytes: &[u8]| write(path, bytes);
+        // (the cancel flag is watched while photos render too: a cancel stops within a second)
+        let flag = Some(c.clone());
+        let r = run_batch_cancellable(
+            items,
+            &opts,
+            &to,
+            &mut w,
+            &|path| std::path::Path::new(path).exists(),
+            false,
+            &mut |done, name| {
+                if let Ok(mut g) = p.lock() {
+                    *g = (done, name.to_string());
+                }
+                !c.load(Ordering::Relaxed)
+            },
+            flag,
+        );
+        let r = r.map(|files| {
+            if !after.is_none() {
+                // Photos can't be stopped once asked: no ✕ from here, before the last look at
+                // the cancel flag, so a cancel either stops the export before Photos or is refused
+                row.set_cancellable(false);
+                if let Ok(mut g) = p.lock() {
+                    g.1 = adding;
+                }
+            }
+            let cancelled = c.load(Ordering::Relaxed);
+            let photos = after.run(&files, cancelled);
+            let mut files = files;
+            if !cancelled && let Some(then) = then {
+                files.extend(then(&files));
+            }
+            (files, photos, cancelled)
+        });
+        let _ = tx.send(r);
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::Builder::new().name("export".into()).spawn(work).map_err(|e| e.to_string())?;
+    #[cfg(target_arch = "wasm32")]
+    work();
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard, plugin_destination: None, limit_from });
+    Ok(json!({"background": true, "total": total}))
+}
+
+/// Export a single paginated PDF with the same activity row and cancellation as image exports.
+pub fn start_contact_sheet(app: &mut LccApp, params: &Value) -> Result<Value, String> {
+    if app.export.is_some() {
+        return Err("an export is already running".into());
+    }
+    let path = params.get("path").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).ok_or("missing path")?.to_string();
+    app.session.check_write_target(&path)?;
+    let guard = app.session.original_guard();
+    let prepared = lcc_engine::contact_sheet::prepare(&mut app.session, params)?;
+    let total = prepared.len();
+    let write = app.services.write_shared.clone();
+    let progress = Arc::new(Mutex::new((0, String::new())));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (p, c) = (progress.clone(), cancel.clone());
+    let (tx, rx) = channel();
+    let work = move || {
+        let result = prepared
+            .run(&mut |done, name| {
+                if let Ok(mut g) = p.lock() {
+                    *g = (done, name.to_string());
+                }
+                !c.load(Ordering::Relaxed)
+            })
+            .and_then(|doc| {
+                if c.load(Ordering::Relaxed) {
+                    return Err("Contact sheet cancelled".into());
+                }
+                guard.check(std::path::Path::new(&path))?;
+                match write {
+                    Some(write) => write(&path, &doc.bytes)?,
+                    None => lcc_engine::export::write_file(&path, &doc.bytes)?,
+                }
+                Ok(vec![json!({"path": path, "pages": doc.pages, "photos": doc.photos, "bytes": doc.bytes.len(), "contactSheet": true})])
+            });
+        // a PDF isn't something Photos imports: contact sheets never add to Apple Photos
+        let _ = tx.send(result.map(|files| (files, None, c.load(Ordering::Relaxed))));
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::Builder::new().name("contact-sheet".into()).spawn(work).map_err(|e| e.to_string())?;
+    #[cfg(target_arch = "wasm32")]
+    work();
+    let row = app.session.activity.start("export", "Exporting contact sheet", Cancel::Flag(cancel.clone()));
+    row.progress(0, total as u64);
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None, limit_from: None });
+    Ok(json!({"background": true, "total": total}))
+}
+
+/// Print the session's current print (`print.get`) to a PDF in the background, with the same
+/// activity row and cancellation as the other exports.
+pub fn start_print(app: &mut LccApp, params: &Value) -> Result<Value, String> {
+    use lcc_engine::print::{compose, output};
+    if app.export.is_some() {
+        return Err("an export is already running".into());
+    }
+    let path = params.get("path").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).ok_or("missing path")?.to_string();
+    app.session.check_write_target(&path)?;
+    let guard = app.session.original_guard();
+    let settings = app.session.print.clone();
+    let ids = app.session.targets(params).map_err(|e| e.to_string())?;
+    let prepared = compose::prepare(&mut app.session, &settings, &ids)?;
+    let total = prepared.len();
+    let title = std::path::Path::new(&path).file_stem().and_then(|n| n.to_str()).unwrap_or("Print").to_string();
+    let write = app.services.write_shared.clone();
+    let progress = Arc::new(Mutex::new((0, String::new())));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (p, c) = (progress.clone(), cancel.clone());
+    let (tx, rx) = channel();
+    let photos = ids.len();
+    let work = move || {
+        let result = prepared
+            .run(&mut |done, name| {
+                if let Ok(mut g) = p.lock() {
+                    *g = (done, name.to_string());
+                }
+                !c.load(Ordering::Relaxed)
+            })
+            .and_then(|pages| {
+                if c.load(Ordering::Relaxed) {
+                    return Err("Print cancelled".into());
+                }
+                let bytes = output::write(&pages, &settings.job, &title)?;
+                guard.check(std::path::Path::new(&path))?;
+                match write {
+                    Some(write) => write(&path, &bytes)?,
+                    None => lcc_engine::export::write_file(&path, &bytes)?,
+                }
+                Ok(vec![json!({"path": path, "pages": pages.len(), "photos": photos, "bytes": bytes.len(), "print": true})])
+            });
+        let _ = tx.send(result.map(|files| (files, None, c.load(Ordering::Relaxed))));
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::Builder::new().name("print".into()).spawn(work).map_err(|e| e.to_string())?;
+    #[cfg(target_arch = "wasm32")]
+    work();
+    let row = app.session.activity.start("export", "Printing to PDF", Cancel::Flag(cancel.clone()));
+    row.progress(0, total as u64);
+    app.export = Some(ExportTask { total, progress, cancel, rx, guard: row, plugin_destination: None, limit_from: None });
+    Ok(json!({"background": true, "total": total}))
+}
+
+/// The toast's account of [`AfterExport::run`]'s Apple Photos outcome.
+pub fn apple_photos_note(outcome: &Value) -> String {
+    if let Some(e) = outcome.get("error").and_then(Value::as_str) {
+        return crate::i18n::tr_format!("not added to Apple Photos: {e}", e = e);
+    }
+    if let Some(why) = outcome.get("skipped").and_then(Value::as_str) {
+        if outcome.get("cancelled").and_then(Value::as_bool) == Some(true) {
+            return crate::i18n::tr("not added to Apple Photos (cancelled)").to_string();
+        }
+        return crate::i18n::tr_format!("not added to Apple Photos: {e}", e = why);
+    }
+    let n = outcome.get("imported").and_then(Value::as_u64).unwrap_or(0);
+    let mut m = match outcome.get("album").and_then(Value::as_str) {
+        Some(album) => crate::i18n::tr_format!("{n} added to Apple Photos album “{album}”", n = n, album = album),
+        None => crate::i18n::tr_format!("{n} added to Apple Photos", n = n),
+    };
+    if let Some(w) = outcome.get("warning").and_then(Value::as_str) {
+        m += &format!(" ({w})");
+    }
+    m
+}
+
+/// Per frame: when an Apple Photos import that no export task reports finishes (`app.export`
+/// without `background`, `export.addToPhotos`), say how it went.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn poll_photos(app: &mut LccApp, ctx: &egui::Context) {
+    let jobs = app.session.apple_photos_imports.all();
+    if jobs.iter().any(|j| !j.finished()) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    for job in jobs {
+        if job.take_announcement() {
+            let outcome = job.json();
+            let msg = apple_photos_note(&outcome);
+            if outcome.get("error").is_some() {
+                app.toast_for(ctx, msg, 15.0);
+            } else {
+                app.toast(ctx, msg);
+            }
+        }
+    }
+}
+
+/// No Apple Photos on the web.
+#[cfg(target_arch = "wasm32")]
+pub fn poll_photos(_: &mut LccApp, _: &egui::Context) {}
+
+/// Below this JPEG quality a file-size limit leaves smooth areas such as skies blotchy (issue #3033).
+const LOW_LIMIT_QUALITY: u64 = 40;
+
+/// The toast's account of a file-size limit set with quality `requested`: the lowest quality it
+/// settled on across `files`, and what to do when that is low. None when the limit lowered no file.
+pub fn limit_quality_note(files: &[Value], requested: u8) -> Option<String> {
+    let q = files.iter().filter_map(|f| f.get("quality").and_then(Value::as_u64)).filter(|&q| q < u64::from(requested)).min()?;
+    Some(if q < LOW_LIMIT_QUALITY {
+        crate::i18n::tr_format!("JPEG quality {q} to fit the size limit (a smaller size or a larger limit keeps more quality)", q = q)
+    } else {
+        crate::i18n::tr_format!("JPEG quality {q} to fit the size limit", q = q)
+    })
+}
+
+/// Per frame: keep the activity row up to date; when the batch finishes, report it.
+pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
+    let Some(task) = &app.export else {
+        // nothing running, but an export waits (for Apple Photos): see whether it can start now
+        if !app.export_queue.is_empty() {
+            start_next(app, ctx);
+        }
+        return;
+    };
+    match task.rx.try_recv() {
+        Ok(r) => {
+            let cancelled = matches!(&r, Ok((_, _, true)));
+            let total = task.total;
+            let limit_from = task.limit_from;
+            // the batch's summary (`activity.list` → finished): photos placed, the failures and why
+            if let Ok((files, _, _)) = &r {
+                task.guard.progress(files.len() as u64, total as u64);
+                for f in files.iter().filter(|f| f.get("error").is_some()) {
+                    let name = f.get("file").and_then(Value::as_str).unwrap_or("");
+                    task.guard.count_failed(&format!("{name}: {}", f["error"].as_str().unwrap_or("error")));
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let destination = task.plugin_destination.clone();
+            app.export = None;
+            if let Ok((files, _, _)) = &r {
+                lcc_engine::export::mark_exported(&mut app.session, files);
+            }
+            // Photos refused (permission, not installed…): leave the way out on screen longer
+            let mut photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
+            let msg = match r {
+                Ok((files, photos, _)) => {
+                    let sheet = files.first().filter(|f| f["contactSheet"] == true);
+                    let ok = files.iter().filter(|f| f.get("path").is_some()).count();
+                    let failed: Vec<&Value> = files.iter().filter(|f| f.get("error").is_some()).collect();
+                    let skipped = files.iter().filter(|f| f.get("skipped").is_some()).count();
+                    let mut m =
+                        crate::i18n::tr_format!("Exported {ok} of {total} photo{}", if total == 1 { "" } else { "s" }, ok = ok, total = total);
+                    let timelapse = files.first().filter(|f| f["timelapse"] == true);
+                    if let Some(t) = timelapse {
+                        m = crate::i18n::tr_format!(
+                            "Exported timelapse: {photos} photos, {frames} frames",
+                            photos = t["photos"].as_u64().unwrap_or(0),
+                            frames = t["frames"].as_u64().unwrap_or(0)
+                        );
+                    }
+                    if let Some(sheet) = sheet {
+                        m = format!("Exported contact sheet: {} photos, {} pages", sheet["photos"], sheet["pages"]);
+                    }
+                    if let Some(pdf) = files.first().filter(|f| f["print"] == true) {
+                        m = format!("Printed to PDF: {} photos, {} pages", pdf["photos"], pdf["pages"]);
+                    }
+                    if skipped > 0 {
+                        m += &crate::i18n::tr_format!(" · {skipped} skipped (file exists)", skipped = skipped);
+                    }
+                    if let Some(first) = failed.first() {
+                        m += &crate::i18n::tr_format!(" · {} failed: {}", failed.len(), first["error"].as_str().unwrap_or("error"));
+                    }
+                    // what the renders reported without failing (e.g. a skipped plug-in filter)
+                    let warnings: Vec<&str> =
+                        files.iter().flat_map(|f| f["warnings"].as_array().into_iter().flatten()).filter_map(Value::as_str).collect();
+                    if let Some(first) = warnings.first() {
+                        m += &format!(" · {} warning{}: {first}", warnings.len(), if warnings.len() == 1 { "" } else { "s" });
+                    }
+                    // File ▸ Email Photo…: how the hand-off to the mail program went (the photos are left
+                    // in their folder, shown, when it did not)
+                    if let Some(e) = files.iter().rev().find_map(|f| f.get("email")) {
+                        m = crate::email_photo::note(e);
+                        if let Some(first) = failed.first() {
+                            m += &crate::i18n::tr_format!(" · {} failed: {}", failed.len(), first["error"].as_str().unwrap_or("error"));
+                        }
+                        photos_failed |= e.get("folder").is_some();
+                    }
+                    if let Some(note) = limit_from.and_then(|q| limit_quality_note(&files, q)) {
+                        m += " · ";
+                        m += &note;
+                    }
+                    if cancelled {
+                        m += " · cancelled";
+                    }
+                    if let Some(photos) = &photos {
+                        m += " · ";
+                        m += &apple_photos_note(photos);
+                    }
+                    app.last_export_result = Some(json!({"files": files, "cancelled": cancelled, "applePhotos": photos}));
+                    // P4.3: plug-in export hooks, G19: destination; on a worker, reported when they finish
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if sheet.is_none() && timelapse.is_none() {
+                        crate::panels::plugins::after_export(app, ctx, &files, destination.as_ref());
+                    }
+                    m
+                }
+                Err(e) => e,
+            };
+            if photos_failed {
+                app.toast_for(ctx, msg, 15.0);
+            } else {
+                app.toast(ctx, msg);
+            }
+            // after this export's toast, so a waiting export that can't start is the one shown
+            start_next(app, ctx);
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            let (done, current) = task.progress.lock().map(|g| g.clone()).unwrap_or_default();
+            task.guard.progress(done as u64, task.total as u64);
+            task.guard.detail(&current);
+            // a waiting export whose ✕ was pressed leaves the queue (and its row the stack)
+            app.export_queue.retain(|q| !q.cancel.load(Ordering::Relaxed));
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            app.export = None;
+            app.toast(ctx, crate::i18n::tr("Export stopped unexpectedly"));
+            start_next(app, ctx);
+        }
+    }
+}
+
+#[cfg(test)]
+mod contact_sheet_tests {
+    use super::*;
+    use crate::pick::{PickKind, PickRequest};
+    use crate::state::Dialog;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn contact_sheet_menu_dialog_picker_and_background_export() {
+        let asked = Arc::new(Mutex::new(Vec::<PickRequest>::new()));
+        let requests = asked.clone();
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let written = bytes.clone();
+        let services = crate::Services {
+            picker: Some(Box::new(move |req| {
+                requests.lock().unwrap().push(req);
+                let (tx, rx) = channel();
+                tx.send(Ok(vec!["Contact Sheet.pdf".into()])).unwrap();
+                Ok(rx)
+            })),
+            write_shared: Some(Arc::new(move |path, data| {
+                assert_eq!(path, "Contact Sheet.pdf");
+                *written.lock().unwrap() = data.to_vec();
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        // Exercise the menu/picker/background PDF workflow with a small procedural original.
+        // A full-size demo makes this test's deadline depend on unrelated concurrent renders.
+        let demo = lcc_engine::Session::with_demo();
+        let id = demo.active().unwrap();
+        let mut photo = (**demo.catalog.photo(id).unwrap()).clone();
+        photo.width = 96;
+        photo.height = 64;
+        let mut session = lcc_engine::Session::new();
+        session.catalog.apply(lcc_catalog::Op::AddPhoto { photo: Box::new(photo) }).unwrap();
+        session.execute("library.select", &json!({"ids": [id.0], "active": id.0})).unwrap();
+        let mut app = LccApp::new(session, services);
+        app.run("dialog.contactSheet", json!({})).unwrap();
+        let Some(Dialog::ContactSheet { options }) = app.ui.dialog.as_mut() else { panic!("no contact sheet settings") };
+        options.paper = "letter".into();
+        options.landscape = true;
+        let dialog = app.ui.dialog.take().unwrap();
+        crate::panels::dialogs::confirm_dialog(&mut app, &dialog).unwrap();
+        assert_eq!(app.pending_picks.len(), 1);
+        let ctx = egui::Context::default();
+        crate::pick::poll(&mut app, &ctx);
+        assert!(app.pending_picks.is_empty());
+        assert!(app.export.is_some(), "picker did not start export: {:?}", app.ui.toasts);
+        // a hang guard, not a speed check: the render queues behind other tests' demo scenes (generated one at a
+        // time process-wide), which on a loaded machine takes minutes
+        let deadline = Instant::now() + Duration::from_secs(300);
+        loop {
+            // Poll the real worker without starting unrelated gallery renders each frame.
+            poll(&mut app, &ctx);
+            if app.export.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "export did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result = app.last_export_result.as_ref().unwrap_or_else(|| panic!("export failed: {:?}", app.ui.toasts));
+        let req = asked.lock().unwrap();
+        assert_eq!(req[0].kind, PickKind::Save);
+        assert_eq!(req[0].filter.as_ref().unwrap().1, &["pdf"]);
+        assert_eq!(req[0].file_name.as_deref(), Some("Contact Sheet.pdf"));
+        let b = bytes.lock().unwrap();
+        assert!(b.starts_with(b"%PDF-1.4"));
+        assert!(String::from_utf8_lossy(&b).contains("/MediaBox [0 0 792.00 612.00]"));
+        assert_eq!(result["files"][0]["photos"], 1);
+    }
+
+    #[test]
+    fn contact_sheet_export_shows_a_row_and_its_cross_stops_it() {
+        let mut app =
+            LccApp::new(lcc_engine::Session::with_demo(), crate::Services { write_shared: Some(Arc::new(|_, _| Ok(()))), ..Default::default() });
+        let ids: Vec<_> = app.session.catalog.photos().take(24).map(|p| p.id.0).collect();
+        start_contact_sheet(&mut app, &json!({"path": "Sheet.pdf", "ids": ids})).unwrap();
+        let rows = app.session.activity.list();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].kind, rows[0].label.as_str(), rows[0].total), ("export", "Exporting contact sheet", 24));
+        assert!(rows[0].cancellable);
+        app.session.activity.cancel(rows[0].id).unwrap();
+        assert!(app.export.as_ref().unwrap().cancel.load(Ordering::Relaxed), "the stack's ✕ stops the sheet");
+        let task = app.export.take().unwrap();
+        assert!(task.rx.recv_timeout(Duration::from_secs(20)).unwrap().is_err(), "a stopped sheet is not written");
+        drop(task);
+        assert!(app.session.activity.list().is_empty(), "the row goes with the export");
+    }
+
+    #[test]
+    fn cancelled_contact_sheet_never_calls_writer() {
+        let mut app = LccApp::new(
+            lcc_engine::Session::with_demo(),
+            crate::Services { write_shared: Some(Arc::new(|_, _| panic!("cancelled export wrote a file"))), ..Default::default() },
+        );
+        let ids: Vec<_> = app.session.catalog.photos().take(24).map(|p| p.id.0).collect();
+        start_contact_sheet(&mut app, &json!({"path": "Cancelled.pdf", "ids": ids})).unwrap();
+        app.export.as_ref().unwrap().cancel.store(true, Ordering::Relaxed);
+        let task = app.export.take().unwrap();
+        assert!(task.rx.recv_timeout(Duration::from_secs(20)).unwrap().is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The toast names the quality a size limit settled on (the lowest of the batch), and nothing
+    /// when the limit lowered no file.
+    #[test]
+    fn a_size_limit_quality_is_reported_only_when_it_lowered_something() {
+        assert_eq!(limit_quality_note(&[json!({"path": "a.jpg"}), json!({"path": "b.jpg", "quality": 90})], 90), None);
+        let files = [json!({"path": "a.jpg", "quality": 72}), json!({"error": "disk full"}), json!({"path": "b.jpg", "quality": 12})];
+        assert!(limit_quality_note(&files, 90).is_some_and(|n| n.contains("12")));
+    }
+
+    /// The toast's Apple Photos part (issue #236): the count and album, a partial import's
+    /// warning, an error with what to do, a cancelled export.
+    #[test]
+    fn apple_photos_outcomes_read_well() {
+        assert_eq!(apple_photos_note(&json!({"imported": 3, "requested": 3, "ids": [], "album": null})), "3 added to Apple Photos");
+        assert_eq!(apple_photos_note(&json!({"imported": 1, "album": "Trip"})), "1 added to Apple Photos album “Trip”");
+        let partial = apple_photos_note(&json!({"imported": 1, "requested": 2, "warning": "Photos added 1 of 2 files"}));
+        assert_eq!(partial, "1 added to Apple Photos (Photos added 1 of 2 files)");
+        let denied = apple_photos_note(
+            &json!({"error": "The app isn't allowed to control Photos. Allow it in System Settings › Privacy & Security › Automation"}),
+        );
+        assert!(denied.starts_with("not added to Apple Photos: ") && denied.contains("Automation"), "{denied}");
+        assert_eq!(apple_photos_note(&json!({"skipped": "the export was cancelled", "cancelled": true})), "not added to Apple Photos (cancelled)");
+        assert_eq!(apple_photos_note(&json!({"skipped": "the export wrote no files"})), "not added to Apple Photos: the export wrote no files");
+        // decided on the `cancelled` flag, not the words (#1046): reworded it is still a cancel, and a
+        // reason that only mentions the word is shown as it is
+        assert_eq!(apple_photos_note(&json!({"skipped": "Export abgebrochen", "cancelled": true})), "not added to Apple Photos (cancelled)");
+        assert_eq!(
+            apple_photos_note(&json!({"skipped": "an earlier, cancelled request is still running"})),
+            "not added to Apple Photos: an earlier, cancelled request is still running"
+        );
+    }
+}

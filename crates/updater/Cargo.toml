@@ -1,0 +1,30 @@
+[package]
+name = "lcc-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Auto updater (L0): GitHub Releases feed, platform asset selection, verified download, staged install"
+
+[lints]
+workspace = true
+
+# Native only: the web build updates by reloading the page (the crate is empty on wasm32).
+[dependencies]
+lcc-brand = { workspace = true }
+lcc-net = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+# the release's signed SHA256SUMS.txt
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
+log = { workspace = true }
+
+# the portable zip a Windows copy unpacked from it updates itself from (deflate, pure Rust)
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# whether Windows Installer owns the running program (an MSI install updates through the installer)
+lcc-winmsi = { workspace = true }
+
+[dev-dependencies]
+# tests' Temp folders, removed when each test ends
+lcc-testkit = { workspace = true }

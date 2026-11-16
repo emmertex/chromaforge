@@ -1,0 +1,29 @@
+---
+title: Map module
+description: Place photos on a map, geotag, saved locations and track logs.
+sidebar:
+  order: 15
+---
+
+import Shot from '../../../components/Shot.astro';
+import NeedsImage from '../../../components/NeedsImage.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+- Open: **Map** in the module bar.
+- Pan by dragging; wheel or double-click zooms around the pointer; **+** / **−** buttons; scale bar.
+- **Search place or lat, lon** (top right): coordinates, saved locations, or Nominatim after you consent.
+- **Map Style**: OpenStreetMap and others; **Add Tile Server** adds your own XYZ URL; the tile cache size shows with **Clear**.
+- **Location Filter** bar: **Visible on Map**, **Tagged**, **Untagged**, **None**, **Saved Location**; it filters the filmstrip too, with counts.
+- **Pins** group into clusters with counts; click selects, hover previews. Double-click a thumbnail to frame its pin.
+- **Geotag**: drag photos from the filmstrip onto the map, drag a pin to move its photos, or right-click ▸ geotag; type **GPS** as "latitude, longitude" in the side panel.
+- **Metadata** side panel: GPS, Sublocation, City, State / Region, Country, Country Code, Title, Headline, Caption, Keywords.
+- **Saved Locations**: name, centre, radius circle, photo counts; stored in the library.
+- **Tracks**: draw GPX / KML / GeoJSON track logs; **Auto-Tag Selected Photos** by capture time with a clock offset from a photo at a known point. Also **Metadata ▸ Auto-Tag from Tracklog…** (GPX).
+- **Reverse geocoding** (off by default): offline GeoNames fills city, region and country.
+- 🟡 Tiles come from the network (none offline); no animated zoom.
+
+<Shot name="map-module" alt="Map module with the location filter bar and metadata panel" menu="Window ▸ Modules ▸ Map" />
+
+<Aside type="note" title="Modern layout">
+  Modern has no Map button. Use **Window ▸ Modules ▸ Map**.
+</Aside>

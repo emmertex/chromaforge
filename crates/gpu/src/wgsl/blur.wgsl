@@ -1,0 +1,240 @@
+// Box passes (clamped edges) over an image of NC (1–4) interleaved channels; three of each approximate a
+// Gaussian (`lcc_raster::blur::gaussian`).
+// P: w, h, nc, r, ch (box_v only). Bindings: src, dst.
+
+// Pixel `i` (all nc ≤ 4 channels at once: one contiguous read per pixel).
+fn ld(i: u32, nc: u32) -> vec4<f32> {
+    let j = i * nc;
+    if (nc == 1u) {
+        return vec4<f32>(src[j], 0.0, 0.0, 0.0);
+    }
+    if (nc == 2u) {
+        return vec4<f32>(src[j], src[j + 1u], 0.0, 0.0);
+    }
+    if (nc == 3u) {
+        return vec4<f32>(src[j], src[j + 1u], src[j + 2u], 0.0);
+    }
+    return vec4<f32>(src[j], src[j + 1u], src[j + 2u], src[j + 3u]);
+}
+
+fn st(i: u32, nc: u32, v: vec4<f32>) {
+    let j = i * nc;
+    dst[j] = v.x;
+    if (nc > 1u) {
+        dst[j + 1u] = v.y;
+    }
+    if (nc > 2u) {
+        dst[j + 2u] = v.z;
+    }
+    if (nc > 3u) {
+        dst[j + 3u] = v.w;
+    }
+}
+
+// Horizontal: one thread per pixel, summing its 2r + 1 window; adjacent threads read adjacent
+// pixels, which the cache serves. (Threads that each slid a running sum over 16 pixels read pixels
+// 16 apart across a workgroup: on a Radeon 780M that pass took 9–15× as long as `box_v`.)
+@compute @workgroup_size(64, 4)
+fn box_h(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let nc = pu(2u);
+    let r = i32(pu(3u));
+    let x = g.x;
+    let y = g.y;
+    if (x >= w || y >= h) {
+        return;
+    }
+    let last = i32(w) - 1;
+    let row = y * w;
+    var acc = vec4<f32>(0.0);
+    for (var k = -r; k <= r; k++) {
+        acc += ld(row + u32(clamp(i32(x) + k, 0, last)), nc);
+    }
+    st(row + x, nc, acc * (1.0 / f32(2 * r + 1)));
+}
+
+// Horizontal for large radii: one thread per CH consecutive pixels of a row, sliding a running sum
+// (box_h's per-pixel window costs 2r + 1 reads a pixel, which for radii in the hundreds made one
+// dispatch long enough for a driver watchdog to reset the GPU). P: w, h, nc, r, ch.
+@compute @workgroup_size(64, 4)
+fn box_h_slide(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let nc = pu(2u);
+    let r = i32(pu(3u));
+    let ch = pu(4u);
+    let x0 = g.x * ch;
+    let y = g.y;
+    if (x0 >= w || y >= h) {
+        return;
+    }
+    let last = i32(w) - 1;
+    let row = y * w;
+    let inv = 1.0 / f32(2 * r + 1);
+    let x1 = min(x0 + ch, w);
+    var acc = vec4<f32>(0.0);
+    for (var k = -r; k <= r; k++) {
+        acc += ld(row + u32(clamp(i32(x0) + k, 0, last)), nc);
+    }
+    for (var x = x0; x < x1; x++) {
+        st(row + x, nc, acc * inv);
+        acc = acc + ld(row + u32(min(i32(x) + r + 1, last)), nc) - ld(row + u32(max(i32(x) - r, 0)), nc);
+    }
+}
+
+// Vertical: one thread per CH consecutive rows of a column (the CPU re-primes every BAND rows the
+// same way).
+@compute @workgroup_size(64, 4)
+fn box_v(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let nc = pu(2u);
+    let r = i32(pu(3u));
+    let ch = pu(4u);
+    let x = g.x;
+    let y0 = g.y * ch;
+    if (x >= w || y0 >= h) {
+        return;
+    }
+    let last = i32(h) - 1;
+    let inv = 1.0 / f32(2 * r + 1);
+    let y1 = min(y0 + ch, h);
+    var acc = vec4<f32>(0.0);
+    for (var k = -r; k <= r; k++) {
+        acc += ld(u32(clamp(i32(y0) + k, 0, last)) * w + x, nc);
+    }
+    for (var y = y0; y < y1; y++) {
+        st(y * w + x, nc, acc * inv);
+        acc = acc + ld(u32(min(i32(y) + r + 1, last)) * w + x, nc) - ld(u32(max(i32(y) - r, 0)) * w + x, nc);
+    }
+}
+
+// Separable median of a single-channel plane (`lcc_pipeline::local::median_hv`): 2r+1
+// taps (r ≤ 24, clamped edges) along a row (median_h) or a column (median_v), one thread per
+// pixel. The median is a selection, so the result matches the CPU's bit for bit.
+// P: w, h, nc (unused), r.
+fn median_of(n: u32, r: u32, v: ptr<function, array<f32, 49>>) -> f32 {
+    // partial selection sort up to the middle
+    for (var i = 0u; i <= r; i++) {
+        var m = i;
+        for (var j = i + 1u; j < n; j++) {
+            if ((*v)[j] < (*v)[m]) {
+                m = j;
+            }
+        }
+        let t = (*v)[i];
+        (*v)[i] = (*v)[m];
+        (*v)[m] = t;
+    }
+    return (*v)[r];
+}
+
+@compute @workgroup_size(16, 16)
+fn median_h(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let r = min(pu(3u), 24u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let n = 2u * r + 1u;
+    var v: array<f32, 49>;
+    let row = g.y * w;
+    for (var k = 0u; k < n; k++) {
+        let x = clamp(i32(g.x + k) - i32(r), 0, i32(w) - 1);
+        v[k] = src[row + u32(x)];
+    }
+    dst[row + g.x] = median_of(n, r, &v);
+}
+
+@compute @workgroup_size(16, 16)
+fn median_v(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let r = min(pu(3u), 24u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let n = 2u * r + 1u;
+    var v: array<f32, 49>;
+    for (var k = 0u; k < n; k++) {
+        let y = clamp(i32(g.y + k) - i32(r), 0, i32(h) - 1);
+        v[k] = src[u32(y) * w + g.x];
+    }
+    dst[g.y * w + g.x] = median_of(n, r, &v);
+}
+
+// Separable minimum of a single-channel plane (`lcc_pipeline::local::min_hv`): 2r+1 taps
+// (clamped to the image) along a row (min_h) or a column (min_v). P: w, h, nc (unused), r.
+@compute @workgroup_size(16, 16)
+fn min_h(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let r = pu(3u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let row = g.y * w;
+    let a = select(0u, g.x - r, g.x >= r);
+    let b = min(g.x + r, w - 1u);
+    var m = src[row + a];
+    for (var x = a + 1u; x <= b; x++) {
+        m = min(m, src[row + x]);
+    }
+    dst[row + g.x] = m;
+}
+
+@compute @workgroup_size(16, 16)
+fn min_v(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    let r = pu(3u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let a = select(0u, g.y - r, g.y >= r);
+    let b = min(g.y + r, h - 1u);
+    var m = src[a * w + g.x];
+    for (var y = a + 1u; y <= b; y++) {
+        m = min(m, src[y * w + g.x]);
+    }
+    dst[g.y * w + g.x] = m;
+}
+
+// Square min (P[4] = 0) or max (1) filter of radius r along one axis (`optics::min_filter`):
+// clamped to the image, single channel. P: w, h, r, axis (0 horizontal, 1 vertical), max.
+@compute @workgroup_size(16, 16)
+fn minmax(@builtin(global_invocation_id) g: vec3<u32>) {
+    let w = pu(0u);
+    let h = pu(1u);
+    if (g.x >= w || g.y >= h) {
+        return;
+    }
+    let r = pu(2u);
+    let vertical = pu(3u) != 0u;
+    let is_max = pu(4u) != 0u;
+    let i = g.y * w + g.x;
+    var v = src[i];
+    var lo = 0u;
+    var hi = 0u;
+    if (vertical) {
+        lo = g.y - min(g.y, r);
+        hi = min(g.y + min(r, h), h - 1u);
+    } else {
+        lo = g.x - min(g.x, r);
+        hi = min(g.x + min(r, w), w - 1u);
+    }
+    for (var k = lo; k <= hi; k++) {
+        var j = g.y * w + k;
+        if (vertical) {
+            j = k * w + g.x;
+        }
+        if (is_max) {
+            v = max(v, src[j]);
+        } else {
+            v = min(v, src[j]);
+        }
+    }
+    dst[i] = v;
+}

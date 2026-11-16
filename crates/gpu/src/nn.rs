@@ -1,0 +1,1608 @@
+//! Denoise networks on the GPU: a [`NetRunner`] executes a [`Net`] (the plain description of a U-Net's layers) with
+//! WGSL compute kernels, one tile at a time, behind the same [`TileRunner`] interface the CPU runner has.
+//!
+//! The runner has a device of its own, so a denoise job and the interactive renders are separate contexts that the
+//! driver time-slices, and a failure of one never takes the other down. There is one such device on each card AI Denoise
+//! uses ([`Card`]: the second graphics card, the card for editing), so a batch makes a photo on each at once; a device
+//! that fails stops being used on its card only. It respects the same switches as GPU rendering
+//! (`{ENV_PREFIX}_GPU`, `{ENV_PREFIX}_GPU_BACKEND`, the GPU preference) and the same crash sentinel around device creation.
+//! `{ENV_PREFIX}_GPU_ADAPTER` picks an adapter by (part of) its name, e.g. to try another card (`backend::pick_adapter`,
+//! shared with the render device).
+//!
+//! Every failure is an `Err` (never a panic), and a device that errs or is lost stops being used: callers then run the
+//! CPU runner. The kernels (`wgsl/nn_conv.wgsl`, `wgsl/nn_pool.wgsl`) are tested against the plain-loop reference
+//! interpreter in `lcc_denoise::reference` and, with the real model, against the pure-Rust CPU runner.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::time::Duration;
+
+use bytemuck::{Pod, Zeroable};
+use lcc_denoise::net::{Activation, Net, Op};
+use lcc_denoise::run::{Error, TileRunner};
+
+/// Longest wait for one tile's GPU work before the device is given up on.
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(60);
+/// The largest tile side (in input cells) the dispatch sizes and 32-bit indexing are checked for.
+const MAX_TILE: usize = 1024;
+/// The largest single buffer used: indices in the kernels are 32-bit element offsets.
+const MAX_BUFFER: u64 = 2 << 30;
+/// Tiles that can be on the GPU at once (each has buffers of its own).
+const WORKSPACES: usize = 2;
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the device
+
+pub(crate) struct Dev {
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) info: wgpu::AdapterInfo,
+    pub(crate) limits: wgpu::Limits,
+    /// The card it is on.
+    pub(crate) card: Card,
+}
+
+/// The graphics cards AI Denoise runs on (shared with the face models: [`crate::ai`]); denoise photos take them in
+/// [`CARDS`] order, and [`NO_SECOND_CARD`] is why there is no device on [`Card::Second`].
+pub use crate::ai::{CARDS, Card, NO_SECOND_CARD};
+
+static DEVS: [OnceLock<Result<Dev, String>>; 2] = [const { OnceLock::new() }, const { OnceLock::new() }];
+static BROKEN: [AtomicBool; 2] = [const { AtomicBool::new(false) }, const { AtomicBool::new(false) }];
+static BROKEN_WHY: [Mutex<Option<String>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
+
+/// Stop using `card`'s denoise device (the first reason is kept); the other card's is not touched.
+pub(crate) fn mark_broken(card: Card, why: &str) {
+    let i = card.index();
+    if let Some(w) = BROKEN_WHY.get(i) {
+        let mut w = w.lock().unwrap_or_else(PoisonError::into_inner);
+        if w.is_none() {
+            *w = Some(why.to_string());
+        }
+    }
+    if let Some(b) = BROKEN.get(i) {
+        b.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Why the GPU stopped being used for denoise on `card` (a device error), if it did.
+pub fn broken_reason_on(card: Card) -> Option<String> {
+    let i = card.index();
+    BROKEN
+        .get(i)
+        .is_some_and(|b| b.load(Ordering::Relaxed))
+        .then(|| BROKEN_WHY.get(i).and_then(|w| w.lock().unwrap_or_else(PoisonError::into_inner).clone()).unwrap_or_else(|| "device error".into()))
+}
+
+/// Why the GPU stopped being used for denoise on the card [`dev`] uses, if it did.
+pub fn broken_reason() -> Option<String> {
+    broken_reason_on(default_card())
+}
+
+/// The card denoise work goes to when none is named: the second card when its device works (or may), else the card
+/// for editing. Never creates a device.
+fn default_card() -> Card {
+    match DEVS.first().and_then(OnceLock::get) {
+        Some(Err(_)) => Card::Editing,
+        _ if broken_reason_on(Card::Second).is_some() => Card::Editing,
+        _ => Card::Second,
+    }
+}
+
+/// The denoise device on the second card when there is one that works, else on the card for editing.
+pub(crate) fn dev() -> Result<&'static Dev, String> {
+    dev_on(Card::Second).or_else(|_| dev_on(Card::Editing))
+}
+
+/// `card`'s denoise device, made on first use; `Err` when it can't be used (GPU switched off, no such card, it failed).
+pub(crate) fn dev_on(card: Card) -> Result<&'static Dev, String> {
+    if let Some(why) = broken_reason_on(card) {
+        return Err(format!("stopped after a GPU failure: {why}"));
+    }
+    if let Some(why) = crate::switched_off() {
+        return Err(why);
+    }
+    let slot = DEVS.get(card.index()).ok_or(NO_SECOND_CARD)?;
+    // creating the device is GPU work too: not once the process is ending (issue #620)
+    let _work = match slot.get() {
+        Some(_) => None,
+        None => Some(crate::exit::enter().ok_or(CLOSING)?),
+    };
+    slot.get_or_init(|| create_device(card)).as_ref().map_err(|e| e.clone())
+}
+
+/// The name of the card denoise would use as `card` (its device's when made, else the card the listing picks), or
+/// `None`: there is no such card (no second card, it is turned off, the GPU is). Asks the drivers the first time.
+pub fn card_name(card: Card) -> Option<String> {
+    if crate::switched_off().is_some() || broken_reason_on(card).is_some() {
+        return None;
+    }
+    if let Some(r) = DEVS.get(card.index()).and_then(OnceLock::get) {
+        return r.as_ref().ok().map(|d| d.info.name.clone());
+    }
+    let backends = crate::backend::compute_backends()?;
+    let _work = crate::exit::enter()?;
+    let instance = instance(backends);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::ai_adapter_on(&instance, backends, card == Card::Second)))
+        .ok()
+        .and_then(Result::ok)
+        .map(|a| a.get_info().name)
+}
+
+/// Wait until a denoise tile may go to `card`. The second card at once; the card for editing, while denoise also has
+/// a second card working, only while the interface is idle (batch work leaves the editing card to the photo being
+/// edited: [`crate::interface_busy`], which waits only while the desktop app tracks the interface). With one card,
+/// nothing waits.
+pub(crate) fn background_turn(card: Card) {
+    if card != Card::Editing || !matches!(DEVS.first().and_then(OnceLock::get), Some(Ok(_))) || broken_reason_on(Card::Second).is_some() {
+        return;
+    }
+    while crate::interface_busy() && !crate::shutting_down() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn instance(backends: wgpu::Backends) -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    // DX12 shaders compile with FXC (issue #471)
+    desc.backend_options = crate::backend::backend_options();
+    // no indirect-call validation pipeline: Intel Metal fails to compile it (#250)
+    desc.flags = crate::backend::instance_flags_from_env(desc.flags);
+    crate::new_instance(desc)
+}
+
+/// Why nothing runs on the GPU once [`crate::begin_shutdown`] was called.
+pub(crate) const CLOSING: &str = "the app is closing";
+
+fn create_device(card: Card) -> Result<Dev, String> {
+    let Some(backends) = crate::backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
+    // on a thread of its own, under the crash sentinel, with a time limit (#3068, `init.rs`)
+    crate::init::create(backends, move || make_device(backends, card))
+}
+
+fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
+    let instance = instance(backends);
+    // the second graphics card (none: `Err`), or the card for editing (`crate::ai_adapter_on`)
+    let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
+    let info = adapter.get_info();
+    if info.device_type == wgpu::DeviceType::Cpu {
+        return Err(format!("software adapter ({}) skipped: the CPU is faster", info.name));
+    }
+    let limits = adapter.limits();
+    if limits.max_storage_buffers_per_shader_stage < 6
+        || limits.max_compute_invocations_per_workgroup < 256
+        || limits.max_compute_workgroup_size_x < 256
+    {
+        return Err(format!("{} is too limited for the denoise kernels", info.name));
+    }
+    if limits.max_compute_workgroup_storage_size < 16 * 1024 {
+        return Err(format!("{} has too little workgroup memory for the denoise kernels", info.name));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some(match card {
+            Card::Second => "lcc-denoise-second",
+            Card::Editing => "lcc-denoise",
+        }),
+        required_limits: limits.clone(),
+        ..Default::default()
+    }))
+    .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
+    let which = card.id();
+    device.on_uncaptured_error(std::sync::Arc::new(move |e| {
+        log::error!("gpu (denoise, {which} card): {e}");
+        mark_broken(card, &format!("device error: {e}"));
+    }));
+    device.set_device_lost_callback(move |reason, msg| {
+        log::error!("gpu (denoise, {which} card): device lost ({reason:?}): {msg}");
+        mark_broken(card, &format!("device lost ({reason:?}): {msg}"));
+    });
+    log::info!("gpu (denoise, {which} card): {} ({:?})", info.name, info.backend);
+    Ok(Dev { device, queue, info, limits, card })
+}
+
+/// The adapter denoise would use ("NVIDIA GeForce RTX 4090 Laptop GPU (Dx12)"), or why it cannot use one. Creates the
+/// device on first use.
+pub fn adapter() -> Result<String, String> {
+    dev().map(|d| format!("{} ({:?})", d.info.name, d.info.backend))
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the plan: what to run, in what buffers
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ConvParams {
+    h: u32,
+    w: u32,
+    c0: u32,
+    c1: u32,
+    n: u32,
+    npad: u32,
+    k: u32,
+    mode: u32,
+    cout: u32,
+    /// 0 none, 1 leaky ReLU with slope `alpha`, 2 sigmoid, 3 a slope per channel after the bias (a fused `PRelu`).
+    act: u32,
+    alpha: f32,
+    /// Always 0: the kernel steps its output stores by `1 + zero`, so FXC cannot merge them (`nn_conv.wgsl`).
+    zero: u32,
+    /// Mode 2: the depth-to-space block size.
+    block: u32,
+    /// Mode 2: the input's channel count / 4 when the input (upsampled by `block`) is added on the way out, else 0.
+    skip_c4: u32,
+    /// Mode 2: 1 when the output is clamped into `[lo, hi]`.
+    clip: u32,
+    lo: f32,
+    hi: f32,
+    _pad: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PoolParams {
+    h: u32,
+    w: u32,
+    c4: u32,
+    total: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Kernel {
+    Conv { bm: u32, bn: u32, bk: u32 },
+    Pool,
+}
+
+/// Where a step's tensor lives.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    Input,
+    Slot(usize),
+    Output,
+}
+
+struct Step {
+    kernel: Kernel,
+    groups: [u32; 3],
+    src: Place,
+    src2: Option<Place>,
+    dst: Place,
+    /// Index into the per-layer GPU data (weights, bias), for the convolutions.
+    layer: Option<usize>,
+    params: Vec<u8>,
+}
+
+struct Layout {
+    steps: Vec<Step>,
+    /// Bytes of each activation buffer.
+    slots: Vec<u64>,
+    /// Input channels on the GPU: the network's, rounded up to a multiple of 4 (the extra plane is zero).
+    in_pad: usize,
+    /// Floats the GPU buffer takes (`in_pad` planes).
+    in_floats: usize,
+    /// Floats of the output: its channels × side².
+    out_floats: usize,
+}
+
+/// How a network ends: the convolution whose stores write the planar output with depth-to-space, and what else its
+/// stores do (the denoisers: nothing; the compact upscaler: add the input upsampled by the block size, and clip).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Tail {
+    conv: usize,
+    /// The depth-to-space block size; 1 for an RGB-to-RGB network, whose last convolution is stored planar at the
+    /// input's size (mode 3).
+    block: usize,
+    skip: bool,
+    clip: Option<(f32, f32)>,
+}
+
+/// Weights arranged for the kernel: `[k][npad]` rows with `k = tap · cin + ci` (columns are output channels, zero past
+/// `n`), and the bias padded the same (followed by the slopes, padded likewise, for a fused `PRelu`).
+struct Layer {
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+}
+
+fn unsupported<T>(why: impl Into<String>) -> Result<T, String> {
+    Err(why.into())
+}
+
+/// The kernel shape for `n` output columns: 64 × 64 blocks when `n` is a multiple of 64, else 128 × 32.
+fn blocks(n: usize, cin: usize) -> (u32, u32, u32) {
+    let bn = if n.is_multiple_of(64) { 64 } else { 32 };
+    let bk = if cin.is_multiple_of(16) {
+        16
+    } else if cin.is_multiple_of(8) {
+        8
+    } else {
+        4
+    };
+    (4096 / bn, bn, bk)
+}
+
+fn round_up(v: usize, to: usize) -> usize {
+    v.div_ceil(to) * to
+}
+
+/// How the activation goes to the kernel: its mode and the leaky slope.
+fn encode(a: Activation) -> (u32, f32) {
+    match a {
+        Activation::None => (0, 0.0),
+        Activation::Leaky(alpha) => (1, alpha),
+        Activation::Sigmoid => (2, 0.0),
+    }
+}
+
+/// The kernel's activation mode for a convolution whose stores run a fused `PRelu` (slopes after the bias).
+const ACT_PRELU: u32 = 3;
+
+/// The layers the kernels run on their own; the rest are only run as part of a convolution (`Tail`, fused `PRelu`).
+fn runs_alone(op: &Op) -> bool {
+    matches!(op, Op::Conv(_) | Op::ConvT2(_) | Op::MaxPool2 { .. } | Op::PRelu { .. })
+}
+
+/// How `ops` ends, if the kernels can write it: for an RGB-to-RGB network (`rgb`) a convolution to 3 channels at the
+/// input's size; else a convolution without activation to `3 · block²` channels and depth-to-space (the denoisers),
+/// optionally followed by the input upsampled by the block size added on and a clip (the compact upscaler).
+fn tail_of(ops: &[Op], rgb: bool) -> Option<Tail> {
+    let n = ops.len();
+    if rgb {
+        let at = n.checked_sub(1)?;
+        return matches!(ops.get(at), Some(Op::Conv(c)) if c.cout == 3).then_some(Tail { conv: at, block: 1, skip: false, clip: None });
+    }
+    let ends_conv = |at: usize, block: usize| matches!(ops.get(at), Some(Op::Conv(c)) if c.src2.is_none() && c.activation == Activation::None && c.cout == 3 * block * block);
+    if let (Some(Op::DepthToSpace { src, block }), Some(at)) = (ops.last(), n.checked_sub(2))
+        && *src == at + 1
+        && ends_conv(at, *block)
+    {
+        return Some(Tail { conv: at, block: *block, skip: false, clip: None });
+    }
+    let at = n.checked_sub(5)?;
+    match ops.get(at + 1..)? {
+        [Op::DepthToSpace { src, block }, Op::Upsample { src: 0, factor }, Op::Add { a, b }, Op::Clip { src: clipped, min, max }]
+            if *src == at + 1
+                && factor == block
+                && ((*a, *b) == (at + 2, at + 3) || (*a, *b) == (at + 3, at + 2))
+                && *clipped == at + 4
+                && ends_conv(at, *block) =>
+        {
+            Some(Tail { conv: at, block: *block, skip: true, clip: Some((*min, *max)) })
+        }
+        _ => None,
+    }
+}
+
+/// Is the network one the kernels run, and how does it end ([`Tail`])?
+fn validate_plan(net: &Net, tile: usize, ops: &[Op]) -> Result<Tail, String> {
+    if !net.pools_evenly(tile) {
+        return unsupported("the tile does not fit the network");
+    }
+    if tile > MAX_TILE {
+        return unsupported("the tile is larger than the kernels' dispatches reach");
+    }
+    let Some(tail) = tail_of(ops, net.fits_tile_at(tile, 0)) else {
+        return unsupported(
+            "the network ends neither in a convolution to 3 channels at the input's size nor in one to 3 · block² channels and depth-to-space",
+        );
+    };
+    if ops.get(..tail.conv).is_some_and(|before| !before.iter().all(runs_alone)) {
+        return unsupported("depth-to-space, upsampling, a sum or a clip before the network's end");
+    }
+    Ok(tail)
+}
+
+/// A convolution's weights arranged for the kernel: row `(tap · cin + ci)`, column `co`, with `cin` the channels the
+/// kernel reads (more than the layer's when the input is padded; the extra rows stay zero).
+fn arrange_conv(c: &lcc_denoise::net::Conv, cin: usize, npad: usize) -> Vec<f32> {
+    let mut weight = vec![0f32; c.k * c.k * cin * npad];
+    for co in 0..c.cout {
+        for ci in 0..c.cin {
+            for ky in 0..c.k {
+                for kx in 0..c.k {
+                    let v = c.weight.get(((co * c.cin + ci) * c.k + ky) * c.k + kx).copied().unwrap_or(0.0);
+                    if let Some(w) = weight.get_mut(((ky * c.k + kx) * cin + ci) * npad + co) {
+                        *w = v;
+                    }
+                }
+            }
+        }
+    }
+    weight
+}
+
+/// The slopes of a `PRelu` that is the only reader of convolution `i` (tensor `i + 1`), so it runs in its stores.
+fn fusable_prelu<'a>(ops: &'a [Op], i: usize, c: &lcc_denoise::net::Conv, last_use: &[usize]) -> Option<&'a [f32]> {
+    match ops.get(i + 1) {
+        Some(Op::PRelu { src, slope }) if *src == i + 1 && c.activation == Activation::None && last_use.get(i + 1) == Some(&(i + 1)) => Some(slope),
+        _ => None,
+    }
+}
+
+/// The bias padded to `npad`, followed by a fused `PRelu`'s slopes padded likewise.
+fn conv_bias(bias: &[f32], npad: usize, slope: Option<&[f32]>) -> Vec<f32> {
+    let mut out = vec![0f32; if slope.is_some() { 2 * npad } else { npad }];
+    for (values, at) in std::iter::once((bias, 0)).chain(slope.map(|s| (s, npad))) {
+        if let Some(to) = out.get_mut(at..at + values.len()) {
+            to.copy_from_slice(values);
+        }
+    }
+    out
+}
+
+/// Work out the steps, the buffers and the arranged weights for `net` on `tile × tile` input cells.
+fn plan(net: &Net, tile: usize, max_binding: u64) -> Result<(Layout, Vec<Layer>), String> {
+    let ops = net.ops();
+    let tail = validate_plan(net, tile, ops)?;
+    let in_pad = round_up(net.in_channels, 4);
+    // a tensor's side in cells: an error when the level shifts it out of range (unreachable while the CPU
+    // runner validates the model first; checked so the planner can't wrap, issue #2140)
+    let side = |t: usize| -> Result<usize, String> {
+        let level = net.shape(t).map_or(0, |s| s.level);
+        let shift = level.unsigned_abs();
+        let s = if level >= 0 { tile.checked_shr(shift) } else { tile.checked_shl(shift).filter(|v| v >> shift == tile) };
+        s.filter(|&s| s > 0).ok_or_else(|| "a layer's size is out of range".to_string())
+    };
+    let bytes = |parts: &[usize]| -> Result<u64, String> {
+        parts.iter().try_fold(1u64, |a, &b| a.checked_mul(b as u64)).ok_or_else(|| "a layer's buffer is too large".to_string())
+    };
+    // the input tensor is padded to a multiple of 4 planes
+    let chan = |t: usize| net.shape(t).map_or(0, |s| if t == 0 { in_pad } else { s.channels });
+    let n_ops = ops.len();
+    // the last layer that reads each tensor
+    let mut last_use = vec![0usize; n_ops + 1];
+    for (i, op) in ops.iter().enumerate() {
+        let reads: Vec<usize> = match op {
+            Op::Conv(c) => std::iter::once(c.src).chain(c.src2).collect(),
+            Op::ConvT2(c) => vec![c.src],
+            Op::MaxPool2 { src } | Op::DepthToSpace { src, .. } | Op::PRelu { src, .. } | Op::Upsample { src, .. } | Op::Clip { src, .. } => {
+                vec![*src]
+            }
+            Op::Add { a, b } => vec![*a, *b],
+        };
+        for t in reads {
+            if let Some(l) = last_use.get_mut(t) {
+                *l = i;
+            }
+        }
+    }
+
+    use Place::{Input, Output, Slot};
+    let mut slots: Vec<u64> = Vec::new();
+    let mut free: Vec<usize> = Vec::new();
+    let mut place: Vec<Option<Place>> = vec![None; n_ops + 1];
+    if let Some(p) = place.first_mut() {
+        *p = Some(Input);
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    let mut layers: Vec<Layer> = Vec::new();
+    /// A buffer of at least `bytes`: the smallest free one that is big enough, else the biggest free one grown, else new.
+    fn alloc(bytes: u64, slots: &mut Vec<u64>, free: &mut Vec<usize>) -> usize {
+        let size = |s: usize| slots.get(s).copied().unwrap_or(0);
+        let fits = free.iter().enumerate().filter(|&(_, &s)| size(s) >= bytes).min_by_key(|&(_, &s)| size(s)).map(|(i, _)| i);
+        let pick = fits.or_else(|| free.iter().enumerate().max_by_key(|&(_, &s)| size(s)).map(|(i, _)| i));
+        match pick {
+            Some(i) => {
+                let s = free.swap_remove(i);
+                if let Some(b) = slots.get_mut(s) {
+                    *b = (*b).max(bytes);
+                }
+                s
+            }
+            None => {
+                slots.push(bytes);
+                slots.len() - 1
+            }
+        }
+    }
+    let get = |place: &[Option<Place>], t: usize| place.get(t).copied().flatten().ok_or_else(|| format!("tensor {t} has no buffer"));
+    // the tensor a PRelu makes when the convolution before it runs it in its stores
+    let mut fused_prelu: Option<usize> = None;
+
+    for (i, op) in ops.iter().enumerate() {
+        let out_t = i + 1;
+        match op {
+            Op::Conv(c) => {
+                let last = i == tail.conv;
+                // the input's zero padding plane sits in the middle of a join: not supported
+                if (c.src == 0 || c.src2 == Some(0)) && in_pad != net.in_channels && c.src2.is_some() {
+                    return unsupported("a join with a network input whose channel count is not a multiple of 4");
+                }
+                let cin = chan(c.src) + c.src2.map_or(0, chan);
+                // block 1: the last layer of an RGB-to-RGB network, stored planar without its padding columns
+                let last_rgb = last && tail.block == 1;
+                if !cin.is_multiple_of(4) || !(c.cout.is_multiple_of(4) || last_rgb) {
+                    return unsupported("a convolution whose channel counts are not multiples of 4");
+                }
+                let s = side(c.src)?;
+                let (n, mode) = (
+                    if last_rgb { round_up(c.cout, 4) } else { c.cout },
+                    if last_rgb {
+                        3u32
+                    } else if last {
+                        2
+                    } else {
+                        0
+                    },
+                );
+                let (bm, bn, bk) = blocks(n, cin);
+                let npad = round_up(n, bn as usize);
+                let weight = arrange_conv(c, cin, npad);
+                // a PRelu that is the only reader of this layer runs in its stores: its slopes follow the bias
+                let prelu = fusable_prelu(ops, i, c, &last_use);
+                let bias = conv_bias(&c.bias, npad, prelu);
+                fused_prelu = prelu.map(|_| out_t + 1);
+                if prelu.is_some() {
+                    // the result lives until the PRelu's readers are done
+                    let readers = last_use.get(out_t + 1).copied().unwrap_or(i + 1);
+                    if let Some(l) = last_use.get_mut(out_t) {
+                        *l = readers;
+                    }
+                }
+                let m = s.checked_mul(s).ok_or("a layer's size is out of range")?;
+                let (act, alpha) = encode(c.activation);
+                let params = ConvParams {
+                    h: s as u32,
+                    w: s as u32,
+                    c0: chan(c.src) as u32,
+                    c1: c.src2.map_or(0, chan) as u32,
+                    n: n as u32,
+                    npad: npad as u32,
+                    k: c.k as u32,
+                    mode,
+                    cout: c.cout as u32,
+                    act: if prelu.is_some() { ACT_PRELU } else { act },
+                    alpha,
+                    zero: 0,
+                    block: tail.block as u32,
+                    skip_c4: if last && tail.skip { (in_pad / 4) as u32 } else { 0 },
+                    clip: u32::from(last && tail.clip.is_some()),
+                    lo: tail.clip.map_or(0.0, |c| c.0),
+                    hi: tail.clip.map_or(0.0, |c| c.1),
+                    _pad: [0; 3],
+                };
+                let src = get(&place, c.src)?;
+                // the skip's input is read through the second source, which a convolution to the output never has
+                let src2 = if last && tail.skip { Some(Input) } else { c.src2.map(|t| get(&place, t)).transpose()? };
+                let dst = if last {
+                    Output
+                } else {
+                    let slot = alloc(bytes(&[m, c.cout, 4])?, &mut slots, &mut free);
+                    Slot(slot)
+                };
+                if let Some(p) = place.get_mut(out_t) {
+                    *p = Some(dst);
+                }
+                layers.push(Layer { weight, bias });
+                steps.push(Step {
+                    kernel: Kernel::Conv { bm, bn, bk },
+                    groups: [m.div_ceil(bm as usize) as u32, (npad as u32) / bn, 1],
+                    src,
+                    src2,
+                    dst,
+                    layer: Some(layers.len() - 1),
+                    params: bytemuck::bytes_of(&params).to_vec(),
+                });
+            }
+            Op::ConvT2(c) => {
+                if !c.cin.is_multiple_of(4) || !c.cout.is_multiple_of(4) {
+                    return unsupported("a transposed convolution whose channel counts are not multiples of 4");
+                }
+                let s = side(c.src)?;
+                let n = 4 * c.cout;
+                let (bm, bn, bk) = blocks(n, c.cin);
+                let npad = round_up(n, bn as usize);
+                // arranged weights: row ci, column (ky · 2 + kx) · cout + co
+                let mut weight = vec![0f32; c.cin * npad];
+                for ci in 0..c.cin {
+                    for co in 0..c.cout {
+                        for ky in 0..2 {
+                            for kx in 0..2 {
+                                let v = c.weight.get(((ci * c.cout + co) * 2 + ky) * 2 + kx).copied().unwrap_or(0.0);
+                                if let Some(w) = weight.get_mut(ci * npad + (ky * 2 + kx) * c.cout + co) {
+                                    *w = v;
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut bias = vec![0f32; npad];
+                for q in 0..4 {
+                    for co in 0..c.cout {
+                        if let (Some(b), Some(v)) = (bias.get_mut(q * c.cout + co), c.bias.get(co)) {
+                            *b = *v;
+                        }
+                    }
+                }
+                let m = s.checked_mul(s).ok_or("a layer's size is out of range")?;
+                let (act, alpha) = encode(c.activation);
+                let params = ConvParams {
+                    h: s as u32,
+                    w: s as u32,
+                    c0: c.cin as u32,
+                    c1: 0,
+                    n: n as u32,
+                    npad: npad as u32,
+                    k: 1,
+                    mode: 1,
+                    cout: c.cout as u32,
+                    act,
+                    alpha,
+                    zero: 0,
+                    block: 0,
+                    skip_c4: 0,
+                    clip: 0,
+                    lo: 0.0,
+                    hi: 0.0,
+                    _pad: [0; 3],
+                };
+                let src = get(&place, c.src)?;
+                let slot = alloc(bytes(&[4, m, c.cout, 4])?, &mut slots, &mut free);
+                if let Some(p) = place.get_mut(out_t) {
+                    *p = Some(Slot(slot));
+                }
+                layers.push(Layer { weight, bias });
+                steps.push(Step {
+                    kernel: Kernel::Conv { bm, bn, bk },
+                    groups: [m.div_ceil(bm as usize) as u32, (npad as u32) / bn, 1],
+                    src,
+                    src2: None,
+                    dst: Slot(slot),
+                    layer: Some(layers.len() - 1),
+                    params: bytemuck::bytes_of(&params).to_vec(),
+                });
+            }
+            Op::MaxPool2 { src } => {
+                let (s, c) = (side(*src)?, chan(*src));
+                if !c.is_multiple_of(4) || net.shape(*src).is_none_or(|sh| !sh.channels.is_multiple_of(4)) {
+                    return unsupported("a max-pool over a channel count that is not a multiple of 4");
+                }
+                let total = (s / 2) * (s / 2) * (c / 4);
+                let params = PoolParams { h: s as u32, w: s as u32, c4: (c / 4) as u32, total: total as u32 };
+                let from = get(&place, *src)?;
+                let slot = alloc((total * 16) as u64, &mut slots, &mut free);
+                if let Some(p) = place.get_mut(out_t) {
+                    *p = Some(Slot(slot));
+                }
+                let groups = total.div_ceil(64);
+                steps.push(Step {
+                    kernel: Kernel::Pool,
+                    groups: [groups.min(8192) as u32, groups.div_ceil(8192) as u32, 1],
+                    src: from,
+                    src2: None,
+                    dst: Slot(slot),
+                    layer: None,
+                    params: bytemuck::bytes_of(&params).to_vec(),
+                });
+            }
+            // run in the stores of the convolution before it, which wrote its result where this layer's goes
+            Op::PRelu { src, .. } => {
+                let Some(conv_place) = place.get(*src).copied().flatten().filter(|_| fused_prelu == Some(out_t)) else {
+                    return unsupported("a PRelu that does not follow a convolution only it reads");
+                };
+                if let Some(p) = place.get_mut(out_t) {
+                    *p = Some(conv_place);
+                }
+            }
+            // run in the stores of the network's last convolution (`Tail`)
+            Op::DepthToSpace { .. } | Op::Upsample { .. } | Op::Add { .. } | Op::Clip { .. } => {}
+        }
+        // buffers whose last reader was this layer are free for the next layer's result
+        for t in 0..=i {
+            if last_use.get(t).copied() == Some(i)
+                && let Some(Some(Slot(s))) = place.get(t)
+                && !free.contains(s)
+            {
+                free.push(*s);
+            }
+        }
+    }
+    if slots.iter().any(|&b| b > max_binding) {
+        return unsupported("an activation buffer is larger than this GPU allows");
+    }
+    if layers.iter().any(|l| (l.weight.len() as u64).saturating_mul(4) > max_binding) {
+        return unsupported("a weight buffer is larger than this GPU allows");
+    }
+    let out_side = net.out_side(tile).ok_or("the output has no size")?;
+    let out_floats = net.out_channels().saturating_mul(out_side).saturating_mul(out_side);
+    Ok((Layout { steps, slots, in_pad, in_floats: in_pad * tile * tile, out_floats }, layers))
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the GPU objects
+
+struct Pipelines {
+    conv: HashMap<(u32, u32, u32), wgpu::ComputePipeline>,
+    conv_layout: wgpu::BindGroupLayout,
+    pool: wgpu::ComputePipeline,
+    pool_layout: wgpu::BindGroupLayout,
+    /// How long each kernel took to build (the driver compiles them), for the log and the tests.
+    built: Vec<(String, f64)>,
+}
+
+pub(crate) fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+        count: None,
+    }
+}
+
+pub(crate) fn pipeline(d: &Dev, label: &str, src: &str, layout: &wgpu::BindGroupLayout) -> wgpu::ComputePipeline {
+    let module = d.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
+    let pl = d.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(layout)], immediate_size: 0 });
+    d.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(&pl),
+        module: &module,
+        entry_point: Some("main"),
+        // The kernels write all of their workgroup memory before reading any of it, so the zeroing wgpu adds by default
+        // is not needed; on DX12 it is written out as one assignment per element, which makes the shader compiler take
+        // a minute over a 2k-element array.
+        compilation_options: wgpu::PipelineCompilationOptions { zero_initialize_workgroup_memory: false, ..Default::default() },
+        cache: None,
+    })
+}
+
+fn conv_source(bm: u32, bn: u32, bk: u32) -> String {
+    include_str!("wgsl/nn_conv.wgsl")
+        .replace("{{BM}}", &bm.to_string())
+        .replace("{{BN}}", &bn.to_string())
+        .replace("{{BK}}", &bk.to_string())
+        .replace("{{B_VECS}}", &(bk * bn / 4).to_string())
+}
+
+fn conv_bgl(d: &Dev) -> wgpu::BindGroupLayout {
+    use wgpu::BufferBindingType::{Storage, Uniform};
+    d.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            entry(0, Uniform),
+            entry(1, Storage { read_only: true }),
+            entry(2, Storage { read_only: true }),
+            entry(3, Storage { read_only: true }),
+            entry(4, Storage { read_only: true }),
+            entry(5, Storage { read_only: false }),
+        ],
+    })
+}
+
+fn pool_bgl(d: &Dev) -> wgpu::BindGroupLayout {
+    use wgpu::BufferBindingType::{Storage, Uniform};
+    d.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[entry(0, Uniform), entry(1, Storage { read_only: true }), entry(2, Storage { read_only: false })],
+    })
+}
+
+fn build_pipelines(d: &Dev, layout: &Layout) -> Pipelines {
+    let (conv_layout, pool_layout) = (conv_bgl(d), pool_bgl(d));
+    let mut conv = HashMap::new();
+    let mut built = Vec::new();
+    for s in &layout.steps {
+        if let Kernel::Conv { bm, bn, bk } = s.kernel {
+            conv.entry((bm, bn, bk)).or_insert_with(|| {
+                let started = std::time::Instant::now();
+                let p = pipeline(d, "nn_conv", &conv_source(bm, bn, bk), &conv_layout);
+                built.push((format!("conv {bm}x{bn}x{bk}"), started.elapsed().as_secs_f64() * 1000.0));
+                p
+            });
+        }
+    }
+    let started = std::time::Instant::now();
+    let pool = pipeline(d, "nn_pool", include_str!("wgsl/nn_pool.wgsl"), &pool_layout);
+    built.push(("pool".into(), started.elapsed().as_secs_f64() * 1000.0));
+    Pipelines { conv, conv_layout, pool, pool_layout, built }
+}
+
+/// One tile's buffers and the bound steps.
+struct Workspace {
+    input: wgpu::Buffer,
+    output: wgpu::Buffer,
+    staging: wgpu::Buffer,
+    bound: Vec<(Kernel, [u32; 3], wgpu::BindGroup)>,
+    _slots: Vec<wgpu::Buffer>,
+}
+
+struct Shared {
+    dev: &'static Dev,
+    layout: Layout,
+    pipes: Pipelines,
+    weights: Vec<(wgpu::Buffer, wgpu::Buffer)>,
+    uniforms: Vec<wgpu::Buffer>,
+    dummy: wgpu::Buffer,
+}
+
+pub(crate) fn storage(d: &Dev, label: &str, bytes: u64, extra: wgpu::BufferUsages) -> wgpu::Buffer {
+    d.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.max(16),
+        usage: wgpu::BufferUsages::STORAGE | extra,
+        mapped_at_creation: false,
+    })
+}
+
+impl Shared {
+    fn workspace(&self) -> Workspace {
+        let d = self.dev;
+        let slots: Vec<wgpu::Buffer> = self.layout.slots.iter().map(|&b| storage(d, "activations", b, wgpu::BufferUsages::empty())).collect();
+        let input = storage(d, "input", (self.layout.in_floats * 4) as u64, wgpu::BufferUsages::COPY_DST);
+        let output = storage(d, "output", (self.layout.out_floats * 4) as u64, wgpu::BufferUsages::COPY_SRC);
+        let staging = d.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (self.layout.out_floats * 4) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let buf = |p: Place| -> &wgpu::Buffer {
+            match p {
+                Place::Input => &input,
+                Place::Output => &output,
+                Place::Slot(i) => slots.get(i).unwrap_or(&self.dummy),
+            }
+        };
+        let mut bound = Vec::new();
+        for (i, s) in self.layout.steps.iter().enumerate() {
+            let uniform = self.uniforms.get(i).unwrap_or(&self.dummy);
+            let bg = match s.kernel {
+                Kernel::Conv { .. } => {
+                    let (w, b) = s.layer.and_then(|l| self.weights.get(l)).map_or((&self.dummy, &self.dummy), |(w, b)| (w, b));
+                    d.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout: &self.pipes.conv_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: buf(s.src).as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: s.src2.map_or(&self.dummy, buf).as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: w.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 4, resource: b.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 5, resource: buf(s.dst).as_entire_binding() },
+                        ],
+                    })
+                }
+                Kernel::Pool => d.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &self.pipes.pool_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: buf(s.src).as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: buf(s.dst).as_entire_binding() },
+                    ],
+                }),
+            };
+            bound.push((s.kernel, s.groups, bg));
+        }
+        Workspace { input, output, staging, bound, _slots: slots }
+    }
+}
+
+/// Workspaces not in use, and how many exist (free or with a tile in flight).
+struct Slots<T> {
+    free: Vec<T>,
+    made: usize,
+}
+
+/// Up to `cap` workspaces shared by the threads that run tiles. The free list and the count share one lock, so a caller
+/// that finds none free and waits cannot miss one being given back or forgotten in between (issue #2577).
+struct Workspaces<T> {
+    slots: Mutex<Slots<T>>,
+    wake: Condvar,
+    cap: usize,
+}
+
+impl<T> Workspaces<T> {
+    fn new(first: T, cap: usize) -> Self {
+        Workspaces { slots: Mutex::new(Slots { free: vec![first], made: 1 }), wake: Condvar::new(), cap }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Slots<T>> {
+        self.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A free workspace, a new one from `make` when fewer than `cap` exist, else wait for one to come back or be
+    /// forgotten.
+    fn take(&self, make: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        let mut s = self.lock();
+        loop {
+            if let Some(w) = s.free.pop() {
+                return Ok(w);
+            }
+            if s.made < self.cap {
+                s.made += 1;
+                drop(s);
+                let w = make();
+                if w.is_err() {
+                    self.forget();
+                }
+                return w;
+            }
+            s = self.wake.wait(s).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn give(&self, w: T) {
+        self.lock().free.push(w);
+        self.wake.notify_one();
+    }
+
+    /// One workspace fewer exists: a waiting caller may make another.
+    fn forget(&self) {
+        let mut s = self.lock();
+        s.made = s.made.saturating_sub(1);
+        drop(s);
+        self.wake.notify_one();
+    }
+}
+
+/// A network on the GPU for one tile size. Cheap to share between threads: each call takes a free workspace.
+pub struct NetRunner {
+    shared: Shared,
+    tile: usize,
+    in_channels: usize,
+    /// Workspaces are made when a call finds none free, up to [`WORKSPACES`].
+    workspaces: Workspaces<Workspace>,
+    bytes: u64,
+}
+
+/// Put `net` on the GPU for `tile × tile` input cells, or say why it cannot be (no GPU, a layer or a size the kernels
+/// do not do, the device refusing the buffers). Creates the device on first use and compiles the kernels.
+pub fn runner(net: &Net, tile: usize) -> Result<NetRunner, String> {
+    runner_with(dev, net, tile)
+}
+
+/// [`runner`] on `card`'s own device (a batch makes a photo on each card at once).
+pub fn runner_on(card: Card, net: &Net, tile: usize) -> Result<NetRunner, String> {
+    runner_with(|| dev_on(card), net, tile)
+}
+
+fn runner_with(dev: impl FnOnce() -> Result<&'static Dev, String>, net: &Net, tile: usize) -> Result<NetRunner, String> {
+    let _work = crate::exit::enter().ok_or(CLOSING)?;
+    let d = dev()?;
+    let max_binding = d.limits.max_storage_buffer_binding_size.min(d.limits.max_buffer_size).min(MAX_BUFFER);
+    let (layout, layers) = plan(net, tile, max_binding)?;
+    let scope = [
+        d.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+        d.device.push_error_scope(wgpu::ErrorFilter::Validation),
+        d.device.push_error_scope(wgpu::ErrorFilter::Internal),
+    ];
+    // the driver compiles the kernels here: a crash in it is reported at the next launch (issue #250)
+    let pipes = crate::backend::with_marker("denoise kernel compilation", || build_pipelines(d, &layout));
+    let weights: Vec<(wgpu::Buffer, wgpu::Buffer)> = layers
+        .iter()
+        .map(|l| {
+            let make =
+                |v: &[f32]| crate::upload::buffer_init(&d.device, &d.queue, Some("weights"), bytemuck::cast_slice(v), wgpu::BufferUsages::STORAGE);
+            (make(&l.weight), make(&l.bias))
+        })
+        .collect();
+    let uniforms: Vec<wgpu::Buffer> = layout
+        .steps
+        .iter()
+        .map(|s| crate::upload::buffer_init(&d.device, &d.queue, Some("params"), &s.params, wgpu::BufferUsages::UNIFORM))
+        .collect();
+    let dummy = storage(d, "dummy", 16, wgpu::BufferUsages::empty());
+    let bytes: u64 = layout.slots.iter().sum::<u64>() + ((layout.in_floats + layout.out_floats) * 8) as u64;
+    let shared = Shared { dev: d, layout, pipes, weights, uniforms, dummy };
+    let first = shared.workspace();
+    let [oom, validation, internal] = scope;
+    let errors = [pollster::block_on(internal.pop()), pollster::block_on(validation.pop()), pollster::block_on(oom.pop())];
+    if let Some(e) = errors.into_iter().flatten().next() {
+        return Err(format!("{}: the denoise kernels could not be set up ({e})", d.info.name));
+    }
+    Ok(NetRunner { shared, tile, in_channels: net.in_channels, workspaces: Workspaces::new(first, WORKSPACES), bytes })
+}
+
+impl NetRunner {
+    /// The adapter this runner uses.
+    pub fn adapter(&self) -> String {
+        format!("{} ({:?})", self.shared.dev.info.name, self.shared.dev.info.backend)
+    }
+
+    /// The card this runner's device is on.
+    pub fn card(&self) -> Card {
+        self.shared.dev.card
+    }
+
+    /// How long each kernel took to build, e.g. `conv 64x64x16: 812 ms`.
+    pub fn build_report(&self) -> String {
+        self.shared.pipes.built.iter().map(|(k, ms)| format!("{k}: {ms:.0} ms")).collect::<Vec<_>>().join(", ")
+    }
+
+    /// Device memory one tile in flight uses (bytes), without the weights.
+    pub fn bytes_per_tile(&self) -> u64 {
+        self.bytes
+    }
+
+    /// A free workspace, a new one when fewer than [`WORKSPACES`] exist, else wait for one to come back.
+    fn take(&self) -> Result<Workspace, Error> {
+        self.workspaces.take(|| {
+            // a caller woken by the last tiles failing on a lost device makes nothing on it (its own card's)
+            if let Some(why) = broken_reason_on(self.shared.dev.card) {
+                return Err(Error::Runtime(format!("the GPU is not used any more: {why}")));
+            }
+            let d = self.shared.dev;
+            let scopes = [d.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory), d.device.push_error_scope(wgpu::ErrorFilter::Validation)];
+            let w = self.shared.workspace();
+            let [oom, validation] = scopes;
+            let (validation, oom) = (pollster::block_on(validation.pop()), pollster::block_on(oom.pop()));
+            if let Some(e) = oom.or(validation) {
+                return Err(Error::Runtime(format!("the GPU could not make room for another tile: {e}")));
+            }
+            Ok(w)
+        })
+    }
+
+    fn give(&self, w: Workspace) {
+        self.workspaces.give(w);
+    }
+
+    /// A workspace is gone (dropped after a failure): room for a new one, and a waiting caller may make it.
+    fn forget(&self) {
+        self.workspaces.forget();
+    }
+
+    fn execute(&self, w: &Workspace, input: &[f32]) -> Result<Vec<f32>, Error> {
+        let d = self.shared.dev;
+        let (t, c) = (self.tile, self.shared.layout.in_pad);
+        // planar → channels innermost (a padding plane stays zero)
+        let mut nhwc = vec![0f32; self.shared.layout.in_floats];
+        for (ch, plane) in input.chunks_exact(t * t).enumerate() {
+            for (i, v) in plane.iter().enumerate() {
+                if let Some(o) = nhwc.get_mut(i * c + ch) {
+                    *o = *v;
+                }
+            }
+        }
+        let mut calls = Vec::with_capacity(w.bound.len());
+        for (kernel, groups, bg) in &w.bound {
+            let pipe = match kernel {
+                Kernel::Conv { bm, bn, bk } => self.shared.pipes.conv.get(&(*bm, *bn, *bk)),
+                Kernel::Pool => Some(&self.shared.pipes.pool),
+            };
+            let Some(pipe) = pipe else { return Err(Error::Runtime("a kernel is missing".into())) };
+            calls.push((pipe, groups, bg));
+        }
+        let scopes = [
+            d.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            d.device.push_error_scope(wgpu::ErrorFilter::Validation),
+            d.device.push_error_scope(wgpu::ErrorFilter::Internal),
+        ];
+        d.queue.write_buffer(&w.input, 0, bytemuck::cast_slice(&nhwc));
+        let mut enc = d.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("denoise tile"), timestamp_writes: None });
+            for (pipe, groups, bg) in calls {
+                pass.set_pipeline(pipe);
+                pass.set_bind_group(0, bg, &[]);
+                pass.dispatch_workgroups(groups[0], groups[1], groups[2]);
+            }
+        }
+        let bytes = (self.shared.layout.out_floats * 4) as u64;
+        enc.copy_buffer_to_buffer(&w.output, 0, &w.staging, 0, bytes);
+        d.queue.submit([enc.finish()]);
+        let slice = w.staging.slice(..bytes);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let waited = d.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(TIMEOUT) });
+        let [oom, validation, internal] = scopes;
+        let errors = [pollster::block_on(internal.pop()), pollster::block_on(validation.pop()), pollster::block_on(oom.pop())];
+        let [internal, validation, oom] = errors;
+        if let Some(e) = oom {
+            // not a broken device: this tile runs on the CPU, and the next may fit
+            return Err(Error::Runtime(format!("the GPU ran out of memory: {e}")));
+        }
+        if let Some(e) = internal.or(validation) {
+            mark_broken(d.card, &format!("device error: {e}"));
+            return Err(Error::Runtime(format!("the GPU reported an error: {e}")));
+        }
+        if let Err(e) = waited {
+            mark_broken(d.card, &format!("the GPU did not finish a tile: {e}"));
+            return Err(Error::Runtime(format!("the GPU did not finish: {e}")));
+        }
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(Error::Runtime(format!("reading the result back failed: {e}"))),
+            Err(e) => return Err(Error::Runtime(format!("reading the result back failed: {e}"))),
+        }
+        let out = {
+            let data = slice.get_mapped_range().map_err(|e| Error::Runtime(format!("reading the result back failed: {e:?}")))?;
+            data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<f32>>()
+        };
+        w.staging.unmap();
+        Ok(out)
+    }
+}
+
+impl TileRunner for NetRunner {
+    fn run(&self, input: &[f32]) -> Result<Vec<f32>, Error> {
+        let card = self.shared.dev.card;
+        if let Some(why) = broken_reason_on(card) {
+            return Err(Error::Runtime(format!("the GPU is not used any more: {why}")));
+        }
+        if input.len() != self.in_channels * self.tile * self.tile {
+            return Err(Error::Input("the tile is not the size the model wants".into()));
+        }
+        background_turn(card);
+        // one tile is one piece of GPU work: a photo's worth would outlast any wait at exit
+        let Some(_work) = crate::exit::enter() else { return Err(Error::Runtime(CLOSING.into())) };
+        let w = self.take()?;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute(&w, input)));
+        match r {
+            Ok(Ok(out)) => {
+                self.give(w);
+                Ok(out)
+            }
+            Ok(Err(e)) => {
+                // its readback buffer may be left half-mapped: a fresh workspace is made when one is next needed
+                drop(w);
+                self.forget();
+                Err(e)
+            }
+            Err(_) => {
+                // a panic inside wgpu: this workspace is not given back, and this card is not used again
+                mark_broken(card, "a denoise tile panicked");
+                drop(w);
+                self.forget();
+                Err(Error::Runtime("the GPU runner gave up".into()))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The denoise kernels validate without a GPU: the pooling kernel, and the convolution for every block size the
+    /// planner picks for these layer widths and channel counts.
+    #[test]
+    fn the_network_kernels_validate_without_a_gpu() {
+        assert_eq!(crate::validate_wgsl("nn_pool", include_str!("wgsl/nn_pool.wgsl")), Ok(()));
+        let mut sizes: Vec<(u32, u32, u32)> = Vec::new();
+        for n in [1usize, 3, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512] {
+            for cin in [1usize, 3, 4, 8, 16, 32, 48, 64, 128, 256, 512] {
+                let b = blocks(n, cin);
+                if !sizes.contains(&b) {
+                    sizes.push(b);
+                }
+            }
+        }
+        for (bm, bn, bk) in sizes {
+            assert_eq!(crate::validate_wgsl(&format!("nn_conv {bm}x{bn}x{bk}"), &conv_source(bm, bn, bk)), Ok(()));
+        }
+    }
+    use lcc_denoise::{onnx, reference, synthetic};
+
+    fn net(tile: u64, ch: u64, depth: usize, seed: u64) -> Net {
+        let path = std::env::temp_dir().join(format!("lc-nn-{}-{tile}-{ch}-{depth}-{seed}.onnx", std::process::id()));
+        std::fs::write(&path, synthetic::unet_onnx(tile, ch, depth, seed)).unwrap();
+        let n = onnx::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        n
+    }
+
+    fn picture(len: usize, seed: u64) -> Vec<f32> {
+        let mut s = seed | 1;
+        (0..len)
+            .map(|_| {
+                s ^= s >> 12;
+                s ^= s << 25;
+                s ^= s >> 27;
+                (s.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 40) as f32 / (1u64 << 24) as f32
+            })
+            .collect()
+    }
+
+    /// The runner, or `None` (with a note) on a machine with no usable GPU.
+    fn gpu(net: &Net, tile: usize) -> Option<NetRunner> {
+        match runner(net, tile) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                lcc_testkit::skip!(Gpu, "no GPU runner here ({e})");
+                None
+            }
+        }
+    }
+
+    fn worst(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        assert!(a.iter().chain(b).all(|v| v.is_finite()), "non-finite denoise output");
+        let scale = b.iter().fold(1e-3f32, |m, v| m.max(v.abs()));
+        a.iter().zip(b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / scale
+    }
+
+    /// A 1 × 1 convolution from 4 channels to `cout` that copies input channel `co % 4` to each output channel `co`.
+    fn copy(src: usize, cout: usize) -> Op {
+        let mut weight = vec![0f32; cout * 4];
+        for co in 0..cout {
+            weight[co * 4 + co % 4] = 1.0;
+        }
+        Op::Conv(lcc_denoise::net::Conv { src, src2: None, cin: 4, cout, k: 1, weight, bias: vec![0.0; cout], activation: Activation::None })
+    }
+
+    /// Two 1 × 1 layers that only copy channels, so the right answer is exact: the first layer's stores (mode 0) went
+    /// wrong on DX12 with FXC on an NVIDIA GTX 1070, where every second pixel came out with its channels shifted.
+    #[test]
+    fn a_layer_stores_every_pixels_channels_where_the_next_reads_them() {
+        let n = Net::new(4, vec![copy(0, 4), copy(1, 12), Op::DepthToSpace { src: 2, block: 2 }]).unwrap();
+        let Some(g) = gpu(&n, 3) else { return };
+        let x: Vec<f32> = (1..=36).map(|i| i as f32).collect();
+        assert_eq!(g.run(&x).unwrap(), reference::run(&n, 3, &x).unwrap());
+    }
+
+    /// The same for a transposed convolution's stores (mode 1): a max-pool halves the tile, and the 2 × 2 transposed
+    /// convolution copies each pooled pixel's channels to the four pixels it becomes.
+    #[test]
+    fn a_transposed_convolution_stores_every_pixels_channels_where_the_next_reads_them() {
+        use lcc_denoise::net::ConvT2;
+        // [cin][cout][2][2]: channel c to channel c at all four places
+        let mut weight = vec![0f32; 4 * 4 * 4];
+        for c in 0..4 {
+            for q in 0..4 {
+                weight[(c * 4 + c) * 4 + q] = 1.0;
+            }
+        }
+        let up = Op::ConvT2(ConvT2 { src: 1, cin: 4, cout: 4, weight, bias: vec![0.0; 4], activation: Activation::None });
+        let n = Net::new(4, vec![Op::MaxPool2 { src: 0 }, up, copy(2, 12), Op::DepthToSpace { src: 3, block: 2 }]).unwrap();
+        let Some(g) = gpu(&n, 6) else { return };
+        let x: Vec<f32> = (1..=144).map(|i| i as f32).collect();
+        assert_eq!(g.run(&x).unwrap(), reference::run(&n, 6, &x).unwrap());
+    }
+
+    #[test]
+    fn the_gpu_gives_what_the_reference_gives() {
+        // (tile, channels, depth): a tile that is not a multiple of the block size, odd channel counts, a deeper net
+        for (tile, ch, depth, seed) in
+            [(1u64, 4u64, 0usize, 1u64), (3, 4, 0, 8), (6, 4, 1, 9), (20, 12, 2, 2), (32, 8, 2, 3), (48, 12, 2, 4), (64, 16, 3, 5)]
+        {
+            let n = net(tile, ch, depth, seed);
+            let Some(g) = gpu(&n, tile as usize) else { return };
+            let x = picture(4 * (tile * tile) as usize, seed);
+            let want = reference::run(&n, tile as usize, &x).unwrap();
+            let got = g.run(&x).unwrap();
+            let cpu = lcc_denoise::cpu::NetRunner::new(&n, tile as usize).unwrap().run(&x).unwrap();
+            assert!(worst(&got, &cpu) < 1e-3, "GPU and pure-Rust CPU differ");
+            let e = worst(&got, &want);
+            eprintln!("{}: tile {tile}, {ch} channels, depth {depth}: off by {e:e} of the output's size", g.adapter());
+            assert!(e < 2e-4, "tile {tile}, {ch} channels, depth {depth}: the GPU is off by {e:e} of the output's size");
+        }
+    }
+
+    /// A compact upscaler shaped like `realesr-general-x4v3`, read from its ONNX bytes.
+    fn upscaler(ch: u64, convs: usize, scale: u64, seed: u64) -> Net {
+        let path = std::env::temp_dir().join(format!("lc-nn-sr-{}-{ch}-{convs}-{scale}-{seed}.onnx", std::process::id()));
+        std::fs::write(&path, synthetic::upscaler_onnx(ch, convs, scale, seed)).unwrap();
+        let n = onnx::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        n
+    }
+
+    /// Three input channels padded to four, a slope per channel in the convolutions' stores, and the last
+    /// convolution's stores doing depth-to-space by 2 or 4, adding the input and clipping.
+    #[test]
+    fn upscalers_on_the_gpu_give_what_the_reference_gives() {
+        for scale in [2u64, 4] {
+            let n = upscaler(8, 2, scale, 17 + scale);
+            for tile in [1usize, 3, 8, 20] {
+                // only a missing card skips: a card that is there must take the upscaler
+                if let Err(e) = dev() {
+                    lcc_testkit::skip!(Gpu, "no GPU here ({e})");
+                    return;
+                }
+                let g = runner(&n, tile).expect("the planner takes this upscaler");
+                // values around [0, 1], so the clip and both sides of every slope are exercised
+                let x: Vec<f32> = picture(3 * tile * tile, tile as u64).iter().map(|v| v + 0.5).collect();
+                let want = reference::run(&n, tile, &x).unwrap();
+                let got = g.run(&x).unwrap();
+                let cpu = lcc_denoise::cpu::NetRunner::for_tile(&n, tile).unwrap().run(&x).unwrap();
+                assert!(worst(&got, &cpu) < 1e-3, "GPU and pure-Rust CPU differ");
+                let e = worst(&got, &want);
+                assert!(e < 2e-4, "scale {scale}, tile {tile}: the GPU is off by {e:e} of the output's size");
+            }
+        }
+    }
+
+    #[test]
+    fn upscaler_tails_the_stores_cannot_write_are_refused() {
+        let n = upscaler(8, 1, 4, 3);
+        let mut ops = n.ops().to_vec();
+        // the clip reads the upsampled input instead of the sum
+        let last = ops.len() - 1;
+        ops[last] = Op::Clip { src: last - 1, min: 0.0, max: 1.0 };
+        assert!(plan(&Net::new(3, ops).unwrap(), 8, u64::MAX).is_err());
+        // a PRelu that does not follow the convolution it reads
+        let mut ops = n.ops().to_vec();
+        ops[3] = Op::PRelu { src: 1, slope: vec![0.1; 8] };
+        assert!(plan(&Net::new(3, ops).unwrap(), 8, u64::MAX).is_err());
+        assert!(plan(&n, 8, u64::MAX).is_ok());
+    }
+
+    /// The real `realesr-general-x4v3.onnx` export at `LC_SR_MODEL` on the GPU against the CPU runner.
+    #[test]
+    #[ignore = "needs LC_SR_MODEL: the realesr-general-x4v3 ONNX export"]
+    fn real_upscaler_on_the_gpu_matches_cpu() {
+        use std::time::Instant;
+        let Some(model) = std::env::var_os("LC_SR_MODEL") else { return };
+        let net = onnx::read(std::path::Path::new(&model)).unwrap();
+        let tile = 256usize;
+        let g = runner(&net, tile).unwrap();
+        let x: Vec<f32> = picture(3 * tile * tile, 7).iter().map(|v| (v + 0.5).clamp(0.0, 1.0)).collect();
+        let cpu_runner = lcc_denoise::cpu::NetRunner::for_tile(&net, tile).unwrap();
+        let started = Instant::now();
+        let cpu = cpu_runner.run(&x).unwrap();
+        let cpu_s = started.elapsed().as_secs_f64();
+        g.run(&x).unwrap();
+        let started = Instant::now();
+        let got = g.run(&x).unwrap();
+        let gpu_s = started.elapsed().as_secs_f64();
+        let e = worst(&got, &cpu);
+        println!("{}: {tile}² tile → {}², CPU {cpu_s:.2} s, GPU {gpu_s:.3} s, off by {e:e}", g.adapter(), 4 * tile);
+        assert!(e < 1e-3);
+    }
+
+    // Issue #479: several pixels loaded by different invocations shared a vec4,
+    // so lane writes raced on Metal. Exercise a partial block repeatedly with new
+    // inputs; stale shared-memory values must never leak into the next dispatch.
+    #[test]
+    fn partial_tiles_remain_correct_when_reusing_a_runner() {
+        let n = net(3, 4, 0, 8);
+        let Some(g) = gpu(&n, 3) else { return };
+        for seed in 100..112 {
+            let x = picture(4 * 3 * 3, seed);
+            let want = reference::run(&n, 3, &x).unwrap();
+            let e = worst(&g.run(&x).unwrap(), &want);
+            assert!(e < 2e-4, "seed {seed}: off by {e:e}");
+        }
+    }
+
+    #[test]
+    fn a_runner_serves_many_tiles_from_many_threads() {
+        let n = net(32, 8, 2, 7);
+        let Some(g) = gpu(&n, 32) else { return };
+        let inputs: Vec<Vec<f32>> = (0..12).map(|i| picture(4 * 32 * 32, 100 + i)).collect();
+        let wants: Vec<Vec<f32>> = inputs.iter().map(|x| reference::run(&n, 32, x).unwrap()).collect();
+        std::thread::scope(|s| {
+            for chunk in inputs.chunks(3).zip(wants.chunks(3)) {
+                let g = &g;
+                s.spawn(move || {
+                    for (x, want) in chunk.0.iter().zip(chunk.1) {
+                        let e = worst(&g.run(x).unwrap(), want);
+                        assert!(e < 2e-4, "off by {e:e}");
+                    }
+                });
+            }
+        });
+    }
+
+    fn rgb_net(tile: u64, ch: u64, depth: usize, seed: u64) -> Net {
+        let path = std::env::temp_dir().join(format!("lc-nn-rgb-{}-{tile}-{ch}-{depth}-{seed}.onnx", std::process::id()));
+        std::fs::write(&path, synthetic::unet_rgb_onnx(tile, ch, depth, seed)).unwrap();
+        let n = onnx::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        n
+    }
+
+    /// RGB to RGB: three planes in (padded to four on the GPU), three planes out at the same size, Relu and a final
+    /// sigmoid; the Bayer output is covered by the tests above.
+    #[test]
+    fn the_gpu_gives_the_cpu_answer_for_an_rgb_network() {
+        for (tile, ch, depth, seed) in [(2u64, 4u64, 0usize, 1u64), (5, 4, 0, 2), (8, 4, 1, 3), (20, 8, 2, 4), (32, 12, 2, 5), (48, 8, 3, 6)] {
+            let n = rgb_net(tile, ch, depth, seed);
+            let Some(g) = gpu(&n, tile as usize) else { return };
+            let x = picture(3 * (tile * tile) as usize, seed);
+            let want = reference::run(&n, tile as usize, &x).unwrap();
+            let got = g.run(&x).unwrap();
+            assert_eq!(got.len(), 3 * (tile * tile) as usize);
+            assert!(got.iter().all(|v| (0.0..=1.0).contains(v)), "a sigmoid keeps the picture in 0..1");
+            let cpu = lcc_denoise::cpu::NetRunner::new(&n, tile as usize).unwrap().run(&x).unwrap();
+            assert!(worst(&got, &cpu) < 1e-3, "tile {tile}: GPU and pure-Rust CPU differ");
+            let e = worst(&got, &want);
+            assert!(e < 2e-4, "tile {tile}, {ch} channels, depth {depth}: the GPU is off by {e:e}");
+            // the wrong number of planes (the Bayer contract's four) is an input error
+            assert!(g.run(&picture(4 * (tile * tile) as usize, seed)).is_err());
+        }
+    }
+
+    /// A darktable-NIND-shaped RGB model on the CPU and the GPU, with timings per tile. Run with
+    /// `LC_DENOISE_RGB_MODEL=<model.onnx>` (and optionally `LC_DENOISE_RGB_TILE`, default 768):
+    /// `cargo test --release -p lcc-gpu --lib real_rgb_model -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a real RGB-to-RGB model: see the doc comment"]
+    fn real_rgb_model_on_the_cpu_and_gpu_agree() {
+        use lcc_denoise::manifest::{DenoiserManifest, Domain, Gain};
+        use lcc_denoise::runtime::{CpuRunner, test_tile_for};
+        use std::time::Instant;
+        let Some(model) = std::env::var_os("LC_DENOISE_RGB_MODEL") else { return };
+        let tile: usize = std::env::var("LC_DENOISE_RGB_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+        let manifest = DenoiserManifest {
+            id: "rgb-test".into(),
+            name: "RGB test".into(),
+            version: "1".into(),
+            licence: Default::default(),
+            source: None,
+            sha256: None,
+            size_bytes: None,
+            provenance: String::new(),
+            domain: Domain::RgbToRgb,
+            tile: tile as u32,
+            overlap: 32,
+            gain: Gain::None,
+        };
+        let cpu = CpuRunner::load(std::path::Path::new(&model), &manifest).unwrap();
+        assert_eq!(cpu.out_side(), tile);
+        let started = Instant::now();
+        let Some(g) = gpu(cpu.net(), tile) else { return };
+        println!("{}: set up in {:.2} s, {:.0} MB per tile in flight", g.adapter(), started.elapsed().as_secs_f64(), g.bytes_per_tile() as f64 / 1e6);
+        let (input, _) = test_tile_for(Domain::RgbToRgb, tile);
+        let t = Instant::now();
+        let want = cpu.run(&input).unwrap();
+        println!("CPU: {:.0} ms for one {tile} tile (first call, one core)", t.elapsed().as_secs_f64() * 1000.0);
+        let t = Instant::now();
+        let got = g.run(&input).unwrap();
+        println!("GPU, first tile: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        for (name, out) in [("CPU", &want), ("GPU", &got)] {
+            assert_eq!(out.len(), 3 * tile * tile);
+            assert!(out.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)), "{name}: not finite or outside 0..1");
+        }
+        let e = worst(&got, &want);
+        println!("worst difference {e:e} of the output's size");
+        assert!(e < 1e-3, "the GPU does not give the CPU answer ({e:e})");
+        let median = |f: &dyn Fn()| {
+            let mut times: Vec<f64> = (0..5)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            times.sort_by(|a, b| a.total_cmp(b));
+            times[times.len() / 2]
+        };
+        println!("CPU: median {:.0} ms per tile", median(&|| drop(cpu.run(&input).unwrap())));
+        println!("GPU: median {:.0} ms per tile", median(&|| drop(g.run(&input).unwrap())));
+    }
+
+    /// The real model on the GPU against the pure-Rust CPU runner, with timings (the numbers in docs/denoise.md come from here):
+    /// `LC_DENOISE_MODEL=<model_bayer.onnx> cargo test --release -p lcc-gpu --lib real_model -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs the real model: see the doc comment"]
+    fn real_model_on_the_gpu_matches_cpu() {
+        use lcc_denoise::manifest::{DenoiserManifest, Domain, Gain};
+        use lcc_denoise::runtime::CpuRunner;
+        use std::time::Instant;
+        let Some(model) = std::env::var_os("LC_DENOISE_MODEL") else { return };
+        let net = onnx::read(std::path::Path::new(&model)).unwrap();
+        let tile = 512usize;
+        let started = Instant::now();
+        let g = runner(&net, tile).unwrap();
+        println!("{}: set up in {:.2} s, {:.0} MB per tile in flight", g.adapter(), started.elapsed().as_secs_f64(), g.bytes_per_tile() as f64 / 1e6);
+        println!("kernels: {}", g.build_report());
+        let manifest = DenoiserManifest {
+            id: "rawnind-bayer".into(),
+            name: "RawNIND Bayer".into(),
+            version: "1".into(),
+            licence: Default::default(),
+            source: None,
+            sha256: None,
+            size_bytes: None,
+            provenance: String::new(),
+            domain: Domain::BayerToRgb,
+            tile: 512,
+            overlap: 64,
+            gain: Gain::MatchMean { nominal: 1.0e6, max_deviation: 0.05 },
+        };
+        let cpu = CpuRunner::load(std::path::Path::new(&model), &manifest).unwrap();
+        // a gradient with noise, in the model's input range
+        let noise = picture(4 * tile * tile, 42);
+        let input: Vec<f32> =
+            (0..4 * tile * tile).map(|i| (0.2 + 0.3 * ((i % tile) as f32 / tile as f32) + 0.1 * (noise[i] - 0.5)).clamp(0.0, 1.0)).collect();
+        let t = Instant::now();
+        let want = cpu.run(&input).unwrap();
+        println!("CPU: {:.0} ms for one tile (one call runs on one core)", t.elapsed().as_secs_f64() * 1000.0);
+        let t = Instant::now();
+        let got = g.run(&input).unwrap();
+        println!("gpu, first tile: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        let e = worst(&got, &want);
+        println!("worst difference {e:e} of the output's size");
+        assert!(e < 1e-3, "the GPU does not give the CPU answer ({e:e})");
+        let mut times: Vec<f64> = (0..8)
+            .map(|_| {
+                let t = Instant::now();
+                g.run(&input).unwrap();
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(|a, b| a.total_cmp(b));
+        println!("gpu, one tile at a time: median {:.0} ms (best {:.0}, worst {:.0})", times[times.len() / 2], times[0], times[times.len() - 1]);
+        // two threads, as the denoiser feeds it
+        let t = Instant::now();
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    for _ in 0..8 {
+                        g.run(&input).unwrap();
+                    }
+                });
+            }
+        });
+        println!("gpu, 16 tiles from 2 threads: {:.0} ms per tile", t.elapsed().as_secs_f64() * 1000.0 / 16.0);
+    }
+
+    #[test]
+    fn a_tile_of_the_wrong_size_is_an_error_not_a_crash() {
+        let n = net(16, 4, 1, 9);
+        let Some(g) = gpu(&n, 16) else { return };
+        assert!(g.run(&[0.0; 10]).is_err());
+        assert!(g.run(&[]).is_err());
+    }
+
+    #[test]
+    fn networks_the_kernels_cannot_run_are_refused() {
+        let n = net(16, 4, 1, 11);
+        // a tile the network does not fit
+        assert!(plan(&n, 15, u64::MAX).is_err());
+        // a buffer limit smaller than the activations
+        assert!(plan(&n, 16, 64).is_err());
+        // a layer of the upscalers, though the network ends as a denoiser does
+        let prelu = Net::new(4, vec![Op::PRelu { src: 0, slope: vec![0.1; 4] }, copy(1, 12), Op::DepthToSpace { src: 2, block: 2 }]).unwrap();
+        assert!(plan(&prelu, 16, u64::MAX).is_err());
+    }
+
+    /// Issue #2577: a tile failing between a caller finding every workspace in use and that caller waiting still wakes
+    /// it. The caller holds the lock from its check to its wait, as `Workspaces::take` does, so `forget` waits for it. A
+    /// wait that runs out fails, whatever the count is by then: the wakeup itself has to arrive.
+    #[test]
+    fn a_caller_that_finds_every_workspace_in_use_hears_one_being_forgotten() {
+        let ws = Workspaces::new(0u32, 1);
+        assert_eq!(ws.lock().free.pop(), Some(0));
+        std::thread::scope(|scope| {
+            // where take() is between finding every workspace in use and waiting
+            let mut s = ws.lock();
+            assert!(s.free.is_empty() && s.made == ws.cap);
+            scope.spawn(|| ws.forget());
+            // the tile in flight fails now
+            std::thread::sleep(Duration::from_millis(50));
+            // wait as take() does, and again only after a spurious wakeup that changed nothing
+            loop {
+                let (next, r) = ws.wake.wait_timeout(s, Duration::from_secs(10)).unwrap_or_else(|e| e.into_inner());
+                assert!(!r.timed_out(), "the caller missed the workspace being forgotten");
+                s = next;
+                if s.made != ws.cap {
+                    break;
+                }
+            }
+            assert_eq!(s.made, 0);
+        });
+    }
+
+    #[test]
+    fn take_waits_for_a_workspace_to_come_back_or_be_forgotten() {
+        let ws = std::sync::Arc::new(Workspaces::new(0u32, 1));
+        let fail = || Err(Error::Runtime("no room".into()));
+        assert_eq!(ws.take(fail).unwrap(), 0);
+        // a caller on a thread nobody joins: if its wakeup never comes, the test fails on its timeout instead of hanging
+        let caller = |made: u32| {
+            let (ws, (tx, rx)) = (ws.clone(), std::sync::mpsc::channel());
+            std::thread::spawn(move || tx.send(ws.take(|| Ok(made))));
+            rx
+        };
+        // the only workspace is in flight: a caller waits until it is forgotten, then makes a new one
+        let rx = caller(1);
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err(), "took a workspace while none was free");
+        ws.forget();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap(), 1);
+        // or until it comes back, and takes that one
+        let rx = caller(2);
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err(), "took a workspace while none was free");
+        ws.give(1);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap(), 1);
+        // a workspace that could not be made leaves room for the next try
+        ws.forget();
+        assert!(ws.take(fail).is_err());
+        assert_eq!(ws.lock().made, 0);
+        assert_eq!(ws.take(|| Ok(3)).unwrap(), 3);
+        assert_eq!(ws.lock().made, 1);
+    }
+}

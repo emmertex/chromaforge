@@ -1,0 +1,829 @@
+use serde_json::{Value, json};
+
+use crate::{Backend, Headless, PROTOCOL_VERSION, Server, call_tool, command_tool_name};
+
+/// An undated file takes its own date (#1216): give the fixture the date its folder template expects (noon UTC,
+/// the same day in every time zone the tests run in).
+fn file_dated_2026_01_14(path: &std::path::Path) {
+    let noon = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_768_392_000);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(noon).unwrap();
+}
+
+fn server() -> Server {
+    Server::new(Box::new(Headless::demo()))
+}
+
+fn rpc(s: &mut Server, id: u64, method: &str, params: Value) -> Value {
+    let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string();
+    let reply = s.handle_line(&line).expect("reply");
+    let v: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(v["jsonrpc"], "2.0");
+    assert_eq!(v["id"], id);
+    v
+}
+
+#[test]
+fn initialize_negotiates_version() {
+    let mut s = server();
+    let r = rpc(&mut s, 1, "initialize", json!({"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    assert_eq!(r["result"]["protocolVersion"], "2025-03-26");
+    assert_eq!(r["result"]["serverInfo"]["name"], lcc_brand::MCP_SERVER);
+    assert!(r["result"]["capabilities"]["tools"].is_object());
+    let r = rpc(&mut s, 2, "initialize", json!({"protocolVersion": "1999-01-01"}));
+    assert_eq!(r["result"]["protocolVersion"], PROTOCOL_VERSION);
+    assert!(s.handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#).is_none());
+    assert!(s.is_initialized());
+}
+
+#[test]
+fn errors() {
+    let mut s = server();
+    let v: Value = serde_json::from_str(&s.handle_line("{not json").unwrap()).unwrap();
+    assert_eq!(v["error"]["code"], -32700);
+    assert_eq!(rpc(&mut s, 1, "nope", json!({}))["error"]["code"], -32601);
+    assert_eq!(rpc(&mut s, 2, "tools/call", json!({}))["error"]["code"], -32602);
+    assert!(s.handle_line("   ").is_none());
+    // Unknown tools and failing commands are tool errors, not protocol errors.
+    let r = rpc(&mut s, 3, "tools/call", json!({"name": "nope", "arguments": {}}));
+    assert_eq!(r["result"]["isError"], true);
+    let r = rpc(&mut s, 4, "tools/call", json!({"name": "run_command", "arguments": {"command": "no.such"}}));
+    assert_eq!(r["result"]["isError"], true);
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("unknown command"));
+}
+
+#[test]
+fn tools_list_has_helpers_and_every_command() {
+    let mut s = server();
+    let r = rpc(&mut s, 1, "tools/list", json!({}));
+    let tools = r["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for n in ["list_commands", "run_command", "import", "set_develop", "render_photo", "export"] {
+        assert!(names.contains(&n), "{n}");
+    }
+    // Headless: no UI tools.
+    assert!(!names.contains(&"screenshot"));
+    let hl = Headless::demo();
+    for c in hl.session.commands() {
+        assert!(!c.id.contains('_'), "command ids must not contain `_` ({})", c.id);
+        let n = command_tool_name(c.id);
+        assert!(names.contains(&n.as_str()), "{n}");
+        assert!(n.len() <= 64 && n.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'), "{n}");
+    }
+    assert!(names.contains(&"cmd_app_export"));
+    for t in tools {
+        assert_eq!(t["inputSchema"]["type"], "object");
+    }
+    // Compact mode keeps only the helpers.
+    let mut s = Server::new(Box::new(Headless::demo())).with_command_tools(false);
+    let r = rpc(&mut s, 1, "tools/list", json!({}));
+    assert!(r["result"]["tools"].as_array().unwrap().iter().all(|t| !t["name"].as_str().unwrap().starts_with("cmd_")));
+}
+
+/// The `import` helper passes the copy options through: a folder template files the copy.
+#[test]
+fn import_tool_copies_with_a_folder_template() {
+    let base = std::env::temp_dir().join(format!("lc-mcp-import-tpl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (src, dest) = (base.join("card"), base.join("out"));
+    std::fs::create_dir_all(&src).unwrap();
+    let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[20, 3, 9, 255]; 64] };
+    let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    std::fs::write(src.join("a.png"), png).unwrap();
+    file_dated_2026_01_14(&src.join("a.png"));
+    let mut b = Headless::demo();
+    b.session.clock = Box::new(|| "2026-01-14T05:58:48".to_string());
+    let args =
+        json!({"paths": [src.to_string_lossy()], "mode": "copy", "destination": dest.to_string_lossy(), "organize": "{date:%Y}/{date:%Y%m%d}"});
+    let r = call_tool(&mut b, "import", &args);
+    assert!(!r.is_error, "{r:?}");
+    assert!(dest.join("2026").join("20260114").join("a.png").is_file());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Issue #93: `render_photo`, `ui.render` and `app.export` with an exact `path` must not replace
+/// a photo's original.
+#[test]
+fn path_writes_never_replace_an_original() {
+    let base = std::env::temp_dir().join(format!("lc-mcp-guard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[90, 30, 9, 255]; 64] };
+    let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    let orig = base.join("a.png");
+    std::fs::write(&orig, &png).unwrap();
+    let mut b = Headless::demo();
+    let r = call_tool(&mut b, "import", &json!({"paths": [orig.to_string_lossy()]}));
+    assert!(!r.is_error, "{r:?}");
+    let id = b.session.catalog.photos().find(|p| p.file_name == "a.png").unwrap().id.0;
+    let path = orig.to_string_lossy().to_string();
+    let r = call_tool(&mut b, "render_photo", &json!({"id": id, "path": path}));
+    assert!(r.is_error, "{r:?}");
+    assert!(b.call("ui.render", json!({"id": id, "path": path})).unwrap_err().contains("original"));
+    let e = b.call("app.export", json!({"ids": [id], "path": path})).unwrap_err();
+    assert!(e.contains("never writes over an original"), "{e}");
+    assert_eq!(std::fs::read(&orig).unwrap(), png, "the original is untouched");
+    // another path still works
+    let r = call_tool(&mut b, "render_photo", &json!({"id": id, "path": base.join("render.png").to_string_lossy()}));
+    assert!(!r.is_error, "{r:?}");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Issue #181: a misspelled or unreadable `app.export` param is an error through the headless
+/// backend (what the CLI `run` and the MCP `export` tool use), not a silent default.
+#[test]
+fn export_refuses_unknown_params_and_bad_values() {
+    let mut b = Headless::demo();
+    let out = "/nonexistent-lc-test/x.jpg";
+    let e = b.call("app.export", json!({"path": out, "longEdgee": 400})).unwrap_err();
+    assert!(e.contains("unknown parameter `longEdgee` (did you mean `longEdge`?)"), "{e}");
+    let e = b.call("app.export", json!({"path": out, "longEdge": "banana"})).unwrap_err();
+    assert!(e.contains("`longEdge` must be a number"), "{e}");
+    let e = b.call("app.export", json!({"path": out, "watermark": {"text": "x", "size": 3}})).unwrap_err();
+    assert!(e.contains("`watermark.size` must be a number 0.005..0.5"), "{e}");
+    // `export` tool and preset expansion go through the same check
+    let r = call_tool(&mut b, "export", &json!({"path": out, "quality": 101}));
+    assert!(r.is_error, "{r:?}");
+    let e = b.session.execute("export.savePreset", &json!({"name": "Typo", "params": {"qualty": 5}})).unwrap_err().to_string();
+    assert!(e.contains("did you mean `quality`"), "{e}");
+}
+
+/// Review of #1966: a `path` whose extension names no format exports PNG through the headless
+/// backend, so its `bitDepth` is checked against PNG's, not let through to an 8-bit file.
+#[test]
+fn export_checks_the_depth_of_the_format_a_bare_path_gets() {
+    let mut b = Headless::demo();
+    let base = std::env::temp_dir().join(format!("lc-mcp-bare-path-depth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    for name in ["output", "output.xyz"] {
+        let e = b.call("app.export", json!({"path": base.join(name).to_string_lossy(), "longEdge": 32, "bitDepth": 10})).unwrap_err();
+        assert!(e.contains("`bitDepth` must be 8 or 16 for png"), "{name}: {e}");
+    }
+    assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0, "nothing written");
+    // the format such a path gets is still PNG, and 16 bits is one of its depths
+    b.call("app.export", json!({"path": base.join("output").to_string_lossy(), "longEdge": 32, "bitDepth": 16})).unwrap();
+    let written = std::fs::read_dir(&base).unwrap().next().unwrap().unwrap().path();
+    let bytes = std::fs::read(&written).unwrap();
+    assert!(bytes.starts_with(b"\x89PNG"), "{written:?} is a PNG");
+    assert_eq!(bytes[24], 16, "{written:?} is 16-bit");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Review of #1966: a preset's `bitDepth` is judged against the format this backend writes, PNG
+/// for a `path` that names none, so a 16-bit preset without `format` writes a 16-bit PNG.
+#[test]
+fn a_preset_depth_is_judged_against_the_format_written() {
+    let mut b = Headless::demo();
+    let base = std::env::temp_dir().join(format!("lc-mcp-preset-depth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    b.session.export_presets.push(lcc_engine::export::ExportPreset { name: "Deep".into(), params: json!({"bitDepth": 16}), ..Default::default() });
+    b.call("app.export", json!({"preset": "Deep", "path": base.join("output").to_string_lossy(), "longEdge": 32})).unwrap();
+    let bytes = std::fs::read(base.join("output")).unwrap();
+    assert!(bytes.starts_with(b"\x89PNG") && bytes[24] == 16, "a 16-bit PNG: {:?}", bytes.get(..25));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Every option the `export` tool advertises reaches `app.export` (they were accepted, then dropped).
+#[test]
+fn export_tool_forwards_its_advertised_options() {
+    let mut b = Headless::demo();
+    let base = std::env::temp_dir().join(format!("lc-mcp-export-fwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let r = call_tool(&mut b, "export", &json!({"dir": base.to_string_lossy(), "subfolder": "sub", "longEdge": 64, "format": "png"}));
+    assert!(!r.is_error, "{r:?}");
+    let files: Vec<_> = std::fs::read_dir(base.join("sub")).unwrap().collect();
+    assert_eq!(files.len(), 1, "written into the subfolder");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Issue #236: `app.export {addToPhotos, photosAlbum}` through the headless backend (the MCP
+/// `export` tool, `lcc-cli run`): the files written go to Photos and the result says how
+/// it went; where Photos isn't (not macOS), it is refused before anything is written. A fake
+/// runner replaces the real one first: tests never start osascript or Photos.
+#[test]
+fn export_adds_to_apple_photos_where_there_is_photos() {
+    use std::sync::{Arc, Mutex};
+    let mut b = Headless::demo();
+    let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+    let c = calls.clone();
+    b.session.apple_photos = Some(Arc::new(move |args: &[String], _| {
+        c.lock().unwrap().push(args.to_vec());
+        Ok(lcc_engine::apple_photos::Output { status: Some(0), stdout: "ID-1/L0/001\n".into(), stderr: String::new() })
+    }));
+    let base = std::env::temp_dir().join(format!("lc-mcp-export-photos-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let r = call_tool(&mut b, "export", &json!({"dir": base.to_string_lossy(), "longEdge": 32, "addToPhotos": true, "photosAlbum": "From \"MCP\""}));
+    if cfg!(target_os = "macos") {
+        assert!(!r.is_error, "{r:?}");
+        let out = r.structured.unwrap();
+        assert_eq!(out["applePhotos"]["imported"], 1, "{out}");
+        assert_eq!(out["applePhotos"]["album"], "From \"MCP\"");
+        let written = out["files"][0]["path"].as_str().unwrap().to_string();
+        let args = calls.lock().unwrap().clone();
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].last(), Some(&written));
+    } else {
+        assert!(r.is_error, "{r:?}");
+        assert!(format!("{:?}", r.content).contains("only available on macOS"), "{r:?}");
+        assert!(!base.exists(), "nothing written");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Review of #236: a one-shot process (`lcc-cli run`, an MCP server reaching EOF) must not
+/// end in the middle of an Apple Photos import, abandoning osascript and the result. The test runs
+/// itself as a child process (`LC_PHOTOS_CHILD`): the child adds a file with a fake runner that
+/// takes a while and then leaves a marker, prints the reply and ends as the CLI does (dropping
+/// its backend). The parent checks the import had finished: by default the call waited for
+/// Photos, and with `wait: false` the backend waited before the process ended. Never osascript:
+/// the child's session has no file-system hooks and only the fake runner.
+#[test]
+fn a_one_shot_process_never_ends_during_a_photos_import() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    if let (Ok(dir), Ok(mode)) = (std::env::var("LC_PHOTOS_CHILD"), std::env::var("LC_PHOTOS_CHILD_MODE")) {
+        let dir = std::path::PathBuf::from(dir);
+        let file = dir.join("a.jpg");
+        let marker = dir.join("imported");
+        let mut h = Headless::new(lcc_engine::Session::with_demo());
+        h.session.apple_photos = Some(Arc::new(move |args: &[String], _| {
+            std::thread::sleep(Duration::from_millis(400));
+            std::fs::write(&marker, args.last().cloned().unwrap_or_default()).unwrap();
+            Ok(lcc_engine::apple_photos::Output { status: Some(0), stdout: "ID-1\n".into(), stderr: String::new() })
+        }));
+        let mut p = json!({"paths": [file.to_string_lossy()]});
+        if mode == "nowait" {
+            p["wait"] = json!(false);
+        }
+        let r = h.call("engine.execute", json!({"command": "export.addToPhotos", "params": p})).unwrap();
+        println!("CHILD-REPLY {r}");
+        drop(h); // what lcc-cli does before it exits
+        return;
+    }
+    let _serial = crate::serial_sockets_and_children();
+    for mode in ["default", "nowait"] {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-photos-child-{mode}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jpg"), b"jpeg").unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::a_one_shot_process_never_ends_during_a_photos_import", "--nocapture", "--test-threads=1"])
+            .env("LC_PHOTOS_CHILD", &dir)
+            .env("LC_PHOTOS_CHILD_MODE", mode)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{mode}: {stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+        let reply: Value = stdout
+            .lines()
+            .find_map(|l| l.split_once("CHILD-REPLY ").map(|(_, j)| serde_json::from_str(j).unwrap()))
+            .unwrap_or_else(|| panic!("{mode}: no reply in {stdout}"));
+        let marker = std::fs::read_to_string(dir.join("imported")).unwrap_or_else(|_| panic!("{mode}: the process ended before the import did"));
+        assert!(marker.ends_with("a.jpg"), "{marker}");
+        if mode == "default" {
+            assert_eq!((reply["running"].as_bool(), reply["imported"].as_u64()), (Some(false), Some(1)), "waited: {reply}");
+        } else {
+            assert_eq!(reply["running"], true, "{reply}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The `import` helper moves: renamed into the folder template, the source removed.
+#[test]
+fn import_tool_moves_with_a_folder_template() {
+    let base = std::env::temp_dir().join(format!("lc-mcp-import-move-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (src, dest) = (base.join("card"), base.join("out"));
+    std::fs::create_dir_all(&src).unwrap();
+    let img = lcc_raster::Rgba8 { width: 8, height: 8, data: vec![[21, 3, 9, 255]; 64] };
+    let png = lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &lcc_codecs::EncodeMeta::default()).unwrap();
+    std::fs::write(src.join("sample.png"), png).unwrap();
+    file_dated_2026_01_14(&src.join("sample.png"));
+    let mut b = Headless::demo();
+    b.session.clock = Box::new(|| "2026-01-14T05:58:48".to_string());
+    let args = json!({"paths": [src.to_string_lossy()], "mode": "move", "destination": dest.to_string_lossy(),
+        "organize": "{date:%Y}/{date:%Y%m%d}", "rename": "{date:%Y%m%d}_{seq:3}"});
+    let r = call_tool(&mut b, "import", &args);
+    assert!(!r.is_error, "{r:?}");
+    assert!(dest.join("2026").join("20260114").join("20260114_001.png").is_file());
+    assert!(!src.join("sample.png").exists(), "moved");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn command_tools_run_commands() {
+    let mut b = Headless::demo();
+    let first = b.session.visible_cloned()[0];
+    let before = b.session.catalog.photo(first).unwrap().rating;
+    let r = call_tool(&mut b, "cmd_library_select", &json!({"ids": [first.0]}));
+    assert!(!r.is_error, "{r:?}");
+    let r = call_tool(&mut b, "cmd_photo_rate", &json!({"rating": 4}));
+    assert!(!r.is_error, "{r:?}");
+    assert_eq!(b.session.catalog.photo(first).unwrap().rating, 4);
+    let r = call_tool(&mut b, "cmd_edit_undo", &json!({}));
+    assert!(!r.is_error);
+    assert_eq!(b.session.catalog.photo(first).unwrap().rating, before, "undo restores the rating");
+}
+
+#[test]
+fn set_develop_values_and_settings() {
+    let mut b = Headless::demo();
+    let first = b.session.visible_cloned()[0];
+    let r = call_tool(&mut b, "set_develop", &json!({"id": first.0, "values": {"light.exposure": 1.25}}));
+    assert!(!r.is_error, "{r:?}");
+    assert_eq!(r.structured.as_ref().unwrap()["controls"][0]["value"], 1.25);
+    assert_eq!(b.session.develop_of(first).unwrap().light.exposure, 1.25);
+    let r = call_tool(&mut b, "set_develop", &json!({"settings": {"light": {"contrast": 30.0}}}));
+    assert!(!r.is_error, "{r:?}");
+    let d = b.session.develop_of(first).unwrap();
+    assert_eq!((d.light.exposure, d.light.contrast), (1.25, 30.0));
+    assert!(call_tool(&mut b, "set_develop", &json!({})).is_error);
+    assert!(call_tool(&mut b, "set_develop", &json!({"values": {"no.such": 1}})).is_error);
+}
+
+#[test]
+fn crop_needs_a_rect_angle_or_reset() {
+    let mut b = Headless::demo();
+    let first = b.session.visible_cloned()[0];
+    // A guessed parameter must not succeed silently.
+    let r = call_tool(&mut b, "crop", &json!({"id": first.0, "aspect": "1:1"}));
+    assert!(r.is_error, "{r:?}");
+    assert!(call_tool(&mut b, "crop", &json!({"id": first.0, "reset": false})).is_error);
+    assert!(!call_tool(&mut b, "crop", &json!({"id": first.0, "rect": [0.1, 0.0, 0.9, 1.0]})).is_error);
+    assert!(!call_tool(&mut b, "crop", &json!({"id": first.0, "reset": true})).is_error);
+}
+
+#[test]
+fn ui_tools_need_the_app() {
+    let mut b = Headless::demo();
+    let r = call_tool(&mut b, "screenshot", &json!({}));
+    assert!(r.is_error);
+    assert!(r.content[0]["text"].as_str().unwrap().contains("--connect"));
+}
+
+#[test]
+fn resources() {
+    let mut s = server();
+    let r = rpc(&mut s, 1, "resources/list", json!({}));
+    let list = r["result"]["resources"].as_array().unwrap();
+    for (i, res) in list.iter().enumerate() {
+        let uri = res["uri"].as_str().unwrap();
+        let r = rpc(&mut s, 10 + i as u64, "resources/read", json!({"uri": uri}));
+        let text = r["result"]["contents"][0]["text"].as_str().unwrap_or_else(|| panic!("{uri}: {r}"));
+        serde_json::from_str::<Value>(text).unwrap();
+    }
+    assert_eq!(rpc(&mut s, 99, "resources/read", json!({"uri": "lcc://nope"}))["error"]["code"], -32002);
+}
+
+/// `select_photos` with an id that is not in the library is a tool error, and the photo that was
+/// active stays active (#182).
+#[test]
+fn select_photos_rejects_unknown_ids_and_keeps_the_active_photo() {
+    let mut b = Headless::demo();
+    let first = b.session.visible_cloned()[0];
+    let r = call_tool(&mut b, "select_photos", &json!({"ids": [first.0]}));
+    assert!(!r.is_error, "{r:?}");
+    let r = call_tool(&mut b, "select_photos", &json!({"ids": [9999]}));
+    assert!(r.is_error, "{r:?}");
+    assert!(r.content[0]["text"].as_str().unwrap().contains("no such photo 9999"), "{r:?}");
+    assert_eq!(b.session.active(), Some(first));
+    let r = call_tool(&mut b, "get_develop", &json!({}));
+    assert!(!r.is_error, "{r:?}");
+    let r = call_tool(&mut b, "get_develop", &json!({"id": 9999}));
+    assert!(r.is_error, "{r:?}");
+    let r = call_tool(&mut b, "set_develop", &json!({"id": 9999, "values": {"light.exposure": 1.0}}));
+    assert!(r.is_error, "{r:?}");
+    assert_eq!(b.session.active(), Some(first));
+}
+
+/// A photo `id` (or `ids` entry) that is not a non-negative integer is an error and leaves the session alone;
+/// it used to be ignored, so the tool edited / rendered / exported the active photo instead.
+#[test]
+fn hostile_photo_ids_and_formats_error_without_side_effects() {
+    let mut b = Headless::demo();
+    let first = b.session.visible_cloned()[0];
+    call_tool(&mut b, "select_photos", &json!({"ids": [first.0]}));
+    let develop = |b: &Headless| serde_json::to_value(&*b.session.develop_of(first).unwrap()).unwrap();
+    let before = develop(&b);
+    let out = "/nonexistent-lc-test/x.jpg";
+    let mut table: Vec<(&str, Value)> = Vec::new();
+    for bad in [json!(-1), json!(2.0), json!(1.5), json!("1"), json!([1]), json!(true), json!(u64::MAX as f64)] {
+        table.push(("set_develop", json!({"id": bad, "values": {"light.exposure": 1.0}})));
+        table.push(("crop", json!({"id": bad, "rect": [0.1, 0.0, 0.9, 1.0]})));
+        table.push(("render_photo", json!({"id": bad})));
+        table.push(("render_preview", json!({"id": bad})));
+        table.push(("export", json!({"id": bad, "path": out})));
+    }
+    for bad in [json!([-1]), json!([first.0, "x"]), json!([first.0, null]), json!([1.5])] {
+        table.push(("export", json!({"ids": bad, "path": out})));
+    }
+    table.push(("render_photo", json!({"format": "bogus"})));
+    table.push(("render_photo", json!({"format": 3})));
+    for (tool, args) in &table {
+        let r = call_tool(&mut b, tool, args);
+        assert!(r.is_error, "{tool} {args} must be refused: {r:?}");
+        assert!(!r.content[0]["text"].as_str().unwrap_or_default().is_empty(), "{tool} {args}: empty error");
+        assert_eq!(b.session.active(), Some(first), "{tool} {args} moved the active photo");
+        assert_eq!(develop(&b), before, "{tool} {args} edited the photo");
+    }
+}
+
+#[test]
+fn core_tools_have_hints_and_reject_unknown_keys() {
+    for compact in [false, true] {
+        let mut s = server().with_command_tools(!compact);
+        let list = rpc(&mut s, 1, "tools/list", json!({}));
+        let tools = list["result"]["tools"].as_array().unwrap();
+        for name in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "list_commands", "run_command", "render_photo"]
+        {
+            assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+        }
+        for t in tools {
+            assert!(!t["title"].as_str().unwrap().is_empty());
+            for hint in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+                assert!(t["annotations"][hint].is_boolean(), "{t}");
+            }
+        }
+        for name in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "query_photos", "run_command"] {
+            let r = rpc(&mut s, 2, "tools/call", json!({"name":name,"arguments":{"misspelled":true}}));
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+            assert!(r["error"]["message"].as_str().unwrap().contains("misspelled"), "{r}");
+        }
+        let preview = tools.iter().find(|t| t["name"] == "render_preview").unwrap();
+        assert_eq!(preview["annotations"]["readOnlyHint"], true);
+        assert!(preview["inputSchema"]["properties"].get("path").is_none());
+        let writer = tools.iter().find(|t| t["name"] == "render_photo").unwrap();
+        assert_eq!(writer["annotations"]["readOnlyHint"], false);
+        let export = tools.iter().find(|t| t["name"] == "export").unwrap();
+        for key in lcc_engine::export::OPTION_PARAMS.iter().chain(lcc_engine::export::TARGET_PARAMS) {
+            assert!(export["inputSchema"]["properties"].get(*key).is_some(), "missing export argument {key}");
+        }
+        let before = rpc(&mut s, 2, "resources/read", json!({"uri":"lcc://library"}));
+        let image = rpc(&mut s, 2, "tools/call", json!({"name":"render_preview","arguments":{"max_side":64}}));
+        assert_eq!(image["result"]["isError"], false, "{image}");
+        assert!(image["result"]["content"].as_array().unwrap().iter().any(|c| c["type"] == "image"));
+        assert_eq!(before, rpc(&mut s, 2, "resources/read", json!({"uri":"lcc://library"})));
+        let batch = json!({"steps":[{"id":"catalog.stats"},{"id":"no.such"},{"id":"catalog.stats"}],"stop_on_error":false});
+        let r = rpc(&mut s, 3, "tools/call", json!({"name":"command_batch","arguments":batch}));
+        assert_eq!(r["result"]["isError"], true);
+        assert_eq!(r["result"]["structuredContent"]["completed"], 2);
+        assert_eq!(r["result"]["structuredContent"]["failed"], 1);
+        let r = rpc(&mut s, 4, "tools/call", json!({"name":"command_batch","arguments":{"steps":[{"id":"no.such"},{"id":"catalog.stats"}]}}));
+        assert_eq!(r["result"]["structuredContent"]["completed"], 0);
+        assert_eq!(r["result"]["structuredContent"]["results"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn core_resources_match_tools_after_parse_error() {
+    let mut s = server();
+    let bad: Value = serde_json::from_str(&s.handle_line("{bad").unwrap()).unwrap();
+    assert_eq!(bad["error"]["code"], -32700);
+    assert!(bad["id"].is_null());
+    let list = rpc(&mut s, 1, "resources/list", json!({}));
+    for (uri, tool) in [("lcc://document", "doc_inspect"), ("lcc://commands", "command_list")] {
+        assert!(list["result"]["resources"].as_array().unwrap().iter().any(|r| r["uri"] == uri));
+        let resource = rpc(&mut s, 2, "resources/read", json!({"uri":uri}));
+        let call = rpc(&mut s, 3, "tools/call", json!({"name":tool,"arguments":{}}));
+        let a: Value = serde_json::from_str(resource["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+        let b: Value = serde_json::from_str(call["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(a, b);
+    }
+    let old = rpc(&mut s, 4, "resources/read", json!({"uri":"lcc://library"}));
+    assert!(old["result"]["contents"].is_array(), "{old}");
+}
+
+#[test]
+fn escaped_tool_panic_is_an_error_and_session_survives() {
+    struct Faulty {
+        inner: Headless,
+        fail: bool,
+    }
+    impl Backend for Faulty {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            if method == "engine.execute" && params["command"] == "catalog.stats" && std::mem::take(&mut self.fail) {
+                panic!("synthetic backend panic");
+            }
+            self.inner.call(method, params)
+        }
+        fn has_ui(&self) -> bool {
+            false
+        }
+        fn describe(&self) -> String {
+            "test".into()
+        }
+    }
+    let mut s = Server::new(Box::new(Faulty { inner: Headless::demo(), fail: true }));
+    let params = json!({"name":"run_command","arguments":{"command":"catalog.stats"}});
+    let r = rpc(&mut s, 1, "tools/call", params.clone());
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r.to_string().contains("synthetic backend panic"));
+    assert_eq!(rpc(&mut s, 2, "tools/call", params)["result"]["isError"], false);
+    assert!(rpc(&mut s, 3, "ping", json!({}))["result"].is_object());
+}
+
+#[test]
+fn modern_requests_receive_result_and_cache_fields() {
+    let mut s = server();
+    let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28"});
+    for (method, mut params) in [
+        ("tools/list", json!({})),
+        ("resources/list", json!({})),
+        ("resources/templates/list", json!({})),
+        ("resources/read", json!({"uri":"lcc://library"})),
+    ] {
+        params["_meta"] = meta.clone();
+        let r = rpc(&mut s, 1, method, params);
+        assert_eq!(r["result"]["resultType"], "complete", "{r}");
+        assert_eq!(r["result"]["cacheScope"], "private");
+        assert_eq!(r["result"]["ttlMs"], if method == "resources/read" { 0 } else { 600_000 });
+    }
+    assert!(rpc(&mut s, 2, "tools/list", json!({}))["result"].get("resultType").is_none());
+}
+
+/// A running app's control channel, as far as the MCP server can tell: it records each call.
+struct Recorder(Vec<(String, Value)>);
+
+impl Backend for Recorder {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.0.push((method.to_string(), params));
+        Ok(Value::Null)
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "recorder".into()
+    }
+}
+
+/// A malformed `paths` entry refuses the whole import before any file is discovered or dispatched.
+#[test]
+fn import_rejects_non_string_paths_before_dispatch() {
+    for mode in ["add", "copy", "move"] {
+        for invalid in [json!(null), json!(false), json!(7), json!(1.5), json!({"path": "photo.png"}), json!(["photo.png"])] {
+            for paths in [json!(["photo.png", invalid]), json!([invalid, "photo.png"])] {
+                let mut b = Recorder(vec![]);
+                let r = call_tool(&mut b, "import", &json!({"paths": paths, "mode": mode}));
+                assert!(r.is_error, "{mode} {paths}: {r:?}");
+                assert!(r.content[0]["text"].as_str().unwrap().contains("paths["), "{r:?}");
+                assert!(b.0.is_empty(), "{mode} {paths} dispatched a partial batch: {:?}", b.0);
+            }
+        }
+    }
+}
+
+/// With the app attached, agents cut, copy and paste in its text fields (`clipboard`).
+#[test]
+fn the_clipboard_tool_cuts_copies_and_pastes_in_the_app() {
+    let names: Vec<String> = crate::tools::helper_tools(true).iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect();
+    assert!(names.iter().any(|n| n == "clipboard"), "{names:?}");
+    assert!(!crate::tools::helper_tools(false).iter().any(|t| t["name"] == "clipboard"), "not without the app");
+    let mut b = Recorder(vec![]);
+    for text in [Value::Null, json!(42), json!(true), json!([]), json!({})] {
+        let r = call_tool(&mut b, "clipboard", &json!({"action": "paste", "text": text}));
+        assert!(r.is_error, "{text}: {r:?}");
+        assert_eq!(r.content[0]["text"], "ui.clipboard: `text` must be a string");
+        assert!(b.0.is_empty(), "invalid text must never reach the backend: {text}");
+    }
+    for args in [
+        json!({"action": "paste", "text": "travel"}),
+        json!({"action": "paste", "text": ""}),
+        json!({"action": "paste"}),
+        json!({"action": "cut"}),
+        json!({"action": "copy"}),
+    ] {
+        b.0.clear();
+        let r = call_tool(&mut b, "clipboard", &args);
+        assert!(!r.is_error, "{args}: {r:?}");
+        assert_eq!(b.0, vec![("ui.clipboard".to_string(), args)]);
+    }
+}
+
+/// A running app that writes the PNG `ui.render` / `ui.screenshot` ask for. It notes each path and
+/// what its folder looked like then; with `dies_mid_write` it leaves a half-written temp file and
+/// fails instead, like an app that quits part-way through.
+struct PngWriter {
+    seen: Vec<(std::path::PathBuf, Option<std::fs::Metadata>)>,
+    dies_mid_write: bool,
+}
+
+impl Backend for PngWriter {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        assert!(matches!(method, "ui.render" | "ui.screenshot"), "{method}");
+        // an app from before `ui.render {inline}`: it ignores the flag and renders without writing anything
+        if params.get("inline").and_then(Value::as_bool) == Some(true) {
+            return Ok(json!({"width": 1, "height": 1}));
+        }
+        let path = std::path::PathBuf::from(params["path"].as_str().unwrap());
+        self.seen.push((path.clone(), path.parent().and_then(|d| std::fs::symlink_metadata(d).ok())));
+        if self.dies_mid_write {
+            std::fs::write(path.with_file_name(".lcc-mcp-test.tmp"), b"half a png").unwrap();
+            return Err("connection closed".into());
+        }
+        crate::write_image(&path, &lcc_raster::Rgba8::new(1, 1), 92)?;
+        Ok(json!({"width": 1, "height": 1}))
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "png writer".into()
+    }
+}
+
+/// Renders and screenshots reach the agent through a PNG the app writes. In a shared /tmp other
+/// users could read it or take its predictable name first and make the render fail, so it goes in
+/// a new folder of its own, private on Unix, that is gone afterwards even when the write fails
+/// (#2573).
+#[test]
+fn render_and_screenshot_pngs_go_through_a_private_folder() {
+    let mut b = PngWriter { seen: vec![], dies_mid_write: false };
+    for (tool, args) in [("render_photo", json!({"id": 1})), ("render_preview", json!({"id": 1})), ("screenshot", json!({}))] {
+        let r = call_tool(&mut b, tool, &args);
+        assert!(!r.is_error, "{tool}: {r:?}");
+        assert_eq!(r.image().map(|(_, mime)| mime), Some("image/png"), "{tool}: {r:?}");
+    }
+    b.dies_mid_write = true;
+    assert!(call_tool(&mut b, "screenshot", &json!({})).is_error);
+    assert_eq!(b.seen.len(), 4);
+    let temp = std::env::temp_dir();
+    let mut folders = vec![];
+    for (file, folder) in &b.seen {
+        let dir = file.parent().unwrap();
+        let meta = folder.as_ref().unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink(), "{}", dir.display());
+        assert_ne!(dir, temp, "{} is right in the shared temp dir", file.display());
+        assert_eq!(dir.parent(), Some(temp.as_path()), "{}", file.display());
+        assert!(dir.file_name().unwrap().to_string_lossy().starts_with("lcc-mcp-"), "{}", dir.display());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700, "{}", dir.display());
+        }
+        assert!(!dir.exists(), "{} was left behind", dir.display());
+        assert!(!folders.contains(&dir), "{} was used twice", dir.display());
+        folders.push(dir);
+    }
+}
+
+/// An app on another machine (`mcp --connect host:port`): files it writes are not readable here,
+/// so a `ui.render` with a `path` leaves nothing behind for the MCP server. `inline` drops out when
+/// `old_app` is set, as an app from before `ui.render {inline}` would ignore it.
+struct OtherMachine {
+    app: Headless,
+    old_app: bool,
+}
+
+impl Backend for OtherMachine {
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+        if method != "ui.render" {
+            return self.app.call(method, params);
+        }
+        if self.old_app
+            && let Some(p) = params.as_object_mut()
+        {
+            p.remove("inline");
+        }
+        match params.get("path").and_then(Value::as_str).map(str::to_string) {
+            // written on the other machine: gone as far as this one is concerned
+            Some(path) => {
+                let r = self.app.call(method, params);
+                let _ = std::fs::remove_file(path);
+                r
+            }
+            None => self.app.call(method, params),
+        }
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "remote (test)".into()
+    }
+}
+
+/// `render_photo` / `render_preview` failed over `--connect` to another machine with "cannot read
+/// rendered image /tmp/<binary>-mcp-…-render.png": the app wrote the temp file on its own disk.
+#[test]
+fn render_photo_works_against_an_app_on_another_machine() {
+    let mut b = OtherMachine { app: Headless::demo(), old_app: false };
+    for tool in ["render_photo", "render_preview"] {
+        let r = call_tool(&mut b, tool, &json!({"format": "jpeg"}));
+        assert!(!r.is_error, "{tool}: {r:?}");
+        let image = r.content.iter().find(|c| c["type"] == "image").expect("image content");
+        assert_eq!(image["mimeType"], "image/jpeg");
+        let bytes = crate::base64_decode(image["data"].as_str().unwrap()).unwrap();
+        assert!(lcc_codecs::decode(&bytes, lcc_codecs::DecodeOptions::default()).is_ok());
+    }
+    // saving a copy writes on this machine
+    let out = std::env::temp_dir().join(format!("lc-mcp-remote-render-{}.png", std::process::id()));
+    let r = call_tool(&mut b, "render_photo", &json!({"path": out.to_string_lossy()}));
+    assert!(!r.is_error, "{r:?}");
+    assert!(std::fs::metadata(&out).unwrap().len() > 0);
+    let _ = std::fs::remove_file(&out);
+}
+
+/// An app from before `ui.render {inline}` that ignores it.
+struct OldApp(Headless);
+
+impl Backend for OldApp {
+    fn call(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+        if let Some(p) = params.as_object_mut().filter(|_| method == "ui.render") {
+            p.remove("inline");
+        }
+        self.0.call(method, params)
+    }
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "old app (test)".into()
+    }
+}
+
+/// An older app on this machine still renders, through a temp file; on another machine it gets an
+/// error, not a panic.
+#[test]
+fn render_photo_falls_back_to_a_file_for_an_older_app() {
+    let r = call_tool(&mut OldApp(Headless::demo()), "render_photo", &json!({}));
+    assert!(!r.is_error, "{r:?}");
+    assert!(r.content.iter().any(|c| c["type"] == "image"));
+    let r = call_tool(&mut OtherMachine { app: Headless::demo(), old_app: true }, "render_photo", &json!({}));
+    assert!(r.is_error, "{r:?}");
+}
+
+/// A server whose policy is read from `vars` (names without the brand prefix) instead of the environment.
+fn server_with(vars: &[(&str, &str)]) -> Server {
+    let policy = crate::Policy::from_lookup(|k| vars.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string()));
+    Server::new(Box::new(Headless::demo())).with_policy(policy)
+}
+
+#[test]
+fn a_denied_command_is_refused_on_every_route_that_could_run_it() {
+    let mut s = server_with(&[("MCP_DENY", "catalog.stats")]);
+    let calls = [
+        json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}),
+        json!({"name": "command_run", "arguments": {"id": "catalog.stats"}}),
+        json!({"name": "command_batch", "arguments": {"steps": [{"id": "engine.commands"}, {"id": "catalog.stats"}]}}),
+        json!({"name": "cmd_catalog_stats", "arguments": {}}),
+        json!({"name": "doc_inspect", "arguments": {}}),
+    ];
+    for (i, call) in calls.into_iter().enumerate() {
+        let r = rpc(&mut s, i as u64 + 1, "tools/call", call.clone());
+        assert_eq!(r["result"]["isError"], true, "{call}");
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("refused by policy"), "{call}: {r}");
+    }
+    let listed = rpc(&mut s, 9, "tools/list", json!({}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(!names.contains(&"cmd_catalog_stats") && !names.contains(&"doc_inspect"), "{names:?}");
+    assert!(names.contains(&"run_command"), "the generic routes stay: they are checked per call");
+}
+
+#[test]
+fn no_policy_variables_means_nothing_is_refused() {
+    let mut s = server_with(&[]);
+    let r = rpc(&mut s, 1, "tools/call", json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}));
+    assert_eq!(r["result"]["isError"], false, "{r}");
+}
+
+#[test]
+fn an_allow_list_leaves_only_those_tools_listed_and_callable() {
+    let mut s = server_with(&[("MCP_ALLOW_TOOLS", "doc_inspect")]);
+    let listed = rpc(&mut s, 1, "tools/list", json!({}));
+    let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
+    assert_eq!(names, ["doc_inspect"]);
+    let r = rpc(&mut s, 2, "tools/call", json!({"name": "run_command", "arguments": {"command": "catalog.stats"}}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+}
+
+/// A relative save `path` is made absolute in this process before the desktop checks it, so the check
+/// and the write name the same file whatever the two processes' working directories are.
+#[test]
+fn a_relative_save_path_is_checked_as_the_absolute_path_that_is_written() {
+    struct Rec(Vec<(String, Value)>);
+    impl Backend for Rec {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            self.0.push((method.into(), params.clone()));
+            match method {
+                "engine.execute" => Ok(json!({})),
+                _ => Err("stop".into()),
+            }
+        }
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "rec".into()
+        }
+    }
+    let mut b = Rec(Vec::new());
+    let _ = call_tool(&mut b, "render_photo", &json!({"id": 1, "path": "out/x.png"}));
+    let checked = b.0.iter().find(|(m, p)| m == "engine.execute" && p["command"] == "export.checkTarget").expect("the target was checked");
+    let path = checked.1["params"]["path"].as_str().unwrap();
+    assert!(std::path::Path::new(path).is_absolute(), "{path}");
+    assert!(path.ends_with("x.png"));
+}

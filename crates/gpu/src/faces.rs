@@ -1,0 +1,1192 @@
+//! Face networks on the GPU: an [`lcc_faces::net::Accelerator`] that runs the interpreter's convolutions (most of
+//! YuNet's, SFace's and AuraFace's time) with a WGSL kernel (`wgsl/faces_conv.wgsl`). Everything else in the graph
+//! stays on the CPU interpreter, which is the reference: a net attaches this only after it agreed with the CPU on a
+//! test input (`Net::attach_checked`), and drops it on the first error.
+//!
+//! The device is a separate one (like denoise's), so a face scan and the interactive renders never share a queue, and
+//! it respects the same switches as GPU rendering (`{ENV_PREFIX}_GPU`, `{ENV_PREFIX}_GPU_BACKEND`, the GPU preference)
+//! and the crash sentinel around device creation. A model's weights are uploaded once, on first use, and stay on the
+//! device while the accelerator (one per loaded model) lives. Every failure is an `Err`, never a panic.
+//!
+//! There is such a device on each card ([`Card`]): a model goes to the second graphics card when there is one (the face
+//! scan is background work, and the card for editing stays free for the window), else to the card for editing. A model
+//! keeps one copy of its weights, on one card: its runs are short and most of a face scan's time is the processor's
+//! (decoding, finding faces), so a second copy would gain little. A device that fails stops being used on its card
+//! only, and the next model goes to the other card.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+use bytemuck::{Pod, Zeroable};
+use lcc_faces::net::program::{Arg, Binary, INPUT, Op, Program, Unary};
+use lcc_faces::net::{Accelerator, ConvJob};
+
+pub use crate::ai::Card;
+
+/// Longest wait for one convolution before the device is given up on.
+const TIMEOUT: Duration = Duration::from_secs(30);
+/// Below this many multiply-adds a convolution stays on the CPU: the upload, dispatch and read-back cost more.
+const MIN_MACS: usize = 1 << 20;
+/// Workgroups a convolution should make at least, cutting its K into slices when its tiles are too few.
+const TARGET_WORKGROUPS: usize = 256;
+/// Weights one model may keep on the device (AuraFace's are about 250 MB).
+const MAX_RESIDENT: u64 = 768 << 20;
+
+struct Dev {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    info: wgpu::AdapterInfo,
+    limits: wgpu::Limits,
+    layout: wgpu::BindGroupLayout,
+    tiled: wgpu::ComputePipeline,
+    direct: wgpu::ComputePipeline,
+    reduce: wgpu::ComputePipeline,
+    ops: Ops,
+    /// Bound where a kernel has fewer operands than bindings.
+    dummy: wgpu::Buffer,
+    /// The card it is on.
+    card: Card,
+}
+
+/// The kernels of `wgsl/faces_ops.wgsl`.
+struct Ops {
+    unary: wgpu::ComputePipeline,
+    affine: wgpu::ComputePipeline,
+    prelu: wgpu::ComputePipeline,
+    binary: wgpu::ComputePipeline,
+    transpose: wgpu::ComputePipeline,
+    maxpool: wgpu::ComputePipeline,
+    resize: wgpu::ComputePipeline,
+    gavg: wgpu::ComputePipeline,
+    gemv: wgpu::ComputePipeline,
+}
+
+/// The face device on each card ([`Card::index`] order).
+static DEVS: [Mutex<Option<Result<&'static Dev, String>>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
+static BROKEN: [AtomicBool; 2] = [const { AtomicBool::new(false) }, const { AtomicBool::new(false) }];
+static BROKEN_WHY: [Mutex<Option<String>>; 2] = [const { Mutex::new(None) }, const { Mutex::new(None) }];
+
+/// Clear broken device state and any cached failure so that a retry (or settings change) can attempt GPU initialization again.
+pub fn reset() {
+    for (i, b) in BROKEN.iter().enumerate() {
+        let was_broken = b.swap(false, Ordering::Relaxed);
+        if let Some(w) = BROKEN_WHY.get(i) {
+            *w.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        if let Some(slot) = DEVS.get(i) {
+            let mut dev = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            if was_broken || matches!(&*dev, Some(Err(_))) {
+                *dev = None;
+            }
+        }
+    }
+}
+
+/// Stop using `card`'s face device (the first reason is kept); the other card's is not touched.
+fn mark_broken(card: Card, why: &str) {
+    let i = card.index();
+    if let Some(w) = BROKEN_WHY.get(i) {
+        let mut w = w.lock().unwrap_or_else(PoisonError::into_inner);
+        if w.is_none() {
+            *w = Some(why.to_string());
+        }
+    }
+    if let Some(b) = BROKEN.get(i) {
+        b.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Stop using `card`'s face device, as a device error does (tests of moving a model to the other card).
+#[doc(hidden)]
+pub fn give_up_on(card: Card, why: &str) {
+    mark_broken(card, why);
+}
+
+/// Why the GPU stopped being used for faces on `card` (a device error), if it did.
+pub fn broken_reason_on(card: Card) -> Option<String> {
+    let i = card.index();
+    BROKEN
+        .get(i)
+        .is_some_and(|b| b.load(Ordering::Relaxed))
+        .then(|| BROKEN_WHY.get(i).and_then(|w| w.lock().unwrap_or_else(PoisonError::into_inner).clone()).unwrap_or_else(|| "device error".into()))
+}
+
+/// Why the GPU stopped being used for faces (a device error) on every card a new model could go to, if it did.
+pub fn broken_reason() -> Option<String> {
+    let second_failed = DEVS.first().is_some_and(|m| matches!(&*m.lock().unwrap_or_else(PoisonError::into_inner), Some(Err(_))));
+    let second_usable = broken_reason_on(Card::Second).is_none() && !second_failed;
+    if second_usable { None } else { broken_reason_on(Card::Editing) }
+}
+
+/// The face device for a new model: the second graphics card's when there is one that works, else the card for
+/// editing's (with one card, the card for editing, as before there were two). The second card's error is dropped when
+/// the card for editing has one too: it is mostly "there is no second graphics card".
+fn dev() -> Result<&'static Dev, String> {
+    dev_on(Card::Second).or_else(|_| dev_on(Card::Editing))
+}
+
+/// `card`'s face device, made on first use; `Err` when it can't be used (GPU switched off, no such card, it failed).
+fn dev_on(card: Card) -> Result<&'static Dev, String> {
+    if let Some(why) = broken_reason_on(card) {
+        return Err(format!("stopped after a GPU failure: {why}"));
+    }
+    if let Some(why) = crate::switched_off() {
+        return Err(why);
+    }
+    let slot = DEVS.get(card.index()).ok_or(crate::ai::NO_SECOND_CARD)?;
+    let mut dev = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(cached) = &*dev {
+        return cached.clone();
+    }
+    let _work = crate::exit::enter().ok_or("the app is closing")?;
+    let res = create_device(card).map(|d| &*Box::leak(Box::new(d)));
+    *dev = Some(res.clone());
+    res
+}
+
+fn create_device(card: Card) -> Result<Dev, String> {
+    let Some(backends) = crate::backend::compute_backends() else { return Err(format!("disabled by {}=off", lcc_brand::env_var("GPU_BACKEND"))) };
+    // on a thread of its own, under the crash sentinel, with a time limit (#3068, `init.rs`)
+    crate::init::create(backends, move || make_device(backends, card))
+}
+
+fn entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None },
+        count: None,
+    }
+}
+
+fn make_device(backends: wgpu::Backends, card: Card) -> Result<Dev, String> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = backends;
+    desc.backend_options = crate::backend::backend_options();
+    desc.flags = crate::backend::instance_flags_from_env(desc.flags);
+    let instance = crate::new_instance(desc);
+    // the second graphics card (none: `Err`), or the card for editing (`crate::ai_adapter_on`)
+    let adapter = crate::ai_adapter_on(&instance, backends, card == Card::Second)?;
+    let info = adapter.get_info();
+    if info.device_type == wgpu::DeviceType::Cpu {
+        return Err(format!("software adapter ({}) skipped: the CPU is faster", info.name));
+    }
+    let limits = adapter.limits();
+    if limits.max_storage_buffers_per_shader_stage < 4
+        || limits.max_compute_invocations_per_workgroup < 256
+        || limits.max_compute_workgroup_size_x < 256
+        || limits.max_compute_workgroup_storage_size < 8 * 1024
+    {
+        return Err(format!("{} is too limited for the face kernels", info.name));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some(match card {
+            Card::Second => "lcc-faces-second",
+            Card::Editing => "lcc-faces",
+        }),
+        required_limits: limits.clone(),
+        ..Default::default()
+    }))
+    .map_err(|e| format!("{}: device creation failed ({e})", info.name))?;
+    let which = card.id();
+    device.on_uncaptured_error(Arc::new(move |e| {
+        log::error!("gpu (faces, {which} card): {e}");
+        mark_broken(card, &format!("device error: {e}"));
+    }));
+    device.set_device_lost_callback(move |reason, msg| {
+        log::error!("gpu (faces, {which} card): device lost ({reason:?}): {msg}");
+        mark_broken(card, &format!("device lost ({reason:?}): {msg}"));
+    });
+    use wgpu::BufferBindingType::{Storage, Uniform};
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("faces conv"),
+        entries: &[
+            entry(0, Uniform),
+            entry(1, Storage { read_only: true }),
+            entry(2, Storage { read_only: true }),
+            entry(3, Storage { read_only: true }),
+            entry(4, Storage { read_only: false }),
+        ],
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("faces conv"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("wgsl/faces_conv.wgsl").into()),
+    });
+    let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+    let ops_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("faces ops"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("wgsl/faces_ops.wgsl").into()),
+    });
+    let pipe_in = |module: &wgpu::ShaderModule, entry: &str| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry),
+            layout: Some(&pl),
+            module,
+            entry_point: Some(entry),
+            // both kernels write all of their workgroup memory before reading it
+            compilation_options: wgpu::PipelineCompilationOptions { zero_initialize_workgroup_memory: false, ..Default::default() },
+            cache: None,
+        })
+    };
+    let pipe = |entry: &str| pipe_in(&module, entry);
+    let op = |entry: &str| pipe_in(&ops_module, entry);
+    let (tiled, direct, reduce) = (pipe("tiled"), pipe("direct"), pipe("reduce"));
+    let ops = Ops {
+        unary: op("unary"),
+        affine: op("affine"),
+        prelu: op("prelu"),
+        binary: op("binary"),
+        transpose: op("transpose"),
+        maxpool: op("maxpool"),
+        resize: op("resize"),
+        gavg: op("gavg"),
+        gemv: op("gemv"),
+    };
+    let dummy = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("faces unused"),
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    log::info!("gpu (faces, {which} card): {} ({:?})", info.name, info.backend);
+    Ok(Dev { device, queue, info, limits, layout, tiled, direct, reduce, ops, dummy, card })
+}
+
+/// The adapter face scans would use ("AMD Radeon RX 7900 XTX (Vulkan)"), or why they cannot use one. Creates the
+/// device on first use.
+pub fn adapter() -> Result<String, String> {
+    dev().map(|d| format!("{} ({:?})", d.info.name, d.info.backend))
+}
+
+/// [`adapter`] on `card` (no other card instead).
+pub fn adapter_on(card: Card) -> Result<String, String> {
+    dev_on(card).map(|d| format!("{} ({:?})", d.info.name, d.info.backend))
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Params {
+    m: u32,
+    n: u32,
+    k: u32,
+    cg: u32,
+    h: u32,
+    w: u32,
+    ow: u32,
+    kh: u32,
+    kw: u32,
+    sh: u32,
+    sw: u32,
+    pt: u32,
+    pl: u32,
+    bias: u32,
+    total: u32,
+    row: u32,
+    splits: u32,
+    kchunk: u32,
+    _a: u32,
+    _b: u32,
+}
+
+/// A layer's weights and bias on the device.
+struct Resident {
+    weights: wgpu::Buffer,
+    bias: wgpu::Buffer,
+}
+
+/// The GPU accelerator for one loaded face model: its weights stay on the device while it lives.
+pub struct FaceGpu {
+    dev: &'static Dev,
+    layers: Mutex<HashMap<usize, Arc<Resident>>>,
+    consts: Mutex<HashMap<usize, wgpu::Buffer>>,
+    resident: AtomicU64,
+}
+
+/// A GPU accelerator for one face model, or why there is none (GPU off, missing or broken): on the second graphics card
+/// when there is one that works, else on the card for editing.
+pub fn accelerator() -> Result<Arc<FaceGpu>, String> {
+    accelerator_with(dev()?)
+}
+
+/// [`accelerator`] on `card` (no other card instead).
+pub fn accelerator_on(card: Card) -> Result<Arc<FaceGpu>, String> {
+    accelerator_with(dev_on(card)?)
+}
+
+fn accelerator_with(dev: &'static Dev) -> Result<Arc<FaceGpu>, String> {
+    Ok(Arc::new(FaceGpu { dev, layers: Mutex::new(HashMap::new()), consts: Mutex::new(HashMap::new()), resident: AtomicU64::new(0) }))
+}
+
+fn u32_of(v: usize) -> Result<u32, String> {
+    u32::try_from(v).ok().filter(|v| *v < (1 << 31)).ok_or_else(|| "a layer too large for the GPU kernel".to_string())
+}
+
+/// How much of the GPU face work may take: at most `concurrent` runs at once, and busy for at most `share` of the time
+/// (after a run of `t`, the next one waits `t · (1 − share) / share`); on the second graphics card, which draws no
+/// window, `second_share`. Set by the background scan's pace.
+struct Pace {
+    concurrent: usize,
+    share: f32,
+    second_share: f32,
+    running: usize,
+}
+
+impl Pace {
+    /// The share of the time a model on `card` may keep it busy.
+    fn share_on(&self, card: Card) -> f32 {
+        match card {
+            Card::Second => self.second_share,
+            Card::Editing => self.share,
+        }
+    }
+}
+
+static PACE: Mutex<Pace> = Mutex::new(Pace { concurrent: usize::MAX, share: 1.0, second_share: 1.0, running: 0 });
+static PACE_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn share_of(share: f32) -> f32 {
+    if share.is_finite() { share.clamp(0.05, 1.0) } else { 1.0 }
+}
+
+/// Limit the GPU work face models do: `concurrent` runs at once (at least one) and `share` of the time (0.05 to 1) on
+/// the card for editing, `second_share` on the second graphics card (it doesn't draw the window, so only a light pace,
+/// the user working, needs to hold it back). The background face scan sets it from its pace; anything else that runs a
+/// face model shares the same limit.
+pub fn set_pace(concurrent: usize, share: f32, second_share: f32) {
+    let mut p = PACE.lock().unwrap_or_else(PoisonError::into_inner);
+    p.concurrent = concurrent.max(1);
+    p.share = share_of(share);
+    p.second_share = share_of(second_share);
+    PACE_FREED.notify_all();
+}
+
+/// A turn on the GPU under the pace; waits for one. Dropping it gives it back.
+struct Turn {
+    share: f32,
+    started: std::time::Instant,
+}
+
+impl Turn {
+    /// A turn for a model on `card` (its share of the time: [`Pace::share_on`]).
+    fn take(card: Card) -> Turn {
+        let mut p = PACE.lock().unwrap_or_else(PoisonError::into_inner);
+        while p.running >= p.concurrent {
+            p = PACE_FREED.wait_timeout(p, Duration::from_millis(200)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+        }
+        p.running += 1;
+        Turn { share: p.share_on(card), started: std::time::Instant::now() }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        // rest while still holding the turn, so the GPU stays idle for the rest of the period
+        if self.share < 1.0 {
+            let rest = self.started.elapsed().mul_f32((1.0 - self.share) / self.share).min(Duration::from_secs(2));
+            std::thread::sleep(rest);
+        }
+        let mut p = PACE.lock().unwrap_or_else(PoisonError::into_inner);
+        p.running = p.running.saturating_sub(1);
+        PACE_FREED.notify_one();
+    }
+}
+
+/// One dispatch to record: a pipeline, its parameters, its four buffers (three read, the last written) and its
+/// workgroup counts.
+struct Dispatch {
+    pipeline: &'static wgpu::ComputePipeline,
+    params: Vec<u8>,
+    buffers: [wgpu::Buffer; 4],
+    groups: [u32; 3],
+}
+
+/// Workgroups for `count` items of 256 (or `count` workgroups when `per_group`): x, y and the row length the kernel
+/// reads back as `q(1)`.
+fn flat(count: usize, limit: usize) -> Option<[u32; 3]> {
+    let blocks = count.max(1);
+    let row = blocks.clamp(1, limit.min(65_535));
+    let rows = blocks.div_ceil(row);
+    (rows <= limit).then_some([u32::try_from(row).ok()?, u32::try_from(rows).ok()?, u32::try_from(row).ok()?])
+}
+
+fn params24(values: &[u32]) -> Vec<u8> {
+    let mut all = [0u32; 24];
+    for (to, v) in all.iter_mut().zip(values) {
+        *to = *v;
+    }
+    bytemuck::cast_slice(&all).to_vec()
+}
+
+impl FaceGpu {
+    /// The card its device is on.
+    pub fn card(&self) -> Card {
+        self.dev.card
+    }
+
+    /// Bytes of weights this model keeps on the device.
+    pub fn resident_bytes(&self) -> u64 {
+        self.resident.load(Ordering::Relaxed)
+    }
+
+    fn upload(&self, label: &str, data: &[f32]) -> wgpu::Buffer {
+        let zero = [0f32; 4];
+        crate::upload::buffer_init(
+            &self.dev.device,
+            &self.dev.queue,
+            Some(label),
+            bytemuck::cast_slice(if data.is_empty() { &zero } else { data }),
+            wgpu::BufferUsages::STORAGE,
+        )
+    }
+
+    /// Whether `bytes` more may stay on the device; counts them if so.
+    fn keep(&self, bytes: u64) -> bool {
+        if self.resident_bytes().saturating_add(bytes) > MAX_RESIDENT {
+            return false;
+        }
+        self.resident.fetch_add(bytes, Ordering::Relaxed);
+        true
+    }
+
+    /// A convolution's weights and bias: kept on the device while the budget lasts, uploaded for this run past it.
+    fn resident(&self, job: &ConvJob) -> Arc<Resident> {
+        let mut layers = self.layers.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(r) = layers.get(&job.layer) {
+            return r.clone();
+        }
+        let r = Arc::new(Resident { weights: self.upload("faces weights", job.weights), bias: self.upload("faces bias", job.bias.unwrap_or(&[])) });
+        if self.keep((job.weights.len() as u64 + job.cout as u64) * 4) {
+            layers.insert(job.layer, r.clone());
+        }
+        r
+    }
+
+    /// A program's constant, kept on the device like the weights.
+    fn constant(&self, id: usize, data: &[f32]) -> wgpu::Buffer {
+        let mut consts = self.consts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(b) = consts.get(&id) {
+            return b.clone();
+        }
+        let b = self.upload("faces constant", data);
+        if self.keep(data.len() as u64 * 4) {
+            consts.insert(id, b.clone());
+        }
+        b
+    }
+
+    fn largest_binding(&self) -> u64 {
+        self.dev.limits.max_storage_buffer_binding_size.min(self.dev.limits.max_buffer_size)
+    }
+
+    /// The dispatches of one convolution reading `input` and writing `output`, or `None` when it exceeds the device.
+    fn conv_dispatches(&self, job: &ConvJob, input: &wgpu::Buffer, output: &wgpu::Buffer) -> Result<Option<Vec<Dispatch>>, String> {
+        let d = self.dev;
+        let groups = job.groups.max(1);
+        let (m, cg) = (job.cout / groups, job.cin / groups);
+        let n = job.oh.checked_mul(job.ow).ok_or("a layer too large")?;
+        let k = cg.checked_mul(job.kh).and_then(|v| v.checked_mul(job.kw)).ok_or("a layer too large")?;
+        let total = job.cout.checked_mul(n).ok_or("a layer too large")?;
+        let direct = m < 8;
+        // Too few 64 x 64 tiles to keep the GPU busy (a 7 x 7 map of 512 channels makes 8): cut K into slices that
+        // run side by side, and sum them in a second pass.
+        let tiles = n.div_ceil(64) * m.div_ceil(64) * groups;
+        let splits = if direct { 1 } else { (TARGET_WORKGROUPS / tiles.max(1)).clamp(1, (k / 128).max(1)) };
+        let kchunk = k.div_ceil(splits).div_ceil(16) * 16;
+        let splits = k.div_ceil(kchunk.max(1)).max(1);
+        let partial = total.checked_mul(splits).ok_or("a layer too large")?;
+        let cin_len = job.cin.checked_mul(job.h).and_then(|v| v.checked_mul(job.w)).ok_or("a layer too large")?;
+        let largest = [cin_len, job.weights.len(), partial].into_iter().max().unwrap_or(0) as u64 * 4;
+        let limit = d.limits.max_compute_workgroups_per_dimension as usize;
+        let Some(sum) = flat(total.div_ceil(256), limit) else { return Ok(None) };
+        let (wx, wy, wz) = if direct { (sum[0] as usize, sum[1] as usize, 1) } else { (n.div_ceil(64), m.div_ceil(64), groups * splits) };
+        if largest > self.largest_binding() || [wx, wy, wz].into_iter().any(|v| v > limit) {
+            return Ok(None);
+        }
+        let res = self.resident(job);
+        let params = Params {
+            m: u32_of(m)?,
+            n: u32_of(n)?,
+            k: u32_of(k)?,
+            cg: u32_of(cg)?,
+            h: u32_of(job.h)?,
+            w: u32_of(job.w)?,
+            ow: u32_of(job.ow)?,
+            kh: u32_of(job.kh)?,
+            kw: u32_of(job.kw)?,
+            sh: u32_of(job.sh)?,
+            sw: u32_of(job.sw)?,
+            pt: u32_of(job.pt)?,
+            pl: u32_of(job.pl)?,
+            bias: u32::from(job.bias.is_some()),
+            total: u32_of(total)?,
+            row: sum[2],
+            splits: u32_of(splits)?,
+            kchunk: u32_of(kchunk)?,
+            _a: 0,
+            _b: 0,
+        };
+        let params = bytemuck::bytes_of(&params).to_vec();
+        let main = |out: &wgpu::Buffer| Dispatch {
+            pipeline: if direct { &d.direct } else { &d.tiled },
+            params: params.clone(),
+            buffers: [input.clone(), res.weights.clone(), res.bias.clone(), out.clone()],
+            groups: [wx as u32, wy as u32, wz as u32],
+        };
+        if splits == 1 {
+            return Ok(Some(vec![main(output)]));
+        }
+        let partials = d.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("faces partial sums"),
+            size: partial as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        Ok(Some(vec![
+            main(&partials),
+            Dispatch {
+                pipeline: &d.reduce,
+                params,
+                buffers: [partials, res.weights.clone(), res.bias.clone(), output.clone()],
+                groups: [sum[0], sum[1], 1],
+            },
+        ]))
+    }
+
+    /// Record `list` into `enc` as one compute pass, with all their parameters in one uniform buffer.
+    fn record(&self, enc: &mut wgpu::CommandEncoder, list: &[Dispatch]) -> Result<(), String> {
+        let d = self.dev;
+        if list.is_empty() {
+            return Ok(());
+        }
+        let align = (d.limits.min_uniform_buffer_offset_alignment as usize).max(256);
+        let mut blob = vec![0u8; list.len() * align];
+        for (i, x) in list.iter().enumerate() {
+            blob.get_mut(i * align..i * align + x.params.len()).ok_or("parameters too large")?.copy_from_slice(&x.params);
+        }
+        let uniform = crate::upload::buffer_init(&d.device, &d.queue, Some("faces params"), &blob, wgpu::BufferUsages::UNIFORM);
+        let binds = list
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let [a, b, c, out] = &x.buffers;
+                d.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &d.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &uniform,
+                                offset: (i * align) as u64,
+                                size: std::num::NonZeroU64::new(x.params.len() as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry { binding: 1, resource: a.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: c.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 4, resource: out.as_entire_binding() },
+                    ],
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("faces"), timestamp_writes: None });
+        for (x, bind) in list.iter().zip(&binds) {
+            pass.set_pipeline(x.pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            let [gx, gy, gz] = x.groups;
+            pass.dispatch_workgroups(gx, gy, gz);
+        }
+        Ok(())
+    }
+
+    /// Submit `enc`, which ends by copying into `staging` (`bytes` long), wait for it and read `staging` back.
+    fn finish(&self, enc: wgpu::CommandEncoder, staging: &wgpu::Buffer, scopes: [wgpu::ErrorScopeGuard; 2]) -> Result<Vec<f32>, String> {
+        let d = self.dev;
+        let index = d.queue.submit([enc.finish()]);
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let waited = d.device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(TIMEOUT) });
+        let [oom, validation] = scopes;
+        let (validation, oom) = (pollster::block_on(validation.pop()), pollster::block_on(oom.pop()));
+        if let Some(e) = oom {
+            return Err(format!("the GPU ran out of memory: {e}"));
+        }
+        if let Some(e) = validation {
+            mark_broken(d.card, &format!("device error: {e}"));
+            return Err(format!("the GPU reported an error: {e}"));
+        }
+        if let Err(e) = waited {
+            mark_broken(d.card, &format!("the GPU did not finish a face model: {e}"));
+            return Err(format!("the GPU did not finish: {e}"));
+        }
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(format!("reading the result back failed: {e}")),
+            Err(e) => return Err(format!("reading the result back failed: {e}")),
+        }
+        let out = {
+            let data = slice.get_mapped_range().map_err(|e| format!("reading the result back failed: {e:?}"))?;
+            data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect::<Vec<f32>>()
+        };
+        staging.unmap();
+        Ok(out)
+    }
+
+    fn scopes(&self) -> [wgpu::ErrorScopeGuard; 2] {
+        [self.dev.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory), self.dev.device.push_error_scope(wgpu::ErrorFilter::Validation)]
+    }
+
+    fn staging(&self, bytes: u64) -> wgpu::Buffer {
+        self.dev.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("faces read-back"),
+            size: bytes.max(4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn scratch(&self, bytes: u64) -> wgpu::Buffer {
+        self.dev.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("faces values"),
+            size: bytes.max(4),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// One convolution, uploaded and read back on its own.
+    fn run(&self, job: &ConvJob) -> Result<Option<Vec<f32>>, String> {
+        let total = job.cout.checked_mul(job.oh).and_then(|v| v.checked_mul(job.ow)).ok_or("a layer too large")?;
+        let bytes = total as u64 * 4;
+        if bytes > self.largest_binding() || job.input.len() as u64 * 4 > self.largest_binding() {
+            return Ok(None);
+        }
+        let Some(_work) = crate::exit::enter() else { return Err("the app is closing".into()) };
+        let _turn = Turn::take(self.dev.card);
+        let d = self.dev;
+        let scopes = self.scopes();
+        let input =
+            crate::upload::buffer_init(&d.device, &d.queue, Some("faces input"), bytemuck::cast_slice(job.input), wgpu::BufferUsages::STORAGE);
+        let output = self.scratch(bytes);
+        let Some(list) = self.conv_dispatches(job, &input, &output)? else {
+            // leave the scopes balanced
+            let [oom, validation] = scopes;
+            let _ = (pollster::block_on(validation.pop()), pollster::block_on(oom.pop()));
+            return Ok(None);
+        };
+        let staging = self.staging(bytes);
+        let mut enc = d.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        self.record(&mut enc, &list)?;
+        enc.copy_buffer_to_buffer(&output, 0, &staging, 0, bytes);
+        self.finish(enc, &staging, scopes).map(Some)
+    }
+
+    /// The dispatch of one non-convolution step.
+    fn op_dispatch(&self, op: &Op, out_len: usize, args: [wgpu::Buffer; 3], out: &wgpu::Buffer) -> Result<Option<Dispatch>, String> {
+        let d = self.dev;
+        let limit = d.limits.max_compute_workgroups_per_dimension as usize;
+        let u = u32_of;
+        let n = u(out_len)?;
+        let per_value = |pipeline: &'static wgpu::ComputePipeline, rest: &[u32]| -> Option<Dispatch> {
+            let groups = flat(out_len.div_ceil(256), limit)?;
+            let mut all = vec![n, groups[2]];
+            all.extend_from_slice(rest);
+            Some(Dispatch {
+                pipeline,
+                params: params24(&all),
+                buffers: [args[0].clone(), args[1].clone(), args[2].clone(), out.clone()],
+                groups: [groups[0], groups[1], 1],
+            })
+        };
+        let per_group = |pipeline: &'static wgpu::ComputePipeline, rest: &[u32]| -> Option<Dispatch> {
+            let groups = flat(out_len, limit)?;
+            let mut all = vec![n, groups[2]];
+            all.extend_from_slice(rest);
+            Some(Dispatch {
+                pipeline,
+                params: params24(&all),
+                buffers: [args[0].clone(), args[1].clone(), args[2].clone(), out.clone()],
+                groups: [groups[0], groups[1], 1],
+            })
+        };
+        let four = |v: &[usize; 4]| -> Result<[u32; 4], String> { Ok([u(v[0])?, u(v[1])?, u(v[2])?, u(v[3])?]) };
+        let k = &d.ops;
+        Ok(match op {
+            Op::Conv(_) => None,
+            Op::Unary(f) => per_value(&k.unary, &[u32::from(*f == Unary::Sigmoid)]),
+            Op::ChannelAffine { channels, plane } => per_value(&k.affine, &[u(*plane)?, u(*channels)?]),
+            Op::ChannelPrelu { channels, plane } => per_value(&k.prelu, &[u(*plane)?, u(*channels)?]),
+            Op::Binary { op, dims, a, b } => {
+                let kind = match op {
+                    Binary::Add => 0,
+                    Binary::Sub => 1,
+                    Binary::Mul => 2,
+                };
+                let mut rest = vec![kind];
+                rest.extend(four(dims)?);
+                rest.extend(four(a)?);
+                rest.extend(four(b)?);
+                per_value(&k.binary, &rest)
+            }
+            Op::Transpose { dims, strides } => {
+                let mut rest = vec![0];
+                rest.extend(four(dims)?);
+                rest.extend(four(strides)?);
+                per_value(&k.transpose, &rest)
+            }
+            Op::MaxPool { h, w, kh, kw, sh, sw, oh, ow, .. } => {
+                per_value(&k.maxpool, &[u(*h)?, u(*w)?, u(*kh)?, u(*kw)?, u(*sh)?, u(*sw)?, u(*oh)?, u(*ow)?])
+            }
+            Op::Resize { h, w, sh, sw, .. } => per_value(&k.resize, &[u(*h)?, u(*w)?, u(*sh)?, u(*sw)?]),
+            Op::GlobalAverage { plane, .. } => per_group(&k.gavg, &[u(*plane)?]),
+            Op::Gemv { k: kk, n: nn, trans_b, alpha } => per_group(&k.gemv, &[u(*kk)?, u(*nn)?, u32::from(*trans_b), alpha.to_bits()]),
+        })
+    }
+
+    /// A whole program for each input, every value staying on the device; one submission and one read-back.
+    fn program(&self, prog: &Program, inputs: &[&[f32]]) -> Result<Option<Vec<Vec<Vec<f32>>>>, String> {
+        let d = self.dev;
+        let largest = self.largest_binding();
+        if prog.lens.iter().any(|l| *l as u64 * 4 > largest) || inputs.iter().any(|i| Some(&i.len()) != prog.lens.get(INPUT)) {
+            return Ok(None);
+        }
+        let out_bytes: u64 = prog.outputs.iter().map(|(_, v, _)| prog.lens.get(*v).copied().unwrap_or(0) as u64 * 4).sum();
+        let total_bytes = out_bytes.checked_mul(inputs.len() as u64).ok_or("too many faces at once")?;
+        if total_bytes > d.limits.max_buffer_size {
+            return Ok(None);
+        }
+        let Some(_work) = crate::exit::enter() else { return Err("the app is closing".into()) };
+        let _turn = Turn::take(self.dev.card);
+        let scopes = self.scopes();
+        let staging = self.staging(total_bytes);
+        let mut enc = d.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("faces program") });
+        // buffers nothing reads any more, reused for later values (best fit)
+        let mut pool: Vec<(u64, wgpu::Buffer)> = Vec::new();
+        let take = |pool: &mut Vec<(u64, wgpu::Buffer)>, bytes: u64| -> wgpu::Buffer {
+            let best = pool
+                .iter()
+                .enumerate()
+                .filter(|(_, (size, _))| *size >= bytes && *size <= bytes.saturating_mul(2))
+                .min_by_key(|(_, (size, _))| *size)
+                .map(|(i, _)| i);
+            match best {
+                Some(i) => pool.swap_remove(i).1,
+                None => self.scratch(bytes),
+            }
+        };
+        let mut at = 0u64;
+        let mut fits = true;
+        for input in inputs {
+            let mut values: Vec<Option<(u64, wgpu::Buffer)>> = vec![None; prog.lens.len()];
+            // a fresh buffer: queued writes land before any of the encoder's work, so a pooled one could still be in use
+            let first = crate::upload::buffer_init(
+                &d.device,
+                &d.queue,
+                Some("faces input"),
+                bytemuck::cast_slice(input),
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            );
+            if let Some(v) = values.get_mut(INPUT) {
+                *v = Some((input.len() as u64 * 4, first));
+            }
+            let mut list = Vec::new();
+            for step in &prog.steps {
+                let len = prog.lens.get(step.out).copied().ok_or("a step writes a value the program does not have")?;
+                let out = take(&mut pool, len as u64 * 4);
+                let mut args = Vec::with_capacity(3);
+                for a in &step.args {
+                    args.push(match a {
+                        Arg::Value(v) => {
+                            values.get(*v).and_then(|v| v.as_ref()).map(|(_, b)| b.clone()).ok_or("a step reads a value before it is made")?
+                        }
+                        Arg::Const { id, data } => self.constant(*id, data),
+                    });
+                }
+                let dispatches = match &step.op {
+                    Op::Conv(job) => {
+                        let input = args.first().ok_or("a convolution without input")?;
+                        self.conv_dispatches(job, input, &out)?
+                    }
+                    op => {
+                        let arg = |i: usize| args.get(i).cloned().unwrap_or_else(|| d.dummy.clone());
+                        self.op_dispatch(op, len, [arg(0), arg(1), arg(2)], &out)?.map(|x| vec![x])
+                    }
+                };
+                let Some(dispatches) = dispatches else {
+                    fits = false;
+                    break;
+                };
+                list.extend(dispatches);
+                if let Some(v) = values.get_mut(step.out) {
+                    *v = Some((len as u64 * 4, out));
+                }
+                for f in &step.free {
+                    if let Some(b) = values.get_mut(*f).and_then(Option::take) {
+                        pool.push(b);
+                    }
+                }
+            }
+            if !fits {
+                break;
+            }
+            self.record(&mut enc, &list)?;
+            for (_, v, _) in &prog.outputs {
+                let (bytes, buffer) = values.get(*v).and_then(|v| v.as_ref()).ok_or("an output was never made")?;
+                let len = prog.lens.get(*v).copied().unwrap_or(0) as u64 * 4;
+                enc.copy_buffer_to_buffer(buffer, 0, &staging, at, len.min(*bytes));
+                at += len;
+            }
+            pool.extend(values.into_iter().flatten());
+        }
+        if !fits {
+            let [oom, validation] = scopes;
+            let _ = (pollster::block_on(validation.pop()), pollster::block_on(oom.pop()));
+            return Ok(None);
+        }
+        let flat_out = self.finish(enc, &staging, scopes)?;
+        let mut rest = flat_out.as_slice();
+        let mut per_input = Vec::with_capacity(inputs.len());
+        for _ in inputs {
+            let mut outs = Vec::with_capacity(prog.outputs.len());
+            for (_, v, _) in &prog.outputs {
+                let len = prog.lens.get(*v).copied().unwrap_or(0);
+                let (this, next) = rest.split_at_checked(len).ok_or("the read-back is short")?;
+                outs.push(this.to_vec());
+                rest = next;
+            }
+            per_input.push(outs);
+        }
+        Ok(Some(per_input))
+    }
+}
+
+/// Run `f`, turning a panic into a broken device (`card`'s only).
+fn guarded<T>(card: Card, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        mark_broken(card, "a face model on the GPU panicked");
+        Err("the GPU runner gave up".into())
+    })
+}
+
+impl Accelerator for FaceGpu {
+    fn device(&self) -> String {
+        format!("{} ({:?})", self.dev.info.name, self.dev.info.backend)
+    }
+
+    fn conv(&self, job: &ConvJob) -> Result<Option<Vec<f32>>, String> {
+        if let Some(why) = broken_reason_on(self.dev.card) {
+            return Err(format!("the GPU is not used any more: {why}"));
+        }
+        if crate::switched_off().is_some() || job.macs() < MIN_MACS {
+            return Ok(None);
+        }
+        guarded(self.dev.card, || self.run(job))
+    }
+
+    fn run_program(&self, program: &Program, inputs: &[&[f32]]) -> Result<Option<Vec<Vec<Vec<f32>>>>, String> {
+        if let Some(why) = broken_reason_on(self.dev.card) {
+            return Err(format!("the GPU is not used any more: {why}"));
+        }
+        if crate::switched_off().is_some() || PER_CONV.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        guarded(self.dev.card, || self.program(program, inputs))
+    }
+}
+
+/// Tests and benchmarks only: run convolutions one by one (the first step's way) instead of whole programs.
+static PER_CONV: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The second graphics card draws no window: only the share set for it holds its face runs back.
+    #[test]
+    fn each_card_has_its_own_share_of_the_time() {
+        let p = Pace { concurrent: 2, share: 0.75, second_share: 1.0, running: 0 };
+        assert_eq!((p.share_on(Card::Editing), p.share_on(Card::Second)), (0.75, 1.0));
+        assert_eq!((share_of(f32::NAN), share_of(0.0), share_of(3.0)), (1.0, 0.05, 1.0));
+    }
+
+    /// A failure on one card stops face models there only.
+    #[test]
+    fn a_broken_card_keeps_its_first_reason_and_leaves_the_other() {
+        // (the editing card is never broken here: the GPU tests in this binary run on it)
+        assert_eq!(broken_reason_on(Card::Second), None);
+        give_up_on(Card::Second, "device lost");
+        give_up_on(Card::Second, "a later error");
+        assert_eq!(broken_reason_on(Card::Second).as_deref(), Some("device lost"));
+        assert_eq!(broken_reason_on(Card::Editing), None, "the card for editing's device is separate");
+        assert!(dev_on(Card::Second).err().unwrap_or_default().contains("device lost"));
+        assert!(accelerator_on(Card::Second).is_err());
+        // a new model goes to the card for editing (when there is a GPU at all)
+        match accelerator() {
+            Ok(a) => assert_eq!(a.card(), Card::Editing),
+            Err(e) => lcc_testkit::skip!(Gpu, "no GPU for the face kernels: {e}"),
+        }
+        reset();
+        assert_eq!(broken_reason_on(Card::Second), None);
+    }
+
+    /// The face detector's kernels validate without a GPU.
+    #[test]
+    fn the_face_kernels_validate_without_a_gpu() {
+        assert_eq!(crate::validate_wgsl("faces_conv", include_str!("wgsl/faces_conv.wgsl")), Ok(()));
+        assert_eq!(crate::validate_wgsl("faces_ops", include_str!("wgsl/faces_ops.wgsl")), Ok(()));
+    }
+
+    fn gpu() -> Option<Arc<FaceGpu>> {
+        match accelerator() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                lcc_testkit::skip!(Gpu, "no GPU for the face kernels: {e}");
+                None
+            }
+        }
+    }
+
+    /// The plain definition of a convolution, to check the kernels against.
+    fn reference(j: &ConvJob) -> Vec<f32> {
+        let (m, cg) = (j.cout / j.groups, j.cin / j.groups);
+        let mut out = vec![0f32; j.cout * j.oh * j.ow];
+        for co in 0..j.cout {
+            let g = co / m;
+            for oy in 0..j.oh {
+                for ox in 0..j.ow {
+                    let mut v = j.bias.map_or(0.0, |b| b[co]);
+                    for ci in 0..cg {
+                        for ky in 0..j.kh {
+                            for kx in 0..j.kw {
+                                let (iy, ix) = ((oy * j.sh + ky) as isize - j.pt as isize, (ox * j.sw + kx) as isize - j.pl as isize);
+                                if iy >= 0 && ix >= 0 && (iy as usize) < j.h && (ix as usize) < j.w {
+                                    v += j.weights[((co * cg + ci) * j.kh + ky) * j.kw + kx]
+                                        * j.input[((g * cg + ci) * j.h + iy as usize) * j.w + ix as usize];
+                                }
+                            }
+                        }
+                    }
+                    out[(co * j.oh + oy) * j.ow + ox] = v;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_gpu_convolution_gives_what_the_definition_gives() {
+        let Some(gpu) = gpu() else { return };
+        // (cin, cout, groups, k, stride, pad, h, w): dense, strided, depthwise, grouped, pointwise, odd sizes
+        for (layer, (cin, cout, groups, k, s, p, h, w)) in [
+            (3, 16, 1, 3, 2, 1, 41, 37),
+            (64, 64, 1, 3, 1, 1, 28, 28),
+            (32, 32, 32, 3, 1, 1, 30, 31),
+            (16, 32, 4, 3, 2, 1, 33, 20),
+            (48, 72, 1, 1, 1, 0, 50, 45),
+            (8, 130, 1, 5, 1, 2, 23, 19),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let cg = cin / groups;
+            let weights: Vec<f32> = (0..cout * cg * k * k).map(|i| ((i * 37 % 23) as f32 - 11.0) * 0.03).collect();
+            let bias: Vec<f32> = (0..cout).map(|i| i as f32 * 0.01 - 0.3).collect();
+            let input: Vec<f32> = (0..cin * h * w).map(|i| ((i * 13 % 29) as f32 - 14.0) * 0.07).collect();
+            let (oh, ow) = ((h + 2 * p - k) / s + 1, (w + 2 * p - k) / s + 1);
+            let job = ConvJob {
+                layer,
+                cin,
+                h,
+                w,
+                cout,
+                groups,
+                kh: k,
+                kw: k,
+                sh: s,
+                sw: s,
+                pt: p,
+                pl: p,
+                oh,
+                ow,
+                weights: &weights,
+                bias: Some(&bias),
+                input: &input,
+            };
+            let got = gpu.run(&job).unwrap().unwrap();
+            let want = reference(&job);
+            let worst = got.iter().zip(&want).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(worst < 1e-3, "case {layer}: off by {worst}");
+        }
+        assert!(gpu.resident_bytes() > 0, "the weights stay on the device");
+    }
+
+    #[test]
+    fn every_operator_on_the_gpu_gives_what_the_cpu_gives() {
+        let Some(gpu) = gpu() else { return };
+        let net = lcc_faces::net::Net::new(lcc_faces::synthetic::every_operator_graph()).unwrap();
+        let inputs: Vec<lcc_faces::net::Tensor> = (0..3)
+            .map(|s| {
+                lcc_faces::net::Tensor::new(vec![1, 4, 8, 8], (0..256).map(|i| (((i * 31 + s * 7) % 37) as f32 - 18.0) * 0.05).collect()).unwrap()
+            })
+            .collect();
+        let cpu: Vec<_> = inputs.iter().map(|x| net.run(x.clone()).unwrap()).collect();
+        let program = net.program(&[1, 4, 8, 8]).unwrap().unwrap();
+        let slices: Vec<&[f32]> = inputs.iter().map(|t| t.data.as_slice()).collect();
+        let got = gpu.program(&program, &slices).unwrap().unwrap();
+        for (want, got) in cpu.iter().zip(&got) {
+            for ((name, want), got) in want.iter().zip(got) {
+                let worst = want.data.iter().zip(got).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
+                assert!(worst < 1e-4, "{name}: off by {worst}");
+            }
+        }
+    }
+
+    /// The real models on the GPU agree with the CPU interpreter: `LC_FACE_MODELS=<folder>` holding
+    /// `face_detection_yunet_2023mar.onnx`, `face_recognition_sface_2021dec.onnx` and (optionally) `glintr100.onnx`.
+    #[test]
+    fn real_face_models_on_the_gpu_agree_with_the_cpu() {
+        let Some(dir) = std::env::var_os("LC_FACE_MODELS").map(std::path::PathBuf::from) else {
+            lcc_testkit::skip!(Model, "LC_FACE_MODELS is not set");
+            return;
+        };
+        if gpu().is_none() {
+            return;
+        }
+        let det = lcc_faces::yunet::Detector::new(&std::fs::read(dir.join("face_detection_yunet_2023mar.onnx")).unwrap()).unwrap();
+        let (w, h) = (900, 700);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| ((i / 3 % w) as f32 * 0.25 + (i / 3 / w) as f32 * 0.3 + (i * 7919 % 41) as f32) as u8).collect();
+        let opts = lcc_faces::yunet::Options { score: 0.0, ..Default::default() };
+        let cpu = det.detect(&rgb, w, h, &opts).unwrap();
+        det.accelerate(accelerator().unwrap(), false).unwrap();
+        let fast = det.detect(&rgb, w, h, &opts).unwrap();
+        assert!(det.net().accelerator().is_some());
+        assert_eq!(cpu.len(), fast.len());
+        for (a, b) in cpu.iter().zip(&fast) {
+            assert!((a.score - b.score).abs() < 1e-3, "{} vs {}", a.score, b.score);
+        }
+        for (file, sha) in
+            [("face_recognition_sface_2021dec.onnx", lcc_faces::known::SFACE_SHA256), ("glintr100.onnx", lcc_faces::known::AURAFACE_SHA256)]
+        {
+            let path = dir.join(file);
+            if !path.exists() {
+                continue;
+            }
+            let e = lcc_faces::runtime::Embedder::load(&path, &lcc_faces::known::lookup(sha).unwrap()).unwrap();
+            let (ew, eh) = e.input_size();
+            let face: Vec<u8> = (0..ew * eh * 3).map(|i| ((i * 13) % 251) as u8).collect();
+            let cpu = e.embed(&face).unwrap();
+            e.accelerate(accelerator().unwrap(), false).unwrap();
+            let fast = e.embed(&face).unwrap();
+            let cosine: f32 = cpu.iter().zip(&fast).map(|(a, b)| a * b).sum();
+            assert!(cosine > 0.9999, "{file}: cosine {cosine}");
+        }
+    }
+
+    /// The MediaPipe Face Landmarker models (`lcc-tflite`, lowered to device programs) on the GPU agree with the CPU
+    /// interpreter on a synthetic picture, alone and batched: `LC_MEDIAPIPE_FACE=<folder>` holding `face_landmarker.task`.
+    /// With `--nocapture`, prints the timings.
+    #[test]
+    fn mediapipe_face_models_on_the_gpu_agree_with_the_cpu() {
+        let Some(dir) = std::env::var_os("LC_MEDIAPIPE_FACE").map(std::path::PathBuf::from) else {
+            lcc_testkit::skip!(Model, "LC_MEDIAPIPE_FACE is not set");
+            return;
+        };
+        if gpu().is_none() {
+            return;
+        }
+        let bundle = std::fs::read(dir.join("face_landmarker.task")).unwrap();
+        for name in ["face_detector.tflite", "face_landmarks_detector.tflite"] {
+            let model = lcc_tflite::Model::from_bytes(lcc_tflite::zip::entry(&bundle, name).unwrap()).unwrap();
+            let n: usize = model.input_shapes()[0].iter().product();
+            let inputs: Vec<Vec<f32>> =
+                (0..8).map(|s| (0..n).map(|i| ((i + s * 977) as f32 * 0.0137).sin() * 0.9 + ((i / 3) % 7) as f32 * 0.02).collect()).collect();
+            let refs: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
+            let cpu: Vec<_> = refs.iter().map(|x| model.run(&[x]).unwrap()).collect();
+            let (on_device, steps) = model.device_steps();
+            model.accelerate(accelerator().unwrap(), refs[0], 1e-3, false).unwrap();
+            let one = model.run(&[refs[1]]).unwrap();
+            let batch = model.run_batch(&refs).unwrap();
+            assert!(model.accelerator().is_some(), "{name}: the GPU was dropped");
+            let close = |a: &[Vec<f32>], b: &[Vec<f32>]| {
+                for (x, y) in a.iter().zip(b) {
+                    let scale = x.iter().fold(1e-6f32, |m, v| m.max(v.abs()));
+                    let worst = x.iter().zip(y).fold(0f32, |m, (p, q)| m.max((p - q).abs()));
+                    assert!(worst <= 1e-3 * scale, "{name}: off by {} of {scale}", worst);
+                }
+            };
+            close(&cpu[1], &one);
+            for (c, g) in cpu.iter().zip(&batch) {
+                close(c, g);
+            }
+            let time = |f: &mut dyn FnMut()| {
+                f();
+                let t = std::time::Instant::now();
+                for _ in 0..5 {
+                    f();
+                }
+                t.elapsed().as_secs_f64() * 1000.0 / 5.0
+            };
+            let cpu_ms = time(&mut || refs.iter().for_each(|x| drop(model.run_cpu(&[x]).unwrap())));
+            let one_ms = time(&mut || refs.iter().for_each(|x| drop(model.run(&[x]).unwrap())));
+            let batch_ms = time(&mut || drop(model.run_batch(&refs).unwrap()));
+            eprintln!(
+                "{name}: {on_device} of {steps} steps on the GPU; 8 runs: CPU {cpu_ms:.1} ms, GPU one by one {one_ms:.1} ms, GPU batched {batch_ms:.1} ms"
+            );
+        }
+    }
+
+    /// Timings, CPU against the GPU one convolution at a time and as whole programs (one face, and a batch of 16):
+    /// `LC_FACE_MODELS=<folder> cargo test --release -p lcc-gpu faces::tests::timings -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a benchmark: needs LC_FACE_MODELS and a GPU"]
+    fn timings() {
+        let Some(dir) = std::env::var_os("LC_FACE_MODELS").map(std::path::PathBuf::from) else { return };
+        let Some(_) = gpu() else { return };
+        let time = |runs: usize, f: &mut dyn FnMut()| {
+            f();
+            let t = std::time::Instant::now();
+            for _ in 0..runs {
+                f();
+            }
+            t.elapsed().as_secs_f64() * 1000.0 / runs as f64
+        };
+        let det = lcc_faces::yunet::Detector::new(&std::fs::read(dir.join("face_detection_yunet_2023mar.onnx")).unwrap()).unwrap();
+        let (w, h) = (1024, 768);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| (i * 7 % 251) as u8).collect();
+        let opts = lcc_faces::yunet::Options::default();
+        let cpu = time(10, &mut || drop(det.detect(&rgb, w, h, &opts).unwrap()));
+        PER_CONV.store(true, Ordering::Relaxed);
+        det.accelerate(accelerator().unwrap(), false).unwrap();
+        let per_conv = time(10, &mut || drop(det.detect(&rgb, w, h, &opts).unwrap()));
+        PER_CONV.store(false, Ordering::Relaxed);
+        det.accelerate(accelerator().unwrap(), false).unwrap();
+        let whole = time(10, &mut || drop(det.detect(&rgb, w, h, &opts).unwrap()));
+        assert!(det.net().accelerator().is_some());
+        eprintln!("YuNet 640: CPU {cpu:.1} ms, GPU per convolution {per_conv:.1} ms, GPU whole network {whole:.1} ms");
+        for (file, sha) in
+            [("face_recognition_sface_2021dec.onnx", lcc_faces::known::SFACE_SHA256), ("glintr100.onnx", lcc_faces::known::AURAFACE_SHA256)]
+        {
+            let e = lcc_faces::runtime::Embedder::load(&dir.join(file), &lcc_faces::known::lookup(sha).unwrap()).unwrap();
+            let (ew, eh) = e.input_size();
+            let faces: Vec<Vec<u8>> = (0..16).map(|s| (0..ew * eh * 3).map(|i| ((i + s * 101) * 13 % 251) as u8).collect()).collect();
+            let refs: Vec<&[u8]> = faces.iter().map(Vec::as_slice).collect();
+            let cpu = time(5, &mut || drop(e.embed(&faces[0]).unwrap()));
+            PER_CONV.store(true, Ordering::Relaxed);
+            e.accelerate(accelerator().unwrap(), false).unwrap();
+            let per_conv = time(5, &mut || drop(e.embed(&faces[0]).unwrap()));
+            PER_CONV.store(false, Ordering::Relaxed);
+            e.accelerate(accelerator().unwrap(), false).unwrap();
+            let whole = time(5, &mut || drop(e.embed(&faces[0]).unwrap()));
+            let batch = time(3, &mut || drop(e.embed_batch(&refs))) / 16.0;
+            assert!(e.net().accelerator().is_some());
+            eprintln!(
+                "{file}: CPU {cpu:.1} ms, GPU per convolution {per_conv:.1} ms, GPU whole network {whole:.1} ms, batch of 16 {batch:.1} ms a face"
+            );
+        }
+    }
+}

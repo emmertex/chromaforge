@@ -1,0 +1,670 @@
+//! The face index: one embedding per face region, kept in memory and cached beside the library.
+//!
+//! Embedding a face costs a model run (tens to hundreds of milliseconds), so each region is embedded once and
+//! remembered, keyed by its photo and its box. The cache file (`face-embeddings-<model id>.bin` in the library folder,
+//! one per model, so switching back to an earlier model does not start over) belongs to one model: its header names the
+//! model and its file hash, and a file made by another model, an older format, or a damaged one is simply ignored and
+//! rebuilt. Embeddings are kept out of the catalog on purpose: they are large, rebuildable, and not comparable between
+//! models.
+//!
+//! Each face also keeps the box to cut its picture from (its "view"): the detector's box when the detector found the same
+//! face, so every face is shown equally close however loosely or tightly its own region was drawn (a Lightroom box, an
+//! older tool's box), else the region's own box.
+//!
+//! Layout (little-endian): `"LCFE"`, version `2`, tag length `u16`, the tag (`<model id>@<sha256>`), dimension `u32`,
+//! then records of `photo u64`, four `i32` (the region's box in ten-thousandths), four `i32` (the view box likewise), and
+//! `dim` `f32`.
+
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use lcc_geom::Rect;
+
+const MAGIC: &[u8; 4] = b"LCFE";
+const VERSION: u8 = 2;
+/// Ends the tag of a cache whose faces are each averaged with their mirror image
+/// ([`lcc_faces::runtime::Embedder::embed_faces`]); a cache made the other way has another tag, so it is not read and
+/// its faces are embedded again rather than mixed with the new ones.
+pub(crate) const MIRROR_TAG: &str = "+mirror";
+
+pub(crate) type Key = (u64, [i32; 4]);
+
+/// One face's record: its embedding and its view box (quantized like a key).
+type Entry = (Arc<[f32]>, [i32; 4]);
+
+/// A quantized box as a rectangle again.
+fn rect_of(k: [i32; 4]) -> Rect {
+    let f = |v: i32| f64::from(v) / 10_000.0;
+    Rect { x0: f(k[0]), y0: f(k[1]), x1: f(k[2]), y1: f(k[3]) }
+}
+
+/// A region's box as the integer key it is cached under.
+pub(crate) fn region_key(r: &Rect) -> [i32; 4] {
+    let q = |v: f64| if v.is_finite() { (v.clamp(-1e3, 1e3) * 10_000.0).round() as i32 } else { 0 };
+    [q(r.x0), q(r.y0), q(r.x1), q(r.y1)]
+}
+
+#[derive(Default)]
+pub(crate) struct Index {
+    /// `<model id>@<sha256>` of the model the embeddings belong to.
+    pub tag: String,
+    pub dim: usize,
+    entries: HashMap<Key, Entry>,
+    unsaved: Vec<(Key, Entry)>,
+    /// Faces that could not be embedded this session (so they are not retried on every call).
+    skipped: std::collections::HashSet<Key>,
+    /// The cache file on disk belongs to this model, so new records can be appended to it.
+    file_matches: bool,
+    /// Records were dropped ([`Index::forget_photo`]): the cache file is written fresh at the next save.
+    rewrite: bool,
+    pub path: Option<PathBuf>,
+}
+
+impl Index {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn get(&self, photo: u64, rect: &Rect) -> Option<&Arc<[f32]>> {
+        self.entries.get(&(photo, region_key(rect))).map(|e| &e.0)
+    }
+
+    /// The box to cut this face's picture from, once the scan has looked at it.
+    pub fn view(&self, photo: u64, rect: &Rect) -> Option<Rect> {
+        self.entries.get(&(photo, region_key(rect))).map(|e| rect_of(e.1))
+    }
+
+    #[cfg(test)]
+    pub fn contains(&self, photo: u64, rect: &Rect) -> bool {
+        self.entries.contains_key(&(photo, region_key(rect)))
+    }
+
+    /// Whether this face still has to be embedded.
+    pub fn needs(&self, photo: u64, rect: &Rect) -> bool {
+        let key = (photo, region_key(rect));
+        !self.entries.contains_key(&key) && !self.skipped.contains(&key)
+    }
+
+    pub fn skip(&mut self, photo: u64, rect: &Rect) {
+        self.skipped.insert((photo, region_key(rect)));
+    }
+
+    /// Drop every face of `photo` (its file was replaced, so they were made from other pixels): they are embedded
+    /// again, and the cache file is rewritten without them at the next save.
+    pub fn forget_photo(&mut self, photo: u64) {
+        let before = self.entries.len();
+        self.entries.retain(|k, _| k.0 != photo);
+        self.unsaved.retain(|(k, _)| k.0 != photo);
+        self.skipped.retain(|k| k.0 != photo);
+        self.rewrite |= self.entries.len() != before;
+    }
+
+    #[cfg(test)]
+    pub fn insert(&mut self, photo: u64, rect: &Rect, embedding: Vec<f32>) {
+        self.insert_with_view(photo, rect, embedding, rect);
+    }
+
+    /// Remember a face's embedding and the box to show it by.
+    pub fn insert_with_view(&mut self, photo: u64, rect: &Rect, embedding: Vec<f32>, view: &Rect) {
+        let entry: Entry = (embedding.into(), region_key(view));
+        let key = (photo, region_key(rect));
+        self.entries.insert(key, entry.clone());
+        self.unsaved.push((key, entry));
+    }
+
+    /// Whether there are embeddings not yet written to the cache file.
+    pub fn has_unsaved(&self) -> bool {
+        !self.unsaved.is_empty() || self.rewrite
+    }
+
+    /// Forget every embedding (Settings ▸ Faces ▸ Clear): the cache file is written fresh, empty, at the next save.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.unsaved.clear();
+        self.skipped.clear();
+        self.rewrite = true;
+    }
+
+    /// Start over for `tag` (`dim` numbers per face), loading what the cache file at `path` holds for it. What the
+    /// previous model's index had not written yet is written first, so switching models loses nothing.
+    pub fn reset(&mut self, tag: &str, dim: usize, path: Option<PathBuf>) {
+        let _ = self.save();
+        self.tag = tag.to_string();
+        self.dim = dim;
+        self.path = path;
+        self.entries.clear();
+        self.unsaved.clear();
+        self.skipped.clear();
+        self.file_matches = false;
+        self.rewrite = false;
+        if let Some(p) = self.path.clone() {
+            self.load(&p);
+        }
+    }
+
+    /// Reads the file record by record, not all at once: at about 2 KiB per face a cache passes 1 GiB at roughly half
+    /// a million faces.
+    fn load(&mut self, path: &Path) {
+        let Ok(file) = std::fs::File::open(path) else { return };
+        let Ok(file_len) = file.metadata().map(|m| m.len()) else { return };
+        let mut r = std::io::BufReader::new(file);
+        let mut head = [0u8; 7];
+        if r.read_exact(&mut head).is_err() || head[..4] != MAGIC[..] || head[4] != VERSION {
+            return;
+        }
+        let tag_len = usize::from(u16::from_le_bytes([head[5], head[6]]));
+        let mut tag = vec![0u8; tag_len];
+        let mut dim = [0u8; 4];
+        if r.read_exact(&mut tag).is_err() || r.read_exact(&mut dim).is_err() {
+            return;
+        }
+        let dim = u32::from_le_bytes(dim) as usize;
+        if tag != self.tag.as_bytes() || dim != self.dim || dim == 0 {
+            return;
+        }
+        self.file_matches = true;
+        let record = 8 + 16 + 16 + dim * 4;
+        let body = file_len.saturating_sub(7 + tag_len as u64 + 4);
+        let records = body / record as u64;
+        let mut rec = vec![0u8; record];
+        for _ in 0..records {
+            if r.read_exact(&mut rec).is_err() {
+                // the file changed or could not be read: what was read is kept and written fresh at the next save, the
+                // rest is embedded again
+                self.rewrite = true;
+                return;
+            }
+            let photo = u64::from_le_bytes([rec[0], rec[1], rec[2], rec[3], rec[4], rec[5], rec[6], rec[7]]);
+            let int = |at: usize| i32::from_le_bytes([rec[at], rec[at + 1], rec[at + 2], rec[at + 3]]);
+            let key = [int(8), int(12), int(16), int(20)];
+            let view = [int(24), int(28), int(32), int(36)];
+            let emb: Vec<f32> = rec[40..].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
+            if emb.iter().all(|v| v.is_finite()) {
+                self.entries.insert((photo, key), (emb.into(), view));
+            }
+        }
+        // a half-written last record (a crash while appending): written fresh at the next save, so later records are
+        // not appended after it and shifted
+        self.rewrite = body % record as u64 != 0;
+    }
+
+    fn header(&self) -> Vec<u8> {
+        let tag = self.tag.as_bytes();
+        let mut h = Vec::with_capacity(11 + tag.len());
+        h.extend_from_slice(MAGIC);
+        h.push(VERSION);
+        h.extend_from_slice(&u16::try_from(tag.len()).unwrap_or(0).to_le_bytes());
+        h.extend_from_slice(tag);
+        h.extend_from_slice(&(self.dim as u32).to_le_bytes());
+        h
+    }
+
+    fn record(&self, key: &Key, entry: &Entry) -> Vec<u8> {
+        let mut r = Vec::with_capacity(40 + entry.0.len() * 4);
+        r.extend_from_slice(&key.0.to_le_bytes());
+        key.1.iter().chain(entry.1.iter()).for_each(|k| r.extend_from_slice(&k.to_le_bytes()));
+        entry.0.iter().for_each(|v| r.extend_from_slice(&v.to_le_bytes()));
+        r
+    }
+
+    /// Write what was added since the last save: appended when the file already belongs to this model, else (or when
+    /// records were dropped) the whole index is written fresh (atomically). A failure is returned, the records stay
+    /// pending.
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.path.clone() else {
+            self.unsaved.clear();
+            self.rewrite = false;
+            return Ok(());
+        };
+        if self.unsaved.is_empty() && !self.rewrite {
+            return Ok(());
+        }
+        if self.file_matches && !self.rewrite {
+            let mut buf = Vec::new();
+            for (k, e) in &self.unsaved {
+                buf.extend(self.record(k, e));
+            }
+            append(&path, &buf)?;
+        } else {
+            let mut buf = self.header();
+            for (k, e) in &self.entries {
+                buf.extend(self.record(k, e));
+            }
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lcc_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
+            self.file_matches = true;
+            self.rewrite = false;
+        }
+        self.unsaved.clear();
+        Ok(())
+    }
+}
+
+impl Drop for Index {
+    fn drop(&mut self) {
+        let _ = self.save();
+    }
+}
+
+/// Append `buf` to the file at `path`. When the write fails (a full disk), the file is cut back to its old length so
+/// the part that got in does not shift what is appended later.
+fn append(path: &Path, buf: &[u8]) -> std::io::Result<()> {
+    // not through a link at the name (issue #2122)
+    let mut f = lcc_catalog::safe_file::open_existing(path, std::fs::OpenOptions::new().append(true))?;
+    let old_len = f.metadata()?.len();
+    let written = f.write_all(buf);
+    if written.is_err() {
+        drop(f);
+        // an append-only handle may not truncate (Windows): cut through a writable one
+        if let Ok(w) = std::fs::OpenOptions::new().write(true).open(path) {
+            let _ = w.set_len(old_len);
+        }
+    }
+    written
+}
+
+const SCAN_MAGIC: &[u8; 4] = b"LCFS";
+const SCAN_VERSION: u8 = 1;
+/// The detector a search was made with: a record made by another one is ignored (a better detector may find more), so
+/// photos YuNet searched are searched again with the MediaPipe face model.
+pub(crate) const SCAN_TAG: &str = "mediapipe-face-landmarker-1";
+/// Largest record file we read.
+const SCAN_MAX_FILE: u64 = 64 << 20;
+
+/// The photos the detector has already searched for faces, so each is searched once, however many times the app
+/// starts. Kept beside the library (`face-scanned.bin`: a header naming the detector, then photo ids, appended to).
+/// The focus-point backfill keeps its own record the same way ([`Scanned::new`] with its magic and decoder tag).
+pub(crate) struct Scanned {
+    set: std::collections::HashSet<u64>,
+    unsaved: Vec<u64>,
+    path: Option<PathBuf>,
+    file_matches: bool,
+    /// A photo was taken out ([`Scanned::remove`]): the record is written fresh at the next save.
+    rewrite: bool,
+    magic: [u8; 4],
+    /// What made the record: a file made by anything else is started afresh.
+    tag: String,
+}
+
+impl Default for Scanned {
+    fn default() -> Self {
+        Scanned::new(*SCAN_MAGIC, SCAN_TAG)
+    }
+}
+
+impl Scanned {
+    /// An empty record (in memory until [`Scanned::reset`] gives it a path) whose file starts with `magic` and `tag`.
+    pub fn new(magic: [u8; 4], tag: &str) -> Scanned {
+        Scanned { set: Default::default(), unsaved: Vec::new(), path: None, file_matches: false, rewrite: false, magic, tag: tag.to_string() }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn contains(&self, photo: u64) -> bool {
+        self.set.contains(&photo)
+    }
+
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    pub fn insert(&mut self, photo: u64) {
+        if self.set.insert(photo) {
+            self.unsaved.push(photo);
+        }
+    }
+
+    /// Search `photo` again (its file was replaced).
+    pub fn remove(&mut self, photo: u64) {
+        if self.set.remove(&photo) {
+            self.unsaved.retain(|p| *p != photo);
+            self.rewrite = true;
+        }
+    }
+
+    pub fn has_unsaved(&self) -> bool {
+        !self.unsaved.is_empty() || self.rewrite
+    }
+
+    /// Forget every photo (they are all searched again): the record is written fresh, empty, at the next save.
+    pub fn clear(&mut self) {
+        self.set.clear();
+        self.unsaved.clear();
+        self.rewrite = true;
+    }
+
+    /// Start over with the record at `path` (written first: what was not yet saved is not lost).
+    pub fn reset(&mut self, path: Option<PathBuf>) {
+        let _ = self.save();
+        self.set.clear();
+        self.unsaved.clear();
+        self.file_matches = false;
+        self.rewrite = false;
+        self.path = path;
+        if let Some(p) = self.path.clone() {
+            self.load(&p);
+        }
+    }
+
+    fn header(&self) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(&self.magic);
+        h.push(SCAN_VERSION);
+        let tag = self.tag.as_bytes().get(..usize::from(u16::MAX)).unwrap_or(self.tag.as_bytes());
+        h.extend_from_slice(&(tag.len() as u16).to_le_bytes());
+        h.extend_from_slice(tag);
+        h
+    }
+
+    fn load(&mut self, path: &Path) {
+        let Ok(bytes) = crate::bounded_read::read_bounded(path, SCAN_MAX_FILE) else { return };
+        let head = self.header();
+        let Some(rest) = bytes.strip_prefix(head.as_slice()) else { return };
+        self.file_matches = true;
+        // a half-written last id (a crash while appending) is ignored, and the record is written fresh at the next save
+        // so later ids are not appended after it and shifted
+        let (ids, torn) = rest.as_chunks::<8>();
+        self.set.extend(ids.iter().map(|c| u64::from_le_bytes(*c)));
+        self.rewrite = !torn.is_empty();
+    }
+
+    /// Write what was added since the last save: appended when the file is this detector's, else the whole record
+    /// is written fresh (atomically). A failure is returned and the ids stay pending.
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.path.clone() else {
+            self.unsaved.clear();
+            self.rewrite = false;
+            return Ok(());
+        };
+        if self.unsaved.is_empty() && !self.rewrite {
+            return Ok(());
+        }
+        if self.file_matches && !self.rewrite {
+            let buf: Vec<u8> = self.unsaved.iter().flat_map(|id| id.to_le_bytes()).collect();
+            append(&path, &buf)?;
+        } else {
+            let mut buf = self.header();
+            buf.extend(self.set.iter().flat_map(|id| id.to_le_bytes()));
+            // a fresh temp file renamed over the index: never written through a link (issue #2122)
+            lcc_catalog::safe_file::write_atomic_nosync(&path, &buf)?;
+            self.file_matches = true;
+            self.rewrite = false;
+        }
+        self.unsaved.clear();
+        Ok(())
+    }
+}
+
+impl Drop for Scanned {
+    fn drop(&mut self) {
+        let _ = self.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f64) -> Rect {
+        Rect { x0: x, y0: 0.1, x1: x + 0.2, y1: 0.4 }
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("lc-faceindex-{name}-{}.bin", std::process::id()))
+    }
+
+    #[test]
+    fn embeddings_survive_a_save_and_load_and_append() {
+        let path = temp("roundtrip");
+        let _ = std::fs::remove_file(&path);
+        let mut a = Index::default();
+        a.reset("m@abc", 3, Some(path.clone()));
+        a.insert(7, &rect(0.1), vec![1.0, 0.0, 0.5]);
+        a.insert(8, &rect(0.3), vec![0.0, 1.0, 0.25]);
+        a.save().unwrap();
+        a.insert(9, &rect(0.5), vec![0.5, 0.5, 0.5]);
+        a.save().unwrap(); // appended
+        let mut b = Index::default();
+        b.reset("m@abc", 3, Some(path.clone()));
+        assert_eq!(b.len(), 3);
+        assert_eq!(b.get(8, &rect(0.3)).map(|e| e.to_vec()), Some(vec![0.0, 1.0, 0.25]));
+        assert!(b.contains(9, &rect(0.5)) && !b.contains(9, &rect(0.6)) && !b.contains(1, &rect(0.5)));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn another_model_a_damaged_file_or_a_torn_tail_are_handled() {
+        let path = temp("other");
+        let _ = std::fs::remove_file(&path);
+        let mut a = Index::default();
+        a.reset("m@abc", 3, Some(path.clone()));
+        a.insert(1, &rect(0.1), vec![1.0, 0.0, 0.0]);
+        a.insert(2, &rect(0.2), vec![0.0, 1.0, 0.0]);
+        a.save().unwrap();
+        // another model: nothing is loaded, and saving replaces the file for the new model
+        let mut other = Index::default();
+        other.reset("n@def", 4, Some(path.clone()));
+        assert_eq!(other.len(), 0);
+        other.insert(5, &rect(0.1), vec![1.0, 0.0, 0.0, 0.0]);
+        other.save().unwrap();
+        let mut again = Index::default();
+        again.reset("n@def", 4, Some(path.clone()));
+        assert_eq!(again.len(), 1);
+        let mut old = Index::default();
+        old.reset("m@abc", 3, Some(path.clone()));
+        assert_eq!(old.len(), 0, "the old model's records are gone");
+        // a torn last record loses only that record
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 5]).unwrap();
+        let mut torn = Index::default();
+        torn.reset("n@def", 4, Some(path.clone()));
+        assert_eq!(torn.len(), 0);
+        // garbage of every kind is ignored
+        for junk in [Vec::new(), b"LCFE".to_vec(), b"LCFE\x01\xff\xff".to_vec(), vec![0xff; 200], b"LCFE\x02\x00\x00".to_vec()] {
+            std::fs::write(&path, &junk).unwrap();
+            let mut j = Index::default();
+            j.reset("n@def", 4, Some(path.clone()));
+            assert_eq!(j.len(), 0);
+        }
+        // and a missing file is fine
+        let _ = std::fs::remove_file(&path);
+        let mut m = Index::default();
+        m.reset("n@def", 4, Some(path.clone()));
+        assert_eq!(m.len(), 0);
+    }
+
+    #[test]
+    fn non_finite_boxes_and_vectors_do_not_break_the_keys() {
+        assert_eq!(region_key(&Rect { x0: f64::NAN, y0: f64::INFINITY, x1: 1e300, y1: -1e300 }), [0, 0, 10_000_000, -10_000_000]);
+        let path = temp("nan");
+        let _ = std::fs::remove_file(&path);
+        let mut a = Index::default();
+        a.reset("m@abc", 2, Some(path.clone()));
+        a.insert(1, &rect(0.1), vec![f32::NAN, 1.0]);
+        a.save().unwrap();
+        let mut b = Index::default();
+        b.reset("m@abc", 2, Some(path.clone()));
+        assert_eq!(b.len(), 0, "a non-finite vector is not loaded back");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A cache past 1 GiB (about half a million faces of a 512-number model) is still read, and later saves append to
+    /// it instead of starting it over with only this session's faces (issue #2997).
+    #[test]
+    fn a_cache_larger_than_a_gibibyte_is_still_loaded_and_appended_to() {
+        let path = temp("large");
+        let _ = std::fs::remove_file(&path);
+        let dim = 512;
+        let mut a = Index::default();
+        a.reset("m@abc", dim, Some(path.clone()));
+        a.insert(7, &rect(0.1), vec![0.5; dim]);
+        a.save().unwrap();
+        drop(a);
+        // grow the file (sparsely) by whole zero records to just past 1 GiB
+        let record = 8 + 16 + 16 + dim as u64 * 4;
+        let len = std::fs::metadata(&path).unwrap().len();
+        let records = ((1u64 << 30) - len) / record + 2;
+        let grown = len + records * record;
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(grown).unwrap();
+        let mut b = Index::default();
+        b.reset("m@abc", dim, Some(path.clone()));
+        assert!(b.contains(7, &rect(0.1)), "photo 7's embedding is loaded");
+        assert!(!b.needs(7, &rect(0.1)));
+        b.insert(8, &rect(0.3), vec![0.25; dim]);
+        b.save().unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), grown + record, "the new face is appended");
+        drop(b);
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The faces and the search of a photo whose file was replaced are dropped from the files too, not only from memory:
+    /// they don't come back at the next launch (issue #1524).
+    #[test]
+    fn a_forgotten_photo_stays_forgotten_after_reloading() {
+        let dir = std::env::temp_dir().join(format!("lc-faces-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (emb, scan) = (dir.join("face-embeddings.bin"), dir.join("face-scanned.bin"));
+        let mut a = Index::default();
+        a.reset("m@abc", 2, Some(emb.clone()));
+        a.insert(1, &rect(0.1), vec![1.0, 0.0]);
+        a.insert(2, &rect(0.1), vec![0.0, 1.0]);
+        a.save().unwrap();
+        a.forget_photo(1);
+        assert!(a.has_unsaved());
+        a.save().unwrap();
+        a.insert(3, &rect(0.1), vec![1.0, 1.0]);
+        a.save().unwrap();
+        let mut b = Index::default();
+        b.reset("m@abc", 2, Some(emb));
+        assert!(!b.contains(1, &rect(0.1)) && b.contains(2, &rect(0.1)) && b.contains(3, &rect(0.1)));
+        let mut s = Scanned::default();
+        s.reset(Some(scan.clone()));
+        s.insert(1);
+        s.insert(2);
+        s.save().unwrap();
+        s.remove(1);
+        assert!(s.has_unsaved());
+        s.save().unwrap();
+        s.insert(3);
+        s.save().unwrap();
+        let mut t = Scanned::default();
+        t.reset(Some(scan));
+        assert!(!t.contains(1) && t.contains(2) && t.contains(3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A torn last record (a crash or a full disk while appending) does not shift the records appended after it
+    /// (issue #2129).
+    #[test]
+    fn records_appended_after_a_torn_tail_stay_aligned() {
+        let dir = std::env::temp_dir().join(format!("lc-faces-torn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (emb, scan) = (dir.join("face-embeddings.bin"), dir.join("face-scanned.bin"));
+        let junk = |p: &Path| {
+            let mut f = std::fs::OpenOptions::new().append(true).open(p).unwrap();
+            f.write_all(&[0x3f; 5]).unwrap();
+        };
+        let mut a = Index::default();
+        a.reset("m@abc", 3, Some(emb.clone()));
+        a.insert(7, &rect(0.1), vec![1.0, 0.0, 0.5]);
+        a.save().unwrap();
+        drop(a);
+        junk(&emb);
+        let mut b = Index::default();
+        b.reset("m@abc", 3, Some(emb.clone()));
+        b.insert(9, &rect(0.5), vec![0.5, 0.25, 0.125]);
+        b.save().unwrap();
+        drop(b);
+        let mut c = Index::default();
+        c.reset("m@abc", 3, Some(emb));
+        assert_eq!(c.len(), 2);
+        assert_eq!(c.get(7, &rect(0.1)).map(|e| e.to_vec()), Some(vec![1.0, 0.0, 0.5]));
+        assert_eq!(c.get(9, &rect(0.5)).map(|e| e.to_vec()), Some(vec![0.5, 0.25, 0.125]));
+        let mut s = Scanned::default();
+        s.reset(Some(scan.clone()));
+        s.insert(42);
+        s.save().unwrap();
+        drop(s);
+        junk(&scan);
+        let mut t = Scanned::default();
+        t.reset(Some(scan.clone()));
+        t.insert(43);
+        t.save().unwrap();
+        drop(t);
+        let mut u = Scanned::default();
+        u.reset(Some(scan));
+        assert!(u.contains(42) && u.contains(43) && u.len() == 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// What the recognition commands keep between calls: the loaded model and the embeddings made with it.
+#[derive(Default)]
+pub(crate) struct FacesState {
+    /// Whether recognition was switched on and whether the scan was paused when last looked up, and when.
+    pub switches_seen: Option<(std::time::Instant, bool, bool)>,
+    /// `<model id>@<sha256>` and the chosen model's manifest (reused without loading the ONNX network).
+    pub manifest: Option<(String, lcc_faces::ModelManifest)>,
+    /// `<model id>@<sha256>` and the loaded model.
+    pub embedder: Option<(String, Arc<lcc_faces::runtime::Embedder>)>,
+    pub index: Index,
+    /// When the models folder was last looked at (the per-frame pump trusts a look for a second).
+    pub checked: Option<std::time::Instant>,
+    /// How many of a person's best matching faces a match is based on when last looked up, and when.
+    pub top_seen: Option<(std::time::Instant, usize)>,
+    pub worker: Option<crate::faces_worker::Worker>,
+    /// After a failure to load the chosen model, the background pump leaves it alone until then.
+    pub retry_at: Option<std::time::Instant>,
+    /// Photos the worker is busy with.
+    pub in_flight: std::collections::HashSet<lcc_catalog::PhotoId>,
+    /// Photos still to hand to the worker, and the catalog revision this list was made at.
+    pub queue: Vec<lcc_catalog::PhotoId>,
+    pub queue_stamp: Option<u64>,
+    /// When the index was last written to its cache file by the background pump.
+    pub saved_at: Option<std::time::Instant>,
+    /// Bumped when another library is opened: what a worker was making for the old one is dropped.
+    pub epoch: u64,
+    /// Photos already searched for faces.
+    pub scanned: Scanned,
+    /// Photos that could not be searched this session (unreadable files): left alone until the next launch.
+    pub scan_failed: std::collections::HashSet<u64>,
+    /// The scan's row in the activity stack, while photos are left.
+    pub task: Option<crate::activity::TaskGuard>,
+    /// The most photos left at once since the scan last finished (the row's whole).
+    pub peak: u64,
+}
+
+impl FacesState {
+    /// Another library is being opened: what was learned about the old one is saved, and nothing of it is kept (photo
+    /// ids are only unique within a library). The loaded model stays; the index is reloaded for the new library.
+    pub fn library_changed(&mut self) {
+        self.index.reset("", 0, None);
+        self.scanned.reset(None);
+        self.scan_failed.clear();
+        self.manifest = None;
+        self.embedder = None;
+        self.checked = None;
+        self.queue.clear();
+        self.queue_stamp = None;
+        self.in_flight.clear();
+        self.retry_at = None;
+        self.saved_at = None;
+        self.task = None;
+        self.peak = 0;
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    /// Photo `id`'s file was replaced by other content: the faces made from the old pixels are dropped and the photo is
+    /// searched again (issue #1524). What a worker is still making from the old file is dropped when it comes back.
+    pub fn content_replaced(&mut self, id: lcc_catalog::PhotoId) {
+        self.index.forget_photo(id.0);
+        self.scanned.remove(id.0);
+        self.scan_failed.remove(&id.0);
+    }
+}

@@ -1,0 +1,30 @@
+---
+title: Stacks and copies
+description: Stacks, virtual copies, duplicates, versions.
+sidebar:
+  order: 11
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+---
+
+import Shot from '../../../components/Shot.astro';
+
+<Shot name="lib-stack" alt="A stack of three with a count badge" />
+
+- **Group into Stack** (`Cmd/Ctrl+G`), **Ungroup Stack** (`Cmd/Ctrl+Shift+G`): **Photo ▸ Stack**.
+- A count badge on the top photo; click it or press `S` to **Expand/Collapse**; **Expand All Stacks**, **Collapse All Stacks**.
+- **Set as Top of Stack** (`Shift+S`), **Move Up / Down in Stack**, **Remove from Stack**, **Split Stack**.
+- **Auto-Stack by Capture Time**: groups shots taken close together in time.
+- Deleting a photo updates the stack count.
+- **Create Virtual Copy** (`Cmd/Ctrl+'`): a new catalog entry sharing the file with its own settings; badge *Copy N*, stacked with the original, same collections, no extra file.
+- **Duplicate** (**Photo ▸ File**): a real `-copy` file with the same settings, metadata and collections.
+- **Versions** panel (left): *Create Version*, **Named** and **Auto** snapshots of a photo's edits.
+- **Convert to DNG** (**Photo ▸ File**): lossless DNG next to the raw, settings embedded, photo relinked; originals kept.
+- **Edit In…**: render a copy (TIFF or PSD, colour space, bit depth) for an external editor, stacked on the original; **Open as Layers** stacks several into a layered PSD.
+- Duplicate files at import are skipped by content; **Find Similar Photos** finds look-alikes.
+
+<Aside type="note" title="Modern layout">
+  **Photo ▸ Stack**, **Photo ▸ File**, **Photo ▸ Edit In** in the ☰ menu.
+</Aside>
