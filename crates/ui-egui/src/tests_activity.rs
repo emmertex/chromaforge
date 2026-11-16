@@ -93,6 +93,9 @@ fn a_task_takes_the_identity_plates_place_and_gives_it_back() {
     h.step();
     click(&mut h, "status:message");
     assert!(h.app.ui.status.is_empty(), "a click dismissed the message");
+    // the pointer still sits in the quick settings bar's stretch, whose hover dismisses any message: move it off
+    assert_eq!(h.request("ui.move", json!({"x": 5, "y": 500}), T)["ok"], true);
+    h.step();
 
     // a task takes the plate's and the status line's place, half a second in
     h.app.ui.status = "Ready".into();
@@ -994,4 +997,40 @@ fn reading_a_browsed_folder_holds_no_preparation_back() {
     gate.store(true, std::sync::atomic::Ordering::Release);
     assert!(h.step_until(Duration::from_secs(60), |h| h.app.import.is_none()));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A continuous job's row (the face scan, search indexing) has a pause button and a gear, in the Classic plate and its
+/// list: pause runs the job's own command and, once the job says it is paused, the button offers resume; the gear opens
+/// Settings at the job's page.
+#[test]
+fn a_job_with_controls_has_pause_resume_and_a_gear_on_its_row() {
+    let mut h = demo();
+    let controls = |paused| lcc_engine::activity::Controls {
+        paused,
+        pause: "ml.pause",
+        resume: "ml.resume",
+        settings_tab: "ai",
+        settings_section: Some("semanticSearch"),
+    };
+    let g = h.app.session.activity.start("mlIndex", "Indexing photos", Cancel::No);
+    g.set_controls(Some(controls(false)));
+    wait_visible(&mut h);
+    let id = g.id();
+    assert!(has(&h, &format!("activity:pause:{id}")), "the plate's row has a pause button");
+    assert!(has(&h, &format!("activity:settings:{id}")), "and a gear");
+    assert!(!has(&h, &format!("activity:cancel:{id}")), "and no ✕");
+    click(&mut h, &format!("activity:pause:{id}"));
+    assert_eq!(h.app.session.execute("ml.indexStatus", &json!({})).unwrap()["paused"], true, "pause ran ml.pause");
+    // the job says it is paused: the button offers resume, here and in the list
+    g.set_controls(Some(controls(true)));
+    h.step();
+    h.step();
+    assert!(has(&h, &format!("activity:resume:{id}")));
+    open_list(&mut h);
+    assert!(has(&h, &format!("activity:resume:{id}")), "the list's row has resume too");
+    click(&mut h, &format!("activity:resume:{id}"));
+    assert_eq!(h.app.session.execute("ml.indexStatus", &json!({})).unwrap()["paused"], false, "resume ran ml.resume");
+    click(&mut h, &format!("activity:settings:{id}"));
+    assert_eq!(h.app.ui.dialog, Some(crate::state::Dialog::Settings { tab: "ai".into() }), "the gear opened its Settings page");
+    drop(g);
 }
