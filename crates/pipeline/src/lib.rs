@@ -26,6 +26,7 @@
 pub mod auto;
 pub mod auto_mask;
 pub mod blemish;
+pub mod brightness;
 pub mod colorops;
 pub mod cull;
 pub mod curve;
@@ -37,6 +38,7 @@ pub mod genpatch;
 pub mod geometry;
 pub mod grade;
 pub mod grain;
+pub mod levels;
 pub mod local;
 pub mod local_tone;
 pub mod lut;

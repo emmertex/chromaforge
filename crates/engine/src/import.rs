@@ -38,8 +38,8 @@ use crate::media::ProbeInfo;
 /// File extensions offered by import discovery and file pickers (lower case).
 /// This includes preview-only raws; the file probe decides whether sensor decoding is available.
 pub const EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "nrw", "arw", "sr2", "srf", "raf", "orf", "rw2", "rwl", "raw", "pef",
-    "srw", "psd", "psb", "jxl", "gif", "bmp",
+    "jpg", "jpeg", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "nefx", "nrw", "arw", "sr2", "srf", "raf", "orf", "rw2", "rwl", "raw",
+    "pef", "srw", "psd", "psb", "jxl", "gif", "bmp",
     // Decoded when built with the codecs' `heif` feature; otherwise the import reports them as
     // failed with the reason ("HEIC/HEIF support isn't included in this build").
     "heic", "heif", "avif", // a HEIC without the `heif` feature is reported as failed
@@ -351,16 +351,22 @@ pub fn has_import_look(p: &Photo) -> bool {
 /// the photo as framed and exposed, a fair stand-in until the render arrives (labelled "Camera
 /// preview" in the loupe). Any other edit is never shown as the camera JPEG.
 pub fn looks_as_shot(p: &Photo) -> bool {
-    if has_import_look(p) {
-        return true;
-    }
+    looks_as_shot_given(p, p.camera_defaults())
+}
+
+/// [`looks_as_shot`] of a photo whose camera defaults ([`Photo::camera_defaults`]) are `defaults`.
+pub fn looks_as_shot_given(p: &Photo, defaults: lcc_develop::DevelopSettings) -> bool {
     let neutral = |d: &lcc_develop::DevelopSettings| {
         let mut d = d.clone();
         d.profile.camera.clear();
         d.profile.id = lcc_develop::Profile::default().id;
         d
     };
-    neutral(&p.develop) == neutral(&p.camera_defaults())
+    // (has_import_look)
+    if p.develop_matches(defaults.clone()) {
+        return true;
+    }
+    neutral(&p.develop) == neutral(&defaults)
 }
 
 /// The name `library.setImportDefault` saves its preset under when the caller doesn't name one
@@ -2334,6 +2340,14 @@ mod tests_known;
 #[cfg(test)]
 mod prepared_tests {
     use super::*;
+
+    /// Nikon's merged pixel-shift NEFX is a raw the app decodes, whatever case its extension is in.
+    #[test]
+    fn nefx_files_are_supported_in_any_letter_case() {
+        for name in ["a.nefx", "A.NEFX", "a.Nefx"] {
+            assert!(is_supported(Path::new(name)), "{name}");
+        }
+    }
 
     /// Extensions the picker may offer: every one in [`EXTENSIONS`], minus the
     /// files this build cannot import (see [`accept_list`]).
