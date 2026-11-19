@@ -2713,6 +2713,8 @@ mod tests_autosync_wb;
 #[cfg(test)]
 mod tests_background_merge;
 #[cfg(test)]
+mod tests_brightness;
+#[cfg(test)]
 mod tests_browse_profile;
 #[cfg(test)]
 mod tests_camera_layers;
@@ -2819,6 +2821,8 @@ mod tests_keyword_list;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;
+#[cfg(test)]
+mod tests_levels;
 #[cfg(test)]
 mod tests_libops;
 #[cfg(test)]
