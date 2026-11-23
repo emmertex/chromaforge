@@ -22,9 +22,10 @@ This is the one rulebook for agents and humans; `CLAUDE.md` only imports it. Cla
   `cargo xtask run|package|install`). Env vars `<PREFIX>_X` (e.g. `<PREFIX>_PROFILE`); legacy prefix still read.
 
 ## Session start
-1. `plan/STATUS.md` (milestone, next task, blockers) → `plan/execution-plan.md` §3 (task) + §7 (autonomy protocol:
-   don't ask unless §7 says it's the user's call) → relevant `plan/architecture.md` section + crate docs. Visual
-   reference: `plan/lightroom/` (gitignored; `10-observed-ui.md` + screenshots).
+1. [`docs/status.md`](docs/status.md) (tracked: milestone, next task, blockers, metrics) → the local plan it names
+   (`plan/` is gitignored: `plan/completion-plan-*.md`, `plan/architecture.md`, `plan/lightroom/` with
+   `10-observed-ui.md` + screenshots) when you have it + crate docs. Don't ask unless the plan says it's the user's
+   call.
 2. `ROADMAP.md` + [`docs/target-app-parity.md`](docs/target-app-parity.md). The checklist counts existence; real gaps
    are quality/coverage (camera colour, CR3/compressed raws, per-model verification, render fidelity, AI, HDR/video/
    Classic; raw detail: [`docs/raw-parity.md`](docs/raw-parity.md)). A wrong ✅ row gets downgraded to 🟡.
@@ -53,7 +54,8 @@ never a panic. Never ship a panic path; fix crashes before building on them. Thi
   free space elsewhere = POSIX `df`), `crates/hdrmeta` (wgpu-hal: `VK_EXT_hdr_metadata` + `vkSetHdrMetadataEXT` on
   Linux/BSD Wayland), `crates/gpumem` (wgpu-hal GPU memory budget for the HDR zoom cache), `crates/android-host`
   (JNI VM/activity adoption), `crates/winspool` (Win32 print spooler), `crates/winmsi` (`MsiEnumClientsW` +
-  `MsiGetComponentPathW` for the updater), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
+  `MsiGetComponentPathW` for the updater), `crates/winjob` (a kill-on-close job object, so the Windows CLI
+  launcher's app ends with it), and `apps/android`'s `#[unsafe(no_mangle)] android_main`. Every other
   production crate root has `#![forbid(unsafe_code)]`. New unsafe need → isolated, well-tested helper crate:
   `// SAFETY:` everywhere, safe API, safe fallback, and a line here naming it.
 - Input-derived numbers are hostile: `get()` not `[i]`/`[a..b]`; checked/saturating math; no division by zero,
@@ -173,6 +175,8 @@ One rule (2026-11-10): **use only material you may legally derive from.**
 - Export always goes through `lcc_engine::export`; UI-only commands live in `crates/ui-egui/src/menus.rs`.
 - Text boxes: `crates/ui-egui/src/text_field.rs` (`TextField`), not `egui::TextEdit` (context menu, Esc restore,
   edit-end reporting); widget ids unique on screen.
+- A new `egui::Window` goes on `crates/ui-egui/windows.json` as a modal (counted in `keyboard::modal_open`, holding the
+  modal layer, a row in `tests_dialogs.rs`'s survey) or an exception with its reason; `cargo xtask windows` (in `ci`) checks.
 - Shell: `mv`/`cp` are interactive aliases here — use `/bin/mv -f`/`/bin/cp -f`.
 - Parallel agents: own git worktree + `CARGO_TARGET_DIR=target/agent-<name>`; own control port (18000–19999, never
   7980); own scratch subfolder; never `rm -rf` shared paths; delete your target dir after; keep every `Cargo.toml`
@@ -191,7 +195,7 @@ One rule (2026-11-10): **use only material you may legally derive from.**
   regression, plus the level above when behaviour spans layers. Crash fixes always get the hostile-input check.
 - After every user-visible change: run the app, screenshot, look; `ui.inspect` → `perf`.
 - Measure, don't guess: `<PREFIX>_PROFILE=1` prints per-stage timings to stderr; `/usr/bin/time` for CLI renders;
-  record numbers in `plan/STATUS.md` → Metrics. Budgets: slider ≤ 16 ms (draft), loupe ≤ 60 ms @ ~2.5 MP, export
+  record numbers in `docs/status.md` → Metrics. Budgets: slider ≤ 16 ms (draft), loupe ≤ 60 ms @ ~2.5 MP, export
   ≤ 1 s per 24 MP JPEG.
 - Perf workflow: measure before (`cargo xtask bench` or `<PREFIX>_PROFILE=1`), change one thing, measure again,
   record both. Bench numbers compare only as same-machine, controlled-environment before/after pairs — never across

@@ -70,6 +70,8 @@ pub mod vignetting_calibration;
 #[cfg(test)]
 pub(crate) use organize::STACK_WORK;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod marketplace;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod plugin_develop;
 pub(crate) mod plugin_filters;
 #[cfg(not(target_arch = "wasm32"))]
@@ -99,6 +101,7 @@ mod print;
 pub mod publish;
 mod query;
 mod quick;
+pub mod read_originals;
 pub mod recheck;
 pub mod reload;
 pub mod sensor;
@@ -305,6 +308,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(folders::specs());
         v.extend(missing::specs());
         v.extend(duplicates::specs());
+        v.extend(read_originals::specs());
         v.extend(recheck::specs());
         v.extend(sync::specs());
         v.extend(store::specs());
@@ -333,6 +337,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(edit_in::specs());
         #[cfg(not(target_arch = "wasm32"))]
         v.extend(plugins::specs());
+        #[cfg(not(target_arch = "wasm32"))]
+        v.extend(marketplace::specs());
         #[cfg(not(target_arch = "wasm32"))]
         v.extend(update::specs());
         v.extend(focus::specs());

@@ -8,6 +8,7 @@
 //! capture button, "same as previous" develop settings, and a live view window where the camera
 //! supports it.
 
+use crate::json_ext::JsonExt as _;
 use serde_json::{Value, json};
 
 use crate::LccApp;
@@ -44,6 +45,17 @@ fn live_id() -> egui::Id {
     egui::Id::new("tether-live")
 }
 
+thread_local! {
+    /// The settings window is open: its form lives in egui's data, which [`settings_open`] can't
+    /// read while egui holds its context.
+    static SETTINGS_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tethered Capture Settings is open ([`crate::keyboard::modal_open`]).
+pub(crate) fn settings_open() -> bool {
+    SETTINGS_OPEN.get()
+}
+
 fn form_id() -> egui::Id {
     egui::Id::new("tether-form")
 }
@@ -66,17 +78,18 @@ pub fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value, String
         open: true,
         folder: str_of(&cur, "folder"),
         session: if cur.is_null() { crate::i18n::tr("Studio Session").to_string() } else { str_of(&cur, "name") },
-        copy: cur["copy"].as_bool().unwrap_or(true),
+        copy: cur.field("copy").as_bool().unwrap_or(true),
         naming: if cur.is_null() { "{session}-{seq:4}".into() } else { str_of(&cur, "naming") },
         collection: str_of(&cur, "collection"),
-        keywords: cur["keywords"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
+        keywords: cur.field("keywords").as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(),
         preset: str_of(&cur, "preset"),
         metadata_preset: str_of(&cur, "metadataPreset"),
         device: app.session.execute("tether.camera", &json!({})).ok().map(|c| str_of(&c, "id")).unwrap_or_default(),
         delete_from_card: false,
-        same_as_previous: cur["sameAsPrevious"].as_bool().unwrap_or(false),
+        same_as_previous: cur.field("sameAsPrevious").as_bool().unwrap_or(false),
     };
     ctx.data_mut(|d| d.insert_temp(form_id(), form));
+    SETTINGS_OPEN.set(true);
     ctx.request_repaint();
     Some(Ok(json!({"dialog": "tether.start"})))
 }
@@ -89,7 +102,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     let (at, status) = ctx.data(|d| d.get_temp::<(f64, Value)>(status_id())).unwrap_or((-1.0, Value::Null));
     let status = if at < 0.0 || now - at >= SCAN_EVERY {
         let st = app.session.execute("tether.status", &json!({})).unwrap_or(Value::Null);
-        if st["active"].as_bool() == Some(true) {
+        if st.field("active").as_bool() == Some(true) {
             scan(app, ctx);
         }
         let st = app.session.execute("tether.status", &json!({})).unwrap_or(Value::Null);
@@ -102,7 +115,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
     } else {
         status
     };
-    if status["active"].as_bool() != Some(true) {
+    if status.field("active").as_bool() != Some(true) {
         return;
     }
     ctx.request_repaint_after(std::time::Duration::from_secs_f64(SCAN_EVERY));
@@ -246,8 +259,8 @@ fn scan(app: &mut LccApp, ctx: &egui::Context) {
         Ok(r) => r,
         Err(e) => return log::warn!("studio capture: {e}"),
     };
-    let n = r["imported"].as_array().map(Vec::len).unwrap_or(0);
-    if let Some(e) = r["error"].as_str() {
+    let n = r.field("imported").as_array().map(Vec::len).unwrap_or(0);
+    if let Some(e) = r.field("error").as_str() {
         app.toast_error(ctx, format!("{}: {e}", crate::i18n::tr("Studio capture")));
     } else if n > 0 {
         // the newest shot is selected: show it in the loupe
@@ -303,8 +316,12 @@ fn bar(app: &mut LccApp, ctx: &egui::Context, st: &Value, cam: &Value) {
 }
 
 fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
-    let Some(mut form) = ctx.data(|d| d.get_temp::<Form>(form_id())).filter(|f| f.open) else { return };
-    let mut open = true;
+    let Some(mut form) = ctx.data(|d| d.get_temp::<Form>(form_id())).filter(|f| f.open) else {
+        SETTINGS_OPEN.set(false);
+        return;
+    };
+    // (Esc is its ✕: no session starts)
+    let mut open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), app.text_focus, ctx);
     let mut start = false;
     let window_id = egui::Id::new("tether-settings");
     let shown = egui::Window::new(crate::i18n::tr("Tethered Capture Settings"))
@@ -323,7 +340,7 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
                     ui.label(crate::i18n::tr("Camera"));
                     let cams = app.session.execute("tether.cameras", &json!({"simulated": true})).unwrap_or(Value::Null);
                     let list: Vec<(String, String)> =
-                        cams["cameras"].as_array().into_iter().flatten().map(|c| (str_of(c, "id"), str_of(c, "name"))).collect();
+                        cams.field("cameras").as_array().into_iter().flatten().map(|c| (str_of(c, "id"), str_of(c, "name"))).collect();
                     let none = crate::i18n::tr("None (studio capture: watch a folder)").to_string();
                     let shown = list.iter().find(|(id, _)| *id == form.device).map(|(_, n)| n.clone()).unwrap_or_else(|| none.clone());
                     let r = egui::ComboBox::from_id_salt("tether-device").selected_text(shown).width(260.0).show_ui(ui, |ui| {
@@ -413,6 +430,10 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
             });
         });
     crate::dialog_frame::ModalLayout::finish(ctx, window_id, shown.as_ref().map(|w| w.response.rect));
+    // a modal: nothing behind it takes the pointer either (`keyboard::modal_open`)
+    if let Some(w) = &shown {
+        ctx.memory_mut(|m| m.set_modal_layer(w.response.layer_id));
+    }
     if start {
         let opt = |s: &str| if s.trim().is_empty() { Value::Null } else { json!(s.trim()) };
         let p = json!({
@@ -427,8 +448,8 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
             let started = if form.folder.trim().is_empty() { Ok(Value::Null) } else { app.run("tether.start", p.clone()) };
             started.and_then(|_| {
                 let mut c = p.clone();
-                c["device"] = json!(form.device);
-                c["deleteFromCard"] = json!(form.delete_from_card);
+                *c.field_mut("device") = json!(form.device);
+                *c.field_mut("deleteFromCard") = json!(form.delete_from_card);
                 app.run("tether.connect", c)
             })
         };
@@ -443,5 +464,6 @@ fn settings_window(app: &mut LccApp, ctx: &egui::Context) {
     if !open {
         form.open = false;
     }
+    SETTINGS_OPEN.set(form.open);
     ctx.data_mut(|d| d.insert_temp(form_id(), form));
 }

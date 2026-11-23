@@ -3,6 +3,7 @@
 //! (`tasks::spawn`, an activity row while they run); Refresh asks again. A service without
 //! comments (Hard Drive, SFTP) says so. Fork-owned.
 
+use crate::json_ext::JsonExt as _;
 use chrono::DateTime;
 use egui::{RichText, vec2};
 use lcc_engine::cmd::publish::{CommentsReview, comments_job};
@@ -55,8 +56,8 @@ struct Choice {
 fn choices(app: &mut LccApp) -> Vec<Choice> {
     let list = app.session.execute("publish.services", &json!({})).unwrap_or(Value::Null);
     let mut out = Vec::new();
-    for svc in list["services"].as_array().map(Vec::as_slice).unwrap_or_default() {
-        let comments = svc["capabilities"]["comments"].as_bool().unwrap_or(false);
+    for svc in list.field("services").as_array().map(Vec::as_slice).unwrap_or_default() {
+        let comments = svc.field("capabilities").field("comments").as_bool().unwrap_or(false);
         let service = svc["name"].as_str().unwrap_or_default();
         for c in svc["collections"].as_array().map(Vec::as_slice).unwrap_or_default() {
             let Some(album) = c["album"].as_u64() else { continue };
@@ -224,6 +225,10 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             });
         });
     crate::dialog_frame::ModalLayout::finish(ctx, id, shown.as_ref().map(|w| w.response.rect));
+    // a modal: nothing behind it takes the pointer either (`keyboard::modal_open`)
+    if let Some(w) = &shown {
+        ctx.memory_mut(|m| m.set_modal_layer(w.response.layer_id));
+    }
     if closed {
         app.review_comments.open = false;
     }

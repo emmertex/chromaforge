@@ -4,6 +4,9 @@
 
 ## Install
 
+The easiest way: the **Download** page on the manual site (linked at the top of the [README](../../README.md)) picks
+the right file for your computer from the latest release.
+
 Release builds are an AppImage, `.deb`, `.rpm` and `.tar.gz` for Linux, a `.dmg` for macOS (Apple silicon, Intel, and a universal one for both), an `.msi` for Windows,
 a FreeBSD package and a static web build. [packaging.md](../packaging.md) lists what each contains and its status.
 
@@ -13,8 +16,10 @@ if macOS still refuses, run `xattr -c` on the downloaded `.dmg` and open it agai
 let you verify the download.
 
 **The macOS command-line tool** is inside the app, `/Applications/<app>.app/Contents/MacOS/<cli>`, and updates
-with it (earlier releases had it as a separate `.zip`). To run it as `<cli>`, link it onto your `PATH` once, after
-opening the app the first time:
+with it (earlier releases had it as a separate `.zip`). It is a link to the app's own program, which works as the
+tool when started under the name `<cli>`; on Linux and FreeBSD `<cli>` is the same kind of link, and on Windows
+`<cli>.exe` is a small launcher for the app. To run it as `<cli>`, link it onto your `PATH` once, keeping that
+name, after opening the app the first time:
 
 ```sh
 mkdir -p ~/.local/bin
@@ -40,6 +45,11 @@ Optional: clone [craft-fonts](https://github.com/storytold/craft-fonts) next to 
 holding the catalog (`<name>.<catalog_ext>` and its store), previews and backups. Originals stay where they are
 unless you copy them on import. File → New Catalog… and File → Open Catalog… switch libraries
 ([catalogs.md](catalogs.md)).
+
+On the first start a **Welcome** window creates or opens the library, and a short guide follows it: which AI
+features to download (each with its size and memory use, nothing downloads until **Finish**), the layout, colour
+scheme, text size and language, a few key settings, and one page per module. **Skip** or Esc closes it;
+Help → Getting Started… opens it again.
 
 To try things without your own photos, use the procedural demo library: `<cli> run --demo …`,
 `<cli> snapshot --demo` and `<cli> mcp --demo` all start with it.

@@ -499,7 +499,26 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// This program, for the lock owner note (the app's display name, or the executable's name).
 fn program_name() -> String {
     let exe = std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()));
-    match exe.as_deref() {
+    program_name_of(exe.as_deref(), marked_cli())
+}
+
+/// Whether the CLI marked this process as itself ([`lcc_updater::mark_command_line_tool`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn marked_cli() -> bool {
+    lcc_updater::is_command_line_tool()
+}
+
+/// No CLI in the browser.
+#[cfg(target_arch = "wasm32")]
+fn marked_cli() -> bool {
+    false
+}
+
+/// [`program_name`] for the executable named `exe` (its stem), in a process marked as the CLI when
+/// `cli`: the packages run the app's executable as the CLI, so the CLI is named by its mark.
+fn program_name_of(exe: Option<&str>, cli: bool) -> String {
+    match exe {
+        _ if cli => lcc_brand::CLI_BINARY.into(),
         None => lcc_brand::DISPLAY_NAME.into(),
         Some(n) if n == lcc_brand::BINARY || n == crate::legacy::BINARY => lcc_brand::DISPLAY_NAME.into(),
         Some(other) => other.to_string(),
@@ -745,6 +764,10 @@ impl Session {
         self.settle_sidecar_writes()?;
         let LibraryStores { dir, catalog, mut files, on_disk } = stores;
         self.media.smart_dir = on_disk.then(|| crate::smart::dir(&dir));
+        // a damaged catalog-settings.json is set aside here, before anything else reads it, so
+        // the user is told (the defaults of a new library, backups on, stand in)
+        #[cfg(not(target_arch = "wasm32"))]
+        let catalog_settings_problem = if on_disk { lcc_catalog::library::CatalogSettings::load_checked(&dir).1 } else { None };
         // the current library may be these same files: let its background snapshot land first
         if let Some(old) = self.library.as_mut()
             && let Err(e) = old.journal.wait()
@@ -809,6 +832,14 @@ impl Session {
         }
         stages.mark("plug-in fields");
         let mut settings = SettingsLoad::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = catalog_settings_problem {
+            let file = lcc_catalog::library::SETTINGS_FILE.to_string();
+            self.notify(match p {
+                lcc_catalog::library::SettingsProblem::SetAside { kept } => crate::notice::Notice::SettingsSetAside { file, kept },
+                lcc_catalog::library::SettingsProblem::Unreadable { reason } => crate::notice::Notice::SettingsUnreadable { file, reason },
+            });
+        }
         // preferences
         let prefs = settings.read::<PrefsFile>(files.as_mut(), "prefs.json").unwrap_or_default();
         self.xmp = prefs.xmp;
@@ -1750,5 +1781,20 @@ mod resolve_tests {
         assert!(s.library.as_ref().is_some_and(|l| l.dir == a));
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod program_name_tests {
+    use super::program_name_of;
+
+    /// The packages run the app's executable as the CLI: a library it holds is "in use by" the CLI,
+    /// so the user quits the right program.
+    #[test]
+    fn a_process_marked_as_the_cli_names_the_cli_in_its_lock() {
+        assert_eq!(program_name_of(Some(lcc_brand::BINARY), true), lcc_brand::CLI_BINARY);
+        assert_eq!(program_name_of(None, true), lcc_brand::CLI_BINARY);
+        assert_eq!(program_name_of(Some(lcc_brand::BINARY), false), lcc_brand::DISPLAY_NAME, "the app is named by its display name");
+        assert_eq!(program_name_of(Some("other"), false), "other");
     }
 }

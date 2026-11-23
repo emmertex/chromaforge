@@ -93,6 +93,15 @@ impl Default for HeadlessView {
     }
 }
 
+/// Whether the Plug-in Marketplace is fetching its list or downloading: a snapshot taken then
+/// would show the list half arrived.
+fn marketplace_busy() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return crate::panels::marketplace::running();
+    #[cfg(target_arch = "wasm32")]
+    false
+}
+
 impl HeadlessView {
     pub fn new() -> Self {
         let ctx = egui::Context::default();
@@ -358,6 +367,9 @@ impl Headless {
         raw.dropped_files =
             self.dropped.drain(..).map(|path| std::sync::Arc::new(HostFile(path)) as std::sync::Arc<dyn egui::DroppedFile + Send + Sync>).collect();
         self.app.raw_input_hook(&mut raw);
+        // (a window that opens or closes in this frame is counted at one end of it)
+        #[cfg(test)]
+        let counted = crate::keyboard::modal_open(&self.app);
         let app = &mut self.app;
         let mut cursor = egui::CursorIcon::Default;
         let commands = self.view.run(raw, |ui| {
@@ -366,6 +378,10 @@ impl Headless {
             cursor = ui.ctx().output(|output| output.cursor_icon);
         });
         self.last_cursor = cursor;
+        #[cfg(test)]
+        if !counted && !crate::keyboard::modal_open(&self.app) {
+            crate::window_list::assert_no_uncounted_modal(&self.view.ctx);
+        }
         self.time += FRAME_DT;
         self.frames += 1;
         for c in commands {
@@ -412,6 +428,10 @@ impl Headless {
             || !self.app.tasks.is_empty()
             || !self.app.synthetic.is_empty()
             || !self.events.is_empty()
+            // a swipe's glide moves the grid for a second after the finger lifts: a test that
+            // reads a widget's rect meanwhile would tap where it was, not where it is
+            || self.app.ui.modern.gesture_busy()
+            || marketplace_busy()
     }
 
     /// Clicks widget `id` (as `ui.widgets` names it) as the user would: input the app doesn't mark

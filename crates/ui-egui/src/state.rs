@@ -655,6 +655,9 @@ pub struct AppSettings {
     pub mirror_image: bool,
     /// Reduce motion (Settings ▸ Interface): no zoom glide, widget easing or turning spinners.
     pub reduce_motion: bool,
+    /// Getting Started (`onboarding`) was finished or skipped: it no longer follows a welcome dialog
+    /// (Help ▸ Getting Started… still opens it).
+    pub onboarding_done: bool,
     /// When a brush tool is active, the mouse wheel changes its size instead of zooming.
     pub wheel_resizes_brush: bool,
     /// Turn the wheel or trackpad scroll gesture the other way when resizing a brush (Issue #1257).
@@ -863,6 +866,7 @@ impl Default for AppSettings {
             scroll_by_row: false,
             mirror_image: false,
             reduce_motion: false,
+            onboarding_done: false,
             wheel_resizes_brush: true,
             invert_brush_resize: false,
             loupe_messages: true,
@@ -1970,6 +1974,9 @@ pub struct UiState {
     /// (`crate::recheck`).
     #[serde(skip)]
     pub rechecked_library: Option<u64>,
+    /// Originals still to be read in the background (`crate::read_originals`).
+    #[serde(skip)]
+    pub originals: crate::read_originals::OriginalsState,
     #[serde(skip)]
     pub status: String,
     #[serde(skip)]
@@ -2906,6 +2913,7 @@ impl Default for UiState {
             #[cfg(test)]
             find_missing_test_delay: None,
             rechecked_library: None,
+            originals: Default::default(),
             status: String::new(),
             dialog: None,
             settings_section: None,
