@@ -23,6 +23,7 @@
 //!
 //! The windows' state is per UI thread (the app has one), so no shared app state is touched.
 
+use crate::json_ext::JsonExt as _;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -141,6 +142,21 @@ thread_local! {
     static STATE: RefCell<WorkflowUi> = RefCell::new(WorkflowUi::default());
 }
 
+/// The Edit Photo question or Edit In Presets is open ([`crate::keyboard::modal_open`]). Not Actions:
+/// what it records are the keys and clicks on the photos, so they reach them.
+pub(crate) fn modal_open() -> bool {
+    STATE.with_borrow(|s| s.ask.is_some() || s.presets_open)
+}
+
+/// The Edit Photo question, as Edit In from the menu asks it.
+#[cfg(test)]
+pub(crate) fn ask_for_test() {
+    update(|s| {
+        s.ask =
+            Some(Ask { params: json!({}), mode: "copyWithAdjustments".into(), editor: Some(false), file_editable: true, count: 1, remember: false })
+    });
+}
+
 /// A copy of the windows' state (tests, `ui.inspect`-style checks).
 #[cfg(test)]
 pub fn state() -> WorkflowUi {
@@ -215,7 +231,7 @@ pub(crate) fn ask_edit(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocr
         let mode = if file_editable { mode } else { "copyWithAdjustments" };
         return Some(run_choice(app, ctx, &json!({}), Some(photocraft), mode, &ids));
     }
-    let first = app.session.catalog.photo(ids[0]).map(|ph| ph.file_name.clone()).unwrap_or_default();
+    let first = ids.first().and_then(|id| app.session.catalog.photo(*id)).map(|ph| ph.file_name.clone()).unwrap_or_default();
     let mode = if file_editable && lcc_engine::cmd::edit_in::suggested_mode(&first) == lcc_engine::cmd::edit_in::Mode::Original {
         "original"
     } else {
@@ -422,7 +438,7 @@ fn reload(app: &mut LccApp, ctx: &egui::Context, ids: Vec<u64>) {
         return;
     }
     match app.session.execute("photo.reload", &json!({"ids": ids})) {
-        Ok(r) if r["reloaded"].as_array().is_some_and(|a| !a.is_empty()) => {
+        Ok(r) if r.field("reloaded").as_array().is_some_and(|a| !a.is_empty()) => {
             app.toast(ctx, tr("Updated the edits saved in the external editor"));
             // fork: Edit In versions of Immich-linked photos go to Immich (RT.C1)
             #[cfg(not(target_arch = "wasm32"))]
@@ -523,9 +539,9 @@ fn combo(ui: &mut egui::Ui, id: &str, label: &str, value: &mut String, choices: 
 
 fn presets_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
     let list = app.session.execute("editIn.presets", &json!({})).ok();
-    let open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), ctx);
+    let open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), app.text_focus, ctx);
     let mut closed = false;
-    egui::Window::new(tr("Edit In Presets"))
+    let shown = egui::Window::new(tr("Edit In Presets"))
         .id(egui::Id::new("edit-in-presets"))
         .title_bar(false)
         .frame(crate::dialog_frame::card_frame(ctx))
@@ -619,6 +635,10 @@ fn presets_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
                 ui.label(egui::RichText::new(&st.message).small());
             }
         });
+    // a modal: nothing behind it takes the pointer either (`keyboard::modal_open`)
+    if let Some(w) = &shown {
+        ctx.memory_mut(|m| m.set_modal_layer(w.response.layer_id));
+    }
     st.presets_open = open && !closed;
 }
 
@@ -626,8 +646,8 @@ fn presets_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
 fn ask_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
     let Some(mut ask) = st.ask.take() else { return };
     let mut go = false;
-    let mut cancel = crate::dialog_frame::esc_closes(false, ctx);
-    egui::Window::new(tr("Edit Photo"))
+    let mut cancel = crate::dialog_frame::esc_closes(false, app.text_focus, ctx);
+    let shown = egui::Window::new(tr("Edit Photo"))
         .id(egui::Id::new("edit-in-ask"))
         .title_bar(false)
         .frame(crate::dialog_frame::card_frame(ctx))
@@ -682,6 +702,10 @@ fn ask_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
                 }
             });
         });
+    // a modal: nothing behind it takes the pointer either (`keyboard::modal_open`)
+    if let Some(w) = &shown {
+        ctx.memory_mut(|m| m.set_modal_layer(w.response.layer_id));
+    }
     if go {
         let _ = choose(app, ctx, ask);
     } else if !cancel {
@@ -709,7 +733,7 @@ fn choose(app: &mut LccApp, ctx: &egui::Context, ask: Ask) -> Result<Value, Stri
 
 fn actions_window(app: &mut LccApp, ctx: &egui::Context, st: &mut WorkflowUi) {
     let list = app.session.execute("actions.list", &json!({})).map_err(|e| e.to_string());
-    let open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), ctx);
+    let open = !crate::dialog_frame::esc_closes(app.ui.dialog.is_some(), app.text_focus, ctx);
     let mut closed = false;
     egui::Window::new(tr("Actions"))
         .id(egui::Id::new("actions-panel"))
@@ -810,7 +834,7 @@ fn play_shortcuts(app: &mut LccApp, ctx: &egui::Context) {
     }
     let Ok(l) = app.session.execute("actions.list", &json!({})) else { return };
     let mut hit = Vec::new();
-    for a in l["actions"].as_array().into_iter().flatten() {
+    for a in l.field("actions").as_array().into_iter().flatten() {
         let (Some(sc), Some(name)) = (a["shortcut"].as_str(), a["name"].as_str()) else { continue };
         let Some((mods, key)) = crate::shortcuts::parse(sc) else { continue };
         if ctx.input_mut(|i| i.consume_key(mods, key)) {

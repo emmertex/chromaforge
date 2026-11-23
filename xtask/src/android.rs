@@ -152,5 +152,22 @@ pub fn check(together: bool) -> Result<(), String> {
         }
         failed += results.iter().filter(|r| !r.1).count();
     }
+    // `lcc-android` builds only for Android, so the host clippy run never sees it: lint it here (its
+    // crate-root denies, e.g. `clippy::indexing_slicing`, would otherwise go unchecked).
+    if let Some(abi) = abis.first() {
+        let target = abi.triple();
+        let mut c = crate::cargo();
+        // `missing_const_for_thread_local` is allowed: for Android targets clippy reports it on
+        // `thread_local!` initializers that are already `const { … }`, in every workspace crate this run
+        // lints (not only `lcc-android`); the host clippy run keeps the lint.
+        c.args(["clippy", "--target", target, "-p", "lcc-android", "--all-targets", "--", "-D", "warnings"]);
+        c.args(["-A", "clippy::missing_const_for_thread_local"]);
+        configure(&mut c, &bin, *abi);
+        let ok = crate::run(c, &format!("cargo clippy --target {target} -p lcc-android")).is_ok();
+        println!("\n{target} clippy:\n  {:<6} lcc-android", if ok { "ok" } else { "FAIL" });
+        if !ok {
+            failed += 1;
+        }
+    }
     if failed == 0 { Ok(()) } else { Err(format!("{failed} crate check(s) failed the Android check")) }
 }

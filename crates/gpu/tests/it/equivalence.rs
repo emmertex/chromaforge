@@ -3,6 +3,11 @@
 //!
 //! Bounds (documented in `docs/gpu-pipeline.md`): mean |Δ| < 0.5 LSB and max |Δ| ≤ 3 LSB per
 //! channel for every case. Skips (passes with a note) when no GPU adapter exists, e.g. on CI.
+//!
+//! On a software adapter (`<PREFIX>_GPU_SOFTWARE=1`: lavapipe on Linux, WARP on Windows; the
+//! nightly job in `docs/ci.md`) the per-pixel bounds are wider ([`SOFT_MEAN_LSB`], [`SOFT_MAX_LSB`]):
+//! those rasterizers round transcendental functions and fused multiply-adds differently from
+//! hardware, but a kernel that is wrong still moves far more than that.
 
 use std::sync::Arc;
 
@@ -11,8 +16,21 @@ use lcc_geom::{Orientation, Point, Rect};
 use lcc_pipeline::{Quality, RenderRequest, SourceInfo, StageCache, render};
 use lcc_raster::{Rgb32f, Rgba8};
 
-const MEAN_LSB: f64 = 0.5;
-const MAX_LSB: u8 = 3;
+const HW_MEAN_LSB: f64 = 0.5;
+const HW_MAX_LSB: u8 = 3;
+/// The bounds on a software adapter.
+const SOFT_MEAN_LSB: f64 = 1.0;
+const SOFT_MAX_LSB: u8 = 6;
+
+/// Mean |Δ| bound for the adapter in use.
+fn mean_lsb() -> f64 {
+    if lcc_gpu::software_adapter() { SOFT_MEAN_LSB } else { HW_MEAN_LSB }
+}
+
+/// Max |Δ| bound for the adapter in use.
+fn max_lsb() -> u8 {
+    if lcc_gpu::software_adapter() { SOFT_MAX_LSB } else { HW_MAX_LSB }
+}
 
 fn gpu() -> bool {
     let ok = lcc_gpu::available();
@@ -90,7 +108,7 @@ fn check(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, 
     let gpu = lcc_gpu::render(src, info, s, req, None).unwrap_or_else(|| panic!("gpu render ({:?})", lcc_gpu::last_fallback()));
     let (mean, max, over) = diff(&cpu, &gpu.image);
     eprintln!("{name:<28} {}x{}  mean {mean:.4}  max {max}  >1: {:.4}%", cpu.width, cpu.height, over * 100.0);
-    assert!(mean < MEAN_LSB && max <= MAX_LSB, "{name}: mean {mean:.4} LSB, max {max} LSB");
+    assert!(mean < mean_lsb() && max <= max_lsb(), "{name}: mean {mean:.4} LSB, max {max} LSB");
     (mean, max)
 }
 
@@ -100,7 +118,7 @@ fn check_spot(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSetti
     let gpu = lcc_gpu::render(src, info, s, req, None).unwrap_or_else(|| panic!("gpu render ({:?})", lcc_gpu::last_fallback()));
     let (mean, max, over) = diff(&cpu, &gpu.image);
     eprintln!("{name:<28} {}x{}  mean {mean:.4}  max {max}  >1: {:.4}%", cpu.width, cpu.height, over * 100.0);
-    assert!(mean < MEAN_LSB / 10.0 && max <= 8, "{name}: mean {mean:.4} LSB, max {max} LSB");
+    assert!(mean < mean_lsb() / 10.0 && max <= 8, "{name}: mean {mean:.4} LSB, max {max} LSB");
 }
 
 /// [`check`] for gamut-warning renders: a warning is a hard decision at the gamut boundary, so a
@@ -110,10 +128,10 @@ fn check_warned(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSet
     let cpu = render(src, info, s, req).image;
     let gpu = lcc_gpu::render(src, info, s, req, None).unwrap_or_else(|| panic!("gpu render ({:?})", lcc_gpu::last_fallback()));
     let (mean, _, over) = diff(&cpu, &gpu.image);
-    let flips = cpu.data.iter().zip(&gpu.image.data).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > MAX_LSB)).count();
+    let flips = cpu.data.iter().zip(&gpu.image.data).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > max_lsb())).count();
     let share = flips as f64 / cpu.data.len() as f64;
     eprintln!("{name:<28} {}x{}  mean {mean:.4}  >1: {:.4}%  boundary flips {flips}", cpu.width, cpu.height, over * 100.0);
-    assert!(mean < MEAN_LSB && share <= 1e-4, "{name}: mean {mean:.4} LSB, {flips} pixels differ by more than {MAX_LSB} LSB");
+    assert!(mean < mean_lsb() && share <= 1e-4, "{name}: mean {mean:.4} LSB, {flips} pixels differ by more than {} LSB", max_lsb());
 }
 
 type Edit = fn(&mut DevelopSettings);
@@ -374,6 +392,18 @@ fn cases() -> Vec<(&'static str, Edit)> {
             s.curve.master = vec![Point::new(0.0, 0.0), Point::new(0.25, 0.15), Point::new(0.75, 0.88), Point::new(1.0, 1.0)];
             s.curve.lights = 30.0;
             s.curve.refine_saturation = 20.0;
+        }),
+        ("channel curves + brightness + levels in the V10 wide space (#1142)", |s| {
+            s.curve.red = vec![Point::new(0.0, 0.0), Point::new(0.62, 0.38), Point::new(1.0, 1.0)];
+            s.curve.green = vec![Point::new(0.0, 0.0), Point::new(0.514, 0.482), Point::new(1.0, 1.0)];
+            s.curve.refine_saturation = 60.0;
+            s.light.brightness = 30.0;
+            s.levels.master.midtone = 0.3;
+        }),
+        ("channel curves on output values (process V9)", |s| {
+            s.process = lcc_develop::Process::V9.version();
+            s.curve.red = vec![Point::new(0.0, 0.0), Point::new(0.62, 0.38), Point::new(1.0, 1.0)];
+            s.light.brightness = 30.0;
         }),
         ("vignette (highlight)", |s| {
             s.vignette.amount = -60.0;
@@ -1450,7 +1480,7 @@ fn windows_match() {
         let name = format!("window: {name}");
         if name.contains("spot") {
             // Heal divides by its blurred source, so float rounding (Metal) moves a few pixels by
-            // more than MAX_LSB; a window missing part of the spot's ring moves many: hold the mean
+            // more than max_lsb(); a window missing part of the spot's ring moves many: hold the mean
             // ten times tighter instead
             check_spot(&name, &src, &info, &s, &req);
         } else {
@@ -1513,7 +1543,8 @@ fn a_zoomed_window_of_a_big_brush_matches_and_is_quick() {
         if !bench {
             check(&format!("big brush window (auto {auto})"), &src, &info, &s, &req);
         }
-        assert!(ms < 3000.0, "a zoomed brush window took {ms:.0} ms");
+        // a speed budget for hardware; a software rasterizer takes seconds
+        assert!(ms < 3000.0 || lcc_gpu::software_adapter(), "a zoomed brush window took {ms:.0} ms");
     }
 }
 
@@ -1528,6 +1559,11 @@ static BIG_SOURCE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn a_window_does_not_keep_the_whole_source_on_the_device() {
     let _lock = BIG_SOURCE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     if !gpu() {
+        return;
+    }
+    if lcc_gpu::software_adapter() {
+        // WARP refuses the 288 MB source buffer (its limits are below a hardware card's)
+        lcc_testkit::skip!(Gpu, "a 24 MP source on the device needs a hardware adapter");
         return;
     }
     use lcc_pipeline::PixelWindow;
@@ -1565,6 +1601,16 @@ fn windows_of_a_big_photo_share_one_uploaded_source() {
     let start = lcc_gpu::source_uploads();
     for (cache, x) in [(&after, 1000), (&after, 1256), (&after, 1512), (&before, 1512), (&before, 1768)] {
         lcc_gpu::render(&src, &info, &s, &at(x), Some(cache)).expect("gpu render");
+    }
+    // A device whose buffers are smaller than the 288 MB source (Mesa lavapipe: 128 MiB storage
+    // bindings; WARP) cuts the windows from the photo on the processor (`render.rs`, step 1) and
+    // uploads only each window's pixels: nothing is uploaded or shared, and nothing is held.
+    let limit = lcc_gpu::max_buffer_bytes().expect("the device rendered");
+    if (src.data.len() as u64) * 12 > limit {
+        assert_eq!(lcc_gpu::source_uploads() - start, 0, "a source over the {} MiB buffer limit is never uploaded", limit >> 20);
+        assert_eq!(lcc_gpu::shared_source_bytes(), 0);
+        assert!(lcc_gpu::stage_bytes(&after) < 100 << 20, "the views' stages hold their windows only");
+        return;
     }
     assert_eq!(lcc_gpu::source_uploads() - start, 1, "one upload for five windows of two views");
     assert!(lcc_gpu::shared_source_bytes() >= 280_000_000, "{}", lcc_gpu::shared_source_bytes());
@@ -1627,9 +1673,9 @@ fn check_hdr_req(name: &str, src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSe
     let above = a.iter().filter(|&&c| c > 255.5).count() as f64 / a.len() as f64;
     eprintln!("{name:<28} {w}x{h}  peak {peak:.2}  mean {mean:.4}  max {max:.2}  above SDR white {:.2}%", above * 100.0);
     assert!(peak <= 1.0 || above > 0.0, "{name}: the case reaches above SDR white");
-    assert!(mean < MEAN_LSB && max <= MAX_LSB as f32, "{name}: mean {mean:.4}, max {max:.2} (8-bit steps)");
+    assert!(mean < mean_lsb() && max <= max_lsb() as f32, "{name}: mean {mean:.4}, max {max:.2} (8-bit steps)");
     let (m8, x8, _) = diff(&cpu.image, &gpu.image);
-    assert!(m8 < MEAN_LSB && x8 <= MAX_LSB, "{name}: 8-bit reduction mean {m8:.4}, max {x8}");
+    assert!(m8 < mean_lsb() && x8 <= max_lsb(), "{name}: 8-bit reduction mean {m8:.4}, max {x8}");
 }
 
 // Given an HDR edit, the GPU's float HDR render matches the CPU's (the reference) above and below
@@ -2291,7 +2337,7 @@ fn neutral_levels_render_like_no_levels() {
 }
 
 /// The ends of the midtone range (and some values between), ordinary and inverted (output levels reversed, and on
-/// every other scene the input range too), on every demo scene: the GPU matches the CPU within [`MAX_LSB`] everywhere
+/// every other scene the input range too), on every demo scene: the GPU matches the CPU within [`max_lsb`] everywhere
 /// and no pixel is off by more than that (the scales are 8-bit levels).
 #[test]
 fn midtone_extremes_match_cpu_on_every_scene() {
@@ -2318,12 +2364,12 @@ fn midtone_extremes_match_cpu_on_every_scene() {
                 let gpu = lcc_gpu::render(&src, &info, &s, &req, None)
                     .unwrap_or_else(|| panic!("scene {i} midtone {midtone}: gpu render ({:?})", lcc_gpu::last_fallback()));
                 let (mean, max, _) = diff(&cpu, &gpu.image);
-                let far = cpu.data.iter().zip(&gpu.image.data).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > MAX_LSB)).count();
+                let far = cpu.data.iter().zip(&gpu.image.data).filter(|(p, q)| (0..3).any(|c| p[c].abs_diff(q[c]) > max_lsb())).count();
                 let share = far as f64 / cpu.data.len() as f64;
                 worst_max = worst_max.max(max);
                 worst_share = worst_share.max(share);
                 assert!(
-                    mean < MEAN_LSB && share == 0.0,
+                    mean < mean_lsb() && share == 0.0,
                     "scene {i} midtone {midtone} inverted {inverted}: mean {mean:.4}, max {max}, share {share:.5}"
                 );
             }

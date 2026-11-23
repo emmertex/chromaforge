@@ -19,6 +19,10 @@
 //! - `{ENV_PREFIX}_GPU_ADAPTER` = (part of) a graphics card's name, any case (`4070`): the card for
 //!   the compute devices — the render device, the denoise network's, the face detector's
 //!   ([`pick_adapter`]).
+//! - `{ENV_PREFIX}_GPU_SOFTWARE=1`: CI and tests only — render on the software adapter (lavapipe /
+//!   llvmpipe on Vulkan, WARP on DX12) instead of a hardware card, which the app otherwise never
+//!   does (the CPU pipeline is faster). The nightly software-adapter equivalence job uses it
+//!   (`docs/ci.md`); [`software_forced`].
 //! - else, for compute only, the saved preference ([`set_compute_preference`]: Settings ▸
 //!   Performance ▸ Graphics interface). On Windows, DX12 builds the compute shaders with FXC, which
 //!   can take many seconds at every start on some machines; Vulkan builds them much faster. The
@@ -119,7 +123,18 @@ pub(crate) fn note_window_backend(b: wgpu::Backend) {
 fn has_hardware_adapter(backends: Backends) -> bool {
     let instance = crate::ctx::instance(backends);
     let adapters = with_marker(&format!("adapter probe ({backends:?})"), || pollster::block_on(instance.enumerate_adapters(backends)));
-    adapters.iter().any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu)
+    adapters.iter().any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu || software_forced())
+}
+
+/// `<PREFIX>_GPU_SOFTWARE` is on: the compute device is the software adapter (CI/tests only).
+pub fn software_forced() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| software_forced_from(lcc_brand::env("GPU_SOFTWARE").as_deref()))
+}
+
+/// [`software_forced`] from the variable's value: `1`, `true`, `yes` or `on`, any case.
+pub fn software_forced_from(env: Option<&str>) -> bool {
+    env.map(|s| s.trim().to_ascii_lowercase()).is_some_and(|s| matches!(s.as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// The automatic compute backend for this process ([`pick_compute_backend`]), decided once.
@@ -256,8 +271,22 @@ pub fn instance_flags(flags: wgpu::InstanceFlags, env: Option<&str>) -> wgpu::In
 /// `WGPU_VALIDATION_INDIRECT_CALL` read from the environment. The compute devices pass wgpu's defaults here,
 /// so this is where those variables reach them: a Vulkan driver that reports no conformance version, like
 /// Mesa's Dozen (the only one on WSL2), is listed only with `WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER=1`.
+///
+/// API validation (the Vulkan validation layer, the DX12 debug layer) is on only when `WGPU_VALIDATION`
+/// asks for it ([`without_implicit_validation`]).
 pub fn instance_flags_from_env(flags: wgpu::InstanceFlags) -> wgpu::InstanceFlags {
+    let flags = without_implicit_validation(flags, std::env::var_os("WGPU_VALIDATION").is_some());
     instance_flags(flags.with_env(), std::env::var("WGPU_VALIDATION_INDIRECT_CALL").ok().as_deref())
+}
+
+/// `flags` without the API validation wgpu turns on by itself in debug builds, unless
+/// `WGPU_VALIDATION` is set (`asked`; its value then decides, in `with_env`). With validation on,
+/// wgpu loads whatever validation layer is installed: on Windows with the Vulkan SDK that is the C++
+/// `VkLayer_khronos_validation`, whose allocator crashed debug test processes with an access
+/// violation when a new render worker thread first recorded commands (Nightly 45122572113, the
+/// headless pixel-bounds test aborting with no panic). Release builds never had it.
+pub fn without_implicit_validation(flags: wgpu::InstanceFlags, asked: bool) -> wgpu::InstanceFlags {
+    if asked { flags } else { flags - (wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::GPU_BASED_VALIDATION) }
 }
 
 /// The graphics card `<PREFIX>_GPU_ADAPTER` asks for: (part of) its name, trimmed and in lower
@@ -294,6 +323,11 @@ pub fn pick_adapter(instance: &wgpu::Instance, backends: Backends) -> Result<wgp
 
 /// [`pick_adapter`] for an explicit `wanted` name (part of it, any case) instead of the variable's.
 pub fn pick_adapter_named(instance: &wgpu::Instance, backends: Backends, wanted: Option<&str>) -> Result<wgpu::Adapter, String> {
+    if software_forced() {
+        // wgpu's fallback adapter is the software one (WARP on DX12, lavapipe on Vulkan)
+        return pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() }))
+            .map_err(|e| format!("{} is set but there is no software adapter among {backends:?} ({e})", lcc_brand::env_var("GPU_SOFTWARE")));
+    }
     if let Some(w) = wanted {
         let all = pollster::block_on(instance.enumerate_adapters(backends));
         let infos: Vec<wgpu::AdapterInfo> = all.iter().map(|a| a.get_info()).collect();
@@ -557,6 +591,16 @@ mod tests {
     /// The environment names a backend: it wins over the saved preference; otherwise the
     /// preference applies; nothing at all is the platform default.
     #[test]
+    fn software_adapter_is_forced_only_by_a_yes() {
+        for on in ["1", "true", " YES ", "On"] {
+            assert!(software_forced_from(Some(on)), "{on}");
+        }
+        for off in [None, Some(""), Some("0"), Some("no"), Some("off"), Some("lavapipe")] {
+            assert!(!software_forced_from(off), "{off:?}");
+        }
+    }
+
+    #[test]
     fn compute_preference_applies_only_without_an_environment_choice() {
         let vulkan = BackendChoice::Use(Backends::VULKAN);
         let dx12 = BackendChoice::Use(Backends::DX12);
@@ -576,6 +620,15 @@ mod tests {
         assert_eq!(instance_flags(base, Some("0")), F::DEBUG);
         assert_eq!(instance_flags(F::empty(), Some("1")), F::VALIDATION_INDIRECT_CALL);
         assert_eq!(instance_flags(F::empty(), None), F::empty());
+    }
+
+    /// Debug builds' implicit API validation is off unless `WGPU_VALIDATION` asks; other flags stay.
+    #[test]
+    fn api_validation_is_off_unless_asked_for() {
+        use wgpu::InstanceFlags as F;
+        let debug_build = F::VALIDATION | F::GPU_BASED_VALIDATION | F::DEBUG;
+        assert_eq!(without_implicit_validation(debug_build, false), F::DEBUG);
+        assert_eq!(without_implicit_validation(debug_build, true), debug_build);
     }
     use super::*;
 

@@ -1,6 +1,7 @@
 //! The Edit panel: histogram, Auto/B&W, profile, and the Light / Color / Effects / Detail / Optics
 //! sections, built from the engine's control specs.
 
+use crate::json_ext::JsonExt as _;
 use egui::epaint::{Mesh, Vertex};
 use egui::{Align2, Color32, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
 use lcc_catalog::PhotoId;
@@ -429,6 +430,9 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             )
                         };
                         ui.label(egui::RichText::new(text).size(11.0).color(Tokens::get(ui.ctx()).text_dim));
+                    } else if fix && !app.session.media.profile_facts(id).known {
+                        // not decoded yet: keep the count's line laid out so the panels under it do not jump (#1272)
+                        ui.label(egui::RichText::new(" ").size(11.0));
                     }
                 },
             );
@@ -558,11 +562,9 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     chosen = crate::widgets::segmented(ui, "vignetteStyle", &items, active, 3);
                 },
             );
-            if let Some(i) = chosen {
-                let _ = app.run(
-                    "develop.merge",
-                    serde_json::json!({"settings": {"vignette": {"style": serde_json::to_value(styles[i].0).unwrap_or_default()}}}),
-                );
+            if let Some((style, ..)) = chosen.and_then(|i| styles.get(i)) {
+                let _ = app
+                    .run("develop.merge", serde_json::json!({"settings": {"vignette": {"style": serde_json::to_value(style).unwrap_or_default()}}}));
             }
         }
         for c in ["vignette.amount", "vignette.midpoint", "vignette.feather", "vignette.roundness", "vignette.highlights"] {
@@ -787,9 +789,25 @@ fn header_notices(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopS
     }
     // a raw without colour matrices whose camera model has measured ones: off starts from the look fitted to the
     // camera's JPEG (Auto), on from the measured colour with the app's own tone curve (Colorimetric)
-    if facts.colorimetric {
+    // Until the first decode reports, a raw of a camera that offered the option before in this session keeps the row
+    // laid out, disabled (pending), so the controls under it do not jump while the photo renders (issue #1272).
+    let camera = app.session.catalog.photo(id).filter(|p| p.develops_raw()).map(|p| p.meta.camera.clone()).unwrap_or_default();
+    let seen_key = egui::Id::new("profile.colorimetricCameras");
+    if facts.colorimetric && !camera.is_empty() {
+        ui.ctx().data_mut(|data| data.get_temp_mut_or_default::<std::collections::BTreeSet<String>>(seen_key).insert(camera.clone()));
+    }
+    let pending = !facts.colorimetric
+        && !facts.known
+        && !camera.is_empty()
+        && ui.ctx().data(|data| data.get_temp::<std::collections::BTreeSet<String>>(seen_key).is_some_and(|s| s.contains(&camera)));
+    if facts.colorimetric || pending {
         egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }, 0, 3)).show(ui, |ui| {
             let mut on = d.profile.camera_colour == lcc_develop::CameraColour::Colorimetric;
+            if pending {
+                let r = ui.add_enabled(false, egui::Checkbox::new(&mut on, crate::i18n::tr("Calibrated camera colour")));
+                crate::widgets::register(ui.ctx(), "check:profile.cameraColour.pending", r.rect);
+                return;
+            }
             let r = ui.checkbox(&mut on, crate::i18n::tr("Calibrated camera colour"));
             crate::widgets::register(ui.ctx(), "check:profile.cameraColour", r.rect);
             let tip = "Start from the colour measured for this camera model instead of the look fitted to the camera's JPEG";
@@ -1167,6 +1185,8 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let [shadow_rect, highlight_rect] = super::histogram::clipping_rects(ui, plot);
     // the clipping mask the pointer is resting on, previewed on the photo this frame
     let mut preview = false;
+    // one of them took a click this frame: its preview is over until the pointer has left
+    let mut indicator_clicked = false;
     for (name, rect, out, label, clipped) in [
         ("shadows", shadow_rect, -1.0, "Shadow clipping", clipping.map(|c| c.shadow_channels())),
         ("highlights", highlight_rect, 1.0, "Highlight clipping", clipping.map(|c| c.highlight_channels())),
@@ -1175,6 +1195,7 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         register(ui.ctx(), format!("histogram:{name}"), rect);
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), app.ui.show_clipping, crate::i18n::tr(label)));
         clicked |= response.clicked();
+        indicator_clicked |= response.clicked();
         preview |= response.hovered();
         let active = app.ui.show_clipping;
         // which channels reach this end of the histogram: the triangle takes their blend (white for
@@ -1245,14 +1266,18 @@ pub(crate) fn histogram(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     // triangles, and each preview toggled the overlay, so the photo rendered again, every tile at
     // 100 %, twice per pass)
     let (now, pass) = (ui.input(|i| i.time), ui.ctx().cumulative_pass_nr());
+    // (a click on an indicator switches the persistent warnings, so the preview it was showing ends
+    // there and stays off until the pointer has left and come back: otherwise the photo keeps its
+    // mask under the resting pointer and the click seems to have done nothing, #1348)
     app.clipping_hover = if preview {
-        let since = app.clipping_hover.filter(|(_, seen)| seen.saturating_add(1) >= pass).map_or(now, |(since, _)| since);
+        let held = app.clipping_hover.filter(|(_, seen)| seen.saturating_add(1) >= pass).map(|(since, _)| since);
+        let since = if indicator_clicked { CLIPPING_PREVIEW_SPENT } else { held.unwrap_or(now) };
         Some((since, pass))
     } else {
         None
     };
     app.clipping_preview = app.clipping_hover.is_some_and(|(since, _)| clipping_preview_due(since, now));
-    if let Some((since, _)) = app.clipping_hover.filter(|_| !app.clipping_preview) {
+    if let Some((since, _)) = app.clipping_hover.filter(|(since, _)| !app.clipping_preview && since.is_finite()) {
         let left = (since + CLIPPING_PREVIEW_REST_S - now).clamp(0.0, CLIPPING_PREVIEW_REST_S);
         ui.ctx().request_repaint_after(std::time::Duration::try_from_secs_f64(left).unwrap_or_default());
     }
@@ -2012,8 +2037,8 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
             _ => from_screen(q),
         };
         if i < v.len() {
-            let lo = if i == 0 { 0.0 } else { v[i - 1].x + POINT_GAP };
-            let hi = if i + 1 >= v.len() { 1.0 } else { v[i + 1].x - POINT_GAP };
+            let lo = i.checked_sub(1).and_then(|h| v.get(h)).map_or(0.0, |p| p.x + POINT_GAP);
+            let hi = v.get(i + 1).map_or(1.0, |p| p.x - POINT_GAP);
             if i == 0 {
                 x = x.min(hi);
             } else if i + 1 == v.len() {
@@ -2023,9 +2048,14 @@ pub(crate) fn curve_editor(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: 
             } else {
                 // neighbours closer than the 0.02 spacing (two clicks side by side, or points
                 // from a file) leave no room: the point stays midway (`clamp` would panic: min above max)
-                x = (v[i - 1].x + v[i + 1].x) / 2.0;
+                x = match (i.checked_sub(1).and_then(|h| v.get(h)), v.get(i + 1)) {
+                    (Some(a), Some(b)) => (a.x + b.x) / 2.0,
+                    _ => x,
+                };
             }
-            v[i] = Point::new(x, y);
+            if let Some(p) = v.get_mut(i) {
+                *p = Point::new(x, y);
+            }
             new_pts = Some(v);
         }
     } else if resp.clicked()
@@ -2424,11 +2454,11 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 8, bottom: 4 }, 3, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
-            for (i, b) in bands.iter().enumerate() {
+            for (i, (b, colour)) in bands.iter().zip(BAND_COLORS.iter()).enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
                 crate::widgets::announce(&resp, crate::i18n::tr(b));
                 register(ui.ctx(), format!("mixerBand:{b}"), r);
-                ui.painter().circle_filled(r.center(), 9.0, hex(BAND_COLORS[i]));
+                ui.painter().circle_filled(r.center(), 9.0, hex(colour));
                 if i == sel {
                     ui.painter().circle_stroke(r.center(), 10.5, Stroke::new(1.5, t.text));
                     ui.painter().circle_filled(r.center(), 2.0, Color32::WHITE);
@@ -2459,7 +2489,7 @@ fn mixer_by_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
             }
         });
     });
-    let b = bands[sel];
+    let Some(&b) = bands.get(sel) else { return };
     if crate::is_bw(d) {
         ui.horizontal(|ui| {
             ui.add_space(24.0);
@@ -3317,7 +3347,7 @@ fn vignetting_calibration_exposure_lines(report: &Value) -> Vec<String> {
     let pct = |v: &Value| format!("{:.0}", v.as_f64().unwrap_or(0.0) * 100.0);
     let mut out = vec![
         tr("Reference: centre at {centre} % of white, darkest corner at {corner} %")
-            .replace("{centre}", &pct(&e["centre"][1]))
+            .replace("{centre}", &pct(&e.field("centre")[1]))
             .replace("{corner}", &pct(&e["darkest"])),
     ];
     match e["verdict"].as_str() {
@@ -3492,14 +3522,14 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
         register(ui.ctx(), key, r.rect);
     };
     let mut run: Option<(&str, Value)> = None;
-    let map = &info["map"];
+    let map = &info.field("map");
     let has_map = !map.is_null();
-    let missing = info["missing"].as_bool() == Some(true);
+    let missing = info.field("missing").as_bool() == Some(true);
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(ui, |ui| {
-        let raw = info["raw"].as_bool().unwrap_or(false);
+        let raw = info.field("raw").as_bool().unwrap_or(false);
         let measuring = app.ui.vignetting_calibration_creating.is_some();
         let selected = app.session.selection.ids.len();
-        let auto = &info["auto"];
+        let auto = &info.field("auto");
         let can_apply = selected > 1 || auto["id"].is_string();
         ui.horizontal_wrapped(|ui| {
             let r = ui.add_enabled_ui(raw && !measuring, |ui| text_button(ui, "vignettingCalibrationCreate", "Create", false)).inner;
@@ -3546,7 +3576,7 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
         // this photo as a reference: each map measured from it and in use, with Stop Using as Reference (one undo
         // step). A withdrawn one shows nothing: the photo is a normal photo again, and Create makes it a reference again
         // (the same map, put back in use).
-        let active = info["referenceOf"].as_array().into_iter().flatten().filter(|m| m["withdrawn"].as_bool() != Some(true));
+        let active = info.field("referenceOf").as_array().into_iter().flatten().filter(|m| m.field("withdrawn").as_bool() != Some(true));
         for (k, m) in active.enumerate() {
             let line = tr("This photo is a vignetting reference ({reference})").replace("{reference}", &vignetting_calibration_source_line(m));
             note(ui, &line, &format!("label:vignettingCalibrationIsReference{k}"));
@@ -3575,7 +3605,7 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
         register(ui.ctx(), "label:vignettingCalibrationSource", r.rect);
         let file = map["fileName"].as_str().unwrap_or("");
         let date = map["captured"].as_str().map(|c| c.get(..10).unwrap_or(c)).unwrap_or("");
-        if info["reference"]["inCatalog"].as_bool() == Some(true) {
+        if info.field("reference").field("inCatalog").as_bool() == Some(true) {
             ui.horizontal_wrapped(|ui| {
                 note(ui, &tr("From {file}, {date}").replace("{file}", file).replace("{date}", date), "label:vignettingCalibrationReference");
                 let link = egui::RichText::new(tr("Show Reference")).size(11.0).color(t.accent).underline();
@@ -3593,18 +3623,20 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
                 "label:vignettingCalibrationReferenceGone",
             );
         }
-        if let Some(n) = vignetting_calibration_refusal(&info["match"]) {
+        if let Some(n) = vignetting_calibration_refusal(info.field("match")) {
             note(ui, &n, "label:vignettingCalibrationRefused");
         }
-        if let Some(n) = vignetting_calibration_note(&info["match"]) {
+        if let Some(n) = vignetting_calibration_note(info.field("match")) {
             note(ui, &n, "label:vignettingCalibrationNote");
         }
-        if let Some((_, report)) = app.ui.vignetting_calibration_report.as_ref().filter(|(p, r)| *p == id && r["map"]["id"] == map["id"]) {
+        if let Some((_, report)) =
+            app.ui.vignetting_calibration_report.as_ref().filter(|(p, r)| *p == id && r.field("map").field("id") == map.field("id"))
+        {
             for (k, line) in vignetting_calibration_exposure_lines(report).iter().enumerate() {
                 note(ui, line, &format!("label:vignettingCalibrationExposure{k}"));
             }
         }
-        if info["profileVignettingReplaced"].as_bool() == Some(true) {
+        if info.field("profileVignettingReplaced").as_bool() == Some(true) {
             note(ui, tr("Profile vignetting is replaced by the vignetting calibration"), "label:vignettingCalibrationReplacesProfile");
         }
     });
@@ -3704,7 +3736,7 @@ fn lens_picker(app: &mut LccApp, ui: &mut egui::Ui, id: lcc_catalog::PhotoId, d:
 pub(crate) fn reload_preview_only(app: &mut LccApp, ctx: &egui::Context, id: PhotoId) {
     match app.run("photo.reload", json!({"ids": [id.0]})) {
         Err(e) => app.toast_error(ctx, e),
-        Ok(r) if r["background"] == true => {}
+        Ok(r) if r.field("background") == true => {}
         // nothing to read in the background (a photo without a file): answered in place
         Ok(_) if app.session.catalog.photo(id).is_some_and(|p| p.preview_only.is_none()) => {
             app.toast(ctx, crate::i18n::tr("This raw is now developed from its raw data"))
@@ -3725,6 +3757,10 @@ pub(crate) fn reset_tip(keymap: &crate::shortcuts::Keymap, mac: bool) -> String 
 /// How long the pointer rests on a histogram clipping indicator before its overlay is previewed
 /// on the photo (see [`crate::LccApp::clipping_hover`]).
 pub(crate) const CLIPPING_PREVIEW_REST_S: f64 = 0.3;
+
+/// The "hovered since" of an indicator that was clicked while hovered: a rest that never comes due,
+/// so the preview stays off until the pointer leaves the indicator ([`clipping_preview_due`]).
+pub(crate) const CLIPPING_PREVIEW_SPENT: f64 = f64::INFINITY;
 
 /// Whether a clipping indicator hovered since `since` has been rested on long enough at `now` (a
 /// clock that went back counts as no rest).

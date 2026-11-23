@@ -22,6 +22,8 @@
 //! go to; use the command-line tool (a console program) from a terminal, or a debug build.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
+// checked indexing (`get`) only
+#![deny(clippy::indexing_slicing)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod alloc_release;
@@ -1340,7 +1342,44 @@ fn in_memory_session(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool
     false
 }
 
-fn main() -> eframe::Result {
+fn main() -> std::process::ExitCode {
+    // Started as the command-line tool: that and nothing of the app (no log file, no window).
+    let mut args = std::env::args_os();
+    let argv0 = args.next();
+    if let Some(cli_args) = cli_args(argv0.as_deref(), args) {
+        return lcc_cli::main_with(cli_args);
+    }
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        // what returning the error from `main` printed
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The option that starts the command-line tool, for a launcher that can't start this program
+/// under the tool's name: the Windows console launcher (`<cli>.exe`), since this is a
+/// GUI-subsystem program there.
+const CLI_OPTION: &str = "--cli";
+
+/// The command-line tool's arguments when this start is the tool, else `None`: started under its
+/// name (`<cli>` or `<cli>.exe`: a link to this program, on Linux, the BSDs and macOS), or with
+/// [`CLI_OPTION`] first.
+fn cli_args(argv0: Option<&std::ffi::OsStr>, rest: impl Iterator<Item = std::ffi::OsString>) -> Option<Vec<std::ffi::OsString>> {
+    let mut rest = rest.peekable();
+    let name = argv0.map(std::path::Path::new).and_then(std::path::Path::file_stem);
+    if name.is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(lcc_brand::CLI_BINARY)) {
+        return Some(rest.collect());
+    }
+    if rest.next_if(|a| a == CLI_OPTION).is_some() {
+        return Some(rest.collect());
+    }
+    None
+}
+
+fn run() -> eframe::Result {
     // First, so every start-up record is kept for the log file (`logging`).
     let logger = logging::install();
     lcc_engine::guard::install_hook(panic_log_path(std::env::args_os().skip(1)));
@@ -1453,7 +1492,7 @@ fn main() -> eframe::Result {
     // the upstream app's, named by settings copied from it) is never opened as this app's own.
     let mut prefs = prefs;
     // the recent list of older versions joins the settings' before Ask me is read (issue #871)
-    catalog_hooks::carry_over_recent(prefs.as_mut(), !in_memory && !keep_prefs_file, |ui| {
+    let recent_skipped = catalog_hooks::carry_over_recent(prefs.as_mut(), !in_memory && !keep_prefs_file, |ui| {
         PrefsWriter { path: prefs_path(), ..Default::default() }.save_ui(ui, false)
     });
     let explicit = library_dir.or_else(|| lcc_brand::env_os("LIBRARY").filter(|p| !p.is_empty()).map(Into::into));
@@ -1612,6 +1651,7 @@ fn main() -> eframe::Result {
                 app.integrated_titlebar = cfg!(target_os = "macos");
                 app.notices.extend(prefs_warning);
                 app.notices.extend(launch_notices);
+                app.notices.extend(recent_skipped.as_deref().map(lcc_ui_egui::panels::notices::recent_catalogs_notice));
                 app.notices.extend(window_notice);
                 app.pending_link = launch_link;
                 app.gpu_notice = true;
@@ -1820,6 +1860,33 @@ fn startup_failed(error: &str, log_file: Option<&std::path::Path>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn os(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// Started under the CLI's name (a link to this program), the whole command line is the CLI's.
+    #[test]
+    fn the_cli_s_name_starts_the_cli_with_every_argument() {
+        let exe = format!("{}{}", lcc_brand::CLI_BINARY, std::env::consts::EXE_SUFFIX);
+        let argv0 = std::path::Path::new("usr").join("bin").join(exe);
+        let got = cli_args(Some(argv0.as_os_str()), os(&["--version", "x"]).into_iter());
+        assert_eq!(got, Some(os(&["--version", "x"])));
+        let upper = std::ffi::OsString::from(lcc_brand::CLI_BINARY.to_uppercase());
+        assert_eq!(cli_args(Some(&upper), os(&["--cli"]).into_iter()), Some(os(&["--cli"])), "case aside, and --cli is then the CLI's own argument");
+    }
+
+    /// `--cli` first starts the CLI with the rest; anywhere else, or under the app's name, it's the app.
+    #[test]
+    fn the_cli_option_first_starts_the_cli_with_the_rest() {
+        let app = std::ffi::OsString::from(lcc_brand::BINARY);
+        assert_eq!(cli_args(Some(&app), os(&["--cli", "render", "a.jpg"]).into_iter()), Some(os(&["render", "a.jpg"])));
+        assert_eq!(cli_args(Some(&app), os(&["--cli"]).into_iter()), Some(vec![]), "no arguments: the CLI's help");
+        assert_eq!(cli_args(Some(&app), os(&["a.jpg", "--cli"]).into_iter()), None, "only first");
+        assert_eq!(cli_args(Some(&app), os(&["--library", "lib"]).into_iter()), None);
+        assert_eq!(cli_args(Some(&app), std::iter::empty()), None);
+        assert_eq!(cli_args(None, std::iter::empty()), None, "no program name: the app");
+    }
 
     /// A link opener that stays running (xdg-open attached to the browser) must not hold the caller; a missing one is an error naming it.
     #[cfg(unix)]

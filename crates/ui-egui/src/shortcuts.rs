@@ -1,6 +1,7 @@
 //! Keyboard shortcuts: parse `Cmd+Shift+X` style strings, apply the user's keymap (Help ▸
 //! Keyboard Shortcuts, `app.setShortcut`) and dispatch UI and engine commands.
 
+use crate::json_ext::JsonExt as _;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -8,6 +9,7 @@ use egui::{Key, Modifiers};
 use serde_json::{Value, json};
 
 use crate::LccApp;
+use crate::keyboard::Owner;
 
 /// The Classic keymap set and keymap files (fork-owned).
 #[path = "keymap_classic.rs"]
@@ -477,7 +479,7 @@ fn grid_key_command(keymap: &Keymap, grid: bool, fullscreen: bool, id: &'static 
 
 /// Content widgets keep keyboard ownership, including text fields and arrow-driven sliders.
 /// Dock chrome owns activation, traversal, resizing and cancellation; its other keys reach commands.
-fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
+pub(crate) fn keyboard_owned(app: &LccApp, ctx: &egui::Context) -> bool {
     if !ctx.egui_wants_keyboard_input() {
         // Escape drops egui focus before shortcuts run; keep the numeric edit's whole input batch.
         return ctx.input(|input| input.key_pressed(Key::Escape))
@@ -575,15 +577,17 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
     if !classic::records_shortcuts(app.ui.dialog.as_ref()) {
         app.recording_shortcut = None;
     }
-    // Dialogs own their keys (including Esc and text editing); background photo actions wait.
-    if app.ui.dialog.is_some() {
+    let owner = crate::keyboard::owner(app, ctx);
+    // A modal (a dialog, Settings, the shortcuts overlay) owns its keys, Esc and text editing
+    // included, and so does the keymap editor recording a shortcut: background photo actions wait.
+    if matches!(owner, Owner::Recorder | Owner::Modal) {
         return;
     }
-    if app.recording_shortcut.is_none() && app.ui.name_edit.is_none() && crate::panels::person::handle_bulk_key(app, ctx) {
+    if app.ui.name_edit.is_none() && crate::panels::person::handle_bulk_key(app, ctx) {
         return;
     }
-    // don't steal keys from text fields or from the keymap editor recording a shortcut
-    if keyboard_owned(app, ctx) || app.recording_shortcut.is_some() || app.ui.name_edit.is_some() {
+    // don't steal keys from text fields
+    if owner == Owner::Widget {
         return;
     }
     // a paste key press the windowing layer dropped (no text on the clipboard): run it as one
@@ -737,7 +741,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
         // a slideshow: Space pauses / resumes
         if id == "view.zoomToggle" && app.ui.slideshow.is_some() {
             if let Ok(v) = app.run("slideshow.togglePause", json!({})) {
-                app.toast(ctx, crate::i18n::tr(if v["paused"] == true { "Slideshow paused" } else { "Slideshow resumed" }));
+                app.toast(ctx, crate::i18n::tr(if v.field("paused") == true { "Slideshow paused" } else { "Slideshow resumed" }));
             }
             continue;
         }
@@ -778,7 +782,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             // Add <filter>: on every selected photo that has none; the Develop panel's section opens
             match app.run("develop.pluginFilter.addTo", json!({"plugin": plugin})) {
                 Ok(r) => {
-                    let (added, had) = (r["added"].as_u64().unwrap_or(0), r["had"].as_u64().unwrap_or(0));
+                    let (added, had) = (r.field("added").as_u64().unwrap_or(0), r.field("had").as_u64().unwrap_or(0));
                     let name = find_bindable(&f).map_or(plugin, |b| b.label.strip_prefix("Add ").unwrap_or(b.label));
                     let text = match (added, had) {
                         (0, _) => crate::i18n::tr_format!("{name} is already on the selected photos", name = name),
@@ -925,12 +929,12 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             {
                 // `added` is null when nothing was left to toggle (the selected photos are gone): nothing to say
                 if let Some(r) = app.run("album.toggleTarget", json!({})).ok().filter(|r| r["added"].is_boolean()) {
-                    let n = r["toggled"].as_u64().unwrap_or(0);
+                    let n = r.field("toggled").as_u64().unwrap_or(0);
                     let what = crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n);
-                    let name = r["name"].as_str().unwrap_or("Quick Collection").to_string();
+                    let name = r.field("name").as_str().unwrap_or("Quick Collection").to_string();
                     app.toast(
                         ctx,
-                        if r["added"] == true {
+                        if r.field("added") == true {
                             crate::i18n::tr_format!("Added {what} to {name}", name = name, what = what)
                         } else {
                             crate::i18n::tr_format!("Removed {what} from {name}", name = name, what = what)

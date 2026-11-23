@@ -853,6 +853,8 @@ fn load_bytes_now(
         // the same development from the denoised mosaic, when the photo has been denoised
         let twin = denoise.and_then(|spec| denoised_camera_rgb(&raw, spec, factor)).filter(|d| d.width == img.width && d.height == img.height);
         // the samples aren't needed any more (the colour model below reads only the tags)
+        let raw_float = matches!(raw.data, lcc_raw::RawData::F32(_));
+        let raw_bits = u8::try_from(raw.bits).unwrap_or(16);
         raw.data = lcc_raw::RawData::U16(Vec::new());
         let hue_sat = camera_look.as_ref().and_then(|p| p.hue_sat.as_ref()).and_then(crate::camera_preview::HueSat::new);
         // A DNG's own profile look (hue/saturation map, look table), DNG spec chapter 6.
@@ -942,12 +944,18 @@ fn load_bytes_now(
                 placement: Some(placement),
                 // (the session adds the catalog's maps: `media`, as it adds the generated patches)
                 vignetting_maps: None,
+                space_origin: Some("raw".into()),
+                bits_per_sample: Some(raw_bits),
+                float: raw_float,
             },
             used_reduced,
         ));
     }
     let d = lcc_codecs::decode(&bytes, fit_box(max_edge)).map_err(|e| e.to_string())?;
     drop(bytes);
+    let space_origin = Some(d.space.origin.as_str().to_string());
+    let bits_per_sample = Some(d.bit_depth);
+    let float = d.float;
     // the denoised picture of a finished picture, brought to this decode's size and through the same conversion
     let twin = denoise.and_then(|spec| denoised_finished(&d, spec));
     let img = d.to_working();
@@ -971,7 +979,7 @@ fn load_bytes_now(
     };
     let img = finish(img);
     let twin = twin.map(finish).filter(|t| t.width == img.width && t.height == img.height);
-    Ok((img, twin, SourceInfo { alpha, infrared, ..SourceInfo::default() }, false))
+    Ok((img, twin, SourceInfo { alpha, infrared, space_origin, bits_per_sample, float, ..SourceInfo::default() }, false))
 }
 
 /// The cached denoised picture of a finished picture (gamma-encoded sRGB at the file's full size, see
@@ -1253,7 +1261,13 @@ pub fn load_embedded_preview(bytes: &[u8], max_edge: usize) -> Option<(Rgb32f, S
     let d = decode_raw_preview(bytes, fit_box(max_edge), None)?;
     let img = d.to_working();
     let img = if img.width.max(img.height) > max_edge { fit(&img, max_edge, max_edge, Filter::Mitchell) } else { img };
-    Some((img.oriented(preview_orientation(bytes, d.orientation)), SourceInfo::default()))
+    let info = SourceInfo {
+        space_origin: Some(d.space.origin.as_str().to_string()),
+        bits_per_sample: Some(d.bit_depth),
+        float: d.float,
+        ..SourceInfo::default()
+    };
+    Some((img.oriented(preview_orientation(bytes, d.orientation)), info))
 }
 
 /// The embedded preview of a raw file for display (sRGB, oriented, no larger than `max_edge`): the
@@ -1896,7 +1910,7 @@ pub(crate) mod tests {
         assert_eq!(ycbcr.as_shot(d65), a7m3.as_shot(d65));
         let unit = WbScaleOf::new(RawFormat::Arw, &ColorData::default(), Some([1.0; 3]), &meta("SONY", "ILCE-7M3"));
         assert!(unit.as_shot(d65).0 < 2500.0, "{:?}", unit.as_shot(d65));
-        // every Sony body but the three without presets is covered (the ILCE-1 has no measured matrices)
+        // every Sony body but the three without presets is covered (the ILCE-1 included)
         let a1 = WbScaleOf::new(RawFormat::Arw, &with, Some(g(2500.0, 1668.0)), &meta("SONY", "ILCE-1"));
         assert!(!a1.relative && a1.scale_white.is_some() && !lcc_catalog::relative_wb_camera("ARW", "SONY ILCE-1"));
         // presets in a file whose camera isn't named as a Sony body: relative, as the catalog decides from the camera alone
@@ -2377,19 +2391,19 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Luminance (from linear RGB) minus its 9 × 9 local mean: tone differences between a render and a camera JPEG
-    /// mostly cancel, edges remain.
+    /// Luminance (from linear RGB), smoothed over 3 × 3, minus its 9 × 9 local mean: tone differences between a
+    /// render and a camera JPEG mostly cancel, edges remain. The smoothing keeps pixel-scale noise out (process V8's
+    /// 8 × 8 ordered dither on 8-bit output, sensor noise): in a featureless corner that noise alone passed the
+    /// detail floor of [`patch_shift`] and was correlated against the JPEG's own (rwl-leica-dlux7, ncc 0.15).
     fn detail(w: usize, h: usize, lum: impl Fn(usize, usize) -> f32) -> Vec<f32> {
-        let l: Vec<f32> = (0..w * h).map(|i| lum(i % w, i / w)).collect();
-        let mut out = vec![0.0; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                let (x0, x1, y0, y1) = (x.saturating_sub(4), (x + 5).min(w), y.saturating_sub(4), (y + 5).min(h));
-                let m = (y0..y1).flat_map(|yy| (x0..x1).map(move |xx| (xx, yy))).map(|(xx, yy)| l[yy * w + xx]).sum::<f32>();
-                out[y * w + x] = l[y * w + x] - m / ((x1 - x0) * (y1 - y0)) as f32;
-            }
-        }
-        out
+        let raw: Vec<f32> = (0..w * h).map(|i| lum(i % w, i / w)).collect();
+        let boxed = |l: &[f32], x: usize, y: usize, r: usize| {
+            let (x0, x1, y0, y1) = (x.saturating_sub(r), (x + r + 1).min(w), y.saturating_sub(r), (y + r + 1).min(h));
+            let m = (y0..y1).flat_map(|yy| (x0..x1).map(move |xx| (xx, yy))).map(|(xx, yy)| l[yy * w + xx]).sum::<f32>();
+            m / ((x1 - x0) * (y1 - y0)) as f32
+        };
+        let l: Vec<f32> = (0..w * h).map(|i| boxed(&raw, i % w, i / w, 1)).collect();
+        (0..w * h).map(|i| l[i] - boxed(&l, i % w, i / w, 4)).collect()
     }
 
     /// The integer shift (within ±`r` px) of the `p × p` patch of `a` at `(x, y)` that best matches `b`, with its

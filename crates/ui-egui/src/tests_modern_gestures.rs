@@ -76,9 +76,11 @@ fn a_swipe_scrolls_the_grid_without_picking_or_dragging_a_photo() {
     assert_eq!(h.app.ui.module, ModuleId::Library, "a swipe opens nothing");
     assert_eq!(h.app.session.selection.ids, selected, "a swipe picks nothing");
     assert!(h.app.ui.dragging_photos.is_none(), "a swipe drags no photos");
-    // a tap still opens the photo under it
+    // a tap still opens the photo under it: on the part of the cell the grid shows (a cell cut
+    // off at the grid's top has its centre under the bar above it)
     let (cell, id) = first_thumb(&h);
-    ask(&mut h, "ui.clickWidget", json!({"id": cell}));
+    let shown = rect(&h, &cell).unwrap().intersect(rect(&h, "grid:scroll").unwrap()).center();
+    ask(&mut h, "ui.click", json!({"x": shown.x, "y": shown.y}));
     assert_eq!(h.app.ui.module, ModuleId::Develop);
     assert_eq!(h.app.session.active().map(|p| p.0), Some(id));
 }
@@ -225,6 +227,135 @@ fn a_long_press_picks_photos_and_taps_then_add_until_back() {
     assert_eq!(r["result"]["closed"], "selection", "{r}");
     assert!(!h.app.ui.modern.selecting);
     assert!(h.app.session.selection.ids.len() <= 1);
+}
+
+#[test]
+fn a_long_press_behind_a_window_over_the_app_picks_nothing() {
+    let mut h = library([600.0, 900.0]);
+    let at = h.app.widgets.iter().find(|(w, _)| w.starts_with("thumb:")).unwrap().1.center();
+    let picked = h.app.session.selection.ids.clone();
+    assert_eq!(exec(&mut h, "library.findDuplicates", json!({}))["ok"], true);
+    h.app.synthetic.push(egui::Event::PointerMoved(at));
+    h.app.synthetic.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    for _ in 0..60 {
+        h.step();
+    }
+    h.app.synthetic.push(egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.settle(SETTLE);
+    assert!(!h.app.ui.modern.selecting, "a long press behind Find Duplicates starts no picking");
+    assert_eq!(h.app.session.selection.ids, picked, "and picks no photo");
+    let r = exec(&mut h, "modern.back", json!({}));
+    assert_eq!(r["result"]["closed"], "findDuplicates", "Back closes Find Duplicates, not what's behind it: {r}");
+    assert!(!h.app.duplicates.as_ref().is_some_and(|f| f.open), "and Find Duplicates is closed");
+}
+
+#[test]
+fn back_closes_a_tool_window_but_not_under_a_question() {
+    type Open = fn(&mut Headless);
+    type Shut = fn(&Headless) -> bool;
+    let windows: [(&str, Open, Shut); 4] = [
+        (
+            "identityPlate",
+            // a change made in the editor, which Back (Cancel) takes back
+            |h| {
+                exec(h, "dialog.identityPlateSetup", json!({}));
+                exec(h, "view.identityPlate", json!({"text": "Changed in the editor"}));
+            },
+            |h| h.app.ui.identity_plate.setup.is_none(),
+        ),
+        (
+            "importWarnings",
+            |h| h.app.import_report = Some(crate::import_report::Report { open: true, ..crate::import_report::Report::new(1, &[]) }),
+            |h| !h.app.import_report.as_ref().is_some_and(|r| r.open),
+        ),
+        ("reviewComments", |h| h.app.review_comments.open = true, |h| !h.app.review_comments.open),
+        ("findDuplicates", |h| drop(exec(h, "library.findDuplicates", json!({}))), |h| !h.app.duplicates.as_ref().is_some_and(|f| f.open)),
+    ];
+    for (name, open, shut) in windows {
+        // a card open behind the window, which Back must leave alone
+        let mut h = develop([800.0, 1280.0]);
+        exec(&mut h, "modern.group", json!({"group": "light"}));
+        let plate = serde_json::to_value(&h.app.ui.identity_plate).unwrap();
+        open(&mut h);
+        h.settle(SETTLE);
+        assert!(!shut(&h), "{name} opens");
+        let r = exec(&mut h, "modern.back", json!({}));
+        assert_eq!(r["result"]["closed"], name, "Back closes {name}: {r}");
+        assert!(shut(&h), "{name} is closed");
+        assert!(h.app.ui.modern.group.is_some(), "Back closing {name} leaves the card behind it open");
+        assert_eq!(serde_json::to_value(&h.app.ui.identity_plate).unwrap(), plate, "{name}: Back cancels, the plate is as it was");
+    }
+    let mut h = library([600.0, 900.0]);
+    exec(&mut h, "library.findDuplicates", json!({}));
+    h.app.quit_prompt = Some(crate::QuitPrompt::Unsaved("changes not saved".into()));
+    exec(&mut h, "modern.back", json!({}));
+    assert!(h.app.duplicates.as_ref().is_some_and(|f| f.open), "with a question over it, Back leaves Find Duplicates open");
+    // in the full-screen preview it waits unseen: Back leaves it for when the preview ends
+    let mut h = library([600.0, 900.0]);
+    exec(&mut h, "library.findDuplicates", json!({}));
+    h.app.ui.fullscreen = true;
+    let r = exec(&mut h, "modern.back", json!({}));
+    assert_ne!(r["result"]["closed"], "findDuplicates", "{r}");
+    assert!(h.app.duplicates.as_ref().is_some_and(|f| f.open), "in full screen, Back leaves the unseen Find Duplicates open");
+}
+
+/// Over the Plug-in Marketplace, Back answers its signer question first (Cancel, the Marketplace
+/// stays), then closes the Marketplace, and leaves the card behind it alone.
+#[test]
+fn back_cancels_the_marketplace_signer_question_then_closes_the_marketplace() {
+    use crate::panels::marketplace::{ask_signer, showing};
+    let mut h = develop([800.0, 1280.0]);
+    exec(&mut h, "modern.group", json!({"group": "light"}));
+    exec(&mut h, "plugins.marketplace", json!({"open": true}));
+    ask_signer();
+    h.settle(SETTLE);
+    exec(&mut h, "modern.back", json!({}));
+    let (open, asking, _) = showing();
+    assert!(open && !asking, "Back cancels the signer question and leaves the Marketplace open");
+    exec(&mut h, "modern.back", json!({}));
+    assert!(!showing().0, "a second Back closes the Marketplace");
+    assert!(h.app.ui.modern.group.is_some(), "Back leaves the card behind the Marketplace open");
+}
+
+/// Back closes the Edit In windows and the Immich, sync and tethering questions as Esc does, each
+/// by its own way out, and leaves what is behind them alone.
+#[test]
+fn back_closes_the_edit_in_immich_sync_and_tethering_windows() {
+    type Step = fn(&mut Headless);
+    let windows: [(&str, Step); 5] = [
+        ("Edit In Presets", |h| drop(exec(h, "dialog.editInPresets", json!({})))),
+        ("Edit Photo", |_| crate::edit_in::ask_for_test()),
+        ("Edited Version Saved Again", |h| crate::panels::connections::ask_resave(h.app.session.active().unwrap().0)),
+        ("Share the New Collection?", |h| {
+            let group = json!({"id": "g", "mode": "catalogue", "keeper": "me", "invited": [], "devices": []});
+            h.app.peer_sync.set_status_for_test(json!({"running": false, "paired": [],
+                "catalogue": {"name": "Main", "photos": 0, "unkeyed": 0, "group": group, "collections": [], "undecided": [{"album": 7, "name": "New"}]}}));
+        }),
+        ("Tethered Capture Settings", |h| drop(exec(h, "tether.start", json!({})))),
+    ];
+    for (name, open) in windows {
+        let mut h = develop([800.0, 1280.0]);
+        exec(&mut h, "modern.group", json!({"group": "light"}));
+        open(&mut h);
+        h.settle(SETTLE);
+        assert!(crate::keyboard::modal_open(&h.app), "{name} is up");
+        exec(&mut h, "modern.back", json!({}));
+        assert!(!crate::keyboard::modal_open(&h.app), "Back closes {name}");
+        assert!(h.app.ui.modern.group.is_some(), "Back leaves the card behind {name} open");
+        if name == "Share the New Collection?" {
+            assert_eq!(crate::panels::peer_sync::waiting(&h.app), 0, "Back is Decide Later: the collection is put off");
+        }
+    }
 }
 
 #[test]
