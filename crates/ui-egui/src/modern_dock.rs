@@ -130,7 +130,7 @@ impl Group {
                 "detail.nrColor",
             ],
             Group::Optics => &["optics.distortion", "optics.vignetting", "optics.caRed", "optics.caBlue", "optics.vignettingCalibrationAmount"],
-            Group::Effects => &["effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount", "grain.amount"],
+            Group::Effects => &["effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount", "glow.amount", "grain.amount"],
             _ => &[],
         }
     }
@@ -141,7 +141,7 @@ fn section_of(control: &str) -> Option<&'static str> {
     let prefix = control.split('.').next().unwrap_or("");
     Some(match (prefix, control) {
         (_, "color.saturation" | "color.vibrance") => "mixer",
-        ("vignette" | "grain", _) => "effects",
+        ("vignette" | "glow" | "grain", _) => "effects",
         ("curve", _) => "curve",
         ("levels", _) => "levels",
         ("wb", _) => "light",

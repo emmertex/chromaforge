@@ -355,6 +355,9 @@ pub struct FinishParams {
     /// instead of on the output's encoded values ([`CurveSpace`]); `None` before V10 or while all three are neutral.
     pub curve_space: Option<CurveSpace>,
     pub vig: Option<Vig>,
+    /// Glow (beyond Lightroom), as a post-pass on the finished encoded window (see
+    /// [`crate::glow`]); `None` while off.
+    pub glow: Option<crate::glow::Params>,
     /// Linear Rec.2020 → linear output RGB, the output's luminance weights (gamut mapping) and its
     /// encoding curve (see [`crate::output`]).
     pub to_out: [[f32; 3]; 3],
@@ -487,6 +490,7 @@ impl FinishParams {
             levels,
             refine_sat: (s.curve.refine_saturation / 100.0).clamp(0.0, 1.0) as f32,
             vig: if effects { vignette(s) } else { None },
+            glow: if effects { crate::glow::Params::of(&s.glow) } else { None },
             to_out: space.from_working(),
             out_luma: space.luma(),
             out_trc: space.trc(),
@@ -595,18 +599,31 @@ fn finish_post<T: Copy + Default + Send>(
     linear: bool,
     store: impl Fn(usize, usize, [f32; 3]) -> T + Sync + Send,
 ) -> Vec<T> {
-    if post.stack.is_empty() {
+    if post.stack.is_empty() && fp.glow.is_none() {
         return finish_with(p, fp, exact, store);
     }
     let (w, h) = (p.img.width, p.img.height);
-    let mut v = if linear { finish_with(p, fp, true, |_, _, e| e.map(srgb_to_linear_ext)) } else { finish_with(p, fp, exact, |_, _, e| e) };
-    crate::plugin_filters::apply_display(post.stack, &mut v, w, h, post.frame.clone(), linear, &mut post.warnings.borrow_mut());
+    // the whole window in its encoded values: Glow (see [`crate::glow`]) runs there, and the
+    // Display-stage plug-ins take it in their own domain
+    let mut v = finish_with(p, fp, if linear { true } else { exact }, |_, _, e| e);
+    if let Some(g) = fp.glow {
+        crate::glow::apply(&mut v, w, h, &g);
+    }
+    if !post.stack.is_empty() {
+        if linear {
+            v.iter_mut().for_each(|e| *e = e.map(srgb_to_linear_ext));
+        }
+        crate::plugin_filters::apply_display(post.stack, &mut v, w, h, post.frame.clone(), linear, &mut post.warnings.borrow_mut());
+        if linear {
+            v.iter_mut().for_each(|e| *e = e.map(linear_to_srgb_ext));
+        }
+    }
     let (ox, oy) = view_origin(fp.view);
     let mut out = vec![T::default(); v.len()];
     for_rows(&mut out, w.max(1), |y, row| {
         for (x, o) in row.iter_mut().enumerate() {
             let e = v.get(y * w + x).copied().unwrap_or_default();
-            *o = store(ox.wrapping_add(x), oy.wrapping_add(y), if linear { e.map(linear_to_srgb_ext) } else { e });
+            *o = store(ox.wrapping_add(x), oy.wrapping_add(y), e);
         }
     });
     out

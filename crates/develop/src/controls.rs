@@ -24,6 +24,8 @@ pub enum Section {
     Levels,
     Effects,
     Vignette,
+    /// Glow, the Resolve-style bloom (beyond Lightroom).
+    Glow,
     Grain,
     Detail,
     Optics,
@@ -53,6 +55,7 @@ impl Section {
             Section::Levels => "Levels",
             Section::Effects => "Effects",
             Section::Vignette => "Vignette",
+            Section::Glow => "Glow",
             Section::Grain => "Grain",
             Section::Detail => "Detail",
             Section::Optics => "Optics",
@@ -354,6 +357,13 @@ controls! {
     "vignette.roundness" => vignette.roundness, "Roundness", Vignette, -100, 100, 0, 1, 0, Centered => CentreLight;
     "vignette.feather" => vignette.feather, "Feather", Vignette, 0, 100, 50, 1, 0, Plain => Ramp;
     "vignette.highlights" => vignette.highlights, "Highlights", Vignette, 0, 100, 0, 1, 0, Plain => Ramp;
+    "glow.amount" => glow.amount, "Amount", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
+    "glow.threshold" => glow.threshold, "Shine Threshold", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
+    "glow.spread" => glow.spread, "Radius", Glow, 0, 100, 25, 1, 0, Plain => Ramp;
+    "glow.gain" => glow.gain, "Gain", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
+    "glow.gamma" => glow.gamma, "Gamma", Glow, 0, 100, 50, 1, 0, Centered;
+    "glow.ratio" => glow.ratio, "H/V Ratio", Glow, 0, 100, 50, 1, 0, Centered;
+    "glow.recovery" => glow.recovery, "Recovery", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
     "grain.amount" => grain.amount, "Grain", Grain, 0, 100, 0, 1, 0, Plain => Ramp;
     "grain.size" => grain.size, "Size", Grain, 0, 100, 25, 1, 0, Plain;
     "grain.sizeVariation" => grain.size_variation, "Size Variation", Grain, 0, 100, 40, 1, 0, Plain;
