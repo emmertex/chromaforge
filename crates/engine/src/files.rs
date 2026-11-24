@@ -1662,6 +1662,8 @@ impl crate::Session {
     pub fn with_fs(mut self) -> Self {
         // installed `.dcp` camera profiles, before anything asks which camera has a colour model
         crate::camera_profiles::install_dcps();
+        // the base curve files a user keeps in the settings folder (nothing is bundled)
+        crate::base_curves::install_once();
         let (l, p) = fs_hooks();
         self.media.file_loader = Some(l);
         self.media.reduced_loader = Some(fs_reduced_loader());
