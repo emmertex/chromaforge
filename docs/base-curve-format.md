@@ -24,6 +24,7 @@ base curve is the base tone itself.
   "format": "base-curve",
   "version": 1,
   "name": "free text",
+  "camera": "optional camera model",
   "input":  { "encoding": "linear", "gain": 1.0, "white": 1.0 },
   "output": { "encoding": "display-linear" },
   "extension": "clamp",
@@ -38,6 +39,7 @@ base curve is the base tone itself.
 | Field | Meaning |
 |---|---|
 | `format`, `version` | `"base-curve"`, `1`. A higher version is not read. |
+| `camera` | Optional free text: the camera model the curve is meant for (`Nikon Z 8`). The selector lists the curves of the photo's camera first (spaces, case and punctuation are ignored when comparing, and the photo's make may come first); rendering ignores it. |
 | `input` | How the scene value `v` becomes the curve's x: `x = gain · v / white`. `v` is the photo's scene-linear luminance relative to the sensor's white (see below). `encoding`: `linear`. `gain`, `white`: numbers above 0 (default 1). |
 | `output` | What the curve returns: `display-linear` (a linear value, 1 = SDR white). |
 | `extension` | What happens above x = 1: `clamp` (hold the last value, default), `linear` (continue with the last segment's slope), `rolloff` (close the gap to 1 exponentially at the last segment's slope). |
@@ -62,7 +64,7 @@ tone-map stage: after white balance, the colour model and the baseline exposure,
 Shadows, Clarity, Dehaze and the local tone steps, and divided by the **white scale of the source's colour model**
 (`SourceInfo::white_scale`: what a white-balanced neutral pixel at the sensor's white reads as luminance once the colour
 model has run, so a neutral sensor-white pixel is 1.0 whatever gain the matrix, a fitted look or the baseline exposure
-carry; 1.0 for sources that do not know it). The base curve replaces the base tone, so the camera look's tone and chroma
+carry; a smart preview does not keep it, so the app works it out from the original file when a base curve needs it, and reads 1.0 when it cannot). The base curve replaces the base tone, so the camera look's tone and chroma
 curve are not applied; the colour model itself (matrix, hue and saturation tables) still is.
 
 Contrast, Whites and Blacks act on the curve's output (display values), with no shoulder of their own and exactly the

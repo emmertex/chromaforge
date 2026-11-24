@@ -101,6 +101,8 @@ pub struct Listed {
     pub name: String,
     /// Why this build cannot render it, if it cannot.
     pub unsupported: Option<&'static str>,
+    /// The camera model the file says it is for (empty: any).
+    pub camera: String,
 }
 
 /// The installed curves in id order.
@@ -110,9 +112,29 @@ pub fn list() -> Vec<Listed> {
         .map(|e| {
             let stem = e.id.strip_prefix(base_curve::ID_PREFIX).unwrap_or(&e.id).to_string();
             let name = if e.curve.name.is_empty() { stem.clone() } else { e.curve.name.clone() };
-            Listed { id: e.id.clone(), stem, name, unsupported: e.curve.unsupported() }
+            Listed { id: e.id.clone(), stem, name, unsupported: e.curve.unsupported(), camera: e.curve.camera.clone() }
         })
         .collect()
+}
+
+/// Letters and digits of `s`, lower-cased: what camera names are compared by.
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Whether a curve made for `curve_camera` is for `photo_camera`: the same name ignoring case, spaces and punctuation,
+/// or the photo's name is that with a maker in front (`Nikon Corporation Nikon Z 8` for `Nikon Z 8`). A curve with no
+/// camera is for none in particular.
+pub fn matches_camera(curve_camera: &str, photo_camera: &str) -> bool {
+    let (c, p) = (squash(curve_camera), squash(photo_camera));
+    !c.is_empty() && (p == c || p.ends_with(&c))
+}
+
+/// [`list`] with the curves for `camera` (the photo's camera model) first, each group in id order.
+pub fn list_for(camera: &str) -> Vec<Listed> {
+    let (mut first, rest): (Vec<Listed>, Vec<Listed>) = list().into_iter().partition(|l| matches_camera(&l.camera, camera));
+    first.extend(rest);
+    first
 }
 
 #[cfg(test)]
@@ -190,5 +212,40 @@ mod tests {
         let partial = crate::crs::to_partial(&props, crate::crs::Target::Any);
         let text = partial.to_string();
         assert!(!text.contains("base_curve") && !text.contains("base:"), "{text}");
+    }
+
+    #[test]
+    fn a_curve_matches_the_camera_it_names_and_the_selector_lists_those_first() {
+        assert!(matches_camera("Nikon Z 8", "NIKON Z 8"));
+        assert!(matches_camera("NikonZ8", "Nikon Z 8"));
+        assert!(matches_camera("Nikon Z 8", "NIKON CORPORATION NIKON Z 8"));
+        assert!(!matches_camera("Nikon Z 8", "Nikon Z 7"));
+        assert!(!matches_camera("Nikon D3", "Nikon D300"), "a name that only starts the other is not it");
+        assert!(!matches_camera("Nikon Z 7", "Nikon Z 7II"));
+        assert!(!matches_camera("", "Nikon Z 8"), "no camera: for none in particular");
+        let doc = |camera: &str| {
+            json!({
+                "format": "base-curve", "version": 1, "camera": camera,
+                "curves": { "a": { "interpolation": "linear", "points": [[0, 0], [1, 1]] } },
+                "apply": [ { "op": "curve", "curve": "a", "on": "luminance" } ]
+            })
+            .to_string()
+            .into_bytes()
+        };
+        let item = |id: &str, camera: &str| {
+            let b = doc(camera);
+            (id.to_string(), base_curve::parse(&b).expect("valid"), base_curve::hash_bytes(&b))
+        };
+        base_curve::install_library(vec![
+            item("base:A-any", ""),
+            item("base:B-other", "Other Maker X"),
+            item("base:C-mine", "Test Maker Q 1"),
+            item("base:D-mine", "TestMaker Q1"),
+        ]);
+        let ids: Vec<String> = list_for("TEST MAKER CORPORATION Test Maker Q 1").into_iter().map(|l| l.id).collect();
+        assert_eq!(ids, ["base:C-mine", "base:D-mine", "base:A-any", "base:B-other"]);
+        let all: Vec<String> = list_for("").into_iter().map(|l| l.id).collect();
+        assert_eq!(all, ["base:A-any", "base:B-other", "base:C-mine", "base:D-mine"], "no camera: id order");
+        base_curve::install_library(vec![]);
     }
 }

@@ -120,6 +120,8 @@ struct RawFile {
     #[serde(default)]
     name: String,
     #[serde(default)]
+    camera: String,
+    #[serde(default)]
     input: RawInput,
     #[serde(default)]
     output: RawOutput,
@@ -147,6 +149,9 @@ pub enum Step {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BaseCurve {
     pub name: String,
+    /// The camera model the curve is meant for (free text, e.g. `Nikon Z 8`; empty: any). A selector lists the curves of the
+    /// photo's camera first; rendering ignores it.
+    pub camera: String,
     pub input: Input,
     pub extension: Extension,
     pub curves: BTreeMap<String, Curve>,
@@ -336,7 +341,8 @@ pub fn parse(bytes: &[u8]) -> Result<BaseCurve, String> {
         }
     }
     let name: String = f.name.chars().filter(|c| !c.is_control()).take(120).collect();
-    Ok(BaseCurve { name, input: Input { gain: f.input.gain, white: f.input.white }, extension: f.extension, curves, apply })
+    let camera: String = f.camera.chars().filter(|c| !c.is_control()).take(80).collect();
+    Ok(BaseCurve { name, camera, input: Input { gain: f.input.gain, white: f.input.white }, extension: f.extension, curves, apply })
 }
 
 /// FNV-1a over a curve file's bytes: the content hash that goes into the settings hash.
@@ -425,6 +431,20 @@ mod tests {
         assert_eq!((c.input.gain, c.input.white, c.extension), (1.0, 1.0, Extension::Clamp));
         assert_eq!(c.curves["a"].points.len(), 3);
         assert!(c.unsupported().is_none());
+    }
+
+    #[test]
+    fn the_camera_is_optional_text_and_never_affects_the_curve() {
+        let mut d = doc();
+        assert_eq!(parse(d.to_string().as_bytes()).unwrap().camera, "");
+        d["camera"] = json!("Some Maker X 1\u{7}");
+        let with = parse(d.to_string().as_bytes()).unwrap();
+        assert_eq!(with.camera, "Some Maker X 1");
+        assert_eq!(with.eval_luminance(0.3), parse(doc().to_string().as_bytes()).unwrap().eval_luminance(0.3));
+        d["camera"] = json!("y".repeat(500));
+        assert_eq!(parse(d.to_string().as_bytes()).unwrap().camera.len(), 80);
+        d["camera"] = json!(5);
+        assert!(parse(d.to_string().as_bytes()).is_err(), "a camera that is not text");
     }
 
     #[test]

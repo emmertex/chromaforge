@@ -819,7 +819,7 @@ fn header_notices(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopS
     }
     // a raw's base curve: a curve file the user keeps in the base-curves folder replaces the raw's base tone
     if app.session.catalog.photo(id).is_some_and(|p| p.develops_raw()) {
-        base_curve_row(app, ui, d);
+        base_curve_row(app, ui, id, d);
     }
 }
 
@@ -829,8 +829,10 @@ const BASE_CURVES_SHOWN: usize = 200;
 /// The Base curve row of the Profile section (`profile.base_curve`): "Default" first, then the curve files found in the
 /// base-curves folder. A selected curve whose file is missing stays selected and says so; one this version cannot render
 /// is listed as not supported. Shown only when the folder holds curves or the photo already names one.
-fn base_curve_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
-    let curves = lcc_engine::base_curves::list();
+fn base_curve_row(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopSettings) {
+    // the curves made for the photo's camera first
+    let camera = app.session.catalog.photo(id).map(|p| p.meta.camera.clone()).unwrap_or_default();
+    let curves = lcc_engine::base_curves::list_for(&camera);
     let current = d.profile.base_curve.clone();
     if curves.is_empty() && current.is_empty() {
         return;
