@@ -263,7 +263,15 @@ fn glow_writes_nothing_while_default_and_keeps_hashes_stable() {
     // malformed Glow values are read leniently, not fatally
     let hostile = d.merged(&serde_json::json!({"glow": {"amount": 1e308, "threshold": -1e308, "spread": 1e308, "gain": -1e308, "gamma": 1e308, "ratio": -1e308, "recovery": 1e308}})).unwrap();
     assert_eq!(
-        (hostile.glow.amount, hostile.glow.threshold, hostile.glow.spread, hostile.glow.gain, hostile.glow.gamma, hostile.glow.ratio, hostile.glow.recovery),
+        (
+            hostile.glow.amount,
+            hostile.glow.threshold,
+            hostile.glow.spread,
+            hostile.glow.gain,
+            hostile.glow.gamma,
+            hostile.glow.ratio,
+            hostile.glow.recovery
+        ),
         (100.0, 0.0, 100.0, 0.0, 100.0, 0.0, 100.0),
         "the merge clamps Glow through its control specs"
     );

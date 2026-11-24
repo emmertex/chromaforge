@@ -58,11 +58,10 @@ impl Params {
     pub fn of(g: &Glow) -> Option<Params> {
         let f = |v: f64| (v / 100.0) as f32;
         let amount = f(g.amount);
-        if !(amount > 0.0) {
+        if amount.is_nan() || amount <= 0.0 {
             return None;
         }
-        let (t, s, gain, gamma, ratio, recovery) =
-            (f(g.threshold), f(g.spread), f(g.gain), f(g.gamma), f(g.ratio), f(g.recovery));
+        let (t, s, gain, gamma, ratio, recovery) = (f(g.threshold), f(g.spread), f(g.gain), f(g.gamma), f(g.ratio), f(g.recovery));
         if ![t, s, gain, gamma, ratio, recovery].iter().all(|v| v.is_finite()) {
             return None;
         }
@@ -179,20 +178,36 @@ impl Halo {
         Halo { proxy, cw, ch }
     }
 
-    /// The halo at window pixel `(x, y)`, bilinearly sampled from the proxy (clamped at the
-    /// edges, as the blur itself is).
+    /// The halo at window pixel `(x, y)`, sampled from the proxy with a Catmull-Rom cubic (clamped
+    /// at the edges, as the blur itself is): bilinear's piecewise slope shows as faint rings where
+    /// a wide halo falls across the proxy's cells.
     fn at(&self, x: usize, y: usize) -> [f32; 3] {
         let (pw, ph) = (self.proxy.width as f32, self.proxy.height as f32);
         let fx = ((x as f32 + 0.5) / self.cw - 0.5).clamp(0.0, pw - 1.0);
         let fy = ((y as f32 + 0.5) / self.ch - 0.5).clamp(0.0, ph - 1.0);
-        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(self.proxy.width - 1), (y0 + 1).min(self.proxy.height - 1));
+        let (x0, y0) = (fx.floor() as isize, fy.floor() as isize);
         let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
-        let p = |x: usize, y: usize| self.proxy.data[y * self.proxy.width + x];
-        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-        let top = zip3(p(x0, y0), p(x1, y0), |a, b| lerp(a, b, tx));
-        let bot = zip3(p(x0, y1), p(x1, y1), |a, b| lerp(a, b, tx));
-        zip3(top, bot, |a, b| lerp(a, b, ty))
+        // Catmull-Rom weights for the four taps around `t` (0..1 between the middle two)
+        let w = |t: f32| {
+            let t2 = t * t;
+            [-0.5 * t * t2 + t2 - 0.5 * t, 1.5 * t * t2 - 2.5 * t2 + 1.0, -1.5 * t * t2 + 2.0 * t2 + 0.5 * t, 0.5 * t * t2 - 0.5 * t2]
+        };
+        let (wx, wy) = (w(tx), w(ty));
+        let p = |x: isize, y: isize| {
+            let (xx, yy) = (x.clamp(0, self.proxy.width as isize - 1) as usize, y.clamp(0, self.proxy.height as isize - 1) as usize);
+            self.proxy.data[yy * self.proxy.width + xx]
+        };
+        let mut out = [0.0f32; 3];
+        for (j, wy) in wy.iter().enumerate() {
+            for (i, wx) in wx.iter().enumerate() {
+                let tap = p(x0 + i as isize - 1, y0 + j as isize - 1);
+                for k in 0..3 {
+                    out[k] += tap[k] * wx * wy;
+                }
+            }
+        }
+        // the cubic overshoots slightly; the halo is a positive veil, so only that side is kept
+        out.map(|v| v.max(0.0))
     }
 }
 
@@ -215,11 +230,7 @@ pub fn apply(img: &mut [[f32; 3]], w: usize, h: usize, p: &Params) {
             // Screen (the default, the gentler one) or Add, Resolve's two composite modes; both
             // extend past 1 the same way, so an HDR render keeps its headroom
             let k = p.amount;
-            let mut o = if p.add {
-                zip3(c, g, |v, gl| v + k * gl)
-            } else {
-                zip3(c, g, |v, gl| v + (1.0 - v) * (k * gl))
-            };
+            let mut o = if p.add { zip3(c, g, |v, gl| v + k * gl) } else { zip3(c, g, |v, gl| v + (1.0 - v) * (k * gl)) };
             // Bright Region Recovery: the bright regions' own detail (what the blur smeared) comes
             // back through the glow, weighted by how bright the pixel itself is
             if p.recovery > 0.0 {

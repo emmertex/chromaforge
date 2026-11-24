@@ -50,10 +50,13 @@ fn glow_off_changes_nothing() {
 fn glow_brightens_and_stays_bounded() {
     let src = bright_patch();
     let base = out(&src, &DevelopSettings::default());
-    let lit = out(&src, &glow(|g| {
-        g.amount = 100.0;
-        g.spread = 100.0;
-    }));
+    let lit = out(
+        &src,
+        &glow(|g| {
+            g.amount = 100.0;
+            g.spread = 100.0;
+        }),
+    );
     assert!(mean(&lit) > mean(&base), "the halo adds light: {} vs {}", mean(&lit), mean(&base));
     assert_eq!(lit.len(), src.len(), "the render completes whole");
     // the dark field next to the patch takes some halo, but never more light than the patch holds
@@ -68,31 +71,42 @@ fn threshold_gates_the_glow() {
     let src = bright_patch();
     let base = out(&src, &DevelopSettings::default());
     // the dark field alone never reaches a high threshold: nothing glows, the render is unchanged
-    let shut = out(&src, &glow(|g| {
-        g.amount = 100.0;
-        g.threshold = 90.0;
-    }));
+    let shut = out(
+        &src,
+        &glow(|g| {
+            g.amount = 100.0;
+            g.threshold = 90.0;
+        }),
+    );
     assert_eq!(base.get(10, 10), shut.get(10, 10), "a dark pixel above no threshold stays as it was");
     // and a low threshold makes more of the picture glow than a high one
-    let low = out(&src, &glow(|g| {
-        g.amount = 100.0;
-        g.threshold = 0.0;
-    }));
-    let high = out(&src, &glow(|g| {
-        g.amount = 100.0;
-        g.threshold = 60.0;
-    }));
+    let low = out(
+        &src,
+        &glow(|g| {
+            g.amount = 100.0;
+            g.threshold = 0.0;
+        }),
+    );
+    let high = out(
+        &src,
+        &glow(|g| {
+            g.amount = 100.0;
+            g.threshold = 60.0;
+        }),
+    );
     assert!(mean(&low) > mean(&high), "lower thresholds take in more sources");
 }
 
 #[test]
 fn screen_is_softer_than_add() {
     let src = bright_patch();
-    let s = |mode| glow(|g| {
-        g.amount = 100.0;
-        g.gain = 100.0;
-        g.mode = mode;
-    });
+    let s = |mode| {
+        glow(|g| {
+            g.amount = 100.0;
+            g.gain = 100.0;
+            g.mode = mode;
+        })
+    };
     let (screen, add) = (out(&src, &s(GlowComposite::Screen)), out(&src, &s(GlowComposite::Add)));
     assert!(mean(&add) > mean(&screen), "Add is the hotter composite: {} vs {}", mean(&add), mean(&screen));
 }

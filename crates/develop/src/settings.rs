@@ -1389,16 +1389,7 @@ pub struct Glow {
 
 impl Default for Glow {
     fn default() -> Self {
-        Self {
-            amount: 0.0,
-            threshold: 50.0,
-            spread: 25.0,
-            gain: 50.0,
-            gamma: 50.0,
-            ratio: 50.0,
-            recovery: 0.0,
-            mode: GlowComposite::Screen,
-        }
+        Self { amount: 0.0, threshold: 50.0, spread: 25.0, gain: 50.0, gamma: 50.0, ratio: 50.0, recovery: 0.0, mode: GlowComposite::Screen }
     }
 }
 

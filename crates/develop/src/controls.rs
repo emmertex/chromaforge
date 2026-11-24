@@ -357,8 +357,8 @@ controls! {
     "vignette.roundness" => vignette.roundness, "Roundness", Vignette, -100, 100, 0, 1, 0, Centered => CentreLight;
     "vignette.feather" => vignette.feather, "Feather", Vignette, 0, 100, 50, 1, 0, Plain => Ramp;
     "vignette.highlights" => vignette.highlights, "Highlights", Vignette, 0, 100, 0, 1, 0, Plain => Ramp;
-    "glow.amount" => glow.amount, "Amount", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
-    "glow.threshold" => glow.threshold, "Shine Threshold", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
+    "glow.amount" => glow.amount, "Glow", Glow, 0, 100, 0, 1, 0, Plain => Ramp;
+    "glow.threshold" => glow.threshold, "Threshold", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
     "glow.spread" => glow.spread, "Radius", Glow, 0, 100, 25, 1, 0, Plain => Ramp;
     "glow.gain" => glow.gain, "Gain", Glow, 0, 100, 50, 1, 0, Plain => Ramp;
     "glow.gamma" => glow.gamma, "Gamma", Glow, 0, 100, 50, 1, 0, Centered;

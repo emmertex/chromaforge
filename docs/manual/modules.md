@@ -59,7 +59,7 @@ made.
 - **Custom** — one group per profile of the sliders you pick, in the order you set (↑ ↓), shown first in the panel. A
   slider in it moves there: it isn't drawn again in its own group.
 - **Groups** — switch any group off, or open it to hide single sliders and options (the Auto · B&W | HDR row, the
-  white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style…).
+  white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style, the glow composite…).
 
 Profiles are saved with the app's settings. A profile that names a slider a later version no longer has keeps the
 rest. For scripts and agents: `view.toolProfile {id}` picks one (without an id it lists them), and

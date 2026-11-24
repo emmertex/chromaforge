@@ -592,8 +592,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 },
             );
             if let Some((mode, ..)) = chosen.and_then(|i| modes.get(i)) {
-                let _ = app
-                    .run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
+                let _ = app.run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
             }
         }
         for c in ["glow.amount", "glow.threshold", "glow.spread", "glow.gain", "glow.gamma", "glow.ratio", "glow.recovery"] {
