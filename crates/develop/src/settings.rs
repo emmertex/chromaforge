@@ -965,7 +965,9 @@ impl Default for PointColor {
 impl PointColor {
     /// True when the sample changes nothing.
     pub fn is_neutral(&self) -> bool {
-        self.hue_shift == 0.0 && self.sat_shift == 0.0 && self.lum_shift == 0.0
+        self.hue_shift == 0.0
+            && self.sat_shift == 0.0
+            && self.lum_shift == 0.0
             && self.variance == 0.0
             && self.hue_uniformity == 0.0
             && self.sat_uniformity == 0.0
