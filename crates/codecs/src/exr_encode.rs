@@ -62,8 +62,7 @@ pub fn encode_exr(width: u32, height: u32, channels: usize, data: &[f32], opts: 
     let chroma = Chromaticities { red: xy(p.r), green: xy(p.g), blue: xy(p.b), white: xy(p.white) };
     let mut attrs = ImageAttributes::new(exr::prelude::IntegerBounds::from_dimensions((w, h)));
     attrs.chromaticities = Some(chroma);
-    let mut layer_attrs = LayerAttributes::default();
-    layer_attrs.software_name = Some(Text::from(lcc_brand::DISPLAY_NAME));
+    let layer_attrs = LayerAttributes { software_name: Some(Text::from(lcc_brand::DISPLAY_NAME)), ..Default::default() };
     let mut out = std::io::Cursor::new(Vec::new());
     let write = |e: exr::error::Error| Error::Encode(format!("EXR: {e}"));
     macro_rules! write_with {
