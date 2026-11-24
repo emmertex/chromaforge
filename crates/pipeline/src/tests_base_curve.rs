@@ -173,7 +173,7 @@ fn the_white_scale_moves_the_curves_input() {
     install("base:Scale", default_doc());
     let s = settings("base:Scale");
     let one = base_tone(&s, &raw_info(), 1.0);
-    let two = base_tone(&s, &SourceInfo { raw: true, white_scale: 2.0, ..Default::default() }, 1.0);
+    let two = base_tone(&s, &SourceInfo { raw: true, white_scale: Some(2.0), ..Default::default() }, 1.0);
     // a source whose colour model carries a gain of 2 reads each scene value twice as large: the table is the same
     // curve at half the input
     for e in [-4.0f32, -2.0, 0.0, 1.0] {
@@ -182,7 +182,7 @@ fn the_white_scale_moves_the_curves_input() {
     }
     // nonsense scales are 1
     for bad in [0.0f32, -1.0, f32::NAN, f32::INFINITY] {
-        let t = base_tone(&s, &SourceInfo { raw: true, white_scale: bad, ..Default::default() }, 1.0);
+        let t = base_tone(&s, &SourceInfo { raw: true, white_scale: Some(bad), ..Default::default() }, 1.0);
         assert_eq!(t.lut(), one.lut(), "{bad}");
     }
     base_curve::install_library(vec![]);

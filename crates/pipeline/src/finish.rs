@@ -579,7 +579,7 @@ fn base_tone_at_with(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast
     // not installed (its file is missing) or that this build cannot render falls through to the default base tone
     // below, and `base_curve_problem` tells the panel and the export why.
     if raw && let Some(e) = lcc_develop::base_curve::get(&s.profile.base_curve).filter(|e| e.curve.unsupported().is_none()) {
-        return ToneMap::film(&e.curve, info.white_scale, contrast, l.whites, blacks, peak);
+        return ToneMap::film(&e.curve, info.white_scale.unwrap_or(1.0), contrast, l.whites, blacks, peak);
     }
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours

@@ -571,6 +571,29 @@ pub fn load_bytes_with(bytes: &[u8], max_edge: usize, options: LoadOptions) -> R
     rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, options, false).map(|(img, _, info, _)| (img, info)))
 }
 
+/// `SourceInfo::white_scale` of the raw file at `path` developed with `options`: what a base curve divides the scene
+/// value by (see `lcc_pipeline::tone::ToneMap::film`). A full decode sets it itself; this is for a source that was
+/// loaded without it (a smart preview keeps the developed pixels, not the colour model), so the preview and the full
+/// render of one photo read the same value. It decodes the file once at a small size (the colour model is chosen the
+/// way every decode chooses it) and remembers the answer for the file as it was (path, size, modification time) and
+/// the options that change the colour model. `None`: the file is not readable or is not a raw.
+pub fn white_scale_of(path: &str, options: LoadOptions) -> Option<f32> {
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<f32>>>> = std::sync::OnceLock::new();
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs())))?;
+    let key = format!("{path}\u{1}{stamp:?}\u{1}{}\u{1}{}\u{1}{:?}", options.camera, options.camera_look, options.colour);
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(v) = known.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
+        return *v;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let options = LoadOptions { path: Some(path.to_string()), ..options };
+    let scale = load_bytes_with(&bytes, 96, options).ok().filter(|(_, info)| info.raw).and_then(|(_, info)| info.white_scale);
+    known.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, scale);
+    scale
+}
+
 /// [`load_bytes`] taking the file's bytes: a raw file's bytes are freed as soon as it is decoded
 /// (less memory held while it is developed).
 pub fn load_vec(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
@@ -936,7 +959,7 @@ fn load_bytes_now(
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
                 camera_tone,
-                white_scale,
+                white_scale: Some(white_scale),
                 mattes,
                 local_tone,
                 filters: None,

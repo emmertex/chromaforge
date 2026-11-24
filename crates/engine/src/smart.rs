@@ -97,9 +97,6 @@ struct SmartFacts {
     lens: Option<lcc_develop::EmbeddedLens>,
     camera_color: Option<lcc_pipeline::CameraColor>,
     local_tone: Option<lcc_pipeline::local_tone::LocalTone>,
-    /// `SourceInfo::white_scale` (absent in proxies written before it existed, and while it is 1).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    white_scale: Option<f32>,
     /// The semantic mattes whose bytes follow the facts, in this order.
     #[serde(default)]
     mattes: Vec<StoredMatte>,
@@ -205,7 +202,6 @@ pub fn encode(img: &Rgb32f, info: Option<&SourceInfo>) -> Result<Vec<u8>, String
             lens: i.lens,
             camera_color: i.camera_color.as_deref().cloned(),
             local_tone: i.local_tone.as_deref().cloned(),
-            white_scale: Some(i.white_scale).filter(|w| *w != 1.0),
             mattes: matte_list,
         };
         let facts = serde_json::to_vec(&facts).map_err(|e| e.to_string())?;
@@ -256,7 +252,6 @@ pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>, Option<Source
         camera_tone: tone,
         mattes: (!mattes.is_empty()).then(|| Arc::new(mattes)),
         local_tone: f.local_tone.map(Arc::new),
-        white_scale: f.white_scale.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(1.0),
         native_long: None,
         // (the fork's own facts: the process's filters, and no colorimetric matrices on record)
         // (a smart preview keeps no transparency: an offline original exports onto white)
@@ -635,6 +630,18 @@ mod tests {
         assert_eq!(migrate(&a, &b, Existing::Move).0, 1);
         assert_eq!(std::fs::read(b.join("1.lcsp")).unwrap(), good);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A smart preview keeps the developed pixels and the decoder facts as before: the white scale a base curve reads is
+    /// not stored (it is worked out from the original when needed), so a photo's proxy is the same bytes whether or not
+    /// anything knows about base curves.
+    #[test]
+    fn the_proxy_does_not_carry_the_base_curves_white_scale() {
+        let img = lcc_scenes::demo_library()[0].render(64, 40);
+        let plain = lcc_pipeline::SourceInfo { raw: true, ..Default::default() };
+        let scaled = lcc_pipeline::SourceInfo { raw: true, white_scale: Some(1.7), ..Default::default() };
+        assert_eq!(encode(&img, Some(&plain)).unwrap(), encode(&img, Some(&scaled)).unwrap());
+        assert_eq!(decode(&encode(&img, Some(&scaled)).unwrap()).unwrap().2.map(|i| i.white_scale), Some(None));
     }
 
     #[test]

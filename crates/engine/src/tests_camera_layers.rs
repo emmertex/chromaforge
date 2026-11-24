@@ -269,3 +269,30 @@ fn a_camera_profile_without_a_tone_curve_keeps_the_photos_own_tone() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A source loaded without the colour model's white scale (a smart preview) gets the scale a decode would set, from the
+/// original, once; a file that is not there or not a raw gives none.
+#[test]
+fn the_white_scale_of_a_file_is_what_its_decode_sets() {
+    let _lock = install();
+    let bytes = dng_with_camera_jpeg();
+    let dir = std::env::temp_dir().join(format!("white-scale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.dng");
+    std::fs::write(&path, &bytes).unwrap();
+    let p = path.to_string_lossy().into_owned();
+    let decoded = crate::files::load_bytes_with(&bytes, 96, LoadOptions::default()).unwrap().1;
+    let want = decoded.white_scale.expect("a raw decode sets the white scale");
+    assert!(want.is_finite() && want > 0.0);
+    assert_eq!(crate::files::white_scale_of(&p, LoadOptions::default()), Some(want));
+    assert_eq!(crate::files::white_scale_of(&p, LoadOptions::default()), Some(want), "remembered");
+    // the options that change the colour model change the answer's key, and each is decoded as the app decodes it
+    let own = LoadOptions { camera: PLAIN.into(), ..Default::default() };
+    let with_plain = crate::files::load_bytes_with(&bytes, 96, own.clone()).unwrap().1.white_scale;
+    assert_eq!(crate::files::white_scale_of(&p, own), with_plain);
+    assert_eq!(crate::files::white_scale_of(&dir.join("missing.dng").to_string_lossy(), LoadOptions::default()), None);
+    std::fs::write(dir.join("b.dng"), b"not a raw").unwrap();
+    assert_eq!(crate::files::white_scale_of(&dir.join("b.dng").to_string_lossy(), LoadOptions::default()), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}

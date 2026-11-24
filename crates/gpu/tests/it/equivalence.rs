@@ -100,7 +100,7 @@ fn base_curve_matches() {
     lcc_develop::base_curve::install_library(vec![("base:Synthetic".into(), curve, lcc_develop::base_curve::hash_bytes(doc))]);
     let src = scene(2, 320, 240);
     let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
-    let info = SourceInfo { raw: true, camera_tone: Some(tone), white_scale: 1.2, ..Default::default() };
+    let info = SourceInfo { raw: true, camera_tone: Some(tone), white_scale: Some(1.2), ..Default::default() };
     let mut s = DevelopSettings::default();
     s.profile.base_curve = "base:Synthetic".into();
     check("base curve neutral", &src, &info, &s, &RenderRequest::fit(320, 240));
