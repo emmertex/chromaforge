@@ -72,6 +72,10 @@ fn service_json(cat: &Catalog, svc: &ServiceConfig) -> Value {
         lcc_publish::KIND_HARD_DRIVE => json!({"comments": false, "likes": false}),
         lcc_publish::KIND_IMMICH => json!({"comments": true, "likes": true}),
         lcc_publish::KIND_SFTP => json!({"comments": false, "likes": false}),
+        #[cfg(not(target_arch = "wasm32"))]
+        k if k.starts_with(super::plugins::KIND_PREFIX) => {
+            json!({"comments": super::plugins::plugin_service_comments(k.trim_start_matches(super::plugins::KIND_PREFIX)), "likes": false})
+        }
         _ => json!(null),
     };
     json!({
@@ -102,6 +106,15 @@ fn check(kind: &str, settings: &Value, export: &Value, c: &str) -> Result<()> {
     }
     if kind == lcc_publish::KIND_SFTP {
         sftp::check_settings(settings).map_err(|e| bad(c, e))?;
+    }
+    if plugin_kind(kind) {
+        // the plug-in reads them (`account.settings`): any object, kept small
+        if !(settings.is_object() || settings.is_null()) {
+            return Err(bad(c, "a plug-in service's `settings` must be an object"));
+        }
+        if serde_json::to_vec(settings).map_or(true, |b| b.len() > MAX_PLUGIN_SETTINGS_BYTES) {
+            return Err(bad(c, format!("a plug-in service's `settings` take at most {} KiB", MAX_PLUGIN_SETTINGS_BYTES / 1024)));
+        }
     }
     if !export.is_object() {
         return Err(bad(c, "`export` must be an object of app.export params"));
@@ -381,7 +394,7 @@ pub fn plan(s: &mut Session, album: AlbumId) -> Result<Plan> {
     }
     let removals = st.to_remove.iter().filter_map(|id| link(&s.catalog, *id).map(|l| (*id, l.remote_id))).collect();
     let photos: Vec<PhotoId> = jobs.iter().map(|j: &Job| j.photo).collect();
-    let open = match sftp::opener(s, &svc, &coll).map_err(|e| bad(C, e))? {
+    let open = match plugin_opener(s, &svc, &coll, &photos).map_or_else(|| sftp::opener(s, &svc, &coll).map_err(|e| bad(C, e)), |o| Ok(Some(o)))? {
         Some(o) => Some(o),
         None => super::immich::publish::opener(s, &svc, &coll, &photos).map_err(|e| bad(C, e))?,
     };
@@ -613,7 +626,7 @@ pub fn comments_job(s: &mut Session, p: &Value, photo: Option<PhotoId>, c: &str)
     let open = if kind_comments(&service.kind) == Some(false) {
         None
     } else {
-        match sftp::opener(s, &service, &collection).map_err(|e| bad(c, e))? {
+        match plugin_opener(s, &service, &collection, &[]).map_or_else(|| sftp::opener(s, &service, &collection).map_err(|e| bad(c, e)), |o| Ok(Some(o)))? {
             Some(o) => Some(o),
             None => super::immich::publish::opener(s, &service, &collection, &[]).map_err(|e| bad(c, e))?,
         }
@@ -784,11 +797,41 @@ fn open_any(
     coll: &lcc_publish::CollectionConfig,
 ) -> std::result::Result<Box<dyn lcc_publish::PublishService>, lcc_publish::PublishError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(r) = super::plugins::open_plugin_service(svc) {
+    if let Some(r) = super::plugins::open_plugin_service(svc, coll) {
         return r;
     }
     lcc_publish::open_service(svc, coll)
 }
+
+/// Opens a plug-in service with what only the session knows: the collection's name and the
+/// photos' title, caption and keywords (`None` for built-in kinds).
+#[cfg(not(target_arch = "wasm32"))]
+fn plugin_opener(s: &Session, svc: &ServiceConfig, coll: &CollectionConfig, photos: &[PhotoId]) -> Option<super::immich::publish::Opener> {
+    if !svc.kind.starts_with(super::plugins::KIND_PREFIX) {
+        return None;
+    }
+    let name = s.catalog.album(coll.album).map(|a| a.name.clone()).unwrap_or_else(|| coll.folder.clone());
+    let target = super::plugins::publish_target(svc, coll, &name);
+    let meta = photos
+        .iter()
+        .filter_map(|id| {
+            let p = s.catalog.photo(*id)?;
+            Some((*id, super::plugins::PhotoMeta { title: p.title.clone(), caption: p.caption.clone(), keywords: p.keywords.clone() }))
+        })
+        .collect();
+    let svc = svc.clone();
+    Some(Box::new(move || {
+        super::plugins::open_plugin_service_with(&svc, target, meta)
+            .unwrap_or_else(|| Err(lcc_publish::PublishError::Config(format!("`{}` is not a plug-in service", svc.kind))))
+    }))
+}
+#[cfg(target_arch = "wasm32")]
+fn plugin_opener(_: &Session, _: &ServiceConfig, _: &CollectionConfig, _: &[PhotoId]) -> Option<super::immich::publish::Opener> {
+    None
+}
+
+/// The most bytes a plug-in service's settings take in `publish.json`.
+const MAX_PLUGIN_SETTINGS_BYTES: usize = 64 * 1024;
 
 #[path = "publish_sftp.rs"]
 mod sftp;
