@@ -57,10 +57,23 @@ warning.
 
 ## What the curve receives
 
-The scene value `v` is the photo's scene-linear luminance after the Exposure gain and the local tone steps, divided by
-the white scale of the source's colour model, so that a neutral sensor-white pixel is 1.0 (a clipped sensor
-channel, white-balanced, reads 1.0 on the neutral axis). Contrast, Whites and Blacks act on the curve's output (display
-values), and Brightness, Levels and the Tone Curve come after, as for every base tone.
+The curve's x is `gain · v / white`, where `v` is the photo's scene-linear luminance (Rec. 2020 luminance) in the
+tone-map stage: after white balance, the colour model and the baseline exposure, then the Exposure gain, Highlights and
+Shadows, Clarity, Dehaze and the local tone steps, and divided by the **white scale of the source's colour model**
+(`SourceInfo::white_scale`: what a white-balanced neutral pixel at the sensor's white reads as luminance once the colour
+model has run, so a neutral sensor-white pixel is 1.0 whatever gain the matrix, a fitted look or the baseline exposure
+carry; 1.0 for sources that do not know it). The base curve replaces the base tone, so the camera look's tone and chroma
+curve are not applied; the colour model itself (matrix, hue and saturation tables) still is.
+
+Contrast, Whites and Blacks act on the curve's output (display values), with no shoulder of their own and exactly the
+identity at 0. For an HDR edit the highlights are lifted to the headroom above the curve as for any base tone: at or
+below 1.5 EV over grey the HDR render equals the SDR one. Brightness, Levels and the Tone Curve come after, as for every
+base tone.
+
+A base curve only replaces the base tone of raw photos; a JPEG or TIFF keeps its display-referred tone.
+
+The evaluation of a file's steps is provisional in this version: which curve of a file matches a given camera's
+rendering, and with what `gain`, is for the person who makes the file to decide; the app applies what the file says.
 
 ## Limits
 
