@@ -19,6 +19,7 @@ pub mod gate;
 pub mod measure;
 pub mod model;
 pub mod positions;
+pub mod recon;
 pub mod register;
 pub mod samples;
 pub mod series;

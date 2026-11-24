@@ -79,6 +79,13 @@ impl Scene {
         k * [0.8, 1.0, 0.5].get(c).copied().unwrap_or(1.0)
     }
 
+    /// The green value (above black) at the scene position `(u, v)`.
+    pub fn green_at(&self, u: f64, v: f64) -> f64 {
+        let tau = 2.0 * std::f64::consts::PI;
+        let l: f64 = self.waves.iter().map(|w| w.3 * (tau * (w.0 * u + w.1 * v) + w.2).cos()).sum::<f64>() + self.level;
+        l.max(50.0) * self.colour(1, u, v)
+    }
+
     /// Luminance above black at the sites `(x, y)` with `(x + y) & 1 == parity` of a `w` x `h` area under the map
     /// `aff`; other entries are zero. A plane wave under an affine map is again a plane wave, so every wave is a
     /// product of a function of `x` and one of `y`.

@@ -31,6 +31,7 @@ pub struct Mosaics {
     table: [u8; 4],
     black: f64,
     white: f64,
+    crop: [usize; 4],
 }
 
 impl Mosaics {
@@ -53,6 +54,8 @@ impl Mosaics {
         for (i, t) in table.iter_mut().enumerate() {
             *t = cfa.color_at(a.x + (i & 1), a.y + (i >> 1));
         }
+        let c = first.crop.clipped(a.width, a.height);
+        let crop = if c.width == 0 || c.height == 0 { [0, 0, a.width, a.height] } else { [c.x, c.y, c.width, c.height] };
         Ok(Mosaics {
             frames: Vec::new(),
             stride: first.width,
@@ -64,6 +67,7 @@ impl Mosaics {
             table,
             black: f64::from(b.mean()),
             white: f64::from(first.white.first().copied().unwrap_or(16383.0)),
+            crop,
         })
     }
 
@@ -107,7 +111,12 @@ impl Mosaics {
         if frames.iter().any(|f| f.len() < stride * height) || frames.len() > super::series::MAX_FRAMES {
             return Err("frames do not fit the mosaic".into());
         }
-        Ok(Mosaics { frames, stride, height, x_origin, y_origin, aw, ah, table, black, white })
+        Ok(Mosaics { frames, stride, height, x_origin, y_origin, aw, ah, table, black, white, crop: [0, 0, aw, ah] })
+    }
+
+    /// The frames' default crop in active-area sites: `[x, y, width, height]`.
+    pub fn crop(&self) -> [usize; 4] {
+        self.crop
     }
 
     /// Parity of `x + y` at green sites of the active area.
