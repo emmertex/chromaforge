@@ -83,6 +83,7 @@
   "Faces: {spec}": "Ansikten: {spec}",
   "Filled the location of {n} photos": "Fyllde i platsen för {n} foton",
   "Finish or cancel installing {name} first": "Slutför eller avbryt installationen av {name} först",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "Visar ett meddelande för varje ändring: vad som ändrades och hur många foton det gällde. ”{mode}” är till för en hårdvarukontroller. Den ställs in under {settings} → {controls}.",
   "Folder “{}”": "Mappen ”{}”",
   "Frame {n} of the series is missing": "Bild {n} i serien saknas",
   "Frame {n} of the series is selected more than once": "Bild {n} i serien är markerad mer än en gång",

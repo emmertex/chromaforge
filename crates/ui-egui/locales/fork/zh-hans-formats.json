@@ -78,6 +78,7 @@
   "Faces: {spec}": "人脸：{spec}",
   "Filled the location of {n} photos": "已填写 {n} 张照片的位置",
   "Finish or cancel installing {name} first": "请先完成或取消安装 {name}",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "每次更改都会显示一条消息：更改了什么，影响了多少张照片。“{mode}”适用于硬件控制器。可在 {settings} → {controls} 中设置。",
   "Folder “{}”": "文件夹“{0}”",
   "Frame {n} of the series is missing": "缺少该系列的第 {n} 帧",
   "Frame {n} of the series is selected more than once": "该系列的第 {n} 帧被重复选择",

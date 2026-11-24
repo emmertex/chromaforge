@@ -2139,7 +2139,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t);
+    super::surface_osd::settings_section(app, ui, t, false);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and

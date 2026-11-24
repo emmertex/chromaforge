@@ -76,6 +76,7 @@
   "Faces: {spec}": "Visages : {spec}",
   "Filled the location of {n} photos": "Lieu renseigné pour {n} photos",
   "Finish or cancel installing {name} first": "Terminez ou annulez d’abord l’installation de {name}",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "Affiche un message pour chaque modification : ce qui a changé et combien de photos sont concernées. « {mode} » concerne un contrôleur matériel. Il se configure dans {settings} → {controls}.",
   "Folder “{}”": "Dossier « {} »",
   "Frame {n} of the series is missing": "La vue {n} de la série manque",
   "Frame {n} of the series is selected more than once": "La vue {n} de la série est sélectionnée plusieurs fois",

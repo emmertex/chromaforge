@@ -80,6 +80,7 @@
   "Faces: {spec}": "Wajah: {spec}",
   "Filled the location of {n} photos": "Lokasi {n} foto telah diisi",
   "Finish or cancel installing {name} first": "Selesaikan atau batalkan dulu pemasangan {name}",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "Menampilkan pesan untuk setiap perubahan: apa yang berubah dan berapa banyak foto yang terpengaruh. “{mode}” untuk pengontrol perangkat keras. Atur di {settings} → {controls}.",
   "Folder “{}”": "Folder “{}”",
   "Frame {n} of the series is missing": "Bingkai {n} dari seri tidak ada",
   "Frame {n} of the series is selected more than once": "Bingkai {n} dari seri dipilih lebih dari sekali",

@@ -215,3 +215,106 @@ fn a_key_shows_one_note_not_a_toast_as_well_and_the_mode_decides_what_shows() {
     assert!(shown(&mut h).is_null(), "off");
     assert!(!h.app.surface.settings().osd.enabled, "Off also switches the console's readout off");
 }
+
+/// A script can see what the window is saying: `ui.inspect` lists the toasts still showing with the time each has
+/// left, the toast with a button, and the overlay's readout, so a test or an agent can time and compare them.
+#[test]
+fn inspect_lists_the_toasts_the_button_toast_and_the_overlay() {
+    let mut h = demo();
+    let inspect = |h: &mut Headless| h.request("ui.inspect", json!({}), T)["result"].clone();
+    let i = inspect(&mut h);
+    assert_eq!(i["toasts"], json!([]), "nothing showing yet: {}", i["toasts"]);
+    assert!(i["toastAction"].is_null() && i["osd"]["shown"].is_null(), "{} {}", i["toastAction"], i["osd"]);
+
+    let ctx = h.view.ctx.clone();
+    h.app.toast_for(&ctx, "Saved", 6.0);
+    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}), 10.0);
+    let i = inspect(&mut h);
+    assert_eq!(i["toasts"][0]["text"], "Saved", "{}", i["toasts"]);
+    let left = i["toasts"][0]["secsLeft"].as_f64().unwrap_or(0.0);
+    assert!(left > 0.0 && left <= 6.0, "the time left counts down from the 6 s it was given: {left}");
+    assert_eq!(i["toastAction"]["button"], "Undo", "{}", i["toastAction"]);
+    assert_eq!(i["toastAction"]["command"], "edit.undo");
+
+    open(&mut h, 1);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    run(&mut h, "develop.set", json!({"control": "light.exposure", "value": 0.33}));
+    h.step();
+    let i = inspect(&mut h);
+    assert_eq!(i["osd"]["shown"]["title"], "Exposure", "the overlay's readout is in the inspect reply: {}", i["osd"]);
+    assert_eq!(i["osd"]["settings"]["mode"], "always");
+}
+
+/// `ui.toast` fires each kind of message so it can be looked at and timed: a plain one for the time given, an error
+/// for the longer error time, and one with a button that runs its command once; bad input is refused.
+#[test]
+fn ui_toast_fires_a_message_an_error_and_a_message_with_a_button() {
+    let mut h = demo();
+    let toast = |h: &mut Headless, params: Value| h.request("ui.toast", params, T);
+    let inspect = |h: &mut Headless| h.request("ui.inspect", json!({}), T)["result"].clone();
+
+    assert_eq!(toast(&mut h, json!({"text": "Saved"}))["ok"], true);
+    assert_eq!(toast(&mut h, json!({"text": "Export failed", "kind": "error"}))["ok"], true);
+    let i = inspect(&mut h);
+    let left = |text: &str| i["toasts"].as_array().and_then(|t| t.iter().find(|t| t["text"] == text)).and_then(|t| t["secsLeft"].as_f64());
+    assert!(left("Saved").is_some_and(|s| s > 0.0 && s <= 1.4), "a plain message stays the default 1.4 s: {}", i["toasts"]);
+    assert!(left("Export failed").is_some_and(|s| s > 1.4 && s <= 6.0), "an error stays 6 s: {}", i["toasts"]);
+
+    assert_eq!(toast(&mut h, json!({"text": "Held", "seconds": 30}))["ok"], true);
+    assert!(
+        inspect(&mut h)["toasts"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["text"] == "Held" && t["secsLeft"].as_f64().is_some_and(|s| s > 20.0))),
+        "seconds sets the time"
+    );
+
+    assert_eq!(toast(&mut h, json!({"text": "Preset updated", "kind": "action", "command": "edit.undo"}))["ok"], true);
+    let i = inspect(&mut h);
+    assert_eq!(i["toastAction"]["text"], "Preset updated", "{}", i["toastAction"]);
+    assert_eq!(i["toastAction"]["button"], "Undo");
+    assert_eq!(i["toastAction"]["command"], "edit.undo");
+
+    assert_eq!(toast(&mut h, json!({"text": "Long", "kind": "action", "command": "edit.undo", "button": "B".repeat(500)}))["ok"], true);
+    assert_eq!(inspect(&mut h)["toastAction"]["button"].as_str().map(|b| b.chars().count()), Some(40), "a button label is cut to 40 characters");
+
+    for bad in [
+        json!({}),
+        json!({"text": ""}),
+        json!({"text": "x", "kind": "toast"}),
+        json!({"text": "x", "seconds": 0}),
+        json!({"text": "x", "seconds": 1e9}),
+        json!({"text": "x", "seconds": "3"}),
+        json!({"text": "x", "kind": "action"}),
+        json!({"text": "x", "kind": 5}),
+    ] {
+        assert_eq!(toast(&mut h, bad.clone())["ok"], false, "{bad} is refused");
+    }
+}
+
+/// Most people have never met a control surface, so Settings ▸ Interface says what "Control surface only" is for and
+/// where one is set up; the Controls page shows the same overlay settings and leaves the pointer out.
+#[test]
+fn show_changes_points_to_the_controls_page_from_settings_but_not_on_it() {
+    let pointer = |h: &Headless| h.painted_text().iter().any(|t| t.contains("Set one up in Settings ▸ Controls"));
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() }), [1400.0, 2400.0], 1.0);
+    h.settle(T);
+    run(&mut h, "app.settings", json!({"page": "interface"}));
+    h.settle(T);
+    // the overlay settings are at the bottom of a long page: scroll the dialog down to them
+    h.request("ui.move", json!({"x": 700.0, "y": 1000.0}), T);
+    h.request("ui.scroll", json!({"dx": 0.0, "dy": -4000.0}), T);
+    h.settle(T);
+    assert!(h.painted_text().iter().any(|t| t == "On-Screen Overlay"), "the overlay settings are on the page: {:?}", h.painted_text());
+    assert!(pointer(&h), "Interface says where a control surface is set up");
+
+    run(&mut h, "app.settings", json!({"page": "controls"}));
+    h.app.surface.editor.section = "readout".into();
+    h.settle(T);
+    assert!(h.painted_text().iter().any(|t| t == "On-Screen Overlay"), "the Controls page has the overlay settings too: {:?}", h.painted_text());
+    assert!(!pointer(&h), "but doesn't point to itself");
+    assert!(
+        h.painted_text().iter().any(|t| t == "Flash a message for each change: what changed, and how many photos were affected."),
+        "it keeps the note: {:?}",
+        h.painted_text()
+    );
+}

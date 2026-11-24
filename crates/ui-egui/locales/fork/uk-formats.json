@@ -76,6 +76,7 @@
   "Faces: {spec}": "Обличчя: {spec}",
   "Filled the location of {n} photos": "Місце заповнено у фото: {n}",
   "Finish or cancel installing {name} first": "Спочатку завершіть або скасуйте встановлення {name}",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "Показує повідомлення про кожну зміну: що змінилося і скількох фотографій це стосувалося. «{mode}» стосується апаратного контролера. Налаштовується в розділі {settings} → {controls}.",
   "Folder “{}”": "Тека «{}»",
   "Frame {n} of the series is missing": "Бракує кадру {n} серії",
   "Frame {n} of the series is selected more than once": "Кадр {n} серії вибрано більше ніж один раз",

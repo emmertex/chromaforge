@@ -118,6 +118,20 @@ fn rect_json(r: egui::Rect) -> Value {
     json!([r.left(), r.top(), r.width(), r.height()])
 }
 
+/// The messages at the bottom centre that are still showing, oldest first, with the seconds each has left.
+fn toasts_json(app: &LccApp, ctx: &egui::Context) -> Value {
+    let now = ctx.input(|i| i.time);
+    let shown = app.ui.toasts.iter().filter(|t| t.1 >= now);
+    shown.map(|(text, until, label)| json!({"text": text, "label": label, "secsLeft": until - now})).collect()
+}
+
+/// The message with a button (Undo…), if one is showing.
+fn toast_action_json(app: &LccApp, ctx: &egui::Context) -> Value {
+    let now = ctx.input(|i| i.time);
+    let a = app.ui.toast_action.as_ref().filter(|a| a.until >= now);
+    a.map_or(Value::Null, |a| json!({"text": a.text, "button": a.button, "command": a.command, "secsLeft": a.until - now}))
+}
+
 pub fn inspect(app: &LccApp, ctx: &egui::Context) -> Value {
     let r = ctx.content_rect();
     // (its own object: one more level of fields in the reply below passes `json!`'s recursion limit)
@@ -150,6 +164,9 @@ pub fn inspect(app: &LccApp, ctx: &egui::Context) -> Value {
         "hoverPreview": app.hover_preview.as_ref().map(|h| h.label.clone()),
         "status": app.ui.status,
         "copied": app.copied,
+        "toasts": toasts_json(app, ctx),
+        "toastAction": toast_action_json(app, ctx),
+        "osd": crate::panels::surface_osd::state_json(app),
         "notices": app.notices,
         "quitPrompt": app.quit_prompt.as_ref().map(crate::QuitPrompt::text),
         // how hard the background face scan may work right now, and why it is judged so (see `panels::faces::scan_pace`)
@@ -446,6 +463,41 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.text" => {
             app.synthetic.push(egui::Event::Text(s("text").unwrap_or("").to_string()));
             ctx.request_repaint();
+            ok(Value::Null)
+        }
+        // fire a message of each kind the window can show, to look at it or time it (`ui.inspect` → `toasts`,
+        // `toastAction`): a plain message, an error, or a message with a button
+        "ui.toast" => {
+            let Some(text) = s("text").filter(|t| !t.is_empty()) else { return err("ui.toast: `text` is required") };
+            let text: String = text.chars().take(500).collect();
+            let secs = match p.get("seconds") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_f64().filter(|n| n.is_finite() && (0.1..=600.0).contains(n)) {
+                    Some(n) => Some(n),
+                    None => return err("ui.toast: `seconds` must be a number from 0.1 to 600"),
+                },
+            };
+            let kind = match p.get("kind") {
+                None | Some(Value::Null) => "message",
+                Some(Value::String(k)) => k.as_str(),
+                Some(_) => return err("ui.toast: `kind` is message, error or action"),
+            };
+            match kind {
+                "message" => app.toast_for(ctx, text, secs.unwrap_or(crate::TOAST_SECONDS)),
+                "error" => match secs {
+                    None => app.toast_error(ctx, text),
+                    Some(secs) => app.toast_for(ctx, text, secs),
+                },
+                "action" => {
+                    let Some(command) = s("command").filter(|c| !c.is_empty()) else {
+                        return err("ui.toast: an `action` toast needs the `command` its button runs");
+                    };
+                    let button: String = s("button").unwrap_or("Undo").chars().take(40).collect();
+                    let params = p.get("params").cloned().unwrap_or_else(|| json!({}));
+                    app.toast_with_action(ctx, text, button, command, params, secs.unwrap_or(10.0));
+                }
+                _ => return err("ui.toast: `kind` is message, error or action"),
+            }
             ok(Value::Null)
         }
         // what the system does for ⌘X / ⌘C / ⌘V in a text field: paste `text`, or (without it)

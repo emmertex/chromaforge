@@ -97,6 +97,7 @@
   "Faces: {spec}": "სახეები: {spec}",
   "Filled the location of {n} photos": "მდებარეობა შევსებულია {n} ფოტოსთვის",
   "Finish or cancel installing {name} first": "ჯერ დაასრულეთ ან გააუქმეთ {name}-ის დაყენება",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "აჩვენებს შეტყობინებას ყოველი ცვლილებისას: რა შეიცვალა და რამდენ ფოტოზე აისახა. „{mode}“ განკუთვნილია აპარატული კონტროლერისთვის. გამართეთ აქ: {settings} → {controls}.",
   "Folder “{}”": "საქაღალდე „{}“",
   "Frame {n} of the series is missing": "სერიის კადრი {n} აკლია",
   "Frame {n} of the series is selected more than once": "სერიის კადრი {n} ერთზე მეტჯერ არის არჩეული",

@@ -78,6 +78,7 @@
   "Faces: {spec}": "顔：{spec}",
   "Filled the location of {n} photos": "{n} 枚の写真の場所を入力しました",
   "Finish or cancel installing {name} first": "先に {name} のインストールを完了するかキャンセルしてください",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "変更のたびにメッセージを表示します。何が変わったか、何枚の写真に影響したかを示します。「{mode}」はハードウェアコントローラー用です。{settings} → {controls} で設定します。",
   "Folder “{}”": "フォルダ「{}」",
   "Frame {n} of the series is missing": "シリーズのコマ {n} がありません",
   "Frame {n} of the series is selected more than once": "シリーズのコマ {n} が複数回選択されています",

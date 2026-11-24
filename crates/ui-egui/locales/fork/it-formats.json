@@ -79,6 +79,7 @@
   "Faces: {spec}": "Volti: {spec}",
   "Filled the location of {n} photos": "Luogo compilato per {n} foto",
   "Finish or cancel installing {name} first": "Completa o annulla prima l’installazione di {name}",
+  "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.": "Mostra un messaggio per ogni modifica: cosa è cambiato e quante foto sono state interessate. «{mode}» è per un controller hardware. Si configura in {settings} → {controls}.",
   "Folder “{}”": "Cartella “{}”",
   "Frame {n} of the series is missing": "Manca il fotogramma {n} della serie",
   "Frame {n} of the series is selected more than once": "Il fotogramma {n} della serie è selezionato più volte",
