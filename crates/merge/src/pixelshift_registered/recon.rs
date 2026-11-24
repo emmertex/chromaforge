@@ -332,20 +332,31 @@ fn kernel_shapes(green: &[Smp], ww: usize, hh: usize, prm: &Params) -> Vec<[f32;
     om
 }
 
-/// Local linear regression of the samples at kernel scale `sg` (sites): the fitted value, the kernel weight sum and the
-/// sum of squared weights per node.
-fn fit_scale(samples: &[Smp], om: &[[f32; 3]], sg: f64, ww: usize, hh: usize, ridge: f64) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+/// The kernel-weighted moments `[S, Sx, Sy, W, Wx, Wy, Wxx, Wxy, Wyy, W2]` of the samples at every node, for the nodes
+/// not in `skip`; `lam` is the smallest eigenvalue of any kernel shape.
+fn moments(samples: &[Smp], om: &[[f32; 3]], sg: f64, ww: usize, hh: usize, lam: f64, skip: Option<&[bool]>) -> Vec<[f32; 10]> {
     let rad = ((3.0 * sg * 2.0) / 0.5).ceil().max(1.0) as i64; // widest kernel: stretch up to 2
     let mut mo = vec![[0f32; 10]; ww * hh];
     let k2 = 1.0 / (sg * sg) as f32;
+    // the kernel is zero beyond q = 18; q is at least `lam` times the squared distance over sigma squared, so a node
+    // farther than this can not contribute (the bound is the circle that holds every such node)
+    let r2max = 18.0 / (lam * f64::from(k2));
     for p in samples {
         let (ix, iy) = (p.x.round() as i64, p.y.round() as i64);
-        for j in iy - rad..=iy + rad {
-            for i in ix - rad..=ix + rad {
-                if i < 0 || j < 0 || i >= ww as i64 || j >= hh as i64 {
+        for j in (iy - rad).max(0)..=(iy + rad).min(hh as i64 - 1) {
+            let dyv = f64::from((p.y - j as f32) * 0.5);
+            let dy2 = dyv * dyv;
+            if dy2 > r2max {
+                continue;
+            }
+            let span = (r2max - dy2).sqrt() * 2.0;
+            let ia = ((f64::from(p.x) - span).ceil() as i64).max(ix - rad).max(0);
+            let ib = ((f64::from(p.x) + span).floor() as i64).min(ix + rad).min(ww as i64 - 1);
+            for i in ia..=ib {
+                let n = j as usize * ww + i as usize;
+                if skip.is_some_and(|s| s[n]) {
                     continue;
                 }
-                let n = j as usize * ww + i as usize;
                 let (dx, dy) = ((p.x - i as f32) * 0.5, (p.y - j as f32) * 0.5); // sites
                 let o = om[n];
                 let q = (o[0] * dx * dx + 2.0 * o[1] * dx * dy + o[2] * dy * dy) * k2;
@@ -367,11 +378,30 @@ fn fit_scale(samples: &[Smp], om: &[[f32; 3]], sg: f64, ww: usize, hh: usize, ri
             }
         }
     }
+    mo
+}
+
+/// Local linear regression of the samples at kernel scale `sg` (sites): the fitted value, the kernel weight sum and the
+/// sum of squared weights per node.
+fn fit_scale(
+    samples: &[Smp],
+    om: &[[f32; 3]],
+    sg: f64,
+    ww: usize,
+    hh: usize,
+    ridge: f64,
+    lam: f64,
+    skip: Option<&[bool]>,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mo = moments(samples, om, sg, ww, hh, lam, skip);
     let mut val = vec![f32::NAN; ww * hh];
     let mut ws = vec![0f32; ww * hh];
     let mut w2s = vec![0f32; ww * hh];
     for n in 0..ww * hh {
-        let m: Vec<f64> = mo[n].iter().map(|v| f64::from(*v)).collect();
+        if skip.is_some_and(|s| s[n]) {
+            continue;
+        }
+        let m: [f64; 10] = mo[n].map(f64::from);
         let (w, wx, wy) = (m[3], m[4], m[5]);
         ws[n] = w as f32;
         w2s[n] = m[9] as f32;
@@ -392,11 +422,14 @@ fn fit_scale(samples: &[Smp], om: &[[f32; 3]], sg: f64, ww: usize, hh: usize, ri
 
 /// Per node, the fit of the smallest scale whose kernel holds at least `n_t` effective samples (the largest scale
 /// otherwise); effective samples are `(sum of weights)² / sum of squared weights`.
-fn select_scale(samples: &[Smp], om: &[[f32; 3]], scales: &[f64], n_t: f64, ww: usize, hh: usize, ridge: f64) -> Vec<f32> {
+fn select_scale(samples: &[Smp], om: &[[f32; 3]], scales: &[f64], n_t: f64, ww: usize, hh: usize, ridge: f64, lam: f64) -> Vec<f32> {
     let mut out = vec![f32::NAN; ww * hh];
     let mut done = vec![false; ww * hh];
     for (si, &s) in scales.iter().enumerate() {
-        let (v, w, w2) = fit_scale(samples, om, s, ww, hh, ridge);
+        if done.iter().all(|d| *d) {
+            break;
+        }
+        let (v, w, w2) = fit_scale(samples, om, s, ww, hh, ridge, lam, Some(&done));
         let last = si + 1 == scales.len();
         for n in 0..ww * hh {
             if done[n] || v[n].is_nan() {
@@ -464,8 +497,10 @@ fn cubic_at(a: &[f32], ww: usize, hh: usize, x: f32, y: f32) -> Option<f32> {
 /// and blue from the smoothed colour ratio (or difference) with the narrow-kernel value blended in where a sample sits.
 fn pass_b(by: &[Vec<Smp>; 3], om: &[[f32; 3]], ww: usize, hh: usize, tw: usize, th: usize, prm: &Params) -> Vec<[f32; 3]> {
     let clamp01 = |v: f32| v.clamp(0.0, 1.0);
-    let (vn, wn, w2n) = fit_scale(&by[1], om, prm.sigma_small, ww, hh, prm.ridge);
-    let ms = select_scale(&by[1], om, &prm.g_scales, prm.n_g, ww, hh, prm.ridge_g);
+    // smallest eigenvalue of a kernel shape (the stretch makes the kernel up to this much wider along an edge), less 2 percent
+    let lam = 0.98 / (1.0 + prm.stretch.max(0.0)).powi(2);
+    let (vn, wn, w2n) = fit_scale(&by[1], om, prm.sigma_small, ww, hh, prm.ridge, lam, None);
+    let ms = select_scale(&by[1], om, &prm.g_scales, prm.n_g, ww, hh, prm.ridge_g, lam);
     let mut g: Vec<f32> = (0..ww * hh)
         .map(|n| {
             let neff = if w2n[n] > 0.0 { wn[n] * wn[n] / w2n[n] } else { 0.0 };
@@ -485,8 +520,8 @@ fn pass_b(by: &[Vec<Smp>; 3], om: &[[f32; 3]], ww: usize, hh: usize, tw: usize, 
             .iter()
             .filter_map(|s| cubic_at(&g, ww, hh, s.x, s.y).map(|gv| Smp { x: s.x, y: s.y, v: if prm.ratio { s.v / gv.max(50.0) } else { s.v - gv } }))
             .collect();
-        let (vn, wn, _) = fit_scale(&by[col], om, prm.sigma_small, ww, hh, prm.ridge);
-        let d = select_scale(&diff, om, &prm.d_scales, prm.n_d, ww, hh, prm.ridge_d);
+        let (vn, wn, _) = fit_scale(&by[col], om, prm.sigma_small, ww, hh, prm.ridge, lam, None);
+        let d = select_scale(&diff, om, &prm.d_scales, prm.n_d, ww, hh, prm.ridge_d, lam);
         let mut val: Vec<f32> = (0..ww * hh)
             .map(|n| {
                 let cd = if d[n].is_nan() {
@@ -710,5 +745,77 @@ mod tests {
         assert!(out.iter().all(|p| p.iter().all(|v| v.is_finite())));
         let empty = reconstruct_box(&mo, None, &[], 10, 10, 0, 0, &prm());
         assert!(empty.is_empty());
+    }
+
+    /// The moments over the whole window of every sample, the nodes in the sample order (what the bounded loop must reproduce).
+    fn moments_plain(samples: &[Smp], om: &[[f32; 3]], sg: f64, ww: usize, hh: usize, skip: Option<&[bool]>) -> Vec<[f32; 10]> {
+        let rad = ((3.0 * sg * 2.0) / 0.5).ceil().max(1.0) as i64;
+        let mut mo = vec![[0f32; 10]; ww * hh];
+        let k2 = 1.0 / (sg * sg) as f32;
+        for p in samples {
+            let (ix, iy) = (p.x.round() as i64, p.y.round() as i64);
+            for j in iy - rad..=iy + rad {
+                for i in ix - rad..=ix + rad {
+                    if i < 0 || j < 0 || i >= ww as i64 || j >= hh as i64 {
+                        continue;
+                    }
+                    let n = j as usize * ww + i as usize;
+                    if skip.is_some_and(|s| s[n]) {
+                        continue;
+                    }
+                    let (dx, dy) = ((p.x - i as f32) * 0.5, (p.y - j as f32) * 0.5);
+                    let o = om[n];
+                    let q = (o[0] * dx * dx + 2.0 * o[1] * dx * dy + o[2] * dy * dy) * k2;
+                    if q > 18.0 {
+                        continue;
+                    }
+                    let wgt = (-0.5 * q).exp();
+                    let m = &mut mo[n];
+                    m[0] += wgt * p.v;
+                    m[1] += wgt * p.v * dx;
+                    m[2] += wgt * p.v * dy;
+                    m[3] += wgt;
+                    m[4] += wgt * dx;
+                    m[5] += wgt * dy;
+                    m[6] += wgt * dx * dx;
+                    m[7] += wgt * dx * dy;
+                    m[8] += wgt * dy * dy;
+                    m[9] += wgt * wgt;
+                }
+            }
+        }
+        mo
+    }
+
+    #[test]
+    fn the_bounded_moments_equal_the_moments_over_the_whole_window_bit_for_bit() {
+        let (ww, hh) = (70usize, 50usize);
+        let mut rng = super::super::synth::Rng(0x1234_5678_9abc_def1);
+        let samples: Vec<Smp> = (0..6000)
+            .map(|_| Smp {
+                x: (rng.uniform() * ww as f64) as f32,
+                y: (rng.uniform() * hh as f64) as f32,
+                v: (1000.0 + 3000.0 * rng.uniform()) as f32,
+            })
+            .collect();
+        // the kernel shapes the structure tensor gives: every orientation and coherence up to the stretch
+        let prm = Params::v4(1008.0, 0.316);
+        let om: Vec<[f32; 3]> = (0..ww * hh)
+            .map(|_| {
+                let a_f = 1.0 + prm.stretch as f32 * rng.uniform() as f32;
+                let th = rng.uniform() as f32 * std::f32::consts::TAU;
+                let (c, sn) = (th.cos(), th.sin());
+                let (sa2, sl2) = (1.0 / a_f, a_f * a_f);
+                [c * c / sa2 + sn * sn / sl2, c * sn / sa2 - sn * c / sl2, sn * sn / sa2 + c * c / sl2]
+            })
+            .collect();
+        let skip: Vec<bool> = (0..ww * hh).map(|_| rng.uniform() < 0.3).collect();
+        let lam = 0.98 / (1.0 + prm.stretch).powi(2);
+        for sg in [0.08, 0.1, 0.22, 0.45] {
+            for sk in [None, Some(&skip[..])] {
+                let (a, b) = (moments(&samples, &om, sg, ww, hh, lam, sk), moments_plain(&samples, &om, sg, ww, hh, sk));
+                assert!(a.iter().zip(&b).all(|(p, q)| p.iter().zip(q).all(|(x, y)| x.to_bits() == y.to_bits())), "scale {sg}");
+            }
+        }
     }
 }

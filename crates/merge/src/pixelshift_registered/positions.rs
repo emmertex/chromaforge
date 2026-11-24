@@ -2,7 +2,7 @@
 //! model per frame fitted to the rest, and the statistics the later gate reports.
 
 use super::coarse::{nominal_positions, tile_start, wide_start};
-use super::measure::{CONVERGED, EarlyStop, Kernel, TileFit, measure_tile, measure_tiles};
+use super::measure::{CONVERGED, EarlyStop, Kernel, TileFit, measure_tile, measure_tiles_with};
 use super::model::{self, Similarity};
 use super::series::GreenSeries;
 use super::tiles::Tile;
@@ -26,10 +26,14 @@ pub enum Start {
     Coarse,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Options {
+/// Called with the fraction of the tiles done; returns false to cancel.
+pub type Progress<'a> = &'a (dyn Fn(f32) -> bool + Sync);
+
+#[derive(Clone, Copy, Default)]
+pub struct Options<'a> {
     /// Give up tiles that are clearly not settling (see [`super::measure::measure_tile`]).
     pub early_stop: Option<EarlyStop>,
+    pub progress: Option<Progress<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -42,6 +46,8 @@ pub enum MeasureError {
     NoStart,
     #[error("only {0} tiles could be measured in every frame; {1} are needed")]
     TooFewTiles(usize, usize),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// One tile of the fit.
@@ -111,7 +117,7 @@ pub fn measure_series(s: &GreenSeries, tiles: &[Tile], start: Start, opts: &Opti
         }
     };
     let par = if n >= 32 { 3 } else { PARALLEL_TILES };
-    let fits = measure_tiles(s, tiles, &inits, rounds, &kernel, opts.early_stop, par);
+    let fits = measure_tiles_with(s, tiles, &inits, rounds, &kernel, opts.early_stop, par, opts.progress).ok_or(MeasureError::Cancelled)?;
     fit_from_tiles(start, tiles, &fits)
 }
 

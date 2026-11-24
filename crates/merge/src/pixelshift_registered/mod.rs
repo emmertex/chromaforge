@@ -18,6 +18,7 @@ pub mod gain;
 pub mod gate;
 pub mod measure;
 pub mod model;
+pub mod pipeline;
 pub mod positions;
 pub mod recon;
 pub mod register;

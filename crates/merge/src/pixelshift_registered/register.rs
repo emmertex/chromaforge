@@ -13,7 +13,7 @@ use super::coarse::nominal_positions;
 use super::gain::{Gains, TileGainReport, global_gains, normalise_green, tile_gains};
 use super::gate::{GateResult, GateVerdict, gate};
 use super::measure::EarlyStop;
-use super::positions::{MeasureError, Options, SeriesFit, Start, measure_series, quick_nominal_check};
+use super::positions::{MeasureError, Options, Progress, SeriesFit, Start, measure_series, quick_nominal_check};
 use super::samples::Samples;
 use super::series::GreenSeries;
 use super::tiles::{Tile, select_tiles};
@@ -66,6 +66,8 @@ pub enum Outcome {
         /// Gains for the plain merge: only when the frames' brightness varies by more than noise.
         plain_gains: Option<Gains>,
     },
+    /// The progress callback asked to stop.
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,20 +95,32 @@ fn ms(t: Instant) -> f64 {
 
 /// Registers a series with the tiles the texture selection picks.
 pub fn register(series: &mut GreenSeries, samples: &dyn Samples, opts: &RegisterOptions) -> Registration {
+    register_progress(series, samples, opts, None)
+}
+
+/// As [`register`], calling `progress` with the fraction of the measurement done; it returns false to cancel.
+pub fn register_progress(series: &mut GreenSeries, samples: &dyn Samples, opts: &RegisterOptions, progress: Option<Progress>) -> Registration {
     let tiles = select_tiles(series).tiles;
-    register_tiles(series, samples, &tiles, opts)
+    register_with(series, samples, &tiles, opts, progress, &measure_series)
 }
 
 /// Registers a series with the given tiles. `series` is modified: its green planes are put on a common level when the
 /// frames' brightness varies by more than noise.
 pub fn register_tiles(series: &mut GreenSeries, samples: &dyn Samples, tiles: &[Tile], opts: &RegisterOptions) -> Registration {
-    register_with(series, samples, tiles, opts, &measure_series)
+    register_with(series, samples, tiles, opts, None, &measure_series)
 }
 
 /// The measurement step of the registration (replaceable so that tests can feed the decision a measurement that is wrong).
-pub type MeasureFn<'a> = dyn Fn(&GreenSeries, &[Tile], Start, &Options) -> Result<SeriesFit, MeasureError> + 'a;
+pub type MeasureFn<'a> = dyn Fn(&GreenSeries, &[Tile], Start, &Options<'_>) -> Result<SeriesFit, MeasureError> + 'a;
 
-fn register_with(series: &mut GreenSeries, samples: &dyn Samples, tiles: &[Tile], opts: &RegisterOptions, measure: &MeasureFn) -> Registration {
+fn register_with(
+    series: &mut GreenSeries,
+    samples: &dyn Samples,
+    tiles: &[Tile],
+    opts: &RegisterOptions,
+    progress: Option<Progress>,
+    measure: &MeasureFn,
+) -> Registration {
     let mut tm = Timings::default();
     let n = series.frame_count();
     let fallback = |reason: FallbackReason, global: &Option<Gains>, tm: Timings| Registration {
@@ -128,7 +142,7 @@ fn register_with(series: &mut GreenSeries, samples: &dyn Samples, tiles: &[Tile]
         return fallback(FallbackReason::NoTexture, &global, tm);
     }
     let nominal = nominal_positions();
-    let options = Options { early_stop: opts.early_stop };
+    let options = Options { early_stop: opts.early_stop, progress };
     let accept = |fit: SeriesFit, gate_result: GateResult, tm: &mut Timings| -> Registration {
         let t = Instant::now();
         let tg = tile_gains(samples, &fit.tiles.iter().map(|x| x.tile).collect::<Vec<_>>(), &fit.models);
@@ -151,6 +165,9 @@ fn register_with(series: &mut GreenSeries, samples: &dyn Samples, tiles: &[Tile]
         let t = Instant::now();
         let fit = measure(series, tiles, Start::Nominal, &options);
         tm.measure_ms += ms(t);
+        if matches!(fit, Err(MeasureError::Cancelled)) {
+            return Registration { outcome: Outcome::Cancelled, global, timings: tm };
+        }
         if let Ok(fit) = fit
             && fit.tiles.len() >= MIN_TILES
             && fit.dropped_fraction() <= MAX_DROPPED
@@ -175,6 +192,7 @@ fn register_with(series: &mut GreenSeries, samples: &dyn Samples, tiles: &[Tile]
         Err(MeasureError::TooFewTiles(k, _)) => return fallback(FallbackReason::TooFewTiles { usable: k, needed: MIN_TILES }, &global, tm),
         Err(MeasureError::NoTiles) => return fallback(FallbackReason::NoTexture, &global, tm),
         Err(MeasureError::FrameCount(k)) => return fallback(FallbackReason::FrameCount(k), &global, tm),
+        Err(MeasureError::Cancelled) => return Registration { outcome: Outcome::Cancelled, global, timings: tm },
     };
     if fit.tiles.len() < MIN_TILES {
         return fallback(FallbackReason::TooFewTiles { usable: fit.tiles.len(), needed: MIN_TILES }, &global, tm);
@@ -305,7 +323,7 @@ mod tests {
             }
             Ok(fit)
         };
-        let r = register_with(&mut s, &m, &tiles(10), &RegisterOptions::default(), &wrong);
+        let r = register_with(&mut s, &m, &tiles(10), &RegisterOptions::default(), None, &wrong);
         let Outcome::Fallback { reason: FallbackReason::MeasuredWorse(g), plain_gains } = r.outcome else { panic!("{:?}", r.outcome) };
         assert_eq!(g.verdict, GateVerdict::Worse, "{g:?}");
         assert!(plain_gains.is_none(), "flat brightness: the plain merge stays PR A's");

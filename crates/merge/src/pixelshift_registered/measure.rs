@@ -20,6 +20,8 @@ const B: i64 = REF_HALF;
 const GRID: usize = (4 * REF_HALF + 20) as usize;
 /// Offsets from the grid origin, in nodes.
 const ORIGIN_MARGIN: i64 = 8;
+/// Grid rows per band when the moments of all frames are accumulated in parallel.
+const BAND_ROWS: usize = 16;
 /// Largest iteration count of one Lucas–Kanade fit.
 const LK_ITER: usize = 30;
 /// A round whose largest update is below this ends the refinement.
@@ -146,17 +148,20 @@ fn bicubic(a: &[f32], w: usize, h: usize, x: f64, y: f64) -> Option<(f64, f64, f
         return None;
     }
     let (mut v, mut gx, mut gy) = (0.0, 0.0, 0.0);
+    let kx: [(f64, f64); 4] = std::array::from_fn(|i| {
+        let tx = x - (ix + i as i64 - 1) as f64;
+        (keys(tx), dkeys(tx))
+    });
     for j in -1..=2i64 {
         let ty = y - (iy + j) as f64;
         let (wy, dwy) = (keys(ty), dkeys(ty));
         for i in -1..=2i64 {
-            let tx = x - (ix + i) as f64;
             let p = *a.get((iy + j) as usize * w + (ix + i) as usize)?;
             if p.is_nan() {
                 return None;
             }
             let p = f64::from(p);
-            let (wx, dwx) = (keys(tx), dkeys(tx));
+            let (wx, dwx) = kx[(i + 1) as usize];
             v += p * wx * wy;
             gx += p * dwx * wy;
             gy += p * wx * dwy;
@@ -165,24 +170,86 @@ fn bicubic(a: &[f32], w: usize, h: usize, x: f64, y: f64) -> Option<(f64, f64, f
     Some((v, gx, gy))
 }
 
-#[allow(clippy::too_many_arguments)]
-/// One sample of weight `sign` at the sensor position `(px, py)` added to the moment sums of the nodes around it.
+/// The nodes of the reference grid the Lucas–Kanade fits can read: the window of every frame (a diamond of ±128 sites
+/// around the tile centre at the frame's position) widened by the capture range and the cubic taps. Only these nodes
+/// are accumulated; the values of the others are never used, so leaving them out changes no result.
+struct Roi {
+    /// First node and one past the last node of each grid row (equal when the row holds none).
+    lo: Vec<usize>,
+    hi: Vec<usize>,
+    /// Start of each row in the compact moment array.
+    off: Vec<usize>,
+    total: usize,
+}
+
+impl Roi {
+    fn new(x0: i64, y0: i64, xc: i64, yc: i64, p: &[[f64; 2]], limit: f64) -> Roi {
+        // taps (2 before, 3 after the floor), the capture range in nodes, and a margin for the rounding of the extents
+        let m = (2.0 * limit).ceil() as i64 + 6;
+        let radius = 2 * (PLANE as i64) + m;
+        let mut lo = vec![GRID; GRID];
+        let mut hi = vec![0usize; GRID];
+        for pk in p {
+            let (cx, cy) = (2.0 * (xc as f64 + pk[0]) - x0 as f64, 2.0 * (yc as f64 + pk[1]) - y0 as f64);
+            let (r0, r1) = (((cy - radius as f64).floor() as i64).max(0), ((cy + radius as f64).ceil() as i64).min(GRID as i64 - 1));
+            for iy in r0..=r1 {
+                let dy = (iy as f64 - cy).abs();
+                let half = (2.0 * PLANE as f64 / 1.0 + m as f64) - (dy - m as f64).max(0.0);
+                if half < 0.0 {
+                    continue;
+                }
+                let (a, b) = (((cx - half).floor() as i64 - 1).max(0) as usize, (((cx + half).ceil() as i64) + 2).min(GRID as i64).max(0) as usize);
+                let (l, h) = (&mut lo[iy as usize], &mut hi[iy as usize]);
+                if a < b {
+                    *l = (*l).min(a);
+                    *h = (*h).max(b);
+                }
+            }
+        }
+        let mut off = vec![0usize; GRID];
+        let mut total = 0;
+        for iy in 0..GRID {
+            if lo[iy] >= hi[iy] {
+                lo[iy] = 0;
+                hi[iy] = 0;
+            }
+            off[iy] = total;
+            total += hi[iy] - lo[iy];
+        }
+        Roi { lo, hi, off, total }
+    }
+}
+
+/// One sample of weight `sign` at the sensor position `(px, py)` added to the moment sums of the nodes around it, for
+/// the grid rows `rows` of the region (`m` holds the nodes from the start of row `first`).
 /// Per node: `[S, Sx, Sy, W, Wx, Wy, Wxx, Wxy, Wyy]` with `(dx, dy)` the sample's offset from the node in sites.
-fn splat(m: &mut [Mom], x0: i64, y0: i64, px: f64, py: f64, v: f64, sign: f32, inv2s2: f64) {
+#[allow(clippy::too_many_arguments)]
+fn splat(m: &mut [Mom], roi: &Roi, first: usize, rows: std::ops::Range<usize>, x0: i64, y0: i64, px: f64, py: f64, v: f64, sign: f32, inv2s2: f64) {
     let (fx, fy) = (2.0 * px - x0 as f64, 2.0 * py - y0 as f64);
     let (ix0, iy0) = (fx.floor() as i64, fy.floor() as i64);
-    for iy in iy0 - 2..=iy0 + 3 {
-        if iy < 0 || iy >= GRID as i64 {
+    let (ya, yb) = ((iy0 - 2).max(rows.start as i64), (iy0 + 3).min(rows.end as i64 - 1));
+    if ya > yb {
+        return;
+    }
+    let base = roi.off.get(first).copied().unwrap_or(0);
+    // the weight is a product of one factor per axis: 12 exponentials instead of 36
+    let ex: [f64; 6] = std::array::from_fn(|i| {
+        let dx = (fx - (ix0 - 2 + i as i64) as f64) * 0.5;
+        (-(dx * dx) * inv2s2).exp()
+    });
+    for iy in ya..=yb {
+        let iu = iy as usize;
+        let (lo, hi) = (roi.lo[iu] as i64, roi.hi[iu] as i64);
+        let (xa, xb) = ((ix0 - 2).max(lo), (ix0 + 3).min(hi - 1));
+        if xa > xb {
             continue;
         }
         let dy = (fy - iy as f64) * 0.5;
-        for ix in ix0 - 2..=ix0 + 3 {
-            if ix < 0 || ix >= GRID as i64 {
-                continue;
-            }
+        let ey = (-(dy * dy) * inv2s2).exp() * f64::from(sign);
+        for ix in xa..=xb {
             let dx = (fx - ix as f64) * 0.5;
-            let w = (-(dx * dx + dy * dy) * inv2s2).exp() * f64::from(sign);
-            if let Some(c) = m.get_mut(iy as usize * GRID + ix as usize) {
+            let w = ex[(ix - (ix0 - 2)) as usize] * ey;
+            if let Some(c) = m.get_mut(roi.off[iu] + (ix - lo) as usize - base) {
                 c[0] += (w * v) as f32;
                 c[1] += (w * v * dx) as f32;
                 c[2] += (w * v * dy) as f32;
@@ -237,8 +304,10 @@ fn region_sites(s: &GreenSeries, xc: i64, yc: i64) -> Vec<(i64, i64)> {
 fn lk(arr: &[f32], sites: &[(f64, f64, f64, f64)], limit: f64) -> Option<([f64; 2], f64)> {
     let mut e = [0.0f64; 2];
     let mut rms = 0.0;
+    let mut samples: Vec<Option<(f64, f64, f64)>> = Vec::with_capacity(sites.len());
     for _ in 0..LK_ITER {
-        let samples: Vec<Option<(f64, f64, f64)>> = sites.iter().map(|s| bicubic(arr, GRID, GRID, s.1 + 2.0 * e[0], s.2 + 2.0 * e[1])).collect();
+        samples.clear();
+        samples.extend(sites.iter().map(|s| bicubic(arr, GRID, GRID, s.1 + 2.0 * e[0], s.2 + 2.0 * e[1])));
         let (mut sw, mut sr, mut sf, mut srr, mut srf) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for (s, p) in sites.iter().zip(&samples) {
             if let Some(p) = p {
@@ -304,11 +373,31 @@ fn round(s: &GreenSeries, tile: &Tile, p: &[[f64; 2]], kernel: &Kernel) -> Optio
         }
         vals.push(v);
     }
-    let mut mo: Vec<Mom> = vec![[0f32; 9]; GRID * GRID];
-    for (k, pk) in p.iter().enumerate() {
-        for (i, &(x, y)) in st.iter().enumerate() {
-            splat(&mut mo, x0, y0, x as f64 + pk[0], y as f64 + pk[1], vals[k][i], 1.0, inv2s2);
+    let roi = Roi::new(x0, y0, xc, yc, p, kernel.lk_limit);
+    // all frames' moments, accumulated in bands of grid rows (each node still receives the samples in the same order)
+    let mut mo: Vec<Mom> = vec![[0f32; 9]; roi.total];
+    {
+        let mut bands: Vec<(usize, std::ops::Range<usize>, &mut [Mom])> = Vec::new();
+        let mut rest: &mut [Mom] = &mut mo;
+        let mut row = 0;
+        while row < GRID {
+            let end = (row + BAND_ROWS).min(GRID);
+            let len = if end < GRID { roi.off[end] - roi.off[row] } else { roi.total - roi.off[row] };
+            let (head, tail) = rest.split_at_mut(len);
+            bands.push((row, row..end, head));
+            rest = tail;
+            row = end;
         }
+        bands.into_par_iter().for_each(|(first, rows, slice)| {
+            if slice.is_empty() {
+                return;
+            }
+            for (k, pk) in p.iter().enumerate() {
+                for (i, &(x, y)) in st.iter().enumerate() {
+                    splat(slice, &roi, first, rows.clone(), x0, y0, x as f64 + pk[0], y as f64 + pk[1], vals[k][i], 1.0, inv2s2);
+                }
+            }
+        });
     }
     let win = hann(PLANE);
     let h2 = (PLANE / 2) as i64;
@@ -317,9 +406,14 @@ fn round(s: &GreenSeries, tile: &Tile, p: &[[f64; 2]], kernel: &Kernel) -> Optio
         .map(|k| {
             let mut mk = mo.clone();
             for (i, &(x, y)) in st.iter().enumerate() {
-                splat(&mut mk, x0, y0, x as f64 + p[k][0], y as f64 + p[k][1], vals[k][i], -1.0, inv2s2);
+                splat(&mut mk, &roi, 0, 0..GRID, x0, y0, x as f64 + p[k][0], y as f64 + p[k][1], vals[k][i], -1.0, inv2s2);
             }
-            let arr: Vec<f32> = mk.iter().map(|c| node_value(c, kernel.wmin)).collect();
+            let mut arr: Vec<f32> = vec![f32::NAN; GRID * GRID];
+            for iy in 0..GRID {
+                for ix in roi.lo[iy]..roi.hi[iy] {
+                    arr[iy * GRID + ix] = node_value(&mk[roi.off[iy] + ix - roi.lo[iy]], kernel.wmin);
+                }
+            }
             let mut win_sites: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(PLANE * PLANE);
             for j in 0..PLANE {
                 for i in 0..PLANE {
@@ -413,11 +507,130 @@ pub fn measure_tiles(
     early_stop: Option<EarlyStop>,
     par: usize,
 ) -> Vec<TileFit> {
+    measure_tiles_with(s, tiles, inits, rounds, kernel, early_stop, par, None).unwrap_or_default()
+}
+
+/// As [`measure_tiles`], reporting the fraction done after every group of tiles; `progress` returns false to cancel (the
+/// result is then `None`).
+#[allow(clippy::too_many_arguments)]
+pub fn measure_tiles_with(
+    s: &GreenSeries,
+    tiles: &[Tile],
+    inits: &[Vec<[f64; 2]>],
+    rounds: usize,
+    kernel: &Kernel,
+    early_stop: Option<EarlyStop>,
+    par: usize,
+    progress: Option<&(dyn Fn(f32) -> bool + Sync)>,
+) -> Option<Vec<TileFit>> {
     let mut out = Vec::with_capacity(tiles.len());
     let par = par.max(1);
     for (ct, ci) in tiles.chunks(par).zip(inits.chunks(par)) {
+        if let Some(p) = progress
+            && !p(out.len() as f32 / tiles.len().max(1) as f32)
+        {
+            return None;
+        }
         let part: Vec<TileFit> = ct.par_iter().zip(ci.par_iter()).map(|(t, i)| measure_tile(s, t, i, rounds, kernel, early_stop)).collect();
         out.extend(part);
     }
-    out
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::coarse::nominal_positions;
+    use super::super::synth::{Spec, series};
+    use super::*;
+
+    /// The straightforward form of the round the optimised one must reproduce bit for bit: the moments of the whole
+    /// reference grid, one sample at a time in frame order, every frame's own samples taken out of a copy.
+    fn splat_plain(m: &mut [Mom], x0: i64, y0: i64, px: f64, py: f64, v: f64, sign: f32, inv2s2: f64) {
+        let (fx, fy) = (2.0 * px - x0 as f64, 2.0 * py - y0 as f64);
+        let (ix0, iy0) = (fx.floor() as i64, fy.floor() as i64);
+        for iy in iy0 - 2..=iy0 + 3 {
+            if iy < 0 || iy >= GRID as i64 {
+                continue;
+            }
+            let dy = (fy - iy as f64) * 0.5;
+            for ix in ix0 - 2..=ix0 + 3 {
+                if ix < 0 || ix >= GRID as i64 {
+                    continue;
+                }
+                let dx = (fx - ix as f64) * 0.5;
+                let w = (-(dx * dx + dy * dy) * inv2s2).exp() * f64::from(sign);
+                if let Some(c) = m.get_mut(iy as usize * GRID + ix as usize) {
+                    c[0] += (w * v) as f32;
+                    c[1] += (w * v * dx) as f32;
+                    c[2] += (w * v * dy) as f32;
+                    c[3] += w as f32;
+                    c[4] += (w * dx) as f32;
+                    c[5] += (w * dy) as f32;
+                    c[6] += (w * dx * dx) as f32;
+                    c[7] += (w * dx * dy) as f32;
+                    c[8] += (w * dy * dy) as f32;
+                }
+            }
+        }
+    }
+
+    fn round_plain(s: &GreenSeries, tile: &Tile, p: &[[f64; 2]], kernel: &Kernel) -> Option<Vec<Option<([f64; 2], f64)>>> {
+        let (xc, yc) = (tile.xc, tile.yc);
+        let (x0, y0) = (2 * (xc - B) - ORIGIN_MARGIN, 2 * (yc - B) - ORIGIN_MARGIN);
+        let inv2s2 = 1.0 / (2.0 * kernel.sigma * kernel.sigma);
+        let st = region_sites(s, xc, yc);
+        let vals: Vec<Vec<f64>> = (0..p.len()).map(|k| st.iter().map(|&(x, y)| s.g(k, x, y)).collect::<Option<Vec<f64>>>()).collect::<Option<_>>()?;
+        let mut mo: Vec<Mom> = vec![[0f32; 9]; GRID * GRID];
+        for (k, pk) in p.iter().enumerate() {
+            for (i, &(x, y)) in st.iter().enumerate() {
+                splat_plain(&mut mo, x0, y0, x as f64 + pk[0], y as f64 + pk[1], vals[k][i], 1.0, inv2s2);
+            }
+        }
+        let win = hann(PLANE);
+        let h2 = (PLANE / 2) as i64;
+        (0..p.len())
+            .map(|k| {
+                let mut mk = mo.clone();
+                for (i, &(x, y)) in st.iter().enumerate() {
+                    splat_plain(&mut mk, x0, y0, x as f64 + p[k][0], y as f64 + p[k][1], vals[k][i], -1.0, inv2s2);
+                }
+                let arr: Vec<f32> = mk.iter().map(|c| node_value(c, kernel.wmin)).collect();
+                let mut win_sites = Vec::new();
+                for j in 0..PLANE {
+                    for i in 0..PLANE {
+                        let (u, v) = (i as i64 - h2, j as i64 - h2);
+                        let (x, y) = (xc + u + v, yc + u - v);
+                        if s.masked_row(y) {
+                            continue;
+                        }
+                        let val = s.g(k, x, y)?;
+                        win_sites.push((val, 2.0 * (x as f64 + p[k][0]) - x0 as f64, 2.0 * (y as f64 + p[k][1]) - y0 as f64, win[i] * win[j]));
+                    }
+                }
+                Some(lk(&arr, &win_sites, kernel.lk_limit))
+            })
+            .collect()
+    }
+
+    fn tile(xc: i64, yc: i64) -> Tile {
+        Tile { xc, yc, rx: xc as f64 - 400.0, ry: yc as f64 - 400.0 }
+    }
+
+    #[test]
+    fn the_round_restricted_to_what_the_fits_read_equals_the_round_over_the_whole_grid_bit_for_bit() {
+        let nom = nominal_positions();
+        let dev: Vec<[f64; 2]> = nom
+            .iter()
+            .enumerate()
+            .map(|(k, n)| [n[0] + 0.3 * (((k * 5) % 7) as f64 / 6.0 - 0.5), n[1] + 0.4 * (((k * 3) % 11) as f64 / 10.0 - 0.5)])
+            .collect();
+        let far: Vec<[f64; 2]> = nom.iter().enumerate().map(|(k, n)| [n[0] + 0.5 * k as f64, n[1] - 0.4 * k as f64]).collect();
+        let s = series(&Spec { aw: 800, ah: 800, frames: 16, ..Spec::default() }).unwrap();
+        for (p, kernel) in [(&nom, Kernel::normal(16)), (&dev, Kernel::normal(16)), (&far, Kernel::wide(16))] {
+            for t in [tile(401, 400), tile(301, 300)] {
+                let (a, b) = (round(&s, &t, p, &kernel), round_plain(&s, &t, p, &kernel));
+                assert!(a.is_some() && a == b, "tile ({}, {}): {a:?} against {b:?}", t.xc, t.yc);
+            }
+        }
+    }
 }
