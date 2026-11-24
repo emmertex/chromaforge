@@ -148,11 +148,11 @@ fn a_display_referred_source_ignores_the_curve_and_a_missing_or_unsupported_one_
     install("base:Present", default_doc());
     let jpeg = SourceInfo::default();
     assert_eq!(base_tone(&settings("base:Present"), &jpeg, 1.0).lut(), base_tone(&DevelopSettings::default(), &jpeg, 1.0).lut());
-    assert!(base_curve_problem(&settings("base:Present"), &jpeg).is_none(), "not a raw: nothing to report");
+    assert!(base_curve_problem(&settings("base:Present"), false).is_none(), "not a raw: nothing to report");
     // missing: the default tone exactly, and a reason
     let missing = settings("base:NotThere");
     assert_eq!(base_tone(&missing, &raw_info(), 1.0).lut(), base_tone(&DevelopSettings::default(), &raw_info(), 1.0).lut());
-    let why = base_curve_problem(&missing, &raw_info()).expect("a reason");
+    let why = base_curve_problem(&missing, true).expect("a reason");
     assert!(why.contains("NotThere") && why.contains("not found"), "{why}");
     // unsupported: loads, is listed, renders the default tone
     let mut doc = default_doc();
@@ -160,10 +160,10 @@ fn a_display_referred_source_ignores_the_curve_and_a_missing_or_unsupported_one_
     install("base:PerChannel", doc);
     let s = settings("base:PerChannel");
     assert_eq!(base_tone(&s, &raw_info(), 1.0).lut(), base_tone(&DevelopSettings::default(), &raw_info(), 1.0).lut());
-    assert!(base_curve_problem(&s, &raw_info()).expect("a reason").contains("per-channel"));
+    assert!(base_curve_problem(&s, true).expect("a reason").contains("per-channel"));
     // in use: no problem
     install("base:Present", default_doc());
-    assert!(base_curve_problem(&settings("base:Present"), &raw_info()).is_none());
+    assert!(base_curve_problem(&settings("base:Present"), true).is_none());
     base_curve::install_library(vec![]);
 }
 

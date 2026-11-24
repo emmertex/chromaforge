@@ -545,9 +545,9 @@ pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
 /// warnings: its file is not installed (the photo keeps the id and renders with the default base tone until it is back),
 /// or this build cannot render it. `None`: no curve selected, not a raw (a base curve only replaces a raw's base tone),
 /// or the curve is in use.
-pub fn base_curve_problem(s: &DevelopSettings, info: &SourceInfo) -> Option<String> {
+pub fn base_curve_problem(s: &DevelopSettings, raw: bool) -> Option<String> {
     let id = &s.profile.base_curve;
-    if id.is_empty() || !info.raw {
+    if id.is_empty() || !raw {
         return None;
     }
     let shown = id.strip_prefix(lcc_develop::base_curve::ID_PREFIX).unwrap_or(id);

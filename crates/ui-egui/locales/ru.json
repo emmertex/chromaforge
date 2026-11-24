@@ -3081,5 +3081,6 @@
   "Import to This Folder…": "Импортировать в эту папку…",
   "Copies the photos of a folder you choose into this folder; the review lets you change that": "Копирует фото из выбранной папки в эту папку; в окне проверки это можно изменить",
   "Add to My Photos…": "Добавить в «Мои фото»…",
-  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Показывает фото этой папки для проверки, затем добавляет их в каталог на месте; ни один файл не затрагивается"
+  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "Показывает фото этой папки для проверки, затем добавляет их в каталог на месте; ни один файл не затрагивается",
+  "Base curve": "Базовая кривая"
 }

@@ -817,6 +817,71 @@ fn header_notices(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, d: &DevelopS
             }
         });
     }
+    // a raw's base curve: a curve file the user keeps in the base-curves folder replaces the raw's base tone
+    if app.session.catalog.photo(id).is_some_and(|p| p.develops_raw()) {
+        base_curve_row(app, ui, d);
+    }
+}
+
+/// How many curves the Base curve list shows at once (a folder can hold thousands; the filter narrows it).
+const BASE_CURVES_SHOWN: usize = 200;
+
+/// The Base curve row of the Profile section (`profile.base_curve`): "Default" first, then the curve files found in the
+/// base-curves folder. A selected curve whose file is missing stays selected and says so; one this version cannot render
+/// is listed as not supported. Shown only when the folder holds curves or the photo already names one.
+fn base_curve_row(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let curves = lcc_engine::base_curves::list();
+    let current = d.profile.base_curve.clone();
+    if curves.is_empty() && current.is_empty() {
+        return;
+    }
+    let m = crate::widgets::row_margin;
+    let mut picked: Option<String> = None;
+    egui::Frame::NONE.inner_margin(m(ui, egui::Margin { left: 12, right: 16, top: 0, bottom: 10 }, 0, 3)).show(ui, |ui| {
+        let stem = current.strip_prefix(lcc_develop::base_curve::ID_PREFIX).unwrap_or(&current).to_string();
+        let selected = if current.is_empty() {
+            crate::i18n::tr("Default").to_string()
+        } else if curves.iter().any(|c| c.id == current) {
+            stem.clone()
+        } else {
+            format!("{stem} (missing)")
+        };
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Base curve"));
+            let r = crate::widgets::combo_box("profile.baseCurve").selected_text(selected).width(180.0).show_ui(ui, |ui| {
+                let filter_id = egui::Id::new("profile.baseCurve.filter");
+                let mut filter: String = ui.ctx().data(|data| data.get_temp(filter_id)).unwrap_or_default();
+                ui.add(egui::TextEdit::singleline(&mut filter).hint_text(crate::i18n::tr("Filter")));
+                ui.ctx().data_mut(|data| data.insert_temp(filter_id, filter.clone()));
+                if ui.selectable_label(current.is_empty(), crate::i18n::tr("Default")).clicked() {
+                    picked = Some(String::new());
+                }
+                let f = filter.to_lowercase();
+                for (listed, c) in curves.iter().filter(|c| f.is_empty() || c.stem.to_lowercase().contains(&f)).enumerate() {
+                    if listed >= BASE_CURVES_SHOWN {
+                        ui.weak("…");
+                        break;
+                    }
+                    let label = if c.unsupported.is_some() { format!("{} (not supported)", c.stem) } else { c.stem.clone() };
+                    if ui.selectable_label(c.id == current, label).clicked() {
+                        picked = Some(c.id.clone());
+                    }
+                }
+                if ui.button(crate::i18n::tr("Refresh")).clicked() {
+                    lcc_engine::base_curves::refresh();
+                }
+            });
+            crate::widgets::register(ui.ctx(), "combo:profile.baseCurve", r.response.rect);
+        });
+        // why the selected curve is not in use (not found, or not renderable by this version): the photo renders with
+        // the default base tone meanwhile
+        if let Some(why) = lcc_pipeline::finish::base_curve_problem(d, true) {
+            ui.label(egui::RichText::new(why).color(ui.visuals().warn_fg_color).size(12.0));
+        }
+    });
+    if let Some(id) = picked {
+        let _ = app.run("develop.merge", json!({"settings": {"profile": {"base_curve": id}}, "label": "Base Curve"}));
+    }
 }
 
 /// The profile row's name and the line under it (OneSlips, LR-PROF-LAYERS): a photo that develops with its camera

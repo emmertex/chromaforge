@@ -1497,13 +1497,20 @@ impl RenderJob {
         // a render a newer request replaced stops its plug-in filters; what it made then isn't the
         // picture asked for, and goes back as superseded (the decode it did is still handed on)
         let cancel = self.superseded.clone();
+        // a selected base curve that is not used (its file is missing, or this version cannot render it): the render
+        // carries the reason like any other render warning, so an export reports it too
+        let base_curve = lcc_pipeline::finish::base_curve_problem(&self.settings, self.info.raw);
         let run = || {
             let (r, cut) = lcc_pipeline::with_cancel(cancel, || {
                 crate::guard::catch("the render", || self.run_unguarded()).unwrap_or_else(|e| RenderResult { rendered: Err(e), ..failed })
             });
             if cut { RenderResult { rendered: Err(SUPERSEDED.into()), ..r } } else { r }
         };
-        if thumb { lcc_gpu::prefer_helper(run) } else { run() }
+        let mut result = if thumb { lcc_gpu::prefer_helper(run) } else { run() };
+        if let (Some(why), Ok(r)) = (base_curve, &mut result.rendered) {
+            r.warnings.push(why);
+        }
+        result
     }
 
     /// This job's result when it fails with `e`.

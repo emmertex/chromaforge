@@ -2880,5 +2880,6 @@
   "Import to This Folder…": "このフォルダに読み込む…",
   "Copies the photos of a folder you choose into this folder; the review lets you change that": "選んだフォルダの写真をこのフォルダにコピーします。レビューで変更できます",
   "Add to My Photos…": "マイフォトに追加…",
-  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "このフォルダの写真をレビューしてから、そのままの場所でカタログに追加します。ファイルには触れません"
+  "Reviews the photos in this folder, then adds them to the catalog where they are; no file is touched": "このフォルダの写真をレビューしてから、そのままの場所でカタログに追加します。ファイルには触れません",
+  "Base curve": "ベースカーブ"
 }
