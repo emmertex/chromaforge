@@ -38,6 +38,8 @@ pub enum Section {
     Retouch,
     /// Repairs of the raw sensor data (a checkbox in the Detail panel).
     Sensor,
+    /// Lens Blur.
+    LensBlur,
 }
 
 impl Section {
@@ -64,6 +66,7 @@ impl Section {
             Section::Skin => "Smooth Skin",
             Section::Retouch => "Retouch",
             Section::Sensor => "Sensor",
+            Section::LensBlur => "Lens Blur",
         }
     }
 }
@@ -362,6 +365,10 @@ controls! {
     "grain.color" => grain.color, "Color", Grain, 0, 100, 0, 1, 0, Plain;
     "grain.seed" => grain.seed, "Seed", Grain, 0, 99999, 0, 1, 0, Plain;
     "grain.response" => grain.response, "Response", Grain, -100, 100, 0, 1, 0, Centered;
+    "lensBlur.amount" => lens_blur.amount, "Blur Amount", LensBlur, 0, 100, 50, 1, 0, Plain => Ramp;
+    "lensBlur.focalDistance" => lens_blur.focal_distance, "Focal Distance", LensBlur, 0, 100, 0, 1, 0, Plain;
+    "lensBlur.focalRange" => lens_blur.focal_range, "Focal Range", LensBlur, 0, 100, 20, 1, 0, Plain;
+    "lensBlur.focusSize" => lens_blur.focus_size, "Focus Area", LensBlur, 0, 0.5, 0, 0.01, 2, Plain;
     "enhance.denoise" => enhance.denoise, "Amount", Detail, 0, 100, 0, 1, 0, Plain;
     "detail.sharpenAmount" => detail.sharpen_amount, "Sharpening", Detail, 0, 150, 0, 1, 0, Plain => Tinted;
     "detail.sharpenRadius" => detail.sharpen_radius, "Radius", Detail, 0.5, 3, 1, 0.1, 1, Plain => Ramp;

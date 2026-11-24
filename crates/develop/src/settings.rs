@@ -2463,13 +2463,85 @@ impl Default for RedEye {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Lens Blur: a shallow depth of field added after the fact, from the photo's estimated depth
+/// (`lcc_pipeline::lens_blur`). Distances are `0..100` (0 = nearest, 100 = farthest).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LensBlur {
     pub enabled: bool,
+    /// Blur Amount, `0..100`: the largest blur, 100 ≈ 3 % of the photo's long edge.
     pub amount: f64,
+    /// The middle of the sharp band, `0..100` (used when no [`Self::focus`] is picked).
     pub focal_distance: f64,
+    /// How deep the sharp band is, `0..100`.
     pub focal_range: f64,
+    /// The focus picker: a point of the uncropped, oriented photo (normalized) whose distance is
+    /// kept sharp; it overrides [`Self::focal_distance`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<Point>,
+    /// The focus picker's area: half its side in normalized units (0 = a point); the distance
+    /// kept sharp is the area's median.
+    pub focus_size: f64,
+    /// The shape of the out-of-focus highlights.
+    pub bokeh: BokehShape,
+}
+
+impl Default for LensBlur {
+    fn default() -> Self {
+        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle }
+    }
+}
+
+impl LensBlur {
+    /// Whether Lens Blur changes the photo.
+    pub fn active(&self) -> bool {
+        self.enabled && self.amount.is_finite() && self.amount > 0.0
+    }
+}
+
+/// The aperture shape Lens Blur imitates (the look of out-of-focus highlights).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BokehShape {
+    /// A round aperture.
+    #[default]
+    Circle,
+    /// Five aperture blades.
+    Pentagon,
+    /// Six aperture blades.
+    Hexagon,
+    /// A mirror lens's ring.
+    Ring,
+}
+
+impl BokehShape {
+    pub const ALL: [BokehShape; 4] = [BokehShape::Circle, BokehShape::Pentagon, BokehShape::Hexagon, BokehShape::Ring];
+    /// `circle`, `pentagon` (or `5`), `hexagon` (or `6`), `ring` (case-insensitive).
+    pub fn parse(name: &str) -> Option<BokehShape> {
+        match name.to_ascii_lowercase().as_str() {
+            "circle" | "round" => Some(BokehShape::Circle),
+            "pentagon" | "5" | "5-blade" => Some(BokehShape::Pentagon),
+            "hexagon" | "6" | "6-blade" => Some(BokehShape::Hexagon),
+            "ring" | "mirror" => Some(BokehShape::Ring),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            BokehShape::Circle => "circle",
+            BokehShape::Pentagon => "pentagon",
+            BokehShape::Hexagon => "hexagon",
+            BokehShape::Ring => "ring",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            BokehShape::Circle => "Circle",
+            BokehShape::Pentagon => "5 Blades",
+            BokehShape::Hexagon => "6 Blades",
+            BokehShape::Ring => "Ring",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

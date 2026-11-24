@@ -608,6 +608,9 @@ fn sil_workflow() {
     s.ok("develop.wbPick", json!({"x": 0.5, "y": 0.5}));
     s.ok("crop.set", json!({"rect": [0.1, 0.1, 0.9, 0.85], "angle": 2.0}));
     s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    // Lens Blur from the subject (no depth model here), focus picked at the centre
+    let lb = s.ok("lensBlur.set", json!({"amount": 60, "focus": {"x": 0.5, "y": 0.5}, "focalRange": 15, "bokeh": "hexagon"}));
+    s.check(lb["enabled"] == true && lb["bokeh"] == "hexagon", "lensBlur.set did not switch Lens Blur on", &lb.to_string());
     s.undo_redo_roundtrip();
     s.request("ui.settle", json!({"timeoutMs": 20000}));
     s.consistent();
@@ -820,7 +823,7 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
     let hostile = r.chance(8);
     let num = |r: &mut Rng, lo: f64, hi: f64| if hostile { json!(r.pick(&[-1e30, 1e30, 0.0, -0.0, 1e-300])) } else { json!(r.f(lo, hi)) };
     let album = albums.first().map_or(json!(1), |a| json!(r.pick(&[*a, albums[albums.len() - 1], 424_242])));
-    match r.below(36) {
+    match r.below(37) {
         0 => ("library.select", json!({"ids": [id], "active": id})),
         1 => ("library.select", json!({"ids": some, "mode": r.pick(&["replace", "add", "toggle", "range"])})),
         2 => ("library.selectAll", json!({})),
@@ -876,6 +879,11 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
         32 => ("vignettingCalibration.create", json!({})),
         33 => ("vignettingCalibration.apply", json!({"map": if hostile { json!({"grid": [300, 2]}) } else { json!("0".repeat(64)) }, "ids": some})),
         34 => ("vignettingCalibration.remove", json!({"ids": some})),
+        // Lens Blur: a picked focus anywhere (hostile: far outside the photo, huge amounts)
+        35 => (
+            "lensBlur.set",
+            json!({"amount": num(r, 0.0, 100.0), "focus": {"x": num(r, 0.0, 1.0), "y": num(r, 0.0, 1.0)}, "bokeh": r.pick(&["circle", "hexagon", "ring", "nope"])}),
+        ),
         _ => ("app.export", json!({"format": "jpeg", "longEdge": 200, "ids": [id], "dir": root.join("monkey-export").to_string_lossy()})),
     }
 }

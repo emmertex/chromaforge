@@ -542,6 +542,8 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Lens Blur, after the lens corrections as in Lightroom Classic
+    section(app, ui, &d, "lensBlur", "Lens Blur", |app, ui, d| lens_blur_body(app, ui, d));
     // Lightroom Classic's Transform panel (the fork's: upstream keeps it in the Crop tool), after the lens corrections
     section(app, ui, &d, "geometry", "Transform", |app, ui, _| super::right::transform_body(app, ui, id));
     section(app, ui, &d, "effects", "Effects", |app, ui, d| {
@@ -888,6 +890,56 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     }
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
     ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
+}
+
+/// The Lens Blur section: Apply, the focus picker, Blur Amount, the bokeh shape and the focal range.
+fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let lb = d.lens_blur;
+    let dim = Tokens::get(ui.ctx()).text_dim;
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
+        let mut on = lb.enabled;
+        if super::settings::check(ui, "lensBlur.enabled", &mut on, "Apply") {
+            if let Err(e) = app.run("lensBlur.set", json!({"enabled": on})) {
+                app.toast(ui.ctx(), e);
+            }
+        }
+        let note = if lcc_pipeline::depth_model::has_depth_model() {
+            "Depth: estimated by the depth model."
+        } else {
+            "Depth: estimated from the subject. Download the depth model (AI Models) for a real depth map."
+        };
+        ui.label(egui::RichText::new(crate::i18n::tr(note)).size(11.0).color(dim));
+        ui.add_space(4.0);
+        let picking = app.ui.tool == "lensFocus";
+        if crate::widgets::text_button(ui, "lensBlurFocus", "Focus Picker", picking)
+            .on_hover_text(crate::i18n::tr("Click the photo to keep that distance sharp; drag to average an area"))
+            .clicked()
+        {
+            app.ui.tool = if picking { String::new() } else { "lensFocus".into() };
+        }
+        if lb.focus.is_some() {
+            ui.add_space(2.0);
+            if crate::widgets::text_button(ui, "lensBlurClearFocus", "Clear Focus", false).clicked() {
+                let _ = app.run("lensBlur.set", json!({"focus": null}));
+            }
+        }
+    });
+    control(app, ui, d, "lensBlur.amount", lb.enabled);
+    sub_title(ui, crate::i18n::tr("Bokeh"));
+    let shapes = lcc_develop::BokehShape::ALL;
+    let items: Vec<(&str, &str)> = shapes.iter().map(|b| (b.label(), b.name())).collect();
+    let mut chosen = None;
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(ui, |ui| {
+        chosen = crate::widgets::segmented(ui, "lensBlurBokeh", &items, shapes.iter().position(|b| *b == lb.bokeh), shapes.len());
+    });
+    if let Some(b) = chosen.and_then(|i| shapes.get(i)) {
+        let _ = app.run("lensBlur.set", json!({"bokeh": b.name()}));
+    }
+    sub_title(ui, crate::i18n::tr("Focal Range"));
+    control(app, ui, d, "lensBlur.focalDistance", lb.enabled && lb.focus.is_none());
+    control(app, ui, d, "lensBlur.focalRange", lb.enabled);
+    control(app, ui, d, "lensBlur.focusSize", lb.enabled && lb.focus.is_some());
+    ui.add_space(8.0);
 }
 
 pub(crate) fn section(
