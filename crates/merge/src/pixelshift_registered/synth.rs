@@ -26,16 +26,35 @@ fn splitmix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A smooth random scene: plane waves of period 6 to 30 sites around a mean level.
+/// A random scene: plane waves of period 6 to 40 sites (band-limited, so that fractional shifts of the quincunx
+/// lattice stay consistent) around a mean level, with slow colour variation.
 pub struct Scene {
     waves: Vec<(f64, f64, f64, f64)>, // fx, fy, phase, amplitude
     chroma: [Vec<(f64, f64, f64, f64)>; 3],
     level: f64,
 }
 
+/// Affine map from site `(x, y)` to scene position: `u = a[0] x + a[1] y + a[2]`, `v = a[3] x + a[4] y + a[5]`.
+pub type Affine = [f64; 6];
+
 impl Scene {
     pub fn new(seed: u64, level: f64, contrast: f64) -> Scene {
         let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1234_5678_9ABC_DEF1) | 1);
+        // many waves with periods spread evenly in the logarithm, larger amplitude at the coarse scales: a scene with
+        // few frequencies leaves the phase correlation nothing to lock on to against the static pattern of the
+        // camera-filled rows
+        let waves: Vec<(f64, f64, f64, f64)> = (0..120)
+            .map(|_| {
+                let per = 6.0 * (40.0f64 / 6.0).powf(r.uniform());
+                let th = 2.0 * std::f64::consts::PI * r.uniform();
+                (
+                    th.cos() / per,
+                    th.sin() / per,
+                    2.0 * std::f64::consts::PI * r.uniform(),
+                    40.0 * contrast * (per / 10.0).sqrt() * (0.5 + r.uniform()),
+                )
+            })
+            .collect();
         let mut mk = |n: usize, amp: f64| -> Vec<(f64, f64, f64, f64)> {
             (0..n)
                 .map(|_| {
@@ -45,24 +64,45 @@ impl Scene {
                 })
                 .collect()
         };
-        let waves = mk(10, 150.0 * contrast);
         let chroma = [mk(3, 0.1 * contrast), mk(3, 0.1 * contrast), mk(3, 0.1 * contrast)];
         Scene { waves, chroma, level }
     }
 
-    /// Scene value above black of colour `c` (0 red, 1 green, 2 blue) at the scene position `(u, v)` in sites.
-    pub fn value(&self, c: usize, u: f64, v: f64) -> f64 {
-        let mut l = self.level;
-        for w in &self.waves {
-            l += w.3 * (2.0 * std::f64::consts::PI * (w.0 * u + w.1 * v) + w.2).cos();
-        }
+    /// Colour factor of channel `c` at the scene position `(u, v)`, including the channel's overall scale.
+    pub fn colour(&self, c: usize, u: f64, v: f64) -> f64 {
         let mut k = 1.0;
         if let Some(ws) = self.chroma.get(c) {
             for w in ws {
                 k += w.3 * (2.0 * std::f64::consts::PI * (w.0 * u + w.1 * v) + w.2).cos();
             }
         }
-        l.max(50.0) * k * [0.8, 1.0, 0.5].get(c).copied().unwrap_or(1.0)
+        k * [0.8, 1.0, 0.5].get(c).copied().unwrap_or(1.0)
+    }
+
+    /// Luminance above black at the sites `(x, y)` with `(x + y) & 1 == parity` of a `w` x `h` area under the map
+    /// `aff`; other entries are zero. A plane wave under an affine map is again a plane wave, so every wave is a
+    /// product of a function of `x` and one of `y`.
+    pub fn luminance(&self, w: usize, h: usize, aff: &Affine, parity: usize) -> Vec<f64> {
+        let mut out = vec![0.0; w * h];
+        let tau = 2.0 * std::f64::consts::PI;
+        for wv in &self.waves {
+            let (fx, fy) = (wv.0 * aff[0] + wv.1 * aff[3], wv.0 * aff[1] + wv.1 * aff[4]);
+            let ph = tau * (wv.0 * aff[2] + wv.1 * aff[5]) + wv.2;
+            let (ca, sa): (Vec<f64>, Vec<f64>) = (0..w).map(|x| (tau * fx * x as f64 + ph).sin_cos()).map(|(s, c)| (c, s)).unzip();
+            let (cb, sb): (Vec<f64>, Vec<f64>) = (0..h).map(|y| (tau * fy * y as f64).sin_cos()).map(|(s, c)| (c, s)).unzip();
+            for y in 0..h {
+                let (c2, s2) = (cb[y], sb[y]);
+                let mut x = (parity + y) & 1;
+                while x < w {
+                    out[y * w + x] += wv.3 * (ca[x] * c2 - sa[x] * s2);
+                    x += 2;
+                }
+            }
+        }
+        for v in out.iter_mut() {
+            *v += self.level;
+        }
+        out
     }
 }
 
@@ -87,6 +127,8 @@ pub struct Spec {
     pub gains: Vec<f64>,
     /// Leave the noise out (the values are only rounded).
     pub noise_free: bool,
+    /// Rotation and scale of frame `k` against the nominal geometry, as `[theta, scale]` about the middle of the area; empty: none.
+    pub models: Vec<[f64; 2]>,
 }
 
 impl Default for Spec {
@@ -103,6 +145,7 @@ impl Default for Spec {
             positions: None,
             gains: Vec::new(),
             noise_free: false,
+            models: Vec::new(),
         }
     }
 }
@@ -121,22 +164,30 @@ impl Spec {
     }
 }
 
-/// The raw mosaic of frame `k`: red where `x + y` has the other parity and `y` is even, blue where it is odd.
+/// The raw mosaic of frame `k`. Only the green sites carry the scene (the registration reads nothing else): red and
+/// blue sites hold a flat level.
 pub fn mosaic(spec: &Spec, scene: &Scene, k: usize) -> Vec<u16> {
     let mut rng = Rng(splitmix(spec.seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
     let p = spec.position(k);
+    let [theta, scale] = spec.models.get(k).copied().unwrap_or([0.0, 0.0]);
+    let (cx, cy) = (spec.aw as f64 / 2.0, spec.ah as f64 / 2.0);
+    // site (x, y) sees the scene at (x + p.x - theta (y - cy) + scale (x - cx), y + p.y + theta (x - cx) + scale (y - cy))
+    let aff: Affine = [1.0 + scale, -theta, p[0] + theta * cy - scale * cx, theta, 1.0 + scale, p[1] - theta * cx - scale * cy];
+    let lum = if spec.flat { Vec::new() } else { scene.luminance(spec.aw, spec.ah, &aff, spec.gpar) };
     let gain = spec.gains.get(k).copied().unwrap_or(1.0);
     let mut out = Vec::with_capacity(spec.aw * spec.ah);
     for y in 0..spec.ah {
         for x in 0..spec.aw {
-            let c = if (x + y) & 1 == spec.gpar {
-                1
-            } else if y & 1 == 0 {
-                0
+            let green = (x + y) & 1 == spec.gpar;
+            let v = if !green {
+                spec.level * if y & 1 == 0 { 0.8 } else { 0.5 }
+            } else if spec.flat {
+                spec.level
             } else {
-                2
-            };
-            let v = if spec.flat { spec.level * [0.8, 1.0, 0.5][c] } else { scene.value(c, x as f64 + p[0], y as f64 + p[1]) } * gain;
+                let (xf, yf) = (x as f64, y as f64);
+                let (u, w) = (aff[0] * xf + aff[1] * yf + aff[2], aff[3] * xf + aff[4] * yf + aff[5]);
+                lum.get(y * spec.aw + x).copied().unwrap_or(spec.level).max(50.0) * scene.colour(1, u, w)
+            } * gain;
             let n = if spec.noise_free { 0.0 } else { (NOISE_A * v.max(1.0)).sqrt() * rng.normal() };
             out.push((BLACK + v + n).round().clamp(0.0, 65535.0) as u16);
         }

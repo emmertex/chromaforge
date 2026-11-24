@@ -74,9 +74,9 @@ fn transpose(data: &mut [C64], n: usize) {
     }
 }
 
-/// Periodic Hann window of `n` samples.
+/// Hann window of `n` samples, sampled at the half-sample positions `(i + 0.5) / n` (no zero end points).
 pub fn hann(n: usize) -> Vec<f64> {
-    (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n.max(1) as f64).cos()).collect()
+    (0..n).map(|i| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * (i as f64 + 0.5) / n.max(1) as f64).cos()).collect()
 }
 
 /// Wrapped index: `i` in `0..n` becomes `i` for `i < n / 2` and `i - n` above.
@@ -99,7 +99,14 @@ fn spectrum(fft: &Fft2, win: &[f64], a: &[f64]) -> Option<Vec<C64>> {
     if a.len() != n * n || a.iter().any(|v| !v.is_finite()) {
         return None;
     }
-    let m = a.iter().sum::<f64>() / a.len() as f64;
+    // the window-weighted mean is removed, then the window applied
+    let (mut sw, mut sa) = (0.0, 0.0);
+    for (i, v) in a.iter().enumerate() {
+        let w = win.get(i % n).copied().unwrap_or(0.0) * win.get(i / n).copied().unwrap_or(0.0);
+        sw += w;
+        sa += w * v;
+    }
+    let m = if sw > 0.0 { sa / sw } else { 0.0 };
     let mut f: Vec<C64> = a
         .iter()
         .enumerate()
@@ -112,17 +119,34 @@ fn spectrum(fft: &Fft2, win: &[f64], a: &[f64]) -> Option<Vec<C64>> {
 /// magnitude, the peak refined by a parabola in x and y). `None` for planes of the wrong length, non-finite values or
 /// no energy.
 pub fn phase_correlation(fft: &Fft2, a: &[f64], b: &[f64]) -> Option<PhaseShift> {
+    phase_correlation_filtered(fft, a, b, None)
+}
+
+/// Phase correlation with the normalised cross spectrum weighted by a Gaussian of `cutoff` cycles per sample (standard
+/// deviation): bins at high frequency, where a band-limited scene has nothing and a static pattern or noise dominates,
+/// count less. `None` as `cutoff` weights all bins equally.
+pub fn phase_correlation_filtered(fft: &Fft2, a: &[f64], b: &[f64], cutoff: Option<f64>) -> Option<PhaseShift> {
     let n = fft.side();
     let win = hann(n);
     let fa = spectrum(fft, &win, a)?;
     let fb = spectrum(fft, &win, b)?;
+    let weight = |i: usize| -> f64 {
+        match cutoff {
+            Some(c) if c > 0.0 => {
+                let (fx, fy) = (wrap(i % n, n) / n as f64, wrap(i / n, n) / n as f64);
+                (-(fx * fx + fy * fy) / (2.0 * c * c)).exp()
+            }
+            _ => 1.0,
+        }
+    };
     let mut p: Vec<C64> = fb
         .iter()
         .zip(&fa)
-        .map(|(b, a)| {
+        .enumerate()
+        .map(|(i, (b, a))| {
             let c = b * a.conj();
             let m = c.norm();
-            if m > 1e-30 { c / m } else { C64::new(0.0, 0.0) }
+            if m > 1e-30 { c / m * weight(i) } else { C64::new(0.0, 0.0) }
         })
         .collect();
     if p.iter().all(|c| c.re == 0.0 && c.im == 0.0) {

@@ -71,6 +71,18 @@ impl GreenSeries {
         Ok(())
     }
 
+    /// Adds a frame that is already in the half-width green layout (`aw / 2` samples per row, `ah` rows); `Err` for any other length or the frame cap.
+    pub fn push_green_frame(&mut self, green: Vec<u16>) -> Result<(), String> {
+        if self.frames.len() >= MAX_FRAMES {
+            return Err(format!("more than {MAX_FRAMES} frames"));
+        }
+        if green.len() != self.aw / 2 * self.ah {
+            return Err(format!("a green frame of {} samples does not fit {} x {}", green.len(), self.aw, self.ah));
+        }
+        self.frames.push(green);
+        Ok(())
+    }
+
     /// Green sample of frame `k` at site `(x, y)`, `None` outside the area, on a non-green site or for a missing frame.
     #[inline]
     pub fn g(&self, k: usize, x: i64, y: i64) -> Option<f64> {
@@ -116,6 +128,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_green_frame_in_the_half_width_layout_is_accepted_only_at_the_right_length() {
+        let mut s = GreenSeries::new(8, 4, 0, 1, 0.0, 100.0, (1.0, 0.0)).unwrap();
+        assert!(s.push_green_frame(vec![0; 15]).is_err());
+        assert!(s.push_green_frame(vec![7; 16]).is_ok());
+        assert_eq!(s.g(0, 1, 0), Some(7.0));
+        assert_eq!(s.g(0, 0, 0), None);
     }
 
     #[test]

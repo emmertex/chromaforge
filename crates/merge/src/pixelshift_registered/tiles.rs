@@ -216,7 +216,7 @@ mod tests {
     fn flat_or_dark_or_clipped_scenes_give_no_tiles() {
         let flat = series(&Spec { aw: 2400, ah: 1800, frames: 1, flat: true, ..Spec::default() }).unwrap();
         assert!(select_tiles(&flat).tiles.is_empty(), "no texture");
-        let dark = series(&Spec { aw: 2400, ah: 1800, frames: 1, level: 50.0, ..Spec::default() }).unwrap();
+        let dark = series(&Spec { aw: 2400, ah: 1800, frames: 1, level: 50.0, contrast: 0.01, ..Spec::default() }).unwrap();
         assert!(scored_tiles(&dark, BAR_LOW).is_empty(), "too dark");
         let clipped = series(&Spec { aw: 2400, ah: 1800, frames: 1, level: 20_000.0, ..Spec::default() }).unwrap();
         assert!(scored_tiles(&clipped, BAR_LOW).is_empty(), "clipped");
