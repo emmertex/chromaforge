@@ -565,11 +565,23 @@ pub struct Profile {
     /// without it keep their JSON (and hash).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub camera: String,
+    /// The base curve that replaces the base tone of a raw (`base:<file stem>`, see [`crate::base_curve`]), or empty for
+    /// the default base tone. Omitted when empty, so settings without it keep their JSON (and hash). Not the Tone Curve
+    /// tool ([`ToneCurve`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_curve: String,
 }
 
 impl Default for Profile {
     fn default() -> Self {
-        Self { id: "lc.color".into(), amount: 100.0, camera_local_tone: false, camera_colour: CameraColour::Auto, camera: String::new() }
+        Self {
+            id: "lc.color".into(),
+            amount: 100.0,
+            camera_local_tone: false,
+            camera_colour: CameraColour::Auto,
+            camera: String::new(),
+            base_curve: String::new(),
+        }
     }
 }
 
