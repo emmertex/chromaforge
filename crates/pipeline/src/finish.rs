@@ -541,6 +541,22 @@ pub fn base_tone(s: &DevelopSettings, info: &SourceInfo, peak: f32) -> ToneMap {
     base_tone_with_contrast_blacks(s, info, peak, s.light.contrast, s.light.blacks)
 }
 
+/// Why the base curve a raw photo selected (`profile.base_curve`) is not used, for the panel and an export's
+/// warnings: its file is not installed (the photo keeps the id and renders with the default base tone until it is back),
+/// or this build cannot render it. `None`: no curve selected, not a raw (a base curve only replaces a raw's base tone),
+/// or the curve is in use.
+pub fn base_curve_problem(s: &DevelopSettings, info: &SourceInfo) -> Option<String> {
+    let id = &s.profile.base_curve;
+    if id.is_empty() || !info.raw {
+        return None;
+    }
+    let shown = id.strip_prefix(lcc_develop::base_curve::ID_PREFIX).unwrap_or(id);
+    match lcc_develop::base_curve::get(id) {
+        None => Some(format!("The base curve \"{shown}\" was not found; the default base tone is used.")),
+        Some(e) => e.curve.unsupported().map(|why| format!("The base curve \"{shown}\" is not used: {why}; the default base tone is used.")),
+    }
+}
+
 pub fn base_tone_with_contrast_blacks(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast: f64, blacks: f64) -> ToneMap {
     // the SDR rendition of an HDR edit: the HDR curve, its highlights rolled off into SDR white
     // (issue #69); SDR edits never get here (their rolloff peak is 1)
@@ -558,6 +574,13 @@ fn base_tone_at_with(s: &DevelopSettings, info: &SourceInfo, peak: f32, contrast
     let raw = info.raw
         && !(crate::plugin_filters::any_active(s)
             && crate::plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Source).neutral_base_tone());
+    // A raw photo that selects a base curve (`profile.base_curve`) takes its base tone from that curve file instead of
+    // the camera look or the generic curve: it replaces them, nothing of `info.camera_tone` is applied. A curve that is
+    // not installed (its file is missing) or that this build cannot render falls through to the default base tone
+    // below, and `base_curve_problem` tells the panel and the export why.
+    if raw && let Some(e) = lcc_develop::base_curve::get(&s.profile.base_curve).filter(|e| e.curve.unsupported().is_none()) {
+        return ToneMap::film(&e.curve, info.white_scale, contrast, l.whites, blacks, peak);
+    }
     match s.process.process() {
         // V2 changes the Highlights/Shadows base (`local::tone_base`), V5 the over-range colours
         // ([`hue_clip`]), V6 Denoise, V7 grain: not the tone map

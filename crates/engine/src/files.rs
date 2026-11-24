@@ -866,6 +866,15 @@ fn load_bytes_now(
             tables: tables.as_ref(),
             hue_sat: hue_sat.as_ref(),
         };
+        // What a white-balanced neutral pixel at the sensor's white (1, 1, 1 after the multipliers) reads as luminance
+        // once the colour model has run (the matrix's neutral row sums, its fitted look's gain, the baseline exposure):
+        // the scale a base curve divides the scene value by, so the curve sees sensor white as 1 (`SourceInfo::white_scale`).
+        let white_scale = {
+            let m = colour.matrix.to_f32();
+            let neutral = [m[0].iter().sum::<f32>(), m[1].iter().sum::<f32>(), m[2].iter().sum::<f32>()];
+            let y = lcc_color::luminance_2020(neutral) * colour.gain;
+            if y.is_finite() && y > 0.0 { y } else { 1.0 }
+        };
         // camera RGB → what the pipeline takes: clipped highlights rebuilt, white balance and the colour model applied,
         // fitted to `max_edge` and upright (the same for the plain and the denoised picture)
         let finish = |mut img: Rgb32f| {
@@ -927,6 +936,7 @@ fn load_bytes_now(
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
                 camera_tone,
+                white_scale,
                 mattes,
                 local_tone,
                 filters: None,

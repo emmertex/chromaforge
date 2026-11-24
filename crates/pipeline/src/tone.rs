@@ -230,6 +230,55 @@ impl ToneMap {
             .collect();
         ToneMap { lut, chroma }
     }
+    /// Contrast, Whites and Blacks (−100..100) acting on a display-linear value `y` in 0..=1, as they act under a base
+    /// curve: the perceptual-domain S-curve and the Whites/Blacks response of [`ToneMap::display_hdr`], but without its
+    /// shoulder above 0.95 (a base curve brings its own, and a shoulder that only exists while a slider is non-zero
+    /// would jump between 0 and 1). Exactly `y` while all three are 0; continuous in each slider at 0 (every term
+    /// carries a factor of its slider); the result is in 0..=1 and, over `y`, non-decreasing for the slider ranges the
+    /// tests cover (the table builders still run [`monotone`] over the whole table).
+    pub fn adjust(y: f32, contrast: f64, whites: f64, blacks: f64) -> f32 {
+        if contrast == 0.0 && whites == 0.0 && blacks == 0.0 {
+            return y;
+        }
+        let (c, w, b) = ((contrast / 100.0) as f32, (whites / 100.0) as f32, (blacks / 100.0) as f32);
+        let m = GREY.powf(1.0 / 2.2);
+        let mut p = y.max(0.0).powf(1.0 / 2.2);
+        if p <= 1.0 {
+            // S-curve anchored at 0, grey and 1
+            p += c * 0.35 * (p - m) * (1.0 - (2.0 * p - 1.0).powi(2));
+        }
+        p += w_b_shift(p, w, b);
+        p.max(0.0).powf(2.2).clamp(0.0, 1.0)
+    }
+
+    /// The base tone of a raw photo that selects a base curve (`profile.base_curve`): the curve replaces the camera
+    /// look's tone or the generic raw curve, it is not applied on top of it.
+    ///
+    /// PROVISIONAL: which curve of a curve file, which x domain and which gain are decided by measurement, not by this
+    /// code. For now the curve is evaluated on luminance only (per-channel steps are not rendered, see
+    /// `BaseCurve::unsupported`), as `x = gain · v / (white · white_scale)` where `v` is the scene-linear luminance
+    /// the tone table is indexed by (after Exposure and the local tone steps) and `white_scale` is the source's
+    /// colour-model scale (`SourceInfo::white_scale`: what a white-balanced neutral sensor-white pixel reads there),
+    /// so that sensor white is 1.0 whatever the colour model's own gain is. The output is display-linear.
+    ///
+    /// Then Contrast, Whites and Blacks ([`ToneMap::adjust`], after the curve, on display values, as
+    /// [`ToneMap::camera_hdr`] orders them), then the HDR lift to `peak` exactly as [`ToneMap::camera_hdr`] does it
+    /// (so `peak` 1 is the SDR table, and an HDR render matches it up to 1.5 EV over grey).
+    pub fn film(curve: &lcc_develop::base_curve::BaseCurve, white_scale: f32, contrast: f64, whites: f64, blacks: f64, peak: f32) -> ToneMap {
+        let peak = if peak.is_finite() { peak.max(1.0) } else { 1.0 };
+        let scale = if white_scale.is_finite() && white_scale > 0.0 { white_scale } else { 1.0 };
+        let top = (2.9 - 1.6 * (whites as f32 / 100.0) + peak.log2() + 1.0).max(HDR_FROM_EV + 0.5);
+        let lut = (0..LUT_N)
+            .map(|i| {
+                let ev = LUT_MIN_EV + (LUT_MAX_EV - LUT_MIN_EV) * i as f32 / (LUT_N - 1) as f32;
+                let y = curve.eval_luminance(GREY * 2f32.powf(ev) / scale).clamp(0.0, 1.0);
+                let o = ToneMap::adjust(y, contrast, whites, blacks);
+                if peak > 1.0 { (o + (peak - 1.0) * smooth(HDR_FROM_EV, top, ev)).clamp(0.0, peak) } else { o }
+            })
+            .collect();
+        ToneMap { lut: monotone(lut), chroma: NO_CHROMA }
+    }
+
     /// `contrast`, `whites`, `blacks` in −100..100 (Lightroom slider units).
     pub fn new(contrast: f64, whites: f64, blacks: f64) -> ToneMap {
         ToneMap::hdr(contrast, whites, blacks, 1.0)

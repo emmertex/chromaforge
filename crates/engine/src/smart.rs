@@ -97,6 +97,9 @@ struct SmartFacts {
     lens: Option<lcc_develop::EmbeddedLens>,
     camera_color: Option<lcc_pipeline::CameraColor>,
     local_tone: Option<lcc_pipeline::local_tone::LocalTone>,
+    /// `SourceInfo::white_scale` (absent in proxies written before it existed, and while it is 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    white_scale: Option<f32>,
     /// The semantic mattes whose bytes follow the facts, in this order.
     #[serde(default)]
     mattes: Vec<StoredMatte>,
@@ -202,6 +205,7 @@ pub fn encode(img: &Rgb32f, info: Option<&SourceInfo>) -> Result<Vec<u8>, String
             lens: i.lens,
             camera_color: i.camera_color.as_deref().cloned(),
             local_tone: i.local_tone.as_deref().cloned(),
+            white_scale: Some(i.white_scale).filter(|w| *w != 1.0),
             mattes: matte_list,
         };
         let facts = serde_json::to_vec(&facts).map_err(|e| e.to_string())?;
@@ -252,6 +256,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>, Option<Source
         camera_tone: tone,
         mattes: (!mattes.is_empty()).then(|| Arc::new(mattes)),
         local_tone: f.local_tone.map(Arc::new),
+        white_scale: f.white_scale.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(1.0),
         native_long: None,
         // (the fork's own facts: the process's filters, and no colorimetric matrices on record)
         // (a smart preview keeps no transparency: an offline original exports onto white)

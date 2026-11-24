@@ -83,6 +83,38 @@ fn camera_tone_and_relative_wb() {
     check("camera chroma curve edited", &src, &info, &s, &RenderRequest::fit(320, 240));
 }
 
+// A selected base curve (a synthetic one): the GPU takes the same tone table as the CPU, SDR and HDR, neutral and
+// edited, over a camera look it replaces.
+#[test]
+fn base_curve_matches() {
+    if !gpu() {
+        return;
+    }
+    let doc = br#"{
+        "format": "base-curve", "version": 1,
+        "input": { "encoding": "linear", "gain": 1.0, "white": 1.0 },
+        "curves": { "a": { "interpolation": "monotone-cubic", "points": [[0, 0], [0.04, 0.1], [0.2, 0.45], [0.5, 0.82], [0.8, 0.96], [1, 1]] } },
+        "apply": [ { "op": "curve", "curve": "a", "on": "luminance" } ]
+    }"#;
+    let curve = lcc_develop::base_curve::parse(doc).expect("a valid synthetic curve");
+    lcc_develop::base_curve::install_library(vec![("base:Synthetic".into(), curve, lcc_develop::base_curve::hash_bytes(doc))]);
+    let src = scene(2, 320, 240);
+    let tone = lcc_pipeline::tone::CameraTone::default_raw().expect("default camera tone");
+    let info = SourceInfo { raw: true, camera_tone: Some(tone), white_scale: 1.2, ..Default::default() };
+    let mut s = DevelopSettings::default();
+    s.profile.base_curve = "base:Synthetic".into();
+    check("base curve neutral", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.light.exposure = 1.0;
+    s.light.contrast = 40.0;
+    s.light.whites = 20.0;
+    s.light.blacks = -15.0;
+    check("base curve edited", &src, &info, &s, &RenderRequest::fit(320, 240));
+    s.hdr.enabled = true;
+    s.hdr.max_ev = 2.0;
+    check_hdr("base curve hdr", &src, &info, &s, 320, 240);
+    lcc_develop::base_curve::install_library(vec![]);
+}
+
 fn scene(i: usize, w: usize, h: usize) -> Arc<Rgb32f> {
     Arc::new(lcc_scenes::demo_library()[i].render(w, h))
 }

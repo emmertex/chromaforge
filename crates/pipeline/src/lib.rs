@@ -123,6 +123,11 @@ pub struct SourceInfo {
     /// the developed pixels (Bradford, linear Rec.2020).
     pub camera_color: Option<Arc<CameraColor>>,
     pub camera_tone: Option<tone::CameraTone>,
+    /// Raw sources: what a white-balanced neutral pixel at the sensor's white reads as scene-linear luminance after
+    /// the colour model (matrix, fitted look gain, baseline exposure): 1.0 when the model keeps white at 1. A base curve
+    /// divides the scene value by it, so the curve sees sensor white as 1.0 whatever gain the colour model carries
+    /// (`tone::ToneMap::film`). 1.0 for sources that do not know it.
+    pub white_scale: f32,
     /// Segmentation mattes stored in the file (DNG semantic masks): AI masks use them.
     pub mattes: Option<Arc<masks::Mattes>>,
     /// The raw's own local tone mapping (DNG `ProfileGainTableMap`), rendered only when the
@@ -213,6 +218,7 @@ impl Default for SourceInfo {
             legacy_relative_wb: false,
             camera_color: None,
             camera_tone: None,
+            white_scale: 1.0,
             mattes: None,
             local_tone: None,
             filters: None,
@@ -1507,6 +1513,8 @@ fn an_exact_box_past_the_pixel_ceiling_is_shrunk() {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_base_curve;
 #[cfg(test)]
 mod tests_cpu_only_cost;
 #[cfg(test)]
