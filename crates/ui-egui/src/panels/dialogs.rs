@@ -3569,7 +3569,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
     }
 
     // ---- File Settings: format (quality) / color space / bit depth
-    const FORMATS: [(F, &str); 10] = [
+    const FORMATS: [(F, &str); 11] = [
         (F::Jpeg, "JPEG"),
         (F::Png, "PNG"),
         (F::Tiff, "TIFF"),
@@ -3579,8 +3579,11 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         (F::Jxl, "JPEG XL"),
         (F::Dng, "DNG"),
         (F::RenderedDng, "DNG"),
+        (F::Exr, "OpenEXR"),
         (F::Original, "Original files"),
     ];
+    use lcc_engine::export::ExrPrimaries as P;
+    const EXR_PRIMARIES: [(P, &str); 2] = [(P::Rec2020, "Linear Rec. 2020"), (P::AcesCg, "ACEScg")];
     const SPACES: [(C, &str); 5] =
         [(C::Srgb, "sRGB"), (C::DisplayP3, "P3"), (C::AdobeRgb, "Adobe RGB"), (C::ProPhoto, "ProPhoto"), (C::Rec2020, "Rec.2020")];
     let mut summary = label_of(&FORMATS, opts.format);
@@ -3588,7 +3591,9 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         summary = format!("{summary} ({}%)", opts.quality);
     }
     if rendered {
-        if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
+        if opts.format == F::Exr {
+            summary = format!("{summary} / {}", label_of(&EXR_PRIMARIES, opts.exr_primaries));
+        } else if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
             summary = format!("{summary} / {}", label_of(&SPACES, opts.effective_space()));
         }
         let depths = lcc_engine::export::ExportOptions::bit_depths(opts.format);
@@ -3616,6 +3621,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 (F::Webp, "WebP"),
                 (F::Avif, "AVIF"),
                 (F::Jxl, "JPEG XL"),
+                (F::Exr, "OpenEXR"),
                 (F::Dng, "DNG"),
                 (F::Original, "Original files"),
             ],
@@ -3678,7 +3684,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 &mut opts.dng_compression,
             );
         }
-        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl) {
+        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl | F::Exr) {
             let tip = crate::i18n::tr(
                 "Photos edited in HDR: JPEG with an HDR gain map (looks right everywhere, brighter highlights on HDR displays), AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ; TIFF needs 32-bit float",
             );
@@ -3706,6 +3712,10 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ (HDR JPEG XL)")).color(t.text_dim));
         } else if opts.format == F::Avif {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB (AVIF)")).color(t.text_dim));
+        } else if opts.format == F::Exr {
+            choices(ui, "Primaries", "exportExrPrimaries", &EXR_PRIMARIES, &mut opts.exr_primaries);
+            let note = "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.";
+            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
         } else {
             use lcc_engine::export::OutputSpace as C;
             choices(

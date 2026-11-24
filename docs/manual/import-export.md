@@ -41,7 +41,7 @@ CR2/CR3, Fujifilm RAF, Panasonic RW2, Olympus ORF, Pentax PEF, Samsung SRW and m
 
 File → Export… opens the export dialog; File → Export with Previous (`Cmd+Alt+Shift+E`) repeats the last one.
 
-- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP, AVIF, DNG, or the original file with an XMP sidecar.
+- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP, AVIF, OpenEXR (scene-linear 16-bit half or 32-bit float, linear Rec. 2020 or ACEScg), DNG, or the original file with an XMP sidecar.
   HDR edits can export as gain-map JPEGs or float TIFFs.
 - Size by long/short edge, width/height, megapixels or percent; resolution in ppi; JPEG quality or a file size limit.
 - Colour space sRGB, Display P3, Adobe RGB, ProPhoto RGB or Rec. 2020.

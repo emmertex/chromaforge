@@ -18,6 +18,7 @@ sidebar:
 | HEIC / HEIF | yes in release builds, and on Android | no |
 | PSD / PSB | merged composite | PSD; also Edit In round trips (TIFF) |
 | GIF, BMP | yes | no |
+| OpenEXR | no | yes (scene-linear half / float, linear Rec. 2020 or ACEScg) |
 | DNG | yes (all kinds) | yes (incl. lossy, rendered DNG) |
 | HDR gain-map JPEG, PQ AVIF / JXL, float TIFF | yes | yes (no HLG) |
 | Original plus XMP sidecar | n/a | yes |

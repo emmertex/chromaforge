@@ -131,6 +131,7 @@ ab_glyph = { version = "0.2", default-features = false, features = ["std"] }  # 
 png = "0.18"
 tiff = "0.11"
 image-webp = "0.2"
+exr = { version = "1.74", default-features = false } # BSD-3-Clause, pure Rust (no unsafe) OpenEXR; scene-linear export
 moxcms = { version = "0.9", default-features = false, features = ["lut"] }
 jxl-oxide = { version = "0.12", default-features = false }
 jixel = "=0.3.4" # BSD-3-Clause OR Apache-2.0, pure-Rust JPEG XL encoder (export; port of libjxl-tiny)

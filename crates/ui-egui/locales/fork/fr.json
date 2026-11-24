@@ -2449,6 +2449,7 @@
   "Scan": "Analyser",
   "Scan photos that have a score already (rescan all)": "Analyser aussi les photos déjà notées (tout réanalyser)",
   "Scanning image quality": "Analyse de la qualité d'image",
+  "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.": "Linéaire de scène, ZIP sans perte ; les primaires sont écrites dans le fichier. Les valeurs au-dessus du blanc sont conservées pour les photos retouchées en HDR.",
   "Scores photos for technical quality (sharpness, noise, exposure and JPEG artifacts) and keeps each score on the photo so the Library can filter and sort by it.": "Évalue la qualité technique des photos (netteté, bruit, exposition et artefacts JPEG) et conserve chaque note avec la photo pour que la bibliothèque puisse filtrer et trier dessus.",
   "Screen Edges to Keep Clear": "Bords d’écran à laisser libres",
   "Screen Mode": "Mode d’écran",

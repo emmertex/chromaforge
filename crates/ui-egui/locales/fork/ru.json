@@ -2699,6 +2699,7 @@
   "Scan failed": "Сканирование не удалось",
   "Scan photos that have a score already (rescan all)": "Сканировать и уже оценённые фотографии (всё заново)",
   "Scanning image quality": "Сканирование качества изображений",
+  "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.": "Линейный по сцене, ZIP без потерь; основные цвета записываются в файл. Значения выше белого сохраняются для фото, отредактированных в HDR.",
   "Scores photos for technical quality (sharpness, noise, exposure and JPEG artifacts) and keeps each score on the photo so the Library can filter and sort by it.": "Оценивает фотографии по техническому качеству (резкость, шум, экспозиция и артефакты JPEG) и сохраняет оценку у фотографии, чтобы библиотека могла фильтровать и сортировать по ней.",
   "Screen Edges to Keep Clear": "Свободные края экрана",
   "Screen Mode": "Режим экрана",
