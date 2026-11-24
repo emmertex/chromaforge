@@ -288,6 +288,7 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 },
                 PointColor { lum: 0.5, chroma: 0.12, hue: 270.0, variance: -60.0, sat_shift: 40.0, hue_range: 80.0, ..Default::default() },
                 PointColor { lum: 0.4, chroma: 0.01, hue: 0.0, lum_shift: -30.0, ..Default::default() },
+                PointColor { lum: 0.6, chroma: 0.1, hue: 45.0, hue_uniformity: 80.0, sat_uniformity: 60.0, lum_uniformity: 40.0, range: 90.0, ..Default::default() },
             ];
         }),
         ("b&w mix", |s| {

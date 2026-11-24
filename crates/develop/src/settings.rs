@@ -928,6 +928,12 @@ pub struct PointColor {
     /// −100 compresses the colour spread within the range towards the sample (evens out e.g.
     /// skin), +100 expands it.
     pub variance: f64,
+    /// Skin-tone uniformity 0..100 per axis (Capture One's Uniformity): pulls the hues,
+    /// saturations (chroma) and lightnesses within the range towards the sample, so at 100 every
+    /// colour at the range's centre takes the sample's value on that axis.
+    pub hue_uniformity: f64,
+    pub sat_uniformity: f64,
+    pub lum_uniformity: f64,
     /// Overall range 0..100 (scales all three widths).
     pub range: f64,
     pub hue_range: f64,
@@ -945,6 +951,9 @@ impl Default for PointColor {
             sat_shift: 0.0,
             lum_shift: 0.0,
             variance: 0.0,
+            hue_uniformity: 0.0,
+            sat_uniformity: 0.0,
+            lum_uniformity: 0.0,
             range: 50.0,
             hue_range: 50.0,
             sat_range: 50.0,
@@ -956,7 +965,11 @@ impl Default for PointColor {
 impl PointColor {
     /// True when the sample changes nothing.
     pub fn is_neutral(&self) -> bool {
-        self.hue_shift == 0.0 && self.sat_shift == 0.0 && self.lum_shift == 0.0 && self.variance == 0.0
+        self.hue_shift == 0.0 && self.sat_shift == 0.0 && self.lum_shift == 0.0
+            && self.variance == 0.0
+            && self.hue_uniformity == 0.0
+            && self.sat_uniformity == 0.0
+            && self.lum_uniformity == 0.0
     }
 }
 

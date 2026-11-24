@@ -2575,6 +2575,10 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     for k in ["hueShift", "satShift", "lumShift", "variance"] {
         control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
     }
+    sub_title(ui, crate::i18n::tr("Uniformity"));
+    for k in ["hueUniformity", "satUniformity", "lumUniformity"] {
+        control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
+    }
     sub_title(ui, crate::i18n::tr("Range"));
     for k in ["range", "hueRange", "satRange", "lumRange"] {
         control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
