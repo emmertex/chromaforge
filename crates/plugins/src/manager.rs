@@ -1473,6 +1473,10 @@ impl Manager {
         };
         lines.extend(error.as_ref().map(|e| format!("update check failed: {e}")));
         lines.extend(offer.as_ref().map(|o| format!("update check: version {} is available", o.version)));
+        // a clean check leaves a record too; a feed entry that was ignored already has its own line
+        if error.is_none() && offer.is_none() && lines.is_empty() {
+            lines.push(format!("update check: up to date (version {})", check.version));
+        }
         for line in lines {
             p.push_log(line);
         }
