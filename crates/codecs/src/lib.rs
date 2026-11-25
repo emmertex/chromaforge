@@ -75,17 +75,35 @@ pub enum Error {
     Encode(String),
 }
 
-/// The text of [`Error::TooLarge`]: the size in megapixels and, when that is over
-/// [`DEFAULT_MAX_PIXELS`], the limit, so the message says what is wrong (issue #1477). A refusal
-/// under the limit came from a decoder's memory budget or a failed allocation.
+/// The text of [`Error::TooLarge`]: the size and, when that is over [`DEFAULT_MAX_PIXELS`], the
+/// limit, so the message says what is wrong (issue #1477). Past the limit both are exact pixel
+/// counts: the limit is Lightroom Classic's "512 megapixels", which counts 2^20 pixels to the
+/// megapixel (536,870,912), so a size in decimal megapixels near it (536.9) would read the same as
+/// the limit. A refusal under the limit came from a decoder's memory budget or a failed allocation.
 fn too_large_message(w: u64, h: u64) -> String {
     let px = w.saturating_mul(h);
-    let mp = |n: u64| n as f64 / 1e6;
     if px > DEFAULT_MAX_PIXELS {
-        format!("image too large: {w}×{h} is {:.1} MP; the limit is {:.0} MP", mp(px), mp(DEFAULT_MAX_PIXELS))
+        format!(
+            "image too large: {w}×{h} is {} pixels; the limit is {} (Lightroom Classic's 512 megapixels)",
+            grouped(px),
+            grouped(DEFAULT_MAX_PIXELS)
+        )
     } else {
-        format!("image too large: {w}×{h} ({:.1} MP) needs more memory than its decoder allows", mp(px))
+        format!("image too large: {w}×{h} ({:.1} MP) needs more memory than its decoder allows", px as f64 / 1e6)
     }
+}
+
+/// `n` with a comma between each group of three digits (536,870,912).
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `w × h × c` samples, or [`Error::TooLarge`] when that overflows `usize` (a 32-bit `usize` on wasm32 wraps on
@@ -330,12 +348,23 @@ mod too_large_tests {
     use super::*;
 
     /// The refusal says how big the image is and, past the limit, what the limit is (issue #1477).
+    /// 23171 × 23171 is the smallest square over 512 × 2^20 pixels; 17070 × 30092 (513.7 MP, the
+    /// scan of #1477) is now under it, so a refusal of it can only be a decoder budget or memory.
     #[test]
     fn the_message_names_the_size_and_the_limit() {
-        let over = Error::TooLarge(17070, 30092).to_string();
-        assert!(over.contains("17070×30092") && over.contains("513.7 MP") && over.contains("512 MP"), "{over}");
+        let over = Error::TooLarge(23171, 23171).to_string();
+        assert!(over.contains("23171×23171") && over.contains("536,895,241 pixels") && over.contains("the limit is 536,870,912"), "{over}");
+        let under = Error::TooLarge(17070, 30092).to_string();
+        assert!(under.contains("17070×30092") && under.contains("513.7 MP") && !under.contains("limit"), "{under}");
         let budget = Error::TooLarge(64, 64).to_string();
         assert!(budget.contains("64×64") && !budget.contains("limit"), "{budget}");
+        // at the limit exactly is a budget refusal, one pixel over names the limit
+        assert!(!Error::TooLarge(16384, 32768).to_string().contains("limit"));
+        assert!(Error::TooLarge(DEFAULT_MAX_PIXELS + 1, 1).to_string().contains("the limit is"));
+        assert_eq!(
+            (grouped(0), grouped(999), grouped(1000), grouped(u64::MAX)),
+            ("0".into(), "999".into(), "1,000".into(), "18,446,744,073,709,551,615".into())
+        );
         // hostile sizes neither overflow nor panic
         for (w, h) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0)] {
             assert!(Error::TooLarge(w, h).to_string().starts_with("image too large"));
