@@ -1,7 +1,7 @@
 //! Organizing commands: stacks (group, ungroup, set top, expand/collapse, auto-stack by capture
 //! time) and virtual copies.
 
-use lcc_catalog::{HistoryStep, Op, PhotoId, Stack, StackId};
+use lcc_catalog::{HistoryStep, Op, PhotoId, Stack, StackId, StackTop};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -352,13 +352,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "Auto-Stack by Capture Time",
             [],
             None,
-            "{gap?: seconds between consecutive captures (default 60), ids? (default: the selection if several photos, else the current view), preview?: bool} → {stacks, photos}",
+            "{gap?: seconds between consecutive captures (default 60), top?: \"first\" (the first photo in time, default), \"raw\" or \"jpeg\" (a raw file, or a JPEG or other non-raw image, goes on top of each stack; a stack without one keeps the first photo), ids? (default: the selection if several photos, else the current view), preview?: bool} → {stacks, photos}",
             always,
             |s, p| {
                 let gap = f64_or(p, "gap", 60.0).max(0.0);
                 let explicit = p.get("ids").is_some();
                 let pool = if explicit || s.selection.ids.len() > 1 { s.targets(p)? } else { s.visible_cloned() };
-                let groups = s.catalog.auto_stack_groups(&pool, gap);
+                let top = match str_param(p, "top") {
+                    None => StackTop::First,
+                    Some("first") => StackTop::First,
+                    Some("raw") => StackTop::Raw,
+                    Some("jpeg") => StackTop::Jpeg,
+                    Some(other) => return Err(bad("stack.auto", format!("top: unknown choice {other:?}"))),
+                };
+                let mut groups = s.catalog.auto_stack_groups(&pool, gap);
+                s.catalog.auto_stack_tops(&mut groups, top);
                 let photos: usize = groups.iter().map(Vec::len).sum();
                 if bool_or(p, "preview", false) {
                     return Ok(json!({"stacks": groups.len(), "photos": photos}));

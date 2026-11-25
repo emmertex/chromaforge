@@ -1139,7 +1139,21 @@ pub(crate) fn prepare(
             e
         }
     };
-    Prepared { img, log_l, base, clarity_blur, texture_blur, sharpen_blur, dark, chroma_blur, air, masks, mask_tone: Vec::new(), px_per_long }
+    Prepared {
+        img,
+        log_l,
+        base,
+        clarity_blur,
+        texture_blur,
+        sharpen_blur,
+        dark,
+        chroma_blur,
+        air,
+        masks,
+        mask_tone: Vec::new(),
+        recolor: Vec::new(),
+        px_per_long,
+    }
 }
 
 /// The airlight of the whole output frame, estimated on a small render of it (`proxy_w` px wide):

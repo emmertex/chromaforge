@@ -225,39 +225,40 @@ pub(super) fn decode(bytes: &[u8], width: usize, height: usize, bits: u32) -> Re
         return Err(corrupt("missing end marker or unexpected trailing data"));
     }
     use rayon::prelude::*;
-    let slices: Vec<Vec<Vec<i32>>> = precincts
-        .par_chunks(header.slice_height)
-        .map(|slice| {
-            let mut bands: Vec<Vec<i32>> = geom.bands.iter().map(|b| Vec::with_capacity(b.wpb as usize * b.l1 as usize * slice.len())).collect();
-            // Vertical GCLI prediction is signalled even at Nikon slice starts. Its external
-            // predecessor is zero; the second row of component 2 still predicts within the precinct.
-            let mut top = PrecinctTop::default();
-            for (ph, body) in slice {
-                let mut body = Reader { rest: body };
-                let mut state = PrecinctState::default();
-                for layout in &packets {
-                    let packet = entropy::parse_packet_header(body.rest, &geom).map_err(corrupt)?;
-                    body.take(packet.header_bytes)?;
-                    let decoded = entropy::decode_packet_body(body.rest, &geom, ph, &packet, layout, &mut state, Some(&top)).map_err(corrupt)?;
-                    body.take(decoded.bytes_consumed)?;
-                }
-                // Lprc includes encoder padding (not necessarily zero), which is not another packet.
-                let dequantized =
-                    oxideav_jpegxs::dequant::dequantize_precinct(1, &geom, &entropy::precinct_truncation(&geom, ph), &state.coefficients, 4);
-                for (dst, src) in bands.iter_mut().zip(dequantized) {
-                    dst.extend(src);
-                }
-                top = PrecinctTop::capture(&geom, ph, &state);
-            }
-            Ok(bands)
-        })
-        .collect::<Result<_>>()?;
-    let mut gathered: Vec<Vec<i32>> = geom.bands.iter().map(|b| Vec::with_capacity(b.wpb as usize * b.l1 as usize * (h / 2))).collect();
-    for slice in slices {
-        for (dst, src) in gathered.iter_mut().zip(slice) {
-            dst.extend(src);
-        }
+    // The dequantised coefficients of every precinct go straight into their place in the final bands: a precinct's part
+    // of a band is `wpb × l1` samples, so slice `s` owns one contiguous range of each band and the slices write theirs in
+    // parallel (the per-slice bands that were gathered into these afterwards cost the same memory again, and a copy).
+    let stride: Vec<usize> = geom.bands.iter().map(|b| b.wpb as usize * b.l1 as usize).collect();
+    let mut gathered: Vec<Vec<i32>> = stride.iter().map(|&n| vec![0; n * (h / 2)]).collect();
+    let slice_height = header.slice_height;
+    let ranges = band_ranges(&mut gathered, &stride, slice_height, precincts.len());
+    // one list of ranges per slice, one range per band: the zips below stop at the shorter side, so a mismatch would
+    // drop bands or slices silently
+    if ranges.len() != precincts.len().div_ceil(slice_height) || ranges.iter().any(|r| r.len() != stride.len()) {
+        return Err(corrupt("unexpected band layout"));
     }
+    precincts.par_chunks(slice_height).zip(ranges).try_for_each(|(slice, mut ranges)| -> Result<()> {
+        // Vertical GCLI prediction is signalled even at Nikon slice starts. Its external
+        // predecessor is zero; the second row of component 2 still predicts within the precinct.
+        let mut top = PrecinctTop::default();
+        for (i, (ph, body)) in slice.iter().enumerate() {
+            let mut body = Reader { rest: body };
+            let mut state = PrecinctState::default();
+            for layout in &packets {
+                let packet = entropy::parse_packet_header(body.rest, &geom).map_err(corrupt)?;
+                body.take(packet.header_bytes)?;
+                let consumed =
+                    entropy::decode_packet_body(body.rest, &geom, ph, &packet, layout, &mut state, Some(&top)).map_err(corrupt)?.bytes_consumed;
+                body.take(consumed)?;
+            }
+            // Lprc includes encoder padding (not necessarily zero), which is not another packet.
+            let dequantized =
+                oxideav_jpegxs::dequant::dequantize_precinct(1, &geom, &entropy::precinct_truncation(&geom, ph), &state.coefficients, 4);
+            place_precinct(&mut ranges, i, dequantized, &stride)?;
+            top = PrecinctTop::capture(&geom, ph, &state);
+        }
+        Ok(())
+    })?;
     let map = band_map();
     let mut component_bands: Vec<Vec<Vec<i32>>> = Vec::with_capacity(4);
     for c in 0..4 {
@@ -304,48 +305,138 @@ pub(super) fn decode(bytes: &[u8], width: usize, height: usize, bits: u32) -> Re
     Ok((out, header.transfer.black))
 }
 
+/// The ranges of `gathered` (one buffer per band, `stride[b] × precincts` samples) that each slice of `slice_height`
+/// precincts owns: element `s` holds slice `s`'s range of every band, in band order (a short final slice gets a short range).
+fn band_ranges<'a>(gathered: &'a mut [Vec<i32>], stride: &[usize], slice_height: usize, precincts: usize) -> Vec<Vec<&'a mut [i32]>> {
+    let slice_height = slice_height.max(1);
+    let mut ranges: Vec<Vec<&mut [i32]>> = (0..precincts.div_ceil(slice_height)).map(|_| Vec::with_capacity(stride.len())).collect();
+    for (band, &n) in gathered.iter_mut().zip(stride) {
+        for (slice, chunk) in ranges.iter_mut().zip(band.chunks_mut((n * slice_height).max(1))) {
+            slice.push(chunk);
+        }
+    }
+    ranges
+}
+
+/// Writes the dequantised bands of the slice's `i`-th precinct into its place in each band's range of `ranges`. The
+/// bands and the strides must be the same in number, and every band exactly its geometry's size (`num_lines × wpb`).
+fn place_precinct(ranges: &mut [&mut [i32]], i: usize, dequantized: Vec<Vec<i32>>, stride: &[usize]) -> Result<()> {
+    if dequantized.len() != stride.len() || ranges.len() != stride.len() {
+        return Err(corrupt("unexpected number of bands in a precinct"));
+    }
+    for ((dst, src), &n) in ranges.iter_mut().zip(dequantized).zip(stride) {
+        let range = i.checked_mul(n).and_then(|start| Some(start..start.checked_add(n)?));
+        let Some(place) = range.and_then(|r| dst.get_mut(r)).filter(|p| p.len() == src.len()) else {
+            return Err(corrupt("unexpected size of a precinct's band"));
+        };
+        place.copy_from_slice(&src);
+    }
+    Ok(())
+}
+
 /// The inverse Star-Tetrix colour transform of JPEG XS (ISO/IEC 21122-1 Annex F) with `Ct = 0`, `Cf = 0` and
 /// `e1 = e2 = 0`, which Nikon writes: `[Ya, Cb, Cr, Δ]` half-resolution planes in, `[R, G1, G2, B]` out. The four
 /// lifting steps each read only the previous step's planes, so every step's rows are computed in parallel.
-fn inverse_star_tetrix([ya, cb, cr, delta]: [Vec<i32>; 4], w: usize, h: usize) -> [Vec<i32>; 4] {
-    use rayon::prelude::*;
-    // One lifting step: `out[x, y] = base[x, y] + f(x, y)` over the whole plane.
-    let step = |base: &[i32], f: &(dyn Fn(usize, usize) -> i32 + Sync)| -> Vec<i32> {
-        let mut out = vec![0; w * h];
-        if w > 0 {
-            out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-                for (x, v) in row.iter_mut().enumerate() {
-                    *v = base.get(y * w + x).copied().unwrap_or(0) + f(x, y);
-                }
-            });
-        }
-        out
-    };
-    let o = [&ya[..], &cb[..], &cr[..], &delta[..]];
+///
+/// Every step updates one component from the neighbours it has in *other* components (diagonal or cross, the parity of
+/// the offset changes the component: see [`component_of`]), so each plane is updated in place and no step allocates:
+/// the six steps used to allocate six planes of the picture's size, written once and dropped.
+fn inverse_star_tetrix(mut planes: [Vec<i32>; 4], w: usize, h: usize) -> [Vec<i32>; 4] {
+    const DIAGONAL: [(i32, i32); 4] = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+    const CROSS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
     // inverse average: Ya from the four diagonal Δ neighbours
-    let w1_0 = step(&ya, &|x, y| -floor_div(diagonal(&o, w, h, 0, x, y), 8));
-    let w1 = [&w1_0[..], &cb[..], &cr[..], &delta[..]];
+    lift_in_place(&mut planes, (w, h), 0, DIAGONAL, -1, 3);
     // inverse delta: Δ from the four diagonal luma neighbours
-    let w2_3 = step(&delta, &|x, y| floor_div(diagonal(&w1, w, h, 3, x, y), 4));
-    let w2 = [&w1_0[..], &cb[..], &cr[..], &w2_3[..]];
+    lift_in_place(&mut planes, (w, h), 3, DIAGONAL, 1, 2);
     // inverse Y: both greens from their four chroma neighbours
-    let w3_0 = step(&w1_0, &|x, y| -floor_div(cross(&w2, w, h, 0, x, y), 8));
-    let w3_3 = step(&w2_3, &|x, y| -floor_div(cross(&w2, w, h, 3, x, y), 8));
-    let w3 = [&w3_0[..], &cb[..], &cr[..], &w3_3[..]];
+    lift_in_place(&mut planes, (w, h), 0, CROSS, -1, 3);
+    lift_in_place(&mut planes, (w, h), 3, CROSS, -1, 3);
     // inverse CbCr: blue and red from their four green neighbours
-    let w4_1 = step(&cb, &|x, y| floor_div(cross(&w3, w, h, 1, x, y), 4));
-    let w4_2 = step(&cr, &|x, y| floor_div(cross(&w3, w, h, 2, x, y), 4));
-    [w4_2, w3_3, w3_0, w4_1]
+    lift_in_place(&mut planes, (w, h), 1, CROSS, 1, 2);
+    lift_in_place(&mut planes, (w, h), 2, CROSS, 1, 2);
+    let [ya, cb, cr, delta] = planes;
+    [cr, delta, ya, cb]
 }
 
-/// Sum of the four diagonal neighbours of component `c`'s sample `(x, y)`.
-fn diagonal(planes: &[&[i32]; 4], w: usize, h: usize, c: usize, x: usize, y: usize) -> i32 {
-    [(-1, -1), (1, -1), (-1, 1), (1, 1)].iter().map(|&(rx, ry)| neighbour(planes, w, h, c, x, y, rx, ry)).sum()
+/// [`lift`] on component `c` of `planes`, in place. The plane is taken out of the array while it is updated, so the
+/// neighbours are read from the other three; none of a component's neighbours is itself (the offsets change the
+/// parity of the position, see [`component_of`]), which the test `no_neighbour_is_the_component_itself` pins.
+fn lift_in_place(planes: &mut [Vec<i32>; 4], (w, h): (usize, usize), c: usize, dirs: [(i32, i32); 4], sign: i32, shift: u32) {
+    let Some(slot) = planes.get_mut(c) else { return };
+    let mut target = std::mem::take(slot);
+    // as the allocating version: the output is `w × h`, a base that is short counts as zeros
+    target.resize(w * h, 0);
+    let others = [&planes[0][..], &planes[1][..], &planes[2][..], &planes[3][..]];
+    lift(&others, &mut target, (w, h), c, dirs, sign, shift);
+    planes[c] = target;
 }
 
-/// Sum of the four horizontal and vertical neighbours of component `c`'s sample `(x, y)`.
-fn cross(planes: &[&[i32]; 4], w: usize, h: usize, c: usize, x: usize, y: usize) -> i32 {
-    [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().map(|&(rx, ry)| neighbour(planes, w, h, c, x, y, rx, ry)).sum()
+/// One lifting step over the whole plane, in place: `plane[x, y] += sign · ⌊(sum of the four neighbours of component
+/// `c` at `dirs`) / 2^shift⌋`, the neighbours read from `planes` as [`neighbour`] defines (`planes[c]` is not read).
+///
+/// Away from the image edges nothing is mirrored, so each neighbour is a fixed plane at a fixed offset (from
+/// [`component_of`]) and a row is four slices added up; the first and last row and column, where the access is
+/// mirrored, go through [`neighbour`] itself.
+fn lift(planes: &[&[i32]; 4], plane: &mut [i32], (w, h): (usize, usize), c: usize, dirs: [(i32, i32); 4], sign: i32, shift: u32) {
+    if w == 0 {
+        return;
+    }
+    let tap = taps(c, dirs);
+    let border = |x: usize, y: usize, own: i32| -> i32 {
+        let sum: i32 = dirs.iter().map(|&(rx, ry)| neighbour(planes, w, h, c, x, y, rx, ry)).sum();
+        own + sign * (sum >> shift)
+    };
+    use rayon::prelude::*;
+    plane.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        // the row's interior columns 1..w-1, when the row itself is interior and every slice exists
+        let interior = (y >= 1 && y + 1 < h && w >= 3)
+            .then(|| {
+                let slice_of = |(component, ox, oy): (usize, isize, isize)| {
+                    let start = ((y as isize + oy) * w as isize + 1 + ox) as usize;
+                    planes.get(component)?.get(start..start + (w - 2))
+                };
+                Some([slice_of(tap[0])?, slice_of(tap[1])?, slice_of(tap[2])?, slice_of(tap[3])?])
+            })
+            .flatten();
+        match interior {
+            Some([a, b, c4, d]) => {
+                for (i, v) in row[1..w - 1].iter_mut().enumerate() {
+                    *v += sign * ((a[i] + b[i] + c4[i] + d[i]) >> shift);
+                }
+                row[0] = border(0, y, row[0]);
+                row[w - 1] = border(w - 1, y, row[w - 1]);
+            }
+            None => {
+                for (x, v) in row.iter_mut().enumerate() {
+                    *v = border(x, y, *v);
+                }
+            }
+        }
+    });
+}
+
+/// Where component `c` sits in each 2×2 cell of the full-resolution CFA grid, `(δx, δy)` (Table F.10, `Ct = 0`): the one
+/// definition of the layout, which [`component_of`], [`neighbour`] and [`taps`] all read.
+const DISPLACEMENT: [(i32, i32); 4] = [(0, 1), (1, 1), (0, 0), (1, 0)];
+
+/// Per neighbour of component `c` at `dirs`, away from the image edges where nothing is mirrored: the component read, and
+/// its offset in plane samples, `(component, columns, rows)`. What [`lift`]'s fast rows read, and what the test
+/// `the_unmirrored_taps_agree_with_the_neighbour_definition` checks against [`neighbour`].
+fn taps(c: usize, dirs: [(i32, i32); 4]) -> [(usize, isize, isize); 4] {
+    let (dx, dy) = DISPLACEMENT[c & 3];
+    dirs.map(|(rx, ry)| (component_of(c, rx, ry), (dx + rx).div_euclid(2) as isize, (dy + ry).div_euclid(2) as isize))
+}
+
+/// The component read at offset `(rx, ry)` on the full-resolution CFA grid from component `c`'s sample (Table F.10,
+/// `Ct = 0`: component `c` sits at offset `(δx, δy)` of each 2×2 cell and the parity of the offset reached names it).
+fn component_of(c: usize, rx: i32, ry: i32) -> usize {
+    let (dx, dy) = DISPLACEMENT[c & 3];
+    match ((rx + dx).rem_euclid(2), (ry + dy).rem_euclid(2)) {
+        (0, 1) => 0,
+        (1, 1) => 1,
+        (0, 0) => 2,
+        _ => 3,
+    }
 }
 
 /// The sample at offset `(rx, ry)` on the full-resolution CFA grid from component `c`'s sample `(x, y)`, mirrored at
@@ -353,26 +444,15 @@ fn cross(planes: &[&[i32]; 4], w: usize, h: usize, c: usize, x: usize, y: usize)
 /// and the parity of the offset reached names the component read.
 #[allow(clippy::too_many_arguments)]
 fn neighbour(planes: &[&[i32]; 4], w: usize, h: usize, c: usize, x: usize, y: usize, rx: i32, ry: i32) -> i32 {
-    const DISPLACEMENT: [(i32, i32); 4] = [(0, 1), (1, 1), (0, 0), (1, 0)];
     let (dx, dy) = DISPLACEMENT[c & 3];
     let (gx, gy) = (2 * x as i64, 2 * y as i64);
     let fx = |rx: i32| gx + i64::from(rx + dx);
     let fy = |ry: i32| gy + i64::from(ry + dy);
     let rx = if fx(rx) < 0 || fx(rx) >= 2 * w as i64 { -rx } else { rx };
     let ry = if fy(ry) < 0 || fy(ry) >= 2 * h as i64 { -ry } else { ry };
-    let component = match ((rx + dx).rem_euclid(2), (ry + dy).rem_euclid(2)) {
-        (0, 1) => 0,
-        (1, 1) => 1,
-        (0, 0) => 2,
-        _ => 3,
-    };
+    let component = component_of(c, rx, ry);
     let (xo, yo) = (fx(rx).max(0) as usize / 2, fy(ry).max(0) as usize / 2);
     planes[component].get(yo * w + xo).copied().unwrap_or(0)
-}
-
-/// `⌊n / d⌋` for `d > 0`.
-fn floor_div(n: i32, d: i32) -> i32 {
-    n.div_euclid(d)
 }
 
 fn band_row(bands: &[Vec<i32>], band: usize, y: usize, width: usize) -> Result<&[i32]> {
@@ -439,12 +519,17 @@ pub(super) mod tests {
     /// Original procedural fixture: constant but distinct Ya/Cr/Delta/Cb, raw GCLI, padded groups,
     /// and independently assembled packet headers. No camera bytes or external decoder code.
     pub(crate) fn fixture(width: usize, height: usize) -> Vec<u8> {
+        fixture_sliced(width, height, 1)
+    }
+
+    /// [`fixture`] with `slice_height` precincts per slice (the last slice may be short).
+    fn fixture_sliced(width: usize, height: usize, slice_height: usize) -> Vec<u8> {
         let mut out = vec![0xff, 0x10];
         marker(&mut out, 0x50, b"CONTACT_INTOPIX_\xef\xc0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         let mut pih = vec![0; 16];
         pih[8..10].copy_from_slice(&(width as u16).to_be_bytes());
         pih[10..12].copy_from_slice(&(height as u16).to_be_bytes());
-        pih[15] = 1; // One precinct per slice, to exercise repeated slice headers.
+        pih[14..16].copy_from_slice(&(slice_height as u16).to_be_bytes()); // `fixture`: one precinct per slice, to exercise repeated slice headers.
         pih.extend([4, 4, 8, 18, 0x44, 0x10, 0x51, 0x14]);
         pih.extend([0x50, 0x88, 0x70, 0x83, 0xf0, 0x15, 0x23, 0xd1, 0x49, 0xcd, 0x3f, 0x7f, 7]);
         marker(&mut out, 0x12, &pih);
@@ -453,8 +538,10 @@ pub(super) mod tests {
         marker(&mut out, 0x14, &weights.iter().flat_map(|&(g, p)| [g, p]).collect::<Vec<_>>());
         let (geom, packets) = geometry(width / 2, &weights);
         let map = band_map();
-        for slice in 0..height / 4 {
-            marker(&mut out, 0x20, &(slice as u16).to_be_bytes());
+        for precinct in 0..height / 4 {
+            if precinct % slice_height == 0 {
+                marker(&mut out, 0x20, &((precinct / slice_height) as u16).to_be_bytes());
+            }
             let mut body = Vec::new();
             for packet in &packets {
                 let (mut gcli, mut data, mut signs) = (Vec::new(), Vec::new(), Vec::new());
@@ -518,20 +605,216 @@ pub(super) mod tests {
         }
     }
 
+    /// The decoded samples of the fixtures, and of 300 deterministic mutations of them (which make the bands
+    /// non-constant, or fail), recorded before the band placement was factored out of `decode`: the placement must
+    /// not change what comes out, valid or not.
+    #[test]
+    fn the_decode_of_the_fixtures_and_their_mutations_is_unchanged() {
+        let mut h = 0xcbf29ce484222325u64;
+        let mut feed = |bytes: &[u8]| bytes.iter().for_each(|&b| h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+        let (mut ok, mut failed) = (0u32, 0u32);
+        let mut seed = 12345u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for (w, hgt, slice_height) in [(70usize, 12usize, 1usize), (130, 36, 1), (130, 36, 4), (64, 8, 2)] {
+            let base = fixture_sliced(w, hgt, slice_height);
+            for round in 0..75 {
+                let mut bytes = base.clone();
+                if round > 0 {
+                    for _ in 0..1 + round % 4 {
+                        let at = 160 + next() % (bytes.len() - 160);
+                        bytes[at] = next() as u8;
+                    }
+                }
+                match decode(&bytes, w, hgt, 14) {
+                    Ok((samples, black)) => {
+                        ok += 1;
+                        feed(&black.to_le_bytes());
+                        samples.iter().for_each(|v| feed(&v.to_le_bytes()));
+                    }
+                    Err(_) => {
+                        // (which of several parallel failures is reported first varies, so only the refusal is recorded)
+                        failed += 1;
+                        feed(b"refused");
+                    }
+                }
+            }
+        }
+        assert_eq!((ok, failed, h), (55, 245, 0x9f562f930d899ad6), "{ok} decoded, {failed} refused, hash {h:#x}");
+    }
+
+    /// The slice height only groups precincts under slice markers: the same precincts give the same samples whether
+    /// the slices are one precinct, several (with a short final slice), or one slice for the whole picture.
+    #[test]
+    fn the_slice_height_does_not_change_the_samples() {
+        let (w, h) = (130, 36); // nine precincts
+        let want = decode(&fixture(w, h), w, h, 14).unwrap();
+        for slice_height in [2, 3, 4, 8, 9, 10, 64] {
+            let got = decode(&fixture_sliced(w, h, slice_height), w, h, 14).unwrap();
+            assert_eq!(got, want, "slice height {slice_height}");
+        }
+    }
+
+    /// Sample `k` of band `band`'s part of precinct `p`: distinct for every (band, precinct, sample), so a part that lands
+    /// in the wrong place, or twice, shows.
+    fn part(band: usize, p: usize, len: usize) -> Vec<i32> {
+        (0..len).map(|k| (band * 100_003 + p * 1_009 + k * 7 + 1) as i32).collect()
+    }
+
+    /// Places every precinct of `precincts` (slices of `slice_height`) through `band_ranges` and `place_precinct`, as
+    /// `decode` does; returns the bands as placed and the plain concatenation of each band's parts.
+    fn placed(stride: &[usize], slice_height: usize, precincts: usize) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
+        let mut gathered: Vec<Vec<i32>> = stride.iter().map(|&n| vec![-1; n * precincts]).collect();
+        let expected: Vec<Vec<i32>> = stride.iter().enumerate().map(|(b, &n)| (0..precincts).flat_map(|p| part(b, p, n)).collect()).collect();
+        let mut ranges = band_ranges(&mut gathered, stride, slice_height, precincts);
+        assert_eq!(ranges.len(), precincts.div_ceil(slice_height), "slices, stride {stride:?}, height {slice_height}, {precincts} precincts");
+        for (s, slice) in ranges.iter_mut().enumerate() {
+            assert_eq!(slice.len(), stride.len());
+            for i in 0..slice_height.min(precincts - s * slice_height) {
+                let dequantized = stride.iter().enumerate().map(|(b, &n)| part(b, s * slice_height + i, n)).collect();
+                place_precinct(slice, i, dequantized, stride).unwrap();
+            }
+        }
+        (gathered, expected)
+    }
+
+    /// Every precinct's part of every band lands where concatenating the parts puts it, for bands of different strides,
+    /// slice heights that do and do not divide the precinct count, a slice taller than the picture, and one precinct.
+    #[test]
+    fn placed_precincts_equal_the_concatenation_of_their_parts() {
+        for stride in [vec![3, 5, 1, 8, 2], vec![7, 2, 6], vec![4], vec![2, 2, 2, 2]] {
+            for slice_height in [1, 2, 3, 5, 7, 8] {
+                for precincts in [1, 2, 7] {
+                    let (got, want) = placed(&stride, slice_height, precincts);
+                    assert_eq!(got, want, "stride {stride:?}, slice height {slice_height}, {precincts} precincts");
+                }
+            }
+        }
+    }
+
+    /// A precinct whose band has the wrong size, or a precinct with the wrong number of bands, is refused and writes nothing
+    /// outside its place; so is a position past the slice's range.
+    #[test]
+    fn a_misshapen_precinct_is_refused() {
+        let stride = [3usize, 5, 2];
+        let fresh = || -> Vec<Vec<i32>> { stride.iter().map(|&n| vec![-1; n * 3]).collect() };
+        let good = || -> Vec<Vec<i32>> { stride.iter().enumerate().map(|(b, &n)| part(b, 0, n)).collect() };
+        for bad_band in 0..stride.len() {
+            for len in [0, stride[bad_band] - 1, stride[bad_band] + 1] {
+                let mut gathered = fresh();
+                let mut ranges = band_ranges(&mut gathered, &stride, 3, 3);
+                let mut dequantized = good();
+                dequantized[bad_band] = vec![9; len];
+                assert!(place_precinct(&mut ranges[0], 1, dequantized, &stride).is_err(), "band {bad_band} of {len} samples");
+            }
+        }
+        for bands in [0, 2, 4] {
+            let mut gathered = fresh();
+            let mut ranges = band_ranges(&mut gathered, &stride, 3, 3);
+            let mut dequantized = good();
+            dequantized.resize(bands, vec![0; 3]);
+            assert!(place_precinct(&mut ranges[0], 0, dequantized, &stride).is_err(), "{bands} bands");
+        }
+        let mut gathered = fresh();
+        let mut ranges = band_ranges(&mut gathered, &stride, 3, 3);
+        for i in [3, 4, usize::MAX / 2, usize::MAX] {
+            assert!(place_precinct(&mut ranges[0], i, good(), &stride).is_err(), "precinct {i} of a slice of three");
+        }
+        // the last one fits exactly
+        place_precinct(&mut ranges[0], 2, good(), &stride).unwrap();
+        // a slice with the wrong number of band ranges
+        let mut short = ranges.remove(0);
+        short.pop();
+        assert!(place_precinct(&mut short, 0, good(), &stride).is_err());
+    }
+
     #[test]
     fn the_parallel_star_tetrix_matches_the_reference_transform() {
-        // odd and even sizes, down to one sample: every edge case of the mirrored access
-        for (w, h) in [(1, 1), (2, 1), (1, 3), (5, 4), (8, 7), (35, 6)] {
-            let mut seed = (w * 31 + h) as u64;
-            let mut next = || {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                ((seed >> 33) as i32 % (1 << 20)) - (1 << 19)
-            };
-            let planes: [Vec<i32>; 4] = std::array::from_fn(|_| (0..w * h).map(|_| next()).collect());
-            let mut reference = planes.clone();
-            let mut slices: Vec<&mut [i32]> = reference.iter_mut().map(Vec::as_mut_slice).collect();
-            oxideav_jpegxs::colour_transform::inverse_star_tetrix(&mut slices, w, h, 0, 0, 0, 0).unwrap();
-            assert_eq!(inverse_star_tetrix(planes, w, h), reference, "{w}x{h}");
+        // odd and even sizes, down to one sample: every edge case of the mirrored access, and sizes with an interior
+        // (three or more rows and columns) where the fast rows run, at the size limit of the codec's range
+        // (±2^19 after dequantising, ±2^24 as the largest the decoder's range check lets through before this step)
+        let sizes = [
+            (1, 1),
+            (2, 1),
+            (1, 3),
+            (3, 1),
+            (2, 2),
+            (3, 3),
+            (3, 4),
+            (4, 3),
+            (5, 4),
+            (8, 7),
+            (35, 6),
+            (64, 33),
+            (130, 9),
+            (2, 100),
+            (100, 2),
+            (257, 5),
+        ];
+        // the generator's values span [-magnitude / 2, magnitude / 2), so the second reaches the decoder's ±2^24 bound
+        for magnitude in [1i32 << 20, 1 << 25] {
+            for (w, h) in sizes {
+                let mut seed = (w * 31 + h) as u64 ^ magnitude as u64;
+                let mut next = || {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((seed >> 33) as i32 % magnitude) - magnitude / 2
+                };
+                let planes: [Vec<i32>; 4] = std::array::from_fn(|_| (0..w * h).map(|_| next()).collect());
+                let mut reference = planes.clone();
+                let mut slices: Vec<&mut [i32]> = reference.iter_mut().map(Vec::as_mut_slice).collect();
+                oxideav_jpegxs::colour_transform::inverse_star_tetrix(&mut slices, w, h, 0, 0, 0, 0).unwrap();
+                assert_eq!(inverse_star_tetrix(planes, w, h), reference, "{w}x{h}, magnitude {magnitude}");
+            }
+        }
+    }
+
+    /// The tap table of `lift` (which plane and offset each neighbour comes from away from the edges) must agree with
+    /// `neighbour`, the definition, at every interior sample of a marked-up picture and every component.
+    #[test]
+    fn the_unmirrored_taps_agree_with_the_neighbour_definition() {
+        let (w, h) = (9usize, 7usize);
+        let planes: [Vec<i32>; 4] = std::array::from_fn(|k| (0..w * h).map(|i| (k * 1000 + i) as i32).collect());
+        let refs = [&planes[0][..], &planes[1][..], &planes[2][..], &planes[3][..]];
+        for c in 0..4 {
+            for (rx, ry) in [(-1, -1), (1, -1), (-1, 1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let (component, ox, oy) = taps(c, [(rx, ry); 4])[0];
+                for y in 1..h - 1 {
+                    for x in 1..w - 1 {
+                        let want = neighbour(&refs, w, h, c, x, y, rx, ry);
+                        let got = planes[component][((y as isize + oy) as usize) * w + (x as isize + ox) as usize];
+                        assert_eq!(got, want, "component {c}, offset ({rx}, {ry}) at ({x}, {y})");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `lift_in_place` takes the component's own plane out of the array: that is only right if no neighbour of a
+    /// component is the component itself, at any of the offsets the transform uses (edges mirror the offset, which keeps
+    /// its parity).
+    #[test]
+    fn no_neighbour_is_the_component_itself() {
+        let diagonal = [(-1, -1), (1, -1), (-1, 1), (1, 1)];
+        let cross = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+        for c in 0..4 {
+            for (rx, ry) in diagonal.into_iter().chain(cross) {
+                assert_ne!(component_of(c, rx, ry), c, "component {c} reads itself at ({rx}, {ry})");
+                assert_ne!(component_of(c, -rx, -ry), c, "component {c} reads itself at ({}, {})", -rx, -ry);
+            }
+        }
+    }
+
+    /// Planes whose length is not `w × h` (short, long, empty) give planes of `w × h` and never panic, as before.
+    #[test]
+    fn star_tetrix_with_wrong_plane_lengths_does_not_panic() {
+        for (w, h) in [(0, 0), (0, 5), (5, 0), (1, 1), (3, 3), (9, 7)] {
+            for len in [0, 1, w * h / 2, w * h, w * h + 5] {
+                let planes: [Vec<i32>; 4] = std::array::from_fn(|k| (0..len).map(|i| (i + k) as i32 - 3).collect());
+                let out = inverse_star_tetrix(planes, w, h);
+                assert!(out.iter().all(|p| p.len() == w * h), "{w}x{h} from planes of {len}");
+            }
         }
     }
 
