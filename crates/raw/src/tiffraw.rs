@@ -338,9 +338,11 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
             // lossy DNG: each chunk is a baseline (DCT) JPEG of 8-bit samples. Its frame is refused from the header
             // when it holds more than a few times the chunk rounded up to whole 16-pixel MCUs (a last strip may be
             // coded at the full RowsPerStrip, an image's only strip at a RowsPerStrip taller than the image), before
-            // the output it declares is allocated (upstream issue #2560).
+            // the output it declares is allocated (upstream issue #2560). The bound is the chunk's own rows, never the
+            // whole image's: every strip of a tall image could otherwise declare a frame of about four images, and
+            // many strips sharing one payload decode it each in parallel (adapted from craft-libs #1884).
             let mcu = |v: usize| v.div_ceil(16).saturating_mul(16);
-            let rows = mcu(ch.max(info.chunk_size().1.min(info.height) as usize).max(info.height as usize));
+            let rows = mcu(ch.max(info.chunk_size().1.min(info.height) as usize));
             let cap = mcu(cw).saturating_mul(rows).saturating_mul(LOSSY_FRAME_SLACK).saturating_mul(cpp.max(1));
             let (px, jw, jh, jc) = lossy_jpeg_limited(src, cpp, 1 << 16, Some(cap))?;
             let mut v = vec![0u16; n];
@@ -647,6 +649,46 @@ mod lossy_tests {
         tile[sof + 7..sof + 9].copy_from_slice(&4096u16.to_be_bytes());
         let r = read_image(&tile, &info(tile.len()), ByteOrder::Little, Packing::Msb);
         assert!(matches!(r, Err(RawError::Limit(_))), "{:?}", r.map(|_| ()));
+    }
+
+    /// craft-libs #1884: a 64×64 RGB image in four 16-row lossy strips that all point at one JPEG of 64×200. Each
+    /// strip's frame may hold a few times its own MCU-rounded rows, not a few times the whole image; the same layout
+    /// with real 64×16 strips decodes.
+    #[test]
+    fn lossy_strips_are_bounded_by_their_own_rows() {
+        let jpeg = |w: u16, h: u16| {
+            let px: Vec<u8> = (0..usize::from(w) * usize::from(h)).flat_map(|i| [40u8, (i % 64 * 3) as u8, 200]).collect();
+            let mut out = Vec::new();
+            jpeg_encoder::Encoder::new(&mut out, 90).encode(&px, w, h, jpeg_encoder::ColorType::Rgb).unwrap();
+            out
+        };
+        let info = |offsets: Vec<u64>, counts: Vec<u64>| ImageInfo {
+            width: 64,
+            height: 64,
+            bits_per_sample: vec![8, 8, 8],
+            samples_per_pixel: 3,
+            compression: comp::LOSSY_JPEG,
+            photometric: 34892,
+            planar: 1,
+            predictor: 1,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Strips { rows_per_strip: 16 },
+            offsets,
+            byte_counts: counts,
+        };
+        let tall = jpeg(64, 200);
+        let r = read_image(&tall, &info(vec![0; 4], vec![tall.len() as u64; 4]), ByteOrder::Little, Packing::Msb);
+        assert!(matches!(r, Err(RawError::Limit(_))), "{:?}", r.map(|_| ()));
+        let strip = jpeg(64, 16);
+        let mut file = Vec::new();
+        let mut offsets = Vec::new();
+        for _ in 0..4 {
+            offsets.push(file.len() as u64);
+            file.extend_from_slice(&strip);
+        }
+        let ok = read_image(&file, &info(offsets, vec![strip.len() as u64; 4]), ByteOrder::Little, Packing::Msb);
+        assert!(matches!(ok, Ok(RawData::U16(ref v)) if v.len() == 64 * 64 * 3), "{:?}", ok.map(|_| ()));
     }
 
     fn strip_info(compression: u16, offsets: Vec<u64>, byte_counts: Vec<u64>) -> ImageInfo {
