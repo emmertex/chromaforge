@@ -1412,11 +1412,11 @@ mod imp {
 
     /// Hand the scoped queue to the shared face worker, alongside any ordinary indexing jobs already in flight.
     fn queue_maintenance(s: &mut Session, embedder: &Arc<Embedder>, pace: Pace, target: usize) {
-        if s.faces.maintenance.as_ref().is_some_and(|run| run.task.is_cancelled()) {
-            if let Some(run) = s.faces.maintenance.as_mut() {
-                run.cancelled = true;
-                run.queue.clear();
-            }
+        if s.faces.maintenance.as_ref().is_some_and(|run| run.task.is_cancelled())
+            && let Some(run) = s.faces.maintenance.as_mut()
+        {
+            run.cancelled = true;
+            run.queue.clear();
         }
         let cancelling = s.faces.maintenance.as_ref().is_some_and(|run| run.cancelled);
         if cancelling {
