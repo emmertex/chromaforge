@@ -17,6 +17,8 @@ import Shot from '../../../components/Shot.astro';
 - A count badge on the top photo; click it or press `S` to **Expand/Collapse**; **Expand All Stacks**, **Collapse All Stacks**.
 - **Set as Top of Stack** (`Shift+S`), **Move Up / Down in Stack**, **Remove from Stack**, **Split Stack**.
 - **Auto-Stack by Capture Time**: groups shots taken close together in time.
+  - **Stack photos taken within this time of each other**: the largest gap between two shots in one stack.
+  - **Put on top of each stack**: *First photo in time* (the earliest shot), *Raw file* or *JPEG file*. With *Raw file* or *JPEG file*, each new stack shows its raw or its JPEG (TIFF, PNG and other non-raw images count as JPEG); a stack that has none keeps its first photo in time. Change one by hand afterwards with **Set as Top of Stack**.
 - Deleting a photo updates the stack count.
 - **Create Virtual Copy** (`Cmd/Ctrl+'`): a new catalog entry sharing the file with its own settings; badge *Copy N*, stacked with the original, same collections, no extra file.
 - **Duplicate** (**Photo ▸ File**): a real `-copy` file with the same settings, metadata and collections.

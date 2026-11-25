@@ -2260,9 +2260,12 @@ pub enum Dialog {
         from: Vec<String>,
         into: String,
     },
-    /// Auto-stack by capture time: the largest gap between consecutive shots, in seconds.
+    /// Auto-stack by capture time: the largest gap between consecutive shots, in seconds, and
+    /// which file type goes on top of each stack.
     AutoStack {
         gap: f32,
+        #[serde(default)]
+        top: lcc_catalog::StackTop,
     },
     /// Library ▸ Advanced Search…: the structured query panel (`crate::advanced_search`), shown
     /// over the grid it filters.
