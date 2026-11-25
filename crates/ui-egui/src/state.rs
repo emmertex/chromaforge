@@ -1271,9 +1271,8 @@ pub enum KeywordChips {
     Grouped,
 }
 
-/// A short message at the bottom of the photo view: its text, when it goes (app time, s), and the colour label it is
-/// shown in, if any.
-pub type Toast = (String, f64, Option<lcc_catalog::ColorLabel>);
+/// A short message at the bottom of the photo view: its text and when it goes (app time, s).
+pub type Toast = (String, f64);
 
 /// A toast with a button (Undo…): its text, the button's label, the command the button runs and
 /// its parameters, and when it goes (app time, s). One at a time; a newer one replaces it.
@@ -2972,15 +2971,15 @@ impl UiState {
     }
 
     /// Show a toast below those already showing: one no longer hides another (upstream #1936). The same message again
-    /// (same text and label) is not shown twice: it moves to the newest place and stays until the later of its times.
+    /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
     pub fn show_toast(&mut self, toast: Toast) {
-        let (text, until, label) = toast;
-        let until = match self.toasts.iter().position(|t| t.0 == text && t.2 == label) {
+        let (text, until) = toast;
+        let until = match self.toasts.iter().position(|t| t.0 == text) {
             Some(at) => self.toasts.remove(at).1.max(until),
             None => until,
         };
-        self.toasts.push((text, until, label));
+        self.toasts.push((text, until));
         if self.toasts.len() > MAX_TOASTS {
             self.toasts.drain(..self.toasts.len() - MAX_TOASTS);
         }
@@ -3374,19 +3373,19 @@ mod toast_tests {
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
         let mut ui = UiState::default();
-        ui.show_toast(("Red Label".into(), 2.0, None));
-        ui.show_toast(("Cache cleared".into(), 3.0, None));
+        ui.show_toast(("Red Label".into(), 2.0));
+        ui.show_toast(("Cache cleared".into(), 3.0));
         assert_eq!(ui.toasts.len(), 2);
         assert_eq!(ui.toast().map(|t| t.0.as_str()), Some("Cache cleared"));
-        ui.show_toast(("Red Label".into(), 4.0, None));
+        ui.show_toast(("Red Label".into(), 4.0));
         assert_eq!(ui.toasts.len(), 2, "the same message is shown once");
         assert_eq!(ui.toast().map(|t| (t.0.as_str(), t.1)), Some(("Red Label", 4.0)));
         for i in 0..5 {
-            ui.show_toast((format!("m{i}"), 10.0, None));
+            ui.show_toast((format!("m{i}"), 10.0));
         }
         assert_eq!(ui.toasts.len(), MAX_TOASTS);
         assert_eq!(ui.toasts.first().map(|t| t.0.as_str()), Some("m2"));
-        ui.show_toast(("short".into(), 1.0, None));
+        ui.show_toast(("short".into(), 1.0));
         ui.expire_toasts(5.0);
         assert!(ui.toasts.iter().all(|t| t.0 != "short"));
     }

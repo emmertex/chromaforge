@@ -195,11 +195,11 @@ fn a_key_shows_one_note_not_a_toast_as_well_and_the_mode_decides_what_shows() {
     press(&mut h, "z", true);
     assert!(shown(&mut h)["title"].as_str().is_some_and(|t| t.starts_with("Undo")));
     assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
-    // with the overlay for the control surface only, the toast is the one note
+    // with the overlay for the control surface only, a key shows nothing
     run(&mut h, "osd.settings", json!({"mode": "surface"}));
     press(&mut h, "p", false);
     assert!(shown(&mut h).is_null());
-    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Flagged as Pick"));
+    assert!(h.app.ui.toast().is_none(), "and no toast either: {:?}", h.app.ui.toasts);
 
     // the mode decides what shows: osd.mode steps Control surface only → Always, and Off shows nothing
     let ids = [h.app.session.active().map_or(0, |p| p.0)];
@@ -317,4 +317,120 @@ fn show_changes_points_to_the_controls_page_from_settings_but_not_on_it() {
         "it keeps the note: {:?}",
         h.painted_text()
     );
+}
+
+/// A change the overlay reports is never a toast as well, in any mode: the overlay says it when it is on for the
+/// window and nothing does otherwise. Each command runs on its own through `LccApp::run`, the way the window runs
+/// it, with nothing else showing. (Toasts a panel adds after its own call are covered where a test drives that panel.)
+#[test]
+fn a_change_the_overlay_reports_is_never_also_a_toast() {
+    let mut h = demo();
+    let ids = open(&mut h, 3);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    let preset = run(&mut h, "preset.create", json!({"name": "Survey", "group": "User Presets"}))["id"].clone();
+    let single = json!({"ids": [ids[0]]});
+    let several = json!({"ids": ids});
+    let cases: Vec<(&str, Value)> = vec![
+        ("photo.rate", json!({"rating": 4, "ids": [ids[0]]})),
+        ("photo.rate", json!({"rating": 2, "ids": ids})),
+        ("photo.increaseRating", single.clone()),
+        ("photo.decreaseRating", single.clone()),
+        ("photo.label", json!({"label": "red", "ids": [ids[0]]})),
+        ("photo.label", json!({"label": "blue", "ids": ids})),
+        ("photo.clearLabel", several.clone()),
+        ("photo.pick", single.clone()),
+        ("photo.reject", several.clone()),
+        ("photo.setMeta", json!({"keywords": ["survey"], "ids": [ids[0]]})),
+        ("photo.setMeta", json!({"removeKeywords": ["survey"], "ids": [ids[0]]})),
+        ("preset.apply", json!({"id": preset, "amount": 100, "ids": ids})),
+        ("map.geotag", json!({"ids": [ids[0]], "lat": 48.1, "lon": 11.5})),
+        ("photo.unflag", single.clone()),
+        ("photo.cycleFlag", single.clone()),
+    ];
+    for (command, params) in &cases {
+        h.app.ui.toasts.clear();
+        h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command} {params}: {e}"));
+        let s = shown(&mut h);
+        assert!(s.is_object(), "{command} {params}: the overlay should report it");
+        assert!(h.app.ui.toast().is_none(), "{command} {params}: the overlay says {s}, so no toast: {:?}", h.app.ui.toasts);
+    }
+    // and in the other modes no toast takes its place: the overlay's mode is the only say
+    for mode in ["surface", "off"] {
+        run(&mut h, "osd.settings", json!({"mode": mode}));
+        for (command, params) in &cases {
+            h.app.ui.toasts.clear();
+            h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command} {params}: {e}"));
+            assert!(h.app.ui.toast().is_none(), "{mode} {command} {params}: {:?}", h.app.ui.toasts);
+        }
+    }
+}
+
+/// A scratch folder that goes away with the test, however it ends.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
+    let d = std::env::temp_dir().join(format!("lc-ui-osd-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    Scratch(d)
+}
+
+fn gradient_jpeg(path: &std::path::Path, shade: u8) {
+    let (w, h) = (256usize, 192usize);
+    let img = lcc_raster::Rgba8 {
+        width: w,
+        height: h,
+        data: (0..w * h).map(|i| [((i % w) * 255 / w) as u8, ((i / w) * 255 / h) as u8, shade, 255]).collect(),
+    };
+    let bytes = lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 90, Default::default(), &Default::default()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Moving photos or folders on disk, and pointing a folder at its new place, are reported by the overlay, which is
+/// why the panels that run them (`panels/left.rs`, `grid.rs`) toast only a move that changed nothing. This checks
+/// the reporting; the panels' own toasts are not driven here.
+#[test]
+fn the_overlay_reports_moves_and_relinks_on_disk() {
+    let src = scratch("files");
+    for (d, shade) in [("a", 40u8), ("b", 140), ("c", 220)] {
+        std::fs::create_dir_all(src.0.join(d)).unwrap();
+        gradient_jpeg(&src.0.join(d).join("x.jpg"), shade);
+        gradient_jpeg(&src.0.join(d).join("y.jpg"), shade.wrapping_add(7));
+    }
+    let services = Services { png: None, ..Default::default() };
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo().with_fs(), services), [1300.0, 900.0], 1.0);
+    let r = h.request(
+        "engine.execute",
+        json!({"command": "library.import", "params": {"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true}}),
+        T,
+    );
+    let all: Vec<u64> =
+        r["result"]["imported"].as_array().map(|a| a.iter().filter_map(|v| v.as_u64().or_else(|| v["id"].as_u64())).collect()).unwrap_or_default();
+    assert_eq!(all.len(), 6, "{r}");
+    h.settle(T);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    let dest = src.0.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let moved = std::env::temp_dir().join(format!("lc-ui-osd-moved-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&moved);
+    std::fs::rename(src.0.join("c"), &moved).unwrap();
+    let _gone = Scratch(moved.clone());
+    let steps = [
+        ("photo.moveToFolder", json!({"folder": dest.to_string_lossy(), "ids": &all[..2]})),
+        ("folder.move", json!({"path": src.0.join("b").to_string_lossy(), "into": dest.to_string_lossy()})),
+        ("folder.relocate", json!({"path": src.0.join("c").to_string_lossy(), "to": moved.to_string_lossy()})),
+    ];
+    for (command, params) in steps {
+        h.app.ui.toasts.clear();
+        h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command}: {e}"));
+        let s = shown(&mut h);
+        assert!(s.is_object(), "{command}: the overlay should report it");
+        assert!(h.app.ui.toast().is_none(), "{command}: the overlay says {s}, so no toast: {:?}", h.app.ui.toasts);
+    }
 }

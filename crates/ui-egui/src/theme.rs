@@ -29,11 +29,6 @@ pub fn label_background(base: Color32, label: Option<lcc_catalog::ColorLabel>, s
     label.map_or(base, |l| base.lerp_to_gamma(label_color(l), if selected { 0.32 } else { 0.22 }))
 }
 
-/// Label confirmations use a pale colour and dark text, distinct from neutral/error HUDs.
-pub fn label_toast_colors(label: lcc_catalog::ColorLabel) -> (Color32, Color32) {
-    (Color32::WHITE.lerp_to_gamma(label_color(label), 0.3), Color32::from_rgb(36, 24, 24))
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Tokens {
     /// Top bar, side panels, bottom bar, tool strip.

@@ -188,9 +188,9 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     // a slideshow's playback controls sit at the bottom: the toasts go to the top there, clear of them
     let top = app.ui.slideshow.is_some();
     let mut edge = if top { canvas.top() + 40.0 + action_h } else { canvas.bottom() - 40.0 - action_h };
-    for (text, until, label) in app.ui.toasts.iter().rev() {
+    for (text, until) in app.ui.toasts.iter().rev() {
         let fade = ((until - now) / 0.25).clamp(0.0, 1.0) as f32;
-        let (background, foreground) = label.map(crate::theme::label_toast_colors).unwrap_or((egui::Color32::from_black_alpha(200), t.text));
+        let (background, foreground) = (egui::Color32::from_black_alpha(200), t.text);
         let foreground = foreground.gamma_multiply(fade);
         let galley = painter.layout(text.clone(), t.font(14.0), foreground, wrap);
         let size = vec2(galley.size().x + 40.0, (galley.size().y + 22.0).max(40.0));

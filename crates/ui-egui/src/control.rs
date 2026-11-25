@@ -122,7 +122,7 @@ fn rect_json(r: egui::Rect) -> Value {
 fn toasts_json(app: &LccApp, ctx: &egui::Context) -> Value {
     let now = ctx.input(|i| i.time);
     let shown = app.ui.toasts.iter().filter(|t| t.1 >= now);
-    shown.map(|(text, until, label)| json!({"text": text, "label": label, "secsLeft": until - now})).collect()
+    shown.map(|(text, until)| json!({"text": text, "secsLeft": until - now})).collect()
 }
 
 /// The message with a button (Undo…), if one is showing.

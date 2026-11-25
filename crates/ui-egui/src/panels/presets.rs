@@ -527,9 +527,9 @@ fn show_folder_node(
             let selected = app.session.selection.ids.len();
             if selected > 1 && !app.session.auto_sync {
                 if ui.button(crate::i18n::tr_format!("Apply to {n} Selected Photos", n = selected)).clicked() {
-                    match app.run("preset.apply", json!({"id": pid, "amount": 100})) {
-                        Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Preset {name} on {n} photos", name = pname, n = selected)),
-                        Err(e) => app.toast(ui.ctx(), e),
+                    // the overlay names the preset and the count; only a refusal is a toast
+                    if let Err(e) = app.run("preset.apply", json!({"id": pid, "amount": 100})) {
+                        app.toast(ui.ctx(), e);
                     }
                 }
                 ui.separator();

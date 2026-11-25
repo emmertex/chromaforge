@@ -323,7 +323,7 @@ pub(crate) fn after_command(app: &mut LccApp, id: &str, r: &Value) {
         && let Err(e) = f(path, &editor)
     {
         let now = app.last_time;
-        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4, None));
+        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4));
     }
 }
 
@@ -429,7 +429,7 @@ fn start_editor(app: &mut LccApp, tool: String, args: Vec<String>, label: String
     });
     if let Err(e) = spawned {
         let now = app.last_time;
-        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4, None));
+        app.ui.show_toast((crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e), now + 1.4));
     }
 }
 

@@ -2261,20 +2261,18 @@ pub(crate) fn move_photos(app: &mut LccApp, ids: Option<&[u64]>, path: &str) -> 
     Ok(r.field("moved").as_u64().unwrap_or(0))
 }
 
-/// What a move of `n` photos into the folder `name` says: how many moved and that Undo moves them
-/// back, or that they were there already.
-pub(crate) fn moved_text(n: u64, name: &str) -> String {
+/// What a move that changed nothing says: the overlay reports a move that happened (and Undo moves it back), so
+/// only "they were there already" is a toast.
+pub(crate) fn say_nothing_moved(app: &mut LccApp, ctx: &egui::Context, n: u64, name: &str) {
     if n == 0 {
-        crate::i18n::tr_format!("Already in “{}”", name)
-    } else {
-        crate::i18n::tr_format!("Moved {n} photo{} to “{}”. Edit → Undo moves them back.", if n == 1 { "" } else { "s" }, name, n = n)
+        app.toast(ctx, crate::i18n::tr_format!("Already in “{}”", name));
     }
 }
 
-/// [`move_photos`], saying how it went in a toast.
+/// [`move_photos`], saying so in a toast when nothing moved.
 fn move_photos_here(app: &mut LccApp, ctx: &egui::Context, ids: Option<&[u64]>, path: &str, name: &str) {
     match move_photos(app, ids, path) {
-        Ok(n) => app.toast(ctx, moved_text(n, name)),
+        Ok(n) => say_nothing_moved(app, ctx, n, name),
         Err(e) => app.toast(ctx, e),
     }
 }
@@ -2646,7 +2644,11 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                 let picked = app.services.pick_folder.as_mut().and_then(|f| f());
                 if let Some(to) = picked {
                     match app.run("folder.relocate", json!({"path": path, "to": to})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("{n} photos relinked", n = r.field("relinked").as_u64().unwrap_or(0))),
+                        // the overlay says it ("Update Folder Location"); only a relink that found nothing is a toast
+                        Ok(r) if r.field("relinked").as_u64().unwrap_or(0) == 0 => {
+                            app.toast(ui.ctx(), crate::i18n::tr_format!("{n} photos relinked", n = 0))
+                        }
+                        Ok(_) => {}
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }
@@ -2698,7 +2700,7 @@ fn folder_item(app: &mut LccApp, ui: &mut egui::Ui, row: FolderRow, item: Folder
                     && let Some(into) = v.into_iter().next()
                 {
                     match app.run("folder.move", json!({"path": path, "into": into})) {
-                        Ok(r) => app.toast(ui.ctx(), crate::pick::answered_message("folder.move", &r).unwrap_or_default()),
+                        Ok(_) => {}
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }

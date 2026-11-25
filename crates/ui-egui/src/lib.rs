@@ -50,7 +50,6 @@ pub mod comments_ui {
 }
 pub mod control;
 pub mod creations_ui;
-pub mod cull_toast;
 pub mod date_picker;
 pub mod dialog_frame;
 pub mod dng_update_task;
@@ -1725,37 +1724,7 @@ impl LccApp {
             if let Some(message) = completed {
                 // Menu clicks can arrive before the next frame updates last_time.
                 let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
-                self.ui.show_toast((message, now + TOAST_SECONDS, None));
-            }
-        }
-        if r.is_ok() && matches!(id, "photo.label" | "photo.clearLabel") {
-            let label = if let Some(applied) = r.as_ref().ok().and_then(|v| v.get("label")).and_then(Value::as_str) {
-                if applied == "none" { None } else { lcc_catalog::ColorLabel::parse(applied) }
-            } else {
-                params.get("label").and_then(Value::as_str).filter(|s| *s != "none").and_then(lcc_catalog::ColorLabel::parse)
-            };
-            let text = match label {
-                Some(label) => {
-                    let name =
-                        self.session.catalog.custom_label_name(label).map(str::to_owned).unwrap_or_else(|| i18n::tr(&format!("{label:?}")).into());
-                    i18n::tr_format!("{name} Label", name = name)
-                }
-                None => i18n::tr("Color label cleared").into(),
-            };
-            let text = cull_toast::with_count(text, cull_toast::targets(self, &params).len());
-            // Native menu clicks can arrive before logic() updates last_time after an idle gap.
-            let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
-            self.ui.show_toast((text, now + TOAST_SECONDS, label));
-        }
-        if r.is_ok()
-            && cull_toast::confirms(id)
-            && !matches!(id, "photo.label" | "photo.clearLabel")
-            && !(cull_toast::is_flag(id) && shortcuts::overlay_reports_changes(self))
-        {
-            // every rating and flag change confirms, with the count when several photos changed
-            if let Some(text) = cull_toast::feedback(self, id, &cull_toast::targets(self, &params)) {
-                let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
-                self.ui.show_toast((text, now + TOAST_SECONDS, None));
+                self.ui.show_toast((message, now + TOAST_SECONDS));
             }
         }
         match &r {
@@ -1937,7 +1906,6 @@ impl LccApp {
                         e = e
                     ),
                     t + 6.0,
-                    None,
                 ));
             }
             (None, true) => {
@@ -1990,7 +1958,7 @@ impl LccApp {
     /// A toast that stays `secs` seconds (messages that say where to look or what to do next).
     pub fn toast_for(&mut self, ctx: &egui::Context, text: impl Into<String>, secs: f64) {
         let t = ctx.input(|i| i.time);
-        self.ui.show_toast((text.into(), t + secs, None));
+        self.ui.show_toast((text.into(), t + secs));
     }
 
     /// Reverse geocoding: say how a place-names download ended (a failure stays readable, with what to do).
@@ -2113,13 +2081,13 @@ impl LccApp {
         self.caches.faces_epoch += 1;
         let text = detect_summary(&v);
         let now = self.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(self.last_time);
-        self.ui.show_toast((text, now + TOAST_SECONDS, None));
+        self.ui.show_toast((text, now + TOAST_SECONDS));
     }
 
     /// A toast for an error the user has to read and act on (stays 6 s).
     pub fn toast_error(&mut self, ctx: &egui::Context, text: impl Into<String>) {
         let t = ctx.input(|i| i.time);
-        self.ui.show_toast((text.into(), t + 6.0, None));
+        self.ui.show_toast((text.into(), t + 6.0));
     }
 
     /// Apply queued MIDI actions. A turn of one knob or fader is one undo step: the interaction opens

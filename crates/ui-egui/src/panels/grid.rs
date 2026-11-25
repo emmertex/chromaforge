@@ -2113,7 +2113,8 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 && let Some(into) = v.into_iter().next()
             {
                 match app.run("photo.moveToFolder", json!({"folder": into})) {
-                    Ok(r) => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved {} photo(s)", r.field("moved"))),
+                    Ok(r) if r.field("moved").as_u64().unwrap_or(0) == 0 => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved {} photo(s)", 0)),
+                    Ok(_) => {}
                     Err(e) => app.toast(ui.ctx(), e),
                 }
             }

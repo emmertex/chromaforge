@@ -14,7 +14,7 @@ pub(crate) fn pump(app: &mut LccApp, ctx: &egui::Context) {
     if v.field("done") == true {
         if let Some(text) = summary_text(&v) {
             let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
-            app.ui.show_toast((text, now + crate::TOAST_SECONDS, None));
+            app.ui.show_toast((text, now + crate::TOAST_SECONDS));
         }
         return;
     }

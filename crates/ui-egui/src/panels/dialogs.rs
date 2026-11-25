@@ -2001,8 +2001,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             // a move says how it went, or why nothing moved
             Ok(r) if matches!(dlg, Dialog::MovePhotos { .. }) => {
                 if let Dialog::MovePhotos { name, .. } = &dlg {
-                    let text = crate::panels::left::moved_text(r.field("moved").as_u64().unwrap_or(0), name);
-                    app.toast(ctx, text);
+                    crate::panels::left::say_nothing_moved(app, ctx, r.field("moved").as_u64().unwrap_or(0), name);
                 }
                 close = true;
             }

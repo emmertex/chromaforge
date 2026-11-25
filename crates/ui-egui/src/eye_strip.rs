@@ -340,7 +340,7 @@ pub fn reject_pump(app: &mut LccApp) {
         )
     };
     let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
-    app.ui.show_toast((text, now + crate::TOAST_SECONDS, None));
+    app.ui.show_toast((text, now + crate::TOAST_SECONDS));
 }
 
 /// The top the strip's messages are laid out from: the loupe's top, or under the activity stack.

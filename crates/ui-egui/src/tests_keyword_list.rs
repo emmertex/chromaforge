@@ -465,15 +465,20 @@ fn typed_keywords_go_inside_the_default_parent() {
     }
 }
 
-/// Dropping photos on a keyword says how many got it: one that had it already isn't counted.
+/// Dropping photos on a keyword is said by the overlay alone, with no toast. (The overlay counts the photos the
+/// command was given, the one that had the keyword already included; the toast it replaces counted only those that
+/// got it.)
 #[test]
-fn dropping_photos_counts_those_that_get_the_keyword() {
+fn dropping_photos_on_a_keyword_is_said_by_the_overlay_not_a_toast() {
     let (mut h, ids) = keywords_panel_at([1400.0, 2400.0]);
     run(&mut h, "keyword.create", json!({"name": "Portugal"}));
     run(&mut h, "photo.setMeta", json!({"ids": [ids[1]], "addKeywords": ["Portugal"]}));
     drag(&mut h, &format!("thumb:{}", ids[0]), "keywordRow:Portugal");
-    let toast = h.app.ui.toast().cloned().map(|t| t.0).unwrap_or_default();
-    assert!(toast.contains("1 photo") && !toast.contains("2 photos"), "{toast}");
+    assert!(keywords_of(&h, ids[0]).contains(&"Portugal".to_string()), "the dropped photo got the keyword");
+    assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
+    h.step();
+    let shown = run(&mut h, "osd.state", json!({}))["result"]["shown"].clone();
+    assert_eq!(shown["title"], "Edit Info", "the overlay reports the drop: {shown}");
 }
 
 /// Scrolled down a long list, ticking and unticking keywords leaves the tree where it is: the
