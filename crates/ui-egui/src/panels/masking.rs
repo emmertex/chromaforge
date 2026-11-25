@@ -920,6 +920,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     }
     divider(ui);
     super::mask_effects::effect_row(app, ui, &m, true);
+    // Recolor: the target colour, Color to Replace, Amount and Range (crate mask_recolor)
     for (key, title, ids) in GROUPS {
         if *key == "effects" {
             // Color Grading is a section of its own, right under Color (as Camera Raw lays it out)
@@ -996,6 +997,10 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     }
+    // Recolor after the mask's slider sections: its rows read the colour the sliders produced
+    // (a flyout row here above the sections shifts their layout, which the drag gestures of the
+    // controls on the photo don't follow)
+    super::mask_recolor::section(app, ui, &m);
     if app.ui.roles_window {
         roles_window(app, ui.ctx());
     }

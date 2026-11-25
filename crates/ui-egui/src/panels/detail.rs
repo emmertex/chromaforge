@@ -4640,6 +4640,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         }
         return;
     }
+    // the mask's Recolor eyedroppers: one click samples into the active mask's colour ("to") or
+    // its Color to Replace ("from")
+    if let Some(target) = match app.ui.tool.as_str() {
+        "maskRecolor" => Some("to"),
+        "maskRecolorFrom" => Some("from"),
+        _ => None,
+    } {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
+                app.toast(ui.ctx(), e);
+            }
+            app.ui.tool.clear();
+        }
+        return;
+    }
     // sizes are in units of the uncropped photo's long edge, as the render reads them
     let long = f64::from(map.per_long());
     let active = app.session.active_mask;
