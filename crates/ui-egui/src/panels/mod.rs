@@ -39,6 +39,7 @@ pub mod manager_table;
 pub mod marketplace;
 pub mod mask_effects;
 pub mod mask_pickers;
+pub mod mask_recolor;
 pub mod masking;
 pub mod metadata;
 pub mod ml_models;

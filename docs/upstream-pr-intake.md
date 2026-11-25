@@ -1,6 +1,7 @@
 # Pulling upstream work: the intake runbook
 
-> **Last updated:** 2026-11-17 · **Change:** `drift` reports waiting rows whose upstream PR moved. Previously: 2026-11-08, an intake PR merges when it is ready, in any order with other PRs, as
+> **Last updated:** 2026-11-25 · **Change:** craft-libs is a second source (its own lane, `--repo craft-libs`, rows
+> `craft-libs#<n>`). Previously: 2026-11-17, `drift` reports waiting rows whose upstream PR moved. Previously: 2026-11-08, an intake PR merges when it is ready, in any order with other PRs, as
 > every round so far has; it is no longer held for a release. Previously: 2026-11-02, created (per-PR and per-commit
 > intake, one PR per round, release-gated; the merge routine is retired).
 
@@ -28,6 +29,33 @@ safer per release.
 
 A PR that is merged is not automatically in: check `git log upstream/main --grep='#<n>'` and read the commits
 themselves. A PR that is closed is not automatically out: read the closing comment.
+
+### The craft-libs lane
+
+Upstream now moves its decoders, develop stages and metadata code into
+[craft-libs](https://github.com/storytold/craft-libs) and consumes them from there, so a fix often lands there and
+the matching upstream PR shrinks to a dependency bump (or is closed). Without this lane those fixes would never be
+seen: the upstream row says "moved to craft-libs", gets `SKIP`, and the fix itself is lost.
+
+- **What is read.** Only PRs touching `TRACKED_PATHS` in `tools/upstream_intake.py`. That list holds the crates the
+  fork has its own counterpart of (raw, crw, develop, develop-model, metadata, crs, tiff, sniff, the image codecs,
+  colour, psd) and the crates it builds against (`ui`, `docpath`, pinned by rev in the root `Cargo.toml`).
+  craft-libs takes 200+ PRs a week, and most of them are for other apps; everything outside the list is ignored.
+  Extend the list in the same commit as a new counterpart crate or dependency.
+- **How it is taken.** The fork doesn't use `craft-raw`, `craft-develop` or `craft-metadata`. A counterpart fix is
+  ported by hand into the fork's own crate (`crates/raw`, `tiff`, `meta`, `codecs`, `develop`, `pipeline`), only
+  when the fork's code has the same bug or lacks the behaviour, and it says "adapted from craft-libs #<n>". A
+  dependency fix arrives as a rev bump, called out in the PR. Extraction PRs (upstream code moved into craft-libs
+  unchanged) are `SKIP`: the fork already has that code from upstream.
+- **Ledger.** The same ledger and columns; the item is `craft-libs#<n>` (a direct commit: `craft-libs commit <sha>`),
+  `Upstream ref` is the PR's head (`headRefOid`, what `drift` compares), and `Reviewed` carries craft-libs' `main`.
+  When an upstream row is closed or skipped because its work "moved to craft-libs", record the craft-libs PR it
+  names as its own row instead of dropping it.
+- **Commands.** `tools/upstream_intake.py enumerate --repo craft-libs --since <date>` (the path filter reads every
+  candidate's files; raise `--max-lookups` for a long window) and `tools/upstream_intake.py drift --repo craft-libs`.
+  A round may cover both sources in one intake PR.
+- **Licence.** craft-libs is MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE` in the repository); ports carry the
+  usual provenance line and `NOTICE` credit.
 
 ## The rules that make this safe
 
@@ -236,6 +264,8 @@ row `URGENT` in `Reason` and ask; do not decide it alone, and do not let an urge
 python3 tools/upstream_intake.py enumerate --since 2026-10-29 --out target/upstream/intake-2026-11-02.md
 python3 tools/upstream_intake.py check          # ledger schema, duplicates, missing refs/links
 python3 tools/upstream_intake.py drift --out target/upstream/drift.md   # waiting rows whose PR moved
+python3 tools/upstream_intake.py enumerate --repo craft-libs --since 2026-11-25   # tracked craft-libs paths only
+python3 tools/upstream_intake.py drift --repo craft-libs
 ```
 
 It never decides anything and never writes to the repository: it lists candidates, marks owned paths, and

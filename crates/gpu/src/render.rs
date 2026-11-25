@@ -1374,20 +1374,22 @@ fn pre_nr(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     }
 }
 
-/// [`linear`] after noise reduction: Smooth Skin and the retouch of people's parts.
+/// [`linear`] after noise reduction: Smooth Skin, the retouch of people's parts, the Tone Equalizer
+/// (on the CPU) and Lens Blur.
 fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let s = &*plan.settings;
-    if !lcc_pipeline::skin_needs_cpu(s) {
+    let lens = plan.lens_blur.is_some() && s.lens_blur.active();
+    if !lcc_pipeline::skin_needs_cpu(s) && !lens {
         return img;
     }
     // Smooth Skin on the device when every bucket's region fits its buffers (`skin_gpu`)
-    let skin_done = skin_gpu(cx, &img, plan);
-    if skin_done && !lcc_pipeline::retouch::active(s) {
+    let skin_done = !lcc_pipeline::skin_needs_cpu(s) || skin_gpu(cx, &img, plan);
+    if skin_done && !lcc_pipeline::retouch::active(s) && !lcc_pipeline::tone_eq::active(s) && !lens {
         return img;
     }
-    // the retouch of people's parts (and Smooth Skin when it didn't fit): the CPU's (the same code
-    // renders both, so they match)
+    // the retouch of people's parts, Lens Blur (and Smooth Skin when it didn't fit): the CPU's
+    // (the same code renders both, so they match)
     let mut host_img = cx.read_rgb(&img, w, h);
     lcc_pipeline::timed("smooth skin", || {
         if !skin_done {
@@ -1395,6 +1397,8 @@ fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
         }
     });
     lcc_pipeline::timed("retouch", || lcc_pipeline::retouch::apply(&mut host_img, s, &plan.frame, plan.px_per_long));
+    lcc_pipeline::timed("tone equalizer", || lcc_pipeline::tone_eq::apply(&mut host_img, s, plan.px_per_long));
+    lcc_pipeline::timed("lens blur", || lcc_pipeline::lens_blur::apply(&mut host_img, plan));
     let buf = cx.gpu.upload(rgb_words(&host_img));
     host.lin = Some(Arc::new(host_img));
     buf
@@ -2343,6 +2347,12 @@ fn masks(
     }
     let mut terms: Vec<_> = list.iter().map(|m| mask_terms(&m.adjust)).collect();
     lcc_pipeline::finish::with_tone(&mut terms, &plan.mask_tone);
+    {
+        // the main colours were measured on the CPU once per edit (crate::recolor::measure)
+        let ids: Vec<u32> = list.iter().map(|m| m.id).collect();
+        let adjusts: Vec<lcc_develop::LocalAdjustments> = list.iter().map(|m| m.adjust).collect();
+        lcc_pipeline::recolor::with_recolor(&mut terms, &ids, &adjusts, &plan.recolor);
+    }
     let curves = list.iter().map(|m| local_curve_luts(&m.curve)).collect();
     let key = lcc_pipeline::masks::alpha_key(&s.masks, s.light.exposure as f32, plan.w, plan.h, plan.mattes.as_deref());
     let chroma = planes.chroma.as_ref().filter(|_| prep.chroma.is_some()).map(|(k, _)| *k);

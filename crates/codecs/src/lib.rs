@@ -20,10 +20,12 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod avif;
+mod avif_gainmap;
 mod convert;
 pub mod display;
 pub mod encode;
 pub mod exif;
+mod exr_encode;
 pub mod gainmap;
 mod heif;
 pub mod icc;
@@ -44,12 +46,14 @@ mod tiff_codec;
 pub mod video;
 mod webp;
 
+pub use avif_gainmap::encode_avif_gain_map;
 pub use encode::{
     ChromaSubsampling, EncodeImage, EncodeMeta, HDR_REFERENCE_WHITE_NITS, HLG_REFERENCE_PEAK_NITS, HdrTransfer, Samples, TiffCompression,
     encode_avif, encode_avif_hdr, encode_avif_pq, encode_jpeg, encode_png, encode_png_pq, encode_psd, encode_tiff, encode_tiff_associated,
     encode_webp_lossless, hlg_signal,
 };
-pub use jxl_encode::{JxlColour, JxlEffort, JxlOptions, encode_jxl};
+pub use exr_encode::{ACESCG, ExrOptions, encode_exr};
+pub use jxl_encode::{JxlColour, JxlEffort, JxlOptions, encode_jxl, encode_jxl_gain_map};
 pub use sniff::{Format, sniff};
 pub use space::{NamedSpace, SourceSpace, SpaceOrigin, Trc};
 
@@ -65,10 +69,23 @@ pub enum Error {
     Unsupported(Format, &'static str),
     #[error("malformed {0:?} data: {1}")]
     Malformed(Format, String),
-    #[error("image too large: {0}×{1}")]
+    #[error("{}", too_large_message(*.0, *.1))]
     TooLarge(u64, u64),
     #[error("encode error: {0}")]
     Encode(String),
+}
+
+/// The text of [`Error::TooLarge`]: the size in megapixels and, when that is over
+/// [`DEFAULT_MAX_PIXELS`], the limit, so the message says what is wrong (issue #1477). A refusal
+/// under the limit came from a decoder's memory budget or a failed allocation.
+fn too_large_message(w: u64, h: u64) -> String {
+    let px = w.saturating_mul(h);
+    let mp = |n: u64| n as f64 / 1e6;
+    if px > DEFAULT_MAX_PIXELS {
+        format!("image too large: {w}×{h} is {:.1} MP; the limit is {:.0} MP", mp(px), mp(DEFAULT_MAX_PIXELS))
+    } else {
+        format!("image too large: {w}×{h} ({:.1} MP) needs more memory than its decoder allows", mp(px))
+    }
 }
 
 /// `w × h × c` samples, or [`Error::TooLarge`] when that overflows `usize` (a 32-bit `usize` on wasm32 wraps on
@@ -85,7 +102,7 @@ pub struct DecodeOptions {
     /// Fit the result within this box (never upscales). JPEG uses DCT-domain scaling (1/2, 1/4,
     /// 1/8) before a final linear-light resample; other formats decode fully then resample.
     pub max_size: Option<(u32, u32)>,
-    /// Refuse images with more pixels than this (default [`DEFAULT_MAX_PIXELS`], 512 MP).
+    /// Refuse images with more pixels than this (default [`DEFAULT_MAX_PIXELS`], 512 × 2^20 pixels).
     pub max_pixels: u64,
     /// Refuse images whose samples, in the file's own layout (before conversion to float), need more
     /// bytes than this (default [`DEFAULT_MAX_BYTES`], 4 GiB): the buffer a format decoder allocates
@@ -94,11 +111,15 @@ pub struct DecodeOptions {
     pub max_bytes: u64,
 }
 
-/// Default [`DecodeOptions::max_pixels`]: 512 MP, the largest image Lightroom Classic opens (65,000 px
-/// a side and 512 megapixels), so every file it reads is in range.
-pub const DEFAULT_MAX_PIXELS: u64 = 512_000_000;
+/// Default [`DecodeOptions::max_pixels`]: 512 × 2^20 pixels, the largest image Lightroom Classic opens, so every
+/// file it reads is in range. Adobe's "512 megapixels" counts a megapixel as 2^20 pixels: Lightroom Classic 16.0
+/// imported grey TIFFs of 524,400,000 and 536,848,900 pixels and refused 536,895,241 and 538,240,000 ("The file sizes
+/// exceed supported file dimensions (512 megapixels or 65k pixel long edge)"; issue #1477). It does not limit the long
+/// edge here: Lightroom refuses one over 65,000 px (65,000 imported, 65,001 did not), a decode of a long, thin file is
+/// not a memory risk, and such files are read.
+pub const DEFAULT_MAX_PIXELS: u64 = 512 * 1024 * 1024;
 
-/// Default [`DecodeOptions::max_bytes`]: 4 GiB, a 512 MP image at 8 bytes a pixel (RGBA, 16 bits).
+/// Default [`DecodeOptions::max_bytes`]: 4 GiB, a 512 × 2^20 pixel image at 8 bytes a pixel (RGBA, 16 bits).
 pub const DEFAULT_MAX_BYTES: u64 = 4 << 30;
 
 fn default_max_bytes() -> u64 {
@@ -302,6 +323,24 @@ fn check_has_pixels(format: Format, image: &Rgb32f) -> Result<()> {
         return Err(Error::Malformed(format, "image has no pixels".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod too_large_tests {
+    use super::*;
+
+    /// The refusal says how big the image is and, past the limit, what the limit is (issue #1477).
+    #[test]
+    fn the_message_names_the_size_and_the_limit() {
+        let over = Error::TooLarge(17070, 30092).to_string();
+        assert!(over.contains("17070×30092") && over.contains("513.7 MP") && over.contains("512 MP"), "{over}");
+        let budget = Error::TooLarge(64, 64).to_string();
+        assert!(budget.contains("64×64") && !budget.contains("limit"), "{budget}");
+        // hostile sizes neither overflow nor panic
+        for (w, h) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0)] {
+            assert!(Error::TooLarge(w, h).to_string().starts_with("image too large"));
+        }
+    }
 }
 
 #[cfg(test)]

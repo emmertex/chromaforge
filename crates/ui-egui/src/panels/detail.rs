@@ -25,20 +25,46 @@ pub(crate) fn stand_in_shows(app: &LccApp, id: PhotoId, slot: Slot) -> bool {
 
 /// A clip's whole decoded frame drawn into `r` through the loupe's [`Frame`]: the crop, its
 /// straighten angle and the flips pick the part of the texture that shows (the uncropped frame
-/// while the Crop tool is open).
+/// while the Crop tool is open). Lens corrections and perspective (Upright, Transform) bend the
+/// mapping, so a warped frame is drawn as a grid of [`VIDEO_MESH_CELLS`]² cells, each corner
+/// mapped through the warp (green plane; the lens's vignette gain is left to export and stills).
 fn video_frame_mesh(tex: egui::TextureId, r: Rect, frame: &Frame) -> egui::Shape {
     let (w, h) = ((r.width().round() as usize).max(1), (r.height().round() as usize).max(1));
     let to_uv = frame.out_to_norm(w, h);
+    let (ow, oh) = (frame.ow.max(1.0), frame.oh.max(1.0));
+    let uv_of = |x: f64, y: f64| -> Point {
+        let n = to_uv.apply(Point::new(x, y));
+        match &frame.warp {
+            Some(warp) => {
+                let s = warp.to_source(Point::new(n.x * ow, n.y * oh), 1);
+                if s.x.is_finite() && s.y.is_finite() { Point::new(s.x / ow, s.y / oh) } else { n }
+            }
+            None => n,
+        }
+    };
+    let cells = if frame.warp.is_some() { VIDEO_MESH_CELLS } else { 1 };
     let mut mesh = egui::epaint::Mesh::with_texture(tex);
-    for (x, y) in [(0.0, 0.0), (w as f64, 0.0), (w as f64, h as f64), (0.0, h as f64)] {
-        let uv = to_uv.apply(Point::new(x, y));
-        let pos = pos2(r.left() + (x / w as f64) as f32 * r.width(), r.top() + (y / h as f64) as f32 * r.height());
-        mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(uv.x as f32, uv.y as f32), color: Color32::WHITE });
+    for j in 0..=cells {
+        for i in 0..=cells {
+            let (fx, fy) = (i as f64 / cells as f64, j as f64 / cells as f64);
+            let uv = uv_of(fx * w as f64, fy * h as f64);
+            let pos = pos2(r.left() + fx as f32 * r.width(), r.top() + fy as f32 * r.height());
+            mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(uv.x as f32, uv.y as f32), color: Color32::WHITE });
+        }
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    let row = (cells + 1) as u32;
+    for j in 0..cells as u32 {
+        for i in 0..cells as u32 {
+            let a = j * row + i;
+            mesh.add_triangle(a, a + 1, a + row + 1);
+            mesh.add_triangle(a, a + row + 1, a + row);
+        }
+    }
     egui::Shape::mesh(mesh)
 }
+
+/// Cells per side of a warped clip frame's mesh ([`video_frame_mesh`]).
+const VIDEO_MESH_CELLS: usize = 24;
 
 /// How long (s) after a brush stroke the photographer still counts as painting ([`crate::LccApp::paint_hold_until`]):
 /// long enough for the next stroke to start.
@@ -3300,12 +3326,16 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
 
     if app.ui.right != RightPanel::Crop {
-        // Keyed by the dragged control's id, not the interaction label: a mask's "Exposure" slider
-        // must not bring up the global clipping mask.
+        // Keyed by the dragged control's id, not the interaction label: the interaction only says
+        // "Drag", so the id decides. The Edit panel's tone sliders carry the `light.` prefix; a
+        // mask's tone sliders (the Masking panel's local adjustments) share the bare
+        // `LocalAdjustments` field names and ask for the same clipping previews.
         if alt_held && app.session.interaction.is_some() {
             match app.ui.dragging_control.as_deref() {
-                Some("light.exposure" | "light.highlights" | "light.whites") => return Overlay::Clipping(Some(false)),
-                Some("light.shadows" | "light.blacks") => return Overlay::Clipping(Some(true)),
+                Some("light.exposure" | "light.highlights" | "light.whites" | "exposure" | "highlights" | "whites") => {
+                    return Overlay::Clipping(Some(false));
+                }
+                Some("light.shadows" | "light.blacks" | "shadows" | "blacks") => return Overlay::Clipping(Some(true)),
                 // Sharpening's sliders: each its own black-and-white view of the band it sharpens
                 Some("detail.sharpenAmount") => return Overlay::Sharpen(SharpenView::Amount),
                 Some("detail.sharpenRadius") => return Overlay::Sharpen(SharpenView::Radius),
@@ -3385,6 +3415,10 @@ fn general_interaction(
     }
     if app.ui.tool == "colorRange" {
         color_range_pick(app, ui, resp, map);
+        return;
+    }
+    if app.ui.tool == "lensFocus" {
+        lens_focus_pick(app, ui, resp, map);
         return;
     }
     if app.ui.tool == "pointColor" {
@@ -4531,6 +4565,30 @@ fn gradient_cursor(shape: &MaskShape, handle: u8, q: Pos2, map: &CanvasMap) -> O
     }
 }
 
+/// Lens Blur's focus picker: a click keeps the distance under it sharp; a drag keeps the area's
+/// (its median distance), centred where the drag began. The picker stays armed.
+fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap) {
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let n = map.norm(q);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": n.x, "y": n.y}, "focusSize": 0.0})) {
+            app.toast(ui.ctx(), e);
+        }
+    } else if resp.drag_stopped()
+        && let (Some(start), Some(end)) = (ui.input(|i| i.pointer.press_origin()), resp.interact_pointer_pos())
+    {
+        let (a, b) = (map.norm(start), map.norm(end));
+        let size = (a.x - b.x).abs().max((a.y - b.y).abs()).min(0.5);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": a.x, "y": a.y}, "focusSize": size})) {
+            app.toast(ui.ctx(), e);
+        }
+    }
+}
+
 /// Colour Range eyedropper: a click samples the colour under it for the selected mask's
 /// colour range, at normalized frame coordinates (crop, rotation and zoom aware);
 /// ⇧-click adds a sample (up to 5).
@@ -4577,6 +4635,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let n = map.norm(q);
             if let Ok(r) = app.run("mask.pointColorPick", json!({"x": n.x, "y": n.y})) {
                 app.ui.mask_point_color = r.field("index").as_u64().unwrap_or(0) as usize;
+            }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    // the mask's Recolor eyedroppers: one click samples into the active mask's colour ("to") or
+    // its Color to Replace ("from")
+    if let Some(target) = match app.ui.tool.as_str() {
+        "maskRecolor" => Some("to"),
+        "maskRecolorFrom" => Some("from"),
+        _ => None,
+    } {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
+                app.toast(ui.ctx(), e);
             }
             app.ui.tool.clear();
         }

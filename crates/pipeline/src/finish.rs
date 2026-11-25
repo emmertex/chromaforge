@@ -225,7 +225,12 @@ pub const LOCAL_BLACKS: (f32, f32) = (-5.5, 1.0);
 pub const LOCAL_WB_EV: f32 = 1.5;
 
 /// Number of per-mask terms in [`mask_terms`].
-pub const MASK_TERMS: usize = MASK_SUMS + 8;
+pub const MASK_TERMS: usize = MASK_SUMS + 18;
+
+/// Where a mask's Recolor terms start in its [`mask_terms`] ([`crate::recolor::TERMS`] of them:
+/// [`crate::recolor::terms`], patched per mask from the measured main colours by
+/// [`crate::recolor::with_recolor`]; zeros while off).
+pub const MASK_RECOLOR: usize = MASK_SUMS + 8;
 
 /// Where a mask's own tone range starts in its [`mask_terms`]: Whites from nothing to full, then Blacks
 /// from full to nothing (log2 luminance over middle grey; [`crate::mask_tone`] fits them to the tones
@@ -308,6 +313,17 @@ pub fn mask_terms(j: &LocalAdjustments) -> [f32; MASK_TERMS] {
         DEFAULT_MASK_TONE[1],
         DEFAULT_MASK_TONE[2],
         DEFAULT_MASK_TONE[3],
+        // Recolor: patched per mask from the measured main colour (crate::recolor::with_recolor)
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ]
 }
 
@@ -747,6 +763,11 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
     let rgb_contrast = rgb_contrast.as_ref();
     let mut terms: Vec<[f32; MASK_TERMS]> = p.masks.iter().map(|m| mask_terms(&m.adjust)).collect();
     with_tone(&mut terms, &p.mask_tone);
+    {
+        let ids: Vec<u32> = p.masks.iter().map(|m| m.id).collect();
+        let adjusts: Vec<lcc_develop::LocalAdjustments> = p.masks.iter().map(|m| m.adjust).collect();
+        crate::recolor::with_recolor(&mut terms, &ids, &adjusts, &p.recolor);
+    }
     // (only when it lines up with the evaluated masks, which it does unless a caller mixed settings)
     let local_points: &[Vec<crate::colorops::PointK>] = if fp.local_points.len() == p.masks.len() { &fp.local_points } else { &[] };
     let local_mixers: &[Option<crate::colorops::MixerK>] = if fp.local_mixers.len() == p.masks.len() { &fp.local_mixers } else { &[] };
@@ -981,6 +1002,21 @@ pub(crate) fn finish_with<T: Copy + Default + Send>(
                 d = lcc_color::perceptual::oklab_to_2020([lab[0], lab[1] + dir[0] * 0.08 * amt, lab[2] + dir[1] * 0.08 * amt]);
             }
             d = crate::colorops::local_grade(d, &l_grade);
+
+            // --- Recolor: each mask's main colour takes its target, keeping shading (crate::recolor)
+            for (m, t) in p.masks.iter().zip(&terms) {
+                if t[MASK_RECOLOR] <= 0.0 {
+                    continue;
+                }
+                let a = m.alpha.data[i];
+                if a <= 0.0 {
+                    continue;
+                }
+                let lab = lcc_color::perceptual::oklab_from_2020(d);
+                // (the recolor block is the fixed tail of the terms: always in range)
+                let out = crate::recolor::apply_terms(lab, &t[MASK_RECOLOR..MASK_RECOLOR + crate::recolor::TERMS], a);
+                d = lcc_color::perceptual::oklab_to_2020(out);
+            }
 
             // --- process V10: the Tone Curve in its wide space, before the vignette and the gamut map
             // (with Brightness and Levels before it, in the same order as the older processes run them on output values)

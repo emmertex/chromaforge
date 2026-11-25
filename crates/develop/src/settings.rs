@@ -323,6 +323,11 @@ pub struct DevelopSettings {
     /// `hash64` (and every cached preview stays valid).
     #[serde(default, skip_serializing_if = "Levels::is_default")]
     pub levels: Levels,
+    /// Tone Equalizer (beyond Lightroom): exposure per luminance band through a smoothed mask, on the
+    /// scene-linear image. Not written while it is the default, so settings without it keep their JSON
+    /// and `hash64`.
+    #[serde(default, skip_serializing_if = "crate::ToneEq::is_default", deserialize_with = "lenient")]
+    pub tone_eq: crate::ToneEq,
     /// Resolve-style HSL curves (the Witchcraft mode's Curves): free points over the hue circle,
     /// one curve each for hue, saturation and luminance. Not written while neutral.
     #[serde(default, skip_serializing_if = "HslCurves::is_neutral")]
@@ -449,6 +454,7 @@ impl Default for DevelopSettings {
             grading: ColorGrading::default(),
             primaries: Primaries::default(),
             levels: Levels::default(),
+            tone_eq: crate::ToneEq::default(),
             hsl_curves: HslCurves::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
@@ -484,11 +490,16 @@ pub struct Sensor {
     /// photo shows), 0 = off (the data as the camera recorded it). A number so it is a develop control
     /// (`sensor.pixelFix`).
     pub pixel_fix: f64,
+    /// How sensor-clipped highlights are rebuilt (`sensor.highlightMode`): 0 = Rebuild (the default: the colour of
+    /// reliable content nearby), 1 = Inpaint Opposed, 2 = Guided Laplacian (both ported from darktable). A number so
+    /// it is a develop control. Not written while 0, so settings from before it keep their JSON and hash.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub highlight_mode: f64,
 }
 
 impl Default for Sensor {
     fn default() -> Self {
-        Self { pixel_fix: 1.0 }
+        Self { pixel_fix: 1.0, highlight_mode: 0.0 }
     }
 }
 
@@ -532,6 +543,19 @@ impl Sensor {
     /// Whether hot, dead and stuck pixels are fixed.
     pub fn fixes_pixels(&self) -> bool {
         self.pixel_fix >= 0.5 || self.pixel_fix.is_nan()
+    }
+
+    /// The highlight reconstruction method's index (`sensor.highlightMode`): 0 Rebuild, 1 Inpaint Opposed, 2 Guided
+    /// Laplacian; anything out of range (NaN included) is 0.
+    pub fn highlight_mode(&self) -> u8 {
+        let r = self.highlight_mode.round();
+        if r == 1.0 {
+            1
+        } else if r == 2.0 {
+            2
+        } else {
+            0
+        }
     }
 }
 
@@ -928,6 +952,12 @@ pub struct PointColor {
     /// −100 compresses the colour spread within the range towards the sample (evens out e.g.
     /// skin), +100 expands it.
     pub variance: f64,
+    /// Skin-tone uniformity 0..100 per axis (Capture One's Uniformity): pulls the hues,
+    /// saturations (chroma) and lightnesses within the range towards the sample, so at 100 every
+    /// colour at the range's centre takes the sample's value on that axis.
+    pub hue_uniformity: f64,
+    pub sat_uniformity: f64,
+    pub lum_uniformity: f64,
     /// Overall range 0..100 (scales all three widths).
     pub range: f64,
     pub hue_range: f64,
@@ -945,6 +975,9 @@ impl Default for PointColor {
             sat_shift: 0.0,
             lum_shift: 0.0,
             variance: 0.0,
+            hue_uniformity: 0.0,
+            sat_uniformity: 0.0,
+            lum_uniformity: 0.0,
             range: 50.0,
             hue_range: 50.0,
             sat_range: 50.0,
@@ -956,7 +989,13 @@ impl Default for PointColor {
 impl PointColor {
     /// True when the sample changes nothing.
     pub fn is_neutral(&self) -> bool {
-        self.hue_shift == 0.0 && self.sat_shift == 0.0 && self.lum_shift == 0.0 && self.variance == 0.0
+        self.hue_shift == 0.0
+            && self.sat_shift == 0.0
+            && self.lum_shift == 0.0
+            && self.variance == 0.0
+            && self.hue_uniformity == 0.0
+            && self.sat_uniformity == 0.0
+            && self.lum_uniformity == 0.0
     }
 }
 
@@ -1713,6 +1752,21 @@ pub struct LocalAdjustments {
     pub grade_global_hue: f64,
     pub grade_global_sat: f64,
     pub grade_global_lum: f64,
+    /// Recolor (0..100; 0 = off): the area's main colour takes `recolor_r/g/b` (sRGB-encoded,
+    /// 0..1) and keeps its own shading, folds and light. Only the dominant colour changes;
+    /// `recolor_range` (−100..100) widens or narrows which hues count as it. Ported from upstream
+    /// (`feat/83-recolour`); see `lcc_pipeline::recolor`.
+    pub recolor: f64,
+    /// The Recolor target colour (sRGB-encoded, 0..1).
+    pub recolor_r: f64,
+    pub recolor_g: f64,
+    pub recolor_b: f64,
+    /// The Recolor hue window (−100..100; 0 = the default; each 50 doubles or halves it).
+    pub recolor_range: f64,
+    /// The colour to replace (sRGB-encoded, 0..1; all 0 = automatic: the area's main colour).
+    pub recolor_from_r: f64,
+    pub recolor_from_g: f64,
+    pub recolor_from_b: f64,
     /// Local vignette/grain are not in Lightroom; we keep the struct extensible.
     pub amount: f64,
 }
@@ -1728,14 +1782,19 @@ pub const LEGACY_LOCAL_HUE_DEG: f64 = 0.6 * 180.0 / std::f64::consts::PI / 100.0
 pub const LOCAL_HUE_STANDARD: f64 = 100.0 * LEGACY_LOCAL_HUE_DEG;
 
 macro_rules! local_wire {
-    ($($f:ident),* $(,)?) => {
+    ($($f:ident),* $(,)? ; $($z:ident),* $(,)?) => {
         /// How [`LocalAdjustments`] is stored. `hue_deg` marks a Hue in degrees; without it (catalogs,
         /// presets and effect files from before the change, partial JSON) `hue` is the old −100..100
-        /// slider value and converts to the same angle in degrees.
+        /// slider value and converts to the same angle in degrees. The `$z` fields (Recolor) are
+        /// left out while they are 0, so edits without Recolor save byte for byte as before.
         #[derive(Clone, Copy, Serialize, Deserialize)]
         #[serde(default)]
         pub struct LocalAdjustmentsWire {
             $($f: f64,)*
+            $(
+                #[serde(skip_serializing_if = "wire_is_zero")]
+                $z: f64,
+            )*
             hue: f64,
             hue_deg: bool,
         }
@@ -1743,23 +1802,28 @@ macro_rules! local_wire {
         impl Default for LocalAdjustmentsWire {
             fn default() -> Self {
                 let d = LocalAdjustments::default();
-                Self { $($f: d.$f,)* hue: d.hue, hue_deg: false }
+                Self { $($f: d.$f,)* $($z: d.$z,)* hue: d.hue, hue_deg: false }
             }
         }
 
         impl From<LocalAdjustmentsWire> for LocalAdjustments {
             fn from(w: LocalAdjustmentsWire) -> Self {
                 let hue = if w.hue_deg { w.hue } else { w.hue * LEGACY_LOCAL_HUE_DEG };
-                Self { $($f: w.$f,)* hue }
+                Self { $($f: w.$f,)* $($z: w.$z,)* hue }
             }
         }
 
         impl From<LocalAdjustments> for LocalAdjustmentsWire {
             fn from(a: LocalAdjustments) -> Self {
-                Self { $($f: a.$f,)* hue: a.hue, hue_deg: true }
+                Self { $($f: a.$f,)* $($z: a.$z,)* hue: a.hue, hue_deg: true }
             }
         }
     };
+}
+
+/// A wire field that stays out of the JSON while it is 0 (`local_wire!`'s second group).
+fn wire_is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 local_wire!(
@@ -1793,7 +1857,15 @@ local_wire!(
     grade_global_hue,
     grade_global_sat,
     grade_global_lum,
-    amount,
+    amount;
+    recolor,
+    recolor_r,
+    recolor_g,
+    recolor_b,
+    recolor_range,
+    recolor_from_r,
+    recolor_from_g,
+    recolor_from_b,
 );
 
 impl LocalAdjustments {
@@ -1843,6 +1915,14 @@ impl Default for LocalAdjustments {
             grade_global_hue: 0.0,
             grade_global_sat: 0.0,
             grade_global_lum: 0.0,
+            recolor: 0.0,
+            recolor_r: 0.0,
+            recolor_g: 0.0,
+            recolor_b: 0.0,
+            recolor_range: 0.0,
+            recolor_from_r: 0.0,
+            recolor_from_g: 0.0,
+            recolor_from_b: 0.0,
             amount: 100.0,
         }
     }
@@ -2463,13 +2543,85 @@ impl Default for RedEye {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Lens Blur: a shallow depth of field added after the fact, from the photo's estimated depth
+/// (`lcc_pipeline::lens_blur`). Distances are `0..100` (0 = nearest, 100 = farthest).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LensBlur {
     pub enabled: bool,
+    /// Blur Amount, `0..100`: the largest blur, 100 ≈ 3 % of the photo's long edge.
     pub amount: f64,
+    /// The middle of the sharp band, `0..100` (used when no [`Self::focus`] is picked).
     pub focal_distance: f64,
+    /// How deep the sharp band is, `0..100`.
     pub focal_range: f64,
+    /// The focus picker: a point of the uncropped, oriented photo (normalized) whose distance is
+    /// kept sharp; it overrides [`Self::focal_distance`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<Point>,
+    /// The focus picker's area: half its side in normalized units (0 = a point); the distance
+    /// kept sharp is the area's median.
+    pub focus_size: f64,
+    /// The shape of the out-of-focus highlights.
+    pub bokeh: BokehShape,
+}
+
+impl Default for LensBlur {
+    fn default() -> Self {
+        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle }
+    }
+}
+
+impl LensBlur {
+    /// Whether Lens Blur changes the photo.
+    pub fn active(&self) -> bool {
+        self.enabled && self.amount.is_finite() && self.amount > 0.0
+    }
+}
+
+/// The aperture shape Lens Blur imitates (the look of out-of-focus highlights).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BokehShape {
+    /// A round aperture.
+    #[default]
+    Circle,
+    /// Five aperture blades.
+    Pentagon,
+    /// Six aperture blades.
+    Hexagon,
+    /// A mirror lens's ring.
+    Ring,
+}
+
+impl BokehShape {
+    pub const ALL: [BokehShape; 4] = [BokehShape::Circle, BokehShape::Pentagon, BokehShape::Hexagon, BokehShape::Ring];
+    /// `circle`, `pentagon` (or `5`), `hexagon` (or `6`), `ring` (case-insensitive).
+    pub fn parse(name: &str) -> Option<BokehShape> {
+        match name.to_ascii_lowercase().as_str() {
+            "circle" | "round" => Some(BokehShape::Circle),
+            "pentagon" | "5" | "5-blade" => Some(BokehShape::Pentagon),
+            "hexagon" | "6" | "6-blade" => Some(BokehShape::Hexagon),
+            "ring" | "mirror" => Some(BokehShape::Ring),
+            _ => None,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            BokehShape::Circle => "circle",
+            BokehShape::Pentagon => "pentagon",
+            BokehShape::Hexagon => "hexagon",
+            BokehShape::Ring => "ring",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            BokehShape::Circle => "Circle",
+            BokehShape::Pentagon => "5 Blades",
+            BokehShape::Hexagon => "6 Blades",
+            BokehShape::Ring => "Ring",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
