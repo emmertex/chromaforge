@@ -314,7 +314,16 @@ fn moov<'a>(bytes: &'a [u8], m: &BoxRef, out: &mut Cr3<'a>, budget: &mut usize) 
                         }
                         _ => continue,
                     };
-                    out.cmt[slot] = bytes.get(c.body..c.end);
+                    // the first readable box of a slot wins; a later readable one replaces a damaged one, and a lone
+                    // damaged box still fills the slot (adapted from craft-libs #1080)
+                    let readable = |b: Option<&[u8]>| b.is_some_and(|b| lcc_tiff::Tiff::parse(b).is_ok());
+                    let body = bytes.get(c.body..c.end);
+                    if let Some(kept) = out.cmt.get_mut(slot)
+                        && !readable(*kept)
+                        && (kept.is_none() || readable(body))
+                    {
+                        *kept = body;
+                    }
                 }
             }
             b"trak" => {
@@ -560,6 +569,28 @@ mod tests {
     fn tiff_with(tag: u16, v: lcc_tiff::Value) -> Vec<u8> {
         let b = lcc_tiff::IfdBuilder::new().with(tag, v);
         lcc_tiff::TiffWriter::new(lcc_tiff::ByteOrder::Little, false).write(&[b]).unwrap()
+    }
+
+    /// craft-libs #1080: a damaged CMT2 gives way to a later readable one, the first readable box stays, and a lone
+    /// damaged box still fills its slot.
+    #[test]
+    fn a_damaged_cmt_box_gives_way_to_a_later_readable_one() {
+        use lcc_tiff::{Value, tags as t};
+        let cmt1 = tiff_with(t::MAKE, Value::Ascii("Canon".into()));
+        let iso = |v: u16| tiff_with(t::ISO_SPEED, Value::Short(vec![v]));
+        let file = |boxes: &[Vec<u8>]| {
+            let mut file = bx(b"ftyp", b"crx    crx isom");
+            file.extend(bx(b"moov", &uuid(&CANON_UUID, &boxes.concat())));
+            file
+        };
+        let damaged = bx(b"CMT2", b"not a tiff");
+        let bytes = file(&[bx(b"CMT1", &cmt1), damaged.clone(), bx(b"CMT2", &iso(800)), bx(b"CMT2", &iso(100))]);
+        let c = parse_cr3(&bytes).unwrap();
+        assert_eq!(c.cmt[1], Some(&iso(800)[..]), "the first readable CMT2 is kept");
+        let bytes = file(&[bx(b"CMT1", &cmt1), damaged]);
+        let c = parse_cr3(&bytes).unwrap();
+        assert_eq!(c.cmt[1], Some(&b"not a tiff"[..]), "a lone damaged box still fills its slot");
+        assert_eq!(c.cmt[0], Some(&cmt1[..]));
     }
 
     /// A small synthetic CR3: Canon uuid with CMT1/CMT2/CMT4, a JPEG track, a raw track, XMP.
