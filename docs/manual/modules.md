@@ -31,7 +31,7 @@ text, the shot-info strip with the pixel size included), `G` returns to the grid
 
 `D` opens the active photo. Its left column is Develop's own, as in Lightroom Classic: Navigator, Presets, Versions
 (snapshots), History and Collections — the Library's Catalog, Folders and Keywords stay in Library, and the My Photos
-sidebar is there as a panel to show from any panel's menu. Panels: Light, Color, Effects, Detail, Optics, Geometry,
+sidebar is there as a panel to show from any panel's menu. Panels: Light, Color, Effects, Lens Blur, Detail, Optics, Geometry,
 Calibration (`Cmd+1`…`Cmd+5` jump to sections), plus the tools above them: Crop (`R`), Remove (`Q`), Red Eye,
 Masking (`Shift+W`: brush `K`, linear `M`, radial `Shift+M`, colour and luminance range, AI
 subject/sky/background/object masks). Presets (`Shift+P`; adaptive presets carry masks recomputed per photo), profiles, snapshots, history and versions (`Shift+V`);

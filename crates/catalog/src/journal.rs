@@ -66,6 +66,7 @@
 //! | 19 | Pixel Shift merges remember their frames | `Op::SetMergeSources`, `Photo.merge_sources` |
 //! | 20 | Image Quality Scanner scores (issue #1313) | `Analysis.quality` (`QualityScan`: sharpness, noise, exposure, compression, score, verdict, the flag a scan wrote) |
 //! | 21 | the Image Quality Scanner assigns star ratings (issue #1362) | `QualityScan.rating_written` |
+//! | 22 | Lens Blur: subject focus, brushes and fixed shapes in the develop settings; per-mask bokeh (upstream PR #2661) | `DevelopSettings.lens_blur` (`focus_mask`, `focus_strokes`, `blur_strokes`, `boost`, `transition`, `shape`, `area`), `LocalAdjustments.lens_blur` / `lens_blur_off` / `lens_blur_outside` / `lens_blur_boost` / `lens_blur_transition` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a
@@ -98,7 +99,7 @@ pub(crate) const FORMAT: &str = "lcc-catalog";
 pub(crate) const V4_FORMAT: &str = "lcc-catalog-db";
 /// The catalog format this build writes (and the newest it reads). See the module docs →
 /// *Format versions*; bump it whenever an [`Op`] variant or a serialized field is added.
-pub const VERSION: u32 = 21;
+pub const VERSION: u32 = 22;
 
 /// When [`Journal::wants_snapshot`] says it's time to compact the log.
 #[derive(Clone, Copy, Debug)]

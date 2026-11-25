@@ -996,6 +996,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     }
+    // (Lens Blur is a block of its own, under the sections: a fold and an eye of its own)
+    divider(ui);
+    super::lens_blur::mask_block(app, ui, &m);
     if app.ui.roles_window {
         roles_window(app, ui.ctx());
     }

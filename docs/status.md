@@ -1,6 +1,6 @@
 # Status
 
-> **Last updated:** 2026-11-25 · **Change:** patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
+> **Last updated:** 2026-11-25 · **Change:** minor (Lens Blur ported from upstream #2661: LR-EDIT-LENSBLUR 🟡, checklist 91.1% of 632 rows, P2 82.6%; Metrics: Lens Blur stage cost); patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
 
 The one tracked place for where Chromaforge stands right now. Agents read it first (see `AGENTS.md`, *Session start*)
 and update it in the commit that changes what it says. The detailed phased plan lives in the gitignored
@@ -17,7 +17,7 @@ and update it in the commit that changes what it says. The detailed phased plan 
 | 2 | Never-crash hardening: fuzz targets, checked indexing, allocation caps, SIL round trips | landed (#1328, #1331, #1334, #1337, #1339, #1340); model-reference job in progress |
 | 3 | Camera colour, CR3 variants, lens data, per-model verification | next |
 
-Checklist breadth: **90.3%** of 630 in-scope rows (P0 98.0%, P1 94.8%, P2 80.3%), from `cargo xtask parity`.
+Checklist breadth: **91.1%** of 632 in-scope rows (P0 98.0%, P1 94.8%, P2 82.6%), from `cargo xtask parity` (recounted 2026-11-25 after Lens Blur, LR-EDIT-LENSBLUR 🟡).
 "Ready for real work" stays an estimate of about 60% (see [target-app-parity.md](target-app-parity.md)).
 
 ## Next task
@@ -50,6 +50,7 @@ Same-machine before/after pairs only (`AGENTS.md`, *Testing & performance*). Bud
 
 | Date | What | Machine | Before | After |
 |---|---|---|---|---|
+| 2026-11-25 | Lens Blur stage cost (release CLI `run --demo … app.export`, `<PREFIX>_PROFILE=1`, demo photo at 6000×4000 and 1600 px long edge, GPU path with the lens blur on the CPU; 7 alternated runs per configuration, medians, machine shared with other work) | CachyOS Linux x64 desktop, 32 threads | plain 24 MP export: render 152 ms; plain 1600 px: render 88 ms | Lens Blur at the maximum (Amount, Boost, Transition 100): 24 MP render 1024 ms, of which the lens blur stage 744 ms (focus 287 ms, transition 17 ms, four disc levels 80 ms); with one radial mask blurred too: render 1430 ms, lens blur 1165 ms; at 1600 px: render 185 ms, lens blur 57 ms. Decode unchanged (about 1.95 s for the demo photo). Over the export budget (1 s per 24 MP) only at the maximum setting; loupe renders on the CPU at 1014×676 about 210 ms per change (lens blur about 170 ms), drafts 8–55 ms. Upstream #2661, catalog format 22 |
 | 2026-11-25 | Export screen preview (release CLI `snapshot --demo`, headless CPU render, demo photo 24 MP, `<PREFIX>_PROFILE=1`, single runs, machine shared with builds) | CachyOS Linux x64 desktop | no preview | screen opens without it: `dialog.export` 25 ms; the preview settles 325 ms after opening (150 ms debounce + render + fit); `export render` on thread `lc-export-preview` 46 ms at 2048 px long edge (decode 0.0 ms, source cached); a second run of the same settings 209 ms (noisy); HDR mode on an SDR display re-renders nothing (settle 44 ms) |
 | 2026-11-24 | 4.1 start-up, 100 000-photo synthetic library (`startup_bench`, release, 3 interleaved runs each) | Windows 11 dev box, shared with other builds (wall times ±100 %) | background-preparation tick (slowest of first 30) 12.1 / 17.6 / 18.6 ms; library ready 0.99–3.9 s; slowest frame 0.52–3.3 s | tick 22.9\* / 4.0 / 4.2 ms; library ready 1.0–8.2 s; slowest frame 0.59–4.7 s (\*first pair under the heaviest load). Tick bounded at 16 384 photos looked at; the multi-second frames are the session open, not preparation |
 | 2026-11-25 | 4.1 session open off the interface thread (`startup_bench`, 100 000 photos, release, 3 interleaved before/after runs, `<PREFIX>_PROFILE=1`) | Windows 11 dev box, heavily loaded by ~10 parallel builds (wall times ±100 %) | slowest frame 4.30 / 3.92 / 3.31 s (open on the interface thread: catalog read 2.9–3.7 s + first view 0.2–3.5 s) | slowest frame 0.65 / 0.36 / 0.89 s; the open's own frame 0.34 s (catalog 0 ms: read and first view sorted on the worker). Library ready 5.9–11.6 s both ways (noise); the first frame's seconds are not the open |

@@ -241,7 +241,8 @@ fn op_variants_are_versioned() {
         }
     }
     /// v20: `Analysis.quality` (the Image Quality Scanner's scores); v21: `QualityScan.rating_written`.
-    const NEWEST_FIELDS: u32 = 21;
+    /// v22: Lens Blur in the develop settings and the mask adjustments (upstream PR #2661).
+    const NEWEST_FIELDS: u32 = 22;
     let map = lcc_develop::EmbeddedVignettingMap::from_ev([4, 4], [2, 2], None, Default::default(), &[0.0; 4]).unwrap();
     let id = lcc_develop::VignettingMapId::of(&map);
     let _vignetting = since(&Op::AddVignettingMap {

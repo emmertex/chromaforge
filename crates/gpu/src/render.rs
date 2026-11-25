@@ -1374,21 +1374,37 @@ fn pre_nr(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     }
 }
 
-/// [`linear`] after noise reduction: Smooth Skin, the retouch of people's parts and the Tone Equalizer (on the CPU).
+/// [`linear`] after noise reduction: Lens Blur, Smooth Skin, the retouch of people's parts and the
+/// Tone Equalizer (on the CPU).
 fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let s = &*plan.settings;
-    if !lcc_pipeline::skin_needs_cpu(s) {
+    let lens_blur = lcc_pipeline::lens_blur::renders(s);
+    if !lcc_pipeline::skin_needs_cpu(s) && !lens_blur {
         return img;
     }
     // Smooth Skin on the device when every bucket's region fits its buffers (`skin_gpu`)
     let skin_done = skin_gpu(cx, &img, plan);
-    if skin_done && !lcc_pipeline::retouch::active(s) && !lcc_pipeline::tone_eq::active(s) {
+    if skin_done && !lcc_pipeline::retouch::active(s) && !lcc_pipeline::tone_eq::active(s) && !lens_blur {
         return img;
     }
     // the retouch of people's parts (and Smooth Skin when it didn't fit): the CPU's (the same code
     // renders both, so they match)
     let mut host_img = cx.read_rgb(&img, w, h);
+    if lens_blur {
+        // Lens Blur (global or a mask's): the CPU renderer's (`lens_blur::apply_with`), so the
+        // two renderers match
+        lcc_pipeline::timed("lens blur", || {
+            lcc_pipeline::lens_blur::apply_with(
+                &mut host_img,
+                s,
+                &plan.frame,
+                plan.px_per_long,
+                plan.mattes.as_deref(),
+                plan.lens_subject.as_deref(),
+            );
+        });
+    }
     lcc_pipeline::timed("smooth skin", || {
         if !skin_done {
             lcc_pipeline::skin::apply(&mut host_img, s, &plan.frame, plan.px_per_long);

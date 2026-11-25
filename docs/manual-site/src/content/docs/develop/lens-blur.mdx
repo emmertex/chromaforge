@@ -1,0 +1,25 @@
+---
+title: Lens Blur
+description: Blur what is out of focus and keep the subject sharp.
+sidebar:
+  order: 10
+---
+
+import Shot from '../../../components/Shot.astro';
+import { Aside } from '@astrojs/starlight/components';
+
+<Shot name="lens-blur-section" alt="The Lens Blur section: Apply, Blur Amount, Boost, Transition, In Focus, Shape, Find Subject and Brush Refinement" />
+
+- **Lens Blur** sits in the Edit panel after **Effects**. Tick **Apply**; the blur starts at 50.
+- **Blur Amount**: how strong the blur is. **Boost**: brighter, rounder highlights in the blur. **Transition**: how gradually the blur grows away from what is sharp.
+- **In Focus**: **Subject** (the photo's subject) or any mask of the photo. The mask's selection stays sharp.
+- **Shape** (with Subject): **Auto**, **Round**, **Horizontal** or **Vertical**. **Move & Resize** drags the shape on the photo; a shape button puts it back in the middle.
+- **Find Subject**: selects people and animals with AI (SAM 3, see [AI masks](../ai/masks-ai/)) and keeps them in focus. It starts where the camera focused when the file records it. The result is an **Object** mask that can be refined in **Masks**. Without the model nothing changes.
+- **Brush Refinement**: **Focus** paints what stays sharp, **Blur** what is blurred. **Amount**, **Size**, **Feather**, **Flow** and **Auto Mask**; Alt erases; **Reset** removes the strokes.
+- The focus controls are greyed out while **Apply** is off.
+- In **Masks**, every mask has a **Lens Blur** block: blur the **Selection** or **Outside** of it, with its own **Amount**, **Boost** and **Transition**. The eye switches the block off and keeps its values.
+- Partial: the blur follows the distance in the picture from what is in focus, not the depth of the scene. There is no focal range, aperture shape or depth view.
+
+<Aside type="note" title="Modern layout">
+  **Lens Blur** is in the Edit panel: open it from **Window ▸ Edit Sections ▸ Lens Blur**, or from the **more** button of the **Effects** card.
+</Aside>

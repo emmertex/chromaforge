@@ -73,6 +73,12 @@ pub(crate) const PAINT_HOLD_SECS: f64 = 1.0;
 /// An in-progress on-canvas gesture.
 #[derive(Clone, Debug)]
 pub enum Gesture {
+    /// Lens Blur's fixed focus shape: moving it (`handle` 0) or stretching it sideways (1) or
+    /// up and down (2), from `original` (where it was when the drag began).
+    LensBlurArea {
+        handle: u8,
+        original: lcc_develop::FocusArea,
+    },
     Brush {
         points: Vec<Point>,
         /// Pen pressure (0..1) at each point; empty when no pen pressure was reported (a mouse) or the
@@ -162,7 +168,7 @@ pub enum Gesture {
 /// Screen ↔ normalized-image mapping for the displayed frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasMap {
-    rect: Rect,
+    pub(super) rect: Rect,
     to_norm: Affine,
     from_norm: Affine,
     k: f32,
@@ -498,7 +504,7 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     if delta == egui::Vec2::ZERO && trackpad_delta != egui::Vec2::ZERO {
         delta = trackpad_delta;
     }
-    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove;
+    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove || super::lens_blur::is_brush(&app.ui.tool);
     let space_held = ui.input(|i| i.key_down(egui::Key::Space)) || app.space_hand.is_some();
     let cmd_or_ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
 
@@ -1925,6 +1931,8 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 crate::panels::genfill::canvas(app, ui, &ui.painter_at(app.canvas_rect.unwrap_or(map.rect)), &|q| map.screen(q), &d);
             }
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Edit if super::lens_blur::is_shape_tool(&app.ui.tool) => super::lens_blur::shape_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Edit if super::lens_blur::is_brush(&app.ui.tool) => super::lens_blur::brush_overlay(app, ui, &resp, &map),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
                 // balance, colour samples, targeted adjustment) means the same point of the photo.
@@ -5511,7 +5519,7 @@ fn guide_runs(samples: impl IntoIterator<Item = Option<Pos2>>) -> Vec<Vec<Pos2>>
 }
 
 /// Long-edge units → normalized units for x and y.
-fn frame_long_norm(map: &CanvasMap) -> (f64, f64) {
+pub(crate) fn frame_long_norm(map: &CanvasMap) -> (f64, f64) {
     // derive from the mapping: 1 normalized unit in x and y in screen points (of the frame's
     // proportions, which a lens or perspective warp doesn't change)
     let map = map.for_mask(false);
@@ -5544,7 +5552,7 @@ fn spot_at(d: &DevelopSettings, map: &CanvasMap, long: f64, h: Pos2) -> Option<u
     })
 }
 
-fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
+pub(crate) fn pin(p: &egui::Painter, c: Pos2, sel: bool) {
     p.circle_filled(c, 6.0, if sel { Color32::from_rgb(1, 101, 221) } else { Color32::from_gray(200) });
     p.circle_stroke(c, 6.0, Stroke::new(1.5, Color32::WHITE));
 }

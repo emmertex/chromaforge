@@ -620,6 +620,13 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Lens Blur (upstream #2661): a shallow depth of field, the subject kept sharp
+    if shows("lensBlur") {
+        section(app, ui, &d, "lensBlur", "Lens Blur", |app, ui, d| {
+            super::lens_blur::edit_section(app, ui, d);
+            ui.add_space(8.0);
+        });
+    }
     // Lightroom Classic's Calibration panel (the cloud app hides it): last, like there.
     section(app, ui, &d, "calibration", "Calibration", |app, ui, d| {
         sub_title(ui, crate::i18n::tr("Shadows"));

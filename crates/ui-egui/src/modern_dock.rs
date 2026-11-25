@@ -106,7 +106,7 @@ impl Group {
             Group::Tone => &[("levels", "Levels"), ("toneEq", "Tone Equalizer"), ("curve", "Tone Curve")],
             Group::Detail => &[("detail", "Detail"), ("retouch", "Retouch")],
             Group::Optics => &[("optics", "Lens Corrections"), ("geometry", "Transform")],
-            Group::Effects => &[("effects", "Effects"), ("plugins", "Plug-in Filters")],
+            Group::Effects => &[("effects", "Effects"), ("lensBlur", "Lens Blur"), ("plugins", "Plug-in Filters")],
             _ => &[],
         }
     }

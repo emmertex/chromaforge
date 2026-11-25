@@ -55,10 +55,11 @@ fn the_edit_panel_is_lightroom_classics_develop_panels_and_every_header_folds() 
                 "optics",
                 "geometry",
                 "effects",
+                "lensBlur",
                 "calibration",
                 "pluginFilters"
             ],
-            "then the fork's Plug-in Filters"
+            "Lightroom Classic's panels in order, then Lens Blur (upstream #2661) and the fork's Plug-in Filters"
         );
         let text = h.painted_text();
         for title in [

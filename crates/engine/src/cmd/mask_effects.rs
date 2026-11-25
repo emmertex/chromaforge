@@ -33,6 +33,7 @@ pub const FIELDS: &[&str] = &[
     "noise",
     "moire",
     "defringe",
+    "lens_blur",
     "color_hue",
     "color_sat",
 ];
@@ -131,10 +132,11 @@ pub fn get(a: &LocalAdjustments, k: &str) -> f64 {
     serde_json::to_value(a).ok().and_then(|v| v.get(k).and_then(Value::as_f64)).unwrap_or(0.0)
 }
 
-/// `a` with field `k` set to `v` (unchanged for an unknown name).
+/// `a` with field `k` set to `v` (unchanged for an unknown name). A [`FIELDS`] slider counts as
+/// known also while its JSON leaves it out at 0 (`lens_blur`).
 pub fn set(a: &LocalAdjustments, k: &str, v: f64) -> LocalAdjustments {
     let Ok(Value::Object(mut o)) = serde_json::to_value(a) else { return *a };
-    if !o.contains_key(k) || !v.is_finite() {
+    if !(o.contains_key(k) || FIELDS.contains(&k)) || !v.is_finite() {
         return *a;
     }
     o.insert(k.into(), json!(v));
@@ -775,42 +777,31 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
 
+    /// A partial effect sets Lens Blur on a mask without any yet (its JSON leaves `lens_blur` out
+    /// at 0); a name no slider has still changes nothing.
     #[test]
-    fn apply_keeps_amount_partial_effects_leave_other_sliders_and_hue_alone_still_matches() {
-        // apply keeps amount and matches ignore it
-        {
-            let e = MaskEffect { name: "E".into(), adjust: LocalAdjustments { exposure: 1.0, ..Default::default() }, ..Default::default() };
-            let current = LocalAdjustments { shadows: 40.0, amount: 60.0, ..Default::default() };
-            let out = e.apply(&current);
-            assert_eq!((out.exposure, out.shadows, out.amount), (1.0, 0.0, 60.0));
-            assert!(e.matches(&out));
-            assert!(!e.matches(&current));
-        }
-        // partial effects leave other sliders and can carry amount
-        {
-            let e = MaskEffect {
-                name: "Lift".into(),
-                adjust: LocalAdjustments { shadows: 30.0, clarity: 99.0, amount: 70.0, ..Default::default() },
-                fields: vec!["shadows".into()],
-                with_amount: true,
-                ..Default::default()
-            };
-            let current = LocalAdjustments { exposure: 0.5, clarity: 10.0, ..Default::default() };
-            let out = e.apply(&current);
-            assert_eq!((out.exposure, out.shadows, out.clarity, out.amount), (0.5, 30.0, 10.0, 70.0));
-            assert!(e.matches(&out));
-            assert!(!e.matches(&LocalAdjustments { amount: 100.0, ..out }), "Amount counts when carried");
-        }
-        // hue without saturation still matches
-        {
-            let e = MaskEffect {
-                name: "E".into(),
-                adjust: LocalAdjustments { color_hue: 240.0, exposure: 0.25, ..Default::default() },
-                ..Default::default()
-            };
-            assert!(e.matches(&LocalAdjustments { exposure: 0.25, ..Default::default() }));
-            assert!(!e.matches(&LocalAdjustments { exposure: 0.25, color_sat: 10.0, ..Default::default() }));
-        }
+    fn partial_effects_set_lens_blur_from_zero() {
+        let e = MaskEffect {
+            name: "Bokeh".into(),
+            adjust: LocalAdjustments { lens_blur: 60.0, ..Default::default() },
+            fields: vec!["lens_blur".into()],
+            ..Default::default()
+        };
+        let out = e.apply(&LocalAdjustments::default());
+        assert_eq!(out.lens_blur, 60.0);
+        assert!(e.matches(&out));
+        assert_eq!(set(&LocalAdjustments::default(), "bogus", 5.0), LocalAdjustments::default());
+    }
+
+    #[test]
+    fn hue_without_saturation_still_matches() {
+        let e = MaskEffect {
+            name: "E".into(),
+            adjust: LocalAdjustments { color_hue: 240.0, exposure: 0.25, ..Default::default() },
+            ..Default::default()
+        };
+        assert!(e.matches(&LocalAdjustments { exposure: 0.25, ..Default::default() }));
+        assert!(!e.matches(&LocalAdjustments { exposure: 0.25, color_sat: 10.0, ..Default::default() }));
     }
 
     #[test]

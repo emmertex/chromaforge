@@ -38,6 +38,7 @@ pub mod genpatch;
 pub mod geometry;
 pub mod grade;
 pub mod grain;
+pub mod lens_blur;
 pub mod levels;
 pub mod local;
 pub mod local_tone;
@@ -657,6 +658,8 @@ pub struct Plan<'a> {
     pub keep: Option<PixelWindow>,
     /// The source's segmentation mattes ([`SourceInfo::mattes`]).
     pub mattes: Option<Arc<masks::Mattes>>,
+    /// The whole photo's subject estimate a lens blur focuses on ([`lens_blur::subject_estimate`]).
+    pub lens_subject: Option<Arc<lens_blur::SubjectEstimate>>,
     /// The Source-stage plug-in filters (resolved), whose key is part of [`Self::pre_nr_key`].
     pub source_filters: Arc<plugin_filters::Stack>,
     /// Where the rendered pixels sit in the whole output frame (`x, y, full_w, full_h`), for
@@ -725,6 +728,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
             // those reads outside the requested window too, at every depth (cut back below)
             let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
+            // (and the lens blur, at every depth: a grown window is cut back to the request)
+            let work = lens_blur::window_for_reads(s, full_w, full_h, px_per_long, work);
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -746,6 +751,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         source: plugin_filters::image_source(info),
     };
     let source_filters = Arc::new(plugin_filters::Stack::resolve(info, s, lcc_develop::FilterStage::Source));
+    let lens_subject = lens_blur::subject_estimate(src, s, info.mattes.as_deref()).map(Arc::new);
     let geo = hash_of((format!("{frame:?}"), w, h));
     let (wb_t, wb_tint) = local::effective_wb(info, s);
     let eyes = redeye::resolve(src, &s.red_eye, s.orientation, &frame, w, h, px_per_long);
@@ -760,6 +766,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         // and the local tone mapping
         local_tone::enabled(info, s),
         src_long,
+        // and the lens blur (after noise reduction, but a draft must not reuse planes without it)
+        lens_blur::key(s),
         // the Source plug-in filters run before this stage
         source_filters.key,
         // and film dust removal before them
@@ -811,9 +819,11 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         joint_nr,
     ));
     let noise_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail].map(f64::to_bits), detail_scale.to_bits()));
-    let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s)) {
-        (None, None, None) => nr_key,
-        (k, r, t) => hash_of((nr_key, k, r, t)),
+    // (the lens blur runs on the noise-reduced image too, and changes with the exposure when a
+    // mask selects on it)
+    let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s), lens_blur::key(s)) {
+        (None, None, None, k) if k.is_empty() => nr_key,
+        (k, r, t, l) => hash_of((nr_key, k, r, t, l)),
     };
     let frame_lin_key = hash_of((
         frame_lin_key,
@@ -855,6 +865,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         mask_tone,
         keep,
         mattes,
+        lens_subject,
         source_filters,
         filter_frame,
         whole_frame,
@@ -1196,6 +1207,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             } else {
                 let mut img = (*nr).clone();
                 retouch_people(&mut img, s, frame, px_per_long);
+                timed("lens blur", || lens_blur::apply_with(&mut img, s, frame, px_per_long, plan.mattes.as_deref(), plan.lens_subject.as_deref()));
                 (Arc::new(img), Some(nr))
             }
         }

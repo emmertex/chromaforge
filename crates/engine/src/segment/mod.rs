@@ -77,6 +77,9 @@ pub(crate) enum Tag {
     NewPrompt { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, text: String },
     /// A zoomed-in pass for a component, computed from `shape` (without its detail).
     Detail { photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// Find Subject for component `comp` of mask `mask` (an Object waiting for it): the people /
+    /// animals found become a "person" Describe selection; none, the object at `point`.
+    Subject { photo: PhotoId, mask: u32, comp: usize, point: Point },
     /// Recompute AI Masks: the selection of component `comp` of mask `mask`, computed from
     /// `shape` (the recipe, without a segmentation), for run `run`.
     Recompute { run: u64, photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
@@ -862,6 +865,35 @@ impl Session {
         }
     }
 
+    /// Find Subject for component `comp` of mask `mask` on photo `id` (an Object without clicks):
+    /// the photo's main people / animals ([`worker::Kind::Subject`]), those the camera's `focus`
+    /// falls on when the file records it; when the subject is neither, the object at `point`. In
+    /// background mode [`Session::segment_poll`] applies the result; otherwise it is applied
+    /// before this returns.
+    pub(crate) fn segment_subject_later(&mut self, id: PhotoId, mask: u32, comp: usize, point: Point, focus: Option<Point>) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let kind = worker::Kind::Subject { focus: focus.map(|p| (p.x as f32, p.y as f32)) };
+            let tag = Tag::Subject { photo: id, mask, comp, point };
+            if self.segmenter.background {
+                return self.segment_queue(id, kind, tag, None);
+            }
+            let seg = self.segment_wait(id, kind, None)?;
+            let mut polled = Polled::default();
+            self.apply_outcome(worker::Outcome { tag, result: Ok(seg), superseded: false, notice: None, extra: None }, &mut polled);
+            match polled.messages.into_iter().next() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, comp, point, focus);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
     /// Background mode: queue Object clicks for component `comp` of mask `mask`; the result
     /// (clicks and segmentation, one undo step) is applied by [`Session::segment_poll`].
     pub(crate) fn segment_clicks_later(&mut self, id: PhotoId, mask: u32, comp: usize, hint: Vec<Point>, exclude: Vec<Point>) -> Result<(), String> {
@@ -1256,6 +1288,51 @@ impl Session {
                     Err(e) => polled.messages.push(e),
                 }
             }
+            Tag::Subject { photo, mask, comp, point } => {
+                let found = match o.result {
+                    Ok(found) => found,
+                    Err(e) => return polled.messages.push(e),
+                };
+                let Some(d) = self.develop_of(photo) else { return };
+                let mut d = (*d).clone();
+                let Some(c) = d.masks.iter_mut().find(|m| m.id == mask).and_then(|m| m.components.get_mut(comp)) else { return };
+                // still the Object waiting for it (not clicked or replaced meanwhile)
+                let MaskShape::Object { hint, seg: None, edge, .. } = &c.shape else { return };
+                if !hint.is_empty() {
+                    return;
+                }
+                let edge = *edge;
+                let seg = match found {
+                    Some(seg) => seg,
+                    // neither a person nor an animal: the object at the point
+                    None if self.segmenter.background => {
+                        if let Err(e) = self.segment_clicks_later(photo, mask, comp, vec![point], Vec::new()) {
+                            polled.messages.push(e);
+                        }
+                        return;
+                    }
+                    None => {
+                        match self.segment_clicks(photo, &clicks_of(&[point], &[])) {
+                            Ok(seg) => {
+                                c.shape = MaskShape::Object { hint: vec![point], exclude: Vec::new(), seg: Some(seg), detail: Vec::new(), edge }
+                            }
+                            Err(e) => return polled.messages.push(e),
+                        }
+                        if let Err(e) = self.set_develop(photo, d, "Find Subject") {
+                            polled.messages.push(e.to_string());
+                        } else {
+                            polled.changed = true;
+                        }
+                        return;
+                    }
+                };
+                let text = lcc_segment::SUBJECT_CONCEPTS.join(", ");
+                c.shape = MaskShape::Prompt { text, seg: Some(seg), detail: Vec::new(), edge };
+                match self.set_develop(photo, d, "Find Subject") {
+                    Ok(()) => polled.changed = true,
+                    Err(e) => polled.messages.push(e.to_string()),
+                }
+            }
             Tag::Detail { photo, mask, comp, shape } => {
                 let patch = match o.result {
                     Ok(Some(p)) => p,
@@ -1509,6 +1586,47 @@ mod tests {
         }
         assert_eq!(s.segment_poll().messages, vec!["latest reply"]);
         assert!(s.segmenter.pending.is_none());
+    }
+
+    /// Find Subject's result: people / animals found become a Describe selection of the waiting
+    /// Object (one undo step), not after it was clicked meanwhile; nothing found queues the object
+    /// at the point (here: no model, so a message, and the mask still waits).
+    #[cfg(feature = "sam")]
+    #[test]
+    fn find_subject_results_fill_the_waiting_mask() {
+        use lcc_develop::{Mask, MaskComponent, MaskOp};
+        let mut s = Session::with_demo();
+        s.segmenter.dir = Some(std::env::temp_dir().join(format!("lc-no-sam3-subject-{}", std::process::id())));
+        let id = s.active().unwrap();
+        let waiting = || MaskShape::Object { hint: vec![], exclude: vec![], seg: None, detail: vec![], edge: 0.0 };
+        let mut d = (*s.develop_of(id).unwrap()).clone();
+        d.masks.push(Mask {
+            id: 3,
+            components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: waiting() }],
+            ..Default::default()
+        });
+        s.set_develop(id, d, "test").unwrap();
+        let point = Point::new(0.4, 0.5);
+        let send = |s: &mut Session, result| {
+            let tag = Tag::Subject { photo: id, mask: 3, comp: 0, point };
+            s.segmenter.results.0.send(worker::Outcome { tag, result, superseded: false, notice: None, extra: None }).unwrap();
+            s.segment_poll()
+        };
+        let shape = |s: &Session| s.develop_of(id).unwrap().masks[0].components[0].shape.clone();
+        // nothing found, no model to click with: said so, and the mask still waits
+        let polled = send(&mut s, Ok(None));
+        assert!(!polled.messages.is_empty() && shape(&s) == waiting(), "{:?}", polled.messages);
+        // people found: a Describe selection of them
+        let polled = send(&mut s, Ok(Some(seg_box(20, 5, 5, 15, 15))));
+        assert!(polled.changed && polled.messages.is_empty());
+        let MaskShape::Prompt { text, seg: Some(_), .. } = shape(&s) else { panic!("{:?}", shape(&s)) };
+        assert_eq!(text, "person, animal");
+        // a result for a mask that changed meanwhile is dropped
+        let before = shape(&s);
+        assert!(!send(&mut s, Ok(Some(seg_box(20, 0, 0, 4, 4)))).changed);
+        assert_eq!(shape(&s), before);
+        // an error reaches the user
+        assert_eq!(send(&mut s, Err("boom".into())).messages, vec!["boom".to_string()]);
     }
 
     fn seg_box(side: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> SegMask {

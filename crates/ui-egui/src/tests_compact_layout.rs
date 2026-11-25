@@ -332,7 +332,7 @@ fn compact_rows_stay_in_the_value_column_whatever_is_open() {
     // column, not past it.
     {
         h.app.ui.open_sections =
-            ["light", "curve", "mixer", "grading", "detail", "optics", "geometry", "effects", "calibration"].map(str::to_string).to_vec();
+            ["light", "curve", "mixer", "grading", "detail", "optics", "geometry", "effects", "lensBlur", "calibration"].map(str::to_string).to_vec();
         redraw(&mut h);
         let hdr = button(&h, "hdr").expect("HDR");
         let exposure = rect(&h, "sliderValue:light.exposure").expect("Exposure's value");

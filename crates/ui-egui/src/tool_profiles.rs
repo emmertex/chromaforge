@@ -46,6 +46,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("optics", "Lens Corrections"),
     ("geometry", "Transform"),
     ("effects", "Effects"),
+    ("lensBlur", "Lens Blur"),
     ("calibration", "Calibration"),
     ("pluginFilters", "Plug-in Filters"),
 ];
@@ -82,6 +83,7 @@ pub fn group_of(control: &str) -> Option<&'static str> {
         "optics" => "optics",
         "geometry" => "geometry",
         "vignette" | "grain" => "effects",
+        "lensBlur" => "lensBlur",
         "calibration" => "calibration",
         _ => return None,
     })

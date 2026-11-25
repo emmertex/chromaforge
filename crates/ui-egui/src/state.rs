@@ -1797,6 +1797,9 @@ pub struct UiState {
     pub brush_auto_range: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
+    /// Lens Blur Brush Refinement: how far a stroke refines the focus, 1..100 (size, feather,
+    /// flow, Auto Mask and pressure are the brush's above).
+    pub lens_blur_brush_amount: f32,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
     pub remove_size: f32,
     pub remove_feather: f32,
@@ -2867,6 +2870,7 @@ impl Default for UiState {
             mask_reset_seen: None,
             brush_auto_range: 0.0,
             brush_pressure: true,
+            lens_blur_brush_amount: 100.0,
             remove_size: 0.02,
             remove_feather: 50.0,
             remove_opacity: 100.0,

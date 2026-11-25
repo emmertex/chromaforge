@@ -292,6 +292,76 @@
   ]
  },
  {
+  "name": "lens-blur-section",
+  "steps": [
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "develop.merge",
+     "params": {
+      "settings": {
+       "lens_blur": {
+        "enabled": true,
+        "amount": 100,
+        "boost": 100,
+        "transition": 100
+       }
+      }
+     }
+    }
+   },
+   {
+    "method": "engine.execute",
+    "params": {
+     "command": "section.lensBlur"
+    }
+   },
+   {
+    "method": "ui.set",
+    "params": {
+     "histogram": false
+    }
+   },
+   {
+    "method": "ui.move",
+    "params": {
+     "x": 1450,
+     "y": 650
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   },
+   {
+    "method": "ui.scroll",
+    "params": {
+     "dx": 0,
+     "dy": -900
+    },
+    "only": [
+     "classic",
+     "compact"
+    ]
+   }
+  ],
+  "layouts": [
+   "classic",
+   "compact"
+  ]
+ },
+ {
   "name": "calibration-section",
   "steps": [
    {

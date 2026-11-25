@@ -933,6 +933,46 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 faces: vec![lcc_develop::SkinFace { x: 0.5, y: 0.45, eyes: 0.06 }],
             });
         }),
+        ("lens blur, the estimated subject (cpu stage)", |s| {
+            // the GPU reads its scene-linear image back for the lens blur (lcc_pipeline::lens_blur),
+            // so both renderers run the same code
+            s.lens_blur.enabled = true;
+            s.lens_blur.amount = 100.0;
+            s.lens_blur.boost = 80.0;
+            s.lens_blur.transition = 70.0;
+        }),
+        ("lens blur, a focus mask and a mask's own (cpu stage)", |s| {
+            let radial = MaskShape::Radial { center: Point::new(0.5, 0.5), rx: 0.2, ry: 0.25, angle: 0.0, feather: 40.0, invert: false };
+            s.masks = vec![
+                Mask {
+                    id: 4,
+                    components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape: radial }],
+                    ..Default::default()
+                },
+                Mask {
+                    id: 5,
+                    components: vec![MaskComponent {
+                        anchor: None,
+                        name: None,
+                        op: MaskOp::Add,
+                        invert: false,
+                        shape: MaskShape::Linear { start: Point::new(0.0, 0.1), end: Point::new(0.0, 0.45) },
+                    }],
+                    adjust: lcc_develop::LocalAdjustments {
+                        exposure: 0.5,
+                        lens_blur: 80.0,
+                        lens_blur_boost: 60.0,
+                        lens_blur_transition: 100.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ];
+            s.lens_blur.enabled = true;
+            s.lens_blur.amount = 90.0;
+            s.lens_blur.focus_mask = Some(4);
+            s.lens_blur.shape = lcc_develop::FocusShape::Round;
+        }),
         ("spots + defringe (cpu stage)", |s| {
             s.spots = vec![Spot { points: vec![Point::new(0.3, 0.3)], size: 0.03, source_offset: Some(Point::new(0.1, 0.0)), ..Default::default() }];
             s.optics.defringe_purple_amount = 5.0;

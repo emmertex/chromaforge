@@ -76,6 +76,7 @@ fn the_default_profile_shows_every_group_and_the_panel_head_has_no_edit_line() {
             "optics",
             "geometry",
             "effects",
+            "lensBlur",
             "calibration",
             "pluginFilters"
         ],

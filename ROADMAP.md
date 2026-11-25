@@ -13,7 +13,7 @@ continuous agent-driven development with 4–6 parallel agents and are revised a
 **switch** from Lightroom. Update it when a gap below closes. The full measured assessment is
 [`docs/target-app-parity.md`](docs/target-app-parity.md); the ranked work list is [`docs/gaps.md`](docs/gaps.md).*
 
-**In one line:** the checklist says **90.5%** of 630 rows (P0 98.0%, P1 94.8%, P2 80.7%; Classic extras 91% of P1,
+**In one line:** the checklist says **91.1%** of 632 rows (P0 98.0%, P1 94.8%, P2 82.6%; Classic extras 91% of P1,
 Immich 11/11), but measured by whether a working photographer could replace Lightroom without noticing, we are at
 roughly **60–65%** and at **alpha**. Every Classic module now exists; the remaining gap is mostly **quality of
 results and camera coverage** (colour calibration, CR3 variants, render fidelity, lens profiles, AI masks), not
@@ -244,6 +244,10 @@ database is read-only; the app owns subsequent edits. See `docs/lightroom-catalo
   references, aggregate ΔE2000 / SSIM tolerances, synthetic ColorChecker check; retunes gated on it.
 - 2026-11-23: Raw-format priority and effort row follow the 2026-11-10 licence policy (share-alike decoder ports
   such as LibRaw `crx.cpp` allowed with provenance) instead of the 2026-10-05 clean-room rule.
+- 2026-11-25: Lens Blur (LR-EDIT-LENSBLUR ⬜ → 🟡, ported from upstream #2661): an Edit section (Apply, Blur
+  Amount, Boost, Transition, In Focus: the subject or any mask, Find Subject on SAM 3, Brush Refinement, a movable
+  focus shape) and a Lens Blur block in every mask; disc bokeh on the CPU for both renderers, catalog format 22.
+  No depth map yet: the falloff follows the image distance from the focus. 91.1% of 632 rows, P2 82.6%.
 - 2026-11-15: M6 row: Depth Range masks are built (estimated depth, Depth Anything V2 Small) and now in the Masks
   panel's Create New Mask (issue #1144).
 - 2026-11-01: IMM-SIDECARS: XMP sidecars both ways — pull the sidecar Immich stores for a linked asset (metadata
