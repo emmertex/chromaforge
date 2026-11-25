@@ -62,11 +62,13 @@ pub mod email_photo;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_module;
+mod export_preview;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
 pub mod face_menu;
 mod focus_scan;
+pub mod focus_watch;
 pub mod folder_poll;
 mod frame_rate;
 pub mod headless;
@@ -104,6 +106,7 @@ pub mod modern_sheets;
 mod modern_sources;
 pub mod module;
 pub mod motion;
+mod notes_view;
 pub mod onboarding;
 pub mod overlay;
 pub mod panels;
@@ -132,6 +135,7 @@ pub mod slideshow_ui;
 pub mod soft_keyboard;
 pub mod softpaint;
 pub mod space_hand;
+pub mod speed_edit;
 pub mod state;
 pub mod surface;
 pub mod surface_icons;
@@ -169,7 +173,11 @@ mod tests_album_remove;
 #[cfg(test)]
 mod tests_appearance;
 #[cfg(test)]
+mod tests_background_clicks;
+#[cfg(test)]
 mod tests_background_prep;
+#[cfg(test)]
+mod tests_backgrounds;
 #[cfg(test)]
 mod tests_bar_buttons;
 #[cfg(test)]
@@ -250,6 +258,8 @@ mod tests_empty_library;
 mod tests_enhance_dialog;
 #[cfg(test)]
 mod tests_error_kinds;
+#[cfg(test)]
+mod tests_export_preview;
 #[cfg(test)]
 mod tests_filmstrip;
 #[cfg(test)]
@@ -377,6 +387,8 @@ mod tests_modules;
 #[cfg(test)]
 mod tests_mouse_nav;
 #[cfg(test)]
+mod tests_notes_view;
+#[cfg(test)]
 mod tests_offline;
 #[cfg(test)]
 mod tests_onboarding;
@@ -469,6 +481,8 @@ mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
 #[cfg(test)]
+mod tests_speed_edit;
+#[cfg(test)]
 mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
@@ -498,6 +512,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_upright_panel;
 #[cfg(test)]
 mod tests_view_state;
 #[cfg(test)]
@@ -559,12 +575,19 @@ pub type SaveToGalleryFn = Box<dyn FnMut(&[String], bool) -> Result<std::sync::m
 pub type OpenWithFn = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 /// Open several files with one start of an application (`app` as for [`OpenWithFn`]).
 pub type OpenAllWithFn = Box<dyn FnMut(&[String], &str) -> Result<(), String>>;
+/// Start an editor once with arguments and several files (an Edit In preset's menu item on a
+/// batch): `args` (one holding `{file}` takes the paths where it stands), then the files, unless
+/// `args` is empty and there is one file, which [`Services::open_with`] opens.
+pub type OpenPresetFn = Box<dyn FnMut(&[String], &str, &[String]) -> Result<(), String>>;
 /// Linux model-folder work: wait for the default opener on a background task.
 #[cfg(target_os = "linux")]
 pub type OpenModelFolderFn = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 /// The ICC profile of the screen showing the window, as the system colour-manages it (`None`:
 /// not known).
 pub type ScreenProfileFn = Box<dyn FnMut() -> Option<Vec<u8>>>;
+/// Sets whether a click in a background window also acts (`true`) or only brings the window
+/// forward; an error says why it can't.
+pub type BackgroundClicksFn = Box<dyn FnMut(bool) -> Result<(), String>>;
 /// Re-reads the MIDI map and says what happened (`midi.reload`; see `docs/midi.md`).
 pub type MidiReload = Box<dyn FnMut() -> Result<String, String>>;
 /// Whether an external editor can be started (its name as in [`Services::open_with`]); the
@@ -663,6 +686,9 @@ pub struct Services {
     /// The profile of the screen showing the window, used while none is chosen in Settings ▸
     /// Display (macOS, whose windows aren't colour-managed: issue #787).
     pub screen_profile: Option<ScreenProfileFn>,
+    /// Whether a click in a background window also acts or only brings the window forward
+    /// (Settings ▸ Interface; macOS only, where the choice exists).
+    pub background_clicks: Option<BackgroundClicksFn>,
     /// Save dialog for an exported `.lcpreset` file.
     pub save_preset_file: Option<SaveFile>,
     /// Open dialog for a keyword list file (`.txt`, Photo Supreme's `.utf8`; File ▸ Import Keywords…).
@@ -712,6 +738,10 @@ pub struct Services {
     /// Open several files with one start of the editor (Open Original; desktop only): an editor
     /// that keeps one window takes them all. None = [`Services::open_with`] for each.
     pub open_all_with: Option<OpenAllWithFn>,
+    /// Start a preset's editor with its arguments and every file of a batch (desktop only). None =
+    /// a preset without arguments opens through [`Services::open_all_with`] / [`Services::open_with`];
+    /// one with arguments can't be started.
+    pub open_preset: Option<OpenPresetFn>,
     /// Optional worker-safe model-folder opener alongside `open_with` (Linux desktop only).
     #[cfg(target_os = "linux")]
     pub open_model_folder: Option<OpenModelFolderFn>,
@@ -831,6 +861,8 @@ pub struct LccApp {
     pub services: Services,
     pub renderer: render::Renderer,
     pub perf: Perf,
+    /// The window's focus and visibility changes, timed (issue #1188).
+    pub focus_watch: focus_watch::FocusWatch,
     /// What this frame ran (commands, control requests, slow panels), for [`SlowFrame`]: at most
     /// [`FRAME_LOG_LEN`] names.
     frame_log: Vec<String>,
@@ -959,6 +991,8 @@ pub struct LccApp {
     pub crop_layout: Option<panels::detail::CropLayout>,
     /// Space is held over a tool on the photo: the view's hand has the pointer ([`space_hand`]).
     pub space_hand: Option<space_hand::SpaceHand>,
+    /// A speed-edit key is held in Develop: a drag or scroll on the photo moves its slider ([`speed_edit`]).
+    pub speed_edit: Option<speed_edit::SpeedEdit>,
     /// The brush stroke being painted, as drawn on the photo until it's committed (issue #517).
     pub brush_live: Option<brush_live::LiveStroke>,
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
@@ -1035,6 +1069,10 @@ pub struct LccApp {
     pub folder_poll: folder_poll::FolderPoll,
     /// A link (`<scheme>://sync?path=…`) the app was started with, followed once a frame runs.
     pub pending_link: Option<String>,
+    /// Single-instance hand-off (gap 37): what later launches hand this copy (their links and
+    /// files), followed each frame (`folder_poll::take_handoffs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub handoff: Option<lcc_engine::instance::Server>,
     /// A Lightroom catalog inspect/import in progress.
     pub lightroom: Option<lightroom_import::LightroomTask>,
     /// Last terminal Lightroom result, exposed by the command's status/wait response.
@@ -1098,6 +1136,9 @@ pub struct LccApp {
     /// The display's headroom when the window shows HDR now ([`HdrOutput::headroom`]): the loupe
     /// then draws HDR edits from their HDR render ([`render::Slot::HdrView`]).
     pub hdr_headroom: Option<f32>,
+    /// The Export screen's preview's HDR texture ([`export_preview`]), while it has one: freed
+    /// when the screen closes or the preview shows SDR.
+    pub export_preview_hdr: Option<egui::TextureId>,
     /// The last GPU event told (`lcc_gpu::events_after`: the graphics card stopped
     /// responding, was restarted …).
     gpu_event_seen: u64,
@@ -1119,6 +1160,8 @@ pub struct LccApp {
     /// and when it was last read (egui time, s).
     pub(crate) screen_profile: Option<Vec<u8>>,
     pub(crate) screen_profile_read: Option<f64>,
+    /// The background-click choice last passed to `services.background_clicks`.
+    pub(crate) background_clicks_applied: Option<bool>,
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
@@ -1287,6 +1330,7 @@ impl LccApp {
             services,
             renderer: render::Renderer::default(),
             perf: Perf::default(),
+            focus_watch: focus_watch::FocusWatch::default(),
             frame_log: Vec::new(),
             slowest_frame: None,
             caches: Caches::default(),
@@ -1344,6 +1388,7 @@ impl LccApp {
             gesture: None,
             crop_layout: None,
             space_hand: None,
+            speed_edit: None,
             brush_live: None,
             loupe_shown: None,
             loupe_timing: Default::default(),
@@ -1379,6 +1424,8 @@ impl LccApp {
             sync_run: None,
             folder_poll: Default::default(),
             pending_link: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            handoff: None,
             lightroom: None,
             lightroom_last: None,
             catalog_ui: Default::default(),
@@ -1409,6 +1456,7 @@ impl LccApp {
             font_problems: None,
             startup_update_check: false,
             hdr_display_sdr: false,
+            export_preview_hdr: None,
             hdr_headroom: None,
             gpu_event_seen: 0,
             last_screen: egui::Vec2::ZERO,
@@ -1420,6 +1468,7 @@ impl LccApp {
             display_error: None,
             screen_profile: None,
             screen_profile_read: None,
+            background_clicks_applied: None,
             library_problem: None,
             waiting_import: Vec::new(),
             alt_asks_for_library: false,
@@ -2281,6 +2330,7 @@ impl LccApp {
         theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
+        theme::set_canvas_shades(ctx, self.ui.settings.loupe_background, self.ui.settings.filmstrip_background);
         let wanted = self.ui.settings.theme(self.system_theme(ctx));
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
@@ -2377,6 +2427,10 @@ impl LccApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         i18n::set_language(self.ui.language);
         self.frame_log.clear();
+        // (a frame that focuses, unfocuses, hides or shows the window says so in its log, and is timed)
+        if let Some(what) = self.focus_watch.observe(focus_watch::WindowState::of(ctx), self.perf.host_frame_ms) {
+            self.note_ran(what);
+        }
         // painting on the loupe (OneSlips, NOTES-1028 note 29): a brush stroke in progress and a moment after it
         let now = ctx.input(|i| i.time);
         let painting = matches!(self.gesture, Some(panels::detail::Gesture::Brush { .. }));
@@ -2404,6 +2458,10 @@ impl LccApp {
             for slot in self.renderer.hdr_unused_slots() {
                 h.release(slot);
             }
+        }
+        // the Export screen's preview (its renders, its HDR texture) goes with the screen
+        if !matches!(self.ui.dialog, Some(state::Dialog::Export { .. })) {
+            export_preview::forget(self, ctx);
         }
         self.logic_inner(ctx);
         self.perf.logic_ms = now_ms() - t0;
@@ -2527,6 +2585,8 @@ impl LccApp {
         if let Some(url) = self.pending_link.take() {
             folder_poll::follow_link(self, ctx, &url);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        folder_poll::take_handoffs(self, ctx);
         self.ui.was_focused = focused;
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
@@ -2827,6 +2887,7 @@ impl LccApp {
         if self.ui.settings.display_profile.is_empty() {
             self.follow_screen_profile(ctx);
         }
+        self.apply_background_clicks();
         if let Some(fs) = ctx.input(|i| i.viewport().fullscreen) {
             self.window_is_fullscreen = fs;
         }
@@ -2864,6 +2925,21 @@ impl LccApp {
         }
         self.screen_profile_read = Some(now);
         self.apply_screen_profile();
+    }
+
+    /// Passes Settings ▸ Interface ▸ Click through to the host when it changes
+    /// (macOS). A failure is logged and clicks keep working as before; it is tried again only
+    /// once the choice changes.
+    fn apply_background_clicks(&mut self) {
+        let accept = self.ui.settings.accept_background_clicks;
+        if self.background_clicks_applied == Some(accept) {
+            return;
+        }
+        let Some(set) = self.services.background_clicks.as_mut() else { return };
+        self.background_clicks_applied = Some(accept);
+        if let Err(msg) = set(accept) {
+            log::warn!("background clicks: {msg}");
+        }
     }
 
     /// Read the screen's profile now and show previews through it (sRGB without one).
@@ -3002,6 +3078,7 @@ impl LccApp {
         self.perf.frame_ms = now_ms() - t0;
         self.perf.update_ms = self.perf.logic_ms + self.perf.frame_ms;
         self.perf.max_update_ms = self.perf.max_update_ms.max(self.perf.update_ms);
+        self.focus_watch.finish(self.perf.logic_ms, self.perf.frame_ms);
         self.note_slow_frame(ctx.cumulative_pass_nr());
     }
 
@@ -3219,7 +3296,7 @@ impl LccApp {
         let t = theme::Tokens::get(&ctx);
         let bg = if matches!(self.ui.view, state::ViewMode::Detail | state::ViewMode::Compare | state::ViewMode::Survey | state::ViewMode::Reference)
         {
-            t.canvas
+            theme::loupe_shade(&ctx).color(t.canvas)
         } else {
             t.grid_bg
         };
@@ -3553,7 +3630,7 @@ pub struct Caches {
     /// The open person page: (name, catalog revision, faces indexed, when it was asked for, the page).
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
-    pub unnamed: Option<(u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
+    pub unnamed: Option<(u64, u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
     /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another
     /// year, folder or album, they are asked for again.
     pub faces_filter: Option<lcc_catalog::Filter>,
@@ -4251,6 +4328,8 @@ mod tests_modern_gestures;
 mod tests_modern_library;
 #[cfg(test)]
 mod tests_modern_sheets;
+#[cfg(test)]
+mod tests_phone_menus;
 #[cfg(test)]
 mod tests_pill_slider;
 #[cfg(test)]

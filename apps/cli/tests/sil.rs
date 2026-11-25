@@ -532,12 +532,79 @@ fn sil_workflow() {
     s.ok("library.sort", json!({"key": "captureDate"}));
     s.consistent();
 
+    // --- quality scan with autoRate (issue #1362): the scan writes star ratings the filter bar
+    // sees, and never onto the photos rated here by hand
+    // (the whole catalog, not the page in view: the filter bar at the end counts against it)
+    let before = s.ok("catalog.query", json!({"filter": {}, "limit": 100_000}));
+    let rating_of = |photos: &Value, id: u64| -> u64 {
+        photos["photos"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p["id"].as_u64() == Some(id))
+            .and_then(|p| p["rating"].as_u64())
+            .unwrap_or(0)
+    };
+    // (photos the user rated above — 5, 3, 3, 5 — and one the shoot left unrated, which a scan may rate;
+    // the fallback is only a last resort: that photo was rejected and a scan leaves that flag alone)
+    let mine: Vec<u64> = ids.iter().copied().filter(|id| rating_of(&before, *id) > 0).collect();
+    let unrated = ids.iter().copied().find(|id| rating_of(&before, *id) == 0).unwrap_or(ids[7]);
+    let mine_before: Vec<u64> = mine.iter().map(|id| rating_of(&before, *id)).collect();
+    // (breakpoints low enough that every score earns a star: the rating each photo takes is then
+    // definite, and the scan's answer can be checked against it; a test on a card no one has seen
+    // should not rest on how a procedural photo happens to score)
+    let breaks = [0, 1, 2, 3, 4];
+    let q = s.ok("photo.qualityScan", json!({"scope": "catalog", "wait": true, "rescan": true, "autoRate": true, "starBreaks": breaks}));
+    s.check(q["failed"].as_u64().unwrap_or(1) == 0, "the auto-rate rescan failed", &q.to_string());
+    let after = s.ok("catalog.query", json!({"filter": {}, "limit": 100_000}));
+    let mine_after: Vec<u64> = mine.iter().map(|id| rating_of(&after, *id)).collect();
+    s.check(mine_after == mine_before, "the scan overwrote a rating set by hand", &format!("{mine_before:?} -> {mine_after:?}"));
+    // a photo nobody rated takes the scan's stars instead
+    let star_of = |score: f64| breaks.iter().filter(|b| score >= **b as f64).count() as u64;
+    let unrated_after = rating_of(&after, unrated);
+    let row = q["photos"].as_array().cloned().unwrap_or_default().into_iter().find(|p| p["id"].as_u64() == Some(unrated));
+    s.check(row.is_some(), "the scan did not answer for the unrated photo", &format!("{unrated}: {q}"));
+    let row = row.unwrap_or(Value::Null);
+    let wanted = star_of(row["score"].as_f64().unwrap_or(-1.0));
+    s.check(wanted > 0, "the test's breakpoints did not earn a star", &format!("{row}"));
+    s.check(unrated_after == wanted, "an unrated photo did not take the stars its score asks for", &format!("{unrated_after} vs {row}"));
+    s.check(row["rating"].as_u64() == Some(unrated_after), "the scan's answer and the photo disagree", &format!("{unrated_after} vs {row}"));
+    // the rated count is the number of photos whose rating actually changed
+    let changed = after["photos"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| {
+            let id = p["id"].as_u64().unwrap_or(0);
+            p["rating"].as_u64().unwrap_or(0) != rating_of(&before, id)
+        })
+        .count() as u64;
+    let rated = q["rated"].as_u64().unwrap_or(u64::MAX);
+    s.check(rated == changed, "the rated count is not what changed", &format!("{rated} vs {changed}: {q}"));
+    // the filter bar sees the scan's ratings: at least one star shows exactly the photos the
+    // catalog's own query for that filter holds
+    let rated_filter = json!({"rating": 1, "ratingOp": "atLeast"});
+    let want_visible = s.ok("catalog.query", json!({"filter": rated_filter}))["total"].as_u64().unwrap_or(u64::MAX);
+    s.ok("library.filter", rated_filter);
+
+    let st = s.ok("library.state", json!({}));
+    s.check(
+        st["visibleCount"].as_u64() == Some(want_visible),
+        "the rating filter does not see the scan's ratings",
+        &format!("{want_visible}: {st}: {q}"),
+    );
+    s.check(want_visible >= 1, "the scan rated no photo at all", &q.to_string());
+    s.ok("library.clearFilter", json!({}));
+    s.consistent();
+
     // --- develop: auto, sliders, white-balance picker, crop, a mask, a preset
     s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
     let r = s.request("ui.set", json!({"view": "detail"}));
     s.check(r["ok"] == true, "switching to Detail failed", &r.to_string());
     s.ok("develop.auto", json!({}));
-    s.ok("develop.set", json!({"values": {"light.exposure": 0.7, "light.contrast": 20, "color.vibrance": 15}}));
+    s.ok("develop.set", json!({"values": {"light.exposure": 0.7, "light.contrast": 20, "color.vibrance": 15, "sensor.highlightMode": 1}}));
     s.ok("develop.wbPick", json!({"x": 0.5, "y": 0.5}));
     s.ok("crop.set", json!({"rect": [0.1, 0.1, 0.9, 0.85], "angle": 2.0}));
     s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
@@ -702,10 +769,12 @@ fn sil_raw_workflow() {
     let (dir, n) = shoot(&s.root, 0, 3);
     s.start();
     let ids = import(&mut s, &dir, n);
-    for &id in &ids {
+    for (i, &id) in ids.iter().enumerate() {
         s.ok("library.select", json!({"ids": [id], "active": id}));
         s.ok("develop.auto", json!({}));
         s.ok("develop.set", json!({"values": {"light.shadows": 30, "detail.nrLuminance": 20}}));
+        // each highlight reconstruction method (plan 7.2) through preview, export, XMP and reopen
+        s.ok("develop.set", json!({"control": "sensor.highlightMode", "value": i % 3}));
         s.ok("develop.wb", json!({"mode": "custom", "temp": 5200, "tint": 5}));
         s.undo_redo_roundtrip();
     }
@@ -772,6 +841,8 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
                 "color.vibrance",
                 "effects.clarity",
                 "detail.sharpenAmount",
+                "toneEq.ev3",
+                "toneEq.detail",
                 "nope.control",
             ]);
             ("develop.set", json!({"control": c, "value": num(r, -2.0, 2.0)}))
@@ -965,5 +1036,170 @@ fn sil_vignetting_calibration() {
     let after = s.ok("vignettingCalibration.photo", json!({"id": others[1]}));
     s.check(after["map"]["id"] == map && after["missing"] == false, "the map didn't survive a reopen", &after.to_string());
     s.check(after["map"]["withdrawn"] == true, "the withdrawn state didn't survive a reopen", &after.to_string());
+    s.finish();
+}
+
+/// Mean linear luminance of a decoded export.
+fn mean_luma(path: &Path) -> f64 {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let Ok(d) = lcc_codecs::decode(&bytes, Default::default()) else { return f64::NAN };
+    let px = &d.image.data;
+    px.iter().map(|p| 0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64).sum::<f64>() / px.len().max(1) as f64
+}
+
+/// Tone Equalizer (completion plan 7.10): band exposures through `develop.set`, hostile values clamped, undo and
+/// redo, the section's eye, an export that gets brighter when every band is raised, copy/paste to another photo and
+/// a reopen that keeps it. No corpus needed.
+#[test]
+fn sil_tone_equalizer() {
+    let mut s = Sil::new("toneeq");
+    let (dir, n) = shoot(&s.root, 2, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    let export = json!({"format": "jpeg", "longEdge": 300});
+    let before = s.export_decodes(&[ids[0]], export.clone(), true);
+    let values: serde_json::Map<String, Value> = (0..9).map(|i| (format!("toneEq.ev{i}"), json!(1.0))).collect();
+    s.ok("develop.set", json!({"values": values}));
+    // hostile values: clamped, never a panic
+    s.ok("develop.set", json!({"control": "toneEq.ev8", "value": 1e300}));
+    s.cmd("develop.set", json!({"control": "toneEq.detail", "value": "lots"}));
+    s.ok("develop.set", json!({"control": "toneEq.size", "value": -1e9}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let t = d["settings"]["tone_eq"].clone();
+    let t = if t.is_null() { d["tone_eq"].clone() } else { t };
+    s.check(t["ev8"] == json!(2.0) && t["size"] == json!(0.0), "Tone Equalizer values weren't clamped", &d.to_string());
+    s.undo_redo_roundtrip();
+    let after = s.export_decodes(&[ids[0]], export.clone(), true);
+    let (b, a) = (mean_luma(&before[0]), mean_luma(&after[0]));
+    s.check(a > b * 1.2, "raising every band didn't brighten the export", &format!("{b} -> {a}"));
+    // the eye switches it off: the export is back where it was
+    s.ok("develop.sectionEnabled", json!({"section": "toneEq", "enabled": false}));
+    let off = s.export_decodes(&[ids[0]], export.clone(), true);
+    let o = mean_luma(&off[0]);
+    s.check((o - b).abs() < 0.02 * b.max(1e-3) + 1e-3, "the eye didn't switch the Tone Equalizer off", &format!("{b} vs {o}"));
+    s.ok("develop.sectionEnabled", json!({"section": "toneEq", "enabled": true}));
+    s.ok("develop.copy", json!({"groups": ["toneEq"]}));
+    s.ok("library.select", json!({"ids": [ids[1]], "active": ids[1]}));
+    s.ok("develop.paste", json!({}));
+    s.consistent();
+    s.reopen_keeps_everything();
+    s.finish();
+}
+
+/// Mean CIEDE2000 over the ColorChecker 24 (2014 edition, D50 references) of a chart lit by D65 that a camera with
+/// colour data `truth` records, rendered through colour data `render`'s input transform (white = D65).
+fn chart_mean_de(truth: &lcc_raw::ColorData, render: &lcc_raw::ColorData) -> f64 {
+    use lcc_colourfit::chart::Edition;
+    use lcc_colourfit::deltae::{de2000, lab};
+    let to_d65 = lcc_color::bradford(lcc_color::D50, lcc_color::D65);
+    let cam = lcc_raw::color::xyz_to_camera(truth, lcc_color::D65);
+    let input = lcc_raw::color::camera_to_xyz_d50(render, lcc_color::D65);
+    let refs = Edition::After2014.reference_xyz();
+    let total: f64 = refs.iter().map(|r| de2000(lab(*r), lab(input.apply(cam.apply(to_d65.apply(*r)))))).sum();
+    total / refs.len() as f64
+}
+
+/// Camera colour (completion plan 3.1, gap 1): the top bodies render ColorChecker colours through their own input
+/// transform consistently, and the dcraw / LibRaw table matrices of bodies that also have measured spectral
+/// sensitivities agree with what the measured camera records: median mean ΔE2000 at most 5, no body above 10 (a
+/// guard against a wrong or misassigned row; on 2026-11-24 the bodies ranged 2.4–9.2, median about 4). This is not
+/// the plan's ΔE ≤ 3 chart criterion: real chart shots of the top bodies (`docs/chart-calibration.md`) are needed for
+/// that. No file or app process is needed.
+#[test]
+fn sil_camera_colour() {
+    const TOP: &[(&str, &str)] = &[
+        ("SONY", "ILCE-7M3"),
+        ("SONY", "ILCE-7M4"),
+        ("SONY", "ILCE-7RM4"),
+        ("SONY", "ILCE-1"),
+        ("SONY", "ILCE-6400"),
+        ("SONY", "ILCE-7RM5"),
+        ("Canon", "Canon EOS R5"),
+        ("Canon", "Canon EOS R6"),
+        ("Canon", "Canon EOS 5D Mark IV"),
+        ("Canon", "Canon EOS R"),
+        ("Canon", "Canon EOS 90D"),
+        ("NIKON CORPORATION", "NIKON Z 6_2"),
+        ("NIKON CORPORATION", "NIKON Z 8"),
+        ("NIKON CORPORATION", "NIKON D850"),
+        ("NIKON CORPORATION", "NIKON D750"),
+        ("NIKON CORPORATION", "NIKON Z 6"),
+        ("FUJIFILM", "X-T4"),
+        ("FUJIFILM", "X-T5"),
+        ("OLYMPUS CORPORATION", "E-M1MarkII"),
+        ("Panasonic", "DC-G9"),
+    ];
+    let mut failures = Vec::new();
+    for (make, model) in TOP {
+        let Some(entry) = lcc_camdb::find(Some(make), model) else {
+            failures.push(format!("{make} {model}: no camera entry"));
+            continue;
+        };
+        let cd = entry.color_data();
+        let de = chart_mean_de(&cd, &cd);
+        println!("sil camera colour: {make} {model} ({:?}) self ΔE2000 {de:.3}", entry.provenance.source);
+        if !lcc_raw::color::has_matrix(&cd) || !de.is_finite() || de > 0.5 {
+            failures.push(format!("{make} {model}: input transform mean ΔE2000 {de:.3}"));
+        }
+    }
+    // dcraw / LibRaw rows against the measured spectral matrices of the same body
+    let mut compared = Vec::new();
+    for e in lcc_camdb::entries().iter().filter(|e| e.provenance.source == lcc_camdb::Source::Dcraw) {
+        let Some(spectral) = lcc_raw::spectral::find(Some(&e.make), &e.model) else { continue };
+        let mut truth = lcc_raw::ColorData::default();
+        if !spectral.fill(&mut truth) {
+            continue;
+        }
+        let de = chart_mean_de(&truth, &e.color_data());
+        println!("sil camera colour: {} {} dcraw-table vs spectral mean ΔE2000 {de:.2}", e.make, e.model);
+        compared.push((format!("{} {}", e.make, e.model), de));
+    }
+    let worst = compared.iter().filter(|(_, de)| !de.is_finite() || *de > 10.0).map(|(n, de)| format!("{n}: {de:.2}"));
+    failures.extend(worst);
+    let mut des: Vec<f64> = compared.iter().map(|(_, de)| *de).collect();
+    des.sort_by(f64::total_cmp);
+    let median = des.get(des.len() / 2).copied().unwrap_or(f64::NAN);
+    println!("sil camera colour: {} table matrices against spectral data, median mean ΔE2000 {median:.2}", des.len());
+    if median.is_nan() || median > 5.0 {
+        failures.push(format!("median table-vs-spectral mean ΔE2000 {median:.2} above 5"));
+    }
+    assert!(compared.len() >= 10, "only {} bodies have both a table and a spectral matrix", compared.len());
+    assert!(failures.is_empty(), "camera colour: {failures:#?}");
+}
+
+/// Adaptive presets (plan 7.8): a preset's mask recipes are made again on every photo it is
+/// applied to, a user preset saves masks as recipes, and the edits survive undo and a reopen.
+#[test]
+fn sil_adaptive_presets() {
+    let mut s = Sil::new("adaptivepresets");
+    let (dir, n) = shoot(&s.root, 3, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    let out = s.ok("preset.apply", json!({"id": "lc.adaptive.subjectAndSky", "ids": ids}));
+    s.check(out["skipped"].as_array().is_some_and(Vec::is_empty), "scene masks were skipped", &out.to_string());
+    for &i in &ids {
+        let d = s.ok("develop.get", json!({"id": i}));
+        let masks = d["masks"].as_array().map_or(0, Vec::len);
+        s.check(masks == 2, "the adaptive preset did not add its two masks", &d["masks"].to_string());
+        s.check(d["color"]["vibrance"].as_f64().is_some_and(|v| v > 0.0), "the preset's look did not apply", &d["color"].to_string());
+    }
+    // the same preset again replaces its own masks
+    s.ok("preset.apply", json!({"id": "lc.adaptive.subjectAndSky", "ids": [ids[0]]}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(d["masks"].as_array().map_or(0, Vec::len) == 2, "applying again doubled the masks", &d["masks"].to_string());
+    // a user preset made of a photo's masks brings them to another photo
+    s.ok("library.select", json!({"ids": [ids[1]], "active": ids[1]}));
+    let made = s.ok("preset.create", json!({"name": "SIL adaptive", "groups": ["masks"]}));
+    let out = s.ok("preset.apply", json!({"id": made["id"], "ids": [ids[2]]}));
+    s.check(out["skipped"].is_array(), "preset.apply did not report skipped masks", &out.to_string());
+    let d = s.ok("develop.get", json!({"id": ids[2]}));
+    s.check(d["masks"].as_array().map_or(0, Vec::len) == 4, "the user preset did not add the photo's masks", &d["masks"].to_string());
+    // hostile ids are errors, not crashes
+    s.cmd("preset.apply", json!({"id": "lc.adaptive.nope", "ids": ids}));
+    s.cmd("preset.apply", json!({"id": "lc.adaptive.deepSky", "amount": f64::MAX, "ids": [u64::MAX]}));
+    s.consistent();
+    s.undo_redo_roundtrip();
+    s.reopen_keeps_everything();
     s.finish();
 }

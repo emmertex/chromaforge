@@ -753,6 +753,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "To hand this editor the original file itself instead (the raw, without a copy: DxO PhotoLab, for example), right-click a photo → Edit In → Open Original in Other Editor (RAW, no copy).",
         ),
     );
+    hint(ui, t, crate::i18n::tr("For more editors, each with its own items in Photo → Edit In, use Photo → Edit In → Edit In Presets…."));
 }
 
 /// A language's name as the picker shows it: its own name (`Deutsch`), or, when no loaded font
@@ -2057,6 +2058,28 @@ fn shared_store(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
 }
 
+/// Whether a click in a background window also clicks what is under the pointer or only brings the
+/// window forward: a choice on macOS only, where the platform asks; Windows and Linux always pass
+/// the click on.
+fn background_clicks_row(ui: &mut egui::Ui, t: &Tokens, s: &mut crate::state::AppSettings) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    row(ui, t, crate::i18n::tr("Click through"), |ui| {
+        choices(
+            ui,
+            "settingsBackgroundClicks",
+            &[(true, "Bring to front and click"), (false, "Only bring to front")],
+            &mut s.accept_background_clicks,
+        );
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr("A click in a background window brings it to the front. Choose whether the same click affects the window's contents."),
+    );
+}
+
 fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let system = app.system_theme(ui.ctx());
     let forced = forced_slider_layout(app);
@@ -2397,6 +2420,15 @@ fn appearance(
         let options = crate::theme::SliderText::ALL.map(|size| (size, size.label()));
         choices(ui, "settingsSliderText", &options, &mut s.slider_text);
     });
+    // issue #1295: a neutral surround for judging colour (also Window ▸ Appearance, the loupe's right-click)
+    row(ui, t, crate::i18n::tr("Loupe background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsLoupeBackground", &options, &mut s.loupe_background);
+    });
+    row(ui, t, crate::i18n::tr("Filmstrip background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsFilmstripBackground", &options, &mut s.filmstrip_background);
+    });
     if rows.control {
         row(ui, t, crate::i18n::tr("Slider control"), |ui| {
             let options = crate::theme::SliderControl::ALL.map(|c| (c, c.label()));
@@ -2405,6 +2437,7 @@ fn appearance(
     }
     // (every slider, pills too)
     hint(ui, t, crate::i18n::tr("Hold Shift for fine control"));
+    background_clicks_row(ui, t, s);
     ui.add_space(2.0);
 }
 

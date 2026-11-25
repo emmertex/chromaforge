@@ -452,7 +452,8 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             Dialog::Export { .. } => 900.0_f32.min(screen.width() - 2.0 * crate::dialog_frame::SCREEN_MARGIN),
             Dialog::Rename { .. } | Dialog::ContactSheet { .. } | Dialog::Timelapse { .. } | Dialog::SlideshowExport { .. } | Dialog::EmailPhoto { .. } => 480.0,
             Dialog::CaptureTime { .. } | Dialog::LabelNames { .. } | Dialog::CreatePreset { .. } | Dialog::CreatePresetFolder { .. } => 440.0,
-            Dialog::QualityScanner { .. } => 470.0,
+            // (a wider column than most: the weight sliders sit beside their labels)
+            Dialog::QualityScanner { .. } => 540.0,
             Dialog::FaceMaintenance { .. } => 580.0,
             _ => DIALOG_W,
         } })
@@ -709,7 +710,18 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         }
                     }
                 }
-                Dialog::QualityScanner { scope, accepted, rejected, apply_flags, rescan, weights } => {
+                Dialog::QualityScanner {
+                    scope,
+                    accepted,
+                    rejected,
+                    apply_flags,
+                    rescan,
+                    weights,
+                    auto_rate,
+                    overwrite_metadata,
+                    star_breaks,
+                } => {
+
                     // what a scan measures, and how far it reaches
                     let selected = app.session.selection.ids.len();
                     // a folder is "shown" when one is open: the Folders panel's choice, or Browse's
@@ -769,6 +781,35 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         );
                     }
                     ui.add_space(8.0);
+                    // auto-assign the ratings and flags the scores ask for, with the protection spelled out
+                    ui.label(egui::RichText::new(crate::i18n::tr("Auto-Assign Metadata")).font(t.semibold(12.5)).color(t.text));
+                    let r = crate::dialog_frame::checkbox(ui, auto_rate, crate::i18n::tr("Write star ratings onto photos the scan can rate"));
+                    crate::widgets::register(ui.ctx(), "check:qualityAutoRate", r.rect);
+                    if *auto_rate {
+                        for (i, brk) in star_breaks.iter_mut().enumerate() {
+                            let r = ui.add(
+                                egui::Slider::new(brk, 0.0..=100.0)
+                                    .text(crate::i18n::tr_format!("★{n} at or above", n = i + 1))
+                                    .fixed_decimals(0),
+                            );
+                            crate::widgets::register(ui.ctx(), format!("field:qualityStarBreak:{i}"), r.rect);
+                        }
+                        // (a breakpoint dragged below the one before it is held at it)
+                        let mut held = 0.0f32;
+                        for brk in star_breaks.iter_mut() {
+                            if *brk < held {
+                                *brk = held;
+                            }
+                            held = *brk;
+                        }
+                        let note = crate::i18n::tr("Below the first break stays 0★; the defaults are 20, 40, 55, 70 and 85.");
+                        crate::dialog_frame::note(ui, egui::RichText::new(note).color(t.text_dim));
+                    }
+                    let r = crate::dialog_frame::checkbox(ui, overwrite_metadata, crate::i18n::tr("Overwrite existing"));
+                    crate::widgets::register(ui.ctx(), "check:qualityOverwrite", r.rect);
+                    let kept = crate::i18n::tr("Ratings and flags you set are kept unless \"Overwrite existing\" is on.");
+                    crate::dialog_frame::note(ui, egui::RichText::new(kept).color(t.text_dim));
+                    ui.add_space(8.0);
                     // the factors and their weights (0 switches one off)
                     ui.label(egui::RichText::new(crate::i18n::tr("Basic Factors")).font(t.semibold(12.5)).color(t.text));
                     for (i, (label, weight)) in ["Blur (sharpness)", "Noise", "Exposure", "Compression artifacts"].iter().zip(weights.iter_mut()).enumerate() {
@@ -784,6 +825,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         ))
                         .color(t.text_dim),
                     );
+                    ui.add_space(8.0);
                     crate::dialog_frame::note(
                         ui,
                         egui::RichText::new(crate::i18n::tr(
@@ -793,23 +835,9 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                     );
                 }
                 Dialog::WhatsNew => {
-                    ui.scope(|ui| {
-                        for line in WHATS_NEW.lines() {
-                            let l = line.trim_end();
-                            if let Some(h) = l.strip_prefix("### ") {
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(12.5)).color(t.text));
-                            } else if let Some(h) = l.strip_prefix("## ") {
-                                ui.add_space(8.0);
-                                ui.label(egui::RichText::new(crate::i18n::tr(h)).font(t.semibold(14.0)).color(t.text));
-                            } else if l.starts_with("# ") || l.is_empty() {
-                            } else if let Some(b) = l.strip_prefix("- ") {
-                                ui.label(egui::RichText::new(format!("•  {}", crate::i18n::tr(b).replace('`', ""))).color(t.text_label));
-                            } else {
-                                ui.label(egui::RichText::new(crate::i18n::tr(l.trim()).replace('`', "")).color(t.text_label));
-                            }
-                        }
-                    });
+                    if let Some(url) = crate::notes_view::whats_new(ui, &t, app.ui.whats_new_opens) {
+                        crate::notes_view::open_link(app, ui.ctx(), &url);
+                    }
                 }
                 Dialog::DenoiseModel { info, accepted } => crate::panels::denoise::model_dialog(app, ui, &t, info, accepted),
                 Dialog::FaceModel { info, accepted, .. } => crate::panels::faces::model_dialog(app, ui, &t, info, accepted),
@@ -2254,8 +2282,9 @@ pub fn parse_gap(text: &str) -> Option<f64> {
 pub const MAX_BURST_GAP: f32 = 86_400.0;
 
 /// The Image Quality Scanner's settings as last confirmed (`UiState::quality_scan_settings`), so the
-/// dialog opens as it was left: the scope, the two cutoffs, whether flags are written and whether
-/// everything is measured again, and the four factors' weights.
+/// dialog opens as it was left: the scope, the two cutoffs, whether flags and ratings are written
+/// and whether everything is measured again, the four factors' weights and the star breakpoints.
+/// Remembered across restarts through `dialog.remember` under `"qualityScan"`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QualityScanSettings {
     pub scope: String,
@@ -2265,11 +2294,107 @@ pub struct QualityScanSettings {
     pub rescan: bool,
     /// Blur, noise, exposure, compression.
     pub weights: [f32; 4],
+    /// Write the star ratings the scores ask for.
+    pub auto_rate: bool,
+    /// "Overwrite existing": write ratings and flags even onto photos the user set.
+    pub overwrite_metadata: bool,
+    /// The scores at which a star steps up (0★→1★ … 4★→5★).
+    pub star_breaks: [f32; 5],
 }
 
 impl Default for QualityScanSettings {
     fn default() -> Self {
-        QualityScanSettings { scope: "selection".into(), accepted: 70.0, rejected: 25.0, apply_flags: false, rescan: false, weights: [1.0; 4] }
+        QualityScanSettings {
+            scope: "selection".into(),
+            accepted: 70.0,
+            rejected: 25.0,
+            apply_flags: false,
+            rescan: false,
+            weights: [1.0; 4],
+            auto_rate: false,
+            overwrite_metadata: false,
+            star_breaks: [20.0, 40.0, 55.0, 70.0, 85.0],
+        }
+    }
+}
+
+impl QualityScanSettings {
+    /// The dialog's id in what the dialogs remember (`dialog.remember`).
+    const REMEMBER: &'static str = "qualityScan";
+
+    /// The settings remembered from the last session, or the defaults when there are none (or none
+    /// readable). The in-memory `quality_scan_settings` wins while it is there.
+    pub fn remembered(app: &crate::LccApp) -> QualityScanSettings {
+        if let Some(kept) = app.ui.quality_scan_settings.clone() {
+            return kept;
+        }
+        let d = QualityScanSettings::default();
+        let r = app.session.dialogs.other.get(Self::REMEMBER).cloned().unwrap_or(serde_json::Value::Null);
+        if !r.is_object() {
+            return d;
+        }
+        let num = |v: &serde_json::Value, key: &str, fallback: f32| {
+            v.get(key).and_then(serde_json::Value::as_f64).map(|x| x as f32).filter(|x| x.is_finite()).unwrap_or(fallback)
+        };
+        let flag = |v: &serde_json::Value, key: &str| v.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let clamp_cutoff = |x: f32| x.clamp(0.0, 100.0);
+        let mut weights = d.weights;
+        if let Some(list) = r.get("weights").and_then(serde_json::Value::as_array) {
+            for (i, w) in weights.iter_mut().enumerate() {
+                if let Some(x) = list.get(i).and_then(serde_json::Value::as_f64).filter(|x| x.is_finite() && (0.0..=10.0).contains(x)) {
+                    *w = x as f32;
+                }
+            }
+        }
+        let mut star_breaks = d.star_breaks;
+        if let Some(list) = r.get("starBreaks").and_then(serde_json::Value::as_array).filter(|list| list.len() == 5) {
+            // (the five are a threshold each: a score 0..=100, and none below the one before it)
+            let five: Vec<f32> =
+                list.iter().filter_map(|item| item.as_f64().filter(|x| x.is_finite() && (0.0..=100.0).contains(x)).map(|x| x as f32)).collect();
+            if let Ok(parsed) = <[f32; 5]>::try_from(five) {
+                let mut rising = true;
+                let mut prev = 0.0f32;
+                for x in parsed {
+                    if x < prev {
+                        rising = false;
+                    }
+                    prev = x;
+                }
+                if rising {
+                    star_breaks = parsed;
+                }
+            }
+        }
+        QualityScanSettings {
+            scope: match r.get("scope").and_then(serde_json::Value::as_str) {
+                // (the value just matched, not a second index into the map: `indexing_slicing` is denied)
+                Some(v @ ("folder" | "catalog")) => v.to_string(),
+                _ => d.scope,
+            },
+            accepted: clamp_cutoff(num(&r, "accepted", d.accepted)),
+            rejected: clamp_cutoff(num(&r, "rejected", d.rejected)),
+            apply_flags: flag(&r, "applyFlags"),
+            rescan: flag(&r, "rescan"),
+            weights,
+            auto_rate: flag(&r, "autoRate"),
+            overwrite_metadata: flag(&r, "overwriteMetadata"),
+            star_breaks,
+        }
+    }
+
+    /// What `dialog.remember` keeps of these.
+    pub fn choices(&self) -> serde_json::Value {
+        json!({
+            "scope": self.scope,
+            "accepted": self.accepted,
+            "rejected": self.rejected,
+            "applyFlags": self.apply_flags,
+            "rescan": self.rescan,
+            "weights": self.weights,
+            "autoRate": self.auto_rate,
+            "overwriteMetadata": self.overwrite_metadata,
+            "starBreaks": self.star_breaks,
+        })
     }
 }
 
@@ -2704,16 +2829,25 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             app.caches.faces_next_pump = 0.0;
             Ok(result)
         }
-        Dialog::QualityScanner { scope, accepted, rejected, apply_flags, rescan, weights } => {
-            // (the settings are kept for the next time the dialog opens, confirmed or not)
-            app.ui.quality_scan_settings = Some(QualityScanSettings {
+        Dialog::QualityScanner { scope, accepted, rejected, apply_flags, rescan, weights, auto_rate, overwrite_metadata, star_breaks } => {
+            let settings = QualityScanSettings {
                 scope: scope.clone(),
                 accepted: *accepted,
                 rejected: *rejected,
                 apply_flags: *apply_flags,
                 rescan: *rescan,
                 weights: *weights,
-            });
+                auto_rate: *auto_rate,
+                overwrite_metadata: *overwrite_metadata,
+                star_breaks: *star_breaks,
+            };
+            // (the settings are kept for the next time the dialog opens, confirmed or not, and
+            // remembered across restarts as the dialogs' choices are)
+            let choices = settings.choices();
+            app.ui.quality_scan_settings = Some(settings);
+            if let Err(e) = app.run("dialog.remember", json!({"dialog": QualityScanSettings::REMEMBER, "choices": choices})) {
+                log::warn!("dialog.remember {}: {e}", QualityScanSettings::REMEMBER);
+            }
             let scope = match scope.as_str() {
                 "folder" => "folder",
                 "catalog" => "catalog",
@@ -2731,6 +2865,9 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
                     "exposure": weights[2],
                     "compression": weights[3],
                 },
+                "autoRate": *auto_rate,
+                "overwriteMetadata": *overwrite_metadata,
+                "starBreaks": star_breaks,
             });
             app.run("photo.qualityScan", p)
         }
@@ -3222,7 +3359,8 @@ const EXPORT_TOPS: &str = "export-screen-tops";
 const EXPORT_JUMP: &str = "export-screen-jump";
 
 /// The Export screen's rail: its groups (name, the section keys it covers).
-const EXPORT_GROUPS: [(&str, &[&str]); 7] = [
+const EXPORT_GROUPS: [(&str, &[&str]); 8] = [
+    ("Preview", &["Preview"]),
     ("Where", &["Location", "Naming"]),
     ("Video", &["Video"]),
     ("File", &["FileSettings"]),
@@ -3363,12 +3501,20 @@ pub(crate) fn export_screen(app: &mut LccApp, ctx: &egui::Context) {
             let h = r.available_height();
             export_presets(app, &mut r, f, h);
         }
-        // every setting, one scrolling page
-        let w = content.width().min(860.0);
-        let column = egui::Rect::from_min_size(
-            egui::pos2(content.left() + ((content.width() - w) / 2.0).max(0.0), content.top()),
-            egui::vec2(w, content.height()),
-        );
+        // every setting, one scrolling page; with room to spare, the preview of the first photo
+        // sits beside it (a card of its own); in a narrow window it is the page's last section
+        const MIN_SETTINGS: f32 = 640.0;
+        let gap = crate::export_preview::WIDTH + 24.0;
+        let beside = content.width() >= MIN_SETTINGS + gap;
+        let w = if beside { content.width() - gap } else { content.width().min(860.0) };
+        let column = if beside {
+            egui::Rect::from_min_size(content.min, egui::vec2(w, content.height()))
+        } else {
+            egui::Rect::from_min_size(
+                egui::pos2(content.left() + ((content.width() - w) / 2.0).max(0.0), content.top()),
+                egui::vec2(w, content.height()),
+            )
+        };
         let mut page = ui.new_child(egui::UiBuilder::new().max_rect(column.shrink2(egui::vec2(16.0, 0.0))));
         page.ctx().data_mut(|d| d.insert_temp(egui::Id::new(EXPORT_SCREEN), true));
         egui::ScrollArea::vertical().id_salt("export-page").auto_shrink([false, false]).show(&mut page, |ui| {
@@ -3389,9 +3535,47 @@ pub(crate) fn export_screen(app: &mut LccApp, ctx: &egui::Context) {
             } else {
                 crate::dialog_frame::form(ui, EXPORT_LABEL_W, body);
             }
+            // (a narrow window: the preview closes the page)
+            if !beside && export_section(app, ui, "Preview", "Preview", "") {
+                let cap = (column.height() * 0.45).clamp(160.0, 460.0);
+                crate::export_preview::draw(
+                    app,
+                    ui,
+                    ExportForm {
+                        opts: &mut opts,
+                        full_size: &mut full_size,
+                        resize: &mut resize,
+                        preset_name: &mut preset_name,
+                        limit_kb: &mut limit_kb,
+                        dir: &mut dir,
+                    },
+                    false,
+                    Some(cap - 44.0),
+                );
+            }
             ui.add_space(40.0);
         });
         page.ctx().data_mut(|d| d.remove::<bool>(egui::Id::new(EXPORT_SCREEN)));
+        if beside {
+            let pane = egui::Rect::from_min_max(egui::pos2(column.right() + 16.0, content.top() + 12.0), content.max);
+            let mut card = ui.new_child(egui::UiBuilder::new().max_rect(pane));
+            crate::dialog_frame::card_frame(ctx).show(&mut card, |ui| {
+                crate::export_preview::draw(
+                    app,
+                    ui,
+                    ExportForm {
+                        opts: &mut opts,
+                        full_size: &mut full_size,
+                        resize: &mut resize,
+                        preset_name: &mut preset_name,
+                        limit_kb: &mut limit_kb,
+                        dir: &mut dir,
+                    },
+                    true,
+                    None,
+                );
+            });
+        }
     });
     ctx.memory_mut(|m| m.set_modal_layer(shown.response.layer_id));
     // the rows may have closed Export or opened another dialog (a folder picker, Watermark…)
@@ -3678,8 +3862,13 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         }
         let rendered = opts.format.is_rendered();
         let depths = lcc_engine::export::ExportOptions::bit_depths(opts.format);
+        // HDR AVIF and JPEG XL fix their own depth (10- or 16-bit PQ/HLG, or an 8-bit base with a gain map)
+        if opts.hdr && matches!(opts.format, F::Avif | F::Jxl) {
+            opts.bit_depth = None;
+        }
         if rendered
             && depths.len() > 1
+            && !(opts.hdr && matches!(opts.format, F::Avif | F::Jxl))
             && let Some(first) = depths.first()
         {
             let mut bd = opts.bit_depth.filter(|b| depths.iter().any(|d| d.0 == *b)).unwrap_or(first.0);
@@ -3719,16 +3908,27 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             let tip = crate::i18n::tr(
                 "Photos edited in HDR: JPEG with an HDR gain map (looks right everywhere, brighter highlights on HDR displays), AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ; TIFF needs 32-bit float",
             );
-            crate::dialog_frame::checkbox(ui, &mut opts.hdr, crate::i18n::tr("HDR output")).on_hover_text(tip);
+            let hdr_box = crate::dialog_frame::checkbox(ui, &mut opts.hdr, crate::i18n::tr("HDR output")).on_hover_text(tip);
+            crate::widgets::register(ui.ctx(), "check:exportHdr", hdr_box.rect);
             if opts.hdr && !opts.hdr_output() {
                 crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("HDR TIFF needs 32-bit float.")).color(t.text_dim));
             }
-            if opts.hdr && opts.format == F::Avif {
+            // AVIF and JPEG XL can store one HDR image, or an SDR image with a gain map
+            if opts.hdr && opts.hdr_output() && matches!(opts.format, F::Avif | F::Jxl) {
+                use lcc_engine::export::HdrMode as M;
+                choices(ui, "HDR mode", "exportHdrMode", &[(M::GainMap, "Gain map"), (M::SingleLayer, "HDR image")], &mut opts.hdr_mode);
+            }
+            if opts.hdr && opts.format == F::Avif && !opts.gain_map() {
                 use lcc_engine::export::HdrCurve as H;
                 choices(ui, "HDR curve", "exportHdrCurve", &[(H::Pq, "PQ"), (H::Hlg, "HLG")], &mut opts.hdr_transfer);
             }
         }
         if !rendered {
+        } else if opts.hdr && opts.gain_map() && opts.format == F::Avif {
+            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB with an HDR gain map (AVIF)")).color(t.text_dim))
+                .on_hover_text(crate::i18n::tr(
+                    "Gain map: looks right everywhere, and shows HDR on viewers that read gain maps. Other viewers show the SDR image.",
+                ));
         } else if opts.format == F::Avif && opts.hdr {
             let label = if opts.hdr_transfer == lcc_engine::export::HdrCurve::Hlg {
                 crate::i18n::tr("Color space: Rec. 2020 HLG (HDR AVIF)")
@@ -3739,7 +3939,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         } else if opts.format == F::Png && opts.hdr {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ, 16-bit (HDR PNG)")).color(t.text_dim))
                 .on_hover_text(crate::i18n::tr("Viewers that don't read the PNG cICP chunk show PQ values as sRGB: flat and washed out. For a picture that looks right everywhere, use JPEG (gain map)."));
-        } else if opts.format == F::Jxl && opts.hdr {
+        } else if opts.format == F::Jxl && opts.hdr && !opts.gain_map() {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ (HDR JPEG XL)")).color(t.text_dim));
         } else if opts.format == F::Avif {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB (AVIF)")).color(t.text_dim));
@@ -3755,6 +3955,15 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             if opts.effective_space() != opts.color_space {
                 let note = "Lossy JPEG XL writes Adobe RGB and ProPhoto as Rec. 2020; choose Lossless to keep them.";
                 crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
+            }
+            if opts.hdr && opts.gain_map() {
+                crate::dialog_frame::note(
+                    ui,
+                    egui::RichText::new(crate::i18n::tr(
+                        "HDR gain map: looks right everywhere; few viewers read JPEG XL gain maps yet, so most show the SDR image.",
+                    ))
+                    .color(t.text_dim),
+                );
             }
         }
         if opts.format == F::Jxl {
@@ -3871,7 +4080,9 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         };
         if export_section(app, ui, "Watermark", "Watermarking", &summary) {
             let mut wm_on = opts.watermark.is_some();
-            if crate::dialog_frame::checkbox(ui, &mut wm_on, crate::i18n::tr("Watermark")).changed() {
+            let wm_box = crate::dialog_frame::checkbox(ui, &mut wm_on, crate::i18n::tr("Watermark"));
+            crate::widgets::register(ui.ctx(), "check:exportWatermark", wm_box.rect);
+            if wm_box.changed() {
                 opts.watermark = wm_on.then(|| lcc_engine::export::Watermark { text: "© ".into(), ..Default::default() });
             }
             let wm_shown = opts.watermark.clone();
@@ -4788,6 +4999,10 @@ mod gap_tests {
 
     #[test]
     fn gap_text_reads_back_what_it_shows() {
+        if lcc_engine::fonts::BUILD_LANGUAGE.is_some() {
+            lcc_testkit::skip!(Fonts, "a single-language build offers only its language and English");
+            return;
+        }
         for v in [0.0, 1.0, 12.0, 59.0, 60.0, 90.0, 600.0, 3599.0, 3600.0, 3601.0, 3661.0, 3900.0, 7325.0, 86340.0, 86399.0] {
             assert_eq!(parse_gap(&fmt_gap(v)), Some(v), "{}", fmt_gap(v));
         }
@@ -4913,7 +5128,21 @@ mod cull_dialog_tests {
         h.step();
         assert_eq!(burst(&h), (1800.0, 1.0));
     }
+}
 
+#[cfg(test)]
+mod quality_scanner_dialog_tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use crate::headless::Headless;
+    use crate::state::Dialog;
+    use crate::{LccApp, Services};
+
+    const T: Duration = Duration::from_secs(20);
+
+    /// What the dialog shows: scope, cutoffs, the flags switch and the four weights.
     fn quality_settings(h: &Headless) -> (String, f32, f32, bool, [f32; 4]) {
         match &h.app.ui.dialog {
             Some(Dialog::QualityScanner { scope, accepted, rejected, apply_flags, weights, .. }) => {
@@ -4923,12 +5152,30 @@ mod cull_dialog_tests {
         }
     }
 
-    /// The Image Quality Scanner's dialog (issue #1313): it opens as it was left, the cutoffs can't
-    /// cross, and Scan hands what it shows to `photo.qualityScan` (which runs it in the background).
+    /// Click the value field right of a slider registered as `id`, type `text`, Enter.
+    fn type_value(h: &mut Headless, id: &str, text: &str) {
+        let r = h.app.widgets.iter().find(|(w, _)| w == id).map(|(_, r)| *r).unwrap_or_else(|| panic!("{id} not on screen"));
+        let spacing = h.view.ctx.global_style().spacing.clone();
+        let x = r.left() + spacing.slider_width + spacing.item_spacing.x + 6.0;
+        assert_eq!(h.request("ui.click", json!({"x": x, "y": r.center().y}), T)["ok"], true);
+        h.step();
+        for key in ["a", "Backspace"] {
+            assert_eq!(h.request("ui.key", json!({"key": key, "cmd": key == "a"}), T)["ok"], true);
+        }
+        assert_eq!(h.request("ui.text", json!({"text": text}), T)["ok"], true);
+        assert_eq!(h.request("ui.key", json!({"key": "Enter"}), T)["ok"], true);
+        h.step();
+        h.step();
+    }
+
+    /// The Image Quality Scanner's dialog (issues #1313 and #1362): it opens as it was left, the
+    /// cutoffs can't cross, the star thresholds appear with their switch and can't cross either, and
+    /// Scan hands what it shows to `photo.qualityScan` (which runs it in the background).
     #[test]
     fn the_quality_scanner_dialog_opens_as_left_and_scans() {
+        // (a tall window: all of a dialog this long is on screen, so a control can be clicked)
         let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
-        let mut h = Headless::new(app, [1400.0, 1000.0], 1.0);
+        let mut h = Headless::new(app, [1400.0, 1800.0], 1.0);
         h.step();
         h.app.run("dialog.qualityScan", json!({})).unwrap();
         for _ in 0..4 {
@@ -4936,10 +5183,35 @@ mod cull_dialog_tests {
         }
         let (scope, accepted, rejected, apply_flags, weights) = quality_settings(&h);
         assert_eq!((scope.as_str(), accepted, rejected, apply_flags, weights), ("selection", 70.0, 25.0, false, [1.0; 4]));
-        // the tree of controls is drawn: the cutoffs, the rescan and flag boxes, a weight a factor
-        for id in ["field:qualityAccepted", "field:qualityRejected", "check:qualityRescan", "check:qualityApplyFlags", "field:qualityWeight:0"] {
+        // the tree of controls is drawn: the cutoffs, the rescan and flag boxes, a weight a factor,
+        // and the auto-assign controls (the star breaks once their switch is on)
+        for id in [
+            "field:qualityAccepted",
+            "field:qualityRejected",
+            "check:qualityRescan",
+            "check:qualityApplyFlags",
+            "field:qualityWeight:0",
+            "check:qualityAutoRate",
+            "check:qualityOverwrite",
+        ] {
             assert!(h.app.widgets.iter().any(|(w, _)| w == id), "{id} is not drawn");
         }
+        assert!(!h.app.widgets.iter().any(|(w, _)| w == "field:qualityStarBreak:0"), "the star breaks show once their switch is on");
+        // the ratings switch: the five thresholds appear under it
+        let r = h.request("ui.clickWidget", json!({"id": "check:qualityAutoRate"}), T);
+        assert_eq!(r["ok"], true, "{r}");
+        h.step();
+        for i in 0..5 {
+            let id = format!("field:qualityStarBreak:{i}");
+            assert!(h.app.widgets.iter().any(|(w, _)| w.as_str() == id), "{id} is not drawn");
+        }
+        // a threshold typed above the one before it stops at it
+        type_value(&mut h, "field:qualityStarBreak:4", "10");
+        let star_breaks = match &h.app.ui.dialog {
+            Some(Dialog::QualityScanner { star_breaks, .. }) => *star_breaks,
+            d => panic!("{d:?}"),
+        };
+        assert_eq!(star_breaks, [20.0, 40.0, 55.0, 70.0, 70.0], "the last threshold stops at the fourth");
         // a rejected cutoff typed above the accepted one stops at it
         type_value(&mut h, "field:qualityAccepted", "40");
         type_value(&mut h, "field:qualityRejected", "60");
@@ -4951,6 +5223,10 @@ mod cull_dialog_tests {
         assert!(h.app.ui.dialog.is_none(), "{:?}", h.app.ui.dialog);
         let kept = h.app.ui.quality_scan_settings.clone().expect("the settings are kept");
         assert_eq!((kept.accepted, kept.rejected), (40.0, 40.0));
+        assert!(kept.auto_rate, "the switch the test turned on is kept");
+        assert_eq!(kept.star_breaks, [20.0, 40.0, 55.0, 70.0, 70.0]);
+        // (the rest still starts off: no overwrite, no ratings)
+        assert!(!kept.overwrite_metadata);
         h.app.run("dialog.qualityScan", json!({})).unwrap();
         h.step();
         h.step();
@@ -4969,6 +5245,86 @@ mod cull_dialog_tests {
         for _ in 0..10 {
             h.step();
         }
+    }
+
+    /// What the dialog remembered comes back with the next opening — across restarts, through the
+    /// choices `dialog.remember` kept — and a value that isn't one (out of range, crossing
+    /// breakpoints) falls back to the default.
+    #[test]
+    fn the_quality_scanner_opens_from_what_it_remembered() {
+        use super::QualityScanSettings;
+        // the dialog as it opened
+        let opened = |h: &Headless| -> QualityScanSettings {
+            match &h.app.ui.dialog {
+                Some(Dialog::QualityScanner {
+                    scope,
+                    accepted,
+                    rejected,
+                    apply_flags,
+                    rescan,
+                    weights,
+                    auto_rate,
+                    overwrite_metadata,
+                    star_breaks,
+                }) => QualityScanSettings {
+                    scope: scope.clone(),
+                    accepted: *accepted,
+                    rejected: *rejected,
+                    apply_flags: *apply_flags,
+                    rescan: *rescan,
+                    weights: *weights,
+                    auto_rate: *auto_rate,
+                    overwrite_metadata: *overwrite_metadata,
+                    star_breaks: *star_breaks,
+                },
+                d => panic!("{d:?}"),
+            }
+        };
+        let app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+        let mut h = Headless::new(app, [1400.0, 1000.0], 1.0);
+        h.step();
+        let kept = json!({
+            "scope": "catalog",
+            "accepted": 88.0,
+            "rejected": 12.0,
+            "applyFlags": true,
+            "rescan": true,
+            "weights": [1.0, 0.5, 2.0, 0.0],
+            "autoRate": true,
+            "overwriteMetadata": true,
+            "starBreaks": [10.0, 30.0, 50.0, 75.0, 95.0],
+        });
+        h.app.run("dialog.remember", json!({"dialog": "qualityScan", "choices": kept})).unwrap();
+        h.app.run("dialog.qualityScan", json!({})).unwrap();
+        h.step();
+        // (nothing is confirmed yet: the dialog itself holds what was remembered)
+        let s = opened(&h);
+        assert_eq!((s.scope.as_str(), s.accepted, s.rejected, s.apply_flags, s.rescan), ("catalog", 88.0, 12.0, true, true));
+        assert_eq!(s.weights, [1.0, 0.5, 2.0, 0.0]);
+        assert_eq!(s.star_breaks, [10.0, 30.0, 50.0, 75.0, 95.0]);
+        assert!(s.auto_rate && s.overwrite_metadata);
+        // nothing remembered: the defaults
+        h.app.ui.dialog = None;
+        h.app.run("dialog.remember", json!({"dialog": "qualityScan", "choices": {}})).unwrap();
+        h.app.run("dialog.qualityScan", json!({})).unwrap();
+        h.step();
+        assert_eq!(opened(&h), QualityScanSettings::default());
+        // a choice file the user edited by hand: the numbers are kept to what a scan takes, and
+        // what is not one of them falls back to its default
+        let bad = json!({
+            "scope": "somewhere",
+            "accepted": 400.0,
+            "rejected": -3.0,
+            "weights": [1.0, 99.0, 2.0, 0.0],
+            "starBreaks": [50.0, 40.0, 55.0, 70.0, 85.0],
+        });
+        h.app.run("dialog.remember", json!({"dialog": "qualityScan", "choices": bad})).unwrap();
+        h.app.ui.dialog = None;
+        let s = QualityScanSettings::remembered(&h.app);
+        assert_eq!((s.accepted, s.rejected), (100.0, 0.0), "clamped to 0..100");
+        assert_eq!(s.scope, "selection", "a scope no radio offers falls back");
+        assert_eq!(s.weights, [1.0, 1.0, 2.0, 0.0], "a weight past 10 keeps the default");
+        assert_eq!(s.star_breaks, [20.0, 40.0, 55.0, 70.0, 85.0], "crossing breakpoints are refused");
     }
 }
 

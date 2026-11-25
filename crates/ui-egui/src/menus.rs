@@ -145,6 +145,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.visualizeHdr", "Visualize HDR", None, "View>Loupe Info"),
     // {on?}: HDR edits shown in HDR on an HDR display (off: their SDR rendition everywhere)
     ("view.hdrPreview", "HDR Preview", None, "View>Loupe Info"),
+    // {hdr?: bool}: the Export screen's preview shows an HDR export's HDR rendition on an HDR display
+    // (SDR otherwise; no menu item: the screen's own SDR | HDR choice)
+    ("export.previewMode", "Export preview: HDR mode", None, ""),
     ("view.colorReadout", "Color Readout", None, ""),
     ("view.colorReadoutRgb", "Show RGB Color Values", None, "View>Loupe Info"),
     ("view.colorReadoutHsl", "Show HSL Color Values", None, "View>Loupe Info"),
@@ -244,6 +247,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("section.retouch", "Retouch", None, "Window>Edit Sections"),
     // {on?}; no params toggles. Opening one Edit section closes the others.
     ("view.soloSections", "Solo Mode", None, "Window>Edit Sections"),
+    // {on?} (no params toggles) or {section}: Light, Color, Color Grading, Effects, Detail in the
+    // Masking panel; opening one folds the others (issue #1305)
+    ("mask.solo", "Solo Mode in Masks", None, "Window>Edit Sections"),
     ("tool.brush", "Brush", Some("B"), "Window>Tools"),
     ("tool.linear", "Linear Gradient", Some("L"), "Window>Tools"),
     ("tool.radial", "Radial Gradient", Some("R"), "Window>Tools"),
@@ -334,6 +340,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("view.appearance", "Next Appearance Mode", None, ""),
     // {theme: charcoal | midnight | silver | paper}: pick a theme and fix the mode to its family.
     ("view.theme", "Theme", None, ""),
+    // {shade?: theme | black | darkGray | mediumGray | lightGray | white}: the shade behind the photo
+    // in the loupe (cycles when omitted). Window ▸ Appearance (Loupe Background group), the loupe's right-click.
+    ("view.loupeBackground", "Next Loupe Background", None, ""),
+    // {shade?}: the same for the filmstrip. Window ▸ Appearance (Filmstrip Background group).
+    ("view.filmstripBackground", "Next Filmstrip Background", None, ""),
     ("dialog.allMetadata", "All Metadata…", None, "Metadata"),
     ("dialog.faceModel", "Add Face Model…", None, ""),
     ("dialog.newSmartAlbum", "New Smart Collection from Filter…", Some("Cmd+Alt+N"), "Library"),
@@ -361,6 +372,9 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("photo.editInPhotoCraft", "Edit in PhotoCraft", Some("Cmd+Shift+E"), "Photo>Edit In"),
     ("photo.editInExternal", "Edit in Other Editor", Some("Cmd+Alt+E"), "Photo>Edit In"),
     ("dialog.editInPresets", "Edit In Presets…", None, "Photo>Edit In"),
+    // {preset, mode?, action?}: one item of a saved Edit In preset's menu (Photo ▸ Edit In ▸ the
+    // preset): the selected photos handed to its editor, all with one start
+    ("photo.editInPreset", "Edit In Preset", None, ""),
     ("panel.actions", "Actions", None, ""),
     // {ids?, app?}: the original files themselves (a raw stays a raw: no render, no copy), opened
     // in the other editor, e.g. a raw developer
@@ -474,6 +488,8 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.shortcuts", "Keyboard Shortcuts", Some("Cmd+/"), "Help"),
     ("app.setShortcut", "Set Keyboard Shortcut", None, ""),
     ("app.resetShortcuts", "Reset All Keyboard Shortcuts", None, ""),
+    ("app.setSpeedKey", "Set Speed-Edit Key", None, ""),
+    ("app.speedKeys", "Speed-Edit Keys", None, ""),
     ("app.keymapSet", "Keymap Set", None, ""),
     ("app.keymapExport", "Export Keymap…", None, "Edit>Keymap"),
     ("app.keymapImport", "Import Keymap…", None, "Edit>Keymap"),
@@ -698,6 +714,27 @@ fn appearance_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     Ok(appearance_json(app))
 }
 
+/// `view.loupeBackground {shade?}` / `view.filmstripBackground {shade?}`: the shade behind the
+/// loupe's photo or the filmstrip; omitted, the next one. Saved with the settings.
+fn background_command(app: &mut LccApp, p: &Value, filmstrip: bool) -> Result<Value, String> {
+    use crate::theme::CanvasShade;
+    let command = if filmstrip { "view.filmstripBackground" } else { "view.loupeBackground" };
+    let s = &mut app.ui.settings;
+    let slot = if filmstrip { &mut s.filmstrip_background } else { &mut s.loupe_background };
+    let shade = match p.get("shade") {
+        None | Some(Value::Null) => slot.next(),
+        Some(v) => match v.as_str().and_then(CanvasShade::from_id) {
+            Some(shade) => shade,
+            None => {
+                let ids = CanvasShade::ALL.map(|s| s.id()).join("|");
+                return Err(format!("{command}: unknown shade {v} ({ids})"));
+            }
+        },
+    };
+    *slot = shade;
+    Ok(json!({"loupe": s.loupe_background.id(), "filmstrip": s.filmstrip_background.id()}))
+}
+
 /// `view.theme {theme}`: pick a theme; the mode becomes its family's (Dark or Light).
 fn theme_command(app: &mut LccApp, p: &Value) -> Result<Value, String> {
     let ids = crate::theme::ThemeKind::ALL.map(|k| k.id()).join("|");
@@ -824,7 +861,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         return Some(crate::panels::surface_osd::command(app, id, p));
     }
     if let Some(language) = language_from_command(id) {
-        app.ui.language = language;
+        // a language this build left out is English, as `set_language` shows it
+        app.ui.language = language.or_english();
         // Immediately, not on the next frame: the reply and anything else run this frame
         // (menus rebuilt from it, toasts) are already in the new language.
         crate::i18n::set_language(app.ui.language);
@@ -943,6 +981,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(json!({"sidebar": app.ui.sidebar}))
         }
         "view.appearance" => appearance_command(app, p),
+        "view.loupeBackground" => background_command(app, p, false),
+        "view.filmstripBackground" => background_command(app, p, true),
         "view.theme" => theme_command(app, p),
         "library.selectOnlyActive" => {
             let Some(active) = app.session.active() else { return Some(Err("no active photo".into())) };
@@ -1049,6 +1089,12 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             // {on?}; no params toggles. Off, an HDR display shows HDR edits as an SDR one does.
             app.ui.hdr_preview = p.get("on").and_then(Value::as_bool).unwrap_or(!app.ui.hdr_preview);
             Ok(json!({"on": app.ui.hdr_preview, "hdrDisplay": app.hdr_headroom.is_some()}))
+        }
+        "export.previewMode" => {
+            // {hdr?: bool}; no params toggles. The Export screen's preview shows an HDR export's HDR rendition
+            // on an HDR display (else its SDR rendition, with a line saying why).
+            app.ui.export_preview_hdr = p.get("hdr").and_then(Value::as_bool).unwrap_or(!app.ui.export_preview_hdr);
+            Ok(json!({"hdr": app.ui.export_preview_hdr, "hdrDisplay": app.hdr_headroom.is_some()}))
         }
         "view.faceBoxes" => {
             app.ui.face_boxes = p.get("show").and_then(Value::as_bool).unwrap_or(!app.ui.face_boxes);
@@ -1931,6 +1977,17 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             }
             Ok(json!({"hidden": app.ui.hidden_locations}))
         }
+        "mask.solo" => match p.get("section") {
+            None | Some(Value::Null) => bool_param(id, p, "on").map(|on| {
+                app.ui.set_mask_solo(on.unwrap_or(!app.ui.mask_solo));
+                json!({"maskSolo": app.ui.mask_solo})
+            }),
+            Some(Value::String(k)) if crate::state::MASK_SECTIONS.contains(&k.as_str()) => {
+                app.ui.solo_mask_section(k);
+                Ok(json!({"maskSolo": app.ui.mask_solo, "section": k}))
+            }
+            Some(other) => Err(format!("mask.solo: unknown section {other} (one of {})", crate::state::MASK_SECTIONS.join(", "))),
+        },
         "view.soloSections" => bool_param(id, p, "on").map(|on| {
             app.ui.set_single_panel(on.unwrap_or(!app.ui.single_panel));
             json!({"soloSections": app.ui.single_panel})
@@ -2628,8 +2685,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             edit_in(app, &ctx, p, photocraft)
         }
         "photo.openOriginalInExternal" => open_original_in(app, &ctx, p),
+        "photo.editInPreset" => crate::edit_in::run_preset(app, &ctx, p),
         "dialog.qualityScan" => {
-            let s = app.ui.quality_scan_settings.clone().unwrap_or_default();
+            let s = crate::panels::dialogs::QualityScanSettings::remembered(app);
             app.ui.dialog = Some(Dialog::QualityScanner {
                 scope: s.scope,
                 accepted: s.accepted,
@@ -2637,6 +2695,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 apply_flags: s.apply_flags,
                 rescan: s.rescan,
                 weights: s.weights,
+                auto_rate: s.auto_rate,
+                overwrite_metadata: s.overwrite_metadata,
+                star_breaks: s.star_breaks,
             });
             Ok(Value::Null)
         }
@@ -2710,6 +2771,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "app.whatsNew" => {
+            app.ui.whats_new_opens = app.ui.whats_new_opens.wrapping_add(1);
             app.ui.dialog = Some(Dialog::WhatsNew);
             Ok(json!({"text": crate::i18n::brand_fill(crate::panels::dialogs::WHATS_NEW)}))
         }
@@ -2763,6 +2825,8 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "app.setShortcut" => crate::shortcuts::set_shortcut(app, p),
+        "app.setSpeedKey" => crate::speed_edit::set_speed_key(app, p),
+        "app.speedKeys" => Ok(crate::speed_edit::list(app)),
         "app.resetShortcuts" => {
             app.ui.settings.keymap.clear();
             Ok(Value::Null)
@@ -3691,6 +3755,10 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
     if let Some(e) = fork::enabled(app, id) {
         return e;
     }
+    // a single-language build (`CRAFT_FONTS_LANGUAGE`) offers only its language and English
+    if let Some(language) = language_from_command(id) {
+        return language.in_build();
+    }
     match id {
         "merge.deleteSourcesNow" => {
             app.session.active().and_then(|id| app.session.merge_sources_to_delete(id)).is_some_and(|(present, _)| !present.is_empty())
@@ -3722,7 +3790,9 @@ pub fn ui_enabled(app: &LccApp, id: &str) -> bool {
         "app.installUpdate" => false,
         #[cfg(not(target_arch = "wasm32"))]
         "app.installUpdate" => app.session.updater.staged().is_some(),
-        "photo.editInPhotoCraft" | "photo.editInExternal" => app.session.active().is_some() && app.services.open_with.is_some(),
+        "photo.editInPhotoCraft" | "photo.editInExternal" | "photo.editInPreset" => {
+            app.session.active().is_some() && app.services.open_with.is_some()
+        }
         "app.exportPrevious" => app.session.active().is_some() && app.session.last_export.is_some(),
         "dialog.pasteSettings" => app.session.active().is_some() && app.session.clipboard.is_some(),
         "dialog.updatePreset" => app.session.active().is_some(),
@@ -3801,10 +3871,15 @@ pub struct MenuEntry {
     pub enabled: bool,
 }
 
+/// Whether a single-language build (`CRAFT_FONTS_LANGUAGE`) leaves out the language this command picks.
+pub(crate) fn language_left_out(id: &str) -> bool {
+    language_from_command(id).is_some_and(|language| !language.in_build())
+}
+
 /// The flattened menu model (UI commands + engine commands with menu paths).
 pub fn menu_entries(app: &LccApp) -> Vec<MenuEntry> {
     let mut v: Vec<MenuEntry> = ui_commands()
-        .filter(|c| !c.3.is_empty())
+        .filter(|c| !c.3.is_empty() && !language_left_out(c.0))
         .map(|(id, label, _, m)| MenuEntry {
             id: id.to_string(),
             label: label.to_string(),

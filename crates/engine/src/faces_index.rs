@@ -768,6 +768,9 @@ pub(crate) struct FacesState {
     pub last_maintenance: Option<FaceScanStatus>,
     /// The most photos left at once since the scan last finished (the row's whole).
     pub peak: u64,
+    /// What the named faces suggest for the library's unnamed faces, judged across the whole library rather than the
+    /// page `faces.unnamed` lists (issue #1365).
+    pub suggestions: crate::face_suggestions::Scan,
 }
 
 impl FacesState {
@@ -793,6 +796,7 @@ impl FacesState {
         self.saved_at = None;
         self.task = None;
         self.peak = 0;
+        self.suggestions = Default::default();
         self.epoch = self.epoch.wrapping_add(1);
     }
 
@@ -800,6 +804,7 @@ impl FacesState {
     /// searched again (issue #1524). What a worker is still making from the old file is dropped when it comes back.
     pub fn content_replaced(&mut self, id: lcc_catalog::PhotoId) {
         self.index.forget_photo(id.0);
+        self.suggestions.forget_photo(id.0);
         self.scanned.remove(id.0);
         self.scan_failed.remove(&id.0);
     }

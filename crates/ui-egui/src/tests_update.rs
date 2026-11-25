@@ -64,6 +64,10 @@ fn services() -> Services {
 
 /// The app with an in-memory session (no library, no network) and the start-up check already done.
 fn app() -> Headless {
+    app_with(services())
+}
+
+fn app_with(services: Services) -> Headless {
     let mut session = lcc_engine::Session::new();
     // a fresh updater: the settings are the defaults, not whatever this machine's are
     session.updater = lcc_engine::update::Updater::new(None);
@@ -71,7 +75,7 @@ fn app() -> Headless {
     // without a key installs nothing (lcc-engine's update tests cover that)
     let key = lcc_updater::UpdateKey::parse("GX9rI+FshTLGq8g4+s1ep4m+DHaykgM0A5v6iz02jWE=").unwrap();
     session.updater.trust_test_key(Some(key));
-    let app = LccApp::new(session, services());
+    let app = LccApp::new(session, services);
     let mut h = Headless::new(app, [1200.0, 900.0], 1.0);
     // no start-up check: these tests drive the dialog themselves
     h.app.ui.update_checked_at_startup = true;
@@ -81,6 +85,11 @@ fn app() -> Headless {
 
 /// Offer `version` as a newer release, as a check would, with its file already downloaded.
 fn offer(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::update::Kind) -> PathBuf {
+    offer_with_notes(h, dir, version, kind, "### Fixed\n- a thing")
+}
+
+/// [`offer`] with the release's notes.
+fn offer_with_notes(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::update::Kind, notes: &str) -> PathBuf {
     use lcc_engine::update::{Kind, Progress, Staged};
     let file = dir.0.join(format!("app-{version}-{}.bin", kind.text()));
     std::fs::write(&file, b"an installer").unwrap();
@@ -102,7 +111,7 @@ fn offer(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::updat
         asset: lcc_updater::Asset { name: name.clone(), url: "http://127.0.0.1:1/app.bin".into(), size: 12, sha256: None, kind: engine_kind },
         sha256: Some("ab".repeat(32)),
         published: Some("2026-10-12".into()),
-        notes: "### Fixed\n- a thing".into(),
+        notes: notes.into(),
         action: "run the installer".into(),
     };
     h.app.session.updater.apply(lcc_updater::Checked::Found(Box::new(update)));
@@ -113,7 +122,7 @@ fn offer(h: &mut Headless, dir: &Scratch, version: &str, kind: lcc_engine::updat
         sha256,
         file: name,
         kind,
-        notes: "### Fixed\n- a thing".into(),
+        notes: notes.into(),
     })));
     file
 }
@@ -203,6 +212,203 @@ fn a_manual_install_never_quits_the_app() {
     assert!(installed.message.contains("Quit the app"), "{}", installed.message);
     // the file is shown through the session's desktop, never by starting the real file manager
     assert_eq!(desktop.requests(), vec![lcc_engine::desktop::Request::Reveal(file.clone())]);
+}
+
+#[test]
+fn the_install_button_is_the_one_to_press_once_the_download_is_ready() {
+    let dir = Scratch::new("install-default");
+    let mut h = app();
+    let file = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive);
+    let desktop = std::sync::Arc::new(lcc_engine::desktop::Recorder::default());
+    h.app.session.desktop = desktop.clone();
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    h.step();
+    h.step();
+    // the button holds the keyboard as soon as it appears, so Return is its press
+    let install = egui::Id::new("update-install-focus");
+    assert!(h.view.ctx.data(|d| d.get_temp::<bool>(install)).unwrap_or(false), "the install button asked for the focus");
+    assert!(h.view.ctx.memory(|m| m.focused()).is_some(), "the install button has the keyboard focus");
+    assert!(h.app.session.updater.installed().is_none(), "nothing installs by itself");
+    ask(&mut h, "ui.key", json!({"key": "Enter"}));
+    h.step();
+    assert!(h.app.session.updater.installed().is_some(), "Return pressed the install button");
+    assert!(file.exists());
+    assert_eq!(desktop.requests(), vec![lcc_engine::desktop::Request::Reveal(file.clone())]);
+}
+
+#[test]
+fn the_install_button_takes_the_focus_again_when_the_dialog_is_reopened() {
+    let dir = Scratch::new("install-reopen");
+    let mut h = app();
+    let _ = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive);
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    let asked = |h: &Headless| h.view.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("update-install-focus"))).unwrap_or(false);
+    assert!(asked(&h), "asked for the focus when it first appeared");
+    h.app.ui.dialog = None;
+    h.step();
+    h.step();
+    assert!(!asked(&h), "closing the dialog forgets it");
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    assert!(asked(&h), "asked again on the next opening");
+}
+
+#[test]
+fn return_installs_nothing_before_the_download_is_ready() {
+    let dir = Scratch::new("install-not-ready");
+    let mut h = app();
+    let _ = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive);
+    h.app.session.updater.set_progress(lcc_engine::update::Progress::Idle);
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    h.step();
+    ask(&mut h, "ui.key", json!({"key": "Enter"}));
+    h.step();
+    assert!(h.app.session.updater.installed().is_none(), "Return does not install a file that isn't downloaded");
+}
+
+/// A clock the test moves (Unix seconds), given to the updater; starts at a fixed time.
+fn clocked(h: &mut Headless) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let now = std::sync::Arc::new(AtomicU64::new(1_800_000_000));
+    let seen = now.clone();
+    h.app.session.updater.set_test_clock(Box::new(move || seen.load(Ordering::SeqCst)));
+    now
+}
+
+/// The dialog's text with a check that finished at the clock's start, the clock now `later` seconds on.
+fn last_checked_after(later: i64) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    let mut h = app();
+    let now = clocked(&mut h);
+    h.app.session.updater.apply(lcc_updater::Checked::Current("1.0.0".into()));
+    now.store((1_800_000_000 + later) as u64, Ordering::SeqCst);
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    h.painted_text().into_iter().find(|t| t.starts_with("Last checked"))
+}
+
+#[test]
+fn the_last_check_reads_as_the_time_since() {
+    assert_eq!(last_checked_after(40).as_deref(), Some("Last checked 40 seconds ago"));
+    assert_eq!(last_checked_after(12 * 60).as_deref(), Some("Last checked 12 minutes ago"));
+    assert_eq!(last_checked_after(50 * 3600).as_deref(), Some("Last checked 50 hours ago"));
+    assert_eq!(last_checked_after(48 * 3600).as_deref(), Some("Last checked 48 hours ago"), "no days");
+}
+
+#[test]
+fn a_check_under_ten_seconds_old_reads_just_now() {
+    assert_eq!(last_checked_after(0).as_deref(), Some("Last checked just now"));
+    assert_eq!(last_checked_after(9).as_deref(), Some("Last checked just now"));
+    assert_eq!(last_checked_after(10).as_deref(), Some("Last checked 10 seconds ago"), "the cut-off");
+}
+
+#[test]
+fn the_singular_reads_as_one_minute_and_one_hour() {
+    assert_eq!(last_checked_after(60).as_deref(), Some("Last checked 1 minute ago"));
+    assert_eq!(last_checked_after(3600).as_deref(), Some("Last checked 1 hour ago"));
+}
+
+#[test]
+fn a_check_in_the_future_reads_just_now_and_does_not_panic() {
+    assert_eq!(last_checked_after(-3600).as_deref(), Some("Last checked just now"));
+    assert_eq!(last_checked_after(-1_800_000_000).as_deref(), Some("Last checked just now"));
+}
+
+#[test]
+fn before_any_check_there_is_no_last_checked_line() {
+    let mut h = app();
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    assert!(!h.painted_text().iter().any(|t| t.starts_with("Last checked")), "{:?}", h.painted_text());
+}
+
+#[test]
+fn a_failed_check_still_says_when_it_was_made() {
+    use std::sync::atomic::Ordering;
+    let mut h = app();
+    let now = clocked(&mut h);
+    h.app.session.updater.apply(lcc_updater::Checked::Failed("no network".into()));
+    now.store(1_800_000_000 + 300, Ordering::SeqCst);
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    assert!(h.painted_text().iter().any(|t| t == "Last checked 5 minutes ago"), "{:?}", h.painted_text());
+}
+
+#[test]
+fn the_line_follows_the_clock_while_the_window_stays_open_with_no_input() {
+    use std::sync::atomic::Ordering;
+    let mut h = app();
+    let now = clocked(&mut h);
+    h.app.session.updater.apply(lcc_updater::Checked::Current("1.0.0".into()));
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    let has = |h: &Headless, text: &str| h.painted_text().iter().any(|t| t == text);
+    assert!(has(&h, "Last checked just now"), "{:?}", h.painted_text());
+    now.store(1_800_000_000 + 61, Ordering::SeqCst);
+    // no key, no pointer: only frames
+    for _ in 0..3 {
+        h.step();
+    }
+    assert!(has(&h, "Last checked 1 minute ago"), "{:?}", h.painted_text());
+}
+
+#[test]
+fn the_window_asks_to_be_redrawn_when_the_words_would_change() {
+    use crate::panels::update::next_change;
+    assert_eq!(next_change(0), 10, "just now holds until 10 seconds");
+    assert_eq!(next_change(9), 1);
+    assert_eq!(next_change(10), 1, "seconds count one by one");
+    assert_eq!(next_change(59), 1);
+    assert_eq!(next_change(60), 60, "a minute reads the same for a minute");
+    assert_eq!(next_change(119), 1);
+    assert_eq!(next_change(3599), 1);
+    assert_eq!(next_change(3600), 3600);
+    assert_eq!(next_change(-5), 10, "a clock that went back");
+    assert!(next_change(i64::MAX) >= 1);
+}
+
+#[test]
+fn the_download_sentence_names_what_the_button_does_and_the_app() {
+    let dir = Scratch::new("sentence");
+    let mut h = app();
+    let _ = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Msi);
+    h.app.session.updater.set_progress(lcc_engine::update::Progress::Idle);
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    let name = lcc_brand::DISPLAY_NAME;
+    let text = h.painted_text();
+    let line = text.iter().find(|t| t.starts_with("Download will download")).unwrap_or_else(|| panic!("{text:?}"));
+    assert!(line.contains(&format!("signed by the {name} authors")), "{line}");
+    assert!(line.ends_with("offer to install it over this version."), "{line}");
+    assert!(!text.iter().any(|t| t.contains("SHA-256") || t.starts_with("Installing it will")), "the two old lines are gone: {text:?}");
+}
+
+#[test]
+fn where_the_download_only_opens_a_folder_the_sentence_says_so() {
+    let dir = Scratch::new("sentence-manual");
+    let mut h = app();
+    let _ = offer(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive);
+    h.app.session.updater.set_progress(lcc_engine::update::Progress::Idle);
+    // (the dialog opened directly: the menu command also asks the feed, and a repeat answer would be stamped again)
+    h.app.ui.dialog = Some(Dialog::Update);
+    h.step();
+    h.step();
+    let text = h.painted_text();
+    let line = text.iter().find(|t| t.starts_with("Download will download")).unwrap_or_else(|| panic!("{text:?}"));
+    assert!(line.ends_with("and open its folder, so you can install it over this version."), "{line}");
 }
 
 #[test]
@@ -688,4 +894,35 @@ fn the_settings_checkbox_says_so_when_it_cannot_be_saved() {
     let toast = toast_text(&h);
     assert!(toast.contains("updates.json"), "the error is shown, naming the file: {toast:?}");
     assert!(!h.app.session.updater.prefs().check_at_startup, "the box shows what is stored: off");
+}
+
+#[test]
+fn the_release_notes_show_inline_markup_and_open_their_links() {
+    use std::sync::{Arc, Mutex};
+    let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+    let o = opened.clone();
+    let mut services = services();
+    services.open_url = Some(Box::new(move |u: &str| {
+        o.lock().unwrap().push(u.to_string());
+        Ok(())
+    }));
+    let dir = Scratch::new("notes-markup");
+    let mut h = app_with(services);
+    let notes = "### Fixed\n- Press `Cmd+K` for **quick** help, see [the guide](https://example.com/guide)\n- [not a web page](javascript:alert(1)) stays text";
+    let _ = offer_with_notes(&mut h, &dir, "9.9.9", lcc_engine::update::Kind::Archive, notes);
+    ask(&mut h, "ui.menu.invoke", json!({"id": "app.checkForUpdates"}));
+    for _ in 0..10 {
+        h.step();
+    }
+    let text = h.painted_text().join("\n");
+    assert!(text.contains("Cmd+K") && text.contains("quick") && text.contains("the guide"), "{text}");
+    assert!(!text.contains('`') && !text.contains("**") && !text.contains("](https"), "the markers are not shown: {text}");
+    assert!(text.contains("not a web page"), "a link the host won't open is shown as its text: {text}");
+    let links: Vec<&str> = h.app.widgets.iter().map(|(w, _)| w.as_str()).filter(|w| w.starts_with("link:notes:")).collect();
+    assert_eq!(links, ["link:notes:0"], "only the https link can be clicked");
+    ask(&mut h, "ui.clickWidget", json!({"id": "link:notes:0"}));
+    for _ in 0..4 {
+        h.step();
+    }
+    assert_eq!(opened.lock().unwrap().as_slice(), ["https://example.com/guide"], "the click opened the link, through the host");
 }

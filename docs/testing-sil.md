@@ -21,6 +21,7 @@ Scenarios (one `#[test]` each, run in parallel):
 |---|---|
 | `sil_workflow` | import a folder → cull (rate, flag, reject, label, filters) → develop (Auto, sliders, WB picker, crop, radial mask, preset) → copy/paste and Synchronize → virtual copy, history back and forth → albums and a smart collection → keywords and metadata → export JPEG, TIFF and Original + Settings → XMP write, change, read back → print render → slideshow export (PDF in the foreground, JPEG slides in the background, an unknown format refused) → reopen |
 | `sil_raw_workflow` | corpus raws (skipped without a corpus): import, Auto, sliders, WB, export JPEG and DNG, XMP, reopen |
+| `sil_adaptive_presets` | built-in adaptive preset on three photos (its look and two scene masks each, nothing skipped), the same preset again replaces its masks, a user preset of a photo's masks brings them to another, unknown preset and hostile ids refused → undo/redo → reopen |
 | `sil_monkey` | seeded random user actions (about 8 % with hostile arguments: bogus ids, out-of-range and huge numbers, control characters), with a reopen every 100 steps and at the end; it stops making virtual copies once the library holds 64 photos (`MONKEY_MAX_PHOTOS`), so a long run's library, and with it each step and its checks, stays inside the per-step timeout |
 
 Engine-level scenarios (no child process; `cargo test -p lcc-engine --test it roundtrip`), in
@@ -89,9 +90,17 @@ goldens in the repository (`crates/pipeline/tests/it/fidelity.rs`, measures in `
 cargo xtask fidelity --regen        # write the references from the current renderer
 cargo xtask fidelity                # compare against them (also part of `cargo xtask sil`)
 cargo xtask fidelity --refs DIR     # another reference folder
+cargo xtask fidelity --baseline     # rewrite the committed process baseline (after adding a process)
 ```
 
-Without references the test records an `Input` skip and passes. **Process-version retunes are gated on it**
+**Process baseline (CI gate).** `frozen_processes_keep_their_committed_baseline` needs no references and runs with
+every `cargo test -p lcc-pipeline`: for each process other than the latest and each tool, the mean L\*a\*b\* of the
+renders of the procedural scenes and the tool's mean ΔE2000 from the unedited render must stay within the committed
+`crates/pipeline/tests/fidelity/process-baseline.json` (± its `tolerance`, in ΔE / L\*a\*b\* units). Every process
+and tool needs an entry, so a new process lands with `--baseline`.
+
+Without references the test records an `Input` skip and passes. **Process-version retunes are gated on it** (and,
+without references, on the process baseline below)
 ([process-versions](process-versions.md)): before changing how a process renders, regenerate the references on
 `main`, make the change, and run the suite. Every process except the new one must stay within tolerance; the new
 process's numbers show how far the retune moved each tool. References made by another editor from the same inputs
