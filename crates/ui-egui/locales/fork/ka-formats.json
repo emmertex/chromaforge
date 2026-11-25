@@ -187,6 +187,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "{folder}-ის ფოტოები გადადის კოლექციაში „Camera Roll - ამ მოწყობილობის სახელი“.",
   "Picks to unflag: {n}": "ნიშნის მოსახსნელი არჩეულები: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "განთავსება: {name}",
   "Plugin {version} installed": "დანამატი {version} დაყენებულია",
   "Preset {name} on {n} photos": "პრესეტი {name} {n} ფოტოზე",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "პრესეტი: {name}. გამოტოვებული AI ნიღბები, რომლებსაც ეს ვერსია ვერ ითვლის: {masks}",

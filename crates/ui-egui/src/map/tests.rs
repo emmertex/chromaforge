@@ -647,3 +647,33 @@ fn saved_locations_are_moved_resized_and_edited_on_the_map() {
     run(&mut h, "map.locationEditor", json!({"action": "cancel"}));
     assert!(h.app.map.editor.is_none());
 }
+
+/// Photos dragged from the filmstrip onto a saved location in the side panel's list take the
+/// location's centre (one undo step), as dropping them on the map does at that point.
+#[test]
+fn photos_dropped_on_a_saved_location_in_the_list_take_its_centre() {
+    let mut h = map_on_fake_tiles();
+    run(&mut h, "map.saveLocation", json!({"name": "Home", "lat": 40.653957, "lon": -4.689763, "radius": 25}));
+    h.settle(SETTLE);
+    let id = h.app.session.visible_cloned()[0].0;
+    assert!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.is_none());
+    // the Saved Locations section sits below Metadata: scroll the side panel to it
+    let side = widget(&h, "map:side").expect("the side panel");
+    h.request("ui.move", json!({"x": side.center().x, "y": side.center().y}), T);
+    for _ in 0..30 {
+        if widget(&h, "map:locationRow:Home").is_some_and(|r| side.contains(r.center())) {
+            break;
+        }
+        h.request("ui.scroll", json!({"dy": -300.0}), T);
+        h.settle(SETTLE);
+    }
+    let row = widget(&h, "map:locationRow:Home").expect("the location's row is on screen");
+    let r = h.request("ui.dragWidget", json!({"id": format!("film:{id}"), "toX": row.center().x, "toY": row.center().y, "steps": 12}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let gps = h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.expect("dropped on the row: geotagged");
+    assert!((gps.0 - 40.653957).abs() < 1e-6 && (gps.1 + 4.689763).abs() < 1e-6, "{gps:?}");
+    assert!(h.app.ui.dragging_photos.is_none(), "the drag ended");
+    run(&mut h, "edit.undo", json!({}));
+    assert!(h.app.session.catalog.photo(lcc_catalog::PhotoId(id)).unwrap().meta.gps.is_none(), "one undo step");
+}

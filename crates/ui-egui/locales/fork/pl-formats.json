@@ -155,6 +155,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Zdjęcia z {folder} trafiają do kolekcji „Camera Roll - nazwa tego urządzenia”.",
   "Picks to unflag: {n}": "Wybrane do odflagowania: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Umieść w: {name}",
   "Preset {name} on {n} photos": "Ustawienie {name} na zdjęciach: {n}",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Ustawienie: {name}. Pominięte maski AI, których ta wersja nie potrafi obliczyć: {masks}",
   "Print settings not saved: {e}": "Nie zapisano ustawień drukowania: {e}",

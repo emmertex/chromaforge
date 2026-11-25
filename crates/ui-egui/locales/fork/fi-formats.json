@@ -161,6 +161,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Kansion {folder} kuvat menevät kokoelmaan ”Camera Roll - tämän laitteen nimi”.",
   "Picks to unflag: {n}": "Liputuksen poistettavat valinnat: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Sijoita kohteeseen {name}",
   "Preset {name} on {n} photos": "Esiasetus {name} {n} kuvaan",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Esiasetus: {name}. Ohitetut tekoälymaskit, joita tämä versio ei osaa laskea: {masks}",
   "Print settings not saved: {e}": "Tulostusasetuksia ei tallennettu: {e}",

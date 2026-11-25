@@ -160,6 +160,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Foto di {folder} masuk ke koleksi “Camera Roll - nama perangkat ini”.",
   "Picks to unflag: {n}": "Pilihan yang tandanya dihapus: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Tempatkan di {name}",
   "Preset {name} on {n} photos": "Preset {name} pada {n} foto",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Preset: {name}. Mask AI yang dilewati karena build ini tidak dapat menghitungnya: {masks}",
   "Print settings not saved: {e}": "Pengaturan cetak tidak tersimpan: {e}",

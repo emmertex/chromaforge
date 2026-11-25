@@ -150,6 +150,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "{folder} 中的照片会放入收藏集“Camera Roll - 此设备名称”。",
   "Picks to unflag: {n}": "将取消标记的选用照片：{n}",
   "Pixel Shift: {reason}": "像素偏移：{reason}",
+  "Place at {name}": "放到 {name}",
   "Preset {name} on {n} photos": "预设 {name} 应用到 {n} 张照片",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "预设：{name}。已跳过此版本无法计算的 AI 蒙版：{masks}",
   "Print settings not saved: {e}": "打印设置未保存：{e}",

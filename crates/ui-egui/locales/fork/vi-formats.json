@@ -182,6 +182,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Ảnh trong {folder} được đưa vào bộ sưu tập “Camera Roll - tên thiết bị này”.",
   "Picks to unflag: {n}": "Ảnh chọn sẽ bỏ cờ: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Đặt tại {name}",
   "Preset {name} on {n} photos": "Preset {name} trên {n} ảnh",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Thiết lập sẵn: {name}. Đã bỏ qua mặt nạ AI mà bản dựng này không tính được: {masks}",
   "Print settings not saved: {e}": "Không lưu được cài đặt in: {e}",

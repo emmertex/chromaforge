@@ -155,6 +155,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Fotky ve složce {folder} jdou do sbírky „Camera Roll - název tohoto zařízení“.",
   "Picks to unflag: {n}": "Vybrané k odznačení: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Umístit do: {name}",
   "Preset {name} on {n} photos": "Předvolba {name} na fotkách: {n}",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Přednastavení: {name}. Přeskočené masky AI, které toto sestavení neumí vypočítat: {masks}",
   "Print settings not saved: {e}": "Nastavení tisku nebylo uloženo: {e}",

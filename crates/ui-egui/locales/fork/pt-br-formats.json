@@ -150,6 +150,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "As fotos em {folder} vão para a coleção “Camera Roll - nome deste dispositivo”.",
   "Picks to unflag: {n}": "Escolhidas a desmarcar: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Colocar em {name}",
   "Preset {name} on {n} photos": "Predefinição {name} em {n} fotos",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Predefinição: {name}. Máscaras de IA ignoradas que esta versão não consegue calcular: {masks}",
   "Print settings not saved: {e}": "Configurações de impressão não salvas: {e}",

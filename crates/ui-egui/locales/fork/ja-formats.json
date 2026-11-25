@@ -150,6 +150,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "{folder} の写真はコレクション「Camera Roll - このデバイスの名前」に入ります。",
   "Picks to unflag: {n}": "フラグを外す採用写真: {n}",
   "Pixel Shift: {reason}": "ピクセルシフト: {reason}",
+  "Place at {name}": "{name} に配置",
   "Preset {name} on {n} photos": "プリセット {name} を {n} 枚の写真に",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "プリセット: {name}。このビルドでは計算できない AI マスクをスキップしました: {masks}",
   "Print settings not saved: {e}": "プリント設定を保存できませんでした：{e}",

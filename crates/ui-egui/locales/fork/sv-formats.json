@@ -166,6 +166,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Bilder i {folder} hamnar i samlingen ”Camera Roll - den här enhetens namn”.",
   "Picks to unflag: {n}": "Val att avflagga: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Placera vid {name}",
   "Preset {name} on {n} photos": "Förinställning {name} på {n} foton",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Förinställning: {name}. Hoppade över AI-masker som den här versionen inte kan beräkna: {masks}",
   "Print settings not saved: {e}": "Utskriftsinställningarna sparades inte: {e}",

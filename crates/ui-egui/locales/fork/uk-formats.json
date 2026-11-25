@@ -146,6 +146,7 @@
   "Photos in {folder} go into the collection “Camera Roll - this device's name”.": "Фото з {folder} потрапляють до колекції «Camera Roll - назва цього пристрою».",
   "Picks to unflag: {n}": "Вибраних, з яких знімається позначка: {n}",
   "Pixel Shift: {reason}": "Pixel Shift: {reason}",
+  "Place at {name}": "Розмістити в {name}",
   "Preset {name} on {n} photos": "Пресет {name} на {n} фото",
   "Preset: {name}. Skipped AI masks this build can't compute: {masks}": "Набір налаштувань: {name}. Пропущено маски ШІ, які ця збірка не вміє обчислювати: {masks}",
   "Print settings not saved: {e}": "Параметри друку не збережено: {e}",

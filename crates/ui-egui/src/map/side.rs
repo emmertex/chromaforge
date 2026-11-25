@@ -366,7 +366,7 @@ fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
         for l in &list {
             let name = l["name"].as_str().unwrap_or("").to_string();
             let private = l["private"].as_bool().unwrap_or(false);
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 let mut p = private;
                 if ui.checkbox(&mut p, "").on_hover_text(tr("Private: photos here are exported without their location")).changed() {
                     let _ = app.run("map.saveLocation", json!({"name": name, "private": p}));
@@ -390,6 +390,8 @@ fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
                     let _ = app.run("map.deleteLocation", json!({"name": name}));
                 }
             });
+            crate::widgets::register(ui.ctx(), format!("map:locationRow:{name}"), row.response.rect);
+            location_drop(app, ui, row.response.rect, &name);
         }
         if list.is_empty() {
             ui.label(RichText::new(tr("Right-click the map and choose New Location Here…, or add one at the map's centre.")).weak().size(11.0));
@@ -402,6 +404,28 @@ fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
             super::open_new_location(app, c, None);
         }
     });
+}
+
+/// Photos dragged from the filmstrip or the grid and dropped on a saved location's row take its
+/// centre as their position (one undo step), as dropping them on the map does at that point.
+fn location_drop(app: &mut LccApp, ui: &mut egui::Ui, rect: egui::Rect, name: &str) {
+    let Some(ids) = app.ui.dragging_photos.clone() else { return };
+    let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+    if !pos.is_some_and(|p| rect.contains(p)) {
+        return;
+    }
+    let Some(centre) = app.session.catalog.saved_location(name).map(|l| l.centre()) else { return };
+    let t = crate::theme::Tokens::get(ui.ctx());
+    ui.painter().rect_stroke(rect.expand(2.0), 4.0, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    crate::panels::grid::drag_hint(ui.ctx(), crate::i18n::tr_format!("Place at {name}", name = name));
+    if released {
+        app.ui.dragging_photos = None;
+        let n = ids.len();
+        match app.run("map.geotag", json!({"ids": ids, "lat": centre.lat, "lon": centre.lon})) {
+            Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Geotagged {n} photo(s)", n = n)),
+            Err(e) => app.toast_error(ui.ctx(), e),
+        }
+    }
 }
 
 fn track_section(app: &mut LccApp, ui: &mut egui::Ui) {
