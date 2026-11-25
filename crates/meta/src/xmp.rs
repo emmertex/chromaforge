@@ -487,9 +487,9 @@ fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<Str
         return;
     }
     if p.attr("rdf:parseType") == Some("Resource") {
-        for c in &p.children {
-            collect_property(c, &struct_prefix, props, budget);
-        }
+        // the struct's fields may be attributes of the property as well as elements, as in an rdf:Description
+        // (adapted from craft-libs #967, from upstream #1226)
+        collect_description(p, &struct_prefix, props, budget);
         return;
     }
     if let Some(d) = p.children.iter().find(|c| c.name == "rdf:Description") {
@@ -1838,6 +1838,33 @@ mod tests {
         );
         assert_eq!(plugin_fields(&parse_xmp(&y).unwrap()), vec![("a".into(), "k".into(), "v".into())]);
         assert!(plugin_fields(&parse_xmp(&write_xmp_ext(&Metadata::default(), &[], &[])).unwrap()).is_empty());
+    }
+
+    /// craft-libs #967 (upstream #1226): a `rdf:parseType="Resource"` struct's attribute fields flatten like an
+    /// rdf:Description's, in all four equivalent forms.
+    #[test]
+    fn resource_struct_attributes_and_elements_flatten_like_description_fields() {
+        let forms = [
+            r#"<c:Parameters rdf:parseType="Resource" c:ConvertToGrayscale="True"><c:Version>1</c:Version></c:Parameters>"#,
+            r#"<c:Parameters><rdf:Description c:ConvertToGrayscale="True"><c:Version>1</c:Version></rdf:Description></c:Parameters>"#,
+            r#"<c:Parameters rdf:parseType="Resource"><c:ConvertToGrayscale>True</c:ConvertToGrayscale><c:Version>1</c:Version></c:Parameters>"#,
+            r#"<c:Parameters rdf:parseType="Resource" c:ConvertToGrayscale="True" c:Version="1"/>"#,
+        ];
+        let mut previous = None;
+        for form in forms {
+            let xml = format!(
+                r#"<rdf:Description xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:c="http://ns.adobe.com/camera-raw-settings/1.0/"><c:Look rdf:parseType="Resource">{form}</c:Look></rdf:Description>"#
+            );
+            let packet = parse_xmp(&xml).unwrap();
+            assert_eq!(packet.properties["crs:Look/crs:Parameters/crs:ConvertToGrayscale"], vec!["True"], "{form}");
+            assert_eq!(packet.properties["crs:Look/crs:Parameters/crs:Version"], vec!["1"], "{form}");
+            assert!(packet.properties.keys().all(|key| !key.contains("rdf:")), "{form}");
+            if let Some((properties, values)) = previous {
+                assert_eq!(packet.properties, properties);
+                assert_eq!(packet.values, values);
+            }
+            previous = Some((packet.properties, packet.values));
+        }
     }
 
     #[test]
