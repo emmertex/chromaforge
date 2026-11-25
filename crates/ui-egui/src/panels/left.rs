@@ -2502,7 +2502,9 @@ pub(crate) fn folder_menu_groups(row: FolderRow) -> &'static [&'static [FolderIt
             &[Reveal, CopyPath],
             &[RemoveDisk],
         ],
-        FolderRow::Local { .. } => &[&[AddToMyPhotos, Synchronize, ScanFaces], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]],
+        FolderRow::Local { .. } => {
+            &[&[AddToMyPhotos, Synchronize, ScanFaces], &[NewFolder, Rename, Move], &[Reveal, CopyPath], &[KeepInLocal, RemoveFromLocal]]
+        }
     }
 }
 

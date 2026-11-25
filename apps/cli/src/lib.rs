@@ -1514,7 +1514,10 @@ mod tests {
         }
         let status = backend.call("engine.execute", json!({"command": "faces.scanStatus", "params": {}})).unwrap();
         assert_eq!(status["state"], "idle");
-        assert!(backend.call("engine.execute", json!({"command": "faces.reset", "params": {}})).is_err(), "the CLI dispatch enforces reset confirmation");
+        assert!(
+            backend.call("engine.execute", json!({"command": "faces.reset", "params": {}})).is_err(),
+            "the CLI dispatch enforces reset confirmation"
+        );
     }
 
     #[test]

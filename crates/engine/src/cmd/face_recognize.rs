@@ -935,9 +935,7 @@ mod imp {
             }
             meta.regions.push(Region { rect: *rect, kind: RegionKind::Face, name: None, description: Some(format!("{MARK}{LABEL}")) });
         }
-        if meta.regions != old_regions
-            && s.apply_system(Op::SetMeta { id, meta: Box::new(meta) }).is_ok()
-        {
+        if meta.regions != old_regions && s.apply_system(Op::SetMeta { id, meta: Box::new(meta) }).is_ok() {
             s.skip_auto_write = true;
         }
     }
@@ -1025,12 +1023,7 @@ mod imp {
                     run.queue.clear();
                 }
                 if needs_follow_up {
-                    run.queue.push_back(crate::faces_index::FaceScanItem {
-                        photo: id,
-                        search: false,
-                        redetect: false,
-                        replace_detections: false,
-                    });
+                    run.queue.push_back(crate::faces_index::FaceScanItem { photo: id, search: false, redetect: false, replace_detections: false });
                     continue;
                 }
                 run.done = run.done.saturating_add(1).min(run.total);
@@ -1131,10 +1124,7 @@ mod imp {
         if !seen_albums.insert(id) {
             return Ok(());
         }
-        let album = s
-            .catalog
-            .album(id)
-            .ok_or_else(|| bad(C, format!("album {} no longer exists", id.0)))?;
+        let album = s.catalog.album(id).ok_or_else(|| bad(C, format!("album {} no longer exists", id.0)))?;
         if album.folder {
             // A selected collection set always means its complete nested collection tree. The
             // `includeSubfolders` option applies only to filesystem folder selectors.
@@ -1258,9 +1248,7 @@ mod imp {
         match mode {
             FaceScanMode::Detect => needs_embedding || needs_search(s, photo),
             FaceScanMode::Recognize => needs_embedding,
-            FaceScanMode::New => {
-                !s.faces.scanned.contains(id.0) && (needs_embedding || needs_search(s, photo))
-            }
+            FaceScanMode::New => !s.faces.scanned.contains(id.0) && (needs_embedding || needs_search(s, photo)),
             FaceScanMode::Rebuild => has_face,
             FaceScanMode::RebuildNamed => has_named_face,
             FaceScanMode::Rescan => true,
@@ -1324,9 +1312,12 @@ mod imp {
             } else if mode == FaceScanMode::RebuildNamed
                 && let Some(photo) = s.catalog.photo(*id)
             {
-                for region in photo.meta.regions.iter().filter(|region| {
-                    region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty())
-                }) {
+                for region in photo
+                    .meta
+                    .regions
+                    .iter()
+                    .filter(|region| region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty()))
+                {
                     s.faces.index.forget_region(id.0, &region.rect);
                 }
             }
@@ -1451,7 +1442,8 @@ mod imp {
                 }
                 continue;
             }
-            let (min_score, named_only) = s.faces.maintenance.as_ref().map_or((crate::faces_worker::REGION_SCORE, false), |run| (run.min_score, run.named_only));
+            let (min_score, named_only) =
+                s.faces.maintenance.as_ref().map_or((crate::faces_worker::REGION_SCORE, false), |run| (run.min_score, run.named_only));
             let needs_work = scan_item_needs_work(s, item, named_only);
             let Some(job) = prepare(s, item.photo, item.search, item.redetect, item.replace_detections, min_score, named_only) else {
                 if let Some(run) = s.faces.maintenance.as_mut() {
@@ -2518,13 +2510,25 @@ mod imp {
                 let scan = pending(&s, &[], true);
                 assert_eq!(scan.first(), Some(&b), "named faces first");
                 assert!(scan.contains(&a) && scan.len() > 2, "the unsearched photos follow");
-                assert!(prepare(&mut s, a, false, false, false, crate::faces_worker::REGION_SCORE, false).is_none(), "nothing to embed in a photo without boxes");
+                assert!(
+                    prepare(&mut s, a, false, false, false, crate::faces_worker::REGION_SCORE, false).is_none(),
+                    "nothing to embed in a photo without boxes"
+                );
                 if detector {
-                    assert!(prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false).is_some_and(|p| p.detect && p.todo.is_empty()));
+                    assert!(
+                        prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false)
+                            .is_some_and(|p| p.detect && p.todo.is_empty())
+                    );
                 } else {
-                    assert!(prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false).is_none(), "no detector: nothing to do, and not marked as searched");
+                    assert!(
+                        prepare(&mut s, a, true, false, false, crate::faces_worker::REGION_SCORE, false).is_none(),
+                        "no detector: nothing to do, and not marked as searched"
+                    );
                 }
-                assert!(prepare(&mut s, b, true, false, false, crate::faces_worker::REGION_SCORE, false).is_some_and(|p| !p.detect && p.todo.len() == 2), "a photo with boxes is not searched");
+                assert!(
+                    prepare(&mut s, b, true, false, false, crate::faces_worker::REGION_SCORE, false).is_some_and(|p| !p.detect && p.todo.len() == 2),
+                    "a photo with boxes is not searched"
+                );
                 // once searched, a photo is not searched again
                 s.faces.scanned.insert(a.0);
                 assert!(!pending(&s, &[], true).contains(&a));
@@ -2667,7 +2671,8 @@ mod imp {
             assert_eq!(all, vec![direct, nested], "subfolders are included by default; a similarly named sibling is not");
             let (only_direct, _) = maintenance_scope(&mut s, &json!({"folder": "/photos/Trip", "includeSubfolders": false})).unwrap();
             assert_eq!(only_direct, vec![direct], "only files directly in the chosen folder are included");
-            let (many, _) = maintenance_scope(&mut s, &json!({"folders": ["/photos/Trip", "/photos/Elsewhere"], "includeSubfolders": false})).unwrap();
+            let (many, _) =
+                maintenance_scope(&mut s, &json!({"folders": ["/photos/Trip", "/photos/Elsewhere"], "includeSubfolders": false})).unwrap();
             assert_eq!(many, vec![direct, outside], "multiple folder roots are unioned and deduplicated");
             assert!(!many.contains(&sibling));
         }
@@ -2684,26 +2689,12 @@ mod imp {
             add_to_album(&mut s, day_picks, &[nested]);
             add_to_album(&mut s, extra, &[sibling, outside]);
 
-            let (with_subfolders, _) =
-                maintenance_scope(&mut s, &json!({"albums": [trip]})).unwrap();
-            assert_eq!(
-                with_subfolders,
-                vec![direct, nested],
-                "a collection set includes all nested collections"
-            );
-            let (folder_toggle_off, _) =
-                maintenance_scope(&mut s, &json!({"albums": [trip], "includeSubfolders": false})).unwrap();
-            assert_eq!(
-                folder_toggle_off,
-                vec![direct, nested],
-                "the filesystem-folder toggle does not trim a collection set"
-            );
+            let (with_subfolders, _) = maintenance_scope(&mut s, &json!({"albums": [trip]})).unwrap();
+            assert_eq!(with_subfolders, vec![direct, nested], "a collection set includes all nested collections");
+            let (folder_toggle_off, _) = maintenance_scope(&mut s, &json!({"albums": [trip], "includeSubfolders": false})).unwrap();
+            assert_eq!(folder_toggle_off, vec![direct, nested], "the filesystem-folder toggle does not trim a collection set");
             let (multiple, _) = maintenance_scope(&mut s, &json!({"albums": [picks, extra]})).unwrap();
-            assert_eq!(
-                multiple,
-                vec![direct, sibling, outside],
-                "several collections are unioned and returned in photo order"
-            );
+            assert_eq!(multiple, vec![direct, sibling, outside], "several collections are unioned and returned in photo order");
         }
 
         #[test]
@@ -2742,7 +2733,11 @@ mod imp {
                 });
                 store.people.push(crate::people_store::PersonData {
                     name: "Ann".into(),
-                    examples: vec![crate::people_store::Example { photo: photo.0, rect: [face.rect.x0, face.rect.y0, face.rect.x1, face.rect.y1], signature: json!([1.0, 0.0]) }],
+                    examples: vec![crate::people_store::Example {
+                        photo: photo.0,
+                        rect: [face.rect.x0, face.rect.y0, face.rect.x1, face.rect.y1],
+                        signature: json!([1.0, 0.0]),
+                    }],
                 });
                 store.decisions.push(crate::people_store::SuggestionDecision {
                     photo: photo.0,
@@ -2763,11 +2758,7 @@ mod imp {
             let result = s.execute("faces.reset", &json!({"confirmed": true})).unwrap();
             assert_eq!(result["faceRegions"], 2, "Face and IgnoredFace regions are removed");
             assert_eq!(result["paused"], true, "the continuous scan stays paused after reset");
-            assert_eq!(
-                s.execute("faces.status", &json!({})).unwrap()["paused"],
-                true,
-                "the saved scan status is paused too"
-            );
+            assert_eq!(s.execute("faces.status", &json!({})).unwrap()["paused"], true, "the saved scan status is paused too");
             assert_eq!(s.catalog.photo(photo).unwrap().meta.regions, vec![pet, focus, other]);
             assert_eq!(s.faces.index.len(), 0);
             assert_eq!(s.faces.scanned.len(), 0);
@@ -2798,12 +2789,23 @@ mod imp {
             assert_eq!(regions.len(), 5);
             assert!(regions.iter().any(|r| r.rect == fresh && r.name.is_none()), "the new detection is kept");
             assert!(regions.iter().any(|r| r.rect == named.rect && r.name.as_deref() == Some("Ann")), "named faces are kept");
-            assert!(regions.iter().any(|r| r.rect == named.rect && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))), "a named face with an automatic-detection marker is kept");
+            assert!(
+                regions.iter().any(|r| r.rect == named.rect && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "a named face with an automatic-detection marker is kept"
+            );
             assert!(regions.iter().any(|r| r.rect == manual.rect && r.description.is_none()), "manual regions are kept");
             assert!(regions.iter().any(|r| r.kind == RegionKind::IgnoredFace), "ignored faces are kept");
             assert!(regions.iter().any(|r| r.kind == RegionKind::Pet), "other region kinds are kept");
-            assert!(regions.iter().any(|r| r.kind == RegionKind::Pet && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))), "non-face regions are not treated as automatic detections");
-            assert!(!regions.iter().any(|r| r.kind == RegionKind::Face && r.name.as_deref().is_none_or(|name| name.trim().is_empty()) && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))), "old unnamed automatic detections are replaced");
+            assert!(
+                regions.iter().any(|r| r.kind == RegionKind::Pet && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "non-face regions are not treated as automatic detections"
+            );
+            assert!(
+                !regions.iter().any(|r| r.kind == RegionKind::Face
+                    && r.name.as_deref().is_none_or(|name| name.trim().is_empty())
+                    && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "old unnamed automatic detections are replaced"
+            );
             let _ = std::fs::remove_dir_all(&d);
         }
     }
@@ -2825,7 +2827,9 @@ mod imp {
     }
 
     pub fn maintenance_status(_: &mut Session, _: &Value) -> Result<Value> {
-        Ok(serde_json::json!({"state": "idle", "mode": null, "scope": null, "done": 0, "total": 0, "pendingPhotos": 0, "failed": 0, "cancelled": false, "taskId": null}))
+        Ok(
+            serde_json::json!({"state": "idle", "mode": null, "scope": null, "done": 0, "total": 0, "pendingPhotos": 0, "failed": 0, "cancelled": false, "taskId": null}),
+        )
     }
 
     pub fn reset(_: &mut Session, _: &Value) -> Result<Value> {

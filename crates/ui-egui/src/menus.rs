@@ -2703,7 +2703,9 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
         }
         "dialog.faceMaintenance" => {
             let mut dialog = Dialog::face_maintenance(&app.session);
-            if let Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, .. } = &mut dialog {
+            if let Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, .. } =
+                &mut dialog
+            {
                 if let Some(value) = p.get("mode").and_then(Value::as_str) {
                     *mode = match value.trim().to_ascii_lowercase().as_str() {
                         "recognize" | "recognition" => "recognize",

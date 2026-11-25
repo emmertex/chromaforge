@@ -504,7 +504,9 @@ fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             .label(format!("{done} / {total}"))
             .widget("faces:maintenanceProgress")
             .show(ui);
-        if state == "scanning" && let Some(id) = maintenance.field("taskId").as_u64() {
+        if state == "scanning"
+            && let Some(id) = maintenance.field("taskId").as_u64()
+        {
             let r = ui.button(crate::i18n::tr("Cancel"));
             register(ui.ctx(), "button:facesMaintenanceCancel", r.rect);
             if r.clicked()
@@ -516,9 +518,7 @@ fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     } else {
         let failed = maintenance.field("failed").as_u64().unwrap_or(0);
         if failed > 0 {
-            ui.label(
-                RichText::new(format!("{}: {failed}", crate::i18n::tr("Failed photos"))).color(t.caution),
-            );
+            ui.label(RichText::new(format!("{}: {failed}", crate::i18n::tr("Failed photos"))).color(t.caution));
         }
     }
 }

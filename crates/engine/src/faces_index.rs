@@ -15,11 +15,11 @@
 //! then records of `photo u64`, four `i32` (the region's box in ten-thousandths), four `i32` (the view box likewise), and
 //! `dim` `f32`.
 
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use serde_json::{Value, json};
 
 use lcc_geom::Rect;
 

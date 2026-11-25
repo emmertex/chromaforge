@@ -3269,20 +3269,10 @@ fn ignoring_a_persons_odd_faces_is_off_until_ticked() {
 #[test]
 fn folder_face_scan_menu_payload_prefills_the_maintenance_dialog() {
     let mut app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
-    let result = crate::menus::run_ui_command(
-        &mut app,
-        "dialog.faceMaintenance",
-        &json!({"mode": "detect", "scope": "folder", "folder": "/pics/trip"}),
-    );
+    let result =
+        crate::menus::run_ui_command(&mut app, "dialog.faceMaintenance", &json!({"mode": "detect", "scope": "folder", "folder": "/pics/trip"}));
     assert!(matches!(result, Some(Ok(_))));
-    let Some(crate::state::Dialog::FaceMaintenance {
-        mode,
-        scope,
-        folders,
-        include_subfolders,
-        ..
-    }) = &app.ui.dialog
-    else {
+    let Some(crate::state::Dialog::FaceMaintenance { mode, scope, folders, include_subfolders, .. }) = &app.ui.dialog else {
         panic!("folder menu did not open face maintenance: {:?}", app.ui.dialog);
     };
     assert_eq!(mode, "detect");
