@@ -946,7 +946,7 @@ fn services(_: &mut Session, _: &Value) -> Result<Value> {
         Ok(Value::Array(
             m.publish_services()
                 .into_iter()
-                .map(|(plugin, s)| json!({"kind": format!("{KIND_PREFIX}{plugin}"), "plugin": plugin, "id": s.id, "name": s.name}))
+                .map(|(plugin, s)| json!({"kind": format!("{KIND_PREFIX}{plugin}"), "plugin": plugin, "id": s.id, "name": s.name, "comments": s.comments}))
                 .collect(),
         ))
     })
@@ -960,17 +960,52 @@ pub fn is_plugin_kind(kind: &str) -> bool {
     kind.strip_prefix(KIND_PREFIX).is_some_and(|id| manager().as_ref().is_some_and(|m| m.publish_services().iter().any(|(p, _)| p == id)))
 }
 
-/// Opens a `plugin:<id>` service; `None` for other kinds (the built-in ones).
+/// A photo's title, caption and keywords, sent with its upload.
+#[derive(Clone, Debug, Default)]
+pub struct PhotoMeta {
+    pub title: String,
+    pub caption: String,
+    pub keywords: Vec<String>,
+}
+
+/// The [`lcc_plugins::publish::PublishTarget`] of a service's collection: the user's service and
+/// the collection, named `name` (the album's name, or its folder when the album is gone).
+pub fn publish_target(svc: &lcc_publish::ServiceConfig, coll: &lcc_publish::CollectionConfig, name: &str) -> lcc_plugins::publish::PublishTarget {
+    lcc_plugins::publish::PublishTarget {
+        account: json!({"id": svc.id, "name": svc.name, "settings": svc.settings}),
+        collection: json!({"album": coll.album.0, "name": name, "folder": coll.folder}),
+    }
+}
+
+/// Opens a `plugin:<id>` service; `None` for other kinds (the built-in ones). Without a session
+/// the collection is named by its folder and uploads carry no title, caption or keywords; a
+/// publish run opens it with them ([`open_plugin_service_with`]).
 pub fn open_plugin_service(
     svc: &lcc_publish::ServiceConfig,
+    coll: &lcc_publish::CollectionConfig,
+) -> Option<std::result::Result<Box<dyn lcc_publish::PublishService>, lcc_publish::PublishError>> {
+    open_plugin_service_with(svc, publish_target(svc, coll, &coll.folder), std::collections::HashMap::new())
+}
+
+/// [`open_plugin_service`] with the collection's target and the photos' metadata.
+pub fn open_plugin_service_with(
+    svc: &lcc_publish::ServiceConfig,
+    target: lcc_plugins::publish::PublishTarget,
+    meta: std::collections::HashMap<lcc_catalog::PhotoId, PhotoMeta>,
 ) -> Option<std::result::Result<Box<dyn lcc_publish::PublishService>, lcc_publish::PublishError>> {
     let id = svc.kind.strip_prefix(KIND_PREFIX)?;
     if !is_plugin_kind(&svc.kind) {
         return Some(Err(lcc_publish::PublishError::Config(format!("plug-in {id} is not installed, enabled, or a publish service"))));
     }
+    let comments = plugin_service_comments(id);
     let dir =
         std::env::temp_dir().join(format!("plugin-publish-{}-{}", std::process::id(), svc.id.replace(|c: char| !c.is_ascii_alphanumeric(), "_")));
-    Some(Ok(Box::new(PluginService { plugin: id.to_string(), dir })))
+    Some(Ok(Box::new(PluginService { plugin: id.to_string(), dir, target, meta, comments })))
+}
+
+/// Whether plug-in `plugin`'s publish service declares remote comments.
+pub fn plugin_service_comments(plugin: &str) -> bool {
+    manager().as_ref().is_some_and(|m| m.publish_services().iter().any(|(p, s)| p == plugin && s.comments))
 }
 
 /// A plug-in's publish service as a [`lcc_publish::PublishService`]: each rendered photo is
@@ -978,10 +1013,27 @@ pub fn open_plugin_service(
 pub struct PluginService {
     plugin: String,
     dir: PathBuf,
+    target: lcc_plugins::publish::PublishTarget,
+    meta: std::collections::HashMap<lcc_catalog::PhotoId, PhotoMeta>,
+    comments: bool,
 }
 
 fn pub_err(e: lcc_plugins::Error) -> lcc_publish::PublishError {
     lcc_publish::PublishError::Service(e.to_string())
+}
+
+impl PluginService {
+    fn with_publisher<T>(
+        &self,
+        f: impl FnOnce(&mut lcc_plugins::publish::PluginPublisher<'_>) -> lcc_plugins::Result<T>,
+    ) -> std::result::Result<T, lcc_publish::PublishError> {
+        let mut g = manager();
+        let m = g.get_or_insert_with(Manager::in_memory);
+        lcc_plugins::publish::PluginPublisher::new(m, &self.plugin)
+            .map(|p| p.with_target(self.target.clone()))
+            .and_then(|mut p| f(&mut p))
+            .map_err(pub_err)
+    }
 }
 
 impl lcc_publish::PublishService for PluginService {
@@ -989,8 +1041,12 @@ impl lcc_publish::PublishService for PluginService {
         "plugin"
     }
 
+    fn capabilities(&self) -> lcc_publish::Capabilities {
+        lcc_publish::Capabilities { comments: self.comments, likes: false }
+    }
+
     fn publish(&mut self, up: &lcc_publish::Upload<'_>) -> std::result::Result<lcc_publish::Published, lcc_publish::PublishError> {
-        use lcc_plugins::publish::{PluginPublisher, PublishItem, PublishProvider};
+        use lcc_plugins::publish::{PublishItem, PublishProvider};
         let io = |e: std::io::Error| lcc_publish::PublishError::Io(e.to_string());
         std::fs::create_dir_all(&self.dir).map_err(io)?;
         // only the file name, never a path the export settings could smuggle in
@@ -998,26 +1054,32 @@ impl lcc_publish::PublishService for PluginService {
         let name = if name.is_empty() || name == "." || name == ".." { "photo".to_string() } else { name };
         let path = self.dir.join(name);
         std::fs::write(&path, up.bytes).map_err(io)?;
+        let meta = self.meta.get(&up.photo).cloned().unwrap_or_default();
         let item = PublishItem {
             path: path.display().to_string(),
             photo: up.photo.0.to_string(),
+            title: meta.title,
+            caption: meta.caption,
+            keywords: meta.keywords,
             remote_id: up.previous.map(str::to_string),
-            ..Default::default()
         };
-        let r = {
-            let mut g = manager();
-            let m = g.get_or_insert_with(Manager::in_memory);
-            PluginPublisher::new(m, &self.plugin).and_then(|mut p| p.upload(&mut lcc_plugins::NoHost, &item))
-        };
+        let r = self.with_publisher(|p| p.upload(&mut lcc_plugins::NoHost, &item));
         let _ = std::fs::remove_file(&path);
-        r.map(|r| lcc_publish::Published { remote_id: r.remote_id }).map_err(pub_err)
+        r.map(|r| lcc_publish::Published { remote_id: r.remote_id })
     }
 
     fn remove(&mut self, remote_id: &str) -> std::result::Result<(), lcc_publish::PublishError> {
-        use lcc_plugins::publish::{PluginPublisher, PublishProvider};
-        let mut g = manager();
-        let m = g.get_or_insert_with(Manager::in_memory);
-        PluginPublisher::new(m, &self.plugin).and_then(|mut p| p.delete(&mut lcc_plugins::NoHost, remote_id)).map_err(pub_err)
+        use lcc_plugins::publish::PublishProvider;
+        self.with_publisher(|p| p.delete(&mut lcc_plugins::NoHost, remote_id))
+    }
+
+    fn comments(&mut self, remote_id: &str) -> std::result::Result<Vec<lcc_publish::Comment>, lcc_publish::PublishError> {
+        use lcc_plugins::publish::PublishProvider;
+        if !self.comments {
+            return Ok(Vec::new());
+        }
+        let list = self.with_publisher(|p| p.comments(&mut lcc_plugins::NoHost, remote_id))?;
+        Ok(list.into_iter().map(|c| lcc_publish::Comment { author: c.author, text: c.text, date: c.date }).collect())
     }
 }
 
@@ -1605,7 +1667,8 @@ pub(crate) mod tests {
         assert!(is_plugin_kind("plugin:test.pub"));
         assert!(!is_plugin_kind("plugin:nope") && !is_plugin_kind("hardDrive"));
         let svc: lcc_publish::ServiceConfig = serde_json::from_value(json!({"id": "svc-9", "kind": "plugin:test.pub", "name": "P"})).unwrap();
-        let mut service = open_plugin_service(&svc).unwrap().unwrap();
+        let coll = lcc_publish::CollectionConfig { album: lcc_catalog::AlbumId(1), folder: "Web".into() };
+        let mut service = open_plugin_service(&svc, &coll).unwrap().unwrap();
         let up = lcc_publish::Upload { photo: lcc_catalog::PhotoId(7), file_name: "../evil/a.jpg", bytes: b"jpeg", sidecars: &[], previous: None };
         assert_eq!(service.publish(&up).unwrap().remote_id, "r1");
         service.remove("r1").unwrap();
