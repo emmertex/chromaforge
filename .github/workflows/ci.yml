@@ -202,7 +202,26 @@ jobs:
       - name: clippy (changed packages)
         if: github.event_name == 'pull_request' && env.FULL_CI != '1'
         shell: bash
-        run: cargo xtask affected-clippy --base HEAD^1
+        run: |
+          set +e
+          CARGO_TERM_COLOR=never cargo xtask affected-clippy --base HEAD^1 2>&1 | tee "$RUNNER_TEMP/affected-clippy.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            count=0
+            while IFS= read -r line; do
+              case "$line" in
+                error*|warning:*|warning\[*|*" --> "*|*" = help: "*|*" = note: "*|*"Caused by:"*)
+                  line=${line//'%'/'%25'}
+                  line=${line//$'\r'/'%0D'}
+                  printf '::error::Clippy diagnostic: %s\n' "$line"
+                  count=$((count + 1))
+                  [ "$count" -ge 40 ] && break
+                  ;;
+              esac
+            done < "$RUNNER_TEMP/affected-clippy.log"
+          fi
+          exit "$status"
       - name: clippy
         if: github.event_name != 'pull_request' || env.FULL_CI == '1'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

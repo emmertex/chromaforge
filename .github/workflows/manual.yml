@@ -66,7 +66,27 @@ jobs:
       - name: System packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends imagemagick
       - name: Build the CLI
-        run: cargo build -p lcc-cli
+        shell: bash
+        run: |
+          set +e
+          CARGO_TERM_COLOR=never cargo build -p lcc-cli 2>&1 | tee "$RUNNER_TEMP/cli-build.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            count=0
+            while IFS= read -r line; do
+              case "$line" in
+                error*|warning:*|warning\[*|*" --> "*|*" = help: "*|*" = note: "*|*"Caused by:"*)
+                  line=${line//'%'/'%25'}
+                  line=${line//$'\r'/'%0D'}
+                  printf '::error::CLI build diagnostic: %s\n' "$line"
+                  count=$((count + 1))
+                  [ "$count" -ge 40 ] && break
+                  ;;
+              esac
+            done < "$RUNNER_TEMP/cli-build.log"
+          fi
+          exit "$status"
       - name: Run every shot script
         run: node docs/manual-site/scripts/shots.mjs --cli target/debug/app-cli
 
