@@ -25,6 +25,7 @@ mod convert;
 pub mod display;
 pub mod encode;
 pub mod exif;
+mod exr_encode;
 pub mod gainmap;
 mod heif;
 pub mod icc;
@@ -51,6 +52,7 @@ pub use encode::{
     encode_avif, encode_avif_hdr, encode_avif_pq, encode_jpeg, encode_png, encode_png_pq, encode_psd, encode_tiff, encode_tiff_associated,
     encode_webp_lossless, hlg_signal,
 };
+pub use exr_encode::{ACESCG, ExrOptions, encode_exr};
 pub use jxl_encode::{JxlColour, JxlEffort, JxlOptions, encode_jxl, encode_jxl_gain_map};
 pub use sniff::{Format, sniff};
 pub use space::{NamedSpace, SourceSpace, SpaceOrigin, Trc};

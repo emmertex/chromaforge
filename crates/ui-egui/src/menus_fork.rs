@@ -59,6 +59,7 @@ const EDIT_SECTIONS: &[UiCommand] = &[
     ("section.grading", "Color Grading", Some("Cmd+4"), "Window>Edit Sections"),
     ("section.primaries", "Primaries", None, "Window>Edit Sections"),
     ("section.hsl", "HSL Curves", None, "Window>Edit Sections"),
+    ("section.lensBlur", "Lens Blur", None, "Window>Edit Sections"),
     ("section.geometry", "Transform", Some("Cmd+7"), "Window>Edit Sections"),
     ("section.pluginFilters", "Plug-in Filters", None, "Window>Edit Sections"),
 ];
@@ -159,6 +160,7 @@ pub(super) fn run(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Value,
         // the fork's Edit sections, opened and closed as upstream's are (⌥-click: just this one)
         "section.levels"
         | "section.toneEq"
+        | "section.lensBlur"
         | "section.curve"
         | "section.mixer"
         | "section.grading"
