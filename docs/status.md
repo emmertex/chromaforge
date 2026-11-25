@@ -1,6 +1,6 @@
 # Status
 
-> **Last updated:** 2026-11-25 · **Change:** minor (Lens Blur ported from upstream #2661: LR-EDIT-LENSBLUR 🟡, checklist 91.1% of 632 rows, P2 82.6%; Metrics: Lens Blur stage cost); patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
+> **Last updated:** 2026-11-25 · **Change:** minor (Lens Blur ported from upstream #2661: LR-EDIT-LENSBLUR 🟡, checklist 91.2% of 632 rows, P2 82.6%, LRC-LIB-CATALOG-PANEL ✅; Metrics: Lens Blur stage cost); patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
 
 The one tracked place for where Chromaforge stands right now. Agents read it first (see `AGENTS.md`, *Session start*)
 and update it in the commit that changes what it says. The detailed phased plan lives in the gitignored
@@ -17,7 +17,7 @@ and update it in the commit that changes what it says. The detailed phased plan 
 | 2 | Never-crash hardening: fuzz targets, checked indexing, allocation caps, SIL round trips | landed (#1328, #1331, #1334, #1337, #1339, #1340); model-reference job in progress |
 | 3 | Camera colour, CR3 variants, lens data, per-model verification | next |
 
-Checklist breadth: **91.1%** of 632 in-scope rows (P0 98.0%, P1 94.8%, P2 82.6%), from `cargo xtask parity` (recounted 2026-11-25 after Lens Blur, LR-EDIT-LENSBLUR 🟡).
+Checklist breadth: **91.2%** of 632 in-scope rows (P0 98.0%, P1 95.0%, P2 82.6%), from `cargo xtask parity` (recounted 2026-11-25 after Lens Blur, LR-EDIT-LENSBLUR 🟡, and LRC-LIB-CATALOG-PANEL ✅).
 "Ready for real work" stays an estimate of about 60% (see [target-app-parity.md](target-app-parity.md)).
 
 ## Next task
