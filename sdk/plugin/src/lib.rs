@@ -203,6 +203,19 @@ impl Request {
             })
             .unwrap_or_default()
     }
+    /// The file an import is preparing (`hook == "beforeImport"`).
+    pub fn path(&self) -> &str {
+        self.0.get("path").and_then(Value::as_str).unwrap_or("")
+    }
+    /// Its size in bytes, as the file system reports it (`hook == "beforeImport"`).
+    pub fn size(&self) -> u64 {
+        self.0.get("size").and_then(Value::as_u64).unwrap_or(0)
+    }
+    /// The photos an import added, as `photo.inspect` JSON (`hook == "afterImport"`), like the
+    /// metadata hook's `photos`.
+    pub fn imported(&self) -> Vec<&Value> {
+        self.0.get("photos").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default()
+    }
 }
 
 /// A photo's pixels from [`host::photo_pixels`]: `width × height`, 8-bit sRGB, interleaved RGB
@@ -409,6 +422,13 @@ pub mod host {
     /// reloaded}`
     pub fn library_add(path: &str, from: &str, stack: bool, album: Option<&str>) -> Result<Value, String> {
         call("library.add", json!({"path": path, "from": from, "stack": stack, "album": album}))
+    }
+
+    /// Moves photos to Recently Deleted (`libraryRemove` permission): `{removed, skipped}`. The
+    /// files on disk are never touched; photos already there are skipped. The user empties
+    /// Recently Deleted as they would any delete.
+    pub fn library_remove(ids: &[&str]) -> Result<Value, String> {
+        call("library.remove", json!({ "ids": ids }))
     }
 
     /// A downsized copy of photo `photo` (`pixels` permission): the whole frame as the crop tool

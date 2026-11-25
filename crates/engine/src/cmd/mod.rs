@@ -92,6 +92,30 @@ pub mod plugins {
     pub fn restore_fields(_s: &mut crate::Session, _items: &[(lcc_catalog::PhotoId, Vec<(String, String, String)>)]) -> usize {
         0
     }
+    /// The web build has no plug-ins, so no import hook: every file imports as is.
+    pub struct BeforeImportHook;
+    impl BeforeImportHook {
+        pub fn filter(&self, files: Vec<String>, _cancel: &std::sync::atomic::AtomicBool, _skipped: &mut usize) -> Vec<String> {
+            files
+        }
+    }
+    pub fn before_import_hook(_s: &crate::Session, _source: serde_json::Value, _attended: bool) -> Option<std::sync::Arc<BeforeImportHook>> {
+        None
+    }
+    pub fn before_import_files(
+        _s: &mut crate::Session,
+        files: Vec<String>,
+        _cancel: &std::sync::atomic::AtomicBool,
+        _skipped: &mut usize,
+    ) -> Vec<String> {
+        files
+    }
+    pub fn after_import(_s: &mut crate::Session, _ids: &[u64]) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+    pub fn import_source(_s: &crate::Session) -> serde_json::Value {
+        serde_json::json!({"kind": "allPhotos"})
+    }
 }
 mod prefs;
 mod preset_files;

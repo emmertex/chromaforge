@@ -7,7 +7,7 @@
 //! A plug-in reaches the catalog only through [`SessionHost`]: read-only queries, and
 //! `photo.setMeta` for standard fields, each behind its permission (checked by `lcc-plugins`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lcc_plugins::{Begun, HostApi, Manager, Permissions};
@@ -21,6 +21,12 @@ use super::{CommandSpec, always, bad, bool_or, cmd, str_param};
 use crate::{Result, Session};
 
 static MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+
+/// Under test, held while a test installs plug-ins or imports with them active, so a hook one
+/// test installs never answers another test's `library.import` (the manager is process-wide, as
+/// in the app, where plug-ins are shared by every open library).
+#[cfg(test)]
+pub(crate) static TEST_PLUGINS: Mutex<()> = Mutex::new(());
 
 /// Where plug-ins are installed: `<PREFIX>_PLUGINS`, else `<settings>/plugins`.
 pub fn plugins_dir() -> Option<PathBuf> {
@@ -156,6 +162,10 @@ impl HostApi for SessionHost<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         super::plugin_library::add(self.0, params)
+    }
+
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        super::plugin_library::remove(self.0, params)
     }
 
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
@@ -927,7 +937,7 @@ fn suggest(s: &mut Session, p: &Value) -> Result<Value> {
         photos.push(v);
     }
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     with_library(&lib, |m| Ok(Value::Array(m.suggest_metadata(&photos, &mut host))))
 }
 
@@ -935,7 +945,7 @@ fn post_export(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.postExport";
     let files = p.get("files").and_then(Value::as_array).ok_or_else(|| bad(C, "missing `files: [{path, photo?}]`"))?;
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     let r = with_library(&lib, |m| Ok(Value::Array(m.post_export(files, &mut host))));
     sync_fields(s);
     r
@@ -1034,7 +1044,7 @@ impl Drop for PluginService {
 /// the same calls on a worker ([`export_hooks`], [`ExportHooks::run`]).
 pub fn after_export(s: &mut Session, files: &[Value], destination: Option<&Value>) -> Option<Vec<Value>> {
     let hooks = export_hooks(&s.plugin_library, files, destination)?;
-    let r = hooks.run(&mut HookSession(SessionHost(s)), &|| false, &mut |_, _| {});
+    let r = hooks.run(&mut HookSession::plain(SessionHost(s)), &|| false, &mut |_, _| {});
     // hooks may have written their own fields (a "delivered" mark)
     sync_fields(s);
     Some(r)
@@ -1107,6 +1117,227 @@ impl ExportHooks {
     }
 }
 
+/// What a plug-in's `beforeImport` hook decided for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BeforeImportDecision {
+    /// Import the file as it is.
+    AsIs,
+    /// Import that file instead (checked: absolute, readable, a supported format).
+    Replace(String),
+    /// Leave the file out of the import.
+    Skip,
+}
+
+/// The reply a before-import call gives, checked: `{}` (as is), `{"replace": path}` (a valid
+/// path only) or `{"skip": true}`. Anything else is an error the caller logs, importing as is.
+fn before_import_reply(v: &Value, asked: &str) -> std::result::Result<BeforeImportDecision, String> {
+    if v.get("skip").and_then(Value::as_bool) == Some(true) {
+        return Ok(BeforeImportDecision::Skip);
+    }
+    match v.get("replace") {
+        None | Some(Value::Null) => Ok(BeforeImportDecision::AsIs),
+        Some(Value::String(p)) => {
+            if Path::new(p) == Path::new(asked) {
+                return Ok(BeforeImportDecision::AsIs);
+            }
+            if !Path::new(p).is_absolute() {
+                return Err(format!("{p}: not an absolute path"));
+            }
+            let real = std::fs::canonicalize(p).map_err(|e| format!("{p} can't be found ({e})"))?;
+            if !real.is_file() {
+                return Err(format!("{p}: not a file"));
+            }
+            if !crate::import::is_supported(&real) {
+                return Err(format!("{p}: the library doesn't import this format"));
+            }
+            Ok(BeforeImportDecision::Replace(real.to_string_lossy().into_owned()))
+        }
+        Some(_) => Err("`replace` must be a path".into()),
+    }
+}
+
+/// Plans one before-import call under the manager's lock for the library a session with
+/// `library` open shows ([`Session::plugin_library`]) and runs it on `host`, handing it back:
+/// `Ok(the plug-in's decision)`; `Err` (logged by the caller, the file imports as is) when no
+/// plug-in could be asked, the call failed, or the reply was bad.
+pub(crate) fn before_import_decision(
+    library: &str,
+    host: &mut dyn HostApi,
+    path: &str,
+    size: u64,
+    source: &Value,
+) -> std::result::Result<BeforeImportDecision, String> {
+    let mut call = {
+        let mut g = manager_for(library);
+        let Some(m) = g.as_mut() else { return Err("no plug-in manager".into()) };
+        match m.before_import_call(path, size, source) {
+            None => return Err("no plug-in has the beforeImport hook".into()),
+            Some(r) => r.map_err(|e| e.to_string())?,
+        }
+    };
+    let outcome = call.run(host);
+    let mut g = manager_for(library);
+    let m = g.get_or_insert_with(Manager::in_memory);
+    let reply = m.end(call, Some(outcome)).map_err(|e| e.to_string())?;
+    before_import_reply(&reply, path)
+}
+
+/// A before-import hook built for one import: the first enabled plug-in with the `beforeImport`
+/// hook ([`Manager::before_import_call`]) is asked about each file as it is prepared, its
+/// catalog requests relayed to the session's thread ([`super::plugin_programs::answer_requests`];
+/// a session nobody answers for refuses them at once, so the files import as is). Built on the
+/// session's thread with [`before_import_hook`]; [`BeforeImportHook::ask`] runs on the thread
+/// that prepares the files. `attended`: the import was started by the user, so the hook may
+/// start granted programs ([`Relayed::StartProgram`]).
+pub struct BeforeImportHook {
+    library: String,
+    source: Value,
+    host: std::sync::Mutex<RelayHost>,
+}
+
+impl BeforeImportHook {
+    /// The decision for `path` (`size`: its bytes, as metadata reports them). An error means the
+    /// caller logs it and imports the file as is; so does a bad reply.
+    pub fn ask(&self, path: &str, size: u64) -> std::result::Result<BeforeImportDecision, String> {
+        let mut host = self.host.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        before_import_decision(&self.library, &mut *host, path, size, &self.source)
+    }
+
+    /// Filters a batch of files through the hook on the preparing thread: `skip`ped files are
+    /// counted in `skipped`, a failed ask keeps the file. Cancel checked per file.
+    pub fn filter(&self, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool, skipped: &mut usize) -> Vec<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut out = Vec::with_capacity(files.len());
+        for f in files {
+            if cancel.load(Relaxed) {
+                out.push(f);
+                continue;
+            }
+            let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+            match self.ask(&f, size) {
+                Ok(BeforeImportDecision::AsIs) => out.push(f),
+                Err(e) => {
+                    log::warn!("beforeImport {f}: {e}");
+                    out.push(f);
+                }
+                Ok(BeforeImportDecision::Replace(p)) => out.push(p),
+                Ok(BeforeImportDecision::Skip) => *skipped += 1,
+            }
+        }
+        out
+    }
+}
+
+/// The Library source the session shows, as a plug-in request gets it (`source`): what
+/// [`before_import_hook`] and [`after_import`] send.
+pub fn import_source(s: &Session) -> Value {
+    super::plugin_library::source(s)
+}
+
+/// The before-import hook for an import from the session `s` shows ([`Session::plugin_library`]),
+/// asking with `source` as its `source`; `None` when no enabled plug-in has the hook. `attended`:
+/// the import was started by the user, so the hook may start granted programs. The UI builds it
+/// on the session's thread and its worker calls [`BeforeImportHook::ask`]; the `library.import`
+/// command filters on the session's thread with [`before_import_files`] instead.
+pub fn before_import_hook(s: &Session, source: Value, attended: bool) -> Option<std::sync::Arc<BeforeImportHook>> {
+    let library = s.plugin_library.clone();
+    let has_hook = {
+        let mut g = manager_for(&library);
+        g.as_mut().is_some_and(|m| m.any_hook(|mf| mf.hooks.before_import))
+    };
+    if !has_hook {
+        return None;
+    }
+    let host = {
+        // the process-wide relay pair (a `program.end` hook's and a job's): its requests are
+        // answered every frame; a session nobody answers for refuses them at once
+        let relay = RelayHost::new(super::plugin_programs::relay_sender(), s.desktop.clone());
+        if attended { relay.allowing_program_start() } else { relay }
+    };
+    Some(std::sync::Arc::new(BeforeImportHook { library, source, host: std::sync::Mutex::new(host) }))
+}
+
+/// Asks the before-import hook about each file of a batch on the session's thread (the
+/// `library.import` command path, where a relayed call would wait for the very thread it is on):
+/// `skip`ped files are counted in `skipped`, a failed ask keeps the file. Cancel checked per file.
+pub(crate) fn before_import_files(s: &mut Session, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool, skipped: &mut usize) -> Vec<String> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let library = s.plugin_library.clone();
+    let source = super::plugin_library::source(s);
+    let mut host = HookSession(SessionHost(s), true);
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        if cancel.load(Relaxed) {
+            out.push(f);
+            continue;
+        }
+        let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+        match before_import_decision(&library, &mut host, &f, size, &source) {
+            Ok(BeforeImportDecision::AsIs) => out.push(f),
+            Err(e) => {
+                log::warn!("beforeImport {f}: {e}");
+                out.push(f);
+            }
+            Ok(BeforeImportDecision::Replace(p)) => out.push(p),
+            Ok(BeforeImportDecision::Skip) => *skipped += 1,
+        }
+    }
+    out
+}
+
+/// After an import's batch was committed (`library.import`, the session's thread): each enabled
+/// plug-in with the `afterImport` hook gets the imported photos ([`Manager::after_import_calls`],
+/// each as `photo.inspect` JSON, as the metadata hook's `photos`) and the import's `source`. One
+/// `{plugin, ok | error}` per plug-in (empty: none). A failing plug-in never fails the import.
+pub fn after_import(s: &mut Session, ids: &[u64]) -> Vec<Value> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let library = s.plugin_library.clone();
+    let planned = {
+        let mut photos = Vec::new();
+        for id in ids.iter().take(1000) {
+            let mut v = match s.execute("photo.inspect", &json!({"id": id})) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v.get("id").is_none() {
+                v["id"] = json!(id.to_string());
+            }
+            photos.push(v);
+        }
+        if photos.is_empty() {
+            return Vec::new();
+        }
+        let source = super::plugin_library::source(s);
+        let mut g = manager_for(&library);
+        match g.as_mut() {
+            Some(m) => m.after_import_calls(&photos, &source),
+            None => return Vec::new(),
+        }
+    };
+    if planned.is_empty() {
+        return Vec::new();
+    }
+    let mut host = HookSession::plain(SessionHost(s));
+    let mut out = Vec::with_capacity(planned.len());
+    for (id, call) in planned {
+        let r = call.map_err(|e| e.to_string()).and_then(|mut call| {
+            let outcome = call.run(&mut host);
+            let mut g = manager_for(&library);
+            let m = g.get_or_insert_with(Manager::in_memory);
+            m.end(call, Some(outcome)).map_err(|e| e.to_string())
+        });
+        out.push(match r {
+            Ok(v) => json!({"plugin": id, "ok": v}),
+            Err(e) => json!({"plugin": id, "error": e}),
+        });
+    }
+    // hooks may have written their own fields (a "seen" mark)
+    sync_fields(s);
+    out
+}
+
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
@@ -1130,6 +1361,8 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
+    /// `library.remove`.
+    LibraryRemove,
     /// `photo.pixels`: `{photo, longEdge}`, already checked. The session's thread only finds the
     /// source and leaves it here; the caller decodes it on its own thread.
     Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
@@ -1137,6 +1370,10 @@ pub(super) enum Relayed {
     SetCrop,
     /// `photo.virtualCopy`: `{photo, name}`, already checked.
     VirtualCopy,
+    /// `program.start` from a `beforeImport` hook on an attended import: the session's thread
+    /// starts it ([`super::plugin_programs::start`]) and answers at once (the run is watched on
+    /// its own thread; `program.end` comes there later).
+    StartProgram(std::sync::Arc<std::sync::Mutex<Option<lcc_plugins::StartRequest>>>),
 }
 
 /// [`Relayed::Pixels`]'s parameters, and back.
@@ -1195,9 +1432,17 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
+            Relayed::LibraryRemove => host.library_remove(&self.params),
             Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
             Relayed::SetCrop => relayed_crop(&mut host, &self.params),
             Relayed::VirtualCopy => relayed_copy(&mut host, &self.params),
+            Relayed::StartProgram(run) => {
+                let taken = run.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                match taken {
+                    Some(run) => host.start_program(run).map(|_| Value::Null),
+                    None => Err("program.start: already answered".into()),
+                }
+            }
         };
         let _ = self.reply.send(r);
     }
@@ -1209,11 +1454,18 @@ pub(super) const HOOK_NO_START: &str = "program.start is not available in hooks 
 /// What plug-ins running on a worker see of the catalog: each request goes to the session's thread
 /// (see [`relay_host`]) and waits for its answer. Programs are looked up through the session's
 /// desktop; none is started ([`HOOK_NO_START`]).
-pub struct RelayHost(std::sync::mpsc::Sender<HostRequest>, std::sync::Arc<dyn crate::desktop::Desktop>);
+pub struct RelayHost(std::sync::mpsc::Sender<HostRequest>, std::sync::Arc<dyn crate::desktop::Desktop>, bool);
 
 impl RelayHost {
     pub(super) fn new(tx: std::sync::mpsc::Sender<HostRequest>, desktop: std::sync::Arc<dyn crate::desktop::Desktop>) -> RelayHost {
-        RelayHost(tx, desktop)
+        RelayHost(tx, desktop, false)
+    }
+
+    /// [`RelayHost`] where `program.start` is relayed to the session's thread (only a
+    /// `beforeImport` hook of an attended import gets one; see [`HOOK_NO_START`]).
+    pub(super) fn allowing_program_start(mut self) -> RelayHost {
+        self.2 = true;
+        self
     }
 
     fn ask(&self, method: Relayed, params: &Value) -> std::result::Result<Value, String> {
@@ -1271,6 +1523,10 @@ impl HostApi for RelayHost {
         self.ask(Relayed::LibraryAdd, params)
     }
 
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        self.ask(Relayed::LibraryRemove, params)
+    }
+
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
         self.pixels_within(photo, long_edge, None)
     }
@@ -1287,8 +1543,11 @@ impl HostApi for RelayHost {
         self.1.find_program(program)
     }
 
-    fn start_program(&mut self, _: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
-        Err(HOOK_NO_START.into())
+    fn start_program(&mut self, run: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
+        if !self.2 {
+            return Err(HOOK_NO_START.into());
+        }
+        self.ask(Relayed::StartProgram(std::sync::Arc::new(std::sync::Mutex::new(Some(run)))), &Value::Null).map(|_| ())
     }
 }
 
@@ -1296,12 +1555,19 @@ impl HostApi for RelayHost {
 /// session's thread to answer.
 pub fn relay_host(s: &Session) -> (RelayHost, std::sync::mpsc::Receiver<HostRequest>) {
     let (tx, rx) = std::sync::mpsc::channel();
-    (RelayHost(tx, s.desktop.clone()), rx)
+    (RelayHost::new(tx, s.desktop.clone()), rx)
 }
 
 /// [`SessionHost`] for hooks and export destinations: the same catalog and lookups, no starts
-/// ([`HOOK_NO_START`]), wherever the hook runs.
-struct HookSession<'a>(SessionHost<'a>);
+/// ([`HOOK_NO_START`]) — except from a `beforeImport` hook of an attended import (`starts: true`),
+/// where a run is what the hook is for.
+struct HookSession<'a>(SessionHost<'a>, bool);
+
+impl HookSession<'_> {
+    fn plain(inner: SessionHost<'_>) -> HookSession<'_> {
+        HookSession(inner, false)
+    }
+}
 
 impl HostApi for HookSession<'_> {
     fn catalog(&mut self, method: &str, params: &Value) -> std::result::Result<Value, String> {
@@ -1314,6 +1580,10 @@ impl HostApi for HookSession<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         self.0.library_add(params)
+    }
+
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        self.0.library_remove(params)
     }
 
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
@@ -1332,8 +1602,11 @@ impl HostApi for HookSession<'_> {
         self.0.find_program(program)
     }
 
-    fn start_program(&mut self, _: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
-        Err(HOOK_NO_START.into())
+    fn start_program(&mut self, run: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
+        if !self.1 {
+            return Err(HOOK_NO_START.into());
+        }
+        self.0.start_program(run)
     }
 }
 
@@ -1360,7 +1633,7 @@ fn export_to(s: &mut Session, p: &Value) -> Result<Value> {
     let files = p.get("files").and_then(Value::as_array).ok_or_else(|| bad(C, "missing `files: [{path, photo?}]`"))?;
     let args = p.get("args").cloned().unwrap_or(Value::Null);
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     let r = with_library(&lib, |m| m.export_to(id, dest, &args, files, &mut host).map_err(|e| plugin_err(C, e)));
     sync_fields(s);
     r
@@ -1666,6 +1939,7 @@ pub(crate) mod tests {
     /// calls; the catalog reaches them through the relay; cancelling skips the calls not yet made.
     #[test]
     fn export_hooks_run_on_a_worker_and_relay_catalog_requests() {
+        let _test_plugins = super::TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _turn = turn();
         manager().get_or_insert_with(Manager::in_memory).install_bytes(&hook_module("test.relay"), None, false).unwrap();
         let files = [json!({"path": "/tmp/x.jpg"})];
@@ -2242,6 +2516,7 @@ pub(crate) mod tests {
     /// once the program has exited.
     #[test]
     fn a_plugin_program_run_is_watched_and_cleaned_up() {
+        let _test_plugins = super::TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _turn = turn();
         let mut s = Session::with_demo();
         let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
@@ -2393,7 +2668,7 @@ pub(crate) mod tests {
         check(&mut super::super::plugin_programs::hook_host(relay), "program.end");
         let (mut relay, _requests) = relay_host(&s);
         check(&mut relay, "a worker's export hooks");
-        check(&mut HookSession(SessionHost(&mut s)), "hooks on the session's thread");
+        check(&mut HookSession::plain(SessionHost(&mut s)), "hooks on the session's thread");
         assert!(desktop.requests().is_empty(), "nothing started");
         let _ = std::fs::remove_dir_all(&root);
     }
