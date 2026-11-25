@@ -426,3 +426,38 @@ fn cmyk(raw: &Raw, ch: usize, icc_bytes: Option<&[u8]>, info: Option<&icc::IccIn
     let origin = if icc_bytes.is_some() || icc_invalid { SpaceOrigin::IccUnsupported } else { SpaceOrigin::Naive };
     Ok((from_vec(raw.width, raw.height, px), SourceSpace::named(NamedSpace::Srgb, origin)))
 }
+
+#[cfg(test)]
+mod size_limit_tests {
+    use super::*;
+
+    /// The default pixel cap is Lightroom Classic's: 512 × 2^20 pixels. At it, one pixel under and one over (the `>` is
+    /// contract: a file of exactly the cap is read), the sizes Lightroom Classic 16.0 was tried with (issue #1477) and
+    /// hostile sizes (overflowing products refuse, zero is malformed, and nothing panics).
+    #[test]
+    fn the_default_cap_is_lightroom_classics_512_times_2_to_the_20() {
+        let opts = DecodeOptions::default();
+        let cap = 512u64 * 1024 * 1024;
+        assert_eq!(opts.max_pixels, cap);
+        assert_eq!(cap, 536_870_912);
+        let ok = |w, h| check_size(Format::Tiff, w, h, &opts).is_ok();
+        // at the cap (16384 × 32768), one pixel under, one pixel over, and one row over
+        assert!(ok(16_384, 32_768));
+        assert!(ok(cap - 1, 1));
+        assert!(!ok(cap + 1, 1));
+        assert!(!ok(16_384, 32_769));
+        // the files Lightroom Classic imported or refused
+        assert!(ok(23_000, 22_800), "524.4 M px: imported");
+        assert!(ok(23_170, 23_170), "536,848,900 px: imported");
+        assert!(ok(30_092, 17_070), "513.7 M px: the scan the old 512,000,000 refused");
+        assert!(!ok(23_171, 23_171), "536,895,241 px: refused");
+        assert!(!ok(23_200, 23_200), "538.2 M px: refused");
+        assert!(!ok(28_000, 28_000), "784 M px: refused");
+        // a long edge is not limited here (Lightroom's 65,000 is not enforced)
+        assert!(ok(65_536, 1_000));
+        // hostile sizes
+        assert!(matches!(check_size(Format::Tiff, u64::MAX, u64::MAX, &opts), Err(Error::TooLarge(..))));
+        assert!(matches!(check_size(Format::Tiff, 0, 5, &opts), Err(Error::Malformed(..))));
+        assert!(matches!(check_size(Format::Tiff, u64::MAX, 0, &opts), Err(Error::Malformed(..))));
+    }
+}
