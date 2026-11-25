@@ -373,7 +373,18 @@ fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
                 }
                 let label = format!("{}{}  ({})", if private { "🔒 " } else { "" }, name, l["photos"].as_u64().unwrap_or(0));
                 if ui.link(label).clicked() {
+                    app.map.active_location = Some(name.clone());
                     let _ = app.run("map.search", json!({"query": name}));
+                }
+                let b = ui.small_button(tr("Edit…")).on_hover_text(tr("Edit this saved location"));
+                crate::widgets::register(ui.ctx(), format!("map:locationEdit:{name}"), b.rect);
+                if b.clicked() {
+                    match super::open_edit_location(app, &name) {
+                        Ok(()) => {
+                            let _ = app.run("map.search", json!({"query": name}));
+                        }
+                        Err(e) => app.toast_error(ui.ctx(), e),
+                    }
                 }
                 if ui.small_button("×").on_hover_text(tr("Delete this saved location")).clicked() {
                     let _ = app.run("map.deleteLocation", json!({"name": name}));
@@ -381,29 +392,14 @@ fn locations_section(app: &mut LccApp, ui: &mut egui::Ui) {
             });
         }
         if list.is_empty() {
-            ui.label(RichText::new(tr("Name a place, set its radius and save it at the map's centre (or right-click the map).")).weak().size(11.0));
+            ui.label(RichText::new(tr("Right-click the map and choose New Location Here…, or add one at the map's centre.")).weak().size(11.0));
         }
         ui.separator();
-        let resp = ui.add(egui::TextEdit::singleline(&mut app.map.new_name).hint_text(tr("New location name")));
-        crate::access::label(&resp, "New location name");
-        if resp.has_focus() {
-            app.text_focus = true;
-        }
-        ui.horizontal(|ui| {
-            ui.label(tr("Radius"));
-            ui.add(egui::DragValue::new(&mut app.map.new_radius).range(10.0..=100_000.0).speed(10.0).suffix(" m"));
-            ui.checkbox(&mut app.map.new_private, tr("Private"));
-        });
-        if ui.button(tr("Save at Map Centre")).clicked() {
+        let b = ui.button(tr("New Location at Map Centre…"));
+        crate::widgets::register(ui.ctx(), "map:newLocationAtCentre", b.rect);
+        if b.clicked() {
             let c = app.map.centre();
-            let name = app.map.new_name.clone();
-            match app.run(
-                "map.saveLocation",
-                json!({"name": name, "lat": c.lat, "lon": c.lon, "radius": app.map.new_radius, "private": app.map.new_private}),
-            ) {
-                Ok(_) => app.map.new_name.clear(),
-                Err(e) => app.toast_error(ui.ctx(), e),
-            }
+            super::open_new_location(app, c, None);
         }
     });
 }

@@ -76,7 +76,9 @@ the photos in view.
 - Drag photos from the filmstrip onto the map to geotag them; drag pins to move them (`map.geotag`).
 - Load a GPX, KML or GeoJSON track log and Auto-Tag photos by capture time, with a camera-clock offset
   (`map.track`, `map.trackOffset`, `photo.autoTagTracklog`).
-- Saved locations with a radius; a **private** location keeps its photos' GPS out of every export.
+- Saved locations with a radius; a **private** location keeps its photos' GPS out of every export. Drag a location's
+  centre to move it and the handle on its edge to resize it; right-click ▸ **New Location Here…** or **Edit…** opens the
+  **Edit Location** panel (name, radius, private).
 - Reverse geocoding is opt-in: offline from a downloaded GeoNames cities list (`map.geonamesDownload`, CC-BY 4.0) or
   online from a Nominatim-compatible server after consent. Nothing is sent without asking.
 - Tiles are cached on disk with a size limit; the app never bulk-prefetches.

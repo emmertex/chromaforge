@@ -529,3 +529,121 @@ fn info_and_key_boxes_follow_their_menu_toggles() {
     h.settle(SETTLE);
     assert!(widget(&h, "map:info").is_none() && widget(&h, "map:key").is_some());
 }
+
+/// Saved locations are edited on the map as in Lightroom Classic: drag the centre handle to move
+/// one, the knob on its edge to change its radius (one undo step each); Lock Markers holds both.
+/// Right-click ▸ New Location Here… opens the Edit Location panel with a draft circle there,
+/// nothing is saved until Save, and Save refuses a name another location already has (it used to
+/// overwrite that location silently). The panel also renames, makes private and deletes.
+#[test]
+fn saved_locations_are_moved_resized_and_edited_on_the_map() {
+    let mut h = map_on_fake_tiles();
+    run(&mut h, "map.view", json!({"lat": 48.8566, "lon": 2.3522, "zoom": 16}));
+    run(&mut h, "map.saveLocation", json!({"name": "Home", "lat": 48.8566, "lon": 2.3522, "radius": 100}));
+    h.settle(SETTLE);
+    let home = |h: &Headless| h.app.session.catalog.saved_location("Home").cloned().expect("Home is saved");
+    assert!(widget(&h, "map:location:Home:centre").is_some(), "every saved location has a centre handle");
+    assert!(widget(&h, "map:location:Home:radius").is_none(), "the radius handle shows on the active location only");
+
+    // drag the centre 80 px east: the location moves, its radius stays
+    let r = h.request("ui.dragWidget", json!({"id": "map:location:Home:centre", "dx": 80.0, "dy": 0.0, "steps": 12}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let moved = home(&h);
+    assert!(moved.lon > 2.3522 + 0.0005 && (moved.lat - 48.8566).abs() < 0.0003, "{moved:?}");
+    assert_eq!(moved.radius, 100.0);
+    assert_eq!(h.app.map.active_location.as_deref(), Some("Home"), "the location just moved is the active one");
+
+    // drag the radius knob 40 px up, away from the centre: the circle grows
+    let knob = widget(&h, "map:location:Home:radius").expect("the active location shows its radius handle");
+    let r = h.request("ui.dragWidget", json!({"id": "map:location:Home:radius", "dx": 0.0, "dy": -40.0, "steps": 12}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let grown = home(&h);
+    assert!(grown.radius > 120.0, "{grown:?} (knob was at {knob:?})");
+    assert!((grown.lon - moved.lon).abs() < 1e-9, "resizing doesn't move it");
+
+    // each drag is one undo step
+    run(&mut h, "edit.undo", json!({}));
+    assert_eq!(home(&h).radius, 100.0);
+    run(&mut h, "edit.undo", json!({}));
+    assert!((home(&h).lon - 2.3522).abs() < 1e-9);
+    h.settle(SETTLE);
+
+    // Lock Markers: the handles don't move it
+    run(&mut h, "map.toggleLockMarkers", json!({}));
+    h.settle(SETTLE);
+    let before = home(&h);
+    h.request("ui.dragWidget", json!({"id": "map:location:Home:centre", "dx": 60.0, "dy": 30.0, "steps": 12}), T);
+    h.settle(SETTLE);
+    assert_eq!(home(&h), before, "locked");
+    run(&mut h, "map.toggleLockMarkers", json!({}));
+
+    // right-click ▸ New Location Here…: a draft, nothing saved yet
+    let canvas = widget(&h, "map:canvas").unwrap();
+    let at = canvas.center() + egui::vec2(-200.0, 120.0);
+    h.request("ui.click", json!({"x": at.x, "y": at.y, "button": "right"}), T);
+    h.settle(SETTLE);
+    let r = h.request("ui.clickWidget", json!({"id": "map:menu:newLocation"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let ed = h.app.map.editor.clone().expect("the Edit Location panel is open");
+    let want = super::view::screen_to_geo(&h.app.map, canvas, at);
+    assert!(ed.original.is_none() && (ed.centre.lat - want.lat).abs() < 1e-4 && (ed.centre.lon - want.lon).abs() < 1e-4, "{ed:?}");
+    assert!(ed.radius >= 10.0, "a radius that suits the zoom: {}", ed.radius);
+    assert!(widget(&h, "map:location:draft:centre").is_some() && widget(&h, "map:location:draft:radius").is_some(), "the draft has handles");
+    assert_eq!(h.app.session.catalog.saved_locations().count(), 1, "nothing saved before Save");
+
+    // the draft's radius handle changes the panel, not the library
+    h.request("ui.dragWidget", json!({"id": "map:location:draft:radius", "dx": 0.0, "dy": -30.0, "steps": 10}), T);
+    h.settle(SETTLE);
+    assert!(h.app.map.editor.as_ref().unwrap().radius > ed.radius);
+    assert_eq!(h.app.session.catalog.saved_locations().count(), 1);
+
+    // a name another location has is refused, not overwritten
+    run(&mut h, "map.locationEditor", json!({"name": "home"}));
+    h.request("ui.clickWidget", json!({"id": "button:mapLocationSave"}), T);
+    h.settle(SETTLE);
+    assert!(h.app.map.editor.as_ref().is_some_and(|e| e.error.is_some()), "the panel says why");
+    assert_eq!(home(&h), before, "Home is untouched");
+    run(&mut h, "map.locationEditor", json!({"name": "Work"}));
+    h.request("ui.clickWidget", json!({"id": "button:mapLocationSave"}), T);
+    h.settle(SETTLE);
+    assert!(h.app.map.editor.is_none(), "saved: the panel closes");
+    assert!(h.app.session.catalog.saved_location("Work").is_some());
+
+    // the panel renames and makes private (the filter follows the rename); Delete removes, undoably
+    run(&mut h, "map.filter", json!({"filter": "location:Home"}));
+    run(&mut h, "map.editLocation", json!({"name": "Home"}));
+    run(&mut h, "map.locationEditor", json!({"name": "Casa", "private": true, "action": "save"}));
+    assert!(h.app.session.catalog.saved_location("Home").is_none());
+    let casa = h.app.session.catalog.saved_location("Casa").cloned().expect("renamed");
+    assert!(casa.private && casa.radius == 100.0);
+    assert_eq!(run(&mut h, "map.view", json!({}))["filter"], "location:Casa");
+    // only the capitals change: not "already exists"
+    run(&mut h, "map.editLocation", json!({"name": "Casa"}));
+    run(&mut h, "map.locationEditor", json!({"name": "CASA", "action": "save"}));
+    assert_eq!(h.app.session.catalog.saved_location("casa").map(|l| l.name.as_str()), Some("CASA"));
+    run(&mut h, "map.editLocation", json!({"name": "Work"}));
+    h.settle(SETTLE);
+    h.request("ui.clickWidget", json!({"id": "button:mapLocationDelete"}), T);
+    h.settle(SETTLE);
+    assert!(h.app.session.catalog.saved_location("Work").is_none());
+    run(&mut h, "edit.undo", json!({}));
+    assert!(h.app.session.catalog.saved_location("Work").is_some());
+
+    // bad input: errors, not panics
+    for (cmd, p) in [
+        ("map.editLocation", json!({"name": "Nowhere"})),
+        ("map.newLocation", json!({"lat": 1000})),
+        ("map.locationEditor", json!({"action": "explode"})),
+    ] {
+        let r = h.request("engine.execute", json!({"command": cmd, "params": p}), T);
+        assert_eq!(r["ok"], false, "{cmd}: {r}");
+    }
+    run(&mut h, "map.newLocation", json!({}));
+    let r = h.request("engine.execute", json!({"command": "map.locationEditor", "params": {"radius": -5}}), T);
+    assert_eq!(r["ok"], false, "{r}");
+    run(&mut h, "map.locationEditor", json!({"action": "cancel"}));
+    assert!(h.app.map.editor.is_none());
+}
