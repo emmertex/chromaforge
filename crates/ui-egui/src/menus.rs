@@ -2716,10 +2716,10 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     .to_string();
                 }
-                if let Some(value) = p.get("scope").and_then(Value::as_str) {
-                    if matches!(value, "all" | "visible" | "selected" | "folder" | "album") {
-                        *scope = value.to_string();
-                    }
+                if let Some(value) = p.get("scope").and_then(Value::as_str)
+                    && matches!(value, "all" | "visible" | "selected" | "folder" | "album")
+                {
+                    *scope = value.to_string();
                 }
                 if let Some(value) = p.get("folder").and_then(Value::as_str) {
                     *folders = value.to_string();
