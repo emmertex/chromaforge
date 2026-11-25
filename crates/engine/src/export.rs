@@ -2184,15 +2184,8 @@ fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOpti
         (ExportFormat::Exr, DeepSamples::F32(v)) => {
             let primaries = o.exr_primaries.rgb_space();
             let m = img.space.rgb_space().to_space(&primaries).to_f32();
-            let lin: Vec<f32> = v
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .flat_map(|p| {
-                    let c = [0, 1, 2].map(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2]);
-                    c
-                })
-                .collect();
+            let lin: Vec<f32> =
+                v.as_chunks::<3>().0.iter().flat_map(|p| [0, 1, 2].map(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2])).collect();
             let opts = lcc_codecs::ExrOptions { half: o.bit_depth != Some(32), primaries };
             return lcc_codecs::encode_exr(w, h, 3, &lin, &opts).map_err(|e| e.to_string());
         }
