@@ -15,10 +15,11 @@
 //! then records of `photo u64`, four `i32` (the region's box in ten-thousandths), four `i32` (the view box likewise), and
 //! `dim` `f32`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use serde_json::{Value, json};
 
 use lcc_geom::Rect;
 
@@ -89,6 +90,15 @@ impl Index {
 
     pub fn skip(&mut self, photo: u64, rect: &Rect) {
         self.skipped.insert((photo, region_key(rect)));
+    }
+
+    /// Drop one face's embedding and any failed-attempt marker (used when rebuilding named-face recognition data).
+    pub fn forget_region(&mut self, photo: u64, rect: &Rect) {
+        let key = (photo, region_key(rect));
+        let removed = self.entries.remove(&key).is_some();
+        self.unsaved.retain(|(k, _)| *k != key);
+        self.skipped.remove(&key);
+        self.rewrite |= removed;
     }
 
     /// Drop every face of `photo` (its file was replaced, so they were made from other pixels): they are embedded
@@ -604,6 +614,122 @@ mod tests {
     }
 }
 
+/// The work a one-shot face maintenance scan does in addition to the continuous library indexer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FaceScanMode {
+    /// Find faces only in photos without existing boxes, then embed the known boxes.
+    Detect,
+    /// Embed existing face boxes without running the detector.
+    Recognize,
+    /// Work only on new or unindexed photos within the selected scope.
+    New,
+    /// Rebuild embeddings for every existing face region in the selected scope.
+    Rebuild,
+    /// Rebuild embeddings for named faces in the selected scope, refreshing the recognition gallery.
+    RebuildNamed,
+    /// Run detection again and merge detections with existing regions.
+    Rescan,
+}
+
+impl FaceScanMode {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Self::Detect => "detect",
+            Self::Recognize => "recognize",
+            Self::New => "new",
+            Self::Rebuild => "rebuild",
+            Self::RebuildNamed => "rebuildNamed",
+            Self::Rescan => "rescan",
+        }
+    }
+
+    pub(crate) fn detects(self) -> bool {
+        matches!(self, Self::Detect | Self::New | Self::Rescan)
+    }
+
+    pub(crate) fn redetects(self) -> bool {
+        self == Self::Rescan
+    }
+
+    pub(crate) fn named_only(self) -> bool {
+        self == Self::RebuildNamed
+    }
+}
+
+/// One photo's first or follow-up stage in a maintenance scan.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FaceScanItem {
+    pub photo: lcc_catalog::PhotoId,
+    /// Search for faces when there are no existing boxes.
+    pub search: bool,
+    /// Always run detection, even when earlier boxes exist.
+    pub redetect: bool,
+    /// Remove earlier detector-generated boxes before merging this detector pass.
+    pub replace_detections: bool,
+}
+
+/// A concise snapshot returned by `faces.scanStatus`, including the last completed or cancelled run.
+#[derive(Clone, Debug)]
+pub(crate) struct FaceScanStatus {
+    pub state: String,
+    pub mode: String,
+    pub scope: String,
+    pub total: u64,
+    pub done: u64,
+    pub failed: u64,
+    pub cancelled: bool,
+    pub task_id: Option<u64>,
+}
+
+impl FaceScanStatus {
+    pub(crate) fn value(&self) -> Value {
+        json!({
+            "state": self.state,
+            "mode": self.mode,
+            "scope": self.scope,
+            "done": self.done.min(self.total),
+            "total": self.total,
+            "pendingPhotos": self.total.saturating_sub(self.done),
+            "failed": self.failed,
+            "cancelled": self.cancelled,
+            "taskId": self.task_id,
+        })
+    }
+}
+
+/// A scoped request driven by the same background face worker as the continuous indexer.
+pub(crate) struct FaceScanRun {
+    pub mode: FaceScanMode,
+    pub scope: String,
+    pub queue: VecDeque<FaceScanItem>,
+    /// The minimum detector score, already validated to the closed interval 0..=1.
+    pub min_score: f32,
+    /// Recognition/gallery-only rebuild: only named face regions are embedded.
+    pub named_only: bool,
+    /// The subset of `FacesState::in_flight` belonging to this request.
+    pub in_flight: HashSet<lcc_catalog::PhotoId>,
+    pub total: u64,
+    pub done: u64,
+    pub failed: u64,
+    pub cancelled: bool,
+    pub task: crate::activity::TaskGuard,
+}
+
+impl FaceScanRun {
+    pub(crate) fn status(&self, state: &str) -> FaceScanStatus {
+        FaceScanStatus {
+            state: state.to_string(),
+            mode: self.mode.id().to_string(),
+            scope: self.scope.clone(),
+            total: self.total,
+            done: self.done.min(self.total),
+            failed: self.failed,
+            cancelled: self.cancelled,
+            task_id: Some(self.task.id()),
+        }
+    }
+}
+
 /// What the recognition commands keep between calls: the loaded model and the embeddings made with it.
 #[derive(Default)]
 pub(crate) struct FacesState {
@@ -636,6 +762,10 @@ pub(crate) struct FacesState {
     pub scan_failed: std::collections::HashSet<u64>,
     /// The scan's row in the activity stack, while photos are left.
     pub task: Option<crate::activity::TaskGuard>,
+    /// A user-requested folder / selection maintenance scan, driven by `faces.pump`.
+    pub maintenance: Option<FaceScanRun>,
+    /// Last scoped scan's outcome, retained for CLI and MCP callers.
+    pub last_maintenance: Option<FaceScanStatus>,
     /// The most photos left at once since the scan last finished (the row's whole).
     pub peak: u64,
 }
@@ -644,6 +774,12 @@ impl FacesState {
     /// Another library is being opened: what was learned about the old one is saved, and nothing of it is kept (photo
     /// ids are only unique within a library). The loaded model stays; the index is reloaded for the new library.
     pub fn library_changed(&mut self) {
+        if let Some(scan) = self.maintenance.take()
+            && let Some(cancel) = scan.task.cancel_flag()
+        {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.last_maintenance = None;
         self.index.reset("", 0, None);
         self.scanned.reset(None);
         self.scan_failed.clear();

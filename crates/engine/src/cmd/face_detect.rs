@@ -555,7 +555,7 @@ fn face_json(f: &Face) -> Value {
 }
 
 /// A detected face that lies on a region the photo already has (from XMP, drawn or named) is that region, not a new face.
-fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
+pub(crate) fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
     regions.iter().any(|r| {
         let (w, h) = (
             (r.rect.x1.min(f64::from(f.x1)) - r.rect.x0.max(f64::from(f.x0))).max(0.0),
@@ -567,10 +567,12 @@ fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
     })
 }
 
-/// A region Detect Faces may replace: one it found earlier and the user has not ignored (an ignored face is kept,
-/// and its box stops the same face being found again).
+/// A region Detect Faces may replace: one it found earlier that is still an unnamed Face region.
+/// Ignored faces, named faces and other region kinds stay in the catalog.
 pub(crate) fn is_detected(r: &Region) -> bool {
-    r.kind != RegionKind::IgnoredFace && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
+    r.kind == RegionKind::Face
+        && r.name.as_deref().is_none_or(|name| name.trim().is_empty())
+        && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
 }
 
 /// What `faces.detect` was asked for.

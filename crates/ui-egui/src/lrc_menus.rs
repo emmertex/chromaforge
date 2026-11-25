@@ -165,6 +165,7 @@ const LIBRARY: &[&str] = &[
     "---",
     "dialog.cull",
     "dialog.qualityScan",
+    "dialog.faceMaintenance",
     "---",
     "library.toggleFilters=Enable Filters",
     "@Filter by Preset",

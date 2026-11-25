@@ -465,6 +465,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.whatsNew", "What's New", None, "Help"),
     ("dialog.cull", "Assisted Culling…", None, "Library"),
     ("dialog.qualityScan", "Image Quality Scanner…", None, "Library"),
+    ("dialog.faceMaintenance", "Face Maintenance…", None, "Library"),
     ("app.help", "{app} Help", Some("F1"), "Help"),
     ("app.feedback", "Send Feedback…", None, "Help"),
     ("app.website", "{app} Website", None, "Help"),
@@ -2637,6 +2638,59 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                 rescan: s.rescan,
                 weights: s.weights,
             });
+            Ok(Value::Null)
+        }
+        "dialog.faceMaintenance" => {
+            let mut dialog = Dialog::face_maintenance(&app.session);
+            if let Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, .. } = &mut dialog {
+                if let Some(value) = p.get("mode").and_then(Value::as_str) {
+                    *mode = match value.trim().to_ascii_lowercase().as_str() {
+                        "recognize" | "recognition" => "recognize",
+                        "new" | "newitems" | "new-only" => "new",
+                        "rebuild" | "all" => "rebuild",
+                        "rebuildnamed" | "named" | "confirmed" => "rebuildNamed",
+                        "rescan" | "redetect" | "re-detect" => "rescan",
+                        "reset" => "reset",
+                        _ => "detect",
+                    }
+                    .to_string();
+                }
+                if let Some(value) = p.get("scope").and_then(Value::as_str) {
+                    if matches!(value, "all" | "visible" | "selected" | "folder" | "album") {
+                        *scope = value.to_string();
+                    }
+                }
+                if let Some(value) = p.get("folder").and_then(Value::as_str) {
+                    *folders = value.to_string();
+                    *scope = "folder".to_string();
+                }
+                if let Some(values) = p.get("folders").and_then(Value::as_array) {
+                    *folders = values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                    *scope = "folder".to_string();
+                }
+                if let Some(value) = p.get("album").and_then(Value::as_u64) {
+                    *album_ids = vec![value];
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(values) = p.get("albums").and_then(Value::as_array) {
+                    *album_ids = values.iter().filter_map(Value::as_u64).collect();
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(value) = p.get("includeSubfolders").and_then(Value::as_bool) {
+                    *include_subfolders = value;
+                }
+                if let Some(value) = p.get("minScore").and_then(Value::as_f64).filter(|score| score.is_finite()) {
+                    *min_score = (value as f32).clamp(0.6, 1.0);
+                }
+                if let Some(value) = p.get("behavior").and_then(Value::as_str)
+                    && matches!(value, "merge" | "replace")
+                {
+                    *behavior = value.to_string();
+                }
+            }
+            app.ui.dialog = Some(dialog);
             Ok(Value::Null)
         }
         "dialog.cull" => {
