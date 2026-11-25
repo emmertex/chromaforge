@@ -47,7 +47,8 @@ seen: the upstream row says "moved to craft-libs", gets `SKIP`, and the fix itse
   when the fork's code has the same bug or lacks the behaviour, and it says "adapted from craft-libs #<n>". A
   dependency fix arrives as a rev bump, called out in the PR. Extraction PRs (upstream code moved into craft-libs
   unchanged) are `SKIP`: the fork already has that code from upstream.
-- **Ledger.** The same ledger and columns; the item is `craft-libs#<n>` (a direct commit: `craft-libs commit <sha>`).
+- **Ledger.** The same ledger and columns; the item is `craft-libs#<n>` (a direct commit: `craft-libs commit <sha>`),
+  `Upstream ref` is the PR's head (`headRefOid`, what `drift` compares), and `Reviewed` carries craft-libs' `main`.
   When an upstream row is closed or skipped because its work "moved to craft-libs", record the craft-libs PR it
   names as its own row instead of dropping it.
 - **Commands.** `tools/upstream_intake.py enumerate --repo craft-libs --since <date>` (the path filter reads every

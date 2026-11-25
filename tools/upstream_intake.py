@@ -552,6 +552,9 @@ def drift_cmd(args):
 
 
 def main(argv):
+    # titles carry arrows and other non-ASCII text: a Windows console's code page must not abort a report
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description="Upstream PR intake helper (docs/upstream-pr-intake.md)")
     sub = parser.add_subparsers(dest="command", required=True)
 
