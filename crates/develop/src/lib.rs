@@ -187,6 +187,7 @@ impl DevelopSettings {
             || off("levels")
             || off("toneEq")
             || off("detail")
+            || (off("lensBlur") && self.lens_blur.enabled)
             || (off(PLUGIN_FILTERS_SECTION) && !self.plugin_filters.is_empty()))
         {
             return std::borrow::Cow::Borrowed(self);
@@ -228,6 +229,9 @@ impl DevelopSettings {
         }
         if off(PLUGIN_FILTERS_SECTION) {
             d.plugin_filters.clear();
+        }
+        if off("lensBlur") {
+            d.lens_blur.enabled = false;
         }
         std::borrow::Cow::Owned(d)
     }

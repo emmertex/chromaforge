@@ -3413,6 +3413,10 @@ fn general_interaction(
         color_range_pick(app, ui, resp, map);
         return;
     }
+    if app.ui.tool == "lensFocus" {
+        lens_focus_pick(app, ui, resp, map);
+        return;
+    }
     if app.ui.tool == "pointColor" {
         if resp.clicked()
             && let Some(q) = resp.interact_pointer_pos()
@@ -4554,6 +4558,30 @@ fn gradient_cursor(shape: &MaskShape, handle: u8, q: Pos2, map: &CanvasMap) -> O
         }
         (MaskShape::Linear { start, end }, _) => Some(resize_cursor(map.screen(*end) - map.screen(*start))),
         _ => Some(egui::CursorIcon::Move),
+    }
+}
+
+/// Lens Blur's focus picker: a click keeps the distance under it sharp; a drag keeps the area's
+/// (its median distance), centred where the drag began. The picker stays armed.
+fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap) {
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let n = map.norm(q);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": n.x, "y": n.y}, "focusSize": 0.0})) {
+            app.toast(ui.ctx(), e);
+        }
+    } else if resp.drag_stopped()
+        && let (Some(start), Some(end)) = (ui.input(|i| i.pointer.press_origin()), resp.interact_pointer_pos())
+    {
+        let (a, b) = (map.norm(start), map.norm(end));
+        let size = (a.x - b.x).abs().max((a.y - b.y).abs()).min(0.5);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": a.x, "y": a.y}, "focusSize": size})) {
+            app.toast(ui.ctx(), e);
+        }
     }
 }
 

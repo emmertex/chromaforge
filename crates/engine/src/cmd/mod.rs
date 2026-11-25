@@ -48,6 +48,7 @@ pub mod geocode;
 pub mod immich;
 pub mod import_tab;
 pub mod keywords;
+pub(crate) mod lens_blur;
 mod lens_db;
 pub mod levels;
 pub mod library;
@@ -267,6 +268,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(masks::specs());
         v.extend(retouch::specs());
         v.extend(retouch::retouch_specs());
+        v.extend(lens_blur::specs());
         v.extend(genfill::specs());
         v.extend(concepts::specs());
         v.extend(people_roles::specs());

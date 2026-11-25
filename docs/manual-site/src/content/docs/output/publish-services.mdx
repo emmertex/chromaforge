@@ -16,7 +16,8 @@ import { Aside } from '@astrojs/starlight/components';
 - **Mark as Up-to-Date** clears a state without sending.
 - SFTP: one folder per collection; the host key is remembered on first use.
 - Immich: collections become albums; send renders, originals or both.
-- 🟡 No Flickr or SmugMug services.
+- Plug-in services: a [plug-in](../../automate/plugins/) can add an online service. It gets the service's settings, each collection's name, and each photo's title, caption and keywords; it can show the site's comments in **Library ▸ Review Comments**.
+- 🟡 No Flickr or SmugMug services of the app's own: those need API keys registered with each site; a plug-in can provide one.
 
 <NeedsImage what="The Publish Services panel with a Hard Drive service and a collection's New / Modified / Published sections" />
 

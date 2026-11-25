@@ -2688,7 +2688,7 @@ impl SyncCounts {
 /// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
 /// working across panels (W).
 pub fn is_picker(tool: &str) -> bool {
-    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite")
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite" | "lensFocus")
 }
 
 impl Default for UiState {

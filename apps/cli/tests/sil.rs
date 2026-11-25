@@ -608,6 +608,9 @@ fn sil_workflow() {
     s.ok("develop.wbPick", json!({"x": 0.5, "y": 0.5}));
     s.ok("crop.set", json!({"rect": [0.1, 0.1, 0.9, 0.85], "angle": 2.0}));
     s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    // Lens Blur from the subject (no depth model here), focus picked at the centre
+    let lb = s.ok("lensBlur.set", json!({"amount": 60, "focus": {"x": 0.5, "y": 0.5}, "focalRange": 15, "bokeh": "hexagon"}));
+    s.check(lb["enabled"] == true && lb["bokeh"] == "hexagon", "lensBlur.set did not switch Lens Blur on", &lb.to_string());
     s.undo_redo_roundtrip();
     s.request("ui.settle", json!({"timeoutMs": 20000}));
     s.consistent();
@@ -881,7 +884,7 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
     let hostile = r.chance(8);
     let num = |r: &mut Rng, lo: f64, hi: f64| if hostile { json!(r.pick(&[-1e30, 1e30, 0.0, -0.0, 1e-300])) } else { json!(r.f(lo, hi)) };
     let album = albums.first().map_or(json!(1), |a| json!(r.pick(&[*a, albums[albums.len() - 1], 424_242])));
-    match r.below(36) {
+    match r.below(37) {
         0 => ("library.select", json!({"ids": [id], "active": id})),
         1 => ("library.select", json!({"ids": some, "mode": r.pick(&["replace", "add", "toggle", "range"])})),
         2 => ("library.selectAll", json!({})),
@@ -939,6 +942,11 @@ fn random_action(r: &mut Rng, ids: &[u64], albums: &[u64], root: &Path, step: us
         32 => ("vignettingCalibration.create", json!({})),
         33 => ("vignettingCalibration.apply", json!({"map": if hostile { json!({"grid": [300, 2]}) } else { json!("0".repeat(64)) }, "ids": some})),
         34 => ("vignettingCalibration.remove", json!({"ids": some})),
+        // Lens Blur: a picked focus anywhere (hostile: far outside the photo, huge amounts)
+        35 => (
+            "lensBlur.set",
+            json!({"amount": num(r, 0.0, 100.0), "focus": {"x": num(r, 0.0, 1.0), "y": num(r, 0.0, 1.0)}, "bokeh": r.pick(&["circle", "hexagon", "ring", "nope"])}),
+        ),
         _ => ("app.export", json!({"format": "jpeg", "longEdge": 200, "ids": [id], "dir": root.join("monkey-export").to_string_lossy()})),
     }
 }
@@ -1030,6 +1038,55 @@ fn diffuser_dng(level: f64, seed: u64) -> Vec<u8> {
         lens_metadata: Default::default(),
     };
     lcc_raw::write_dng(&raw, &DngWriteOptions::default()).unwrap()
+}
+
+/// Skin-tone uniformity on Point Color (completion plan 7.9): a sample picked on the photo, its three uniformity
+/// sliders set through the develop controls (a hostile value clamped, an unknown field refused), the same on a mask's
+/// Point Color; undo, redo, a consistent catalog, an export that decodes, and a reopen that keeps it all.
+#[test]
+fn sil_skin_uniformity() {
+    let mut s = Sil::new("skinuniformity");
+    let (dir, n) = shoot(&s.root, 2, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    let picked = s.ok("pointColor.pick", json!({"x": 0.4, "y": 0.5}));
+    let i = picked["index"].as_u64().unwrap_or(0);
+    s.ok(
+        "develop.set",
+        json!({"values": {
+            format!("pointColor.{i}.hueUniformity"): 70,
+            format!("pointColor.{i}.satUniformity"): 1e9,
+            format!("pointColor.{i}.lumUniformity"): 30,
+        }}),
+    );
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let pc = &d["point_colors"][i as usize];
+    s.check(pc["hue_uniformity"] == 70.0 && pc["lum_uniformity"] == 30.0, "the uniformity sliders didn't stick", &pc.to_string());
+    s.check(pc["sat_uniformity"] == 100.0, "an out-of-range uniformity wasn't clamped", &pc.to_string());
+    let bad = s.request("develop.set", json!({"control": format!("pointColor.{i}.uniformity"), "value": 10}));
+    s.check(bad["ok"] == false, "an unknown Point Color field was accepted", &bad.to_string());
+    s.undo_redo_roundtrip();
+
+    // the same sliders on a mask's local Point Color
+    s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    s.ok("mask.pointColorPick", json!({"x": 0.5, "y": 0.5}));
+    s.ok("mask.pointColorSet", json!({"index": 0, "values": {"hue_uniformity": 50, "sat_uniformity": -20, "lum_uniformity": 400}}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let m = &d["masks"][0]["point_colors"][0];
+    s.check(
+        m["hue_uniformity"] == 50.0 && m["sat_uniformity"] == 0.0 && m["lum_uniformity"] == 100.0,
+        "the mask's uniformity wasn't set within its range",
+        &m.to_string(),
+    );
+    s.undo_redo_roundtrip();
+    s.request("ui.settle", json!({"timeoutMs": 20000}));
+    s.consistent();
+    s.export_decodes(&[ids[0]], json!({"format": "jpeg", "longEdge": 400}), true);
+    s.reopen_keeps_everything();
+    let after = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(after["point_colors"] == d["point_colors"], "the uniformity didn't survive a reopen", &after["point_colors"].to_string());
+    s.finish();
 }
 
 /// Flat-field correction end to end (design notes §10): a reference and three photos of the same setup, the map made
