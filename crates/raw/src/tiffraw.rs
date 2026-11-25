@@ -317,8 +317,11 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
         }
         comp::JPEG => {
             // Blackmagic's lossy CinemaDNG DCT-codes (SOF0/SOF1, 12-bit) its tiles under this compression code too
-            let limit = n.saturating_mul(2).max(1 << 16);
-            let f = if dctjpeg::is_dct(src) { dctjpeg::decode(src, limit)? } else { ljpeg::decode(src, limit)? };
+            // A lossless frame may hold at most twice the tile's samples, with no floor: a 65,536-sample floor let each
+            // of many tiny tiles decode (and keep) a frame far larger than the tile budget counts (adapted from
+            // craft-libs #2232). DCT tiles keep the floor: they are padded to whole MCUs.
+            let f =
+                if dctjpeg::is_dct(src) { dctjpeg::decode(src, n.saturating_mul(2).max(1 << 16))? } else { ljpeg::decode(src, n.saturating_mul(2))? };
             if f.data.len() < n {
                 // Some writers encode edge tiles smaller than nominal: accept a frame that covers the rows inside the image.
                 if f.data.is_empty() || f.data.len() % (cw * cpp) != 0 || f.data.len() / (cw * cpp) < vh {
@@ -327,6 +330,8 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
             }
             let mut v = f.data;
             v.resize(n, 0);
+            // a larger frame's surplus is not kept: the tile holds what the decode budget counts for it
+            v.shrink_to_fit();
             Ok(ChunkPx::U16(v))
         }
         comp::LOSSY_JPEG => {
@@ -857,6 +862,20 @@ mod budget_tests {
     use super::*;
     use lcc_tiff::image::Layout;
     use lcc_tiff::tags::photometric;
+
+    /// craft-libs #2232: 1,024 tiles of 2×2 all pointing at one lossless JPEG of 128×128×4 samples. With a
+    /// 65,536-sample floor on the decode limit each tile decoded and kept a frame of 65,536 samples that the decode
+    /// grouping counted as 8 bytes; a tile may now decode at most twice its own samples.
+    #[test]
+    fn tiny_tiles_with_a_large_frame_are_refused() {
+        let tile = ljpeg::encode(&vec![300u16; 128 * 128 * 4], 128, 128, 4, 12, 1, 0);
+        let info = ImageInfo { bits_per_sample: vec![12], byte_counts: vec![tile.len() as u64; 1024], ..aliased(64, 64, 2, 0) };
+        assert!(read_image(&tile, &info, ByteOrder::Little, Packing::Msb).is_err());
+        // a frame of the tile's own size still decodes
+        let fits = ljpeg::encode(&[300u16; 4], 2, 2, 1, 12, 1, 0);
+        let info = ImageInfo { bits_per_sample: vec![12], byte_counts: vec![fits.len() as u64; 4], ..aliased(4, 4, 2, 0) };
+        assert_eq!(read_image(&fits, &info, ByteOrder::Little, Packing::Msb).unwrap(), RawData::U16(vec![300; 4 * 4]));
+    }
 
     /// `w`×`h` CFA image in `tile`×`tile` lossless-JPEG tiles that all point at the same `payload` bytes at offset 0.
     fn aliased(w: u32, h: u32, tile: u32, payload: u64) -> ImageInfo {
