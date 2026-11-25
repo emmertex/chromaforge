@@ -51,6 +51,37 @@ pub enum ExportFormat {
     Dng,
     /// Render to DNG: a linear DNG (16-bit float) of the rendered photo, the edit baked in.
     RenderedDng,
+    /// OpenEXR: scene-linear half or float, linear Rec. 2020 or ACEScg primaries ([`ExrPrimaries`]).
+    Exr,
+}
+
+/// The primaries of an OpenEXR export (the samples are always linear).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExrPrimaries {
+    /// Linear Rec. 2020 (D65), the pipeline's working primaries.
+    #[default]
+    Rec2020,
+    /// ACEScg (ACES AP1 primaries, ACES white), the VFX working space.
+    #[serde(rename = "acescg")]
+    AcesCg,
+}
+
+impl ExrPrimaries {
+    pub const NAMES: &[&str] = &["rec2020", "acescg"];
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "rec2020" | "rec.2020" | "bt2020" => Some(Self::Rec2020),
+            "acescg" | "ap1" => Some(Self::AcesCg),
+            _ => None,
+        }
+    }
+    pub fn rgb_space(self) -> lcc_color::RgbSpace {
+        match self {
+            Self::Rec2020 => lcc_color::REC2020,
+            Self::AcesCg => lcc_codecs::ACESCG,
+        }
+    }
 }
 
 impl ExportFormat {
@@ -66,6 +97,7 @@ impl ExportFormat {
             "original" => Self::Original,
             "dng" => Self::Dng,
             "rendereddng" | "renderdng" | "render-dng" | "lineardng" => Self::RenderedDng,
+            "exr" | "openexr" => Self::Exr,
             _ => return None,
         })
     }
@@ -81,6 +113,7 @@ impl ExportFormat {
             // the original keeps its own extension (see `ExportOptions::file_name_for`)
             Self::Original => "",
             Self::Dng | Self::RenderedDng => "dng",
+            Self::Exr => "exr",
         }
     }
 
@@ -859,6 +892,9 @@ pub struct ExportOptions {
     pub video_quality: u8,
     /// Video: longest output side in pixels (`None` = the clip's size; never upscales).
     pub video_max_side: Option<u32>,
+    /// OpenEXR: the primaries of the linear samples.
+    #[serde(default)]
+    pub exr_primaries: ExrPrimaries,
 }
 
 impl Default for ExportOptions {
@@ -896,6 +932,7 @@ impl Default for ExportOptions {
             video_format: crate::export_video::VideoFormat::H264,
             video_quality: 80,
             video_max_side: None,
+            exr_primaries: ExrPrimaries::Rec2020,
         }
     }
 }
@@ -946,6 +983,7 @@ pub const OPTION_PARAMS: &[&str] = &[
     "videoFormat",
     "videoQuality",
     "videoMaxSide",
+    "exrPrimaries",
 ];
 
 /// Why an export can't add its files to Apple Photos on this platform (`None`: it can, when the
@@ -1121,7 +1159,7 @@ impl ExportOptions {
             match k.as_str() {
                 "format" => {
                     if ExportFormat::parse(string(cmd, k, v)?).is_none() {
-                        return Err(bad(format!("`{k}` must be one of jpeg|png|tiff|webp|avif|jxl|dng|original")));
+                        return Err(bad(format!("`{k}` must be one of jpeg|png|tiff|webp|avif|jxl|exr|dng|original")));
                     }
                 }
                 "quality" | "videoQuality" => {
@@ -1196,6 +1234,7 @@ impl ExportOptions {
                 "destinationMode" => one_of(k, v, &["specificFolder", "sameAsOriginal", "chooseLater"])?,
                 "tiffCompression" => one_of(k, v, &["none", "lzw", "zip", "deflate"])?,
                 "jxlEffort" => one_of(k, v, &["fast", "normal"])?,
+                "exrPrimaries" => parses(k, v, |s| ExrPrimaries::parse(s).is_some(), ExrPrimaries::NAMES)?,
                 "dngCompression" => {
                     serde_json::from_value::<DngCompression>(v.clone())
                         .map_err(|_| bad(format!("`{k}` must be one of lossless|deflate|uncompressed|lossy")))?;
@@ -1391,6 +1430,7 @@ impl ExportOptions {
             video_max_side: u("videoMaxSide").filter(|v| *v > 0).map(|v| {
                 v.clamp(u64::from(crate::export_video::VIDEO_MAX_SIDE_RANGE.0), u64::from(crate::export_video::VIDEO_MAX_SIDE_RANGE.1)) as u32
             }),
+            exr_primaries: s("exrPrimaries").and_then(ExrPrimaries::parse).unwrap_or(d.exr_primaries),
         }
     }
 
@@ -1469,6 +1509,8 @@ impl ExportOptions {
             (ExportFormat::Tiff, _) => OutputDepth::U16,
             (ExportFormat::RenderedDng, _) if self.hdr => OutputDepth::F32Hdr,
             (ExportFormat::RenderedDng, _) => OutputDepth::F32Linear,
+            (ExportFormat::Exr, _) if self.hdr => OutputDepth::F32Hdr,
+            (ExportFormat::Exr, _) => OutputDepth::F32Linear,
             (ExportFormat::Psd, Some(8)) => OutputDepth::U8,
             (ExportFormat::Psd, _) => OutputDepth::U16,
             (ExportFormat::Avif, _) if self.gain_map() => OutputDepth::U8,
@@ -1490,6 +1532,7 @@ impl ExportOptions {
             ExportFormat::Tiff => &[(16, "16-bit"), (8, "8-bit"), (32, "32-bit float")],
             ExportFormat::Psd => &[(16, "16-bit"), (8, "8-bit")],
             ExportFormat::RenderedDng => &[(16, "16-bit float")],
+            ExportFormat::Exr => &[(16, "16-bit half float"), (32, "32-bit float")],
             ExportFormat::Avif => &[(8, "8-bit"), (10, "10-bit")],
             ExportFormat::Jxl => &[(8, "8-bit"), (16, "16-bit")],
         }
@@ -1501,7 +1544,8 @@ impl ExportOptions {
         self.hdr
             && matches!(
                 (self.format, self.bit_depth),
-                (ExportFormat::Jpeg | ExportFormat::Avif | ExportFormat::Png | ExportFormat::Jxl, _) | (ExportFormat::Tiff, Some(32))
+                (ExportFormat::Jpeg | ExportFormat::Avif | ExportFormat::Png | ExportFormat::Jxl | ExportFormat::Exr, _)
+                    | (ExportFormat::Tiff, Some(32))
             )
     }
 
@@ -1524,6 +1568,8 @@ impl ExportOptions {
     pub fn effective_space(&self) -> OutputSpace {
         match self.format {
             ExportFormat::Avif | ExportFormat::Png | ExportFormat::Jxl if self.hdr && !self.gain_map() => OutputSpace::Rec2020,
+            // rendered in the working primaries; ACEScg is converted to when the file is written
+            ExportFormat::Exr => OutputSpace::Rec2020,
             ExportFormat::Avif => OutputSpace::Srgb,
             ExportFormat::Jxl if !self.jxl_lossless && matches!(self.color_space, OutputSpace::AdobeRgb | OutputSpace::ProPhoto) => {
                 OutputSpace::Rec2020
@@ -1752,6 +1798,7 @@ fn encode_8bit(img: &Rgba8, o: &ExportOptions, meta: Option<&Metadata>) -> Resul
         ExportFormat::Jxl => lcc_codecs::encode_jxl(&e, &o.jxl(space, false), &meta),
         f @ (ExportFormat::Original | ExportFormat::Dng) => return Err(format!("{f:?} export does not encode pixels")),
         ExportFormat::RenderedDng => return Err("Render to DNG needs a float render".into()),
+        ExportFormat::Exr => return Err("OpenEXR export needs a float render".into()),
     };
     r.map(|bytes| (bytes, None)).map_err(|e| e.to_string())
 }
@@ -2133,6 +2180,14 @@ fn encode_deep_with_alpha(img: &DeepImage, alpha: Option<&Plane>, o: &ExportOpti
         (ExportFormat::RenderedDng, DeepSamples::F32(v)) => {
             let m = meta_src.cloned().unwrap_or_default();
             return lcc_raw::write_rendered_dng(img.width, img.height, v, &img.space.rgb_space(), &m, xmp.clone()).map_err(|e| e.to_string());
+        }
+        (ExportFormat::Exr, DeepSamples::F32(v)) => {
+            let primaries = o.exr_primaries.rgb_space();
+            let m = img.space.rgb_space().to_space(&primaries).to_f32();
+            let lin: Vec<f32> =
+                v.as_chunks::<3>().0.iter().flat_map(|p| [0, 1, 2].map(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2])).collect();
+            let opts = lcc_codecs::ExrOptions { half: o.bit_depth != Some(32), primaries };
+            return lcc_codecs::encode_exr(w, h, 3, &lin, &opts).map_err(|e| e.to_string());
         }
         (ExportFormat::Avif, DeepSamples::F32(v)) if img.space == OutputSpace::Rec2020 => {
             lcc_codecs::encode_avif_hdr(w, h, v, o.quality, 8, &meta, o.hdr_transfer.codec())
@@ -5474,10 +5529,107 @@ mod tests {
             ExportFormat::Original,
             ExportFormat::Dng,
             ExportFormat::RenderedDng,
+            ExportFormat::Exr,
         ] {
             for &(b, _) in ExportOptions::bit_depths(f) {
                 let o = ExportOptions { format: f, bit_depth: Some(b), ..Default::default() };
                 assert_eq!(ExportOptions::from_params(&o.to_json()).ok(), Some(o), "{f:?} {b}");
+            }
+        }
+    }
+
+    /// Read an exported OpenEXR back: (width, height, RGB samples, chromaticities, written as half?).
+    fn read_exr(bytes: &[u8]) -> (usize, usize, Vec<[f32; 3]>, Option<exr::meta::attribute::Chromaticities>, bool) {
+        use exr::prelude::*;
+        let img = read()
+            .no_deep_data()
+            .largest_resolution_level()
+            .rgb_channels(
+                |res, ch: &RgbChannels| (res.width(), vec![[0.0f32; 3]; res.area()], ch.0.sample_type == SampleType::F16),
+                |(w, v, _), p, (r, g, b): (f32, f32, f32)| v[p.y() * *w + p.x()] = [r, g, b],
+            )
+            .first_valid_layer()
+            .all_attributes()
+            .from_buffered(std::io::Cursor::new(bytes))
+            .expect("a readable EXR");
+        let (_, px, half) = img.layer_data.channel_data.pixels;
+        (img.layer_data.size.width(), img.layer_data.size.height(), px, img.attributes.chromaticities, half)
+    }
+
+    /// Item 7.5: OpenEXR export writes the float render scene-linear, in half (default) or float,
+    /// in linear Rec. 2020 or converted to ACEScg, the primaries in the `chromaticities` header;
+    /// values above white (an HDR render) survive.
+    #[test]
+    fn exr_export_round_trips_scene_linear() {
+        use serde_json::json;
+        let samples: Vec<f32> = (0..4 * 3 * 3).map(|i| i as f32 * 0.11).collect(); // up to 3.85: past white
+        let img = DeepImage { width: 4, height: 3, space: OutputSpace::Rec2020, samples: DeepSamples::F32(samples.clone()) };
+        for (params, half, aces) in [
+            (json!({"format": "exr"}), true, false),
+            (json!({"format": "exr", "bitDepth": 32}), false, false),
+            (json!({"format": "openexr", "bitDepth": 32, "exrPrimaries": "acescg"}), false, true),
+            (json!({"path": "/out/a.exr", "exrPrimaries": "ACEScg"}), true, true),
+        ] {
+            let o = ExportOptions::from_params(&params).unwrap();
+            assert_eq!(o.format, ExportFormat::Exr);
+            assert_eq!(o.effective_space(), OutputSpace::Rec2020, "rendered in the working primaries");
+            assert!(matches!(o.effective_depth(), OutputDepth::F32Linear | OutputDepth::F32Hdr));
+            let bytes = encode_deep(&img, &o, None).unwrap();
+            let (w, h, px, chroma, was_half) = read_exr(&bytes);
+            assert_eq!((w, h, was_half), (4, 3, half), "{params}");
+            let space = if aces { lcc_codecs::ACESCG } else { lcc_color::REC2020 };
+            let c = chroma.expect("chromaticities");
+            assert!((c.red.x() - space.r.x as f32).abs() < 1e-6 && (c.white.x() - space.white.x as f32).abs() < 1e-6, "{params}");
+            // converting back to Rec. 2020 gives the render again
+            let back = space.to_space(&lcc_color::REC2020).to_f32();
+            for (i, p) in px.iter().enumerate() {
+                let v = [0, 1, 2].map(|r| back[r][0] * p[0] + back[r][1] * p[1] + back[r][2] * p[2]);
+                for (c, got) in v.iter().enumerate() {
+                    let want = samples[i * 3 + c];
+                    assert!((got - want).abs() <= want.abs() * 3e-3 + 2e-3, "{params} px {i}.{c}: {got} vs {want}");
+                }
+            }
+            assert!(px.iter().flatten().any(|&v| v > 1.0), "values above white are kept");
+        }
+        // ACEScg differs from Rec. 2020 for a saturated colour (it is a real conversion)
+        let red = DeepImage { width: 1, height: 1, space: OutputSpace::Rec2020, samples: DeepSamples::F32(vec![1.0, 0.0, 0.0]) };
+        let aces = ExportOptions { format: ExportFormat::Exr, exr_primaries: ExrPrimaries::AcesCg, ..Default::default() };
+        let (_, _, px, _, _) = read_exr(&encode_deep(&red, &aces, None).unwrap());
+        assert!(px[0][1] > 1e-3 && px[0][0] < 0.99, "{:?}", px[0]);
+        assert_eq!(ExportFormat::Exr.extension(), "exr");
+        assert!(ExportOptions { format: ExportFormat::Exr, hdr: true, ..Default::default() }.hdr_output());
+    }
+
+    /// Item 7.5: hostile EXR settings are errors or fall back; hostile samples are written finite.
+    #[test]
+    fn exr_export_hostile_settings() {
+        use serde_json::json;
+        let err = |p: serde_json::Value| ExportOptions::from_params(&p).map_or_else(|e| e.to_string(), |_| format!("accepted {p}"));
+        assert!(err(json!({"format": "exr", "exrPrimaries": "xyz"})).contains("exrPrimaries"));
+        assert!(err(json!({"format": "exr", "exrPrimaries": 3})).contains("exrPrimaries"));
+        assert!(err(json!({"format": "exr", "bitDepth": 8})).contains("bitDepth"));
+        assert!(err(json!({"format": "exr", "bitDepth": 1e300})).contains("bitDepth"));
+        // stored settings read leniently
+        let o = ExportOptions::from_json(&json!({"format": "exr", "exrPrimaries": "nonsense", "bitDepth": 7}));
+        assert_eq!((o.format, o.exr_primaries, o.bit_depth), (ExportFormat::Exr, ExrPrimaries::Rec2020, None));
+        // the 8-bit path refuses instead of writing nonsense
+        assert!(encode_image(&Rgba8::new(2, 2), &ExportOptions { format: ExportFormat::Exr, ..Default::default() }).is_err());
+        // NaN / inf / huge samples, an empty image and a 16-bit render: errors or finite files, never a panic
+        let nasty = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30, f32::MIN_POSITIVE];
+        for exr_primaries in [ExrPrimaries::Rec2020, ExrPrimaries::AcesCg] {
+            for bit_depth in [None, Some(32)] {
+                let o = ExportOptions { format: ExportFormat::Exr, exr_primaries, bit_depth, ..Default::default() };
+                let img = DeepImage { width: 2, height: 1, space: OutputSpace::Rec2020, samples: DeepSamples::F32(nasty.clone()) };
+                if let Ok(bytes) = encode_deep(&img, &o, None) {
+                    let (_, _, px, _, _) = read_exr(&bytes);
+                    assert!(px.iter().flatten().all(|v| v.is_finite()), "{px:?}");
+                }
+                let empty = DeepImage { width: 0, height: 0, space: OutputSpace::Rec2020, samples: DeepSamples::F32(vec![]) };
+                assert!(encode_deep(&empty, &o, None).is_err());
+                let short = DeepImage { width: 5, height: 5, space: OutputSpace::Rec2020, samples: DeepSamples::F32(vec![0.5; 7]) };
+                assert!(encode_deep(&short, &o, None).is_err());
+                let deep16 = DeepImage { width: 1, height: 1, space: OutputSpace::Rec2020, samples: DeepSamples::U16(vec![1, 2, 3]) };
+                assert!(encode_deep(&deep16, &o, None).is_err());
             }
         }
     }

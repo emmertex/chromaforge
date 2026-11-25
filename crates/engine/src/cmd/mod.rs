@@ -48,6 +48,7 @@ pub mod geocode;
 pub mod immich;
 pub mod import_tab;
 pub mod keywords;
+pub(crate) mod lens_blur;
 mod lens_db;
 pub mod levels;
 pub mod library;
@@ -267,6 +268,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(masks::specs());
         v.extend(retouch::specs());
         v.extend(retouch::retouch_specs());
+        v.extend(lens_blur::specs());
         v.extend(genfill::specs());
         v.extend(concepts::specs());
         v.extend(people_roles::specs());
@@ -417,6 +419,13 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 }
 pub(crate) fn f64_req(p: &Value, key: &str, cmd: &str) -> Result<f64> {
     p.get(key).and_then(Value::as_f64).ok_or_else(|| bad(cmd, format!("missing number `{key}`")))
+}
+/// Like [`f64_req`], but absent / null is `None`; a supplied value that is not a number is an error.
+pub(crate) fn f64_opt(p: &Value, key: &str, cmd: &str) -> Result<Option<f64>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_f64().map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be a number, got {v}"))),
+    }
 }
 /// A non-negative whole number that fits `usize`. Keep integer JSON exact; accept integral
 /// floating-point values for compatibility, without truncating or saturating their conversion.

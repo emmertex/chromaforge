@@ -83,7 +83,8 @@ pub fn from_tiff(tiff: &Tiff) -> Metadata {
     }
     m.stabilization = nikon_vibration_reduction(exif, m.make.as_deref(), tiff.order);
     m.orientation = ifd0.and_then(|i| i.u16(t::ORIENTATION)).filter(|v| (1..=8).contains(v)).map(Orientation::from_exif);
-    m.rating = ifd0.and_then(|i| i.i64(t::RATING)).map(|r| r.clamp(-1, 5) as i8);
+    // a SHORT 0xFFFF is how writers store -1 (rejected), not a five-star rating (adapted from craft-libs #967)
+    m.rating = ifd0.and_then(|i| i.i64(t::RATING)).map(|r| if r == 0xFFFF { -1 } else { r.clamp(-1, 5) } as i8);
 
     m.exposure_time = pos(either(t::EXPOSURE_TIME).and_then(|v| v.get_f64(0)))
         .or_else(|| exif.and_then(|e| e.f64(t::SHUTTER_SPEED_VALUE)).filter(|v| v.abs() < 64.0).map(|tv| 2f64.powf(-tv)));
@@ -415,6 +416,19 @@ pub(crate) mod tests {
         assert_eq!(m.lens_model.as_deref(), Some("LUMIX S 85/F1.8"));
         assert_eq!(m.focal_length, Some(85.0));
         assert_eq!(crate::extract(&rw2).lens_model.as_deref(), Some("LUMIX S 85/F1.8"));
+    }
+
+    /// craft-libs #967 (upstream #1995): the Exif Rating 0xFFFF reads as rejected (-1), not as five stars.
+    #[test]
+    fn rating_65535_reads_as_rejected() {
+        let rating = |v: u16| {
+            let mut ifd0 = IfdBuilder::new();
+            ifd0.set(t::RATING, Value::Short(vec![v]));
+            read_exif(&TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap()).rating
+        };
+        assert_eq!(rating(0xFFFF), Some(-1));
+        assert_eq!(rating(3), Some(3));
+        assert_eq!(rating(9), Some(5));
     }
 
     /// A RW2 whose own short Exif IFD lacks ISO, with `inner` as the Exif of its JpgFromRaw and `raw_iso` in

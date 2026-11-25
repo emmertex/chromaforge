@@ -35,13 +35,14 @@ Lightroom `.xmp` presets); Import Keywords… reads keyword lists.
 
 Supported files: JPEG, PNG, TIFF, WebP, AVIF/HEIF (also on Android), PSD, DNG and the common raw formats (Sony ARW, Nikon NEF and NEFX, Canon
 CR2/CR3, Fujifilm RAF, Panasonic RW2, Olympus ORF, Pentax PEF, Samsung SRW and more). Per-model status is in the
-[parity tracker](../parity-checklist.md) (`LR-IMP-CAMERA-COVERAGE`).
+[parity tracker](../parity-checklist.md) (`LR-IMP-CAMERA-COVERAGE`). Images over 512 megapixels are refused; the error
+gives the image's size in megapixels and the limit.
 
 ## Export
 
 File → Export… opens the export dialog; File → Export with Previous (`Cmd+Alt+Shift+E`) repeats the last one.
 
-- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP, AVIF, DNG, or the original file with an XMP sidecar.
+- Formats: JPEG, PNG, TIFF (8/16/32-bit, LZW/ZIP), WebP, AVIF, OpenEXR (scene-linear 16-bit half or 32-bit float, linear Rec. 2020 or ACEScg), DNG, or the original file with an XMP sidecar.
   HDR edits can also export as gain-map JPEGs, PQ AVIF, PNG and JPEG XL, as float TIFFs, and (AVIF and JPEG XL with HDR mode Gain map) as an SDR image with a gain map.
 - Size by long/short edge, width/height, megapixels or percent; resolution in ppi; JPEG quality or a file size limit.
 - Colour space sRGB, Display P3, Adobe RGB, ProPhoto RGB or Rec. 2020.

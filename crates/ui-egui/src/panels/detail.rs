@@ -3326,12 +3326,16 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
     }
 
     if app.ui.right != RightPanel::Crop {
-        // Keyed by the dragged control's id, not the interaction label: a mask's "Exposure" slider
-        // must not bring up the global clipping mask.
+        // Keyed by the dragged control's id, not the interaction label: the interaction only says
+        // "Drag", so the id decides. The Edit panel's tone sliders carry the `light.` prefix; a
+        // mask's tone sliders (the Masking panel's local adjustments) share the bare
+        // `LocalAdjustments` field names and ask for the same clipping previews.
         if alt_held && app.session.interaction.is_some() {
             match app.ui.dragging_control.as_deref() {
-                Some("light.exposure" | "light.highlights" | "light.whites") => return Overlay::Clipping(Some(false)),
-                Some("light.shadows" | "light.blacks") => return Overlay::Clipping(Some(true)),
+                Some("light.exposure" | "light.highlights" | "light.whites" | "exposure" | "highlights" | "whites") => {
+                    return Overlay::Clipping(Some(false));
+                }
+                Some("light.shadows" | "light.blacks" | "shadows" | "blacks") => return Overlay::Clipping(Some(true)),
                 // Sharpening's sliders: each its own black-and-white view of the band it sharpens
                 Some("detail.sharpenAmount") => return Overlay::Sharpen(SharpenView::Amount),
                 Some("detail.sharpenRadius") => return Overlay::Sharpen(SharpenView::Radius),
@@ -3411,6 +3415,10 @@ fn general_interaction(
     }
     if app.ui.tool == "colorRange" {
         color_range_pick(app, ui, resp, map);
+        return;
+    }
+    if app.ui.tool == "lensFocus" {
+        lens_focus_pick(app, ui, resp, map);
         return;
     }
     if app.ui.tool == "pointColor" {
@@ -4557,6 +4565,30 @@ fn gradient_cursor(shape: &MaskShape, handle: u8, q: Pos2, map: &CanvasMap) -> O
     }
 }
 
+/// Lens Blur's focus picker: a click keeps the distance under it sharp; a drag keeps the area's
+/// (its median distance), centred where the drag began. The picker stays armed.
+fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: &CanvasMap) {
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+    if resp.clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let n = map.norm(q);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": n.x, "y": n.y}, "focusSize": 0.0})) {
+            app.toast(ui.ctx(), e);
+        }
+    } else if resp.drag_stopped()
+        && let (Some(start), Some(end)) = (ui.input(|i| i.pointer.press_origin()), resp.interact_pointer_pos())
+    {
+        let (a, b) = (map.norm(start), map.norm(end));
+        let size = (a.x - b.x).abs().max((a.y - b.y).abs()).min(0.5);
+        if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": a.x, "y": a.y}, "focusSize": size})) {
+            app.toast(ui.ctx(), e);
+        }
+    }
+}
+
 /// Colour Range eyedropper: a click samples the colour under it for the selected mask's
 /// colour range, at normalized frame coordinates (crop, rotation and zoom aware);
 /// ⇧-click adds a sample (up to 5).
@@ -4603,6 +4635,27 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
             let n = map.norm(q);
             if let Ok(r) = app.run("mask.pointColorPick", json!({"x": n.x, "y": n.y})) {
                 app.ui.mask_point_color = r.field("index").as_u64().unwrap_or(0) as usize;
+            }
+            app.ui.tool.clear();
+        }
+        return;
+    }
+    // the mask's Recolor eyedroppers: one click samples into the active mask's colour ("to") or
+    // its Color to Replace ("from")
+    if let Some(target) = match app.ui.tool.as_str() {
+        "maskRecolor" => Some("to"),
+        "maskRecolorFrom" => Some("from"),
+        _ => None,
+    } {
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.clicked()
+            && let Some(q) = resp.interact_pointer_pos()
+        {
+            let n = map.norm(q);
+            if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
+                app.toast(ui.ctx(), e);
             }
             app.ui.tool.clear();
         }

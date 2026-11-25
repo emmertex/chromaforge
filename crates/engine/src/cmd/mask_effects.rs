@@ -35,6 +35,14 @@ pub const FIELDS: &[&str] = &[
     "defringe",
     "color_hue",
     "color_sat",
+    "recolor",
+    "recolor_r",
+    "recolor_g",
+    "recolor_b",
+    "recolor_range",
+    "recolor_from_r",
+    "recolor_from_g",
+    "recolor_from_b",
 ];
 
 /// Brush settings an effect can carry (Lightroom keeps these per brush, not in presets).
@@ -128,11 +136,41 @@ impl Default for MaskEffect {
 
 /// Field `k` of `a` (0 for an unknown name).
 pub fn get(a: &LocalAdjustments, k: &str) -> f64 {
-    serde_json::to_value(a).ok().and_then(|v| v.get(k).and_then(Value::as_f64)).unwrap_or(0.0)
+    // (the Recolor fields directly: a 0 one is left out of the JSON, so a lookup by name misses it)
+    let direct = match k {
+        "recolor" => Some(a.recolor),
+        "recolor_r" => Some(a.recolor_r),
+        "recolor_g" => Some(a.recolor_g),
+        "recolor_b" => Some(a.recolor_b),
+        "recolor_range" => Some(a.recolor_range),
+        "recolor_from_r" => Some(a.recolor_from_r),
+        "recolor_from_g" => Some(a.recolor_from_g),
+        "recolor_from_b" => Some(a.recolor_from_b),
+        _ => None,
+    };
+    direct.unwrap_or_else(|| serde_json::to_value(a).ok().and_then(|v| v.get(k).and_then(Value::as_f64)).unwrap_or(0.0))
 }
 
 /// `a` with field `k` set to `v` (unchanged for an unknown name).
 pub fn set(a: &LocalAdjustments, k: &str, v: f64) -> LocalAdjustments {
+    let mut out = *a;
+    let direct = match k {
+        "recolor" => Some(&mut out.recolor),
+        "recolor_r" => Some(&mut out.recolor_r),
+        "recolor_g" => Some(&mut out.recolor_g),
+        "recolor_b" => Some(&mut out.recolor_b),
+        "recolor_range" => Some(&mut out.recolor_range),
+        "recolor_from_r" => Some(&mut out.recolor_from_r),
+        "recolor_from_g" => Some(&mut out.recolor_from_g),
+        "recolor_from_b" => Some(&mut out.recolor_from_b),
+        _ => None,
+    };
+    if let Some(slot) = direct {
+        if v.is_finite() {
+            *slot = v;
+        }
+        return out;
+    }
     let Ok(Value::Object(mut o)) = serde_json::to_value(a) else { return *a };
     if !o.contains_key(k) || !v.is_finite() {
         return *a;
@@ -141,9 +179,16 @@ pub fn set(a: &LocalAdjustments, k: &str, v: f64) -> LocalAdjustments {
     serde_json::from_value(Value::Object(o)).unwrap_or(*a)
 }
 
-/// The sliders of `a` away from 0 (the colour's hue only with its saturation).
+/// The sliders of `a` away from 0: a tint's hue only with its saturation; Recolor's colour
+/// channels and Range only with its Amount.
 pub fn changed_fields(a: &LocalAdjustments) -> Vec<String> {
-    let mut out: Vec<String> = FIELDS.iter().filter(|k| get(a, k).abs() > 1e-9 && **k != "color_hue").map(|k| k.to_string()).collect();
+    let on = a.recolor.abs() > 1e-9;
+    let with_amount = ["recolor", "recolor_r", "recolor_g", "recolor_b", "recolor_range", "recolor_from_r", "recolor_from_g", "recolor_from_b"];
+    let mut out: Vec<String> = FIELDS
+        .iter()
+        .filter(|k| get(a, k).abs() > 1e-9 && **k != "color_hue" && (on || !with_amount.contains(&**k)))
+        .map(|k| k.to_string())
+        .collect();
     if a.color_sat.abs() > 1e-9 {
         out.push("color_hue".into());
     }
@@ -216,6 +261,9 @@ fn clamp_point(p: PointColor) -> PointColor {
         sat_shift: c(p.sat_shift, -100.0, 100.0, 0.0),
         lum_shift: c(p.lum_shift, -100.0, 100.0, 0.0),
         variance: c(p.variance, -100.0, 100.0, 0.0),
+        hue_uniformity: c(p.hue_uniformity, 0.0, 100.0, 0.0),
+        sat_uniformity: c(p.sat_uniformity, 0.0, 100.0, 0.0),
+        lum_uniformity: c(p.lum_uniformity, 0.0, 100.0, 0.0),
         range: c(p.range, 0.0, 100.0, d.range),
         hue_range: c(p.hue_range, 0.0, 100.0, d.hue_range),
         sat_range: c(p.sat_range, 0.0, 100.0, d.sat_range),

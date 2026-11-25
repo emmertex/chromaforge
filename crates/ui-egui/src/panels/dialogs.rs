@@ -488,7 +488,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             );
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
                 Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
-                Dialog::AutoStack { gap } => {
+                Dialog::AutoStack { gap, top } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
                         egui::Slider::new(gap, 0.0..=86400.0)
@@ -498,7 +498,28 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             .custom_parser(crate::panels::dialogs::parse_gap),
                     );
                     crate::widgets::named(r, crate::i18n::tr("Stack photos taken within this time of each other:"));
-                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "preview": true})).unwrap_or_default();
+                    // which file type each new stack shows (a stack without one keeps its first photo)
+                    let h = ui.label(egui::RichText::new(crate::i18n::tr("Put on top of each stack:")).color(t.text_label));
+                    crate::widgets::register(ui.ctx(), "label:autoStackTop", h.rect);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (i, (value, label)) in [
+                            (lcc_catalog::StackTop::First, "First photo in time"),
+                            (lcc_catalog::StackTop::Raw, "Raw file"),
+                            (lcc_catalog::StackTop::Jpeg, "JPEG file"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            if crate::widgets::text_button(ui, &format!("autoStackTop-{i}"), label, *top == value).clicked() {
+                                *top = value;
+                            }
+                        }
+                    });
+                    if *top != lcc_catalog::StackTop::First {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Stacks without one keep their first photo in time.")).color(t.text_dim));
+                    }
+                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "top": *top, "preview": true})).unwrap_or_default();
                     let scope = if app.session.selection.ids.len() > 1 { "the selected photos" } else { "the photos in view" };
                     crate::dialog_frame::note(ui,
                         egui::RichText::new({
@@ -2631,7 +2652,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             r
         }
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
-        Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AutoStack { gap, top } => app.run("stack.auto", json!({"gap": gap, "top": top})),
         Dialog::AdvancedSearch { search } => {
             // a half-typed number or an unsupported condition keeps the panel open on the problem
             crate::advanced_search::draft_query(search).and_then(|query| app.run("library.advancedSearch", json!({"query": query})))
@@ -3623,7 +3644,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
     }
 
     // ---- File Settings: format (quality) / color space / bit depth
-    const FORMATS: [(F, &str); 10] = [
+    const FORMATS: [(F, &str); 11] = [
         (F::Jpeg, "JPEG"),
         (F::Png, "PNG"),
         (F::Tiff, "TIFF"),
@@ -3633,8 +3654,11 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         (F::Jxl, "JPEG XL"),
         (F::Dng, "DNG"),
         (F::RenderedDng, "DNG"),
+        (F::Exr, "OpenEXR"),
         (F::Original, "Original files"),
     ];
+    use lcc_engine::export::ExrPrimaries as P;
+    const EXR_PRIMARIES: [(P, &str); 2] = [(P::Rec2020, "Linear Rec. 2020"), (P::AcesCg, "ACEScg")];
     const SPACES: [(C, &str); 5] =
         [(C::Srgb, "sRGB"), (C::DisplayP3, "P3"), (C::AdobeRgb, "Adobe RGB"), (C::ProPhoto, "ProPhoto"), (C::Rec2020, "Rec.2020")];
     let mut summary = label_of(&FORMATS, opts.format);
@@ -3642,7 +3666,9 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
         summary = format!("{summary} ({}%)", opts.quality);
     }
     if rendered {
-        if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
+        if opts.format == F::Exr {
+            summary = format!("{summary} / {}", label_of(&EXR_PRIMARIES, opts.exr_primaries));
+        } else if !(opts.hdr && matches!(opts.format, F::Avif | F::Png | F::Jxl)) && opts.format != F::Avif {
             summary = format!("{summary} / {}", label_of(&SPACES, opts.effective_space()));
         }
         let depths = lcc_engine::export::ExportOptions::bit_depths(opts.format);
@@ -3670,6 +3696,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 (F::Webp, "WebP"),
                 (F::Avif, "AVIF"),
                 (F::Jxl, "JPEG XL"),
+                (F::Exr, "OpenEXR"),
                 (F::Dng, "DNG"),
                 (F::Original, "Original files"),
             ],
@@ -3737,7 +3764,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                 &mut opts.dng_compression,
             );
         }
-        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl) {
+        if matches!(opts.format, F::Jpeg | F::Tiff | F::Avif | F::Png | F::Jxl | F::Exr) {
             let tip = crate::i18n::tr(
                 "Photos edited in HDR: JPEG with an HDR gain map (looks right everywhere, brighter highlights on HDR displays), AVIF as 10-bit, PNG and JPEG XL as 16-bit Rec. 2020 PQ; TIFF needs 32-bit float",
             );
@@ -3776,6 +3803,10 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: Rec. 2020 PQ (HDR JPEG XL)")).color(t.text_dim));
         } else if opts.format == F::Avif {
             crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Color space: sRGB (AVIF)")).color(t.text_dim));
+        } else if opts.format == F::Exr {
+            choices(ui, "Primaries", "exportExrPrimaries", &EXR_PRIMARIES, &mut opts.exr_primaries);
+            let note = "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.";
+            crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr(note)).color(t.text_dim));
         } else {
             use lcc_engine::export::OutputSpace as C;
             choices(

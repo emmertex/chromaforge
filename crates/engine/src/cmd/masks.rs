@@ -1244,6 +1244,91 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "mask.recolor",
+            "Set Mask Recolor",
+            [],
+            None,
+            "{id?, color?: \"#rrggbb\" (sRGB), amount?: 0..100 (0 = off), range?: −100..100 (the hue window; each 50 doubles or halves it), from?: \"#rrggbb\"|null (Color to Replace; null: Automatic)}: the masked area's main colour takes `color` and keeps its shading, folds and light; with no mask selected (nor named) the settings for the next new mask change → {recolor, rgb, from}",
+            has_active,
+            |s, p| {
+                let c = "mask.recolor";
+                let (color, from) = (hex_param(p, "color", c)?, hex_param(p, "from", c)?);
+                let amount = super::f64_opt(p, "amount", c)?;
+                let range = super::f64_opt(p, "range", c)?;
+                let set = |a: &mut LocalAdjustments| {
+                    if let Some(rgb) = color {
+                        (a.recolor_r, a.recolor_g, a.recolor_b) = (rgb[0], rgb[1], rgb[2]);
+                    }
+                    if let Some(rgb) = from {
+                        (a.recolor_from_r, a.recolor_from_g, a.recolor_from_b) = (rgb[0], rgb[1], rgb[2]);
+                        if rgb.iter().all(|v| *v <= 0.0) {
+                            // an explicit black clears Color to Replace back to Automatic
+                            (a.recolor_from_r, a.recolor_from_g, a.recolor_from_b) = (0.0, 0.0, 0.0);
+                        }
+                    } else if p.get("from").is_some() {
+                        (a.recolor_from_r, a.recolor_from_g, a.recolor_from_b) = (0.0, 0.0, 0.0);
+                    }
+                    if let Some(v) = amount {
+                        a.recolor = v;
+                    }
+                    if let Some(v) = range {
+                        a.recolor_range = v;
+                    }
+                    *a = clamp_local(*a);
+                };
+                // no mask selected (nor named): the settings for the next new mask
+                if s.active_mask.is_none() && p.get("id").and_then(Value::as_u64).is_none() {
+                    set(&mut s.mask_next);
+                    s.mask_next_set = true;
+                    let a = s.mask_next;
+                    return Ok(json!({"next": a, "recolor": a.recolor, "from": from}));
+                }
+                let mid = mask_id(p, s.active_mask, c)?;
+                let mut out = LocalAdjustments::default();
+                masks_edit(s, c, "Recolor", |masks, _| {
+                    let i = find(masks, mid, c)?;
+                    set(&mut masks[i].adjust);
+                    out = masks[i].adjust;
+                    Ok(())
+                })?;
+                Ok(json!({"recolor": out.recolor, "rgb": [out.recolor_r, out.recolor_g, out.recolor_b], "range": out.recolor_range}))
+            }
+        ),
+        cmd!(
+            "mask.recolorPick",
+            "Pick Mask Recolor Color",
+            [],
+            None,
+            "{id?, x, y} normalized image coords, target?: \"to\" (default) | \"from\": samples the developed colour at the point into the mask's Recolor colour (`to`) or its Color to Replace (`from`) → {hex, rgb, target}",
+            has_active,
+            |s, p| {
+                let c = "mask.recolorPick";
+                let (x, y) = (super::f64_req(p, "x", c)?, super::f64_req(p, "y", c)?);
+                if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                    return Err(bad(c, "`x` and `y` are normalized points on the photo (0..1 each)"));
+                }
+                let to = p.get("target").and_then(Value::as_str) != Some("from");
+                let rgb = super::color::probe(s, c, x, y, recolor_probe_neutral)?;
+                let rgb64 = rgb.map(f64::from);
+                let hex = lcc_pipeline::recolor::to_hex(rgb64);
+                let mid = mask_id(p, s.active_mask, c)?;
+                masks_edit(s, c, "Mask Recolor", |masks, _| {
+                    let i = find(masks, mid, c)?;
+                    let a = &mut masks[i].adjust;
+                    let slot = if to {
+                        [&mut a.recolor_r, &mut a.recolor_g, &mut a.recolor_b]
+                    } else {
+                        [&mut a.recolor_from_r, &mut a.recolor_from_g, &mut a.recolor_from_b]
+                    };
+                    for (v, n) in slot.into_iter().zip(rgb64) {
+                        *v = n;
+                    }
+                    Ok(())
+                })?;
+                Ok(json!({"hex": hex, "rgb": rgb64, "target": if to { "to" } else { "from" }}))
+            }
+        ),
+        cmd!(
             "mask.next",
             "New Mask Settings",
             [],
@@ -1293,7 +1378,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Mask Point Color",
             [],
             None,
-            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, range, hue_range, sat_range, lum_range}}: changes one of the mask's Point Color samples (shifts and variance −100..100, ranges 0..100)",
+            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, hue_uniformity, sat_uniformity, lum_uniformity, range, hue_range, sat_range, lum_range}}: changes one of the mask's Point Color samples (shifts and variance −100..100, uniformities and ranges 0..100)",
             has_active,
             |s, p| {
                 let c = "mask.pointColorSet";
@@ -1313,7 +1398,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     for f in [&mut n.hue_shift, &mut n.sat_shift, &mut n.lum_shift, &mut n.variance] {
                         *f = clamp(*f, -100.0, 100.0);
                     }
-                    for f in [&mut n.range, &mut n.hue_range, &mut n.sat_range, &mut n.lum_range] {
+                    for f in [
+                        &mut n.hue_uniformity,
+                        &mut n.sat_uniformity,
+                        &mut n.lum_uniformity,
+                        &mut n.range,
+                        &mut n.hue_range,
+                        &mut n.sat_range,
+                        &mut n.lum_range,
+                    ] {
                         *f = clamp(*f, 0.0, 100.0);
                     }
                     *pc = n;
@@ -1898,8 +1991,30 @@ pub(crate) fn clamp_local(mut a: LocalAdjustments) -> LocalAdjustments {
     for v in [&mut a.grade_shadows_lum, &mut a.grade_midtones_lum, &mut a.grade_highlights_lum, &mut a.grade_global_lum] {
         c(v, -100.0, 100.0);
     }
+    c(&mut a.recolor, 0.0, 100.0);
+    c(&mut a.recolor_range, -100.0, 100.0);
+    for v in [&mut a.recolor_r, &mut a.recolor_g, &mut a.recolor_b, &mut a.recolor_from_r, &mut a.recolor_from_g, &mut a.recolor_from_b] {
+        c(v, 0.0, 1.0);
+    }
     c(&mut a.amount, 0.0, 200.0);
     a
+}
+
+/// `"#7a3fb0"` (or `null`) from a command parameter: `Ok(None)` when absent or null.
+fn hex_param(p: &Value, key: &str, c: &str) -> Result<Option<[f64; 3]>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => lcc_pipeline::recolor::parse_hex(s).map(Some).ok_or_else(|| bad(c, format!("`{key}` is not a #rrggbb colour"))),
+        Some(_) => Err(bad(c, format!("`{key}` must be a \"#rrggbb\" string or null"))),
+    }
+}
+
+/// What a Recolor eyedropper renders without: Recolor itself, so a pick inside the mask samples
+/// the colour before it changes.
+fn recolor_probe_neutral(d: &mut lcc_develop::DevelopSettings) {
+    for m in &mut d.masks {
+        m.adjust.recolor = 0.0;
+    }
 }
 
 /// One stroke of `mask.brushStroke` from `r` (the command's parameters, or one of its `runs`), the values `r`

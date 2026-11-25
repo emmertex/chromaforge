@@ -2923,6 +2923,8 @@ mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
 #[cfg(test)]
+mod tests_lens_blur;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;
 #[cfg(test)]
@@ -2946,6 +2948,8 @@ mod tests_mask_geometry;
 mod tests_mask_links;
 #[cfg(test)]
 mod tests_mask_next;
+#[cfg(test)]
+mod tests_mask_recolor;
 #[cfg(test)]
 mod tests_merge;
 #[cfg(test)]

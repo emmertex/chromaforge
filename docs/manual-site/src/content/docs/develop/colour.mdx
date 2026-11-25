@@ -75,10 +75,28 @@ The **Tone Equalizer** (beyond Lightroom, after darktable's module of the same n
 ## Other colour tools
 - **Tone Curve**: point (RGB or per channel) and parametric, presets, import and export.
 - **Color Mixer**: eight-band HSL and B&W mix.
-- **Point Color**: pick a colour, shift its hue, saturation and luminance, with range and variance.
+- **Point Color**: pick a colour, shift its hue, saturation and luminance, with range and variance. See [Skin-tone uniformity](#skin-tone-uniformity) below.
 - **Calibration**: shadows tint, primary hue and saturation.
 - **White balance**: presets and eyedropper.
 - **Local colour**: Color Mixer, Point Color, curves and Colour Range inside masks.
+
+## Skin-tone uniformity
+
+<NeedsImage what="Point Color with a skin sample selected: the Uniformity sliders (Hue, Saturation, Lightness) between the shifts and the Range sliders" />
+
+Blotchy or uneven skin usually means the colours of the face spread around one tone: some patches redder, some paler,
+some more saturated. **Uniformity** evens them out, as Capture One's skin-tone tool does.
+
+1. In **Color Mixer ▸ Point Color**, pick the skin with the eyedropper.
+2. Under **Uniformity**, raise **Hue Uniformity**, **Saturation Uniformity** or **Lightness Uniformity** (0–100). Each
+   pulls the colours inside the sample's range towards the sample, on that axis only: Hue evens out red and yellow
+   patches, Saturation evens out how strong the colour is, Lightness evens out bright and dark patches.
+3. Use **Range** to say how far from the sample the colours it touches may be; **Visualize range** shows them.
+
+At 100 the colours closest to the sample take its value on that axis; colours near the edge of the range move less, so
+there is no hard edge. **Variance** still works next to it and moves all three axes at once. The same sliders are in a
+mask's Point Color, so you can even out one face only. Lightroom has no uniformity, so these sliders are not written to
+Lightroom XMP; your catalog and presets keep them.
 
 ## Profiles and looks
 <Shot name="profiles" alt="The Profile Browser" menu="Window ▸ Edit Panels ▸ Profile Browser" />

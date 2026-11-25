@@ -82,6 +82,11 @@ impl ModalLayout {
         let max = self.body_max_height(ui);
         let key = self.id.with("dialog-body-height");
         let last = ui.ctx().data(|d| d.get_temp::<f32>(key));
+        // The content gets the same id in both layouts below, so a widget that keeps state (a collapsing header, a
+        // scroll position, a text cursor) has one state, not one per layout. Without it, closing a section that took
+        // the body from taller than the room to shorter switched to the direct layout, where the section was still
+        // open, which made the body too tall again: the two layouts alternated on every frame, each discarding it.
+        let content = egui::UiBuilder::new().id(self.id.with("dialog-body-content"));
         let (out, height) = if last.is_some_and(|h| h > max) {
             let out = egui::ScrollArea::vertical()
                 .id_salt(self.id.with("dialog-body"))
@@ -89,11 +94,11 @@ impl ModalLayout {
                 .min_scrolled_height(max)
                 // full width: no reflow when the scrollbar appears
                 .auto_shrink([false, false])
-                .show(ui, add);
+                .show(ui, |ui| ui.scope_builder(content, add).inner);
             (out.inner, out.content_size.y)
         } else {
             let top = ui.cursor().top();
-            let out = ui.scope(add).inner;
+            let out = ui.scope_builder(content, add).inner;
             (out, ui.min_rect().bottom() - top)
         };
         self.body_bottom = Some(ui.cursor().top());
@@ -739,4 +744,62 @@ pub fn grab_handle(ui: &mut Ui) -> bool {
             _ => false,
         });
     resp.clicked() || pulled
+}
+
+#[cfg(test)]
+mod modal_body_tests {
+    use super::*;
+
+    /// One frame of a dialog body holding a collapsible section (2000 points open, a header's height closed) in an
+    /// 800 x 600 viewport, with `events`; returns the section's openness.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, header: &mut Option<Rect>) -> f32 {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))), events, ..Default::default() };
+        let mut openness = f32::NAN;
+        let mut out = ctx.run_ui(input, |ui| {
+            let mut layout = ModalLayout::begin(ui, Id::new("modal-body-test"));
+            layout.body(ui, |ui| {
+                let r = egui::CollapsingHeader::new("Section").id_salt("section").default_open(true).show(ui, |ui| {
+                    ui.add_space(2000.0);
+                });
+                *header = Some(r.header_response.rect);
+                openness = r.openness;
+            });
+        });
+        // nothing paints in this test: drop the font atlas updates, as epaint requires
+        out.textures_delta.clear();
+        openness
+    }
+
+    fn body_height(ctx: &egui::Context) -> Option<f32> {
+        ctx.data(|d| d.get_temp::<f32>(Id::new("modal-body-test").with("dialog-body-height")))
+    }
+
+    /// Closing a section that takes the body from taller than the room (scrolled) to shorter (laid out directly)
+    /// keeps it closed and the layout settles: both layouts must give the body's widgets the same state. When they
+    /// didn't, the direct layout found the section open, the body was too tall again, and the two layouts
+    /// alternated on every frame, each one discarding the frame (What's New's long newest date, 2026-11-25).
+    #[test]
+    fn a_section_closed_across_the_scroll_threshold_stays_closed() {
+        let ctx = egui::Context::default();
+        let mut header = None;
+        for _ in 0..10 {
+            frame(&ctx, Vec::new(), &mut header);
+        }
+        assert!(body_height(&ctx).is_some_and(|h| h > 1000.0), "open, the body is taller than the room: {:?}", body_height(&ctx));
+        let at = header.expect("the header was drawn").center();
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, vec![egui::Event::PointerMoved(at), press(true)], &mut header);
+        frame(&ctx, vec![press(false)], &mut header);
+        let mut openness = f32::NAN;
+        for _ in 0..120 {
+            openness = frame(&ctx, Vec::new(), &mut header);
+        }
+        assert_eq!(openness, 0.0, "the section stays closed");
+        let settled = body_height(&ctx);
+        assert!(settled.is_some_and(|h| h < 100.0), "closed, the body is a header's height: {settled:?}");
+        for _ in 0..5 {
+            frame(&ctx, Vec::new(), &mut header);
+            assert_eq!(body_height(&ctx), settled, "the layout settles instead of alternating");
+        }
+    }
 }
