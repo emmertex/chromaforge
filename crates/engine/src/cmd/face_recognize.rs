@@ -1321,13 +1321,13 @@ mod imp {
             }
             if mode == FaceScanMode::Rebuild {
                 s.faces.index.forget_photo(id.0);
-            } else if mode == FaceScanMode::RebuildNamed {
-                if let Some(photo) = s.catalog.photo(*id) {
-                    for region in photo.meta.regions.iter().filter(|region| {
-                        region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty())
-                    }) {
-                        s.faces.index.forget_region(id.0, &region.rect);
-                    }
+            } else if mode == FaceScanMode::RebuildNamed
+                && let Some(photo) = s.catalog.photo(*id)
+            {
+                for region in photo.meta.regions.iter().filter(|region| {
+                    region.kind == RegionKind::Face && region.name.as_deref().is_some_and(|name| !name.trim().is_empty())
+                }) {
+                    s.faces.index.forget_region(id.0, &region.rect);
                 }
             }
             queue.push_back(FaceScanItem {
