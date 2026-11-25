@@ -1297,7 +1297,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set Mask Point Color",
             [],
             None,
-            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, range, hue_range, sat_range, lum_range}}: changes one of the mask's Point Color samples (shifts and variance −100..100, ranges 0..100)",
+            "{id?, index, values: {hue_shift, sat_shift, lum_shift, variance, hue_uniformity, sat_uniformity, lum_uniformity, range, hue_range, sat_range, lum_range}}: changes one of the mask's Point Color samples (shifts and variance −100..100, uniformities and ranges 0..100)",
             has_active,
             |s, p| {
                 let c = "mask.pointColorSet";
@@ -1317,7 +1317,15 @@ pub fn specs() -> Vec<CommandSpec> {
                     for f in [&mut n.hue_shift, &mut n.sat_shift, &mut n.lum_shift, &mut n.variance] {
                         *f = clamp(*f, -100.0, 100.0);
                     }
-                    for f in [&mut n.range, &mut n.hue_range, &mut n.sat_range, &mut n.lum_range] {
+                    for f in [
+                        &mut n.hue_uniformity,
+                        &mut n.sat_uniformity,
+                        &mut n.lum_uniformity,
+                        &mut n.range,
+                        &mut n.hue_range,
+                        &mut n.sat_range,
+                        &mut n.lum_range,
+                    ] {
                         *f = clamp(*f, 0.0, 100.0);
                     }
                     *pc = n;
