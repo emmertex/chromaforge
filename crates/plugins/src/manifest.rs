@@ -833,7 +833,9 @@ mod tests {
     #[test]
     fn publish_comments_need_the_publish_services_feature() {
         let with = |requires: Value| {
-            Manifest::parse(json!({"id": "a", "name": "A", "requires": requires, "publish": {"id": "s", "name": "S", "comments": true}}).to_string().as_bytes())
+            Manifest::parse(
+                json!({"id": "a", "name": "A", "requires": requires, "publish": {"id": "s", "name": "S", "comments": true}}).to_string().as_bytes(),
+            )
         };
         assert!(with(json!([])).is_err());
         assert!(with(json!(["publishServices"])).unwrap().publish.unwrap().comments);

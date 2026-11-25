@@ -218,7 +218,8 @@ mod tests {
         let many: Vec<Value> = (0..MAX_COMMENTS + 50).map(|i| json!({"author": "a", "text": format!("c{i}")})).collect();
         assert_eq!(parse_comments(&json!({"comments": many})).unwrap().len(), MAX_COMMENTS);
         let long = "é".repeat(MAX_COMMENT_BYTES);
-        let c = parse_comments(&json!([{"author": long, "text": format!("x\u{0}y{long}"), "date": 7}, {"text": "  "}, {"author": "no text"}])).unwrap();
+        let c =
+            parse_comments(&json!([{"author": long, "text": format!("x\u{0}y{long}"), "date": 7}, {"text": "  "}, {"author": "no text"}])).unwrap();
         assert_eq!(c.len(), 1, "empty and missing texts are dropped");
         assert!(c[0].text.len() <= MAX_COMMENT_BYTES && c[0].author.len() <= MAX_COMMENT_BYTES);
         assert!(c[0].text.starts_with("xy"), "control characters dropped");
@@ -228,7 +229,13 @@ mod tests {
     #[test]
     fn hostile_remote_ids_are_refused() {
         assert!(parse_published(json!({"remoteId": "r1"})).is_ok());
-        for bad in [json!({"remoteId": ""}), json!({"remoteId": "a\u{0}b"}), json!({"remoteId": "x".repeat(MAX_REMOTE_ID_BYTES + 1)}), json!({"remoteId": 3}), json!(null)] {
+        for bad in [
+            json!({"remoteId": ""}),
+            json!({"remoteId": "a\u{0}b"}),
+            json!({"remoteId": "x".repeat(MAX_REMOTE_ID_BYTES + 1)}),
+            json!({"remoteId": 3}),
+            json!(null),
+        ] {
             assert!(parse_published(bad.clone()).is_err(), "{bad}");
         }
     }

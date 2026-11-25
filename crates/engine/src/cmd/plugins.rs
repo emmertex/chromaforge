@@ -1029,7 +1029,10 @@ impl PluginService {
     ) -> std::result::Result<T, lcc_publish::PublishError> {
         let mut g = manager();
         let m = g.get_or_insert_with(Manager::in_memory);
-        lcc_plugins::publish::PluginPublisher::new(m, &self.plugin).map(|p| p.with_target(self.target.clone())).and_then(|mut p| f(&mut p)).map_err(pub_err)
+        lcc_plugins::publish::PluginPublisher::new(m, &self.plugin)
+            .map(|p| p.with_target(self.target.clone()))
+            .and_then(|mut p| f(&mut p))
+            .map_err(pub_err)
     }
 }
 

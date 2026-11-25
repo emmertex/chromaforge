@@ -626,7 +626,9 @@ pub fn comments_job(s: &mut Session, p: &Value, photo: Option<PhotoId>, c: &str)
     let open = if kind_comments(&service.kind) == Some(false) {
         None
     } else {
-        match plugin_opener(s, &service, &collection, &[]).map_or_else(|| sftp::opener(s, &service, &collection).map_err(|e| bad(c, e)), |o| Ok(Some(o)))? {
+        match plugin_opener(s, &service, &collection, &[])
+            .map_or_else(|| sftp::opener(s, &service, &collection).map_err(|e| bad(c, e)), |o| Ok(Some(o)))?
+        {
             Some(o) => Some(o),
             None => super::immich::publish::opener(s, &service, &collection, &[]).map_err(|e| bad(c, e))?,
         }
@@ -816,7 +818,7 @@ fn plugin_opener(s: &Session, svc: &ServiceConfig, coll: &CollectionConfig, phot
         .iter()
         .filter_map(|id| {
             let p = s.catalog.photo(*id)?;
-            Some((*id, super::plugins::PhotoMeta { title: p.title.clone(), caption: p.caption.clone(), keywords: p.keywords.clone() }))
+            Some((*id, super::plugins::PhotoMeta { title: p.meta.title.clone(), caption: p.meta.caption.clone(), keywords: p.meta.keywords.clone() }))
         })
         .collect();
     let svc = svc.clone();
