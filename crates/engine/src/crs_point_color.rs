@@ -174,6 +174,10 @@ pub fn to_ours(p: &LrPoint, variance: f64) -> PointColor {
         sat_shift: pct(p.shift[1]),
         lum_shift: pct(p.shift[2]),
         variance: if variance.is_finite() { variance.clamp(-100.0, 100.0) } else { 0.0 },
+        // Lightroom has no uniformity
+        hue_uniformity: 0.0,
+        sat_uniformity: 0.0,
+        lum_uniformity: 0.0,
         range: (p.range * 100.0).clamp(0.0, 100.0),
         hue_range,
         sat_range,

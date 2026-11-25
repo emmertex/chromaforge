@@ -38,6 +38,7 @@ pub mod genpatch;
 pub mod geometry;
 pub mod grade;
 pub mod grain;
+pub mod lens_blur;
 pub mod levels;
 pub mod local;
 pub mod local_tone;
@@ -675,6 +676,8 @@ pub struct Plan<'a> {
     pub whole_frame: geometry::Frame,
     /// The whole output frame's size (`full_w, full_h`; a windowed render is part of it).
     pub full_size: (usize, usize),
+    /// Lens Blur's distance grid, when Lens Blur is on ([`lens_blur::resolve`]).
+    pub lens_blur: Option<Arc<lens_blur::Depth>>,
 }
 
 /// Long edge of the small render a windowed render estimates the whole frame's airlight from.
@@ -730,6 +733,9 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             let work = if req.depth == OutputDepth::U8 { grow_window(work, retouch::reach(s, px_per_long), full_w, full_h) } else { work };
             // and so does the Tone Equalizer, whose mask is smoothed
             let work = if req.depth == OutputDepth::U8 { grow_window(work, tone_eq::reach(s, px_per_long), full_w, full_h) } else { work };
+            // and Lens Blur, which gathers from up to its largest radius away
+            let work =
+                if req.depth == OutputDepth::U8 { grow_window(work, lens_blur::reach(&s.lens_blur, px_per_long), full_w, full_h) } else { work };
             // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
             // those reads outside the requested window too, at every depth (cut back below)
             let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
@@ -819,9 +825,12 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         joint_nr,
     ));
     let noise_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail].map(f64::to_bits), detail_scale.to_bits()));
-    let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s)) {
-        (None, None, None) => nr_key,
-        (k, r, t) => hash_of((nr_key, k, r, t)),
+    // Lens Blur's distance grid (the depth model's, else from the Subject selection)
+    let lens_depth = lens_blur::resolve(aux(), info, s);
+    let lens_key = lens_blur::key(&s.lens_blur, lens_depth.as_deref());
+    let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s), &lens_key) {
+        (None, None, None, None) => nr_key,
+        (k, r, t, l) => hash_of((nr_key, k, r, t, l)),
     };
     let frame_lin_key = hash_of((
         frame_lin_key,
@@ -833,6 +842,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         skin::key(s),
         retouch::key(s),
         tone_eq::key(s),
+        &lens_key,
     ));
     // AI masks without a model: analysed once per photo look on the whole frame (cached)
     let mattes = if auto_mask::needed(s) {
@@ -869,6 +879,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         filter_frame,
         whole_frame,
         full_size: (full_w, full_h),
+        lens_blur: lens_depth,
     }
 }
 
@@ -1111,6 +1122,9 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, nr_key, .. } = plan;
     let s = &*plan.settings;
     let mut warnings = Vec::new();
+    if plan.lens_blur.as_ref().is_some_and(|d| d.source == lens_blur::DepthSource::Subject) {
+        warnings.push(lens_blur::NO_MODEL_WARNING.to_string());
+    }
 
     let shared = match (&src, cache) {
         (Src::Shared(a), Some(c)) => Some((*a, c)),
@@ -1206,6 +1220,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             } else {
                 let mut img = (*nr).clone();
                 retouch_people(&mut img, s, frame, px_per_long);
+                timed("lens blur", || lens_blur::apply(&mut img, &plan));
                 (Arc::new(img), Some(nr))
             }
         }

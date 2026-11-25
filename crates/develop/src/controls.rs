@@ -40,6 +40,8 @@ pub enum Section {
     Retouch,
     /// Repairs of the raw sensor data (a checkbox in the Detail panel).
     Sensor,
+    /// Lens Blur.
+    LensBlur,
 }
 
 impl Section {
@@ -67,6 +69,7 @@ impl Section {
             Section::Skin => "Smooth Skin",
             Section::Retouch => "Retouch",
             Section::Sensor => "Sensor",
+            Section::LensBlur => "Lens Blur",
         }
     }
 }
@@ -378,6 +381,10 @@ controls! {
     "grain.color" => grain.color, "Color", Grain, 0, 100, 0, 1, 0, Plain;
     "grain.seed" => grain.seed, "Seed", Grain, 0, 99999, 0, 1, 0, Plain;
     "grain.response" => grain.response, "Response", Grain, -100, 100, 0, 1, 0, Centered;
+    "lensBlur.amount" => lens_blur.amount, "Blur Amount", LensBlur, 0, 100, 50, 1, 0, Plain => Ramp;
+    "lensBlur.focalDistance" => lens_blur.focal_distance, "Focal Distance", LensBlur, 0, 100, 0, 1, 0, Plain;
+    "lensBlur.focalRange" => lens_blur.focal_range, "Focal Range", LensBlur, 0, 100, 20, 1, 0, Plain;
+    "lensBlur.focusSize" => lens_blur.focus_size, "Focus Area", LensBlur, 0, 0.5, 0, 0.01, 2, Plain;
     "enhance.denoise" => enhance.denoise, "Amount", Detail, 0, 100, 0, 1, 0, Plain;
     "detail.sharpenAmount" => detail.sharpen_amount, "Sharpening", Detail, 0, 150, 0, 1, 0, Plain => Tinted;
     "detail.sharpenRadius" => detail.sharpen_radius, "Radius", Detail, 0.5, 3, 1, 0.1, 1, Plain => Ramp;
@@ -476,6 +483,42 @@ pub static INDEXED: &[ControlSpec] = &[
         shade: Shade::Plain,
     },
     ControlSpec {
+        id: "pointColor.hueUniformity",
+        label: "Hue Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
+        id: "pointColor.satUniformity",
+        label: "Saturation Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
+        id: "pointColor.lumUniformity",
+        label: "Lightness Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
         id: "pointColor.range",
         label: "Range",
         section: Section::PointColor,
@@ -570,6 +613,9 @@ fn indexed_field<'a>(s: &'a mut DevelopSettings, id: &str) -> Option<&'a mut f64
                 "satShift" => &mut p.sat_shift,
                 "lumShift" => &mut p.lum_shift,
                 "variance" => &mut p.variance,
+                "hueUniformity" => &mut p.hue_uniformity,
+                "satUniformity" => &mut p.sat_uniformity,
+                "lumUniformity" => &mut p.lum_uniformity,
                 "range" => &mut p.range,
                 "hueRange" => &mut p.hue_range,
                 "satRange" => &mut p.sat_range,
