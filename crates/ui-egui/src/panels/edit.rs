@@ -618,7 +618,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         sub_title(ui, crate::i18n::tr("Glow"));
         if shown_here(app, ui, "option:glowComposite") {
             use lcc_develop::GlowComposite as G;
-            let modes = [(G::Screen, "Screen", "screen"), (G::Add, "Add", "add")];
+            let modes = [(G::Screen, "glow composite|Screen", "screen"), (G::Add, "glow composite|Add", "add")];
             let items: Vec<(&str, &str)> = modes.iter().map(|(_, l, k)| (*l, *k)).collect();
             let active = modes.iter().position(|(v, _, _)| *v == d.glow.mode);
             let mut chosen = None;

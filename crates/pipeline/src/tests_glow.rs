@@ -187,3 +187,74 @@ fn the_section_eye_switches_glow_off() {
     let off = out(&src, &s);
     assert!(mean(&off) < mean(&lit), "the Effects eye turns Glow off with the panel");
 }
+
+#[test]
+fn a_small_render_glows_on_every_side() {
+    // a render smaller than the halo's proxy would be (a thumbnail): the halo still sits around
+    // its source, the same to the right of the patch as to the left
+    let src = bright_patch();
+    let base = out(&src, &DevelopSettings::default());
+    let lit = out(
+        &src,
+        &glow(|g| {
+            g.amount = 100.0;
+            g.spread = 100.0;
+        }),
+    );
+    let lift = |x: usize| lit.get(x, 80)[1] as i32 - base.get(x, 80)[1] as i32;
+    // the patch spans 90..150: 80 and 159 are its mirror images
+    let (left, right) = (lift(80), lift(159));
+    assert!(left > 0 && right > 0, "both sides take the halo: {left} vs {right}");
+    assert!((left - right).abs() <= 2 + left.max(right) / 4, "the halo is centred on its source: {left} vs {right}");
+}
+
+#[test]
+fn a_zoomed_window_shows_the_whole_renders_halo() {
+    // the halo's width is a fraction of the frame, not of the window being drawn
+    let src = Rgb32f::from_fn(1200, 800, |x, y| {
+        let inside = (450..750).contains(&x) && (300..500).contains(&y);
+        if inside { [0.9, 0.85, 0.7] } else { [0.02, 0.025, 0.03] }
+    });
+    let s = glow(|g| {
+        g.amount = 100.0;
+        g.spread = 60.0;
+    });
+    let info = SourceInfo::default();
+    let whole = render(&src, &info, &s, &RenderRequest::fit(1200, 800)).image;
+    let win = crate::PixelWindow { x: 300, y: 320, w: 160, h: 120 };
+    let part = render(&src, &info, &s, &RenderRequest { window: Some(win), ..RenderRequest::fit(1200, 800) }).image;
+    assert_eq!((part.width, part.height), (win.w, win.h));
+    let mut worst = 0;
+    for y in 0..win.h {
+        for x in 0..win.w {
+            let (a, b) = (whole.get(win.x + x, win.y + y), part.get(x, y));
+            worst = worst.max((a[1] as i32 - b[1] as i32).abs());
+        }
+    }
+    assert!(whole.get(win.x + 100, win.y + 60)[1] > 20, "the window lies in the halo");
+    assert!(worst <= 6, "the window matches the whole render within the proxy's tolerance: {worst}");
+}
+
+#[test]
+fn glow_only_adds_light_and_recovery_gives_sources_back() {
+    // straight on the post-pass: an HDR window (values past 1) with a dark surround
+    let (w, h) = (96usize, 64usize);
+    let window = || -> Vec<[f32; 3]> {
+        (0..w * h).map(|i| if (30..60).contains(&(i % w)) && (20..40).contains(&(i / w)) { [2.5, 2.0, 1.5] } else { [0.05; 3] }).collect()
+    };
+    let params = |mode, recovery| {
+        crate::glow::Params::of(&Glow { amount: 100.0, gain: 100.0, spread: 100.0, mode, recovery, ..Glow::default() }).expect("glow is on")
+    };
+    for mode in [GlowComposite::Screen, GlowComposite::Add] {
+        let (before, mut after) = (window(), window());
+        crate::glow::apply(&mut after, w, h, &params(mode, 0.0), w as f64);
+        assert!(before.iter().zip(&after).all(|(b, a)| (0..3).all(|k| a[k] >= b[k] - 1e-6)), "{mode:?} never darkens, past 1 either");
+        assert!(after[32 * w + 20][1] > before[32 * w + 20][1], "{mode:?} lights the surround");
+        // full Recovery: the sources come back as they were, the halo around them stays
+        let mut kept = window();
+        crate::glow::apply(&mut kept, w, h, &params(mode, 100.0), w as f64);
+        let i = 30 * w + 45;
+        assert!((0..3).all(|k| (kept[i][k] - before[i][k]).abs() < 1e-4), "{mode:?}: a source keeps its own values");
+        assert!(kept[32 * w + 20][1] > before[32 * w + 20][1], "{mode:?}: the halo stays with Recovery");
+    }
+}

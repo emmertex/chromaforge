@@ -74,7 +74,7 @@ fn screens() -> Vec<(String, Vec<(&'static str, serde_json::Value)>)> {
     }
     // context menus: a right click on a widget, after the commands that show it
     // named, since a mask's automatic name ("Radial Gradient") is stored in the edit, in English
-    let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2, "name": "Glow"});
+    let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2, "name": "Lantern 7"});
     out.push((
         "Mask menu".into(),
         vec![("module.develop", json!({})), ("panel.masking", json!({})), ("mask.add", radial), (RIGHT_CLICK, json!({"widget": "mask:1"}))],

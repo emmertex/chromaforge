@@ -607,7 +607,7 @@ fn finish_post<T: Copy + Default + Send>(
     // Display-stage plug-ins take it in their own domain
     let mut v = finish_with(p, fp, if linear { true } else { exact }, |_, _, e| e);
     if let Some(g) = fp.glow {
-        crate::glow::apply(&mut v, w, h, &g);
+        crate::glow::apply(&mut v, w, h, &g, fp.px_per_long);
     }
     if !post.stack.is_empty() {
         if linear {

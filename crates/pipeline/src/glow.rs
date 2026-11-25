@@ -120,25 +120,30 @@ fn shine(p: &Params, c: [f32; 3]) -> f32 {
 /// The halo, computed on a proxy of `img` (`w × h`): the shine-extracted colours, downsampled,
 /// blurred and shaped by Gain and Gamma, sampled back at any point of the window.
 struct Halo {
-    /// The proxy, and the window's size in its cells (the bilinear sample steps).
+    /// The proxy, and the size of one of its cells in window pixels.
     proxy: Rgb32f,
     cw: f32,
     ch: f32,
 }
 
 impl Halo {
-    fn new(img: &[[f32; 3]], w: usize, h: usize, p: &Params) -> Halo {
+    /// `px_per_long`: the whole frame's long edge at this render's scale (not the window's: a
+    /// zoomed window is a piece of the frame, and its halos are as wide as the fit view's).
+    fn new(img: &[[f32; 3]], w: usize, h: usize, p: &Params, px_per_long: f64) -> Halo {
         let long = w.max(h) as f32;
-        // a quarter of the window, kept between 384 and 1024 cells: a halo holds no finer detail,
-        // and every size renders the same field (within the proxy's tolerance)
-        let target = (long * 0.25).clamp(384.0, 1024.0);
+        let frame_long = if px_per_long.is_finite() && px_per_long >= 1.0 { px_per_long as f32 } else { long };
+        // a quarter of the window, kept between 384 and 1024 cells (never more cells than the
+        // window has pixels): a halo holds no finer detail, and every size renders the same field
+        // (within the proxy's tolerance)
+        let target = (long * 0.25).clamp(384.0, 1024.0).min(long.max(1.0));
         let k = long / target;
         // the H/V ratio lives here: resampling x by k·√ratio and y by k/√ratio, then sampling
         // back, spreads the halo √ratio times wider horizontally than vertically
         let r = p.ratio.sqrt();
-        let (cw, ch) = (k * r, k / r);
-        let pw = ((w as f32 / cw).round() as usize).clamp(1, w.max(1));
-        let ph = ((h as f32 / ch).round() as usize).clamp(1, h.max(1));
+        let pw = ((w as f32 / (k * r)).round() as usize).clamp(1, w.max(1));
+        let ph = ((h as f32 * r / k).round() as usize).clamp(1, h.max(1));
+        // the cells as they came out after rounding, so the proxy covers the window exactly
+        let (cw, ch) = (w as f32 / pw as f32, h as f32 / ph as f32);
         let mut proxy = Rgb32f { width: pw, height: ph, data: vec![[0.0; 3]; pw * ph] };
         // box-average the shine-weighted colours into the proxy's cells (parallel over its rows)
         par_rows(&mut proxy.data, pw, |py, rows| {
@@ -149,17 +154,14 @@ impl Halo {
                 let x1 = (((px + 1) as f32 * cw).ceil() as usize).clamp(x0 + 1, w);
                 let mut acc = [0.0f32; 3];
                 for y in y0..y1 {
-                    let row = &img[y * w..y * w + w];
-                    for x in x0..x1 {
-                        let c = row[x];
+                    let Some(cells) = img.get(y * w + x0..y * w + x1) else { continue };
+                    for &c in cells {
                         if !c.iter().all(|v| v.is_finite()) {
                             continue;
                         }
                         let s = shine(p, c);
                         if s > 0.0 {
-                            for k in 0..3 {
-                                acc[k] += c[k] * s;
-                            }
+                            acc = zip3(acc, c, |a, v| a + v * s);
                         }
                     }
                 }
@@ -167,9 +169,10 @@ impl Halo {
                 *o = acc.map(|v| v / n.max(1) as f32);
             }
         });
-        // the blur's sigma keeps the halo's width relative to the long edge (the ratio came out of
-        // the resampling), then Gain brightens and Gamma reshapes the glow's falloff
-        let blurred = gaussian(&proxy, p.sigma * pw.max(ph) as f32);
+        // the blur's sigma keeps the halo's width relative to the frame's long edge, in proxy cells
+        // (their geometric mean: the ratio came out of the resampling), then Gain brightens and
+        // Gamma reshapes the glow's falloff
+        let blurred = gaussian(&proxy, p.sigma * frame_long / (cw * ch).sqrt().max(1e-3));
         let (gain, gamma) = (p.gain, p.gamma);
         let mut proxy = blurred;
         for c in &mut proxy.data {
@@ -211,15 +214,16 @@ impl Halo {
     }
 }
 
-/// Glow over the finished, output-encoded window (`img`, `w × h`), in place.
-pub fn apply(img: &mut [[f32; 3]], w: usize, h: usize, p: &Params) {
-    if w == 0 || h == 0 || img.len() < w * h {
+/// Glow over the finished, output-encoded window (`img`, `w × h`), in place. `px_per_long` is the
+/// whole frame's long edge at this render's scale, which the halo's width is a fraction of.
+pub fn apply(img: &mut [[f32; 3]], w: usize, h: usize, p: &Params, px_per_long: f64) {
+    if w == 0 || h == 0 || w.checked_mul(h).is_none_or(|n| img.len() < n) {
         return;
     }
-    let halo = Halo::new(img, w, h, p);
+    let halo = Halo::new(img, w, h, p, px_per_long);
     par_rows(img, w, |y, row| {
-        for x in 0..w {
-            let c = row[x];
+        for (x, px) in row.iter_mut().enumerate() {
+            let c = *px;
             if !c.iter().all(|v| v.is_finite()) {
                 continue;
             }
@@ -227,20 +231,21 @@ pub fn apply(img: &mut [[f32; 3]], w: usize, h: usize, p: &Params) {
             if !g.iter().all(|v| v.is_finite()) {
                 continue;
             }
-            // Screen (the default, the gentler one) or Add, Resolve's two composite modes; both
-            // extend past 1 the same way, so an HDR render keeps its headroom
+            // Screen (the default, the gentler one) or Add, Resolve's two composite modes. Screen
+            // fills the room left under white, so a value already past 1 (an HDR render's
+            // headroom) has none and is kept as it is: the glow only ever adds light
             let k = p.amount;
-            let mut o = if p.add { zip3(c, g, |v, gl| v + k * gl) } else { zip3(c, g, |v, gl| v + (1.0 - v) * (k * gl)) };
-            // Bright Region Recovery: the bright regions' own detail (what the blur smeared) comes
-            // back through the glow, weighted by how bright the pixel itself is
+            let mut o = if p.add { zip3(c, g, |v, gl| v + k * gl) } else { zip3(c, g, |v, gl| v + (1.0 - v).max(0.0) * (k * gl)) };
+            // Bright Region Recovery: where the pixel is itself a glow source, the glow steps back
+            // and the picture's own values (the detail the veil washed out) show through
             if p.recovery > 0.0 {
-                let s = shine(p, c);
+                let s = p.recovery * shine(p, c);
                 if s > 0.0 {
-                    o = zip3(o, zip3(c, g, |v, gl| (v - gl).max(0.0)), |v, d| v + p.recovery * s * d);
+                    o = zip3(o, c, |v, own| v + (own - v) * s);
                 }
             }
             if o.iter().all(|v| v.is_finite()) {
-                row[x] = o;
+                *px = o;
             }
         }
     });
