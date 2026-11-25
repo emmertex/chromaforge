@@ -31,7 +31,7 @@ cited here still exists. Formerly docs/parity.md.
 | C. Views & navigation (VIEW) | 18 | 2 | 0 | 0 | 9/9 (100%) | 5/5 (100%) |
 | D. Search & filter (FILT) | 13 | 1 | 0 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
-| F. Edit panel — global adjustments (EDIT) | 44 | 6 | 1 | 0 | 28/28 (100%) | 13/15 (87%) |
+| F. Edit panel — global adjustments (EDIT) | 45 | 6 | 1 | 0 | 28/28 (100%) | 13/15 (87%) |
 | G. Profiles (PROF) | 8 | 7 | 1 | 0 | 3/4 (75%) | 3/4 (75%) |
 | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
 | I. Remove / healing (REM) | 10 | 2 | 2 | 1 | 4/4 (100%) | 2/3 (67%) |
@@ -55,9 +55,9 @@ cited here still exists. Formerly docs/parity.md.
 | Lightroom Classic extras | 106 | 22 | 0 | 0 | — | 36/40 (90%) |
 | BEYOND. Beyond the reference app | 9 | 0 | 0 | 0 | — | — |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 533 | 85 | 14 | 25 | 195/203 (96%) | 172/191 (90%) |
+| **Total** | 534 | 85 | 14 | 25 | 195/203 (96%) | 172/191 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **91.1%** of 632 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 82.4% of 233.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **91.1%** of 633 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 82.4% of 233.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -281,6 +281,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-EDIT-COLOR-MIXER-HSL | 8-band colour mixer | P0 | ✅ | `ctl:mixer.*`, `cmd:view.colorMixer` | laid out as in Lightroom Classic: Mixer \| Point Color tabs, Adjust HSL (default; Hue \| Saturation \| Luminance \| All, eight colour sliders per group, each group with its targeted adjustment) or Color (one colour at a time); `view.colorMixer {tab, adjust, group, band}` sets the layout (upstream #2955) |
 | LR-EDIT-COLOR-MIXER-BW | B&W mix | P1 | ✅ | `ctl:bw.*`, `cmd:develop.autoBwMix` | eight bands; Auto pushes each hue band's colourful pixels away from the mean lightness (own rule) |
 | LR-EDIT-COLOR-POINTCOLOR | Point colour | P1 | ✅ | `cmd:pointColor.pick`, `cmd:pointColor.delete` | |
+| LR-EDIT-COLOR-POINTCOLOR-UNIFORMITY | Skin-tone uniformity on Point Color (beyond Lightroom, from Capture One) | P3 | ✅ | `cmd:pointColor.pick`, `cmd:mask.pointColorSet`, `crates/pipeline/src/colorops.rs`, `crates/develop/src/controls.rs` | Hue, Saturation and Lightness Uniformity (0–100) per sample, photo and mask Point Color: pull the colours within the sample's range towards it in OkLCh, each axis on its own, at the range's soft weight; develop controls `pointColor.N.hueUniformity` / `satUniformity` / `lumUniformity`; CPU and GPU (equivalence-tested); unit tests per axis and on hostile values; SIL `sil_skin_uniformity`. Not in Lightroom's XMP, so not written to or read from it |
 | LR-EDIT-COLOR-GRADING | Colour grading wheels | P0 | ✅ | `ctl:grading.*`, `crates/ui-egui/src/panels/edit.rs` (`grading`) | 3-Way / Shadows / Midtones / Highlights tabs; a range tab shows one large wheel with Hue, Saturation and Luminance sliders; Blending and Balance in every tab; 3-Way shows the hovered wheel's hue and saturation; every wheel marks its neutral centre; wheel modifiers as in Lightroom: Shift-drag keeps the puck's hue and changes saturation only (the spoke is the guide; a puck at the centre has no hue, so it takes the angle where the pointer pressed), Cmd/Ctrl-drag keeps the saturation and changes hue only (the circle is the guide), Alt/Option-drag fine-adjusts at 0.1x and combines with either lock, and a hover tooltip lists them (issues #559, #1160; test `modifier_drags_constrain_and_fine_adjust_the_puck_in_one_undo_step` in `crates/ui-egui/src/tests_grading.rs`); a wheel drag holds the pointer as in Lightroom: hidden while dragging (the puck follows the mouse's travel; on macOS the pointer is locked in place), back where the button went down on release, and given back at once on Esc, a lost window focus or a wheel that goes away mid-drag; the browser can't move the pointer, so there it only shows again where the drag ended (issue #1899; tests `a_held_wheel_follows_the_mouses_motion_not_where_the_pointer_sits`, `a_wheel_drag_hides_the_pointer_and_releasing_puts_it_back_where_it_was_pressed`, `escape_or_losing_focus_gives_the_pointer_back_mid_drag`, `a_wheel_that_goes_away_mid_drag_gives_the_pointer_back`); the large wheel adds 25/50/75 % saturation rings (issue #559); each wheel's eye hides its effect for viewing only (`RenderJob::with_hidden_grading`, not saved, export unaffected) (issue #737). No Global wheel tab yet |
 | LR-EDIT-EFFECTS-TEXTURE | Texture | P0 | ✅ | `ctl:effects.texture` | |
 | LR-EDIT-EFFECTS-CLARITY | Clarity | P0 | ✅ | `ctl:effects.clarity` | |

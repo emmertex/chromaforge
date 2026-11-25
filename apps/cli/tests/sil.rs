@@ -1032,6 +1032,55 @@ fn diffuser_dng(level: f64, seed: u64) -> Vec<u8> {
     lcc_raw::write_dng(&raw, &DngWriteOptions::default()).unwrap()
 }
 
+/// Skin-tone uniformity on Point Color (completion plan 7.9): a sample picked on the photo, its three uniformity
+/// sliders set through the develop controls (a hostile value clamped, an unknown field refused), the same on a mask's
+/// Point Color; undo, redo, a consistent catalog, an export that decodes, and a reopen that keeps it all.
+#[test]
+fn sil_skin_uniformity() {
+    let mut s = Sil::new("skinuniformity");
+    let (dir, n) = shoot(&s.root, 2, 0);
+    s.start();
+    let ids = import(&mut s, &dir, n);
+    s.ok("library.select", json!({"ids": [ids[0]], "active": ids[0]}));
+    let picked = s.ok("pointColor.pick", json!({"x": 0.4, "y": 0.5}));
+    let i = picked["index"].as_u64().unwrap_or(0);
+    s.ok(
+        "develop.set",
+        json!({"values": {
+            format!("pointColor.{i}.hueUniformity"): 70,
+            format!("pointColor.{i}.satUniformity"): 1e9,
+            format!("pointColor.{i}.lumUniformity"): 30,
+        }}),
+    );
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let pc = &d["point_colors"][i as usize];
+    s.check(pc["hue_uniformity"] == 70.0 && pc["lum_uniformity"] == 30.0, "the uniformity sliders didn't stick", &pc.to_string());
+    s.check(pc["sat_uniformity"] == 100.0, "an out-of-range uniformity wasn't clamped", &pc.to_string());
+    let bad = s.request("develop.set", json!({"control": format!("pointColor.{i}.uniformity"), "value": 10}));
+    s.check(bad["ok"] == false, "an unknown Point Color field was accepted", &bad.to_string());
+    s.undo_redo_roundtrip();
+
+    // the same sliders on a mask's local Point Color
+    s.ok("mask.add", json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.3, "ry": 0.2}));
+    s.ok("mask.pointColorPick", json!({"x": 0.5, "y": 0.5}));
+    s.ok("mask.pointColorSet", json!({"index": 0, "values": {"hue_uniformity": 50, "sat_uniformity": -20, "lum_uniformity": 400}}));
+    let d = s.ok("develop.get", json!({"id": ids[0]}));
+    let m = &d["masks"][0]["point_colors"][0];
+    s.check(
+        m["hue_uniformity"] == 50.0 && m["sat_uniformity"] == 0.0 && m["lum_uniformity"] == 100.0,
+        "the mask's uniformity wasn't set within its range",
+        &m.to_string(),
+    );
+    s.undo_redo_roundtrip();
+    s.request("ui.settle", json!({"timeoutMs": 20000}));
+    s.consistent();
+    s.export_decodes(&[ids[0]], json!({"format": "jpeg", "longEdge": 400}), true);
+    s.reopen_keeps_everything();
+    let after = s.ok("develop.get", json!({"id": ids[0]}));
+    s.check(after["point_colors"] == d["point_colors"], "the uniformity didn't survive a reopen", &after["point_colors"].to_string());
+    s.finish();
+}
+
 /// Flat-field correction end to end (design notes §10): a reference and three photos of the same setup, the map made
 /// from the reference, applied to a selection, its amount, removed from one, the reference removed while the others
 /// keep their correction; undo, redo, a consistent catalog, and a reopen that keeps it all. No corpus needed.
