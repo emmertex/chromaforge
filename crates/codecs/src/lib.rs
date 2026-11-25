@@ -67,10 +67,23 @@ pub enum Error {
     Unsupported(Format, &'static str),
     #[error("malformed {0:?} data: {1}")]
     Malformed(Format, String),
-    #[error("image too large: {0}×{1}")]
+    #[error("{}", too_large_message(*.0, *.1))]
     TooLarge(u64, u64),
     #[error("encode error: {0}")]
     Encode(String),
+}
+
+/// The text of [`Error::TooLarge`]: the size in megapixels and, when that is over
+/// [`DEFAULT_MAX_PIXELS`], the limit, so the message says what is wrong (issue #1477). A refusal
+/// under the limit came from a decoder's memory budget or a failed allocation.
+fn too_large_message(w: u64, h: u64) -> String {
+    let px = w.saturating_mul(h);
+    let mp = |n: u64| n as f64 / 1e6;
+    if px > DEFAULT_MAX_PIXELS {
+        format!("image too large: {w}×{h} is {:.1} MP; the limit is {:.0} MP", mp(px), mp(DEFAULT_MAX_PIXELS))
+    } else {
+        format!("image too large: {w}×{h} ({:.1} MP) needs more memory than its decoder allows", mp(px))
+    }
 }
 
 /// `w × h × c` samples, or [`Error::TooLarge`] when that overflows `usize` (a 32-bit `usize` on wasm32 wraps on
@@ -304,6 +317,24 @@ fn check_has_pixels(format: Format, image: &Rgb32f) -> Result<()> {
         return Err(Error::Malformed(format, "image has no pixels".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod too_large_tests {
+    use super::*;
+
+    /// The refusal says how big the image is and, past the limit, what the limit is (issue #1477).
+    #[test]
+    fn the_message_names_the_size_and_the_limit() {
+        let over = Error::TooLarge(17070, 30092).to_string();
+        assert!(over.contains("17070×30092") && over.contains("513.7 MP") && over.contains("512 MP"), "{over}");
+        let budget = Error::TooLarge(64, 64).to_string();
+        assert!(budget.contains("64×64") && !budget.contains("limit"), "{budget}");
+        // hostile sizes neither overflow nor panic
+        for (w, h) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0)] {
+            assert!(Error::TooLarge(w, h).to_string().starts_with("image too large"));
+        }
+    }
 }
 
 #[cfg(test)]
