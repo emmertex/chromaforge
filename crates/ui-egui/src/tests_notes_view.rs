@@ -53,7 +53,9 @@ fn header_ids(h: &Headless) -> Vec<String> {
 }
 
 fn click(h: &mut Headless, id: &str) {
-    let r = h.request("ui.clickWidget", json!({"id": id}), T);
+    // Hit the disclosure chevron itself. The header also contains styled text and links; clicking
+    // the text's center can be intercepted differently by platform text/layout backends.
+    let r = h.request("ui.clickWidget", json!({"id": id, "fx": 0.02}), T);
     assert_eq!(r["ok"], true, "{id}: {r}");
     settle(h);
 }

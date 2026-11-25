@@ -951,10 +951,15 @@ mod imp {
             return (0, 0);
         }
         if d.detect_wanted {
+            // A user or another import may have added regions while this background scan was in flight.
+            // Never apply its stale detections to a photo that no longer qualifies for the initial search.
+            let still_needs_search = s.catalog.photo(d.id).is_some_and(|photo| needs_search(s, photo));
             match &d.found {
                 Some(found) => {
                     s.faces.scanned.insert(d.id.0);
-                    add_found(s, d.id, found, d.redetect && d.replace_detections);
+                    if d.redetect || still_needs_search {
+                        add_found(s, d.id, found, d.redetect && d.replace_detections);
+                    }
                 }
                 None => {
                     s.faces.scan_failed.insert(d.id.0);
@@ -2661,7 +2666,8 @@ mod imp {
         }
 
         fn add_to_album(s: &mut Session, album: u64, photos: &[PhotoId]) {
-            s.execute("album.addPhotos", &json!({"id": album, "ids": photos.iter().map(|id| id.0).collect::<Vec<_>>()})).unwrap();
+            s.execute("library.select", &json!({"ids": photos.iter().map(|id| id.0).collect::<Vec<_>>()})).unwrap();
+            s.execute("album.addPhotos", &json!({"id": album})).unwrap();
         }
 
         #[test]
@@ -2784,7 +2790,10 @@ mod imp {
             pet.description = Some(format!("{MARK}{LABEL}"));
             set_regions(&mut s, photo, vec![automatic, named.clone(), manual.clone(), ignored.clone(), pet.clone()]);
             let fresh = region(0.2, None).rect;
-            add_found(&mut s, photo, &[fresh], true);
+            let mut done = finished(&s, photo, Some(vec![fresh]), vec![]);
+            done.redetect = true;
+            done.replace_detections = true;
+            ingest(&mut s, done);
             let regions = &s.catalog.photo(photo).unwrap().meta.regions;
             assert_eq!(regions.len(), 5);
             assert!(regions.iter().any(|r| r.rect == fresh && r.name.is_none()), "the new detection is kept");

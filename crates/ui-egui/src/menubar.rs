@@ -137,6 +137,7 @@ pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "Vi
 /// Order inside submenus whose items come from the registry: (menu, submenu, ids and `---`).
 /// Items not listed follow in registry order, dialogs (labels ending in `…`) last.
 const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
+    ("Library", "Faces", &["faces.detect=Find Faces Again…", "faces.clearAndRescan", "---", "dialog.faceMaintenance"]),
     (
         "Photo",
         "Develop Settings",
