@@ -137,7 +137,25 @@ jobs:
       - name: Changed-crate tests
         if: github.event_name == 'pull_request' && env.FULL_CI != '1'
         shell: bash
-        run: cargo xtask affected-tests --base HEAD^1
+        run: |
+          set +e
+          CARGO_TERM_COLOR=never cargo xtask affected-tests --base HEAD^1 2>&1 | tee "$RUNNER_TEMP/affected-tests.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### Changed-crate test failure (last 120 log lines)'
+              echo '```text'
+              tail -n 120 "$RUNNER_TEMP/affected-tests.log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(failures:|test result: FAILED|error: test failed|---- .* stdout ----|thread .* panicked at|assertion .* failed|  left:|  right:|error\[|error:)' "$RUNNER_TEMP/affected-tests.log" | tail -n 40 | while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              printf '::error::affected-tests: %s\n' "$line"
+            done
+          fi
+          exit "$status"
       # Software-in-the-loop suite (docs/testing-sil.md); skipped until `cargo xtask sil` exists.
       - name: SIL suite
         shell: bash
