@@ -24,12 +24,14 @@ fn xml_legal(s: &str) -> std::borrow::Cow<'_, str> {
     if s.chars().all(xml_char) { std::borrow::Cow::Borrowed(s) } else { std::borrow::Cow::Owned(s.chars().filter(|c| xml_char(*c)).collect()) }
 }
 
+// A literal carriage return reads back as a line feed (XML end-of-line handling), so it is written as `&#13;`
+// (adapted from craft-libs #1042, from upstream #4119).
 fn escape(s: &str) -> String {
-    xml_escape(xml_legal(s)).into_owned()
+    xml_escape(xml_legal(s)).replace('\r', "&#13;")
 }
 
 fn partial_escape(s: &str) -> String {
-    xml_partial_escape(xml_legal(s)).into_owned()
+    xml_partial_escape(xml_legal(s)).replace('\r', "&#13;")
 }
 use quick_xml::events::Event;
 use std::collections::BTreeMap;
@@ -1875,7 +1877,10 @@ mod tests {
         let illegal: Vec<char> =
             x.chars().filter(|&c| (c < '\u{20}' && !matches!(c, '\t' | '\n' | '\r')) || c == '\u{FFFE}' || c == '\u{FFFF}').collect();
         assert!(illegal.is_empty(), "illegal XML chars in output: {illegal:?}");
-        assert!(x.contains(">abcde\tf\ng\rh<"), "allowed characters must survive: {x}");
+        assert!(x.contains(">abcde\tf\ng&#13;h<"), "allowed characters must survive: {x}");
+        // a carriage return survives the round trip: a literal one would read back as a line feed (craft-libs #1042)
+        let back = parse_xmp(&x).unwrap();
+        assert!(back.properties.values().flatten().any(|v| v == "abcde\tf\ng\rh"), "{:?}", back.properties);
     }
 
     #[test]
