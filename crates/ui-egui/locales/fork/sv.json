@@ -2893,6 +2893,7 @@
   "Scan": "Skanna",
   "Scan photos that have a score already (rescan all)": "Skanna även bilder som redan har ett betyg (skanna om allt)",
   "Scanning image quality": "Skannar bildkvalitet",
+  "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.": "Scenlinjär, förlustfri ZIP; primärfärgerna skrivs in i filen. Värden över vitt behålls för foton redigerade i HDR.",
   "Scores photos for technical quality (sharpness, noise, exposure and JPEG artifacts) and keeps each score on the photo so the Library can filter and sort by it.": "Bedömer bilder efter teknisk kvalitet (skärpa, brus, exponering och JPEG-artefakter) och sparar varje betyg med bilden så att biblioteket kan filtrera och sortera på det.",
   "Screen Edges to Keep Clear": "Skärmkanter att hålla fria",
   "Screen Mode": "Skärmläge",

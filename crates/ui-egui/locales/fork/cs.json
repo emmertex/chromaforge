@@ -2674,6 +2674,7 @@
   "Scan": "Skenovat",
   "Scan photos that have a score already (rescan all)": "Skenovat i fotografie, které už skóre mají (vše znovu)",
   "Scanning image quality": "Skenování kvality obrazu",
+  "Scene-linear, lossless ZIP; the primaries are written into the file. Values above white are kept for photos edited in HDR.": "Lineární scéna, bezeztrátový ZIP; primární barvy se zapíší do souboru. Hodnoty nad bílou se zachovají u fotografií upravených v HDR.",
   "Scores photos for technical quality (sharpness, noise, exposure and JPEG artifacts) and keeps each score on the photo so the Library can filter and sort by it.": "Hodnotí fotografie podle technické kvality (ostrost, šum, expozice a artefakty JPEG) a ukládá každé skóre k fotografii, aby knihovna mohla podle něj filtrovat a řadit.",
   "Screen Edges to Keep Clear": "Okraje obrazovky, které mají zůstat volné",
   "Screen Mode": "Režim obrazovky",

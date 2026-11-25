@@ -119,6 +119,8 @@ own-model = ["denoise", "lcc-denoise/own-model", "lcc-denoise-core/own-model"]
 test-support = []
 
 [dev-dependencies]
+# EXR export tests read the files back
+exr = { workspace = true }
 lcc-fuzzkit = { workspace = true }
 # the issue #1174 chart test measures ΔE2000 on the synthetic ColorChecker
 lcc-fidelity = { workspace = true }

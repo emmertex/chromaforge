@@ -235,6 +235,8 @@ database is read-only; the app owns subsequent edits. See `docs/lightroom-catalo
 
 ## Log
 - 2026-11-25: adaptive presets (plan 7.8; LR-PRE-ADAPTIVE, LR-MASK-ADAPTIVE): 90.6% of 630 rows, P2 81.2%.
+- 2026-11-25: plan 7.5 OpenEXR scene-linear export (gap 42 narrows; beyond the Lightroom target, numbers unchanged):
+  half / float, linear Rec. 2020 or ACEScg, primaries in the `chromaticities` attribute (`exr` crate, BSD-3-Clause).
 - 2026-11-25: Lens Blur renders (LR-EDIT-LENSBLUR ⬜ → 🟡, gap 11, plan 7.1): depth model or subject fallback,
   focus picker, bokeh shapes, `lensBlur.*` commands and develop controls; no depth refine brushes yet.
 - 2026-11-24: process-retune gate in CI (LR-BEHAV-RENDER-FIDELITY, gap 3): every frozen process must match a
