@@ -235,10 +235,12 @@ fn point_apply(pw: array<f32, POINT_WORDS>, lch: vec3<f32>, strength: f32) -> ve
     let sl = pw[0];
     let sc = pw[1];
     let sh = pw[2];
-    let var_k = pw[6];
-    let wh_ = pw[7];
-    let wc_ = pw[8];
-    let wl_ = pw[9];
+    let var_h = pw[6];
+    let var_c = pw[7];
+    let var_l = pw[8];
+    let wh_ = pw[9];
+    let wc_ = pw[10];
+    let wl_ = pw[11];
     var l = lch.x;
     var c = lch.y;
     var h = lch.z;
@@ -255,10 +257,10 @@ fn point_apply(pw: array<f32, POINT_WORDS>, lch: vec3<f32>, strength: f32) -> ve
     if (w <= 0.0) {
         return lch;
     }
-    h += w * (var_k * wrap_angle(h - sh) + pw[3]);
-    c += w * var_k * (c - sc);
+    h += w * (var_h * wrap_angle(h - sh) + pw[3]);
+    c += w * var_c * (c - sc);
     c = max(c * (1.0 + w * pw[4]), 0.0);
-    l += w * (var_k * (l - sl) + pw[5]);
+    l += w * (var_l * (l - sl) + pw[5]);
     return vec3<f32>(l, c, h);
 }
 
