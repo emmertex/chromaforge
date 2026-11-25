@@ -62,6 +62,11 @@ pub const HOST_FEATURES: &[&str] = &[
     // `updateUrl` in the manifest: the feed the Plug-in Manager checks for newer versions
     // (`plugin.checkUpdates`, `plugin.update`), and `requires` in a feed entry
     "updates",
+    // publish services: `comments` on `publish` and the `publish.comments` hook; every publish
+    // request carries the user's service (`account: {id, name, settings}`) and the published
+    // collection (`collection: {album, name, folder}`), and `publish.upload` the photo's title,
+    // caption and keywords
+    "publishServices",
     // `libraryRemove` in the permissions and the `library.remove` host call (soft-delete into
     // Recently Deleted; files are never touched)
     "libraryRemove",
@@ -269,6 +274,10 @@ pub struct PublishDecl {
     pub id: String,
     /// Display name ("WebDAV").
     pub name: String,
+    /// The service has remote comments: the host asks `{"hook": "publish.comments"}` for them.
+    /// Needs `"publishServices"` in `requires`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub comments: bool,
 }
 
 /// One dialog or settings field.
@@ -553,6 +562,9 @@ impl Manifest {
         {
             return bad("publish service needs an id and a name".into());
         }
+        if self.publish.as_ref().is_some_and(|p| p.comments) && !self.requires.iter().any(|r| r == "publishServices") {
+            return bad("publish service: `comments` needs \"publishServices\" in `requires`".into());
+        }
         if self.export_destinations.len() > MAX_DESTINATIONS {
             return bad(format!("at most {MAX_DESTINATIONS} export destinations"));
         }
@@ -832,6 +844,20 @@ mod tests {
         ] {
             assert!(Manifest::parse(bad.to_string().as_bytes()).is_err(), "{bad}");
         }
+    }
+
+    /// A publish service with remote comments needs the `publishServices` host feature named.
+    #[test]
+    fn publish_comments_need_the_publish_services_feature() {
+        let with = |requires: Value| {
+            Manifest::parse(
+                json!({"id": "a", "name": "A", "requires": requires, "publish": {"id": "s", "name": "S", "comments": true}}).to_string().as_bytes(),
+            )
+        };
+        assert!(with(json!([])).is_err());
+        assert!(with(json!(["publishServices"])).unwrap().publish.unwrap().comments);
+        let plain = Manifest::parse(json!({"id": "a", "name": "A", "publish": {"id": "s", "name": "S"}}).to_string().as_bytes()).unwrap();
+        assert!(!plain.publish.unwrap().comments, "comments are off unless declared");
     }
 
     /// A command may also be a quick settings bar button (`quickAction`), a few per plug-in; a

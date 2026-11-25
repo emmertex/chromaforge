@@ -16,7 +16,7 @@
 | `.deb`, `.rpm` | `packaging/linux/package.sh` + `nfpm.yaml.in` | release.yml | needs `nfpm`; runtime deps (Vulkan/EGL, X11/Wayland) as depends/recommends |
 | `.tar.gz` (FHS tree) | `packaging/linux/package.sh` | release.yml | input for the Flatpak bundle |
 | Flatpak bundle | `packaging/linux/flatpak-bundle.sh`, `flatpak/<app_id>.yml.in` (source build), `.bundle.yml.in` (from the tarball) | release.yml | installed and smoke-tested in CI; not on Flathub |
-| macOS `.dmg` (the app, with the CLI link and the craft-fonts faces inside) | `packaging/macos/package.sh` | release.yml (`arm64`, `x64` and `universal`, from one build of each architecture) | released builds are ad-hoc signed only (no Apple developer certificate, not notarized); signing/notarization run only if the secrets are set |
+| macOS `.dmg` (the app, with the CLI link and the craft-fonts faces inside) | `packaging/macos/package.sh` | release.yml (`arm64`, `x64` and `universal`, from one build of each architecture; the universal image through 26.48.x only, #1269) | released builds are ad-hoc signed only (no Apple developer certificate, not notarized); signing/notarization run only if the secrets are set |
 | Windows `.msi` | `packaging/windows/package.ps1`, `app.wxs.in` | release.yml (x64), windows-arm64.yml (installs and uninstalls) | released builds are unsigned; Authenticode signing via `sign.ps1` runs only if signing secrets are set |
 | FreeBSD `.tar.gz` | `packaging/freebsd/package.sh` | release.yml / freebsd.yml | `--dry-run` works on any OS (packaging-lint) |
 | Web (static) | `packaging/web/package.sh` | release.yml | hosting notes in `packaging/web/HOSTING.md` |
@@ -29,6 +29,10 @@ AppStream metadata (`<app_id>.metainfo.xml.in`), the PTP udev rule, which descri
 tethering, Edit In, actions and plug-in features. `packaging-lint.yml` validates the templates
 (`desktop-file-validate`, `appstreamcli`, Flatpak manifest parity). `cargo xtask install` installs locally under
 `~/.local` without a package.
+The AppImage carries the entry and icons inside the image only; started as one (`APPIMAGE` set), the app itself
+writes `<app_id>.desktop` and the icons into `~/.local/share` (`apps/app/src/desktop_entry.rs`; the entry is this
+same template, rendered by `apps/app/build.rs` with `Exec=` pointing at the image), unless an entry for the app id
+is already installed by a package or a launcher tool.
 
 ### One program for the app and the CLI
 

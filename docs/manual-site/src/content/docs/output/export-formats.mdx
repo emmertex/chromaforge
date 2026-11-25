@@ -1,6 +1,6 @@
 ---
 title: Formats
-description: JPEG, TIFF, PNG, PSD, WebP, AVIF, JPEG XL, DNG and originals.
+description: JPEG, TIFF, PNG, PSD, WebP, AVIF, JPEG XL, OpenEXR, DNG and originals.
 sidebar:
   order: 3
 ---
@@ -13,14 +13,18 @@ import { Aside } from '@astrojs/starlight/components';
 - **JPEG**: **Quality** 1–100; **Limit file size (KB)** finds the quality that fits; when it has to go below **Quality**, the message after the export and the command-line tool say which quality it settled on.
 - **PNG**, **TIFF**, **PSD** (flat, 8/16-bit, no layers), **WebP**, **AVIF**.
 - **JPEG XL**: native builds only; lossy or lossless, 8/16-bit.
+- **OpenEXR**: the finished photo scene-linear for compositing and grading (Nuke, Resolve, Blender). **Bit depth** 16-bit half float (default) or 32-bit float; **Primaries** Linear Rec. 2020 (the working space) or ACEScg. Lossless ZIP compression; the primaries and white point are written into the file's `chromaticities` attribute. Photos edited in HDR keep their values above white with **HDR output** on; others are clipped at white like any other export. Transparency is flattened onto white.
+
+<NeedsImage name="export-exr" alt="File Settings with OpenEXR: bit depth and primaries" />
 - **DNG**: raw photos only, a lossless re-encode with the edits in the embedded XMP. Compression: lossless JPEG (default), ZIP, none or lossy.
 - **DNG of: Rendered photo**: the finished image as a linear DNG other raw converters open as rendered. Also **Photo ▸ File ▸ Render to DNG** (writes `<name>-Rendered.dng` beside the original and stacks it).
 - **Original files**: copies the file byte for byte, with an XMP sidecar.
+- HDR files (gain-map JPEG, PQ / HLG or gain-map AVIF, PQ or gain-map JPEG XL, PQ PNG, float TIFF): [HDR output](../export-size-sharpen/#hdr-output).
 - A non-raw photo cannot be exported as DNG.
 - Transparent sources keep alpha in PNG, WebP and TIFF.
 
 ## Bit depth and compression
-- **Bit depth**: 8-bit, 16-bit or 32-bit float for PNG / TIFF (TIFF defaults to 16).
+- **Bit depth**: 8-bit, 16-bit or 32-bit float for PNG / TIFF (TIFF defaults to 16); 16-bit half or 32-bit float for OpenEXR.
 - **Compression** (TIFF): None, LZW, ZIP.
 
 <Shot name="export-tiff" alt="File Settings with TIFF: bit depth and compression" menu="☰ ▸ Shortcuts ▸ Export…" />

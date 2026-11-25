@@ -242,7 +242,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                     "conflict": {"type": "string", "enum": ["unique", "overwrite", "skip"], "description": "Applies to path and dir, including sidecars: unique (default) picks the next free numbered name, skip leaves the existing file, overwrite replaces it"},
                     "tiffCompression": {"type": "string", "enum": ["none", "lzw", "zip"]},
                     "dngCompression": {"type": "string", "enum": ["lossless", "deflate", "uncompressed", "lossy"]},
-                    "format": {"type": "string", "enum": ["jpeg", "png", "tiff", "psd", "webp", "avif", "jxl", "original", "dng", "rendereddng"], "description": "psd = a flat PSD (no layers); rendereddng = Render to DNG, a linear 16-bit float DNG of the rendered photo with the edit baked in; original = the file as is + an XMP sidecar with the edits; dng = raw photos as DNG with the edits embedded"},
+                    "format": {"type": "string", "enum": ["jpeg", "png", "tiff", "psd", "webp", "avif", "jxl", "exr", "original", "dng", "rendereddng"], "description": "psd = a flat PSD (no layers); exr = scene-linear OpenEXR (bitDepth 16 half, default, or 32 float; exrPrimaries); rendereddng = Render to DNG, a linear 16-bit float DNG of the rendered photo with the edit baked in; original = the file as is + an XMP sidecar with the edits; dng = raw photos as DNG with the edits embedded"},
                     "longEdge": {"type": "integer", "description": "Output long edge in px. When no size param is given: 3000; 0 = full size (cropped, native resolution)"},
                     "shortEdge": {"type": "integer", "description": "Output short edge in px"},
                     "width": {"type": "integer", "description": "Output width in px (with height: fit inside width × height, either orientation, unless `fit` says otherwise)"},
@@ -255,6 +255,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                     "jxlLossless": {"type": "boolean", "description": "JPEG XL: mathematically lossless (quality unused); default false"},
                     "jxlEffort": {"type": "string", "enum": ["fast", "normal"], "description": "JPEG XL encoder effort: normal (default) makes files about a quarter smaller than fast, in about twice the time"},
                     "jxlProgressive": {"type": "boolean", "description": "JPEG XL: progressive file, a coarse image first (default false)"},
+                    "exrPrimaries": {"type": "string", "enum": ["rec2020", "acescg"], "description": "OpenEXR: primaries of the linear samples, written into the file (default rec2020)"},
                     "limitKb": {"type": "integer", "description": "JPEG: largest quality that fits this many KB"},
                     "sharpen": {"type": "string", "enum": ["none", "screen", "matte", "glossy"]},
                     "sharpenAmount": {"type": "string", "enum": ["low", "standard", "high"]},
@@ -275,6 +276,7 @@ pub fn helper_tools(has_ui: bool) -> Vec<Value> {
                 if let (Some(o), serde_json::Value::Object(v)) = (
                     props.as_object_mut(),
                     json!({
+                        "hdrMode": {"type": "string", "enum": ["hdr", "gainMap"], "description": "How AVIF and JPEG XL store HDR output (default hdr): hdr = one HDR image (10-bit / 16-bit Rec. 2020 PQ or HLG), gainMap = an 8-bit SDR image with an ISO 21496-1 gain map (looks right everywhere, HDR where the viewer reads gain maps). Only JPEG, AVIF and JPEG XL carry a gain map; its base image is 8-bit"},
                         "destinationMode": {"type": "string", "enum": ["specificFolder", "sameAsOriginal", "chooseLater"], "description": "specificFolder (default) = everything into `dir`; sameAsOriginal = each photo into the folder of its original (+ `subfolder`); a photo with no folder on disk or whose folder is gone gets an error; chooseLater = the desktop app asks for the folder when the export starts (here, as specificFolder: pass `dir`)"},
                         "customText": {"type": "string", "description": "Text of the `{custom}` naming token, e.g. naming `{custom}-{seq:1}`"},
                         "fit": {"type": "string", "enum": ["dimensions", "widthHeight"], "description": "With width + height: dimensions (default) fits either orientation (the larger number goes to the long edge); widthHeight limits the width to `width` and the height to `height` as the photo stands"},
@@ -861,6 +863,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
                         "colorSpace",
                         "bitDepth",
                         "hdr",
+                        "hdrMode",
                         "hdrTransfer",
                         "pluginDestination",
                         "preset",

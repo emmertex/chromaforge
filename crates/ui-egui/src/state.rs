@@ -673,6 +673,8 @@ pub struct AppSettings {
     pub keymap: crate::shortcuts::Keymap,
     /// The keymap set the user's changes apply over (Classic by default).
     pub keymap_set: crate::shortcuts::KeymapSet,
+    /// Speed-edit keys: hold the key and drag or scroll on the photo to move the slider (`app.setSpeedKey`).
+    pub speed_keys: crate::speed_edit::SpeedKeys,
     /// Auto (follow the system), Dark or Light.
     pub appearance_mode: AppearanceMode,
     /// The theme of the dark appearance.
@@ -702,6 +704,12 @@ pub struct AppSettings {
     pub slider_text: crate::theme::SliderText,
     /// How dragging a slider and scrubbing its value follow the pointer (Settings ▸ Interface).
     pub slider_control: crate::theme::SliderControl,
+    /// The shade behind the photo in the loupe, Compare, Survey and Reference (`view.loupeBackground`).
+    #[serde(deserialize_with = "lenient")]
+    pub loupe_background: crate::theme::CanvasShade,
+    /// The shade behind the filmstrip's thumbnails (`view.filmstripBackground`).
+    #[serde(deserialize_with = "lenient")]
+    pub filmstrip_background: crate::theme::CanvasShade,
     /// Theme shortcuts in the appearance context menu.
     #[serde(deserialize_with = "deserialize_favorite_themes")]
     pub favorite_themes: Vec<String>,
@@ -877,6 +885,7 @@ impl Default for AppSettings {
             loupe_messages: true,
             keymap: Default::default(),
             keymap_set: Default::default(),
+            speed_keys: crate::speed_edit::default_keys(),
             appearance_mode: AppearanceMode::Dark,
             dark_theme: DarkTheme::Charcoal,
             light_theme: LightTheme::Silver,
@@ -888,6 +897,8 @@ impl Default for AppSettings {
             auto_sync: false,
             slider_text: Default::default(),
             slider_control: Default::default(),
+            loupe_background: Default::default(),
+            filmstrip_background: Default::default(),
             favorite_themes: Vec::new(),
             display_profile: String::new(),
             color_readout: Default::default(),
@@ -1288,6 +1299,9 @@ pub fn crop_mask_alpha(percent: u8) -> u8 {
 /// The most toasts on screen at once: a newer one pushes the oldest out.
 pub const MAX_TOASTS: usize = 3;
 
+/// The Masking panel's folding sections, top to bottom (`section:mask:<key>`).
+pub const MASK_SECTIONS: [&str; 5] = ["light", "color", "grading", "effects", "detail"];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiState {
@@ -1416,6 +1430,9 @@ pub struct UiState {
     pub open_flyouts: Vec<String>,
     /// Solo Mode (`view.soloSections`): opening one Edit section closes the others.
     pub single_panel: bool,
+    /// Solo Mode for the Masking panel's sections (`mask.solo`, issue #1305): opening one of
+    /// [`MASK_SECTIONS`] folds the others.
+    pub mask_solo: bool,
     pub show_clipping: bool,
     pub histogram: bool,
     /// Which distribution the Histogram panel draws and how tall its bins are, as the *names* of a
@@ -1546,6 +1563,10 @@ pub struct UiState {
     /// HDR edits are shown in HDR on an HDR display (View ▸ HDR Preview, `view.hdrPreview`);
     /// off, every view shows their SDR rendition, as on an SDR display.
     pub hdr_preview: bool,
+    /// The Export screen's preview shows the HDR rendition of an HDR export (SDR otherwise);
+    /// kept for the session (`export.previewMode`).
+    #[serde(skip)]
+    pub export_preview_hdr: bool,
     /// The left sidebar's sections: their order, which are hidden and which are folded shut.
     pub sidebar: crate::sidebar::SidebarLayout,
     /// The ids of other folded panels (the Classic modules' `panel:<key>` panels), saved here. Settings files
@@ -1989,6 +2010,9 @@ pub struct UiState {
     /// A Settings section to bring into view once (`app.settings {section}`), e.g. `lensProfiles`.
     #[serde(skip)]
     pub settings_section: Option<String>,
+    /// How many times Help ▸ What's New was opened: each opening starts its entries over (the newest open, the rest closed).
+    #[serde(skip)]
+    pub whats_new_opens: u64,
     /// Develop ▸ Lens Corrections: the lens maker picked in the lens picker before a model (issue #307).
     #[serde(skip)]
     pub lens_pick_make: Option<String>,
@@ -2085,6 +2109,10 @@ pub enum Dialog {
         crossfade: u32,
         prores: bool,
         quality: u8,
+    },
+    /// File ▸ More Exports ▸ Export with Several Presets… (`crate::run_presets_ui`): the presets ticked.
+    RunPresets {
+        picked: Vec<String>,
     },
     /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
     EmailPhoto {
@@ -2281,7 +2309,7 @@ pub enum Dialog {
     /// Library ▸ Image Quality Scanner… (issue #1313): score photos for technical
     /// quality (blur, noise, exposure, JPEG blockiness) in the background and flag them Pick /
     /// Reject by two cutoffs; the scores stay on the photos for the Library's quality filter and
-    /// sort.
+    /// sort. Also assigns the star ratings the scores ask for (issue #1362).
     QualityScanner {
         /// The scope: `selection`, `folder` or `catalog` (`photo.qualityScan`'s `scope`).
         scope: String,
@@ -2295,6 +2323,12 @@ pub enum Dialog {
         rescan: bool,
         /// The factors measured, as `photo.qualityScan`'s `weights`: blur, noise, exposure, compression.
         weights: [f32; 4],
+        /// Write the star ratings the scores ask for (photos the user never rated themselves).
+        auto_rate: bool,
+        /// “Overwrite existing”: write the ratings and flags even onto photos the user set.
+        overwrite_metadata: bool,
+        /// The scores at which a star steps up (0★→1★ … 4★→5★), non-decreasing.
+        star_breaks: [f32; 5],
     },
     /// Help ▸ System Info: (label, value) rows.
     DenoiseModel {
@@ -2654,7 +2688,7 @@ impl SyncCounts {
 /// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
 /// working across panels (W).
 pub fn is_picker(tool: &str) -> bool {
-    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite")
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite" | "lensFocus")
 }
 
 impl Default for UiState {
@@ -2721,6 +2755,7 @@ impl Default for UiState {
             open_sections: vec!["light".into(), "primaries".into()],
             open_flyouts: vec![],
             single_panel: false,
+            mask_solo: false,
             show_clipping: false,
             histogram: true,
             histogram_mode: lcc_raster::HistogramMode::default().name().into(),
@@ -2752,6 +2787,7 @@ impl Default for UiState {
             face_boxes: false,
             draw_faces: false,
             hdr_preview: true,
+            export_preview_hdr: false,
             sidebar: Default::default(),
             collapsed_sidebar: Vec::new(),
             group_open: Default::default(),
@@ -2922,6 +2958,7 @@ impl Default for UiState {
             status: String::new(),
             dialog: None,
             settings_section: None,
+            whats_new_opens: 0,
             lens_pick_make: None,
             vignetting_calibration_info: None,
             vignetting_calibration_creating: None,
@@ -3067,6 +3104,22 @@ impl UiState {
             self.folded_sections.retain(|s| s != id);
         } else {
             self.folded_sections.push(id.to_string());
+        }
+    }
+
+    /// Opens the mask section `key` (one of [`MASK_SECTIONS`]) and folds every other one.
+    pub fn solo_mask_section(&mut self, key: &str) {
+        self.folded_sections.retain(|s| s.strip_prefix("mask:").is_none_or(|k| !MASK_SECTIONS.contains(&k)));
+        for k in MASK_SECTIONS.iter().filter(|k| **k != key) {
+            self.folded_sections.push(format!("mask:{k}"));
+        }
+    }
+    /// Turns the Masking panel's Solo Mode on or off. Turning it on keeps only the first open
+    /// section open.
+    pub fn set_mask_solo(&mut self, on: bool) {
+        self.mask_solo = on;
+        if on && let Some(k) = MASK_SECTIONS.iter().find(|k| !self.section_folded(&format!("mask:{k}"))) {
+            self.solo_mask_section(k);
         }
     }
 

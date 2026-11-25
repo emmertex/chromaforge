@@ -753,6 +753,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "To hand this editor the original file itself instead (the raw, without a copy: DxO PhotoLab, for example), right-click a photo → Edit In → Open Original in Other Editor (RAW, no copy).",
         ),
     );
+    hint(ui, t, crate::i18n::tr("For more editors, each with its own items in Photo → Edit In, use Photo → Edit In → Edit In Presets…."));
 }
 
 /// A language's name as the picker shows it: its own name (`Deutsch`), or, when no loaded font
@@ -2418,6 +2419,15 @@ fn appearance(
     row(ui, t, crate::i18n::tr("Slider text"), |ui| {
         let options = crate::theme::SliderText::ALL.map(|size| (size, size.label()));
         choices(ui, "settingsSliderText", &options, &mut s.slider_text);
+    });
+    // issue #1295: a neutral surround for judging colour (also Window ▸ Appearance, the loupe's right-click)
+    row(ui, t, crate::i18n::tr("Loupe background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsLoupeBackground", &options, &mut s.loupe_background);
+    });
+    row(ui, t, crate::i18n::tr("Filmstrip background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsFilmstripBackground", &options, &mut s.filmstrip_background);
     });
     if rows.control {
         row(ui, t, crate::i18n::tr("Slider control"), |ui| {

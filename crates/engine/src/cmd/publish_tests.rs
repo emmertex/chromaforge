@@ -290,3 +290,86 @@ fn a_published_collection_lists_sections_has_no_comments_and_bad_params_are_erro
     let mut m = Session::new();
     assert!(m.execute("publish.services", &json!({})).is_err());
 }
+
+/// A sample plug-in publish service (hand-written WebAssembly): it writes every request it gets
+/// to its log and answers each with a remote id and one comment.
+#[cfg(not(target_arch = "wasm32"))]
+fn sample_publish_plugin() -> Vec<u8> {
+    let manifest = r#"{"id":"test.flickrish","name":"Sample Photo Site","version":"1.0.0","requires":["publishServices"],"publish":{"id":"site","name":"Sample Site","comments":true}}"#;
+    let reply = r#"{"ok":{"remoteId":"remote-1","comments":[{"author":"Ann","text":"Lovely light","date":"2026-11-25T10:00:00Z"}]}}"#;
+    let esc = |s: &str| s.replace('"', "\\\"");
+    let src = format!(
+        r#"(module
+  (import "host" "log" (func $log (param i32 i32)))
+  (memory (export "memory") 2)
+  (data (i32.const 16) "{m}") (data (i32.const 8192) "{r}")
+  (func (export "lcc_abi_version") (result i32) (i32.const 1))
+  (func (export "lcc_manifest") (result i64) (i64.or (i64.shl (i64.const {ml}) (i64.const 32)) (i64.const 16)))
+  (func (export "lcc_alloc") (param i32) (result i32) (i32.const 65536))
+  (func (export "lcc_handle") (param $p i32) (param $n i32) (result i64)
+    (call $log (local.get $p) (local.get $n))
+    (i64.or (i64.shl (i64.const {rl}) (i64.const 32)) (i64.const 8192))))"#,
+        m = esc(manifest),
+        r = esc(reply),
+        ml = manifest.len(),
+        rl = reply.len()
+    );
+    wat::parse_str(&src).unwrap()
+}
+
+/// Publishing through a plug-in service: the plug-in gets the user's service and settings, the
+/// collection's name and each photo's title, caption and keywords; its remote comments come back.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn plugin_publish_service_gets_account_collection_and_metadata_and_answers_comments() {
+    let _turn = crate::cmd::plugins::tests::turn();
+    s_install(&sample_publish_plugin());
+    let (root, mut s) = library("plugin");
+    let ids = import(&mut s, &root, 2);
+    s.execute("photo.setMeta", &json!({"ids": [ids[0]], "title": "Harbour at dusk", "caption": "Boats", "keywords": ["sea", "boat"]})).unwrap();
+    let svc = s
+        .execute(
+            "publish.createService",
+            &json!({"kind": "plugin:test.flickrish", "name": "My Site", "settings": {"user": "ann"}, "export": {"format": "jpeg", "longEdge": 20}}),
+        )
+        .unwrap();
+    let listed = s.execute("publish.services", &json!({})).unwrap();
+    let mine = listed["services"].as_array().unwrap().iter().find(|x| x["id"] == svc["id"]).cloned().unwrap();
+    assert_eq!(mine["capabilities"]["comments"], true, "{mine}");
+    // a plug-in service's settings are an object of bounded size
+    for bad in [json!("x"), json!({"big": "x".repeat(70 * 1024)})] {
+        let p = json!({"kind": "plugin:test.flickrish", "name": "Bad", "settings": bad});
+        assert!(s.execute("publish.createService", &p).is_err());
+    }
+    s.execute("library.select", &json!({"ids": [ids[0]]})).unwrap();
+    let coll = s.execute("publish.createCollection", &json!({"service": "My Site", "name": "Harbours", "addSelected": true})).unwrap()["collection"]
+        .as_u64()
+        .unwrap();
+    let r = s.execute("publish.run", &json!({"collection": coll})).unwrap();
+    assert_eq!(r["runs"][0]["published"].as_array().unwrap().len(), 1, "{r}");
+
+    let log = s.execute("plugin.log", &json!({"id": "test.flickrish"})).unwrap();
+    let upload = log.as_array().unwrap().iter().filter_map(Value::as_str).find(|l| l.contains("publish.upload")).unwrap().to_string();
+    for want in ["\"user\":\"ann\"", "\"name\":\"My Site\"", "\"name\":\"Harbours\"", "Harbour at dusk", "\"caption\":\"Boats\"", "\"sea\""] {
+        assert!(upload.contains(want), "{want} missing from {upload}");
+    }
+    let c = s.execute("publish.comments", &json!({"collection": coll, "id": ids[0]})).unwrap();
+    assert_eq!((c["supported"].as_bool(), c["published"].as_bool()), (Some(true), Some(true)), "{c}");
+    assert_eq!(c["comments"][0]["author"], "Ann", "{c}");
+    assert_eq!(c["comments"][0]["text"], "Lovely light");
+    let log = s.execute("plugin.log", &json!({"id": "test.flickrish"})).unwrap();
+    assert!(log.as_array().unwrap().iter().filter_map(Value::as_str).any(|l| l.contains("publish.comments") && l.contains("remote-1")), "{log}");
+
+    // taking the photo out removes it through the plug-in, with the same remote id
+    s.execute("album.removePhotos", &json!({"id": coll, "ids": [ids[0]]})).unwrap();
+    let r = s.execute("publish.run", &json!({"collection": coll})).unwrap();
+    assert_eq!(r["runs"][0]["removed"].as_array().map(Vec::len), Some(1), "{r}");
+    let log = s.execute("plugin.log", &json!({"id": "test.flickrish"})).unwrap();
+    assert!(log.as_array().unwrap().iter().filter_map(Value::as_str).any(|l| l.contains("publish.delete") && l.contains("remote-1")), "{log}");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn s_install(bytes: &[u8]) {
+    let mut g = crate::cmd::plugins::manager();
+    g.get_or_insert_with(lcc_plugins::Manager::in_memory).install_bytes(bytes, None, false).unwrap();
+}

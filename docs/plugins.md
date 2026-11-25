@@ -495,7 +495,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)), `updates` (`updateUrl`, [Updates](#updates)), and `quickActions` (`quickAction` on a command, [Quick actions](#quick-actions)), `libraryRemove` (the `library.remove` host call, [Import hooks](#import-hooks)), `beforeImport` (the hook; on an attended import its `program.start` works) and `afterImport` (the hook after each imported batch; both [Import hooks](#import-hooks)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)), `updates` (`updateUrl`, [Updates](#updates)), `quickActions` (`quickAction` on a command, [Quick actions](#quick-actions)), `publishServices` (`comments` on `publish`, the `publish.comments` hook, and the `account` and `collection` every publish request carries, [Publish services](#publish-services)), `libraryRemove` (the `library.remove` host call, [Import hooks](#import-hooks)), `beforeImport` (the hook; on an attended import its `program.start` works) and `afterImport` (the hook after each imported batch; both [Import hooks](#import-hooks)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -685,7 +685,7 @@ The manifest fields:
 | `commands` | `[{id, label, menu?, dialog?, prepare?, job?, quickAction?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false`; `quickAction: true` adds a quick settings bar button ([Quick actions](#quick-actions)) |
 | `settings` | `[{key, label, type, …, prepare?}]`, at most 32; needs `requires: ["settings"]` |
 | `hooks` | `{export?: true, metadata?: true, beforeImport?: true, afterImport?: true}` |
-| `publish` | `{id, name}`: one publish service |
+| `publish` | `{id, name, comments?}`: one publish service; `comments: true` needs `requires: ["publishServices"]` ([Publish services](#publish-services)) |
 | `exportDestinations` | `[{id, name, dialog?}]`, at most 16 |
 | `metadataFields` | `[{key, label, type, …, readOnly?}]`, at most 32; `type` and its options as for dialog fields |
 
@@ -703,6 +703,7 @@ The manifest fields:
 | `afterImport` | `req.imported()` → photos (`photo.inspect` JSON), `req.source()` | anything; `message` is shown |
 | `publish.upload` | `item: {path, photo, title, caption, keywords, remoteId?}` | `{remoteId, url?}`; the same `remoteId` comes back on a re-publish and on removal |
 | `publish.delete` | `remoteId` | anything |
+| `publish.comments` | `remoteId` (only with `comments: true`) | `{comments: [{author, text, date?}]}` |
 | `program.end` | `req.run()`, `req.program()`, `req.status()` (`exited`, `cancelled`, `failed`), `req.code()` (the exit code, when known), `req.tmp_dir()` (readable during the call) | anything; failures go to the log |
 
 ### 4. Call the host
@@ -755,6 +756,39 @@ The manifest fields:
   use beyond the baseline.
 - Stamp and sign the release build (Stamping your plug-in and Signing your plug-in, below) and
   distribute that `.wasm` file. There is no store yet: tell users what each permission is for.
+
+## Publish services
+
+A plug-in adds an online service (a photo site, a gallery, a client portal) to the Publish
+Services panel with `publish: {id, name}`; the user sets it up there like a built-in one (kind
+`plugin:<plug-in id>`), as often as they like (one per account), with its own export settings and
+collections. The app renders new and modified photos and hands each to the plug-in; the plug-in
+sends it and answers with the service's id for it.
+
+With host feature **`publishServices`** (list it in `requires` when you rely on it), every
+publish request also carries:
+
+- `account: {id, name, settings}`: the user's service (`svc-3`, "My Gallery") and its settings
+  (`publish.createService {kind, name, settings}`: any JSON object up to 64 KiB). Keep what a
+  user types once (a user name, a token) in the plug-in's own `settings` instead; those have a
+  page in the Plug-in Manager.
+- `collection: {album, name, folder}`: the published collection (its catalog album, its name now,
+  and the name it had when it was made), so the service can keep one remote album per collection.
+- in `publish.upload`'s `item`: the photo's `title`, `caption` and `keywords`.
+
+`publish: {id, name, comments: true}` says the service has remote comments: Library ▸ Review Comments
+and `publish.comments` / `publish.reviewComments` ask the plug-in with `{"hook":
+"publish.comments", remoteId}`, and it answers `{comments: [{author, text, date?}]}`.
+
+The host checks the replies: a `remoteId` is 1–1024 bytes without control characters; at most
+1,000 comments are kept per photo, each text and author cut at 8 KiB, control characters
+dropped, empty ones left out. The network hosts the service talks to are named in the manifest's
+`network` permission, as for any plug-in.
+
+The app ships no Flickr or SmugMug service of its own: those need an API key registered with
+each site. A plug-in author who registers one can ship such a service as a plug-in; the key
+then belongs to that plug-in (keep it out of public source, or have each user enter their own in
+the plug-in's settings).
 
 ## Stamping your plug-in
 

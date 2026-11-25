@@ -62,6 +62,7 @@ pub mod email_photo;
 mod enhance_pump;
 pub mod enhance_ui;
 pub mod export_module;
+mod export_preview;
 pub mod export_task;
 pub mod eye_strip;
 pub mod eyedropper;
@@ -105,6 +106,7 @@ pub mod modern_sheets;
 mod modern_sources;
 pub mod module;
 pub mod motion;
+mod notes_view;
 pub mod onboarding;
 pub mod overlay;
 pub mod panels;
@@ -123,6 +125,7 @@ pub mod region;
 pub mod reload;
 pub mod render;
 pub mod render_dng_task;
+pub mod run_presets_ui;
 pub mod settings_screen;
 /// The module shell's frame steps (fork-owned).
 mod shell;
@@ -133,6 +136,7 @@ pub mod slideshow_ui;
 pub mod soft_keyboard;
 pub mod softpaint;
 pub mod space_hand;
+pub mod speed_edit;
 pub mod state;
 pub mod surface;
 pub mod surface_icons;
@@ -173,6 +177,8 @@ mod tests_appearance;
 mod tests_background_clicks;
 #[cfg(test)]
 mod tests_background_prep;
+#[cfg(test)]
+mod tests_backgrounds;
 #[cfg(test)]
 mod tests_bar_buttons;
 #[cfg(test)]
@@ -253,6 +259,8 @@ mod tests_empty_library;
 mod tests_enhance_dialog;
 #[cfg(test)]
 mod tests_error_kinds;
+#[cfg(test)]
+mod tests_export_preview;
 #[cfg(test)]
 mod tests_filmstrip;
 #[cfg(test)]
@@ -380,6 +388,8 @@ mod tests_modules;
 #[cfg(test)]
 mod tests_mouse_nav;
 #[cfg(test)]
+mod tests_notes_view;
+#[cfg(test)]
 mod tests_offline;
 #[cfg(test)]
 mod tests_onboarding;
@@ -472,6 +482,8 @@ mod tests_space_hand;
 #[cfg(test)]
 mod tests_space_hold;
 #[cfg(test)]
+mod tests_speed_edit;
+#[cfg(test)]
 mod tests_stand_in_crop;
 #[cfg(test)]
 mod tests_surface;
@@ -501,6 +513,8 @@ mod tests_tool_row;
 mod tests_unsaved;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_update;
+#[cfg(test)]
+mod tests_upright_panel;
 #[cfg(test)]
 mod tests_view_state;
 #[cfg(test)]
@@ -562,6 +576,10 @@ pub type SaveToGalleryFn = Box<dyn FnMut(&[String], bool) -> Result<std::sync::m
 pub type OpenWithFn = Box<dyn FnMut(&str, &str) -> Result<(), String>>;
 /// Open several files with one start of an application (`app` as for [`OpenWithFn`]).
 pub type OpenAllWithFn = Box<dyn FnMut(&[String], &str) -> Result<(), String>>;
+/// Start an editor once with arguments and several files (an Edit In preset's menu item on a
+/// batch): `args` (one holding `{file}` takes the paths where it stands), then the files, unless
+/// `args` is empty and there is one file, which [`Services::open_with`] opens.
+pub type OpenPresetFn = Box<dyn FnMut(&[String], &str, &[String]) -> Result<(), String>>;
 /// Linux model-folder work: wait for the default opener on a background task.
 #[cfg(target_os = "linux")]
 pub type OpenModelFolderFn = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
@@ -721,6 +739,10 @@ pub struct Services {
     /// Open several files with one start of the editor (Open Original; desktop only): an editor
     /// that keeps one window takes them all. None = [`Services::open_with`] for each.
     pub open_all_with: Option<OpenAllWithFn>,
+    /// Start a preset's editor with its arguments and every file of a batch (desktop only). None =
+    /// a preset without arguments opens through [`Services::open_all_with`] / [`Services::open_with`];
+    /// one with arguments can't be started.
+    pub open_preset: Option<OpenPresetFn>,
     /// Optional worker-safe model-folder opener alongside `open_with` (Linux desktop only).
     #[cfg(target_os = "linux")]
     pub open_model_folder: Option<OpenModelFolderFn>,
@@ -970,6 +992,8 @@ pub struct LccApp {
     pub crop_layout: Option<panels::detail::CropLayout>,
     /// Space is held over a tool on the photo: the view's hand has the pointer ([`space_hand`]).
     pub space_hand: Option<space_hand::SpaceHand>,
+    /// A speed-edit key is held in Develop: a drag or scroll on the photo moves its slider ([`speed_edit`]).
+    pub speed_edit: Option<speed_edit::SpeedEdit>,
     /// The brush stroke being painted, as drawn on the photo until it's committed (issue #517).
     pub brush_live: Option<brush_live::LiveStroke>,
     /// What the loupe drew last frame: photo and source ("render", "cached", "embedded", "small",
@@ -1046,6 +1070,10 @@ pub struct LccApp {
     pub folder_poll: folder_poll::FolderPoll,
     /// A link (`<scheme>://sync?path=…`) the app was started with, followed once a frame runs.
     pub pending_link: Option<String>,
+    /// Single-instance hand-off (gap 37): what later launches hand this copy (their links and
+    /// files), followed each frame (`folder_poll::take_handoffs`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub handoff: Option<lcc_engine::instance::Server>,
     /// A Lightroom catalog inspect/import in progress.
     pub lightroom: Option<lightroom_import::LightroomTask>,
     /// Last terminal Lightroom result, exposed by the command's status/wait response.
@@ -1109,6 +1137,9 @@ pub struct LccApp {
     /// The display's headroom when the window shows HDR now ([`HdrOutput::headroom`]): the loupe
     /// then draws HDR edits from their HDR render ([`render::Slot::HdrView`]).
     pub hdr_headroom: Option<f32>,
+    /// The Export screen's preview's HDR texture ([`export_preview`]), while it has one: freed
+    /// when the screen closes or the preview shows SDR.
+    pub export_preview_hdr: Option<egui::TextureId>,
     /// The last GPU event told (`lcc_gpu::events_after`: the graphics card stopped
     /// responding, was restarted …).
     gpu_event_seen: u64,
@@ -1358,6 +1389,7 @@ impl LccApp {
             gesture: None,
             crop_layout: None,
             space_hand: None,
+            speed_edit: None,
             brush_live: None,
             loupe_shown: None,
             loupe_timing: Default::default(),
@@ -1393,6 +1425,8 @@ impl LccApp {
             sync_run: None,
             folder_poll: Default::default(),
             pending_link: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            handoff: None,
             lightroom: None,
             lightroom_last: None,
             catalog_ui: Default::default(),
@@ -1423,6 +1457,7 @@ impl LccApp {
             font_problems: None,
             startup_update_check: false,
             hdr_display_sdr: false,
+            export_preview_hdr: None,
             hdr_headroom: None,
             gpu_event_seen: 0,
             last_screen: egui::Vec2::ZERO,
@@ -2296,6 +2331,7 @@ impl LccApp {
         theme::set_compact(ctx, self.compact());
         theme::set_slider_text(ctx, self.ui.settings.slider_text);
         theme::set_slider_control(ctx, self.ui.settings.slider_control);
+        theme::set_canvas_shades(ctx, self.ui.settings.loupe_background, self.ui.settings.filmstrip_background);
         let wanted = self.ui.settings.theme(self.system_theme(ctx));
         if theme::current(ctx) != Some(wanted) {
             theme::apply_kind(ctx, wanted);
@@ -2424,6 +2460,10 @@ impl LccApp {
                 h.release(slot);
             }
         }
+        // the Export screen's preview (its renders, its HDR texture) goes with the screen
+        if !matches!(self.ui.dialog, Some(state::Dialog::Export { .. })) {
+            export_preview::forget(self, ctx);
+        }
         self.logic_inner(ctx);
         self.perf.logic_ms = now_ms() - t0;
     }
@@ -2546,6 +2586,8 @@ impl LccApp {
         if let Some(url) = self.pending_link.take() {
             folder_poll::follow_link(self, ctx, &url);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        folder_poll::take_handoffs(self, ctx);
         self.ui.was_focused = focused;
         // auto import: list the watched folder every few seconds (on a worker thread: it may be on
         // a network share), then import what's new like any import (also on a worker thread)
@@ -3255,7 +3297,7 @@ impl LccApp {
         let t = theme::Tokens::get(&ctx);
         let bg = if matches!(self.ui.view, state::ViewMode::Detail | state::ViewMode::Compare | state::ViewMode::Survey | state::ViewMode::Reference)
         {
-            t.canvas
+            theme::loupe_shade(&ctx).color(t.canvas)
         } else {
             t.grid_bg
         };
@@ -3589,7 +3631,7 @@ pub struct Caches {
     /// The open person page: (name, catalog revision, faces indexed, when it was asked for, the page).
     pub person_page: Option<(String, u64, u64, f64, std::sync::Arc<panels::person::PersonPage>)>,
     /// The unnamed faces: (catalog revision, faces indexed, when it was asked for, the list).
-    pub unnamed: Option<(u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
+    pub unnamed: Option<(u64, u64, u64, f64, std::sync::Arc<panels::unnamed::Unnamed>)>,
     /// The library filter (any person filter aside) the two above were asked for with: when the sidebar picks another
     /// year, folder or album, they are asked for again.
     pub faces_filter: Option<lcc_catalog::Filter>,
@@ -4287,6 +4329,8 @@ mod tests_modern_gestures;
 mod tests_modern_library;
 #[cfg(test)]
 mod tests_modern_sheets;
+#[cfg(test)]
+mod tests_phone_menus;
 #[cfg(test)]
 mod tests_pill_slider;
 #[cfg(test)]
