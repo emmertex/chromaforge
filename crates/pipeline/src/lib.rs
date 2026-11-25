@@ -8,7 +8,7 @@
 //! 1. geometry — user orientation, lens corrections (distortion, CA, vignetting), perspective, crop +
 //!    straighten, flips; one resample at output resolution; then defringe
 //! 2. scene-linear — white balance, spot removal, noise reduction, Smooth Skin ([`skin`]), then
-//!    exposure, dehaze, local tone (highlights/shadows), texture, clarity, local adjustments (masks)
+//!    the Tone Equalizer ([`tone_eq`]), exposure, dehaze, local tone (highlights/shadows), texture, clarity, local adjustments (masks)
 //! 3. tone map — contrast / whites / blacks filmic curve on luminance, highlight desaturation
 //! 4. colour — vibrance, saturation, colour mixer, colour grading, B&W (OkLCh)
 //! 5. display — gamut map to the output space (sRGB unless [`RenderRequest::space`] says otherwise), encode, tone curves (parametric + point), vignette, grain
@@ -39,6 +39,7 @@ pub mod geometry;
 pub mod glow;
 pub mod grade;
 pub mod grain;
+pub mod lens_blur;
 pub mod levels;
 pub mod local;
 pub mod local_tone;
@@ -61,6 +62,7 @@ pub mod skin;
 pub mod source_stage;
 pub mod spots;
 pub mod tone;
+pub mod tone_eq;
 pub mod transform;
 pub mod upright;
 pub mod vignetting_calibration;
@@ -667,6 +669,8 @@ pub struct Plan<'a> {
     pub whole_frame: geometry::Frame,
     /// The whole output frame's size (`full_w, full_h`; a windowed render is part of it).
     pub full_size: (usize, usize),
+    /// Lens Blur's distance grid, when Lens Blur is on ([`lens_blur::resolve`]).
+    pub lens_blur: Option<Arc<lens_blur::Depth>>,
 }
 
 /// Long edge of the small render a windowed render estimates the whole frame's airlight from.
@@ -720,6 +724,11 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             let work = if req.depth == OutputDepth::U8 { grow_window(work, skin::reach(s, px_per_long), full_w, full_h) } else { work };
             // (the retouch of people's parts is per pixel: retouch::reach is 0)
             let work = if req.depth == OutputDepth::U8 { grow_window(work, retouch::reach(s, px_per_long), full_w, full_h) } else { work };
+            // and so does the Tone Equalizer, whose mask is smoothed
+            let work = if req.depth == OutputDepth::U8 { grow_window(work, tone_eq::reach(s, px_per_long), full_w, full_h) } else { work };
+            // and Lens Blur, which gathers from up to its largest radius away
+            let work =
+                if req.depth == OutputDepth::U8 { grow_window(work, lens_blur::reach(&s.lens_blur, px_per_long), full_w, full_h) } else { work };
             // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
             // those reads outside the requested window too, at every depth (cut back below)
             let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
@@ -811,9 +820,12 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         joint_nr,
     ));
     let noise_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail].map(f64::to_bits), detail_scale.to_bits()));
-    let lin_key = match (skin::key(s), retouch::key(s)) {
-        (None, None) => nr_key,
-        (k, r) => hash_of((nr_key, k, r)),
+    // Lens Blur's distance grid (the depth model's, else from the Subject selection)
+    let lens_depth = lens_blur::resolve(aux(), info, s);
+    let lens_key = lens_blur::key(&s.lens_blur, lens_depth.as_deref());
+    let lin_key = match (skin::key(s), retouch::key(s), tone_eq::key(s), &lens_key) {
+        (None, None, None, None) => nr_key,
+        (k, r, t, l) => hash_of((nr_key, k, r, t, l)),
     };
     let frame_lin_key = hash_of((
         frame_lin_key,
@@ -824,6 +836,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         joint_nr,
         skin::key(s),
         retouch::key(s),
+        tone_eq::key(s),
+        &lens_key,
     ));
     // AI masks without a model: analysed once per photo look on the whole frame (cached)
     let mattes = if auto_mask::needed(s) {
@@ -858,6 +872,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         filter_frame,
         whole_frame,
         full_size: (full_w, full_h),
+        lens_blur: lens_depth,
     }
 }
 
@@ -928,7 +943,7 @@ fn grow_window(win: PixelWindow, reach: f64, full_w: usize, full_h: usize) -> Pi
 /// Whether Smooth Skin or the retouch of people's parts (Teeth) changes this render (they run after noise
 /// reduction; the GPU renderer does Smooth Skin itself and the retouch on the CPU).
 pub fn skin_needs_cpu(s: &DevelopSettings) -> bool {
-    skin::analysis(s).is_some() || retouch::active(s)
+    skin::analysis(s).is_some() || retouch::active(s) || tone_eq::active(s)
 }
 
 /// Smooth Skin, then the retouch of people's parts, on the noise-reduced scene-linear image (both
@@ -936,6 +951,7 @@ pub fn skin_needs_cpu(s: &DevelopSettings) -> bool {
 pub fn retouch_people(img: &mut Rgb32f, s: &DevelopSettings, frame: &geometry::Frame, px_per_long: f64) {
     timed("smooth skin", || skin::apply(img, s, frame, px_per_long));
     timed("retouch", || retouch::apply(img, s, frame, px_per_long));
+    timed("tone equalizer", || tone_eq::apply(img, s, px_per_long));
 }
 
 /// Whether the scene-linear stage needs work only the CPU does (content-aware Fill, Generate and
@@ -1099,6 +1115,9 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     let Plan { ref frame, w, h, px_per_long, detail_scale, geo, lin_key, nr_key, .. } = plan;
     let s = &*plan.settings;
     let mut warnings = Vec::new();
+    if plan.lens_blur.as_ref().is_some_and(|d| d.source == lens_blur::DepthSource::Subject) {
+        warnings.push(lens_blur::NO_MODEL_WARNING.to_string());
+    }
 
     let shared = match (&src, cache) {
         (Src::Shared(a), Some(c)) => Some((*a, c)),
@@ -1194,6 +1213,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
             } else {
                 let mut img = (*nr).clone();
                 retouch_people(&mut img, s, frame, px_per_long);
+                timed("lens blur", || lens_blur::apply(&mut img, &plan));
                 (Arc::new(img), Some(nr))
             }
         }
@@ -1544,5 +1564,7 @@ mod tests_sharpen;
 mod tests_skin;
 #[cfg(test)]
 mod tests_tone;
+#[cfg(test)]
+mod tests_tone_eq;
 #[cfg(test)]
 mod tests_window;

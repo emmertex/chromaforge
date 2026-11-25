@@ -398,6 +398,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
             });
         });
+        ui.vertical_centered(|ui| super::mask_effects::style_brush_row(app, ui));
         super::mask_pickers::people_picker(app, ui, id);
         super::mask_pickers::concept_picker(app, ui);
         describe_field(app, ui, true);
@@ -1134,11 +1135,14 @@ fn mask_mixer(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) {
 }
 
 /// The local Point Color sliders: (widget id, the global control's field, the `mask.pointColorSet` key).
-const MASK_POINT_FIELDS: [(&str, &str, &str); 8] = [
+const MASK_POINT_FIELDS: [(&str, &str, &str); 11] = [
     ("maskPointColor.hueShift", "hueShift", "hue_shift"),
     ("maskPointColor.satShift", "satShift", "sat_shift"),
     ("maskPointColor.lumShift", "lumShift", "lum_shift"),
     ("maskPointColor.variance", "variance", "variance"),
+    ("maskPointColor.hueUniformity", "hueUniformity", "hue_uniformity"),
+    ("maskPointColor.satUniformity", "satUniformity", "sat_uniformity"),
+    ("maskPointColor.lumUniformity", "lumUniformity", "lum_uniformity"),
     ("maskPointColor.range", "range", "range"),
     ("maskPointColor.hueRange", "hueRange", "hue_range"),
     ("maskPointColor.satRange", "satRange", "sat_range"),
@@ -1192,6 +1196,9 @@ fn mask_point_color(app: &mut LccApp, ui: &mut egui::Ui, m: &lcc_develop::Mask) 
             "sat_shift" => pc.sat_shift,
             "lum_shift" => pc.lum_shift,
             "variance" => pc.variance,
+            "hue_uniformity" => pc.hue_uniformity,
+            "sat_uniformity" => pc.sat_uniformity,
+            "lum_uniformity" => pc.lum_uniformity,
             "range" => pc.range,
             "hue_range" => pc.hue_range,
             "sat_range" => pc.sat_range,

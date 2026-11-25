@@ -2110,6 +2110,10 @@ pub enum Dialog {
         prores: bool,
         quality: u8,
     },
+    /// File ▸ More Exports ▸ Export with Several Presets… (`crate::run_presets_ui`): the presets ticked.
+    RunPresets {
+        picked: Vec<String>,
+    },
     /// File ▸ Email Photo… (`crate::email_photo`): the long edge (pixels) and JPEG quality of the copies.
     EmailPhoto {
         long_edge: u32,
@@ -2684,7 +2688,7 @@ impl SyncCounts {
 /// (Point Color, Color Range). The white balance picker is left out: it puts itself away after one pick and keeps
 /// working across panels (W).
 pub fn is_picker(tool: &str) -> bool {
-    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite")
+    tool.starts_with("tat:") || matches!(tool, "pointColor" | "colorRange" | "levelsBlack" | "levelsWhite" | "lensFocus")
 }
 
 impl Default for UiState {

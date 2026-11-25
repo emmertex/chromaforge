@@ -22,6 +22,8 @@ pub enum Section {
     Primaries,
     /// Levels: black, midtone, white and output levels per channel (beyond Lightroom).
     Levels,
+    /// Tone Equalizer: exposure per luminance band (beyond Lightroom).
+    ToneEq,
     Effects,
     Vignette,
     /// Glow, the Resolve-style bloom (beyond Lightroom).
@@ -40,6 +42,8 @@ pub enum Section {
     Retouch,
     /// Repairs of the raw sensor data (a checkbox in the Detail panel).
     Sensor,
+    /// Lens Blur.
+    LensBlur,
 }
 
 impl Section {
@@ -53,6 +57,7 @@ impl Section {
             Section::Grading => "Color Grading",
             Section::Primaries => "Primaries",
             Section::Levels => "Levels",
+            Section::ToneEq => "Tone Equalizer",
             Section::Effects => "Effects",
             Section::Vignette => "Vignette",
             Section::Glow => "Glow",
@@ -67,6 +72,7 @@ impl Section {
             Section::Skin => "Smooth Skin",
             Section::Retouch => "Retouch",
             Section::Sensor => "Sensor",
+            Section::LensBlur => "Lens Blur",
         }
     }
 }
@@ -341,6 +347,19 @@ controls! {
     "levels.blue.white" => levels.blue.white, "Blue Input White", Levels, 0, 255, 255, 1, 0, Plain;
     "levels.blue.outBlack" => levels.blue.out_black, "Blue Output Black", Levels, 0, 255, 0, 1, 0, Plain;
     "levels.blue.outWhite" => levels.blue.out_white, "Blue Output White", Levels, 0, 255, 255, 1, 0, Plain;
+    "toneEq.ev8" => tone_eq.ev8, "-8 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev7" => tone_eq.ev7, "-7 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev6" => tone_eq.ev6, "-6 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev5" => tone_eq.ev5, "-5 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev4" => tone_eq.ev4, "-4 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev3" => tone_eq.ev3, "-3 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev2" => tone_eq.ev2, "-2 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev1" => tone_eq.ev1, "-1 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.ev0" => tone_eq.ev0, "0 EV", ToneEq, -2, 2, 0, 0.05, 2, Centered => Ramp;
+    "toneEq.smoothing" => tone_eq.smoothing, "Curve Smoothing", ToneEq, -1, 1, 0, 0.01, 2, Centered;
+    "toneEq.detail" => tone_eq.detail, "Preserve Details", ToneEq, 0, 100, 100, 1, 0, Plain;
+    "toneEq.size" => tone_eq.size, "Mask Size", ToneEq, 0, 100, 50, 1, 0, Plain;
+    "toneEq.edges" => tone_eq.edges, "Edge Refinement", ToneEq, 0, 100, 25, 1, 0, Plain;
     "skin.amount" => skin.amount, "Amount", Skin, 0, 100, 0, 1, 0, Plain;
     "skin.texture" => skin.texture, "Texture", Skin, -100, 100, 0, 1, 0, Centered;
     "skin.evenTone" => skin.even_tone, "Even Tone", Skin, 0, 100, 0, 1, 0, Plain;
@@ -372,6 +391,10 @@ controls! {
     "grain.color" => grain.color, "Color", Grain, 0, 100, 0, 1, 0, Plain;
     "grain.seed" => grain.seed, "Seed", Grain, 0, 99999, 0, 1, 0, Plain;
     "grain.response" => grain.response, "Response", Grain, -100, 100, 0, 1, 0, Centered;
+    "lensBlur.amount" => lens_blur.amount, "Blur Amount", LensBlur, 0, 100, 50, 1, 0, Plain => Ramp;
+    "lensBlur.focalDistance" => lens_blur.focal_distance, "Focal Distance", LensBlur, 0, 100, 0, 1, 0, Plain;
+    "lensBlur.focalRange" => lens_blur.focal_range, "Focal Range", LensBlur, 0, 100, 20, 1, 0, Plain;
+    "lensBlur.focusSize" => lens_blur.focus_size, "Focus Area", LensBlur, 0, 0.5, 0, 0.01, 2, Plain;
     "enhance.denoise" => enhance.denoise, "Amount", Detail, 0, 100, 0, 1, 0, Plain;
     "detail.sharpenAmount" => detail.sharpen_amount, "Sharpening", Detail, 0, 150, 0, 1, 0, Plain => Tinted;
     "detail.sharpenRadius" => detail.sharpen_radius, "Radius", Detail, 0.5, 3, 1, 0.1, 1, Plain => Ramp;
@@ -413,6 +436,7 @@ controls! {
     "calibration.blueSat" => calibration.blue_sat, "Blue Saturation", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#3a60e0" };
     "crop.angle" => crop.geometry.angle, "Straighten", Geometry, -45, 45, 0, 0.01, 2, Centered;
     "sensor.pixelFix" => sensor.pixel_fix, "Fix Hot and Dead Pixels", Sensor, 0, 1, 1, 1, 0, Plain;
+    "sensor.highlightMode" => sensor.highlight_mode, "Highlight Reconstruction", Sensor, 0, 2, 0, 1, 0, Plain;
     "filmDust.remove" => film_dust.remove, "Remove Film Dust", Sensor, 0, 1, 0, 1, 0, Plain;
     "filmDust.sensitivity" => film_dust.sensitivity, "Film Dust Sensitivity", Sensor, 0, 100, 50, 1, 0, Plain;
     "filmDust.expand" => film_dust.expand, "Film Dust Expand", Sensor, -8, 40, 1, 1, 0, Centered;
@@ -466,6 +490,42 @@ pub static INDEXED: &[ControlSpec] = &[
         step: 1.0,
         decimals: 0,
         track: Centered,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
+        id: "pointColor.hueUniformity",
+        label: "Hue Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
+        id: "pointColor.satUniformity",
+        label: "Saturation Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
+        shade: Shade::Plain,
+    },
+    ControlSpec {
+        id: "pointColor.lumUniformity",
+        label: "Lightness Uniformity",
+        section: Section::PointColor,
+        min: 0.0,
+        max: 100.0,
+        default: 0.0,
+        step: 1.0,
+        decimals: 0,
+        track: Plain,
         shade: Shade::Plain,
     },
     ControlSpec {
@@ -563,6 +623,9 @@ fn indexed_field<'a>(s: &'a mut DevelopSettings, id: &str) -> Option<&'a mut f64
                 "satShift" => &mut p.sat_shift,
                 "lumShift" => &mut p.lum_shift,
                 "variance" => &mut p.variance,
+                "hueUniformity" => &mut p.hue_uniformity,
+                "satUniformity" => &mut p.sat_uniformity,
+                "lumUniformity" => &mut p.lum_uniformity,
                 "range" => &mut p.range,
                 "hueRange" => &mut p.hue_range,
                 "satRange" => &mut p.sat_range,

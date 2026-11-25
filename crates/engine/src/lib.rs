@@ -138,6 +138,7 @@ pub mod quality_scan;
 pub mod remote;
 pub mod rename;
 pub mod render_dng;
+pub mod run_presets;
 pub mod scene_disk;
 pub mod segment;
 pub mod sensor_maps;
@@ -2921,6 +2922,8 @@ mod tests_import_move;
 mod tests_import_tab;
 #[cfg(test)]
 mod tests_keyword_list;
+#[cfg(test)]
+mod tests_lens_blur;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests_lens_db;

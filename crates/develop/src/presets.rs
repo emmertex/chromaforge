@@ -28,6 +28,8 @@ pub enum SettingsGroup {
     Light,
     /// Levels (beyond Lightroom): black, midtone, white and output levels per channel.
     Levels,
+    /// Tone Equalizer (beyond Lightroom): exposure per luminance band.
+    ToneEq,
     ToneCurve,
     Color,
     ColorMixer,
@@ -62,6 +64,7 @@ impl SettingsGroup {
         SettingsGroup::WhiteBalance,
         SettingsGroup::Light,
         SettingsGroup::Levels,
+        SettingsGroup::ToneEq,
         SettingsGroup::ToneCurve,
         SettingsGroup::Color,
         SettingsGroup::ColorMixer,
@@ -107,6 +110,7 @@ impl SettingsGroup {
             SettingsGroup::WhiteBalance => "White Balance",
             SettingsGroup::Light => "Light",
             SettingsGroup::Levels => "Levels",
+            SettingsGroup::ToneEq => "Tone Equalizer",
             SettingsGroup::ToneCurve => "Tone Curve",
             SettingsGroup::Color => "Color",
             SettingsGroup::ColorMixer => "Color Mixer",
@@ -138,6 +142,7 @@ impl SettingsGroup {
             SettingsGroup::WhiteBalance => &["wb"],
             SettingsGroup::Light => &["light", "hdr"],
             SettingsGroup::Levels => &["levels"],
+            SettingsGroup::ToneEq => &["tone_eq"],
             SettingsGroup::ToneCurve => &["curve"],
             SettingsGroup::Color => &["color"],
             SettingsGroup::ColorMixer => &["mixer", "bw_mix", "point_colors", "hsl_curves"],
@@ -189,6 +194,10 @@ pub fn extract_groups(s: &DevelopSettings, groups: &[SettingsGroup]) -> Value {
         // (neutral channels are not written either: a photo without Levels still resets the Levels it is pasted on)
         if *g == SettingsGroup::Levels {
             out.insert("levels".into(), s.levels.full_json());
+        }
+        // (not written while neutral: copying it neutral still resets it where it is pasted)
+        if *g == SettingsGroup::ToneEq && !out.contains_key("tone_eq") {
+            out.insert("tone_eq".into(), serde_json::to_value(crate::ToneEq::default()).unwrap_or(Value::Null));
         }
         // (not written while off: copying it off still switches it off where it is pasted)
         if *g == SettingsGroup::SmoothSkin && !out.contains_key("skin") {
@@ -326,6 +335,7 @@ impl SettingsGroup {
             SettingsGroup::WhiteBalance => "whiteBalance",
             SettingsGroup::Light => "light",
             SettingsGroup::Levels => "levels",
+            SettingsGroup::ToneEq => "toneEq",
             SettingsGroup::ToneCurve => "toneCurve",
             SettingsGroup::Color => "color",
             SettingsGroup::ColorMixer => "colorMixer",
@@ -708,6 +718,9 @@ fn blend_base(s: &DevelopSettings) -> Value {
     // Levels leave a channel out while it is neutral: every channel blends from its own values (neutral ones too)
     if let Some(o) = base.as_object_mut() {
         o.insert("levels".into(), s.levels.full_json());
+        if let Ok(t) = serde_json::to_value(s.tone_eq) {
+            o.entry("tone_eq").or_insert(t);
+        }
     }
     base
 }

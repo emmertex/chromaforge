@@ -9,6 +9,7 @@ mod activity;
 pub mod alternatives;
 mod before;
 pub(crate) mod browse;
+pub mod camera_looks;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod catalog;
 pub mod chart_profile;
@@ -47,6 +48,7 @@ pub mod geocode;
 pub mod immich;
 pub mod import_tab;
 pub mod keywords;
+pub(crate) mod lens_blur;
 mod lens_db;
 pub mod levels;
 pub mod library;
@@ -56,6 +58,7 @@ pub mod map;
 pub mod mask_effect_files;
 pub mod mask_effects;
 mod masks;
+pub(crate) mod match_look;
 mod merge;
 pub mod metadata;
 pub mod metadata_files;
@@ -256,6 +259,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(alternatives::specs());
         v.extend(collections::specs());
         v.extend(develop::specs());
+        v.extend(match_look::specs());
         v.extend(color::specs());
         v.extend(plugin_filters::specs());
         v.extend(curves::specs());
@@ -264,6 +268,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(masks::specs());
         v.extend(retouch::specs());
         v.extend(retouch::retouch_specs());
+        v.extend(lens_blur::specs());
         v.extend(genfill::specs());
         v.extend(concepts::specs());
         v.extend(people_roles::specs());
@@ -274,6 +279,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(map::specs());
         v.extend(previews::specs());
         v.extend(lut_profiles::specs());
+        v.extend(camera_looks::specs());
         v.extend(vignetting_calibration::specs());
         v.extend(lens_db::specs());
         v.extend(source::specs());
