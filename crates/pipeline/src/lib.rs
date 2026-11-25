@@ -53,6 +53,7 @@ pub mod output;
 pub mod plugin_filters;
 pub mod profiles;
 pub mod quality;
+pub mod recolor;
 pub mod redeye;
 pub mod retouch;
 pub mod scene_model;
@@ -443,6 +444,9 @@ pub(crate) struct Prepared {
     pub masks: Vec<masks::Evaluated>,
     /// The masks' own Whites / Blacks tone ranges ([`Plan::mask_tone`]).
     pub mask_tone: Vec<[f32; 4]>,
+    /// The masks' Recolor main colours by mask id ([`Plan::recolor`]); copied from the plan in
+    /// `render_impl`, so the GPU path reads the same numbers ([`crate::recolor`]).
+    pub recolor: Vec<(u32, recolor::Reference)>,
     /// Output pixels per unit of the source long edge.
     pub px_per_long: f64,
 }
@@ -651,6 +655,10 @@ pub struct Plan<'a> {
     /// render of the whole frame ([`mask_tone`]), so previews, zoomed windows and exports agree; empty when no mask
     /// has Whites or Blacks (the masks then use [`finish::DEFAULT_MASK_TONE`]).
     pub mask_tone: Vec<[f32; 4]>,
+    /// Each visible mask's Recolor main colour, by mask id, measured on a fixed-size render of the
+    /// whole frame ([`recolor::measure`]), so previews, zoomed windows, exports and the GPU agree;
+    /// empty when no mask has Recolor on. A mask without an entry here recolors nothing.
+    pub recolor: Vec<(u32, recolor::Reference)>,
     /// A windowed render works on a larger window when spots reach into it (see
     /// [`spots::window_for_reads`]); this is the requested window inside the rendered one, which
     /// the result is cut to.
@@ -835,6 +843,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         info.mattes.clone()
     };
     let mask_tone = mask_tone::ranges(aux(), info, s, &whole_frame, mattes.as_deref());
+    let recolor = recolor::measure::references(src, info, s, &whole_frame, mattes.as_deref());
     Plan {
         settings,
         frame,
@@ -853,6 +862,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         eyes,
         fixed_air,
         mask_tone,
+        recolor,
         keep,
         mattes,
         source_filters,
@@ -1215,6 +1225,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         prep.air = a;
     }
     prep.mask_tone = plan.mask_tone.clone();
+    prep.recolor = plan.recolor.clone();
     lap("prepare", &mut t);
     if let Some((a, c)) = shared {
         // (a render whose filters stopped short at its cancel keeps nothing: its pixels aren't the stack's)
@@ -1536,6 +1547,8 @@ mod tests_nr_scale;
 mod tests_pixel_scale;
 #[cfg(test)]
 mod tests_plugin_filters;
+#[cfg(test)]
+mod tests_recolor_render;
 #[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]

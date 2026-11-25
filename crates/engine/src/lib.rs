@@ -2947,6 +2947,8 @@ mod tests_mask_links;
 #[cfg(test)]
 mod tests_mask_next;
 #[cfg(test)]
+mod tests_mask_recolor;
+#[cfg(test)]
 mod tests_merge;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

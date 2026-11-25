@@ -2344,6 +2344,12 @@ fn masks(
     }
     let mut terms: Vec<_> = list.iter().map(|m| mask_terms(&m.adjust)).collect();
     lcc_pipeline::finish::with_tone(&mut terms, &plan.mask_tone);
+    {
+        // the main colours were measured on the CPU once per edit (crate::recolor::measure)
+        let ids: Vec<u32> = list.iter().map(|m| m.id).collect();
+        let adjusts: Vec<lcc_develop::LocalAdjustments> = list.iter().map(|m| m.adjust).collect();
+        lcc_pipeline::recolor::with_recolor(&mut terms, &ids, &adjusts, &plan.recolor);
+    }
     let curves = list.iter().map(|m| local_curve_luts(&m.curve)).collect();
     let key = lcc_pipeline::masks::alpha_key(&s.masks, s.light.exposure as f32, plan.w, plan.h, plan.mattes.as_deref());
     let chroma = planes.chroma.as_ref().filter(|_| prep.chroma.is_some()).map(|(k, _)| *k);

@@ -1678,6 +1678,12 @@ pub struct UiState {
     /// (`new` mask, or `add`/`subtract`/`intersect` on the selected one) and the text typed.
     #[serde(skip)]
     pub describe: Option<(String, String)>,
+    /// The Recolor hex field's buffer and whether its edit is under way (the panel resets the
+    /// buffer to the mask's colour between edits).
+    #[serde(skip)]
+    pub mask_recolor_hex: String,
+    #[serde(skip)]
+    pub mask_recolor_hex_edit: bool,
     /// A SAM 3 download was started from the app (to report its end once).
     #[serde(skip)]
     pub sam_downloading: bool,
@@ -2823,6 +2829,8 @@ impl Default for UiState {
             focus_search: false,
             renaming_mask: None,
             describe: None,
+            mask_recolor_hex: String::new(),
+            mask_recolor_hex_edit: false,
             detail_due: None,
             sam_downloading: false,
             renaming_component: None,

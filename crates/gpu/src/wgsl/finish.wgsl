@@ -1152,6 +1152,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         d = oklab_inv(lab);
     }
 
+    // --- Recolor: each mask's main colour takes its target, keeping shading
+    // (lcc_pipeline::recolor, after the colour grading, as the CPU finish does)
+    for (var m = 0u; m < nm; m++) {
+        let t = pu(F_MASK_OFF) + m * MASK_TERMS;
+        if (aux[t + MASK_RECOLOR] <= 0.0) {
+            continue;
+        }
+        let a = masks[m * mn + mi];
+        if (a <= 0.0) {
+            continue;
+        }
+        let r = MASK_RECOLOR + t;
+        let tgt = vec4<f32>(aux[r + 1u], aux[r + 2u], aux[r + 3u], aux[r]);
+        let h = vec2<f32>(aux[r + 6u], aux[r + 7u]);
+        let win = vec2<f32>(aux[r + 8u], aux[r + 9u]);
+        d = oklab_inv(recolor_one(oklab(d), tgt, aux[r + 4u], aux[r + 5u], h, win, a));
+    }
+
     // --- process V10: the Tone Curve in its wide space, before the vignette and the gamut map (`finish::CurveSpace::apply`)
     // (with Brightness and Levels before it, in the order the older processes run them on output values)
     let curve_wide = pu(F_CURVE_WIDE) != 0u;
@@ -1421,4 +1439,59 @@ fn keep_hue_in_gamut(r: vec3<f32>, mapped: vec3<f32>, luma: vec3<f32>, peak: f32
         kept = yy + (c - yy) * t;
     }
     return kept + (mapped - kept) * hue_fade(dot(luma, r), max(r.x, max(r.y, r.z)), peak);
+}
+
+// One pixel's Recolor (`lcc_pipeline::recolor::apply` with `apply_terms`): `lab` in OkLab;
+// `target` = (OkLab L, a, b, strength); `rl`/`rc` the area's main colour's lightness and chroma;
+// `h` its hue as (cos, sin); `win` the membership window (hue half-width, saturation floor);
+// `alpha` the mask's weight here. The recolor terms' window already folds the reference's spread.
+fn recolor_one(lab: vec3<f32>, tgt: vec4<f32>, rl: f32, rc: f32, h: vec2<f32>, win: vec2<f32>, alpha: f32) -> vec3<f32> {
+    if (tgt.w <= 0.0 || alpha <= 0.0 || !(tgt.w == tgt.w)) {
+        return lab;
+    }
+    let k0 = min(tgt.w * alpha, 1.0);
+    let c0 = length(lab.yz);
+    let hue0 = select(atan2(lab.z, lab.y), 0.0, lab.y == 0.0 && lab.z == 0.0);
+    let mh = atan2(h.y, h.x);
+    let dh = abs(wrap_angle(hue0 - mh));
+    let coloured = sstep(GREY_CHROMA.x, GREY_CHROMA.y, rc);
+    let by_hue = 1.0 - sstep(win.x, win.x * 2.0 + 0.1, dh);
+    let sat = c0 / max(lab.x, 0.05);
+    let q = sat / max(rc / max(rl, 0.05), 1e-4);
+    let by_sat = sstep(win.y * 0.6, win.y * 2.5, q) * sstep(MIN_CHROMA.x, MIN_CHROMA.y, c0);
+    let full = 1.0 + (by_hue * by_sat - 1.0) * coloured;
+    let loose = 1.0 - sstep(win.x * 2.0, win.x * 3.2 + 0.1, dh);
+    let weak = sstep(HUE_ONLY.x, HUE_ONLY.y, c0) * (1.0 - sstep(HUE_ONLY.z, HUE_ONLY.w, c0));
+    let hue_w = max(full, loose * weak * coloured);
+    let k = k0 * full;
+    let k_hue = k0 * max(hue_w - full, 0.0);
+    if (k <= 0.0 && k_hue <= 0.0) {
+        return lab;
+    }
+    let tc = length(tgt.yz);
+    let th = select(atan2(tgt.z, tgt.y), 0.0, tgt.y == 0.0 && tgt.z == 0.0);
+    let lrl = max(rl, MIN_REF_L);
+    let lt = max(tgt.x, 0.0);
+    var l1 = lt * lab.x / lrl;
+    if (lab.x > lrl) {
+        let s = min(lt / lrl, max(1.0 - lt, 0.0) / max(1.0 - lrl, 1e-3));
+        l1 = lt + (lab.x - lrl) * s;
+    }
+    // the pixel's chroma over the main chroma, softly limited above 1
+    var ratio = 0.0;
+    if (rc > 1e-6) {
+        let r0 = max(c0 / rc, 0.0);
+        let span = MAX_CHROMA_RATIO - 1.0;
+        ratio = select(r0, 1.0 + span * (1.0 - exp(-(r0 - 1.0) / span)), r0 > 1.0);
+    }
+    // a grey area: chroma from its shading, never above the target's, fading out above its own lightness
+    let grey = clamp(l1 / max(lt, 1e-6), 0.0, 1.0) * (1.0 - sstep(lt, max(lt, 0.95) + 0.05, l1));
+    let ends = sstep(DARK_FADE.x, DARK_FADE.y, l1) * (1.0 - sstep(LIGHT_FADE.x, LIGHT_FADE.y, l1));
+    let c1 = tc * (grey + (ratio - grey) * coloured) * ends;
+    let keep = coloured * sstep(GREY_CHROMA.x, GREY_CHROMA.y, c0);
+    let h1 = th + clamp(wrap_angle(hue0 - mh) * keep, -MAX_HUE_OFFSET, MAX_HUE_OFFSET);
+    let fresh = vec3<f32>(l1, c1 * cos(h1), c1 * sin(h1));
+    let turned = vec3<f32>(l1, c0 * cos(h1), c0 * sin(h1));
+    let out = lab + (fresh - lab) * k + (turned - lab) * k_hue;
+    return select(lab, out, out.x == out.x && out.y == out.y && out.z == out.z);
 }

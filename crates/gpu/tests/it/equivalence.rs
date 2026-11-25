@@ -659,6 +659,21 @@ fn cases() -> Vec<(&'static str, Edit)> {
                 m(linear, L { noise: -60.0, moire: -40.0, ..Default::default() }),
             ];
         }),
+        ("masks (recolor)", |s| {
+            let radial = MaskShape::Radial { center: Point::new(0.45, 0.5), rx: 0.35, ry: 0.3, angle: 0.0, feather: 60.0, invert: false };
+            let linear = MaskShape::Linear { start: Point::new(0.5, 0.0), end: Point::new(0.5, 0.7) };
+            let m = |shape, adjust| Mask {
+                components: vec![MaskComponent { anchor: None, name: None, op: MaskOp::Add, invert: false, shape }],
+                adjust,
+                ..Default::default()
+            };
+            use lcc_develop::LocalAdjustments as L;
+            // a purple target on a gradient mask, and a grey-to-white one with a Range next to it
+            s.masks = vec![
+                m(radial, L { recolor: 100.0, recolor_r: 0.48, recolor_g: 0.25, recolor_b: 0.69, ..Default::default() }),
+                m(linear, L { recolor: 70.0, recolor_r: 0.9, recolor_g: 0.9, recolor_b: 0.95, recolor_range: -50.0, ..Default::default() }),
+            ];
+        }),
         ("masks (auto mask brush)", |s| {
             let st = |pts: &[(f64, f64)], auto_mask, erase| BrushStroke {
                 points: pts.iter().map(|p| Point::new(p.0, p.1)).collect(),
