@@ -21,7 +21,7 @@ import Shot from '../../../components/Shot.astro';
 - **Drag and drop**: files or folders dropped on the window open the review (or import at once with **Settings ▸ Import ▸ Import dropped photos without review**). A card says what the drop will do.
 - **Import presets**: save and reuse the dialog's settings (**Save as Preset**).
 - **Raw defaults** (**Settings**): built-in, a preset, or per camera model; applied to new photos.
-- Raw, JPEG, TIFF, PNG, WebP, JPEG XL, PSD and DNG are read. Unreadable files are reported, never crash the import. Previews are built in the background after import.
+- Raw, JPEG, TIFF, PNG, WebP, JPEG XL, PSD and DNG are read. Unreadable files are reported, never crash the import. Images over 512 megapixels are refused with a message giving their size and the limit. Previews are built in the background after import.
 - Import runs on a worker thread with a progress row and **Cancel** in the activity stack; the whole import is one undo step.
 
 <NeedsImage what="The Import Photos review: source on the left, thumbnail grid with checkboxes, and Transfer, Destination, Rename, Apply on Import settings on the right." />
