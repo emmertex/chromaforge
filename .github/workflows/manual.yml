@@ -84,7 +84,7 @@ jobs:
                   [ "$count" -ge 40 ] && break
                   ;;
               esac
-            done < "$RUNNER_TEMP/cli-build.log"
+            done < <(awk '{ line[NR]=$0 } END { for (i=NR; i>0; i--) print line[i] }' "$RUNNER_TEMP/cli-build.log")
           fi
           exit "$status"
       - name: Run every shot script

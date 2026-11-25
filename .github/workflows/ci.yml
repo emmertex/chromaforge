@@ -219,7 +219,7 @@ jobs:
                   [ "$count" -ge 40 ] && break
                   ;;
               esac
-            done < "$RUNNER_TEMP/affected-clippy.log"
+            done < <(awk '{ line[NR]=$0 } END { for (i=NR; i>0; i--) print line[i] }' "$RUNNER_TEMP/affected-clippy.log")
           fi
           exit "$status"
       - name: clippy
