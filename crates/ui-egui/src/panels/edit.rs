@@ -578,7 +578,7 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         ui.add_space(8.0);
     });
     // Lens Blur, after the lens corrections as in Lightroom Classic
-    section(app, ui, &d, "lensBlur", "Lens Blur", |app, ui, d| lens_blur_body(app, ui, d));
+    section(app, ui, &d, "lensBlur", "Lens Blur", lens_blur_body);
     // Lightroom Classic's Transform panel (the fork's: upstream keeps it in the Crop tool), after the lens corrections
     section(app, ui, &d, "geometry", "Transform", |app, ui, _| super::right::transform_body(app, ui, id));
     section(app, ui, &d, "effects", "Effects", |app, ui, d| {
@@ -933,10 +933,10 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     let dim = Tokens::get(ui.ctx()).text_dim;
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
         let mut on = lb.enabled;
-        if super::settings::check(ui, "lensBlur.enabled", &mut on, "Apply") {
-            if let Err(e) = app.run("lensBlur.set", json!({"enabled": on})) {
-                app.toast(ui.ctx(), e);
-            }
+        if super::settings::check(ui, "lensBlur.enabled", &mut on, "Apply")
+            && let Err(e) = app.run("lensBlur.set", json!({"enabled": on}))
+        {
+            app.toast(ui.ctx(), e);
         }
         let note = if lcc_pipeline::depth_model::has_depth_model() {
             "Depth: estimated by the depth model."

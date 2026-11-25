@@ -53,6 +53,7 @@ fn the_edit_panel_is_lightroom_classics_develop_panels_and_every_header_folds() 
                 "detail",
                 "retouch",
                 "optics",
+                "lensBlur",
                 "geometry",
                 "effects",
                 "calibration",

@@ -179,7 +179,7 @@ pub fn apply(img: &mut Rgb32f, plan: &Plan<'_>) {
 pub fn blur(img: &mut Rgb32f, lb: &LensBlur, depth: &Depth, frame: &Frame, px_per_long: f64) {
     let (w, h) = (img.width, img.height);
     let rmax = max_radius(lb, px_per_long);
-    if w == 0 || h == 0 || img.data.len() != w * h || rmax < 0.5 || depth.grid.width == 0 || depth.grid.height == 0 {
+    if !lb.active() || w == 0 || h == 0 || img.data.len() != w * h || rmax < 0.5 || depth.grid.width == 0 || depth.grid.height == 0 {
         return;
     }
     let focus = focus_distance(lb, &depth.grid);
@@ -416,9 +416,10 @@ mod tests {
     }
 
     fn on() -> lcc_develop::DevelopSettings {
-        let mut s = lcc_develop::DevelopSettings::default();
-        s.lens_blur = LensBlur { enabled: true, amount: 100.0, focal_distance: 0.0, focal_range: 10.0, ..LensBlur::default() };
-        s
+        lcc_develop::DevelopSettings {
+            lens_blur: LensBlur { enabled: true, amount: 100.0, focal_distance: 0.0, focal_range: 10.0, ..LensBlur::default() },
+            ..Default::default()
+        }
     }
 
     fn mean_diff(a: &lcc_raster::Rgba8, b: &lcc_raster::Rgba8) -> f32 {
