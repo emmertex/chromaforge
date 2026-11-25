@@ -488,7 +488,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             );
             let mut body = |ui: &mut egui::Ui| match &mut dlg {
                 Dialog::AdvancedSearch { search } => crate::advanced_search::body(ui, search, app),
-                Dialog::AutoStack { gap } => {
+                Dialog::AutoStack { gap, top } => {
                     ui.label(egui::RichText::new(crate::i18n::tr("Stack photos taken within this time of each other:")).color(t.text_label));
                     let r = ui.add(
                         egui::Slider::new(gap, 0.0..=86400.0)
@@ -498,7 +498,28 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                             .custom_parser(crate::panels::dialogs::parse_gap),
                     );
                     crate::widgets::named(r, crate::i18n::tr("Stack photos taken within this time of each other:"));
-                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "preview": true})).unwrap_or_default();
+                    // which file type each new stack shows (a stack without one keeps its first photo)
+                    let h = ui.label(egui::RichText::new(crate::i18n::tr("Put on top of each stack:")).color(t.text_label));
+                    crate::widgets::register(ui.ctx(), "label:autoStackTop", h.rect);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (i, (value, label)) in [
+                            (lcc_catalog::StackTop::First, "First photo in time"),
+                            (lcc_catalog::StackTop::Raw, "Raw file"),
+                            (lcc_catalog::StackTop::Jpeg, "JPEG file"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            if crate::widgets::text_button(ui, &format!("autoStackTop-{i}"), label, *top == value).clicked() {
+                                *top = value;
+                            }
+                        }
+                    });
+                    if *top != lcc_catalog::StackTop::First {
+                        crate::dialog_frame::note(ui, egui::RichText::new(crate::i18n::tr("Stacks without one keep their first photo in time.")).color(t.text_dim));
+                    }
+                    let preview = app.session.execute("stack.auto", &json!({"gap": *gap, "top": *top, "preview": true})).unwrap_or_default();
                     let scope = if app.session.selection.ids.len() > 1 { "the selected photos" } else { "the photos in view" };
                     crate::dialog_frame::note(ui,
                         egui::RichText::new({
@@ -2631,7 +2652,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
             r
         }
         Dialog::MergeKeywords { from, into } => app.run("keyword.merge", json!({"from": from, "into": into})),
-        Dialog::AutoStack { gap } => app.run("stack.auto", json!({"gap": gap})),
+        Dialog::AutoStack { gap, top } => app.run("stack.auto", json!({"gap": gap, "top": top})),
         Dialog::AdvancedSearch { search } => {
             // a half-typed number or an unsupported condition keeps the panel open on the problem
             crate::advanced_search::draft_query(search).and_then(|query| app.run("library.advancedSearch", json!({"query": query})))

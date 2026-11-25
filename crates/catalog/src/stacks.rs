@@ -10,7 +10,22 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::query::cmp_name;
-use crate::{Catalog, CatalogError, Op, PhotoId, Result, Stack, StackId};
+use serde::{Deserialize, Serialize};
+
+use crate::{Catalog, CatalogError, MediaKind, Op, PhotoId, Result, Stack, StackId};
+
+/// Which photo an automatic stack shows on top.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StackTop {
+    /// The first photo in time, as the groups are ordered.
+    #[default]
+    First,
+    /// A raw file.
+    Raw,
+    /// A JPEG or other non-raw image.
+    Jpeg,
+}
 
 impl Catalog {
     pub fn stack(&self, id: StackId) -> Option<&Stack> {
@@ -262,6 +277,25 @@ impl Catalog {
         groups.retain(|g| g.len() >= 2);
         groups
     }
+
+    /// `groups` (as [`Catalog::auto_stack_groups`] orders them) with the first photo of the kind
+    /// `top` prefers moved to the front of each, the others keeping their order. A group with none
+    /// keeps its first photo on top.
+    pub fn auto_stack_tops(&self, groups: &mut [Vec<PhotoId>], top: StackTop) {
+        let wanted = |id: PhotoId| match top {
+            StackTop::First => false,
+            StackTop::Raw => self.photos.get(&id).is_some_and(|p| p.kind == MediaKind::Raw),
+            StackTop::Jpeg => self.photos.get(&id).is_some_and(|p| p.kind == MediaKind::Image),
+        };
+        for g in groups {
+            if let Some(i) = g.iter().position(|id| wanted(*id))
+                && i > 0
+            {
+                let p = g.remove(i);
+                g.insert(0, p);
+            }
+        }
+    }
 }
 
 impl Catalog {
@@ -509,5 +543,36 @@ mod tests {
         let op = c.group_ops(ids[0], &[ids[1]], true).unwrap();
         c.apply(op).unwrap();
         assert_eq!(c.auto_stack_groups(&ids, 10.0), vec![vec![ids[3], ids[4]]]);
+    }
+    #[test]
+    fn auto_stack_top_by_file_type() {
+        // jpeg, raw, video | raw, jpeg | video, jpeg
+        let kinds = [MediaKind::Image, MediaKind::Raw, MediaKind::Video, MediaKind::Raw, MediaKind::Image, MediaKind::Video, MediaKind::Image];
+        let mut c = Catalog::new();
+        let ids: Vec<PhotoId> = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let id = c.alloc_photo_id();
+                let mut p = Photo::new(id, Source::Demo { scene: 1 }, &format!("{i}.jpg"), "JPEG", 60, 40, "2026-01-01T00:00:00");
+                p.kind = *kind;
+                c.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
+                id
+            })
+            .collect();
+        let groups: Vec<Vec<PhotoId>> = [vec![0, 1, 2], vec![3, 4], vec![5, 6]].iter().map(|g| g.iter().map(|i| ids[*i]).collect()).collect();
+        let run = |top: StackTop| {
+            let mut groups = groups.clone();
+            c.auto_stack_tops(&mut groups, top);
+            groups.iter().map(|g| g.iter().map(|id| ids.iter().position(|x| *x == *id).unwrap()).collect::<Vec<_>>()).collect::<Vec<_>>()
+        };
+        assert_eq!(run(StackTop::First), vec![vec![0, 1, 2], vec![3, 4], vec![5, 6]]);
+        assert_eq!(run(StackTop::Raw), vec![vec![1, 0, 2], vec![3, 4], vec![5, 6]], "no raw: unchanged");
+        assert_eq!(run(StackTop::Jpeg), vec![vec![0, 1, 2], vec![4, 3], vec![6, 5]]);
+        let mut none: Vec<Vec<PhotoId>> = Vec::new();
+        c.auto_stack_tops(&mut none, StackTop::Raw);
+        assert!(none.is_empty());
+        assert_eq!(serde_json::to_string(&StackTop::Jpeg).unwrap(), "\"jpeg\"");
+        assert_eq!(serde_json::from_str::<StackTop>("\"raw\"").unwrap(), StackTop::Raw);
     }
 }
