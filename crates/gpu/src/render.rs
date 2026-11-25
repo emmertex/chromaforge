@@ -1374,7 +1374,8 @@ fn pre_nr(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
     }
 }
 
-/// [`linear`] after noise reduction: Smooth Skin, the retouch of people's parts and Lens Blur.
+/// [`linear`] after noise reduction: Smooth Skin, the retouch of people's parts, the Tone Equalizer
+/// (on the CPU) and Lens Blur.
 fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let s = &*plan.settings;
@@ -1384,7 +1385,7 @@ fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
     }
     // Smooth Skin on the device when every bucket's region fits its buffers (`skin_gpu`)
     let skin_done = !lcc_pipeline::skin_needs_cpu(s) || skin_gpu(cx, &img, plan);
-    if skin_done && !lcc_pipeline::retouch::active(s) && !lens {
+    if skin_done && !lcc_pipeline::retouch::active(s) && !lcc_pipeline::tone_eq::active(s) && !lens {
         return img;
     }
     // the retouch of people's parts, Lens Blur (and Smooth Skin when it didn't fit): the CPU's
@@ -1396,6 +1397,7 @@ fn post_nr(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>, host: &mut Host) -> Buf {
         }
     });
     lcc_pipeline::timed("retouch", || lcc_pipeline::retouch::apply(&mut host_img, s, &plan.frame, plan.px_per_long));
+    lcc_pipeline::timed("tone equalizer", || lcc_pipeline::tone_eq::apply(&mut host_img, s, plan.px_per_long));
     lcc_pipeline::timed("lens blur", || lcc_pipeline::lens_blur::apply(&mut host_img, plan));
     let buf = cx.gpu.upload(rgb_words(&host_img));
     host.lin = Some(Arc::new(host_img));
