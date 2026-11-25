@@ -83,7 +83,7 @@ fn each_date_is_a_header_and_only_the_newest_starts_open() {
 #[test]
 fn each_opening_starts_over_with_the_newest_open() {
     let mut h = open([1300.0, 900.0]);
-    // close the newest first, so the next header is in the window however long the newest is
+    // close the newest first: a long newest section can push the next header out of view
     click(&mut h, "disclosure:whatsNew-0");
     click(&mut h, "disclosure:whatsNew-1");
     h.request("ui.key", json!({"key": "Escape"}), T);
