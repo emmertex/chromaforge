@@ -2140,7 +2140,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             }
             // Face Maintenance stays open on a missing model, invalid scope or active scan, so the choices are not lost.
             Err(e) if matches!(dlg, Dialog::FaceMaintenance { .. }) => app.toast(ctx, e),
-            Ok(_) if matches!(dlg, Dialog::FaceMaintenance { mode, .. } if mode == "reset") => {
+            Ok(_) if matches!(&dlg, Dialog::FaceMaintenance { mode, .. } if mode == "reset") => {
                 app.toast(ctx, crate::i18n::tr("Reset"));
                 close = true;
             }
