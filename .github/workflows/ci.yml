@@ -113,7 +113,25 @@ jobs:
       - name: cargo xtask ci (--fast unless a release / manual run)
         shell: bash
         run: |
-          if [ -n "$FULL_CI" ]; then cargo xtask ci; else cargo xtask ci --fast; fi
+          set +e
+          if [ -n "$FULL_CI" ]; then
+            cargo xtask ci 2>&1 | tee "$RUNNER_TEMP/ci.log"
+          else
+            cargo xtask ci --fast 2>&1 | tee "$RUNNER_TEMP/ci.log"
+          fi
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            count=0
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              printf '::error::cargo xtask ci: %s\n' "$line"
+              count=$((count + 1))
+              [ "$count" -ge 30 ] && break
+            done < <(tail -n 30 "$RUNNER_TEMP/ci.log")
+          fi
+          exit "$status"
       # PRs: the unit and integration tests of the crates the PR changes and of every workspace crate
       # depending on them (all of them when Cargo.lock or another workspace-wide file changed)
       - name: Changed-crate tests
