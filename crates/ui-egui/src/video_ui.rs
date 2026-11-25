@@ -125,9 +125,8 @@ pub fn show_bar(app: &mut LccApp, ui: &mut Ui, rect: Rect, id: PhotoId) -> Optio
     let state = state_of(app, id)?;
     let out = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| control_bar(ui, &state)).inner;
     for (cmd, params) in out.requests {
-        if let Err(e) = app.run(cmd, params) {
-            app.toast(ui.ctx(), e);
-        }
+        let result = app.run(cmd, params);
+        app.report(ui.ctx(), result);
     }
     state_of(app, id)
 }
@@ -282,9 +281,8 @@ pub fn handle_keys(app: &mut LccApp, ctx: &egui::Context) {
         (space, left, right)
     });
     let mut run = |cmd: &str, params: Value| {
-        if let Err(e) = app.run(cmd, params) {
-            app.toast(ctx, e);
-        }
+        let result = app.run(cmd, params);
+        app.report(ctx, result);
     };
     if space {
         run("video.togglePlay", json!({}));

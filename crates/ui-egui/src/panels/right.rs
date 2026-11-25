@@ -697,7 +697,7 @@ fn mode_segmented_bar(ui: &mut egui::Ui, id: &str, active_key: &str) -> Option<&
 /// Makes (or remakes) the film-dust mask from the infrared pass at the develop settings' sensitivity and expand.
 fn film_dust_mask(app: &mut LccApp, ctx: &egui::Context, d: &lcc_develop::DevelopSettings) {
     if let Err(e) = app.run("spot.filmDustMask", json!({"sensitivity": d.film_dust.sensitivity, "expand": d.film_dust.expand})) {
-        app.toast(ctx, e);
+        app.toast_error(ctx, e);
     }
 }
 
@@ -812,7 +812,7 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                                 },
                             );
                         }
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
             });

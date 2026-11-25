@@ -54,6 +54,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
         return;
     }
     app.slideshow_export_reported = true;
+    let failed = !matches!(run.result(), Some(Ok(_)));
     let msg = match run.result() {
         Some(Ok(r)) => {
             let what = match r.field("format").as_str() {
@@ -70,7 +71,11 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
         Some(Err(e)) => e,
         None => crate::i18n::tr("Export stopped unexpectedly").to_string(),
     };
-    app.toast(ctx, msg);
+    if failed {
+        app.toast_error(ctx, msg);
+    } else {
+        app.toast(ctx, msg);
+    }
 }
 
 #[cfg(test)]

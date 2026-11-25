@@ -157,7 +157,7 @@ pub fn apply(app: &mut LccApp, ctx: &egui::Context, d: Decision) {
     let reply = match app.run(cmd, params) {
         Ok(reply) => reply,
         Err(error) => {
-            app.toast(ctx, error);
+            app.toast_error(ctx, error);
             return;
         }
     };

@@ -415,6 +415,7 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             }
             // Photos refused (permission, not installed…): leave the way out on screen longer
             let mut photos_failed = matches!(&r, Ok((_, Some(p), _)) if p.get("error").is_some());
+            let export_failed = r.is_err();
             let msg = match r {
                 Ok((files, photos, _)) => {
                     let sheet = files.first().filter(|f| f["contactSheet"] == true);
@@ -481,6 +482,8 @@ pub fn poll(app: &mut LccApp, ctx: &egui::Context) {
             };
             if photos_failed {
                 app.toast_for(ctx, msg, 15.0);
+            } else if export_failed {
+                app.toast_error(ctx, msg);
             } else {
                 app.toast(ctx, msg);
             }

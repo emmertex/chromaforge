@@ -1944,7 +1944,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 app.run("mask.component", json!({"id": m.id, "component": comp, "action": "delete"}))
             };
             if let Err(e) = r {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     }
@@ -4541,7 +4541,7 @@ fn color_range_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map:
         let n = map.norm(q);
         let add = ui.input(|i| i.modifiers.shift);
         if let Err(e) = app.run("mask.sampleColor", json!({"x": n.x, "y": n.y, "add": add})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
 }
@@ -6780,7 +6780,7 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                         app.run("library.select", json!({"ids": [id.0], "mode": super::grid::click_mode(m, on_picture)}))
                     };
                     if compare && let Err(e) = r {
-                        app.toast(ui.ctx(), e);
+                        app.toast_error(ui.ctx(), e);
                     }
                 }
                 // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,

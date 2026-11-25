@@ -535,6 +535,8 @@ pub use control::{ControlRequest, ControlResponse};
 pub use state::UiState;
 
 pub(crate) const TOAST_SECONDS: f64 = 1.4;
+/// How long an error stays: long enough to read and act on.
+pub(crate) const ERROR_TOAST_SECONDS: f64 = 6.0;
 
 /// How long after a mask slider last moved its overlay stays hidden (ms).
 const MASK_ADJUST_HIDE_MS: u64 = 250;
@@ -1929,7 +1931,7 @@ impl LccApp {
                 self.toast(ctx, crate::i18n::tr("No horizon or vertical lines to level by"));
             }
             Ok(_) => {}
-            Err(e) => self.toast(ctx, e),
+            Err(e) => self.toast_error(ctx, e),
         }
     }
 
@@ -2084,10 +2086,22 @@ impl LccApp {
         self.ui.show_toast((text, now + TOAST_SECONDS));
     }
 
-    /// A toast for an error the user has to read and act on (stays 6 s).
+    /// A toast for an error the user has to read and act on (stays 6 s). For a `Result`, use [`LccApp::report`].
     pub fn toast_error(&mut self, ctx: &egui::Context, text: impl Into<String>) {
         let t = ctx.input(|i| i.time);
-        self.ui.show_toast((text.into(), t + 6.0));
+        self.ui.show_toast((text.into(), t + ERROR_TOAST_SECONDS));
+    }
+
+    /// How a command or operation ended, as far as the user must be told: the value when it worked (nothing is
+    /// said; the overlay reports what changed), else the error as an error toast. The one way to say a failure.
+    pub fn report<T, E: Into<String>>(&mut self, ctx: &egui::Context, result: Result<T, E>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(e) => {
+                self.toast_error(ctx, e);
+                None
+            }
+        }
     }
 
     /// Apply queued MIDI actions. A turn of one knob or fader is one undo step: the interaction opens
@@ -2689,7 +2703,7 @@ impl LccApp {
         if let Some(model) = drop.models.first()
             && let Err(e) = panels::faces::open_dialog(self, model)
         {
-            self.toast(ctx, e);
+            self.toast_error(ctx, e);
         }
         if !drop.presets.is_empty() {
             // presets live in a library: with none open they would go with the session it replaces

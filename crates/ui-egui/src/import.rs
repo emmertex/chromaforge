@@ -874,7 +874,7 @@ pub fn poll_scan(app: &mut LccApp, ctx: &egui::Context) {
             && let [c] = out.candidates.as_slice()
             && let Some(e) = &c.error
         {
-            app.toast(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
+            app.toast_error(ctx, crate::i18n::tr_format!("Could not read {name}: {e}", name = c.path, e = e));
             return;
         }
         let mut lap = crate::now_ms();
@@ -1187,7 +1187,7 @@ pub fn drop_paths(app: &mut LccApp, ctx: &egui::Context, paths: Vec<String>) {
     };
     if let Err(e) = r {
         log::warn!("drop: {e}");
-        app.toast(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
+        app.toast_error(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
     }
 }
 
@@ -1227,7 +1227,7 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
                 if task.auto {
                     app.session.auto_import_retry(&task.auto_paths);
                 }
-                app.toast(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
+                app.toast_error(ctx, crate::i18n::tr_format!("Import failed: {e}", e = e));
                 return;
             }
         }
@@ -2522,7 +2522,7 @@ pub(crate) fn preset_stack_section(app: &mut LccApp, ui: &mut egui::Ui, d: &mut 
         }
     });
     if manage && let Err(e) = app.run("dialog.presetsManager", serde_json::json!({})) {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     if let Some(pid) = added {
         d.presets.push(pid);

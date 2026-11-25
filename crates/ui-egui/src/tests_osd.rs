@@ -343,6 +343,10 @@ fn a_change_the_overlay_reports_is_never_also_a_toast() {
         ("photo.setMeta", json!({"keywords": ["survey"], "ids": [ids[0]]})),
         ("photo.setMeta", json!({"removeKeywords": ["survey"], "ids": [ids[0]]})),
         ("preset.apply", json!({"id": preset, "amount": 100, "ids": ids})),
+        (
+            "map.reverseGeocode",
+            json!({"provider": "given", "places": [{"id": ids[0], "city": "Lisbon", "country": "Portugal", "countryCode": "PT"}]}),
+        ),
         ("map.geotag", json!({"ids": [ids[0]], "lat": 48.1, "lon": 11.5})),
         ("photo.unflag", single.clone()),
         ("photo.cycleFlag", single.clone()),
@@ -433,4 +437,74 @@ fn the_overlay_reports_moves_and_relinks_on_disk() {
         assert!(s.is_object(), "{command}: the overlay should report it");
         assert!(h.app.ui.toast().is_none(), "{command}: the overlay says {s}, so no toast: {:?}", h.app.ui.toasts);
     }
+}
+
+/// A failure is said with `toast_error` or `LccApp::report`, never a plain `toast` or a short `toast_for`: given the
+/// error itself (a binding named `e`, `err` or `error`, bare or inside a format, on one line or several), it would
+/// vanish in 1.4 s instead of staying the error time. The scan reads the UI source, so a new call site can't slip
+/// back. (A failure kept in a variable of another name is not seen; `report` and a behaviour test cover that.)
+#[test]
+fn a_failure_is_never_a_plain_toast() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut files = Vec::new();
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    let mut found = Vec::new();
+    for path in files {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("tests") || name == "headless.rs" || name == "tests.rs" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        // a unit-test module at the end of a file is not product code
+        let product = text.split("#[cfg(test)]\nmod ").next().unwrap_or("");
+        let lines: Vec<&str> = product.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some((at, call)) = [".toast(", ".toast_for("].iter().filter_map(|c| line.find(c).map(|at| (at, *c))).min() else { continue };
+            // the call's arguments, read on over up to 6 lines to its closing parenthesis
+            let mut text = line[at + call.len()..].to_string();
+            for next in lines.iter().skip(n + 1).take(6) {
+                text.push(' ');
+                text.push_str(next);
+            }
+            let mut depth = 1;
+            let end = text
+                .char_indices()
+                .find(|(_, c)| {
+                    depth += i32::from(*c == '(') - i32::from(*c == ')');
+                    depth == 0
+                })
+                .map_or(text.len(), |(i, _)| i);
+            let args = &text[..end];
+            // a failure kept longer than the error time is fine; a `toast_for` is judged by its last argument
+            let short = call == ".toast(" || args.rsplit(',').next().and_then(|s| s.trim().parse::<f64>().ok()).is_some_and(|secs| secs < 6.0);
+            if short && args.split(|c: char| !is_word(c)).any(|w| matches!(w, "e" | "err" | "error")) {
+                found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "a failure given to a plain toast (use `toast_error` or `report`):\n{}", found.join("\n"));
+}
+
+/// `report` says a failure for the error time and a success not at all, and hands back the value.
+#[test]
+fn report_says_a_failure_for_the_error_time_and_a_success_not_at_all() {
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    assert_eq!(h.app.report(&ctx, Ok::<_, String>(7)), Some(7));
+    assert!(h.app.ui.toasts.is_empty(), "{:?}", h.app.ui.toasts);
+    assert_eq!(h.app.report(&ctx, Err::<u8, _>("Couldn't do it")), None);
+    let r = h.request("ui.inspect", json!({}), T)["result"]["toasts"].clone();
+    let left = r[0]["secsLeft"].as_f64().unwrap_or(0.0);
+    assert_eq!(r[0]["text"], "Couldn't do it", "{r}");
+    assert!(left > 5.0, "a failure stays the error time, not the 1.4 s of a notice: {left}");
 }

@@ -1632,7 +1632,7 @@ pub(crate) fn reorder_drop(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, r: 
     };
     app.ui.dragging_photos = None;
     if let Err(e) = app.run("album.orderPhotos", json!({"album": album.0, "ids": dragged, "before": before.map(|b| b.0)})) {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
 }
 
@@ -1676,7 +1676,7 @@ fn folder_header(app: &mut LccApp, ui: &mut egui::Ui, b: &lcc_engine::Browse, id
                     let n = local.len();
                     match app.run("photo.addToLibrary", json!({"ids": local})) {
                         Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("Added {n} photo{} to My Photos", if n == 1 { "" } else { "s" }, n = n)),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
             }
@@ -1904,7 +1904,7 @@ pub fn stack_badge(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId, sid: lcc_ca
 /// not. The selection stays as it is (Compare keeps its pair).
 pub fn toggle_stack(app: &mut LccApp, ctx: &egui::Context, id: PhotoId) {
     if let Err(e) = app.run("stack.toggle", json!({"ids": [id.0]})) {
-        app.toast(ctx, e);
+        app.toast_error(ctx, e);
     }
 }
 
@@ -1921,7 +1921,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     if alt.clicked()
         && let Err(e) = app.run("photo.showAlternatives", json!({"id": id.0}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     // Photo ▸ Edit In: a copy with this photo's edits, opened in PhotoCraft or another editor
     // (desktop only: the web can't start programs)
@@ -1988,7 +1988,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 if b.clicked() {
                     match app.run("album.addPhotos", json!({"id": aid})) {
                         Ok(r) => toast_skipped(app, ui.ctx(), &r),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
             }
@@ -2067,7 +2067,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         if set_reference.clicked()
             && let Err(e) = app.run("photo.setReference", json!({"id": id.0}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     });
     crate::widgets::menu_button(ui, crate::i18n::tr("Photo Merge"), |ui| {
@@ -2115,7 +2115,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 match app.run("photo.moveToFolder", json!({"folder": into})) {
                     Ok(r) if r.field("moved").as_u64().unwrap_or(0) == 0 => app.toast(ui.ctx(), crate::i18n::tr_format!("Moved {} photo(s)", 0)),
                     Ok(_) => {}
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
         }
@@ -2153,7 +2153,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     crate::i18n::tr_format!("{n} similar photo{} · View ▸ Clear Filters to see all", if n == 1 { "" } else { "s" }, n = n),
                 );
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     ui.separator();
@@ -2169,7 +2169,7 @@ pub fn context_menu(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         let n = r.field("files").as_array().map_or(0, Vec::len);
                         app.toast(ui.ctx(), crate::i18n::tr_format!("Exported {n} photo{}", if n == 1 { "" } else { "s" }, n = n));
                     }
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
         }
@@ -2216,7 +2216,7 @@ fn quick_collection_item(app: &mut LccApp, ui: &mut egui::Ui) {
     if r.clicked() {
         match app.run("album.toggleTarget", json!({})) {
             Ok(r) => toast_skipped(app, ui.ctx(), &r),
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 }

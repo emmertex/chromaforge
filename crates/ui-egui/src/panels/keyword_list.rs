@@ -179,7 +179,7 @@ fn drop_keyword(app: &mut LccApp, ctx: &egui::Context, keyword: &str, parent: Op
     }
     match app.run("keyword.move", json!({"keyword": keyword, "parent": parent})) {
         Ok(_) => follow(app, keyword, &to),
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
@@ -370,7 +370,7 @@ fn drop_target(app: &mut LccApp, ui: &mut egui::Ui, rect: Rect, path: &str) {
             app.ui.dragging_photos = None;
             // the overlay says what changed and how many photos; only a refusal is a toast
             if let Err(e) = app.run("photo.setMeta", json!({"ids": ids, "addKeywords": [path]})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     }

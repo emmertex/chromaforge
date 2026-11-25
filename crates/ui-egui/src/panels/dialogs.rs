@@ -1709,7 +1709,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                                     Ok(_) => {
                                         app.toast(ui.ctx(), format!("Saved watermark preset “{}”", preset_name.trim()));
                                     }
-                                    Err(e) => app.toast(ui.ctx(), e),
+                                    Err(e) => app.toast_error(ui.ctx(), e),
                                 }
                             }
                             crate::widgets::named(ui.add(egui::TextEdit::singleline(preset_name).hint_text(crate::i18n::tr("Preset name")).desired_width(ui.available_width())), crate::i18n::tr("Preset name"));
@@ -1985,7 +1985,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
                         | Dialog::AdvancedSearch { .. }
                 ) =>
             {
-                app.toast(ctx, e)
+                app.toast_error(ctx, e)
             }
             // the SAM 3 dialog stays open to show the download (or why it can't start)
             Err(e) if matches!(dlg, Dialog::SamModel { .. }) => {
@@ -2007,11 +2007,11 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             }
             // a prompt (Rename Folder, …) that is refused closes and says why
             Err(e) if matches!(dlg, Dialog::MovePhotos { .. } | Dialog::TextPrompt { .. }) => {
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
                 close = true;
             }
             Err(e) if matches!(dlg, Dialog::TextPrompt { .. }) => {
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
                 close = true;
             }
             // photos dated to a year or a month alone have no time to shift: say so (and, in the same
@@ -2033,7 +2033,7 @@ pub fn show(app: &mut LccApp, ctx: &egui::Context) {
             // empty), unless the library it names has gone
             Err(e) if matches!(dlg, Dialog::LightroomDestination { .. }) => {
                 close = !crate::lightroom_destination::keeps_open_on_error(app, &dlg);
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
             }
             Ok(_) if keeps_open(app, &dlg) => {
                 if let Dialog::SamModel { error, .. } = &mut dlg {
@@ -2424,7 +2424,7 @@ fn sam_model_body(app: &mut LccApp, ui: &mut egui::Ui, error: Option<&str>) {
             if r.clicked()
                 && let Err(e) = crate::links::open(app, SAM_HELP)
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
     }
@@ -2901,7 +2901,7 @@ pub(crate) fn start_export(
         if let Some(ctx) = app.tasks.repaint.clone() {
             match saved {
                 Ok(_) => app.toast(&ctx, crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim())),
-                Err(e) => app.toast(&ctx, e),
+                Err(e) => app.toast_error(&ctx, e),
             }
         }
     }
@@ -3101,7 +3101,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
                     picked = preset_name.trim().to_string();
                     preset_name.clear();
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         let user = presets.iter().any(|(p, b)| !*b && p.name.eq_ignore_ascii_case(&picked));
@@ -3109,7 +3109,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
         if r.clicked() && user {
             match app.run("export.deletePreset", json!({"name": picked})) {
                 Ok(_) => picked.clear(),
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         let can_rename = user && named;
@@ -3120,7 +3120,7 @@ pub(crate) fn export_presets(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm<
                     picked = preset_name.trim().to_string();
                     preset_name.clear();
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
     });
@@ -3983,7 +3983,7 @@ pub(crate) fn export_settings(app: &mut LccApp, ui: &mut egui::Ui, f: ExportForm
                             app.toast(ui.ctx(), crate::i18n::tr_format!("Saved export preset “{}”", preset_name.trim()));
                             preset_name.clear();
                         }
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
                 crate::widgets::named(
@@ -4601,7 +4601,7 @@ fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: 
     if let Some(name) = delete
         && let Err(e) = app.run("naming.deletePreset", json!({"name": name}))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
     if let Some(name) = save_as.as_mut() {
         let mut save = false;
@@ -4621,7 +4621,7 @@ fn naming_presets_row(app: &mut LccApp, ui: &mut egui::Ui, tag: &str, template: 
         if save {
             match app.run("naming.savePreset", json!({"name": name.trim(), "template": template.trim()})) {
                 Ok(_) => save_as = None,
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
     }

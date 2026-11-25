@@ -82,7 +82,7 @@ fn act(app: &mut LccApp, ctx: &egui::Context, cmd: &str, p: serde_json::Value, d
                 app.toast(ctx, msg);
             }
         }
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
@@ -241,7 +241,7 @@ pub fn section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                     app.toast(&ctx, crate::i18n::tr_format!("Saved template {name}", name = n));
                     name.clear();
                 }
-                Err(e) => app.toast(&ctx, e),
+                Err(e) => app.toast_error(&ctx, e),
             }
         }
         ui.data_mut(|d| d.insert_temp(mem, name));

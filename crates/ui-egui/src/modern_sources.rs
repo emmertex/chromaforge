@@ -193,9 +193,8 @@ fn picker(app: &mut LccApp, ctx: &egui::Context, at: egui::Pos2) {
     let on_title = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| title.is_some_and(|r| r.contains(p)));
     if let Some(p) = chosen {
         set_open(ctx, false);
-        if let Err(e) = app.run("library.source", p) {
-            app.toast_error(ctx, e);
-        }
+        let result = app.run("library.source", p);
+        app.report(ctx, result);
     } else if outside && !on_title {
         set_open(ctx, false);
     }

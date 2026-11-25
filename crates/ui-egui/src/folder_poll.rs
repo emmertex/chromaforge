@@ -249,7 +249,7 @@ fn add_waiting(app: &mut LccApp, ctx: &egui::Context) {
     };
     match SyncJob::start(&mut app.session, changes, folder_watch::only_new()) {
         Ok((work, commit)) => crate::sync::start_run(app, lcc_catalog::folders::folder_label(&path), work, commit),
-        Err(e) => app.toast(ctx, format!("{path}: {e}")),
+        Err(e) => app.toast_error(ctx, format!("{path}: {e}")),
     }
 }
 

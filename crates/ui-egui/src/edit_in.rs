@@ -285,7 +285,7 @@ fn run_choice(
         match app.run("photo.editIn", p) {
             Ok(r) => results.push(r),
             Err(e) => {
-                app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+                app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
                 return Err(e);
             }
         }
@@ -487,7 +487,7 @@ pub(crate) fn pump(app: &mut LccApp, ctx: &egui::Context) {
                 ROUND_TRIP.with_borrow_mut(|rt| rt.subscribed.remove(&port));
             }
             // a launch that failed on the worker (no such program, ...) is a toast, as a failed hand-off is
-            Msg::Error(e) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
+            Msg::Error(e) => app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         }
     }
     reload(app, ctx, changed);

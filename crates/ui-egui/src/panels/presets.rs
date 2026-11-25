@@ -529,7 +529,7 @@ fn show_folder_node(
                 if ui.button(crate::i18n::tr_format!("Apply to {n} Selected Photos", n = selected)).clicked() {
                     // the overlay names the preset and the count; only a refusal is a toast
                     if let Err(e) = app.run("preset.apply", json!({"id": pid, "amount": 100})) {
-                        app.toast(ui.ctx(), e);
+                        app.toast_error(ui.ctx(), e);
                     }
                 }
                 ui.separator();
@@ -555,12 +555,12 @@ fn show_folder_node(
             if ui.add_enabled(app.session.active().is_some(), egui::Button::new(crate::i18n::tr("Update with Current Settings…"))).clicked()
                 && let Err(e) = app.run("dialog.updatePreset", json!({"id": pid}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             if app.session.preset_undo.as_ref().is_some_and(|(id, _)| *id == pid) && ui.button(crate::i18n::tr("Undo Update")).clicked() {
                 match app.run("preset.undoUpdate", json!({})) {
                     Ok(_) => app.toast(ui.ctx(), crate::i18n::tr_format!("“{name}” has its old settings again", name = pname)),
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
             if ui.button(crate::i18n::tr("Rename…")).clicked() {

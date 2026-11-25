@@ -182,7 +182,7 @@ fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value)
     if r.changed() {
         match app.run("faces.matching", json!({"mirrorAverage": on})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, "Matches a little more often, but scanning takes twice as long. Changing it scans the faces again.");
@@ -198,7 +198,7 @@ fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value)
                 // a person's page asks again for the faces that look like them
                 app.caches.person_page = None;
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(
@@ -262,7 +262,7 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
     if selected_dev != dev_before {
         match app.run("faces.gpu", json!({"device": selected_dev})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 
@@ -296,7 +296,7 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
     if selected_prec != prec_before {
         match app.run("faces.gpu", json!({"precision": selected_prec})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 
@@ -395,7 +395,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if r.changed() {
         match app.run("faces.enable", json!({"enabled": on})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, "Suggests who is in a photo from the faces you have named. Everything stays on your computer.");

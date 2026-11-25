@@ -768,7 +768,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             && matches!(id, "app.export" | "app.exportPrevious")
         {
             // an export that can't start (e.g. no folder) says why instead of doing nothing
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
         }
     }
     classic::keep_focus_on_panel_toggle(ctx, &fire);
@@ -796,7 +796,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                         app.ui.toggle_section(lcc_develop::PLUGIN_FILTERS_SECTION);
                     }
                 }
-                Err(e) => app.toast(ctx, e),
+                Err(e) => app.toast_error(ctx, e),
             }
         } else if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
@@ -1026,7 +1026,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             if let Err(e) = app.run(&f, json!({}))
                 && matches!(f.as_str(), "app.export" | "app.exportPrevious")
             {
-                app.toast(ctx, e);
+                app.toast_error(ctx, e);
             }
         }
     }
@@ -1092,7 +1092,7 @@ fn canvas_nudge(app: &mut LccApp, ctx: &egui::Context) {
             app.run("spot.update", json!({"move": [dx, dy]}))
         };
         if let Err(e) = r {
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
         }
     }
 }

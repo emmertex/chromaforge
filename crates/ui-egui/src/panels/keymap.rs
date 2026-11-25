@@ -375,7 +375,7 @@ fn apply(app: &mut LccApp, ctx: &egui::Context, params: serde_json::Value) {
                 app.toast_for(ctx, crate::i18n::tr_format!("Removed from {}", lost.join(", ")), 3.0);
             }
         }
-        Err(e) => app.toast_for(ctx, e, 3.0),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
