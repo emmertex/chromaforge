@@ -537,6 +537,13 @@ fn unpack_chunk(
                 }
             } else {
                 undo_diff_u16(row, cpp * factor);
+                // packed samples store each difference modulo 2^bits: the sum wraps there too, not at 2^16, or a
+                // negative step comes back 2^bits too high (adapted from craft-libs #1300). Samples in 16-bit words
+                // keep the 16-bit wrap: their values may exceed the declared depth.
+                if kind >= 2 && bits < 16 {
+                    let mask = ((1u32 << bits) - 1) as u16;
+                    row.iter_mut().for_each(|v| *v &= mask);
+                }
             }
         }
     }
@@ -866,6 +873,36 @@ mod lossy_tests {
     /// A deflated tile is refused when its packed bytes are too few for deflate to have produced
     /// the nominal chunk, or when the stream stops short of the rows inside the image; a fully
     /// covered flat tile still decodes.
+    #[test]
+    fn predictor_two_wraps_at_the_packed_bit_depth() {
+        // craft-libs #1300: a 12-bit Msb-packed deflated strip with horizontal differencing; a falling row stores
+        // its negative steps modulo 4096
+        let row = [4000u16, 10, 3000, 5, 4095, 0, 1, 2];
+        let diffs: Vec<u16> = row.iter().enumerate().map(|(i, &v)| if i == 0 { v } else { v.wrapping_sub(row[i - 1]) & 0xfff }).collect();
+        let mut packed = Vec::new();
+        for pair in diffs.chunks(2) {
+            let (a, b) = (pair[0], pair[1]);
+            packed.extend([(a >> 4) as u8, (((a & 0xf) << 4) | (b >> 8)) as u8, b as u8]);
+        }
+        let zlib = miniz_oxide::deflate::compress_to_vec_zlib(&packed, 6);
+        let info = ImageInfo {
+            width: 8,
+            height: 1,
+            bits_per_sample: vec![12],
+            samples_per_pixel: 1,
+            compression: comp::ADOBE_DEFLATE,
+            photometric: 32803,
+            planar: 1,
+            predictor: 2,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Strips { rows_per_strip: 1 },
+            offsets: vec![0],
+            byte_counts: vec![zlib.len() as u64],
+        };
+        assert_eq!(read_image(&zlib, &info, ByteOrder::Little, Packing::Msb).unwrap(), RawData::U16(row.to_vec()));
+    }
+
     #[test]
     fn a_short_or_undercovering_deflated_tile_is_refused() {
         let info = |byte_counts: u64| ImageInfo {

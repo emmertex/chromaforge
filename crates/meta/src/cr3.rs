@@ -351,16 +351,33 @@ fn trak(bytes: &[u8], t: &BoxRef, budget: &mut usize) -> Option<Cr3Track> {
             // full box: version/flags, entry count, entries
             b"stsd" if be32(body, 4)? > 0 => kind = boxes(bytes, b.body + 8, b.end, budget).first().map(|e| sample_entry(bytes, e, budget)),
             // version/flags, sample_size (0 = per-sample table), count, sizes
+            // A truncated or impossible table denies the track's sample data but never drops the track: a missing
+            // main track would let the largest-raw selector decode the reduced raw as the photo (adapted from
+            // craft-libs #1300).
             b"stsz" => {
-                size = match be32(body, 4)? {
-                    0 if be32(body, 8)? > 0 => be32(body, 12),
-                    0 => None,
-                    n if be32(body, 8)? > 0 => Some(n),
+                let count = be32(body, 8).unwrap_or(0);
+                size = match be32(body, 4) {
+                    Some(0) if count > 0 && count as usize <= body.len().saturating_sub(12) / 4 => be32(body, 12),
+                    Some(n) if n > 0 && count > 0 && u64::from(n).checked_mul(u64::from(count)).is_some_and(|t| t <= bytes.len() as u64) => Some(n),
                     _ => None,
                 }
             }
-            b"co64" if be32(body, 4)? > 0 => offset = be64(body, 8).and_then(|v| usize::try_from(v).ok()),
-            b"stco" if be32(body, 4)? > 0 => offset = be32(body, 8).map(|v| v as usize),
+            b"co64" => {
+                offset = match be32(body, 4) {
+                    Some(count) if count > 0 && count as usize <= body.len().saturating_sub(8) / 8 => {
+                        be64(body, 8).and_then(|v| usize::try_from(v).ok())
+                    }
+                    _ => None,
+                }
+            }
+            b"stco" => {
+                offset = match be32(body, 4) {
+                    Some(count) if count > 0 && count as usize <= body.len().saturating_sub(8) / 4 => {
+                        be32(body, 8).and_then(|v| usize::try_from(v).ok())
+                    }
+                    _ => None,
+                }
+            }
             _ => {}
         }
     }
@@ -495,6 +512,51 @@ mod tests {
         let stbl = [full(b"stsd", &stsd), full(b"stsz", &stsz), full(b"co64", &co64)].concat();
         bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &stbl))))
     }
+    /// [`trak`] with one of its sample tables (`stsz`, `co64`, or `stco` in place of `co64`) replaced by `payload`
+    /// after the full box's version/flags.
+    fn trak_with_table(entry: Vec<u8>, table: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut stsd = 1u32.to_be_bytes().to_vec();
+        stsd.extend(entry);
+        let stsz = [0u32, 1, 16].into_iter().flat_map(u32::to_be_bytes).collect::<Vec<_>>();
+        let mut co64 = 1u32.to_be_bytes().to_vec();
+        co64.extend(4096u64.to_be_bytes());
+        let offsets = match table {
+            b"stco" => full(b"stco", payload),
+            b"co64" => full(b"co64", payload),
+            _ => full(b"co64", &co64),
+        };
+        let stbl = [full(b"stsd", &stsd), full(b"stsz", if table == b"stsz" { payload } else { &stsz }), offsets].concat();
+        bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &stbl))))
+    }
+
+    /// craft-libs #1300: a sample table too short for its own count (or with none) denies the track's data but keeps
+    /// the track, so the largest-raw selector can't fall back to a reduced raw and decode it as the photo.
+    #[test]
+    fn a_truncated_sample_table_keeps_the_track_without_data() {
+        let file = |track: Vec<u8>| {
+            let mut file = bx(b"ftyp", b"crx    crx isom");
+            file.extend(bx(b"moov", &track));
+            file.resize(4112, 0);
+            file
+        };
+        let entry = || craw(16, 16, &bx(b"CMP1", &[0xff, 0x10, 0, 0x30]));
+        let whole = trak_with_table(entry(), b"none", &[]);
+        assert_eq!(parse_cr3(&file(whole)).unwrap().tracks[0].data, Some((4096, 16)));
+        let short_count = 3u32.to_be_bytes();
+        for table in [b"stsz", b"co64", b"stco"] {
+            for payload in [&[][..], &[0u8; 4][..], &short_count[..], &[0, 0, 0, 0, 0, 0, 0, 9][..]] {
+                let bytes = file(trak_with_table(entry(), table, payload));
+                let parsed = parse_cr3(&bytes).unwrap();
+                assert_eq!(parsed.tracks.len(), 1, "{} {payload:?}: the track is kept", String::from_utf8_lossy(table));
+                assert!(parsed.tracks[0].data.is_none(), "{} {payload:?}: no data", String::from_utf8_lossy(table));
+            }
+        }
+        // a constant sample size whose count overruns the file
+        let huge = [64u32, u32::MAX].into_iter().flat_map(u32::to_be_bytes).collect::<Vec<_>>();
+        let bytes = file(trak_with_table(entry(), b"stsz", &huge));
+        assert!(parse_cr3(&bytes).unwrap().tracks[0].data.is_none());
+    }
+
     fn tiff_with(tag: u16, v: lcc_tiff::Value) -> Vec<u8> {
         let b = lcc_tiff::IfdBuilder::new().with(tag, v);
         lcc_tiff::TiffWriter::new(lcc_tiff::ByteOrder::Little, false).write(&[b]).unwrap()
@@ -731,7 +793,10 @@ mod tests {
         let mut file = bx(b"ftyp", b"crx \0\0\0\x01crx isom");
         file.extend(bx(b"moov", &bx(b"trak", &bx(b"mdia", &bx(b"minf", &bx(b"stbl", &stbl))))));
         file.resize(512, 0);
-        assert!(parse_cr3(&file).unwrap().tracks.is_empty());
+        // the track stays (craft-libs #1300: dropping it would let a reduced raw stand in), but without data
+        let tracks = parse_cr3(&file).unwrap().tracks;
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].data.is_none());
     }
 
     #[test]
