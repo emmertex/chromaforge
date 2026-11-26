@@ -1959,3 +1959,5 @@ mod tests_upgrade_backup;
 mod tests_v4;
 #[cfg(test)]
 mod tests_video;
+#[cfg(test)]
+mod tests_volume_key;
