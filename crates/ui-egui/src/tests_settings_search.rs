@@ -143,6 +143,16 @@ fn reading_the_other_pages_starts_nothing() {
 }
 
 #[test]
+fn the_notifications_page_is_found_by_its_text_and_reading_it_changes_nothing() {
+    let mut h = open("general");
+    let before = h.app.ui.toasts.len();
+    search(&mut h, "stays until you dismiss it");
+    assert!(listed(&h, "notifications"), "a hint on Notifications' page keeps its section listed");
+    assert!(!listed(&h, "display"), "a section without the words is not listed");
+    assert_eq!(h.app.ui.toasts.len(), before, "reading the page fired no test message");
+}
+
+#[test]
 fn a_page_opened_on_its_own_still_starts_its_work() {
     let mut h = open("sync");
     steps(&mut h, 4);

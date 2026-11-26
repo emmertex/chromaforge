@@ -505,6 +505,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                         toast.until = now + secs;
                     }
                     app.ui.show_toast(toast);
+                    // a script's own time is kept, as the policy would otherwise replace it
+                    if let (Some(secs), Some(shown)) = (secs, app.ui.toasts.last_mut()) {
+                        shown.until = now + secs;
+                    }
                 }
                 "action" => {
                     let Some(command) = s("command").filter(|c| !c.is_empty()) else {

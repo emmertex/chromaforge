@@ -64,6 +64,7 @@ const SECTIONS: &[Section] = &[
     Section { key: "performance", label: "Performance", icon: Icon::Activity, tabs: &["performance"] },
     Section { key: "display", label: "Display", icon: Icon::Monitor, tabs: &["display"] },
     Section { key: "interface", label: "Interface", icon: Icon::Palette, tabs: &["interface"] },
+    Section { key: "notifications", label: "Notifications", icon: Icon::Chat, tabs: &["notifications"] },
     Section { key: "slideshow", label: "Slideshow", icon: Icon::Slideshow, tabs: &["slideshow"] },
     Section { key: "faces", label: "Faces", icon: Icon::FaceBox, tabs: &["faces"] },
     Section { key: "profiles", label: "Profiles", icon: Icon::ProfileGrid, tabs: &["profiles"] },
