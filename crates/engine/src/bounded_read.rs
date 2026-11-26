@@ -71,6 +71,28 @@ pub(crate) fn counting<R>(inner: R) -> CountingReader<R> {
     CountingReader { inner, job: crate::memory::current_job() }
 }
 
+/// `n` bytes moved by the thread's current I/O job (written, or copied in the kernel where no
+/// reader sees them): counted as progress, as [`CountingReader`] counts what it reads.
+pub(crate) fn count_bytes(n: u64) {
+    if n > 0
+        && let Some(job) = crate::memory::current_job()
+    {
+        job.add_bytes(usize::try_from(n).unwrap_or(usize::MAX));
+    }
+}
+
+/// The whole file at `path`, read through a [`CountingReader`] (so a slow volume shows its
+/// progress to the I/O scheduler). Unbounded, as `std::fs::read`: for files the caller already
+/// holds work-gate memory for.
+pub(crate) fn read_counted(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let hint = file.metadata().map(|m| usize::try_from(m.len()).unwrap_or(0)).unwrap_or(0);
+    let mut out = Vec::new();
+    let _ = out.try_reserve_exact(hint);
+    counting(file).read_to_end(&mut out)?;
+    Ok(out)
+}
+
 impl<R> CountingReader<R> {
     fn count(&self, n: usize) {
         if n > 0

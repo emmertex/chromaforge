@@ -29,28 +29,36 @@ pub(crate) fn write_dng_for(s: &Session, path: &str, packet: String) -> std::res
     write_dng_with(s.media.file_bytes.as_ref(), path, packet)
 }
 
-/// [`write_dng_for`] without the session (imports convert on a worker thread).
+/// [`write_dng_with`] without the session (imports convert on a worker thread).
+///
+/// Run as an I/O scheduler job (Copy as DNG), its reads and writes count as progress and the
+/// decode, encode and check between them as computing (§5.2 of the I/O spec).
 pub(crate) fn write_dng_with(file_bytes: Option<&crate::merge::ByteReader>, path: &str, packet: String) -> std::result::Result<String, String> {
     let bytes = match file_bytes {
         Some(r) => r(path)?,
-        None => std::fs::read(path).map_err(|e| format!("{path}: {e}"))?,
+        None => crate::bounded_read::read_counted(Path::new(path)).map_err(|e| format!("{path}: {e}"))?,
     };
-    let mut raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    crate::camera_preview::with_starting_colour(&mut raw, &bytes);
-    drop(bytes);
-    let dng = lcc_raw::write_dng(&raw, &lcc_raw::DngWriteOptions { xmp: (!packet.is_empty()).then_some(packet), ..Default::default() })
-        .map_err(|e| e.to_string())?;
-    let back = lcc_raw::decode(&dng).map_err(|e| format!("{path}: the DNG written for it doesn't decode ({e}); the raw is kept"))?;
-    let same = match (&back.data, &raw.data) {
-        (lcc_raw::RawData::U16(a), lcc_raw::RawData::U16(b)) => a == b,
-        (lcc_raw::RawData::F32(a), lcc_raw::RawData::F32(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
-        _ => false,
+    let dng = {
+        // pure CPU, between the read of the raw and the write of the DNG
+        let _computing = crate::memory::computing();
+        let mut raw = lcc_raw::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        crate::camera_preview::with_starting_colour(&mut raw, &bytes);
+        drop(bytes);
+        let dng = lcc_raw::write_dng(&raw, &lcc_raw::DngWriteOptions { xmp: (!packet.is_empty()).then_some(packet), ..Default::default() })
+            .map_err(|e| e.to_string())?;
+        let back = lcc_raw::decode(&dng).map_err(|e| format!("{path}: the DNG written for it doesn't decode ({e}); the raw is kept"))?;
+        let same = match (&back.data, &raw.data) {
+            (lcc_raw::RawData::U16(a), lcc_raw::RawData::U16(b)) => a == b,
+            (lcc_raw::RawData::F32(a), lcc_raw::RawData::F32(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+            _ => false,
+        };
+        if (back.width, back.height, back.cpp) != (raw.width, raw.height, raw.cpp) || !same {
+            return Err(format!("{path}: the DNG written for it doesn't hold the same raw data; the raw is kept"));
+        }
+        dng
     };
-    if (back.width, back.height, back.cpp) != (raw.width, raw.height, raw.cpp) || !same {
-        return Err(format!("{path}: the DNG written for it doesn't hold the same raw data; the raw is kept"));
-    }
-    drop((raw, back));
-    let out = lcc_catalog::safe_file::write_new_unique(&mut dng_names(path), &dng)
+    let count = |n: usize| crate::bounded_read::count_bytes(u64::try_from(n).unwrap_or(u64::MAX));
+    let out = lcc_catalog::safe_file::write_new_unique_progress(&mut dng_names(path), &dng, &count)
         .map_err(|e| format!("{path}: could not write its DNG ({e}); the raw is kept"))?;
     Ok(out.to_string_lossy().to_string())
 }

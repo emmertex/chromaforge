@@ -35,6 +35,9 @@ pub(crate) struct JobState {
     /// Work-gate bytes the job's permits hold now.
     permit_bytes: AtomicU64,
     status: AtomicU8,
+    /// Cancel asked the job to skip its optional last step (a copy's DNG conversion): the gate
+    /// refuses its next wait ([`crate::memory::GateError::Skipped`]).
+    skip: AtomicBool,
     /// Set when the gate refused the job because abandoned jobs hold memory (typed, for the
     /// metrics; nothing matches the error text).
     gate_failure: Mutex<Option<VolumeKey>>,
@@ -57,6 +60,7 @@ impl JobState {
             at_gate: AtomicBool::new(false),
             permit_bytes: AtomicU64::new(0),
             status: AtomicU8::new(RUNNING),
+            skip: AtomicBool::new(false),
             gate_failure: Mutex::new(None),
             gate: Mutex::new(None),
         }
@@ -136,6 +140,26 @@ impl JobState {
         self.status.load(Ordering::Acquire) == ABANDONED
     }
 
+    /// Cancel's request to skip the job's optional last step (a copy's DNG step). Its gate is
+    /// woken, so a wait there for that step ends at once.
+    pub(crate) fn request_skip(&self) {
+        self.skip.store(true, Ordering::Release);
+        self.wake_gate();
+    }
+
+    /// Wake the gate the job holds or waits for permits of, if any (the lock on it is let go
+    /// first: the gate's waiters take the gate's lock, then this one).
+    fn wake_gate(&self) {
+        let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(g) = gate {
+            g.wake();
+        }
+    }
+
+    pub(crate) fn skip_requested(&self) -> bool {
+        self.skip.load(Ordering::Acquire)
+    }
+
     /// The job's thread claims its result; `false` if the scheduler abandoned it first.
     pub(crate) fn try_finish(&self) -> bool {
         self.status.compare_exchange(RUNNING, FINISHED, Ordering::AcqRel, Ordering::Acquire).is_ok()
@@ -151,11 +175,7 @@ impl JobState {
     pub(crate) fn try_abandon(&self) -> bool {
         let abandoned = self.status.compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire).is_ok();
         if abandoned {
-            // (the gate's lock is taken after this one is let go: the gate's waiters take them the other way round)
-            let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            if let Some(g) = gate {
-                g.wake();
-            }
+            self.wake_gate();
         }
         abandoned
     }

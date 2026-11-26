@@ -224,6 +224,9 @@ pub enum GateError {
     /// The scheduler abandoned the job (its volume stopped responding, or the user cancelled):
     /// it ends without reading.
     Abandoned,
+    /// The user cancelled while the job waited for memory for an optional last step (a copy's
+    /// Copy as DNG): it skips that step and keeps what it has done (the raw copy).
+    Skipped,
     /// The request can never fit: reads that are not returning hold memory (the most of it on
     /// `volume`), and the request's bytes don't fit beside it under the limit.
     CannotFit { volume: String },
@@ -233,6 +236,7 @@ impl std::fmt::Display for GateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GateError::Abandoned => f.write_str("abandoned"),
+            GateError::Skipped => f.write_str("skipped: the import was cancelled"),
             GateError::CannotFit { volume } => write!(f, "memory held by a read that is not returning (on {volume})"),
         }
     }
@@ -331,7 +335,8 @@ impl WorkGate {
     /// - Admission is tried first, by `acquire`'s own rule (a request of 0 bytes, or any when
     ///   nothing is held, or one that fits, is admitted at once).
     /// - The job's abandon flag set: [`GateError::Abandoned`] at once (the scheduler wakes the
-    ///   gate when it abandons a job that holds or waits for its permits).
+    ///   gate when it abandons a job that holds or waits for its permits); its skip flag set
+    ///   (cancel, at a copy's DNG step): [`GateError::Skipped`], as fast (the request wakes it too).
     /// - Only a request the gate would not admit now is checked for "cannot fit": abandoned jobs
     ///   stalled on their own clocks hold A > 0 bytes and A + B exceeds the limit, so held never
     ///   falls low enough ([`GateError::CannotFit`], naming the volume holding the most). The
@@ -348,6 +353,9 @@ impl WorkGate {
         if job.is_abandoned() {
             return Err(GateError::Abandoned);
         }
+        if job.skip_requested() {
+            return Err(GateError::Skipped);
+        }
         let need = bytes as u128;
         let mut g = self.lock();
         // (before the abandon flag is read below: an abandon after this finds the gate to wake)
@@ -357,6 +365,9 @@ impl WorkGate {
         let result = loop {
             if job.is_abandoned() {
                 break Err(GateError::Abandoned);
+            }
+            if job.skip_requested() {
+                break Err(GateError::Skipped);
             }
             if !over(g.0, g.1, bytes) {
                 g.0 = g.0.saturating_add(need);
@@ -454,6 +465,16 @@ pub(crate) struct Computing(Option<std::sync::Arc<crate::io_sched::JobState>>);
 /// outer guard).
 pub(crate) fn computing() -> Computing {
     Computing(current_job().filter(|j| j.begin_computing()))
+}
+
+/// While held, the thread's I/O job is flushing a file it wrote to disk (`sync_all`): the time
+/// the device takes to write what the page cache holds, which no byte counter sees. Its volumes'
+/// stall clocks pause as for [`computing`], and as there only up to ten stall times, so a flush
+/// that never returns still ends in a stall. (Not in the I/O spec, which counts written bytes
+/// only: a large file written into a big page cache moves its bytes in moments and then spends
+/// size ÷ device speed in the flush, e.g. 66 s for 2 GB at 30 MB/s.)
+pub(crate) fn flushing() -> Computing {
+    computing()
 }
 
 impl Drop for Computing {

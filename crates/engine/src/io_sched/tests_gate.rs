@@ -41,7 +41,7 @@ impl Reg {
     fn stranded<'g>(&self, gate: &'g WorkGate, vol: &str, bytes: usize, kind: AbandonKind) -> (Arc<JobState>, Permit<'g>) {
         let j = self.job(vol);
         let permit = with_job(Some(j.clone()), || gate.acquire_for_job(bytes)).unwrap();
-        self.shared.add_entry(&j, kind, self.clock.mono());
+        self.shared.add_entry(&j, &j.volume, kind, self.clock.mono());
         assert!(j.try_abandon());
         (j, permit)
     }
@@ -242,7 +242,7 @@ fn what_counts_as_stranded() {
     let computing = reg.job("/a");
     let _p2 = with_job(Some(computing.clone()), || gate.acquire_for_job(200)).unwrap();
     assert!(computing.begin_computing());
-    reg.shared.add_entry(&computing, AbandonKind::Stall, reg.clock.mono());
+    reg.shared.add_entry(&computing, &computing.volume, AbandonKind::Stall, reg.clock.mono());
     assert!(computing.try_abandon());
     assert_eq!(reg.a(), 0);
     reg.clock.advance(10 * SEC);
@@ -273,7 +273,7 @@ fn a_computing_entry_enters_a_after_its_restarted_clock() {
     let j = reg.job("/a");
     let _p = with_job(Some(j.clone()), || gate.acquire_for_job(100)).unwrap();
     assert!(j.begin_computing());
-    reg.shared.add_entry(&j, AbandonKind::Stall, reg.clock.mono());
+    reg.shared.add_entry(&j, &j.volume, AbandonKind::Stall, reg.clock.mono());
     assert!(j.try_abandon());
     reg.clock.advance(5 * SEC);
     j.end_computing();
@@ -357,6 +357,24 @@ fn an_abandon_wakes_its_waiter_at_once() {
     assert_eq!(rx.recv_timeout(WAITS).ok(), Some(Err(GateError::Abandoned)));
 }
 
+/// Cancel's skip request (a copy's DNG step) wakes the gate too: the wait ends at once.
+#[test]
+fn a_skip_request_wakes_its_waiter_at_once() {
+    let reg = Reg::new();
+    let gate = leak(100);
+    let _holder = gate.acquire(100);
+    let j = reg.job("/b");
+    let j2 = j.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(with_job(Some(j2), || gate.acquire_for_job(10).map(drop)));
+    });
+    wait_until(|| j.at_gate(), "the waiter at the gate");
+    std::thread::sleep(Duration::from_millis(50));
+    j.request_skip();
+    assert_eq!(rx.recv_timeout(WAITS).ok(), Some(Err(GateError::Skipped)));
+}
+
 /// A holder abandoned while another job waits (no entry outstanding when it began to wait) wakes
 /// the gate too: the waiter looks again at once and fails "cannot fit".
 #[test]
@@ -374,7 +392,7 @@ fn an_abandoned_holder_wakes_the_waiters() {
     });
     wait_until(|| w.at_gate(), "the waiter at the gate");
     std::thread::sleep(Duration::from_millis(50));
-    reg.shared.add_entry(&x, AbandonKind::Stall, reg.clock.mono());
+    reg.shared.add_entry(&x, &x.volume, AbandonKind::Stall, reg.clock.mono());
     assert!(x.try_abandon());
     assert!(matches!(rx.recv_timeout(WAITS).ok(), Some(Err(GateError::CannotFit { .. }))));
     drop(held);

@@ -923,7 +923,7 @@ pub(crate) fn probe_scheduled(
         .iter()
         .map(|p| {
             let (probe, path) = (probe.clone(), p.clone());
-            IoJob { source: p.clone(), run: Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send> }
+            IoJob::read(p.clone(), Box::new(move || probe(&path)) as Box<dyn FnOnce() -> Result<ProbeInfo, String> + Send>)
         })
         .collect();
     let report = crate::io_sched::run_jobs(ctx, jobs, workers, Result::is_ok, cancel, done);
@@ -936,7 +936,7 @@ pub(crate) fn probe_scheduled(
             JobOutcome::Done(r) => r,
             JobOutcome::NotStarted => Err(unreached.into()),
             JobOutcome::Cancelled => Err("cancelled".into()),
-            JobOutcome::VolumeNotResponding { volume } => Err(format!("{p}: volume not responding ({volume})")),
+            JobOutcome::VolumeNotResponding { volume, .. } => Err(format!("{p}: volume not responding ({volume})")),
             JobOutcome::Panicked(m) => Err(format!("{p}: {m}")),
         })
         .collect()
@@ -1894,62 +1894,111 @@ pub fn batch_size() -> usize {
 
 /// Run `transfers` (several at once where threads exist); their outcomes in order, `None` for one
 /// not started because `cancel` was set. `done` counts each one finished.
+///
+/// Since the I/O scheduler's copies (I/O spec PR 2): each copy holds a slot on its source's and its
+/// destination's volume ([`crate::io_sched`]); a copy that panics fails only its file; a volume
+/// that stops responding fails its copies (the ones under way: "outcome unknown", since one may
+/// still finish and leave an untracked file at the destination, the source kept) while copies
+/// elsewhere go on; cancel returns even when a volume hangs (a copy waiting for memory for its
+/// Copy as DNG step skips it and keeps its raw copy).
 fn run_transfers(
     transfers: Vec<Transfer>,
     file_bytes: Option<&crate::merge::ByteReader>,
     cancel: &std::sync::atomic::AtomicBool,
     done: &std::sync::atomic::AtomicUsize,
 ) -> Vec<Option<PreparedItem>> {
-    use std::sync::atomic::Ordering::Relaxed;
-    let one = |t: Transfer| {
-        if cancel.load(Relaxed) {
-            return None;
-        }
-        let path = t.path.clone();
-        // last-resort guard: a panic is this file's failure, not the import's
-        let item = crate::guard::catch("import", || run_transfer(t, file_bytes)).unwrap_or_else(|e| PreparedItem::Failed(path, e));
-        done.fetch_add(1, Relaxed);
-        Some(item)
-    };
+    // (a single transfer, as today: not started once cancelled, else run on this thread; the
+    // scheduler's single-job path honours `cancel`)
     #[cfg(not(target_arch = "wasm32"))]
     {
         let n = workers(transfers.len());
-        if n > 1 {
-            let mut results: Vec<Option<PreparedItem>> = std::iter::repeat_with(|| None).take(transfers.len()).collect();
-            let queue = std::sync::Mutex::new(transfers.into_iter().enumerate());
-            let out = std::sync::Mutex::new(&mut results);
-            // (the tests' injected faults hold for the workers too)
-            #[cfg(test)]
-            let fault = crate::import_move::injected_fault();
-            let work = &|| {
+        transfers_scheduled(crate::io_sched::IoContext::global(), transfers, file_bytes.cloned(), n, cancel, done)
+    }
+    // (no threads: one file after another, R10)
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        transfers
+            .into_iter()
+            .map(|t| {
+                if cancel.load(Relaxed) {
+                    return None;
+                }
+                let path = t.path.clone();
+                // last-resort guard: a panic is this file's failure, not the import's
+                let item = crate::guard::catch("import", || run_transfer(t, file_bytes)).unwrap_or_else(|e| PreparedItem::Failed(path, e));
+                done.fetch_add(1, Relaxed);
+                Some(item)
+            })
+            .collect()
+    }
+}
+
+/// [`run_transfers`] through the I/O scheduler, with `workers` today's thread count: each outcome
+/// as an item (`None`: not started).
+#[cfg(not(target_arch = "wasm32"))]
+fn transfers_scheduled(
+    ctx: &std::sync::Arc<crate::io_sched::IoContext>,
+    transfers: Vec<Transfer>,
+    file_bytes: Option<crate::merge::ByteReader>,
+    workers: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    done: &std::sync::atomic::AtomicUsize,
+) -> Vec<Option<PreparedItem>> {
+    use crate::io_sched::{IoJob, JobOutcome};
+    // (the tests' injected faults hold for the workers too)
+    #[cfg(test)]
+    let fault = crate::import_move::injected_fault();
+    let mut about = Vec::with_capacity(transfers.len());
+    let jobs = transfers
+        .into_iter()
+        .map(|t| {
+            let moving = matches!(t.how, How::Place { .. });
+            about.push((t.path.clone(), t.dir.clone(), moving));
+            let (source, dest, skippable) = (t.path.clone(), Some(t.dir.to_string_lossy().into_owned()), t.dng);
+            let file_bytes = file_bytes.clone();
+            let run = move || {
                 #[cfg(test)]
                 crate::import_move::inject(fault);
-                loop {
-                    let next = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next();
-                    let Some((i, t)) = next else { break };
-                    let r = one(t);
-                    if let Some(slot) = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(i) {
-                        *slot = r;
-                    }
-                }
+                let path = t.path.clone();
+                // last-resort guard: a panic is this file's failure, not the import's
+                crate::guard::catch("import", || run_transfer(t, file_bytes.as_ref())).unwrap_or_else(|e| PreparedItem::Failed(path, e))
             };
-            std::thread::scope(|sc| {
-                let handles: Vec<_> =
-                    (0..n).filter_map(|i| std::thread::Builder::new().name(format!("lc-import-copy-{i}")).spawn_scoped(sc, work).ok()).collect();
-                if handles.is_empty() {
-                    // no thread to be had: copy here, one after another
-                    work();
+            IoJob { source, dest, skippable, run: Box::new(run) as Box<dyn FnOnce() -> PreparedItem + Send> }
+        })
+        .collect();
+    let report = crate::io_sched::run_jobs(ctx, jobs, workers, transfer_ok, cancel, done);
+    report
+        .outcomes
+        .into_iter()
+        .zip(about)
+        .map(|(o, (path, dir, moving))| {
+            let what = if moving { "move" } else { "copy" };
+            match o {
+                JobOutcome::Done(item) => Some(item),
+                JobOutcome::NotStarted => None,
+                JobOutcome::Cancelled => Some(PreparedItem::Failed(
+                    path,
+                    format!("outcome unknown: the {what} into {} was left behind when the import was cancelled (it showed no progress); a file may still appear there, outside the library; the original is kept", dir.display()),
+                )),
+                JobOutcome::VolumeNotResponding { volume, abandoned: true } => {
+                    let msg = format!("outcome unknown: volume {volume} stopped responding during the {what} into {}; a file may still appear there, outside the library; the original is kept", dir.display());
+                    Some(PreparedItem::Failed(path, msg))
                 }
-                for h in handles {
-                    if h.join().is_err() {
-                        log::error!("import: a copy worker stopped unexpectedly");
-                    }
+                JobOutcome::VolumeNotResponding { volume, abandoned: false } => {
+                    let msg = format!("volume not responding ({volume}): not {}; the original is kept", if moving { "moved" } else { "copied" });
+                    Some(PreparedItem::Failed(path, msg))
                 }
-            });
-            return results;
-        }
-    }
-    transfers.into_iter().map(one).collect()
+                JobOutcome::Panicked(m) => Some(PreparedItem::Failed(path, m)),
+            }
+        })
+        .collect()
+}
+
+/// A transfer whose result shows its volumes work (for the scheduler's recovery rule).
+#[cfg(not(target_arch = "wasm32"))]
+fn transfer_ok(item: &PreparedItem) -> bool {
+    matches!(item, PreparedItem::Ready(_))
 }
 
 /// Copy or move one planned file (and Copy as DNG); its item.
@@ -1973,8 +2022,13 @@ fn run_transfer(t: Transfer, file_bytes: Option<&crate::merge::ByteReader>) -> P
     if dng {
         // decoding the raw twice and encoding it takes several times the file's size in memory
         let weight = usize::try_from(info.file_size).unwrap_or(usize::MAX).saturating_mul(6);
-        let _permit = crate::memory::work_gate().acquire(weight);
-        match crate::cmd::convert::write_dng_with(file_bytes, &stored, String::new()) {
+        // (as an I/O scheduler job: cancel makes it skip this step, keeping the raw copy; a stall
+        // abandons it; memory held by reads that are not returning fails it)
+        match crate::memory::work_gate()
+            .acquire_for_job(weight)
+            .map_err(|e| e.to_string())
+            .and_then(|_permit| crate::cmd::convert::write_dng_with(file_bytes, &stored, String::new()))
+        {
             Ok(dng) => {
                 let _ = std::fs::remove_file(&stored);
                 stored = dng;
@@ -2461,6 +2515,9 @@ impl Session {
 #[cfg(test)]
 #[path = "import/tests_known.rs"]
 mod tests_known;
+#[cfg(test)]
+#[path = "import/tests_transfers.rs"]
+mod tests_transfers;
 
 #[cfg(test)]
 mod prepared_tests {

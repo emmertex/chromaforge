@@ -131,7 +131,7 @@ impl Latch {
 }
 
 pub(super) fn job(path: &str, f: impl FnOnce() -> R + Send + 'static) -> IoJob<R> {
-    IoJob { source: path.to_string(), run: Box::new(f) }
+    IoJob::read(path.to_string(), Box::new(f))
 }
 
 /// Count `n` bytes for the thread's job (as the capped counting reader does).
@@ -451,7 +451,7 @@ fn a_hung_volume_is_declared_not_responding() {
     assert_eq!(ok_count(&r), 4);
     for o in r.outcomes.iter().take(6) {
         match o {
-            JobOutcome::VolumeNotResponding { volume } => assert_eq!(volume.id(), "/a"),
+            JobOutcome::VolumeNotResponding { volume, .. } => assert_eq!(volume.id(), "/a"),
             other => panic!("{other:?}"),
         }
     }
@@ -1491,7 +1491,7 @@ fn the_desktop_probe_counts_its_bytes() {
         .iter()
         .map(|p| {
             let (probe, p2) = (probe.clone(), p.clone());
-            IoJob { source: p.clone(), run: Box::new(move || probe(&p2).map(|_| 1u32).map_err(|e| e.to_string())) as Box<dyn FnOnce() -> R + Send> }
+            IoJob::read(p.clone(), Box::new(move || probe(&p2).map(|_| 1u32).map_err(|e| e.to_string())) as Box<dyn FnOnce() -> R + Send>)
         })
         .collect();
     let (r, _) = h.run(jobs, 2);
