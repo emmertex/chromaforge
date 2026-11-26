@@ -4576,7 +4576,7 @@ fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: 
     {
         let n = map.norm(q);
         if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": n.x, "y": n.y}, "focusSize": 0.0})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     } else if resp.drag_stopped()
         && let (Some(start), Some(end)) = (ui.input(|i| i.pointer.press_origin()), resp.interact_pointer_pos())
@@ -4584,7 +4584,7 @@ fn lens_focus_pick(app: &mut LccApp, ui: &egui::Ui, resp: &egui::Response, map: 
         let (a, b) = (map.norm(start), map.norm(end));
         let size = (a.x - b.x).abs().max((a.y - b.y).abs()).min(0.5);
         if let Err(e) = app.run("lensBlur.set", json!({"focus": {"x": a.x, "y": a.y}, "focusSize": size})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
 }
