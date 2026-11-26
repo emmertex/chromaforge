@@ -45,6 +45,7 @@ pub mod metadata;
 pub mod ml_models;
 pub mod navigator;
 pub mod notices;
+pub mod notifications;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer_sync;
 pub mod people;
@@ -183,19 +184,21 @@ pub fn toast(app: &mut LccApp, ctx: &egui::Context) {
     }
     let Some(canvas) = app.canvas_rect else { return };
     let t = Tokens::get(ctx);
+    let m = app.ui.settings.messages.clone();
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("toast")));
     // long messages (a save warning, the web build's notices) wrap within the canvas
     let wrap = (canvas.width() - 80.0).clamp(200.0, 720.0);
     // a slideshow's playback controls sit at the bottom: the toasts go to the top there, clear of them
-    let top = app.ui.slideshow.is_some();
-    let mut edge = if top { canvas.top() + 40.0 + action_h } else { canvas.bottom() - 40.0 - action_h };
+    let top = m.from_top(app.ui.slideshow.is_some());
+    let gap = m.edge_gap();
+    let mut edge = if top { canvas.top() + gap + action_h } else { canvas.bottom() - gap - action_h };
     let mut dismissed = None;
     let shown: Vec<_> = app.ui.toasts_shown().into_iter().cloned().collect();
     for toast in shown.iter().rev() {
         let fade = ((toast.until - now) / 0.25).clamp(0.0, 1.0) as f32;
-        let look = crate::toast::look(&t, toast.kind, fade);
+        let look = crate::toast::look(&t, toast.kind, fade, &m);
         // a sticky message keeps room at its right for the button that dismisses it
-        let button = if toast.key.is_some() { crate::toast::DISMISS_WIDTH } else { 0.0 };
+        let button = if toast.key.is_some() { crate::toast::DISMISS_WIDTH * m.size.clamp(0.5, 2.0) as f32 } else { 0.0 };
         let galley = painter.layout(toast.text.clone(), t.font(look.font), look.text, wrap - button);
         let size = look.size(galley.size()) + vec2(button, 0.0);
         let r = if top {
@@ -239,12 +242,14 @@ fn toast_action(app: &mut LccApp, ctx: &egui::Context, now: f64) -> f32 {
     let (Some(a), Some(canvas)) = (app.ui.toast_action.clone(), app.canvas_rect) else { return 0.0 };
     let t = Tokens::get(ctx);
     let fade = ((a.until - now) / 0.25).clamp(0.0, 1.0) as f32;
-    let look = crate::toast::look(&t, crate::ToastKind::Action, fade);
-    let top = app.ui.slideshow.is_some();
+    let m = app.ui.settings.messages.clone();
+    let look = crate::toast::look(&t, crate::ToastKind::Action, fade, &m);
+    let top = m.from_top(app.ui.slideshow.is_some());
+    let gap = m.edge_gap();
     let (pivot, anchor) = if top {
-        (egui::Align2::CENTER_TOP, pos2(canvas.center().x, canvas.top() + 40.0))
+        (egui::Align2::CENTER_TOP, pos2(canvas.center().x, canvas.top() + gap))
     } else {
-        (egui::Align2::CENTER_BOTTOM, pos2(canvas.center().x, canvas.bottom() - 40.0))
+        (egui::Align2::CENTER_BOTTOM, pos2(canvas.center().x, canvas.bottom() - gap))
     };
     let mut clicked = false;
     let shown = egui::Area::new(egui::Id::new("toast-action")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(anchor).show(ctx, |ui| {

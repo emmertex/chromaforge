@@ -106,6 +106,7 @@ mod modern_sources;
 pub mod module;
 pub mod motion;
 mod notes_view;
+pub mod notifications;
 pub mod onboarding;
 pub mod overlay;
 pub mod panels;
@@ -1967,7 +1968,7 @@ impl LccApp {
     /// the toast goes.
     pub fn toast_with_action(&mut self, ctx: &egui::Context, text: impl Into<String>, button: impl Into<String>, command: &str, params: Value) {
         let text = text.into();
-        let until = ctx.input(|i| i.time) + toast::stay_seconds(ToastKind::Action, &text);
+        let until = ctx.input(|i| i.time) + toast::stay_seconds(ToastKind::Action, &text, self.ui.settings.messages.info_seconds());
         self.ui.toast_action = Some(state::ToastAction { text, button: button.into(), command: command.to_string(), params, until });
         ctx.request_repaint();
     }

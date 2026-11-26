@@ -24,7 +24,7 @@ use ls::runtime::Shown;
 use ls::settings::{OsdMode, OsdPosition};
 use serde_json::{Value, json};
 
-use super::settings::{choices, hint, row};
+use super::settings::{choices, row};
 use crate::LccApp;
 use crate::i18n::{tr, tr_format};
 use crate::theme::Tokens;
@@ -208,7 +208,7 @@ pub fn report_area(r: &ChangeReport) -> ls::settings::OsdArea {
 
 /// Whether the overlay may show `r`: its mode and its area's option, asked of the settings' one rule. Change reports
 /// never come from a control surface (its own readout is `surface_content`).
-fn report_allowed(app: &LccApp, r: &ChangeReport) -> bool {
+pub(crate) fn report_allowed(app: &LccApp, r: &ChangeReport) -> bool {
     app.surface.settings().osd.allows(report_area(r), false)
 }
 
@@ -352,61 +352,38 @@ pub const MODES: &[(OsdMode, &str)] = &[(OsdMode::Off, "Off"), (OsdMode::Surface
 pub const POSITIONS: &[(OsdPosition, &str)] =
     &[(OsdPosition::Bottom, "Down"), (OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
 
-/// Settings, Interface, Overlay (also in Settings, Controls): one set of settings for every
-/// overlay. `in_controls` is the Controls page showing it: there the pointer to that page is left out.
-pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, in_controls: bool) {
-    crate::surface::ensure_loaded(app);
-    let mut s = app.surface.settings().osd.clone();
-    let before = s.clone();
-    super::settings::heading_help(ui, t, "On-Screen Overlay", "changeOverlay");
-    let mut mode = s.mode;
-    row(ui, t, "Show changes", |ui| {
-        if choices(ui, "osdMode", MODES, &mut mode) {
-            s.set_mode(mode);
-        }
-    });
-    // most people have never met a control surface: Settings says what that choice is for and where one is set up
-    // (the Controls page shows these settings too, and there the pointer would point at itself)
-    if in_controls {
-        hint(ui, t, "Flash a message for each change: what changed, and how many photos were affected.");
+/// The five controls the overlay pill and the messages share (Settings ▸ Notifications): size, opacity, how long,
+/// where, and the background. `messages` picks the ids they register under (`slider:osd.size`, `field:osdBackground`;
+/// `slider:messages.size`…).
+pub fn look_editor(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    messages: bool,
+    (size, opacity, display_ms, position, background): (&mut f64, &mut f64, &mut u32, &mut OsdPosition, &mut String),
+) {
+    let (size_id, opacity_id, time_id, position_id, background_id) = if messages {
+        ("slider:messages.size", "slider:messages.opacity", "slider:messages.duration", "messagesPosition", "field:messagesBackground")
     } else {
-        let note = crate::i18n::tr_format!(
-            "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.",
-            mode = tr("Control surface only"),
-            settings = tr("Settings"),
-            controls = tr("Controls")
-        );
-        hint(ui, t, &note);
-    }
+        ("slider:osd.size", "slider:osd.opacity", "slider:osd.duration", "osdPosition", "field:osdBackground")
+    };
     row(ui, t, "Size", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.size, 0.5..=2.0).fixed_decimals(2).suffix("×"));
-        crate::widgets::register(ui.ctx(), "slider:osd.size", r.rect);
+        let r = ui.add(egui::Slider::new(size, 0.5..=2.0).fixed_decimals(2).suffix("×"));
+        crate::widgets::register(ui.ctx(), size_id, r.rect);
     });
     row(ui, t, "Opacity", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.opacity, 0.1..=1.0).fixed_decimals(2));
-        crate::widgets::register(ui.ctx(), "slider:osd.opacity", r.rect);
+        let r = ui.add(egui::Slider::new(opacity, 0.1..=1.0).fixed_decimals(2));
+        crate::widgets::register(ui.ctx(), opacity_id, r.rect);
     });
     row(ui, t, "Shown for", |ui| {
-        let r = ui.add(egui::Slider::new(&mut s.display_ms, 500..=10_000).suffix(" ms"));
-        crate::widgets::register(ui.ctx(), "slider:osd.duration", r.rect);
+        let r = ui.add(egui::Slider::new(display_ms, 500..=10_000).suffix(" ms"));
+        crate::widgets::register(ui.ctx(), time_id, r.rect);
     });
     row(ui, t, "Position", |ui| {
-        choices(ui, "osdPosition", POSITIONS, &mut s.position);
+        choices(ui, position_id, POSITIONS, position);
     });
     row(ui, t, "Background", |ui| {
-        crate::text_field::TextField::singleline("field:osdBackground", &mut s.background).width(90.0).show(ui);
+        crate::text_field::TextField::singleline(background_id, background).width(90.0).show(ui);
     });
-    if s != before {
-        let colour_ok = ls::settings::rgb(&s.background).is_some();
-        let rt = app.surface.runtime.settings_mut();
-        if colour_ok {
-            rt.osd = s;
-            app.surface.changed();
-        } else {
-            // keep the half-typed colour in the field without applying it
-            rt.osd.background = s.background;
-        }
-    }
 }
 
 // ------------------------------------------------------------------------------------- commands
@@ -420,7 +397,7 @@ fn parse_mode(s: &str) -> Option<OsdMode> {
     })
 }
 
-fn parse_position(s: &str) -> Option<OsdPosition> {
+pub(crate) fn parse_position(s: &str) -> Option<OsdPosition> {
     Some(match s.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
         "down" | "bottom" => OsdPosition::Bottom,
         "downlow" | "bottomedge" => OsdPosition::BottomEdge,
@@ -430,13 +407,17 @@ fn parse_position(s: &str) -> Option<OsdPosition> {
     })
 }
 
-fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
-    let position = match osd.position {
+pub(crate) fn position_name(p: OsdPosition) -> &'static str {
+    match p {
         OsdPosition::Bottom => "down",
         OsdPosition::BottomEdge => "downLow",
         OsdPosition::Top => "up",
         OsdPosition::TopEdge => "upHigh",
-    };
+    }
+}
+
+fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
+    let position = position_name(osd.position);
     json!({
         "mode": osd.mode,
         "inDevelop": osd.in_develop,

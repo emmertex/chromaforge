@@ -605,6 +605,9 @@ pub struct AppSettings {
     /// again shows them at once. Used only where the GPU has room for them
     /// ([`crate::render::hdr_cache_fit`]); the Settings dialog says when it hasn't.
     pub hdr_zoom_cache: bool,
+    /// How messages look and how long they stay (Settings ▸ Notifications ▸ Messages).
+    #[serde(deserialize_with = "lenient_messages")]
+    pub messages: crate::toast::MessageSettings,
     /// Edit in Other Editor: the application ("" = the system's default for the file type).
     pub external_editor: String,
     /// The file Edit in Other Editor hands over.
@@ -859,6 +862,7 @@ impl Default for AppSettings {
             preview_limit: 0,
             high_quality_adjustment_previews: false,
             hdr_zoom_cache: true,
+            messages: crate::toast::MessageSettings::default(),
             external_editor: String::new(),
             external_file: EditFile::default(),
             photocraft_path: String::new(),
@@ -3002,6 +3006,10 @@ impl UiState {
     /// (same text) is not shown twice: it moves to the newest place and stays until the later of its times.
     /// Past [`MAX_TOASTS`] the oldest goes.
     pub fn show_toast(&mut self, mut toast: Toast) {
+        // how long it stays is the policy's, with the Information time the person chose
+        if toast.key.is_none() {
+            toast.until = toast.at + crate::toast::stay_seconds(toast.kind, &toast.text, self.settings.messages.info_seconds());
+        }
         if let Some(key) = toast.key.clone() {
             // a sticky message belongs to its condition: raised again it keeps one place, with the newest text, and
             // one the person dismissed stays away until the condition clears
@@ -3395,6 +3403,11 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: Default + serde::de::Deserialize
 }
 
 /// A list of ids read leniently: what isn't a list is none, and what isn't text in it is left out.
+/// The message settings read leniently, each value kept inside its range.
+fn lenient_messages<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::toast::MessageSettings, D::Error> {
+    lenient::<D, crate::toast::MessageSettings>(d).map(crate::toast::MessageSettings::clamped)
+}
+
 fn lenient_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(value.as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect())
@@ -3450,7 +3463,8 @@ mod toast_tests {
     /// oldest goes; each expires at its own time.
     #[test]
     fn toasts_stack_instead_of_replacing_one_another() {
-        let message = |text: String, until: f64| Toast { text, until, kind: ToastKind::Message, key: None };
+        // a message stays 1.4 s from when it was raised, so `at` places its end
+        let message = |text: String, ends: f64| Toast { text, until: 0.0, kind: ToastKind::Message, key: None, at: ends - 1.4 };
         let mut ui = UiState::default();
         ui.show_toast(message("Red Label".into(), 2.0));
         ui.show_toast(message("Cache cleared".into(), 3.0));
@@ -3458,7 +3472,7 @@ mod toast_tests {
         assert_eq!(ui.toast().map(|t| t.text.as_str()), Some("Cache cleared"));
         ui.show_toast(message("Red Label".into(), 4.0));
         assert_eq!(ui.toasts.len(), 2, "the same message is shown once");
-        assert_eq!(ui.toast().map(|t| (t.text.as_str(), t.until)), Some(("Red Label", 4.0)));
+        assert_eq!(ui.toast().map(|t| (t.text.as_str(), (t.until - 4.0).abs() < 1e-9)), Some(("Red Label", true)));
         for i in 0..5 {
             ui.show_toast(message(format!("m{i}"), 10.0));
         }
@@ -3473,9 +3487,9 @@ mod toast_tests {
     #[test]
     fn the_same_text_again_keeps_the_error_kind() {
         let mut ui = UiState::default();
-        ui.show_toast(Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None });
-        ui.show_toast(Toast { text: "Disk full".into(), until: 2.0, kind: ToastKind::Message, key: None });
-        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None }]);
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Error, key: None, at: 0.0 });
+        ui.show_toast(Toast { text: "Disk full".into(), until: 0.0, kind: ToastKind::Message, key: None, at: 0.0 });
+        assert_eq!(ui.toasts, vec![Toast { text: "Disk full".into(), until: 6.0, kind: ToastKind::Error, key: None, at: 0.0 }]);
     }
 
     /// A sticky message belongs to its key: raised again it stays one, with the newest text; clearing the key takes it
