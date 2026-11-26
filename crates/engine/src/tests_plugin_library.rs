@@ -534,7 +534,7 @@ fn before_import_hook_replaces_and_skips_on_library_import() {
 
     // every file is replaced by first.png: one photo, imported from it
     let manifest = r#"{"id":"t.before","name":"B","version":"1.0.0","requires":["beforeImport"],"hooks":{"beforeImport":true},"permissions":{}}"#;
-    let reply = format!(r#"{{"replace":"{}"}}"#, dir.join("first.png").display());
+    let reply = json!({"replace": dir.join("first.png").display().to_string()}).to_string();
     let bytes = reply_module(manifest, &reply);
     let module = dir.join("before.wasm");
     std::fs::write(&module, &bytes).unwrap();
