@@ -254,12 +254,17 @@ impl ToneMap {
     /// The base tone of a raw photo that selects a base curve (`profile.base_curve`): the curve replaces the camera
     /// look's tone or the generic raw curve, it is not applied on top of it.
     ///
-    /// PROVISIONAL: which curve of a curve file, which x domain and which gain are decided by measurement, not by this
-    /// code. For now the curve is evaluated on luminance only (per-channel steps are not rendered, see
-    /// `BaseCurve::unsupported`), as `x = gain · v / (white · white_scale)` where `v` is the scene-linear luminance
-    /// the tone table is indexed by (after Exposure and the local tone steps) and `white_scale` is the source's
-    /// colour-model scale (`SourceInfo::white_scale`: what a white-balanced neutral sensor-white pixel reads there),
-    /// so that sensor white is 1.0 whatever the colour model's own gain is. The output is display-linear.
+    /// Which curve of a curve file, which x domain and which gain are the file's business, not this code's. The
+    /// file's whole `apply` list runs on luminance (per-channel steps are not rendered, see
+    /// `BaseCurve::unsupported`): its curves, and in format version 2 its `encode` and `decode` steps, so the table
+    /// carries the file's whole neutral transfer. The first x is `gain · v / (white · white_scale)` where `v` is the
+    /// scene-linear luminance the tone table is indexed by (after Exposure and the local tone steps) and `white_scale`
+    /// is the source's colour-model scale (`SourceInfo::white_scale`: what a white-balanced neutral sensor-white pixel
+    /// reads there), so that sensor white is 1.0 whatever the colour model's own gain is. The output is
+    /// display-linear. Scene values at or above the curve's white (x ≥ 1) give exactly the transfer's value for 1:
+    /// white, when the file's curve ends at 1. That is where the highlight reconstruction puts fully clipped
+    /// highlights (neutral, at the brightest white-balanced channel's clip), so they render white without a rule of
+    /// their own.
     ///
     /// Then Contrast, Whites and Blacks ([`ToneMap::adjust`], after the curve, on display values, as
     /// [`ToneMap::camera_hdr`] orders them), then the HDR lift to `peak` exactly as [`ToneMap::camera_hdr`] does it

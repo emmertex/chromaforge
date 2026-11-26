@@ -234,3 +234,69 @@ fn contrast_whites_and_blacks_act_after_the_curve_without_a_second_shoulder() {
     }
     base_curve::install_library(vec![]);
 }
+
+/// Format version 2 file: a natural spline curve, then the encode and decode steps (synthetic numbers).
+fn neutral_transfer_doc() -> serde_json::Value {
+    json!({
+        "format": "base-curve", "version": 2,
+        "input": { "gain": 0.9 },
+        "curves": { "a": { "interpolation": "natural-cubic-spline", "points": [[0, 0], [0.1, 0.25], [0.5, 0.7], [1, 1]] } },
+        "apply": [
+            { "op": "curve", "curve": "a", "on": "luminance" },
+            { "op": "encode", "gamma": 2.4, "offset": 0.1 },
+            { "op": "decode", "gamma": 1.6, "knee": 0.02 }
+        ]
+    })
+}
+
+#[test]
+fn the_table_carries_the_whole_neutral_transfer_curve_encode_and_decode() {
+    let _g = lock();
+    install("base:Transfer", neutral_transfer_doc());
+    let t = base_tone(&settings("base:Transfer"), &raw_info(), 1.0);
+    let curve = base_curve::get("base:Transfer").expect("installed").curve;
+    let spline = &curve.curves["a"];
+    // the same transfer worked out here from its definitions
+    let (gamma, offset, dgamma, knee): (f64, f64, f64, f64) = (2.4, 0.1, 1.6, 0.02);
+    let p = 1.0 / gamma;
+    let enc_knee = (offset / ((1.0 + offset) * (1.0 - p))).powf(gamma);
+    let by_hand = |v: f64| -> f64 {
+        let x = 0.9 * v;
+        let c = spline.eval(x);
+        let e = if c < enc_knee { (1.0 + offset) * p * enc_knee.powf(p - 1.0) * c } else { (1.0 + offset) * c.powf(p) - offset };
+        if e < knee { knee.powf(dgamma - 1.0) * e } else { e.powf(dgamma) }
+    };
+    for i in (0..LUT_N).step_by(53) {
+        let v = f64::from(GREY * 2f32.powf(ev(i)));
+        assert!((f64::from(t.lut()[i]) - by_hand(v).clamp(0.0, 1.0)).abs() < 2e-6, "entry {i} (ev {}): {} against {}", ev(i), t.lut()[i], by_hand(v));
+    }
+    assert!(t.lut().windows(2).all(|w| w[1] >= w[0]), "monotone");
+    assert!(t.lut()[0] < 1e-4 && (t.lut()[LUT_N - 1] - 1.0).abs() < 1e-6);
+    // Contrast, Whites and Blacks still come after the whole transfer, and 0 leaves it exactly alone
+    let mut s = settings("base:Transfer");
+    s.light.contrast = 30.0;
+    let c = base_tone(&s, &raw_info(), 1.0);
+    for i in (0..LUT_N).step_by(131) {
+        assert!((c.lut()[i] - ToneMap::adjust(t.lut()[i], 30.0, 0.0, 0.0)).abs() < 1e-6, "entry {i}");
+    }
+    base_curve::install_library(vec![]);
+}
+
+#[test]
+fn scene_values_at_or_above_the_curves_white_render_white() {
+    let _g = lock();
+    install("base:Clip", neutral_transfer_doc());
+    let t = base_tone(&settings("base:Clip"), &raw_info(), 1.0);
+    // the file's gain is 0.9: a scene value of 1/0.9 (and everything above it) reaches x = 1, where the clamped curve
+    // holds 1 and the encode and decode keep it: exactly white. A fully clipped highlight, which the highlight
+    // reconstruction writes at the brightest white-balanced channel's clip (for a red multiplier of 1.8 that is about
+    // 1.78 of the sensor's white, 1.6 in x), is above it.
+    for v in [1.2f32, 1.78, 3.0, 20.0] {
+        assert!((t.apply(v) - 1.0).abs() < 1e-6, "scene value {v}: {}", t.apply(v));
+    }
+    assert!(t.apply(0.9) < 1.0, "just below x = 1 the output has not reached white");
+    // a source whose white-balance multipliers are all near 1 puts its clipped highlights at x of about 0.9: the table
+    // does not reach white there, which is the curve's own value at that x
+    assert!(t.apply(0.99 * 1.0) < 1.0);
+    base_curve::install_library(vec![]);
+}
