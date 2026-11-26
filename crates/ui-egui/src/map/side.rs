@@ -163,9 +163,11 @@ pub fn poll_jobs(app: &mut LccApp, ctx: &egui::Context) {
             },
             Job::Geocode(rx) => match rx.try_recv() {
                 Ok(Ok(params)) => match app.run("map.reverseGeocode", params) {
-                    Ok(v) => {
-                        app.toast(ctx, crate::i18n::tr_format!("Filled the location of {n} photos", n = v.field("changed").as_u64().unwrap_or(0)))
+                    // the overlay says "Reverse Geocode" when photos changed; only a lookup that filled none is a toast
+                    Ok(v) if v.field("changed").as_u64().unwrap_or(0) == 0 => {
+                        app.toast(ctx, crate::i18n::tr_format!("Filled the location of {n} photos", n = 0))
                     }
+                    Ok(_) => {}
                     Err(e) => app.toast_error(ctx, e),
                 },
                 Ok(Err(e)) => app.toast_error(ctx, e),
@@ -543,9 +545,10 @@ fn geocode_section(app: &mut LccApp, ui: &mut egui::Ui) {
         if ui.add_enabled(can, egui::Button::new(tr("Look Up Selected Photos"))).clicked() {
             match app.run("map.lookup", json!({})) {
                 Ok(v) if v.get("pending").is_some() => app.toast(ui.ctx(), tr("Looking up locations…")),
-                Ok(v) => {
-                    app.toast(ui.ctx(), crate::i18n::tr_format!("Filled the location of {n} photos", n = v.field("found").as_u64().unwrap_or(0)))
+                Ok(v) if v.field("found").as_u64().unwrap_or(0) == 0 => {
+                    app.toast(ui.ctx(), crate::i18n::tr_format!("Filled the location of {n} photos", n = 0))
                 }
+                Ok(_) => {}
                 Err(e) => app.toast_error(ui.ctx(), e),
             }
         }

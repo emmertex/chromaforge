@@ -334,6 +334,10 @@ pub struct DevelopSettings {
     pub hsl_curves: HslCurves,
     pub effects: Effects,
     pub vignette: Vignette,
+    /// Glow, the Resolve-style bloom (beyond Lightroom). Not written while at the default, so
+    /// settings without it keep their JSON and `hash64` (and every cached preview stays valid).
+    #[serde(skip_serializing_if = "Glow::is_default", deserialize_with = "lenient")]
+    pub glow: Glow,
     pub grain: Grain,
     pub detail: Detail,
     pub optics: Optics,
@@ -458,6 +462,7 @@ impl Default for DevelopSettings {
             hsl_curves: HslCurves::default(),
             effects: Effects::default(),
             vignette: Vignette::default(),
+            glow: Glow::default(),
             grain: Grain::default(),
             detail: Detail::default(),
             optics: Optics::default(),
@@ -1383,6 +1388,54 @@ pub struct Effects {
     pub texture: f64,
     pub clarity: f64,
     pub dehaze: f64,
+}
+
+/// How Glow composites over the picture (Resolve's Glow offers Screen, its gentler default, and
+/// the hotter Add).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GlowComposite {
+    #[default]
+    Screen,
+    Add,
+}
+
+/// Glow (beyond Lightroom, after DaVinci Resolve's Glow effect): the picture's bright parts,
+/// taken above a threshold and spread as a halo over it. Not written while at the default
+/// (Amount 0), so settings without Glow keep their JSON and `hash64` (and every cached preview
+/// stays valid).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Glow {
+    /// Overall strength, 0..100 (0: off). Resolve's Opacity.
+    pub amount: f64,
+    /// Only pixels brighter than this glow, 0..100. Resolve's Shine Threshold.
+    pub threshold: f64,
+    /// Halo width, 0..100 (relative to the frame, so a preview matches an export). Resolve's Spread.
+    pub spread: f64,
+    /// Brightness of the glow itself, 0..100 (50 = ×1). Resolve's Gain.
+    pub gain: f64,
+    /// Distribution of the glow's falloff, 0..100 (50 = 1). Resolve's Gamma.
+    pub gamma: f64,
+    /// Horizontal/vertical spread ratio, 0..100 (50 = an even halo; lower spreads the glow more
+    /// vertically, higher more horizontally). Resolve's H/V Ratio.
+    pub ratio: f64,
+    /// How much of the bright regions' own detail comes back through the glow, 0..100.
+    /// Resolve's Bright Region Recovery.
+    pub recovery: f64,
+    pub mode: GlowComposite,
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self { amount: 0.0, threshold: 50.0, spread: 25.0, gain: 50.0, gamma: 50.0, ratio: 50.0, recovery: 0.0, mode: GlowComposite::Screen }
+    }
+}
+
+impl Glow {
+    pub fn is_default(&self) -> bool {
+        *self == Glow::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

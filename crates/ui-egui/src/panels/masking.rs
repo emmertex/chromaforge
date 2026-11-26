@@ -157,7 +157,7 @@ fn section_header(app: &mut LccApp, ui: &mut egui::Ui, key: &str, title: &str, i
         if !solo {
             app.ui.toggle_folded(&id);
         } else if let Err(e) = app.run("mask.solo", json!({"section": key})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     resp.context_menu(|ui| {
@@ -166,7 +166,7 @@ fn section_header(app: &mut LccApp, ui: &mut egui::Ui, key: &str, title: &str, i
         register(ui.ctx(), "maskSectionMenu:solo", item.rect);
         if item.changed() {
             if let Err(e) = app.run("mask.solo", json!({"on": solo})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -824,7 +824,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                             && !popup_open_at_start
                             && let Err(e) = app.run("mask.editComponent", json!({"id": m.id, "component": i}))
                         {
-                            app.toast(ui.ctx(), e);
+                            app.toast_error(ui.ctx(), e);
                         }
                         if resp.double_clicked() {
                             app.ui.renaming_component = Some((m.id, i, label.clone()));
@@ -1660,7 +1660,7 @@ fn who_picker(app: &mut LccApp, ui: &mut egui::Ui, photo: PhotoId, comp: usize, 
                 let _ = app.run("mask.update", json!({"component": comp, "shape": shape}));
                 let _ = app.run("masks.recompute", json!({"id": photo.0}));
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     if let Some(w) = chosen {
@@ -1741,7 +1741,7 @@ fn roles_window(app: &mut LccApp, ctx: &egui::Context) {
     if let Some((role, scope)) = clear
         && let Err(e) = app.run("people.clearRole", json!({"role": role, "scope": scope}))
     {
-        app.toast(ctx, e);
+        app.toast_error(ctx, e);
     }
 }
 
@@ -2422,11 +2422,11 @@ pub(crate) fn start_new(app: &mut LccApp, ctx: &egui::Context, kind: &str) {
         // armed: the first click on the photo makes the mask and picks there
         "colorRange" => match arm_new(app, "colorRange") {
             Ok(_) => app.toast(ctx, crate::i18n::tr("Click the photo to pick a colour · ⇧-click adds more")),
-            Err(e) => app.toast(ctx, e),
+            Err(e) => app.toast_error(ctx, e),
         },
         "object" if !needs_model(app, "object", "new") => match arm_new(app, "object") {
             Ok(_) => app.toast(ctx, crate::i18n::tr("Click the object to select it · ⌥-click leaves a part out")),
-            Err(e) => app.toast(ctx, e),
+            Err(e) => app.toast_error(ctx, e),
         },
         "object" => {}
         "prompt" => start_describe(app, "new"),

@@ -1172,7 +1172,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 && let Some(f) = app.services.pick_folder.as_mut().and_then(|f| f())
                 && let Err(e) = app.run("library.autoImport", json!({"folder": f}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             if d.auto_folder.is_some() && ui.button(crate::i18n::tr("Turn Off")).clicked() {
                 let _ = app.run("library.autoImport", json!({"folder": null}));
@@ -1310,7 +1310,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if crate::widgets::text_button(ui, "lensDbFolder", "Choose Folder…", false).clicked()
             && let Err(e) = app.run("app.lensDbFolder", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         if st.field("canDownload") == true {
             let label = if st.field("downloaded") == true { "Update" } else { "Download" };
@@ -1318,7 +1318,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             if b.clicked()
                 && let Err(e) = app.run("lens.db.download", json!({}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
         if running && crate::widgets::text_button(ui, "lensDbCancel", "Cancel", false).clicked() {
@@ -1329,7 +1329,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             && crate::widgets::text_button(ui, "lensDbRemove", "Remove", false).clicked()
             && let Err(e) = app.run("lens.db.remove", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     });
     match st.field("download").field("state").as_str() {
@@ -1944,7 +1944,7 @@ fn smart_previews(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 };
                 app.toast(ui.ctx(), if failed > 0 { crate::i18n::tr_format!("{msg} ({failed} failed)", failed = failed, msg = msg) } else { msg });
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, crate::i18n::tr("Keep it on a drive with room: smart previews are about 1 MB per photo. The thumbnail cache stays in the catalog."));
@@ -2140,7 +2140,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t);
+    super::surface_osd::settings_section(app, ui, t, false);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and

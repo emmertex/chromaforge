@@ -36,6 +36,7 @@ pub mod film_dust;
 pub mod finish;
 pub mod genpatch;
 pub mod geometry;
+pub mod glow;
 pub mod grade;
 pub mod grain;
 pub mod lens_blur;
@@ -739,6 +740,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
             // The joint colour NR (process V8) reads a chain of neighbours across its scales: keep
             // those reads outside the requested window too, at every depth (cut back below)
             let work = grow_window(work, joint_nr_reach(s, detail_scale), full_w, full_h);
+            // and Glow's halos reach into the window from outside it, at every depth
+            let work = grow_window(work, glow::reach(s, px_per_long), full_w, full_h);
             if work != win {
                 keep = Some(PixelWindow { x: win.x - work.x, y: win.y - work.y, ..win });
             }
@@ -1548,6 +1551,8 @@ mod tests_dehaze;
 mod tests_draft_nr;
 #[cfg(test)]
 mod tests_geometry;
+#[cfg(test)]
+mod tests_glow;
 #[cfg(test)]
 mod tests_hdr;
 #[cfg(test)]

@@ -200,7 +200,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         "readout" => {
             egui::ScrollArea::vertical().id_salt("surfaceReadout").max_height(max_h).show(ui, |ui| {
                 timing_and_readout(app, ui, t);
-                super::surface_osd::settings_section(app, ui, t);
+                super::surface_osd::settings_section(app, ui, t, true);
             });
         }
         "setup" => {

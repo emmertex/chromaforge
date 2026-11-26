@@ -236,12 +236,12 @@ fn batch_bar(app: &mut LccApp, ui: &mut egui::Ui, current: &str) {
     }
     if let Some(who) = assign {
         if let Err(error) = app.run("faces.nameFaces", json!({"faces": faces_json(&selected), "name": who})) {
-            app.toast(ui.ctx(), error);
+            app.toast_error(ui.ctx(), error);
         }
         clear_selection(app);
     } else if reject {
         if let Err(error) = app.run("faces.ignore", json!({"faces": faces_json(&selected)})) {
-            app.toast(ui.ctx(), error);
+            app.toast_error(ui.ctx(), error);
         }
         clear_selection(app);
     } else if clear {
@@ -260,7 +260,7 @@ fn confirm_above(app: &mut LccApp, ctx: &egui::Context, name: &str, more: &[&Fac
     if !faces.is_empty()
         && let Err(error) = app.run("faces.nameFaces", json!({"faces": faces, "name": name}))
     {
-        app.toast(ctx, error);
+        app.toast_error(ctx, error);
     }
 }
 
@@ -467,7 +467,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, name: &str) {
             }
             Hit::RejectOne => {
                 if let Err(error) = app.run("faces.ignore", json!({"faces": faces_json(&[(f.photo, f.index)])})) {
-                    app.toast(ui.ctx(), error);
+                    app.toast_error(ui.ctx(), error);
                 }
                 app.ui.person_selected.remove(&(f.photo, f.index));
             }

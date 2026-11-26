@@ -288,7 +288,7 @@ fn terminal(app: &mut LccApp, ctx: &egui::Context, task: &LightroomTask, mut val
     }
     app.lightroom_last = Some(value);
     app.lightroom = None;
-    app.toast_for(ctx, message, 6.0);
+    app.toast(ctx, message);
 }
 
 /// How an inspect or import of a Lightroom catalog went, in the UI language.
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(h.app.session.activity.list()[0].label, "Importing Capture One catalog");
         let task = h.app.lightroom.take().unwrap();
         terminal(&mut h.app, &h.view.ctx, &task, json!({"photos": 2, "imported": 2, "collections": 1, "library": "C:/Pictures/Photo Library"}));
-        let toast = h.app.ui.toast().unwrap().0.to_string();
+        let toast = h.app.ui.toast().unwrap().text.to_string();
         assert!(toast.contains("Capture One import complete") && !toast.contains("Lightroom"), "{toast}");
         assert!(
             matches!(&h.app.ui.dialog, Some(crate::state::Dialog::LightroomResult { capture_one: true, summary, .. }) if !summary.contains("Lightroom")),
@@ -760,7 +760,7 @@ mod tests {
         let (task, _tx, _, _) = fake_import(&h);
         let value = json!({"photos": 1, "imported": 1, "collections": 0, "missing": ["D:/Photos/a.NEF"], "mapping": {"1": id}, "library": "C:/Pictures/Photo Library"});
         terminal(&mut h.app, &h.view.ctx, &task, value);
-        assert!(h.app.ui.toast().unwrap().0.contains("1 photos added"));
+        assert!(h.app.ui.toast().unwrap().text.contains("1 photos added"));
         h.step();
         h.step();
         let text = h.painted_text().join(" ");
