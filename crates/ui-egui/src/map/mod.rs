@@ -165,6 +165,8 @@ pub struct MapUi {
     pub menu_at: Option<LatLon>,
     /// Pins as drawn last frame: (screen centre, photo ids) — for `map.inspect`-style queries and tests.
     pub drawn: Vec<(egui::Pos2, Vec<u64>)>,
+    /// The map moving to a photo clicked in the filmstrip ([`centre_on_photo`]).
+    pub glide: Option<Glide>,
     /// The selection the map last saw (sorted ids): a filmstrip selection change reveals the new
     /// pins when they lie off screen (fork #741). `None` before the first frame.
     pub last_selection: Option<Vec<u64>>,
@@ -176,6 +178,19 @@ pub struct MapUi {
     centre_name: Option<(LatLon, Option<String>)>,
     pins_cache: Option<(u64, usize, String, i64, std::sync::Arc<Vec<lcc_geo::Cluster<u64>>>)>,
 }
+
+/// The map's centre on its way to a place: from and to (Web Mercator, 0..1), when it started (egui
+/// time, s), and the centre it set last frame (anything else moving the map ends the glide).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glide {
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    pub start: f64,
+    pub last: LatLon,
+}
+
+/// How long the map takes to glide to a nearby photo (s).
+pub const GLIDE_SECONDS: f64 = 0.45;
 
 impl Default for MapUi {
     fn default() -> Self {
@@ -198,6 +213,7 @@ impl Default for MapUi {
             dragging_pin: None,
             menu_at: None,
             drawn: Vec::new(),
+            glide: None,
             last_selection: None,
             canvas: None,
             names: None,
@@ -381,6 +397,65 @@ pub fn reveal_selection(app: &mut LccApp, force: bool) -> bool {
     // without `force`: only zoom out when the pins don't fit at the current zoom, never in
     let zoom = if force { zf } else { zf.min(app.map.prefs.zoom) };
     app.map.set_view(c, zoom);
+    true
+}
+
+/// One click on a filmstrip thumbnail (Lightroom Classic): the map centres on that photo's pin at
+/// the zoom it has, gliding there when the pin is within a few map widths, jumping when it is
+/// farther. A photo without a position leaves the map alone. Returns whether the map moves.
+pub fn centre_on_photo(app: &mut LccApp, id: lcc_catalog::PhotoId, now: f64) -> bool {
+    let Some(to) = app.session.catalog.photo(id).and_then(|p| p.meta.gps).map(|g| LatLon::new(g.0, g.1)).filter(|g| g.is_valid()) else {
+        return false;
+    };
+    // the selection this click made is the map's: no reveal of it on top of the move
+    let mut sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    sel.sort_unstable();
+    app.map.last_selection = Some(sel);
+    let from = lcc_geo::mercator::project(app.map.centre());
+    let mut target = lcc_geo::mercator::project(to);
+    // the short way round the antimeridian
+    let dx = target.0 - from.0;
+    target.0 = from.0 + (dx - dx.round());
+    let world = lcc_geo::mercator::world_px(app.map.prefs.zoom);
+    let px = (target.0 - from.0).hypot(target.1 - from.1) * world;
+    if px < 0.5 {
+        app.map.glide = None;
+        return false;
+    }
+    let r = app.map.canvas.unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 700.0)));
+    let near = px <= 3.0 * f64::from(r.width().max(r.height()));
+    let zoom = app.map.prefs.zoom;
+    if near {
+        app.map.glide = Some(Glide { from, to: target, start: now, last: app.map.centre() });
+    } else {
+        app.map.glide = None;
+        app.map.set_view(to, zoom);
+        app.map.save();
+    }
+    true
+}
+
+/// Moves the map one frame along its glide; `true` while it is still on its way.
+pub fn glide_step(m: &mut MapUi, now: f64) -> bool {
+    let Some(g) = m.glide else { return false };
+    let c = m.centre();
+    // someone else moved the map (a drag, a zoom, a search): it stops here
+    if (c.lat - g.last.lat).abs() > 1e-9 || (c.lon - g.last.lon).abs() > 1e-9 {
+        m.glide = None;
+        return false;
+    }
+    let t = ((now - g.start) / GLIDE_SECONDS).clamp(0.0, 1.0);
+    // ease in and out
+    let e = t * t * (3.0 - 2.0 * t);
+    let at = lcc_geo::mercator::unproject(g.from.0 + (g.to.0 - g.from.0) * e, g.from.1 + (g.to.1 - g.from.1) * e);
+    let zoom = m.prefs.zoom;
+    m.set_view(at, zoom);
+    if t >= 1.0 {
+        m.glide = None;
+        m.save();
+        return false;
+    }
+    m.glide = Some(Glide { last: m.centre(), ..g });
     true
 }
 

@@ -6862,6 +6862,11 @@ fn filmstrip_strip(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
                     if compare && let Err(e) = r {
                         app.toast_error(ui.ctx(), e);
                     }
+                    // as in Lightroom Classic, one click brings the map to the photo, at the zoom it has
+                    if map {
+                        let now = ui.input(|i| i.time);
+                        crate::map::centre_on_photo(app, *id, now);
+                    }
                 }
                 // fork #741: a double-clicked thumbnail centres the map on its pin and zooms in,
                 // even when the pin was already on screen

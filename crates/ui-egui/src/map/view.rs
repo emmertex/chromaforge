@@ -62,6 +62,9 @@ fn canvas(app: &mut LccApp, ui: &mut egui::Ui, r: Rect) {
     // fork #741: a filmstrip selection whose pins lie off screen brings the map to them (pan only).
     // The first frame only records the selection, so entering the module never jumps.
     let sel: Vec<u64> = app.session.selection.ids.iter().map(|p| p.0).collect();
+    if super::glide_step(&mut app.map, ui.input(|i| i.time)) {
+        ctx.request_repaint();
+    }
     if app.map.last_selection.as_ref().is_some_and(|prev| prev.as_slice() != sel.as_slice()) {
         super::reveal_selection(app, false);
     } else {
