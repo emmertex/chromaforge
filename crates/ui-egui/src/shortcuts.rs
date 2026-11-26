@@ -1177,8 +1177,18 @@ mod tests {
             select_only_active_chord(&mut h);
             assert_eq!(h.app.session.selection.ids, vec![PhotoId(2)]);
             assert_eq!(h.app.session.active(), Some(PhotoId(2)));
-            // Narrowing the selection does not replace the last photo-edit undo step.
+            // Narrowing the selection is a step of its own (Undo brings the three photos back) and does not replace the
+            // photo-edit step under it.
             h.app.session.execute("edit.undo", &json!({})).unwrap();
+            assert_eq!(h.app.session.selection.ids, vec![PhotoId(1), PhotoId(2), PhotoId(3)]);
+            assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().rating, 4, "the edit is still there");
+            // (the loupe is the Develop module: entering it is a step between the edit and the narrowing)
+            for _ in 0..3 {
+                if h.app.session.catalog.photo(PhotoId(1)).unwrap().rating == 0 {
+                    break;
+                }
+                h.app.session.execute("edit.undo", &json!({})).unwrap();
+            }
             for id in 1..=3 {
                 assert_eq!(h.app.session.catalog.photo(PhotoId(id)).unwrap().rating, 0);
             }

@@ -521,6 +521,8 @@ mod tests_upright_panel;
 #[cfg(test)]
 mod tests_view_state;
 #[cfg(test)]
+mod tests_view_undo;
+#[cfg(test)]
 mod tests_viewperf;
 #[cfg(test)]
 mod tests_vignetting_calibration_ui;
@@ -1553,6 +1555,15 @@ impl LccApp {
 
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         self.run_typed(id, params).map_err(|e| e.message)
+    }
+
+    /// Run `f`, in which the app moves the view by itself (an import showing what it brought in, the Import tab
+    /// browsing a card): what it changes in the source, filter or selection is not a step of Undo.
+    pub fn without_view_steps<R>(&mut self, f: impl FnOnce(&mut LccApp) -> R) -> R {
+        let was = self.session.record_navigation(false);
+        let r = f(self);
+        self.session.record_navigation(was);
+        r
     }
 
     /// [`LccApp::run`], keeping what kind of error a refusal is: for code that decides on it
