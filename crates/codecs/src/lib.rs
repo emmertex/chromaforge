@@ -69,10 +69,41 @@ pub enum Error {
     Unsupported(Format, &'static str),
     #[error("malformed {0:?} data: {1}")]
     Malformed(Format, String),
-    #[error("image too large: {0}×{1}")]
+    #[error("{}", too_large_message(*.0, *.1))]
     TooLarge(u64, u64),
     #[error("encode error: {0}")]
     Encode(String),
+}
+
+/// The text of [`Error::TooLarge`]: the size and, when that is over [`DEFAULT_MAX_PIXELS`], the
+/// limit, so the message says what is wrong (issue #1477). Past the limit both are exact pixel
+/// counts: the limit is Lightroom Classic's "512 megapixels", which counts 2^20 pixels to the
+/// megapixel (536,870,912), so a size in decimal megapixels near it (536.9) would read the same as
+/// the limit. A refusal under the limit came from a decoder's memory budget or a failed allocation.
+fn too_large_message(w: u64, h: u64) -> String {
+    let px = w.saturating_mul(h);
+    if px > DEFAULT_MAX_PIXELS {
+        format!(
+            "image too large: {w}×{h} is {} pixels; the limit is {} (Lightroom Classic's 512 megapixels)",
+            grouped(px),
+            grouped(DEFAULT_MAX_PIXELS)
+        )
+    } else {
+        format!("image too large: {w}×{h} ({:.1} MP) needs more memory than its decoder allows", px as f64 / 1e6)
+    }
+}
+
+/// `n` with a comma between each group of three digits (536,870,912).
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `w × h × c` samples, or [`Error::TooLarge`] when that overflows `usize` (a 32-bit `usize` on wasm32 wraps on
@@ -89,7 +120,7 @@ pub struct DecodeOptions {
     /// Fit the result within this box (never upscales). JPEG uses DCT-domain scaling (1/2, 1/4,
     /// 1/8) before a final linear-light resample; other formats decode fully then resample.
     pub max_size: Option<(u32, u32)>,
-    /// Refuse images with more pixels than this (default [`DEFAULT_MAX_PIXELS`], 512 MP).
+    /// Refuse images with more pixels than this (default [`DEFAULT_MAX_PIXELS`], 512 × 2^20 pixels).
     pub max_pixels: u64,
     /// Refuse images whose samples, in the file's own layout (before conversion to float), need more
     /// bytes than this (default [`DEFAULT_MAX_BYTES`], 4 GiB): the buffer a format decoder allocates
@@ -98,11 +129,15 @@ pub struct DecodeOptions {
     pub max_bytes: u64,
 }
 
-/// Default [`DecodeOptions::max_pixels`]: 512 MP, the largest image Lightroom Classic opens (65,000 px
-/// a side and 512 megapixels), so every file it reads is in range.
-pub const DEFAULT_MAX_PIXELS: u64 = 512_000_000;
+/// Default [`DecodeOptions::max_pixels`]: 512 × 2^20 pixels, the largest image Lightroom Classic opens, so every
+/// file it reads is in range. Adobe's "512 megapixels" counts a megapixel as 2^20 pixels: Lightroom Classic 16.0
+/// imported grey TIFFs of 524,400,000 and 536,848,900 pixels and refused 536,895,241 and 538,240,000 ("The file sizes
+/// exceed supported file dimensions (512 megapixels or 65k pixel long edge)"; issue #1477). It does not limit the long
+/// edge here: Lightroom refuses one over 65,000 px (65,000 imported, 65,001 did not), a decode of a long, thin file is
+/// not a memory risk, and such files are read.
+pub const DEFAULT_MAX_PIXELS: u64 = 512 * 1024 * 1024;
 
-/// Default [`DecodeOptions::max_bytes`]: 4 GiB, a 512 MP image at 8 bytes a pixel (RGBA, 16 bits).
+/// Default [`DecodeOptions::max_bytes`]: 4 GiB, a 512 × 2^20 pixel image at 8 bytes a pixel (RGBA, 16 bits).
 pub const DEFAULT_MAX_BYTES: u64 = 4 << 30;
 
 fn default_max_bytes() -> u64 {
@@ -306,6 +341,35 @@ fn check_has_pixels(format: Format, image: &Rgb32f) -> Result<()> {
         return Err(Error::Malformed(format, "image has no pixels".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod too_large_tests {
+    use super::*;
+
+    /// The refusal says how big the image is and, past the limit, what the limit is (issue #1477).
+    /// 23171 × 23171 is the smallest square over 512 × 2^20 pixels; 17070 × 30092 (513.7 MP, the
+    /// scan of #1477) is now under it, so a refusal of it can only be a decoder budget or memory.
+    #[test]
+    fn the_message_names_the_size_and_the_limit() {
+        let over = Error::TooLarge(23171, 23171).to_string();
+        assert!(over.contains("23171×23171") && over.contains("536,895,241 pixels") && over.contains("the limit is 536,870,912"), "{over}");
+        let under = Error::TooLarge(17070, 30092).to_string();
+        assert!(under.contains("17070×30092") && under.contains("513.7 MP") && !under.contains("limit"), "{under}");
+        let budget = Error::TooLarge(64, 64).to_string();
+        assert!(budget.contains("64×64") && !budget.contains("limit"), "{budget}");
+        // at the limit exactly is a budget refusal, one pixel over names the limit
+        assert!(!Error::TooLarge(16384, 32768).to_string().contains("limit"));
+        assert!(Error::TooLarge(DEFAULT_MAX_PIXELS + 1, 1).to_string().contains("the limit is"));
+        assert_eq!(
+            (grouped(0), grouped(999), grouped(1000), grouped(u64::MAX)),
+            ("0".into(), "999".into(), "1,000".into(), "18,446,744,073,709,551,615".into())
+        );
+        // hostile sizes neither overflow nor panic
+        for (w, h) in [(u64::MAX, u64::MAX), (u64::MAX, 0), (0, 0)] {
+            assert!(Error::TooLarge(w, h).to_string().starts_with("image too large"));
+        }
+    }
 }
 
 #[cfg(test)]

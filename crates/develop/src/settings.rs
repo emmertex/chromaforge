@@ -1805,6 +1805,21 @@ pub struct LocalAdjustments {
     pub grade_global_hue: f64,
     pub grade_global_sat: f64,
     pub grade_global_lum: f64,
+    /// Recolor (0..100; 0 = off): the area's main colour takes `recolor_r/g/b` (sRGB-encoded,
+    /// 0..1) and keeps its own shading, folds and light. Only the dominant colour changes;
+    /// `recolor_range` (−100..100) widens or narrows which hues count as it. Ported from upstream
+    /// (`feat/83-recolour`); see `lcc_pipeline::recolor`.
+    pub recolor: f64,
+    /// The Recolor target colour (sRGB-encoded, 0..1).
+    pub recolor_r: f64,
+    pub recolor_g: f64,
+    pub recolor_b: f64,
+    /// The Recolor hue window (−100..100; 0 = the default; each 50 doubles or halves it).
+    pub recolor_range: f64,
+    /// The colour to replace (sRGB-encoded, 0..1; all 0 = automatic: the area's main colour).
+    pub recolor_from_r: f64,
+    pub recolor_from_g: f64,
+    pub recolor_from_b: f64,
     /// Local vignette/grain are not in Lightroom; we keep the struct extensible.
     pub amount: f64,
 }
@@ -1820,14 +1835,19 @@ pub const LEGACY_LOCAL_HUE_DEG: f64 = 0.6 * 180.0 / std::f64::consts::PI / 100.0
 pub const LOCAL_HUE_STANDARD: f64 = 100.0 * LEGACY_LOCAL_HUE_DEG;
 
 macro_rules! local_wire {
-    ($($f:ident),* $(,)?) => {
+    ($($f:ident),* $(,)? ; $($z:ident),* $(,)?) => {
         /// How [`LocalAdjustments`] is stored. `hue_deg` marks a Hue in degrees; without it (catalogs,
         /// presets and effect files from before the change, partial JSON) `hue` is the old −100..100
-        /// slider value and converts to the same angle in degrees.
+        /// slider value and converts to the same angle in degrees. The `$z` fields (Recolor) are
+        /// left out while they are 0, so edits without Recolor save byte for byte as before.
         #[derive(Clone, Copy, Serialize, Deserialize)]
         #[serde(default)]
         pub struct LocalAdjustmentsWire {
             $($f: f64,)*
+            $(
+                #[serde(skip_serializing_if = "wire_is_zero")]
+                $z: f64,
+            )*
             hue: f64,
             hue_deg: bool,
         }
@@ -1835,23 +1855,28 @@ macro_rules! local_wire {
         impl Default for LocalAdjustmentsWire {
             fn default() -> Self {
                 let d = LocalAdjustments::default();
-                Self { $($f: d.$f,)* hue: d.hue, hue_deg: false }
+                Self { $($f: d.$f,)* $($z: d.$z,)* hue: d.hue, hue_deg: false }
             }
         }
 
         impl From<LocalAdjustmentsWire> for LocalAdjustments {
             fn from(w: LocalAdjustmentsWire) -> Self {
                 let hue = if w.hue_deg { w.hue } else { w.hue * LEGACY_LOCAL_HUE_DEG };
-                Self { $($f: w.$f,)* hue }
+                Self { $($f: w.$f,)* $($z: w.$z,)* hue }
             }
         }
 
         impl From<LocalAdjustments> for LocalAdjustmentsWire {
             fn from(a: LocalAdjustments) -> Self {
-                Self { $($f: a.$f,)* hue: a.hue, hue_deg: true }
+                Self { $($f: a.$f,)* $($z: a.$z,)* hue: a.hue, hue_deg: true }
             }
         }
     };
+}
+
+/// A wire field that stays out of the JSON while it is 0 (`local_wire!`'s second group).
+fn wire_is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 local_wire!(
@@ -1885,7 +1910,15 @@ local_wire!(
     grade_global_hue,
     grade_global_sat,
     grade_global_lum,
-    amount,
+    amount;
+    recolor,
+    recolor_r,
+    recolor_g,
+    recolor_b,
+    recolor_range,
+    recolor_from_r,
+    recolor_from_g,
+    recolor_from_b,
 );
 
 impl LocalAdjustments {
@@ -1935,6 +1968,14 @@ impl Default for LocalAdjustments {
             grade_global_hue: 0.0,
             grade_global_sat: 0.0,
             grade_global_lum: 0.0,
+            recolor: 0.0,
+            recolor_r: 0.0,
+            recolor_g: 0.0,
+            recolor_b: 0.0,
+            recolor_range: 0.0,
+            recolor_from_r: 0.0,
+            recolor_from_g: 0.0,
+            recolor_from_b: 0.0,
             amount: 100.0,
         }
     }

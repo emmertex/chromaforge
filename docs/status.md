@@ -1,10 +1,6 @@
 # Status
 
-<<<<<<< HEAD
 > **Last updated:** 2026-11-25 · **Change:** patch (checklist 631 rows after Glow); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
-=======
-> **Last updated:** 2026-11-25 · **Change:** patch (Metrics: Export screen preview render); minor (HDR export: gain map AVIF and JPEG XL, `hdrMode: gainMap`; reader side shows the SDR base); patch (Metrics: 24 MP HDR export encodes); patch (Metrics: first `cargo xtask bench` budget run, 4.4); patch (Metrics: 100k-grid wheel-scroll frame, plan 4.8); major (created: tracked replacement for the gitignored `plan/STATUS.md`); minor (Metrics: draft NR drag, task 4.5); minor (Metrics: CPU-only stages, plan 4.6)
->>>>>>> origin/main
 
 The one tracked place for where Chromaforge stands right now. Agents read it first (see `AGENTS.md`, *Session start*)
 and update it in the commit that changes what it says. The detailed phased plan lives in the gitignored
@@ -21,7 +17,7 @@ and update it in the commit that changes what it says. The detailed phased plan 
 | 2 | Never-crash hardening: fuzz targets, checked indexing, allocation caps, SIL round trips | landed (#1328, #1331, #1334, #1337, #1339, #1340); model-reference job in progress |
 | 3 | Camera colour, CR3 variants, lens data, per-model verification | next |
 
-Checklist breadth: **90.3%** of 631 in-scope rows (P0 98.0%, P1 94.8%, P2 80.3%), from `cargo xtask parity`.
+Checklist breadth: **91.2%** of 634 in-scope rows (P0 98.0%, P1 94.8%, P2 82.7%), from `cargo xtask parity`.
 "Ready for real work" stays an estimate of about 60% (see [target-app-parity.md](target-app-parity.md)).
 
 ## Next task
