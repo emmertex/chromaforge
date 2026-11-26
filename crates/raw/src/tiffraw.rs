@@ -317,8 +317,11 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
         }
         comp::JPEG => {
             // Blackmagic's lossy CinemaDNG DCT-codes (SOF0/SOF1, 12-bit) its tiles under this compression code too
-            let limit = n.saturating_mul(2).max(1 << 16);
-            let f = if dctjpeg::is_dct(src) { dctjpeg::decode(src, limit)? } else { ljpeg::decode(src, limit)? };
+            // A lossless frame may hold at most twice the tile's samples, with no floor: a 65,536-sample floor let each
+            // of many tiny tiles decode (and keep) a frame far larger than the tile budget counts (adapted from
+            // craft-libs #2232). DCT tiles keep the floor: they are padded to whole MCUs.
+            let f =
+                if dctjpeg::is_dct(src) { dctjpeg::decode(src, n.saturating_mul(2).max(1 << 16))? } else { ljpeg::decode(src, n.saturating_mul(2))? };
             if f.data.len() < n {
                 // Some writers encode edge tiles smaller than nominal: accept a frame that covers the rows inside the image.
                 if f.data.is_empty() || f.data.len() % (cw * cpp) != 0 || f.data.len() / (cw * cpp) < vh {
@@ -327,15 +330,19 @@ fn decode_chunk(data: &[u8], info: &ImageInfo, c: &Chunk, order: ByteOrder, pack
             }
             let mut v = f.data;
             v.resize(n, 0);
+            // a larger frame's surplus is not kept: the tile holds what the decode budget counts for it
+            v.shrink_to_fit();
             Ok(ChunkPx::U16(v))
         }
         comp::LOSSY_JPEG => {
             // lossy DNG: each chunk is a baseline (DCT) JPEG of 8-bit samples. Its frame is refused from the header
             // when it holds more than a few times the chunk rounded up to whole 16-pixel MCUs (a last strip may be
             // coded at the full RowsPerStrip, an image's only strip at a RowsPerStrip taller than the image), before
-            // the output it declares is allocated (upstream issue #2560).
+            // the output it declares is allocated (upstream issue #2560). The bound is the chunk's own rows, never the
+            // whole image's: every strip of a tall image could otherwise declare a frame of about four images, and
+            // many strips sharing one payload decode it each in parallel (adapted from craft-libs #1884).
             let mcu = |v: usize| v.div_ceil(16).saturating_mul(16);
-            let rows = mcu(ch.max(info.chunk_size().1.min(info.height) as usize).max(info.height as usize));
+            let rows = mcu(ch.max(info.chunk_size().1.min(info.height) as usize));
             let cap = mcu(cw).saturating_mul(rows).saturating_mul(LOSSY_FRAME_SLACK).saturating_mul(cpp.max(1));
             let (px, jw, jh, jc) = lossy_jpeg_limited(src, cpp, 1 << 16, Some(cap))?;
             let mut v = vec![0u16; n];
@@ -530,6 +537,13 @@ fn unpack_chunk(
                 }
             } else {
                 undo_diff_u16(row, cpp * factor);
+                // packed samples store each difference modulo 2^bits: the sum wraps there too, not at 2^16, or a
+                // negative step comes back 2^bits too high (adapted from craft-libs #1300). Samples in 16-bit words
+                // keep the 16-bit wrap: their values may exceed the declared depth.
+                if kind >= 2 && bits < 16 {
+                    let mask = ((1u32 << bits) - 1) as u16;
+                    row.iter_mut().for_each(|v| *v &= mask);
+                }
             }
         }
     }
@@ -642,6 +656,46 @@ mod lossy_tests {
         tile[sof + 7..sof + 9].copy_from_slice(&4096u16.to_be_bytes());
         let r = read_image(&tile, &info(tile.len()), ByteOrder::Little, Packing::Msb);
         assert!(matches!(r, Err(RawError::Limit(_))), "{:?}", r.map(|_| ()));
+    }
+
+    /// craft-libs #1884: a 64×64 RGB image in four 16-row lossy strips that all point at one JPEG of 64×200. Each
+    /// strip's frame may hold a few times its own MCU-rounded rows, not a few times the whole image; the same layout
+    /// with real 64×16 strips decodes.
+    #[test]
+    fn lossy_strips_are_bounded_by_their_own_rows() {
+        let jpeg = |w: u16, h: u16| {
+            let px: Vec<u8> = (0..usize::from(w) * usize::from(h)).flat_map(|i| [40u8, (i % 64 * 3) as u8, 200]).collect();
+            let mut out = Vec::new();
+            jpeg_encoder::Encoder::new(&mut out, 90).encode(&px, w, h, jpeg_encoder::ColorType::Rgb).unwrap();
+            out
+        };
+        let info = |offsets: Vec<u64>, counts: Vec<u64>| ImageInfo {
+            width: 64,
+            height: 64,
+            bits_per_sample: vec![8, 8, 8],
+            samples_per_pixel: 3,
+            compression: comp::LOSSY_JPEG,
+            photometric: 34892,
+            planar: 1,
+            predictor: 1,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Strips { rows_per_strip: 16 },
+            offsets,
+            byte_counts: counts,
+        };
+        let tall = jpeg(64, 200);
+        let r = read_image(&tall, &info(vec![0; 4], vec![tall.len() as u64; 4]), ByteOrder::Little, Packing::Msb);
+        assert!(matches!(r, Err(RawError::Limit(_))), "{:?}", r.map(|_| ()));
+        let strip = jpeg(64, 16);
+        let mut file = Vec::new();
+        let mut offsets = Vec::new();
+        for _ in 0..4 {
+            offsets.push(file.len() as u64);
+            file.extend_from_slice(&strip);
+        }
+        let ok = read_image(&file, &info(offsets, vec![strip.len() as u64; 4]), ByteOrder::Little, Packing::Msb);
+        assert!(matches!(ok, Ok(RawData::U16(ref v)) if v.len() == 64 * 64 * 3), "{:?}", ok.map(|_| ()));
     }
 
     fn strip_info(compression: u16, offsets: Vec<u64>, byte_counts: Vec<u64>) -> ImageInfo {
@@ -820,6 +874,36 @@ mod lossy_tests {
     /// the nominal chunk, or when the stream stops short of the rows inside the image; a fully
     /// covered flat tile still decodes.
     #[test]
+    fn predictor_two_wraps_at_the_packed_bit_depth() {
+        // craft-libs #1300: a 12-bit Msb-packed deflated strip with horizontal differencing; a falling row stores
+        // its negative steps modulo 4096
+        let row = [4000u16, 10, 3000, 5, 4095, 0, 1, 2];
+        let diffs: Vec<u16> = row.iter().enumerate().map(|(i, &v)| if i == 0 { v } else { v.wrapping_sub(row[i - 1]) & 0xfff }).collect();
+        let mut packed = Vec::new();
+        for pair in diffs.chunks(2) {
+            let (a, b) = (pair[0], pair[1]);
+            packed.extend([(a >> 4) as u8, (((a & 0xf) << 4) | (b >> 8)) as u8, b as u8]);
+        }
+        let zlib = miniz_oxide::deflate::compress_to_vec_zlib(&packed, 6);
+        let info = ImageInfo {
+            width: 8,
+            height: 1,
+            bits_per_sample: vec![12],
+            samples_per_pixel: 1,
+            compression: comp::ADOBE_DEFLATE,
+            photometric: 32803,
+            planar: 1,
+            predictor: 2,
+            sample_format: 1,
+            new_subfile_type: 0,
+            layout: Layout::Strips { rows_per_strip: 1 },
+            offsets: vec![0],
+            byte_counts: vec![zlib.len() as u64],
+        };
+        assert_eq!(read_image(&zlib, &info, ByteOrder::Little, Packing::Msb).unwrap(), RawData::U16(row.to_vec()));
+    }
+
+    #[test]
     fn a_short_or_undercovering_deflated_tile_is_refused() {
         let info = |byte_counts: u64| ImageInfo {
             width: 512,
@@ -857,6 +941,20 @@ mod budget_tests {
     use super::*;
     use lcc_tiff::image::Layout;
     use lcc_tiff::tags::photometric;
+
+    /// craft-libs #2232: 1,024 tiles of 2×2 all pointing at one lossless JPEG of 128×128×4 samples. With a
+    /// 65,536-sample floor on the decode limit each tile decoded and kept a frame of 65,536 samples that the decode
+    /// grouping counted as 8 bytes; a tile may now decode at most twice its own samples.
+    #[test]
+    fn tiny_tiles_with_a_large_frame_are_refused() {
+        let tile = ljpeg::encode(&vec![300u16; 128 * 128 * 4], 128, 128, 4, 12, 1, 0);
+        let info = ImageInfo { bits_per_sample: vec![12], byte_counts: vec![tile.len() as u64; 1024], ..aliased(64, 64, 2, 0) };
+        assert!(read_image(&tile, &info, ByteOrder::Little, Packing::Msb).is_err());
+        // a frame of the tile's own size still decodes
+        let fits = ljpeg::encode(&[300u16; 4], 2, 2, 1, 12, 1, 0);
+        let info = ImageInfo { bits_per_sample: vec![12], byte_counts: vec![fits.len() as u64; 4], ..aliased(4, 4, 2, 0) };
+        assert_eq!(read_image(&fits, &info, ByteOrder::Little, Packing::Msb).unwrap(), RawData::U16(vec![300; 4 * 4]));
+    }
 
     /// `w`×`h` CFA image in `tile`×`tile` lossless-JPEG tiles that all point at the same `payload` bytes at offset 0.
     fn aliased(w: u32, h: u32, tile: u32, payload: u64) -> ImageInfo {

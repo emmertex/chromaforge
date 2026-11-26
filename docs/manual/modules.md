@@ -34,11 +34,12 @@ text, the shot-info strip with the pixel size included), `G` returns to the grid
 sidebar is there as a panel to show from any panel's menu. Panels: Light, Color, Effects, Detail, Optics, Geometry,
 Calibration (`Cmd+1`…`Cmd+5` jump to sections), plus the tools above them: Crop (`R`), Remove (`Q`), Red Eye,
 Masking (`Shift+W`: brush `K`, linear `M`, radial `Shift+M`, colour and luminance range, AI
-subject/sky/background/object masks). Presets (`Shift+P`), profiles, snapshots, history and versions (`Shift+V`);
+subject/sky/background/object masks). Presets (`Shift+P`; adaptive presets carry masks recomputed per photo), profiles, snapshots, history and versions (`Shift+V`);
 before/after (`Y`, `\`); clipping (`J`); soft proofing (`S`).
 Show Before (`\`) and Original Photo are momentary and never saved. Delete, `X` and the tool keys act only on a tool that
 is on screen. Calibration's primary Saturation is fixed in process V9 (older photos keep their look). From process V10 the Tone Curve works in a fixed wide colour space (ProPhoto primaries) before the export conversion, so channel curves act as in Lightroom and don't depend on the export space. Create Camera
-Profile accepts a ColorChecker 24 or SpyderCHECKR 24 photo.
+Profile accepts a ColorChecker 24 or SpyderCHECKR 24 photo. Create Camera Matching Look from Raw + JPEG (Photo → Develop
+Settings) fits the camera's JPEG rendering from selected raw + JPEG pairs into a profile in the Camera Matching group.
 Copy and paste settings with `Cmd+C`/`Cmd+V` (`Cmd+Shift+C` to choose which). Photo → Photo Merge makes HDR and
 panorama DNGs. Every slider is a develop control: `<cli> controls` lists ids and ranges.
 
@@ -59,7 +60,7 @@ made.
 - **Custom** — one group per profile of the sliders you pick, in the order you set (↑ ↓), shown first in the panel. A
   slider in it moves there: it isn't drawn again in its own group.
 - **Groups** — switch any group off, or open it to hide single sliders and options (the Auto · B&W | HDR row, the
-  white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style…).
+  white balance selector, Contrast Mode, AI Denoise, Remove Hot Pixels, the vignette style, the glow composite…).
 
 Profiles are saved with the app's settings. A profile that names a slider a later version no longer has keeps the
 rest. For scripts and agents: `view.toolProfile {id}` picks one (without an id it lists them), and
@@ -75,7 +76,9 @@ the photos in view.
 - Drag photos from the filmstrip onto the map to geotag them; drag pins to move them (`map.geotag`).
 - Load a GPX, KML or GeoJSON track log and Auto-Tag photos by capture time, with a camera-clock offset
   (`map.track`, `map.trackOffset`, `photo.autoTagTracklog`).
-- Saved locations with a radius; a **private** location keeps its photos' GPS out of every export.
+- Saved locations with a radius; a **private** location keeps its photos' GPS out of every export. Drag a location's
+  centre to move it and the handle on its edge to resize it; right-click ▸ **New Location Here…** or **Edit…** opens the
+  **Edit Location** panel (name, radius, private).
 - Reverse geocoding is opt-in: offline from a downloaded GeoNames cities list (`map.geonamesDownload`, CC-BY 4.0) or
   online from a Nominatim-compatible server after consent. Nothing is sent without asking.
 - Tiles are cached on disk with a size limit; the app never bulk-prefetches.

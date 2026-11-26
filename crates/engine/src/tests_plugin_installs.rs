@@ -723,15 +723,35 @@ fn the_update_commands_check_ask_and_install() {
 
     let updates = |s: &mut Session| listed(s, id).unwrap()["updates"].clone();
     assert_eq!((updates(&mut s)["check"].clone(), updates(&mut s)["available"].clone()), (json!(false), json!(true)), "{}", updates(&mut s));
+    assert!(updates(&mut s)["checkedAgo"].is_null(), "no check yet: nothing to say");
     let none = s.execute("plugin.checkUpdates", &json!({})).unwrap();
     assert_eq!(none["checked"], json!([]), "off by default: nothing is checked");
     s.execute("plugin.setUpdateCheck", &json!({"id": id, "on": true})).unwrap();
+    let check_lines = || {
+        let g = crate::cmd::plugins::manager();
+        g.as_ref().unwrap().get(id).unwrap().log.iter().filter(|l| l.starts_with("update check:")).count()
+    };
+    let before = check_lines();
     let checked = s.execute("plugin.checkUpdates", &json!({"due": true})).unwrap();
     assert_eq!(checked["checked"], json!([id]), "{checked}");
     let offer = &checked["plugins"][0]["updates"]["offer"];
     assert_eq!((&offer["version"], &offer["notes"], &offer["adds"]), (&json!("2.0.0"), &json!("Writes captions now."), &json!([])), "{checked}");
+    assert_eq!(check_lines(), before + 1, "the check that ran logged one line");
     assert_eq!(s.execute("plugin.checkUpdates", &json!({"due": true})).unwrap()["checked"], json!([]), "within the day: not again");
+    assert_eq!(check_lines(), before + 1, "the check that wasn't due logged nothing");
     assert_eq!(updates(&mut s)["offer"]["version"], "2.0.0", "plugin.list shows the result");
+    let ago = |v: &Value| v["checkedAgo"].as_i64();
+    assert!((0..60).contains(&ago(&updates(&mut s)).unwrap()), "seconds since the check: {}", updates(&mut s));
+    assert!((0..60).contains(&ago(&checked["plugins"][0]["updates"]).unwrap()), "the command's own answer too: {checked}");
+    // a check stamped in the future (the clock moved back) reads as a negative number of seconds
+    {
+        let mut g = crate::cmd::plugins::manager();
+        let m = g.as_mut().unwrap();
+        let c = m.update_checks(Some(id), None).unwrap();
+        let feed = served.0.lock().unwrap().get(feed_url).cloned().unwrap();
+        m.record_check(&c[0], chrono::Utc::now().timestamp() + 3600, Ok(feed)).unwrap();
+    }
+    assert!(ago(&updates(&mut s)).unwrap() < -3500, "{}", updates(&mut s));
 
     let asked = s.execute("plugin.update", &json!({"id": id})).unwrap();
     assert_eq!((&asked["updated"], &asked["undeclared"]), (&json!(false), &json!(["metadataWrite"])), "{asked}");

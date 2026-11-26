@@ -240,6 +240,10 @@ fn cancel_does_nothing() {
 /// An empty library has nothing to merge with: the window opens on Merge.
 #[test]
 fn an_empty_library_opens_the_window_on_merge() {
+    if lcc_engine::fonts::BUILD_LANGUAGE.is_some() {
+        lcc_testkit::skip!(Fonts, "a single-language build offers only its language and English");
+        return;
+    }
     let f = Fixture::new("empty");
     let mut h = f.app(true);
     let r = h.app.run("file.importLightroom", json!({"path": f.lrcat()})).unwrap();
@@ -329,7 +333,7 @@ fn a_folder_that_isnt_empty_is_refused_and_the_window_stays() {
     }
     click(&mut h, "button:dialogOk");
     assert!(destination(&h).is_some(), "the window stays to be corrected");
-    let toast = h.app.ui.toast().cloned().map(|t| t.0).unwrap_or_default();
+    let toast = h.app.ui.toast().cloned().map(|t| t.text).unwrap_or_default();
     assert!(toast.contains("isn't empty"), "{toast}");
     assert_eq!(open_dir(&h), Some(f.lib.clone()));
     assert!(h.app.lightroom.is_none() && h.app.lightroom_last.is_none());

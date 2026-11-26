@@ -296,13 +296,10 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
 
     let mn = maker_note(bytes, &tiff);
     let ip = mn.as_ref().and_then(|m| sub_ifd(bytes, m, IMAGE_PROCESSING));
-    let active = match ip.as_ref().map(|i| CROP.map(|tag| i.u64(tag).map(|v| v as usize))) {
-        // checked: the tags are file data; `x + cw` on a hostile value would wrap past the bounds
-        Some([Some(x), Some(y), Some(cw), Some(ch)])
-            if cw > 0 && ch > 0 && x.checked_add(cw).is_some_and(|end| end <= w) && y.checked_add(ch).is_some_and(|end| end <= h) =>
-        {
-            Rect::new(x, y, cw, ch)
-        }
+    // The crop is file data: a value past `usize` (LONG8 on a 32-bit target) or outside the frame keeps the whole
+    // frame, never a narrowed or wrapped rectangle (adapted from craft-libs #2380).
+    let active = match ip.as_ref().map(|i| CROP.map(|tag| i.u64(tag).and_then(|v| usize::try_from(v).ok()))) {
+        Some([Some(x), Some(y), Some(cw), Some(ch)]) if cw > 0 && ch > 0 && x <= w && y <= h && cw <= w - x && ch <= h - y => Rect::new(x, y, cw, ch),
         _ => Rect::new(0, 0, w, h),
     };
     let cfa = stated.unwrap_or_else(|| cfa_from_data(samples, w, active));
@@ -494,8 +491,8 @@ pub(crate) fn preview(bytes: &[u8]) -> Option<&[u8]> {
     let tiff = Tiff::parse(bytes).ok()?;
     let mn = maker_note(bytes, &tiff)?;
     let cs = sub_ifd(bytes, &mn, CAMERA_SETTINGS)?;
-    let start = mn.base.checked_add(cs.u64(PREVIEW_START)?)? as usize;
-    let len = cs.u64(PREVIEW_LENGTH)? as usize;
+    let start = usize::try_from(mn.base.checked_add(cs.u64(PREVIEW_START)?)?).ok()?;
+    let len = usize::try_from(cs.u64(PREVIEW_LENGTH)?).ok()?;
     bytes.get(start..start.checked_add(len)?.min(bytes.len()))
 }
 
@@ -577,6 +574,40 @@ mod tests {
     /// SHORT values, little-endian.
     fn shorts(v: &[u16]) -> Vec<u8> {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
+    }
+
+    /// LONG8 crop values past `u32` never become a small, plausible crop on a 32-bit target (craft-libs #2380): a
+    /// regression guard on 64-bit, where the bounds check already refused them.
+    #[test]
+    fn maker_note_crop_does_not_narrow_on_32_bit_targets() {
+        let file = |crop: [u64; 4]| {
+            let mut note = b"OLYMPUS II ".to_vec();
+            note.extend_from_slice(&1u16.to_le_bytes());
+            note.extend_from_slice(&IMAGE_PROCESSING.to_le_bytes());
+            note.extend_from_slice(&4u16.to_le_bytes());
+            note.extend_from_slice(&1u32.to_le_bytes());
+            note.extend_from_slice(&30u32.to_le_bytes());
+            note.extend_from_slice(&0u32.to_le_bytes());
+            note.extend_from_slice(&4u16.to_le_bytes());
+            for (i, tag) in CROP.iter().enumerate() {
+                note.extend_from_slice(&tag.to_le_bytes());
+                note.extend_from_slice(&16u16.to_le_bytes()); // LONG8
+                note.extend_from_slice(&1u32.to_le_bytes());
+                note.extend_from_slice(&(84u32 + i as u32 * 8).to_le_bytes());
+            }
+            note.extend_from_slice(&0u32.to_le_bytes());
+            note.extend(crop.into_iter().flat_map(u64::to_le_bytes));
+            orf_with_note(20, 4, 16, vec![0; 160], Some(RGGB), Some(note))
+        };
+        let crop = [1, 1, 18, 2];
+        assert_eq!(crate::probe_info(&file(crop)).unwrap().active_area, Rect::new(1, 1, 18, 2));
+        for i in 0..4 {
+            let mut hostile = crop;
+            hostile[i] += 1u64 << 32;
+            assert_eq!(crate::probe_info(&file(hostile)).unwrap().active_area, Rect::new(0, 0, 20, 4), "crop field {i}");
+        }
+        // out of the frame, without any narrowing: still the whole frame
+        assert_eq!(crate::probe_info(&file([4, 0, 18, 2])).unwrap().active_area, Rect::new(0, 0, 20, 4));
     }
 
     /// A 16 × 4 ORF of 12-bit samples in 16-bit words with an [`olymp_note`] of `entries`, decoded.

@@ -24,12 +24,14 @@ fn xml_legal(s: &str) -> std::borrow::Cow<'_, str> {
     if s.chars().all(xml_char) { std::borrow::Cow::Borrowed(s) } else { std::borrow::Cow::Owned(s.chars().filter(|c| xml_char(*c)).collect()) }
 }
 
+// A literal carriage return reads back as a line feed (XML end-of-line handling), so it is written as `&#13;`
+// (adapted from craft-libs #1042, from upstream #4119).
 fn escape(s: &str) -> String {
-    xml_escape(xml_legal(s)).into_owned()
+    xml_escape(xml_legal(s)).replace('\r', "&#13;")
 }
 
 fn partial_escape(s: &str) -> String {
-    xml_partial_escape(xml_legal(s)).into_owned()
+    xml_partial_escape(xml_legal(s)).replace('\r', "&#13;")
 }
 use quick_xml::events::Event;
 use std::collections::BTreeMap;
@@ -487,9 +489,9 @@ fn collect_property(p: &Node, prefix: &str, props: &mut BTreeMap<String, Vec<Str
         return;
     }
     if p.attr("rdf:parseType") == Some("Resource") {
-        for c in &p.children {
-            collect_property(c, &struct_prefix, props, budget);
-        }
+        // the struct's fields may be attributes of the property as well as elements, as in an rdf:Description
+        // (adapted from craft-libs #967, from upstream #1226)
+        collect_description(p, &struct_prefix, props, budget);
         return;
     }
     if let Some(d) = p.children.iter().find(|c| c.name == "rdf:Description") {
@@ -1840,6 +1842,33 @@ mod tests {
         assert!(plugin_fields(&parse_xmp(&write_xmp_ext(&Metadata::default(), &[], &[])).unwrap()).is_empty());
     }
 
+    /// craft-libs #967 (upstream #1226): a `rdf:parseType="Resource"` struct's attribute fields flatten like an
+    /// rdf:Description's, in all four equivalent forms.
+    #[test]
+    fn resource_struct_attributes_and_elements_flatten_like_description_fields() {
+        let forms = [
+            r#"<c:Parameters rdf:parseType="Resource" c:ConvertToGrayscale="True"><c:Version>1</c:Version></c:Parameters>"#,
+            r#"<c:Parameters><rdf:Description c:ConvertToGrayscale="True"><c:Version>1</c:Version></rdf:Description></c:Parameters>"#,
+            r#"<c:Parameters rdf:parseType="Resource"><c:ConvertToGrayscale>True</c:ConvertToGrayscale><c:Version>1</c:Version></c:Parameters>"#,
+            r#"<c:Parameters rdf:parseType="Resource" c:ConvertToGrayscale="True" c:Version="1"/>"#,
+        ];
+        let mut previous = None;
+        for form in forms {
+            let xml = format!(
+                r#"<rdf:Description xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:c="http://ns.adobe.com/camera-raw-settings/1.0/"><c:Look rdf:parseType="Resource">{form}</c:Look></rdf:Description>"#
+            );
+            let packet = parse_xmp(&xml).unwrap();
+            assert_eq!(packet.properties["crs:Look/crs:Parameters/crs:ConvertToGrayscale"], vec!["True"], "{form}");
+            assert_eq!(packet.properties["crs:Look/crs:Parameters/crs:Version"], vec!["1"], "{form}");
+            assert!(packet.properties.keys().all(|key| !key.contains("rdf:")), "{form}");
+            if let Some((properties, values)) = previous {
+                assert_eq!(packet.properties, properties);
+                assert_eq!(packet.values, values);
+            }
+            previous = Some((packet.properties, packet.values));
+        }
+    }
+
     #[test]
     fn writer_drops_characters_xml_1_0_forbids() {
         let bad = "a\u{1}b\u{0}c\u{FFFE}d\u{FFFF}e\u{1F}\tf\ng\rh";
@@ -1848,7 +1877,10 @@ mod tests {
         let illegal: Vec<char> =
             x.chars().filter(|&c| (c < '\u{20}' && !matches!(c, '\t' | '\n' | '\r')) || c == '\u{FFFE}' || c == '\u{FFFF}').collect();
         assert!(illegal.is_empty(), "illegal XML chars in output: {illegal:?}");
-        assert!(x.contains(">abcde\tf\ng\rh<"), "allowed characters must survive: {x}");
+        assert!(x.contains(">abcde\tf\ng&#13;h<"), "allowed characters must survive: {x}");
+        // a carriage return survives the round trip: a literal one would read back as a line feed (craft-libs #1042)
+        let back = parse_xmp(&x).unwrap();
+        assert!(back.properties.values().flatten().any(|v| v == "abcde\tf\ng\rh"), "{:?}", back.properties);
     }
 
     #[test]

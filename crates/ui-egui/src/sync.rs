@@ -482,6 +482,6 @@ pub fn poll_run(app: &mut LccApp, ctx: &egui::Context) {
     if not_saved.is_empty() && !crashed {
         app.toast(ctx, format!("{name}: {text}"));
     } else {
-        app.toast_for(ctx, format!("{name}: {text}"), 12.0);
+        app.toast_error(ctx, format!("{name}: {text}"));
     }
 }

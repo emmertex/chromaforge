@@ -65,6 +65,47 @@ Clear… and Restart… ask first, in place. The scan's activity row ("Finding f
 (`activity.list`): a pause button (resume while paused, the row staying with "Paused") and a gear that opens Settings ▸
 Faces. `activity.pause {id}` runs the same commands.
 
+## Face maintenance
+
+**Library ▸ Faces ▸ Face Maintenance…** starts a scoped background pass; right-click a catalog folder and choose **Scan Folder for
+Faces…** to prefill that folder. The dialog accepts the visible photos, the selection, one or more filesystem folders, or
+one or more collections. Folder scope includes subfolders by default and can be limited to direct children; that toggle
+applies only to filesystem folders. Collection sets always include nested collections, and selecting multiple regular or
+smart collections unions their photos. Only photos already in the catalog are included, and folder membership follows
+each photo's current source path.
+
+The actions are:
+
+- **Detect and Recognize**: search unsearched photos that have no face regions, then embed existing and newly found
+  boxes that do not yet have embeddings.
+- **Recognize Existing Faces**: embed existing face boxes that do not yet have an embedding; does not run the detector.
+- **Scan New Items**: process only photos not yet marked as searched: detect faces where a photo has no face region and
+  embed any existing face boxes that still need it. Already-searched photos are skipped.
+- **Rebuild All Embeddings** / **Rebuild Named Faces**: forget and recompute the selected model's embeddings for all
+  face regions / named face regions in scope. These do not change names.
+- **Rescan and Merge**: run detection again, even where boxes already exist. **Replace** removes only earlier automatic
+  detections before adding the new ones; **Merge** keeps them. Named, ignored and manually drawn faces, plus non-face
+  regions, are preserved in either mode.
+
+A recognition model is needed for every scan action; reset does not require a model. Detection actions also need the face
+detector model. The progress is a cancellable activity task. `faces.scanStatus` reports the scoped pass,
+`activity.cancel {id: taskId}` stops queued work, and `faces.pause` / `faces.resume` stop or restart new photos from being
+queued; photos already in flight are allowed to finish. The same saved pause setting controls the continuous face scan.
+A cancel may let a small number of already-running photos finish. The CLI and MCP use the
+same engine commands. For example:
+
+```sh
+<cli> run --library DIR faces.maintain mode=detect folder=/Photos/Trip includeSubfolders=true
+<cli> run --library DIR faces.scanStatus
+```
+
+MCP clients can use `cmd_faces_maintain`, `cmd_faces_scanStatus`, `cmd_faces_reset`, or `command_run`.
+
+**Reset All Face Data** is destructive and requires the dialog's confirmation (or `faces.reset {confirmed: true}` from a
+command client). It removes Face and IgnoredFace regions, face names, saved appearance examples, suggestion decisions,
+and recognition indexes, but keeps other region kinds and People role bindings. The continuous face scan is left paused
+so it does not immediately repopulate the reset data; resume it explicitly when you are ready.
+
 ## Downloading a model
 
 **Settings ▸ Faces ▸ Download** (or Library ▸ Detect Faces, which offers it for the detector):
@@ -380,8 +421,20 @@ by its own box.
 
 Recognition suggests a person for a face when that face looks like the ones named with them. Those faces wait in
 **Suggested**, grouped under the person the named faces picked out, the person with the most waiting faces first and each
-person's faces most alike first (`faces.unnamed {bySuggestion: true}`, which adds `groups` to its answer). A group is
-reviewed as a whole:
+person's faces most alike first (`faces.unnamed {bySuggestion: true}`, which adds `groups` to its answer).
+
+Every unnamed face with an embedding is compared with the named ones, not only the faces the view happens to list: the
+comparison runs a slice per call (`budgetMs`) and resumes until it is done, and `scan` of the answer says how many faces
+of the library's were judged and whether that is all of them. That way a face is suggested wherever it falls in the list,
+and its group says how many faces the library has for the person rather than how many came first. `groups` therefore holds
+every suggested face the filter lets through, including pages of faces the list does not show. While the comparison is
+still running the Suggested category says how far it is, rather than presenting what it has found so far as the whole
+answer.
+
+Naming more faces does not empty **Suggested** while the library is compared again: what the last comparison found stays
+on screen, and a suggestion naming a person since renamed or removed is not shown. The count beside **Suggested** comes
+from `groups`, so it is every suggestion the library has within the filter, not only the page the list happens to show.
+A group is reviewed as a whole:
 
 - **✓ Confirm all** (or the **Confirm** button beside them in a group's own heading) names every one of that person's
   suggested faces, in one undo step (`faces.confirmSuggestions`). It names a face what the named faces suggest for it
@@ -399,8 +452,8 @@ name in a group's heading opens their page, where the same faces are offered fac
 
 The decisions are per face region, and the engine applies them before anything is grouped, so a session's decisions show
 at once: a confirmed face is named (and leaves the list), a rejected face moves to **Unknown**, and neither is suggested
-as that person again. The heading over **Suggested** offers to confirm every suggestion on screen at once, in one undo
-step.
+as that person again. The heading over **Suggested** offers to confirm every suggestion at once, in one undo
+step per 5000 faces (a library's suggestions are more than one command takes).
 
 ### Ignored faces
 
@@ -479,7 +532,7 @@ reuses the pictures of its step instead of rendering every face again.
 
 All of this is reachable from the control channel, the CLI and MCP: `faces.models.list`, `faces.models.inspect {path}`,
 `faces.models.install {path, acknowledged: true, activate?}`, `faces.models.download {id, acknowledged: true}` (then `faces.models.downloads`, which also installs what has arrived, and `faces.models.downloadCancel {id}`), `faces.models.remove {id}`, `faces.models.select {id}`,
-`faces.enable {enabled?}`, `faces.detect {ids?, apply?}`, `faces.index {budgetMs?, ids?}`, `faces.pump` (what the app calls every frame), `faces.suggest {ids?, threshold?, margin?}`, `faces.person {name, more?}` (a person's faces and the unnamed faces that look like them), `faces.unnamed {limit?}` (every unnamed face, look-alikes together, with suggested names), `faces.setName {id?, index, name}`, `faces.nameFaces {faces: [{photo, index}], name}` (name many at once, one undo step), `faces.renamePerson {from, to, merge?}` (rename every in-library face of one person, or merge two when `merge` is true, one undo step), `faces.confirmSuggestions {faces}` and `faces.rejectSuggestions {faces}` (the Suggested category's decisions: name the faces what is suggested for them now, one undo step; or keep them unknown and suggest that person no more), `faces.undoSuggestionDecision {faces}` (forget a decision, so the suggestion is back) and `faces.suggestionDecisions {photo?}` (what was decided, a page at a time), and `faces.evaluate`. `faces.unnamed {bySuggestion: true}` also answers `groups`: the suggested faces under the person suggested, the most faces first. Neither a confirmation nor a rejection writes to a photo's sidecar: a confirmation is a name on a face region (catalog only, undoable), a rejection is a line in `people.json`. `acknowledged` must be `true`: the caller has shown the user the terms and the user agreed. Installing makes the model the one in use and switches recognition on unless `activate` is `false`.
+`faces.enable {enabled?}`, `faces.detect {ids?, apply?}`, `faces.index {budgetMs?, ids?}`, `faces.maintain {mode?, scope?, ids?, folder?, folders?, album?, albums?, includeSubfolders?, minScore?, behavior?}`, `faces.scanStatus`, `faces.reset {confirmed: true}`, `faces.pump` (what the app calls every frame), `faces.suggest {ids?, threshold?, margin?}`, `faces.person {name, more?}` (a person's faces and the unnamed faces that look like them), `faces.unnamed {limit?, bySuggestion?, budgetMs?}` (every unnamed face, look-alikes together, with suggested names found across the whole library; `scan` says how far that comparison is), `faces.setName {id?, index, name}`, `faces.nameFaces {faces: [{photo, index}], name}` (name many at once, one undo step), `faces.renamePerson {from, to, merge?}` (rename every in-library face of one person, or merge two when `merge` is true, one undo step), `faces.confirmSuggestions {faces}` and `faces.rejectSuggestions {faces}` (the Suggested category's decisions: name the faces what is suggested for them now, one undo step; or keep them unknown and suggest that person no more), `faces.undoSuggestionDecision {faces}` (forget a decision, so the suggestion is back) and `faces.suggestionDecisions {photo?}` (what was decided, a page at a time), and `faces.evaluate`. `faces.unnamed {bySuggestion: true}` also answers `groups`: the suggested faces under the person suggested, the most faces first. Neither a confirmation nor a rejection writes to a photo's sidecar: a confirmation is a name on a face region (catalog only, undoable), a rejection is a line in `people.json`. `acknowledged` must be `true`: the caller has shown the user the terms and the user agreed. Installing makes the model the one in use and switches recognition on unless `activate` is `false`.
 
 ## Find Blemishes
 

@@ -102,7 +102,7 @@ fn asking_for_a_build_while_one_runs_says_it_waits() {
     assert_eq!(r["queued"], true, "{r}");
     assert_eq!(a.session.preview_queue.len(), 1);
     assert!(a.session.preview_build.as_ref().is_some_and(|b| std::sync::Arc::ptr_eq(b, &running)), "the running build carries on");
-    let toast = a.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = a.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert_eq!(toast, "Queued: it starts when the running preview build finishes");
     // the same again: one waiting, the toast says the same
     a.ui.toasts.clear();

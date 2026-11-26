@@ -172,3 +172,63 @@ fn the_manager_checks_on_open_shows_the_update_and_asks_before_undeclared_groups
     assert!(!granted, "new permissions aren't granted");
     assert!(!shown(&h, "Version 2.0.0 is available"), "the offer goes once installed: {:?}", h.painted_text());
 }
+
+/// The plug-in's page says when its last check ran, whatever it found: nothing before the first
+/// check, "just now" after Check Now on an up-to-date plug-in, the time since for an older one, and
+/// "just now" for a time in the future (a clock that moved back).
+#[test]
+fn the_page_says_when_the_last_check_ran() {
+    let _turn = FETCHER_TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    lcc_engine::cmd::plugins::use_in_memory_manager();
+    let v1 = module("1.0.0", json!({"catalog": true}));
+    let served = Arc::new(Served::default());
+    let entry = json!({"id": ID, "version": "1.0.0", "url": "https://feed.test/ui-v1.wasm", "sha256": sha256(&v1)});
+    served.0.lock().unwrap().insert(FEED.into(), json!({"ui-updates": entry}).to_string().into_bytes());
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(m) = lcc_engine::cmd::plugins::manager().as_mut() {
+                m.set_fetcher(Arc::new(lcc_plugins::updates::Net));
+                let _ = m.uninstall(ID);
+            }
+        }
+    }
+    let _restore = Restore;
+    {
+        let mut g = lcc_engine::cmd::plugins::manager();
+        let m = g.as_mut().unwrap();
+        m.set_fetcher(served.clone());
+        m.install_bytes(&v1, None, false).unwrap();
+    }
+    let app = LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() });
+    let mut h = Headless::new(app, [1200.0, 900.0], 1.0);
+    h.settle(T);
+    let r = h.request("engine.execute", json!({"command": "plugins.page", "params": {"id": ID, "tab": "about", "open": true}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(T);
+    let last = |h: &Headless| h.painted_text().into_iter().find(|t| t.starts_with("Last checked"));
+    assert!(has(&h, &format!("button:pluginCheckUpdates:{ID}")));
+    assert_eq!(last(&h), None, "never checked: no line");
+
+    assert!(h.click_as_user(&format!("button:pluginCheckUpdates:{ID}")));
+    finish(&mut h);
+    assert_eq!(last(&h).as_deref(), Some("Last checked just now"), "{:?}", h.painted_text());
+
+    // a check made earlier, and one stamped in the future
+    let restamp = |h: &mut Headless, at: i64| {
+        {
+            let mut g = lcc_engine::cmd::plugins::manager();
+            let m = g.as_mut().unwrap();
+            let c = m.update_checks(Some(ID), None).unwrap();
+            let feed = served.0.lock().unwrap().get(FEED).cloned().unwrap();
+            m.record_check(&c[0], at, Ok(feed)).unwrap();
+        }
+        let _ = h.request("engine.execute", json!({"command": "plugins.page", "params": {"id": ID, "tab": "about", "open": false}}), T);
+        let _ = h.request("engine.execute", json!({"command": "plugins.page", "params": {"id": ID, "tab": "about", "open": true}}), T);
+        h.settle(T);
+    };
+    restamp(&mut h, chrono::Utc::now().timestamp() - 12 * 60);
+    assert_eq!(last(&h).as_deref(), Some("Last checked 12 minutes ago"), "{:?}", h.painted_text());
+    restamp(&mut h, chrono::Utc::now().timestamp() + 3600);
+    assert_eq!(last(&h).as_deref(), Some("Last checked just now"), "{:?}", h.painted_text());
+}

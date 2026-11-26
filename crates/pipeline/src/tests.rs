@@ -63,6 +63,7 @@ fn directional_sliders() {
     assert!(at("light.blacks", -100.0) < base);
     assert!(at("vignette.amount", -100.0) < base);
     assert!(at("vignette.amount", 100.0) > base);
+    assert!(at("glow.amount", 100.0) > base);
     assert!(at("effects.dehaze", -100.0) != base);
 }
 

@@ -753,6 +753,7 @@ fn general_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             "To hand this editor the original file itself instead (the raw, without a copy: DxO PhotoLab, for example), right-click a photo → Edit In → Open Original in Other Editor (RAW, no copy).",
         ),
     );
+    hint(ui, t, crate::i18n::tr("For more editors, each with its own items in Photo → Edit In, use Photo → Edit In → Edit In Presets…."));
 }
 
 /// A language's name as the picker shows it: its own name (`Deutsch`), or, when no loaded font
@@ -1171,7 +1172,7 @@ fn import_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 && let Some(f) = app.services.pick_folder.as_mut().and_then(|f| f())
                 && let Err(e) = app.run("library.autoImport", json!({"folder": f}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             if d.auto_folder.is_some() && ui.button(crate::i18n::tr("Turn Off")).clicked() {
                 let _ = app.run("library.autoImport", json!({"folder": null}));
@@ -1309,7 +1310,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         if crate::widgets::text_button(ui, "lensDbFolder", "Choose Folder…", false).clicked()
             && let Err(e) = app.run("app.lensDbFolder", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
         if st.field("canDownload") == true {
             let label = if st.field("downloaded") == true { "Update" } else { "Download" };
@@ -1317,7 +1318,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             if b.clicked()
                 && let Err(e) = app.run("lens.db.download", json!({}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
         if running && crate::widgets::text_button(ui, "lensDbCancel", "Cancel", false).clicked() {
@@ -1328,7 +1329,7 @@ fn lens_profiles(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             && crate::widgets::text_button(ui, "lensDbRemove", "Remove", false).clicked()
             && let Err(e) = app.run("lens.db.remove", json!({}))
         {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     });
     match st.field("download").field("state").as_str() {
@@ -1943,7 +1944,7 @@ fn smart_previews(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 };
                 app.toast(ui.ctx(), if failed > 0 { crate::i18n::tr_format!("{msg} ({failed} failed)", failed = failed, msg = msg) } else { msg });
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, crate::i18n::tr("Keep it on a drive with room: smart previews are about 1 MB per photo. The thumbnail cache stays in the catalog."));
@@ -2057,6 +2058,28 @@ fn shared_store(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     );
 }
 
+/// Whether a click in a background window also clicks what is under the pointer or only brings the
+/// window forward: a choice on macOS only, where the platform asks; Windows and Linux always pass
+/// the click on.
+fn background_clicks_row(ui: &mut egui::Ui, t: &Tokens, s: &mut crate::state::AppSettings) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    row(ui, t, crate::i18n::tr("Click through"), |ui| {
+        choices(
+            ui,
+            "settingsBackgroundClicks",
+            &[(true, "Bring to front and click"), (false, "Only bring to front")],
+            &mut s.accept_background_clicks,
+        );
+    });
+    hint(
+        ui,
+        t,
+        crate::i18n::tr("A click in a background window brings it to the front. Choose whether the same click affects the window's contents."),
+    );
+}
+
 fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let system = app.system_theme(ui.ctx());
     let forced = forced_slider_layout(app);
@@ -2117,7 +2140,7 @@ fn interface_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
         ),
     );
     // the overlay that reports every change (and the control surfaces' readout)
-    super::surface_osd::settings_section(app, ui, t);
+    super::surface_osd::settings_section(app, ui, t, false);
 }
 
 /// View ▸ View Options (⌘J), Lightroom Classic's Loupe View tab: whether the info overlay shows and
@@ -2397,6 +2420,15 @@ fn appearance(
         let options = crate::theme::SliderText::ALL.map(|size| (size, size.label()));
         choices(ui, "settingsSliderText", &options, &mut s.slider_text);
     });
+    // issue #1295: a neutral surround for judging colour (also Window ▸ Appearance, the loupe's right-click)
+    row(ui, t, crate::i18n::tr("Loupe background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsLoupeBackground", &options, &mut s.loupe_background);
+    });
+    row(ui, t, crate::i18n::tr("Filmstrip background"), |ui| {
+        let options = crate::theme::CanvasShade::ALL.map(|shade| (shade, shade.label()));
+        choices(ui, "settingsFilmstripBackground", &options, &mut s.filmstrip_background);
+    });
     if rows.control {
         row(ui, t, crate::i18n::tr("Slider control"), |ui| {
             let options = crate::theme::SliderControl::ALL.map(|c| (c, c.label()));
@@ -2405,6 +2437,7 @@ fn appearance(
     }
     // (every slider, pills too)
     hint(ui, t, crate::i18n::tr("Hold Shift for fine control"));
+    background_clicks_row(ui, t, s);
     ui.add_space(2.0);
 }
 

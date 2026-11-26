@@ -462,3 +462,112 @@ fn library_add_leaves_the_user_s_last_undo_step_alone() {
     let v = f.s.execute("photo.inspect", &json!({"id": f.photo.0})).unwrap();
     assert_eq!(v["develop"]["light"]["exposure"], 1.0, "undoing the add keeps the user's edit");
 }
+
+/// `library.remove` moves the photos to Recently Deleted (files untouched), skips ids already
+/// there, fails on an unknown id before anything changes, and undo brings them back.
+#[test]
+fn library_remove_soft_deletes_and_skips_deleted() {
+    let dir = temp_dir("remove");
+    write_png(&dir.join("a.png"), 1, 16, 16);
+    write_png(&dir.join("b.png"), 2, 16, 16);
+    let mut s = Session::new().with_fs();
+    let a = import(&mut s, &dir.join("a.png"));
+    let b = import(&mut s, &dir.join("b.png"));
+    let file_of = |p: PhotoId| match &s.catalog.photo(p).unwrap().source {
+        lcc_catalog::Source::File { path } => path.clone(),
+        _ => panic!("a file"),
+    };
+    let (a_file, b_file) = (file_of(a), file_of(b));
+
+    // unknown id: refused, nothing changes
+    let e = SessionHost(&mut s).library_remove(&json!({"ids": [a.0.to_string(), "999999"]})).unwrap_err();
+    assert!(e.contains("999999"), "{e}");
+    assert!(s.catalog.photo(a).unwrap().in_library());
+
+    // both go to Recently Deleted; one asked again is skipped
+    let r = SessionHost(&mut s).library_remove(&json!({"ids": [a.0.to_string(), b.0.to_string()]})).unwrap();
+    assert_eq!(r, json!({"removed": 2, "skipped": 0}));
+    assert!(!s.catalog.photo(a).unwrap().in_library());
+    let r = SessionHost(&mut s).library_remove(&json!({"ids": [a.0.to_string(), b.0.to_string()]})).unwrap();
+    assert_eq!(r, json!({"removed": 0, "skipped": 2}));
+    // the files are untouched
+    assert!(std::path::Path::new(&a_file).is_file() && std::path::Path::new(&b_file).is_file());
+    // undo brings them back
+    s.undo_step().unwrap();
+    assert!(s.catalog.photo(a).unwrap().in_library() && s.catalog.photo(b).unwrap().in_library());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module whose manifest is `manifest` and whose every call replies `reply` (as the host's
+/// `{"ok": value}` value).
+fn reply_module(manifest: &str, reply: &str) -> Vec<u8> {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let (m, r) = (esc(manifest), esc(reply));
+    let src = format!(
+        r#"(module
+  (memory (export "memory") 2)
+  (data (i32.const 16) "{m}") (data (i32.const 32768) "{r}")
+  (func (export "lcc_abi_version") (result i32) (i32.const 1))
+  (func (export "lcc_manifest") (result i64) (i64.or (i64.shl (i64.const {ml}) (i64.const 32)) (i64.const 16)))
+  (func (export "lcc_alloc") (param i32) (result i32) (i32.const 65536))
+  (func (export "lcc_handle") (param i32 i32) (result i64) (i64.or (i64.shl (i64.const {rl}) (i64.const 32)) (i64.const 32768))))"#,
+        ml = manifest.len(),
+        rl = reply.len()
+    );
+    wat::parse_str(&src).unwrap()
+}
+
+/// The `beforeImport` hook of `library.import` replaces and skips files: the replacement is
+/// checked (it becomes the import), a skip is reported in `skippedByPlugin`, and a plug-in's own
+/// `library.add` output (the same command with `pluginHooks: false`) is never asked.
+#[test]
+fn before_import_hook_replaces_and_skips_on_library_import() {
+    use crate::cmd::plugins::{TEST_PLUGINS, use_in_memory_manager};
+    let _guard = TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _turn = crate::cmd::plugins::tests::turn();
+    crate::cmd::plugins::TEST_IMPORT_HOOKS.with(|c| c.set(true));
+    let dir = temp_dir("before-import");
+    write_png(&dir.join("first.png"), 1, 16, 16);
+    write_png(&dir.join("second.png"), 2, 16, 16);
+    write_png(&dir.join("third.png"), 3, 16, 16);
+    let mut s = Session::new().with_fs();
+    use_in_memory_manager();
+
+    // every file is replaced by first.png: one photo, imported from it
+    let manifest = r#"{"id":"t.before","name":"B","version":"1.0.0","requires":["beforeImport"],"hooks":{"beforeImport":true},"permissions":{}}"#;
+    let reply = json!({"replace": dir.join("first.png").display().to_string()}).to_string();
+    let bytes = reply_module(manifest, &reply);
+    let module = dir.join("before.wasm");
+    std::fs::write(&module, &bytes).unwrap();
+    s.execute("plugin.install", &json!({"path": module.display().to_string()})).unwrap();
+
+    let r = s.execute("library.import", &json!({"paths": [dir.display().to_string()]})).unwrap();
+    assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+    let file = match &s.catalog.photo(PhotoId(r["imported"][0].as_u64().unwrap())).unwrap().source {
+        lcc_catalog::Source::File { path } => path.clone(),
+        _ => panic!("a file"),
+    };
+    assert!(file.ends_with("first.png"), "{file}");
+
+    // skip: nothing is asked again (nothing to import now, and no error)
+    let reply = r#"{"skip":true}"#.to_string();
+    std::fs::write(&module, reply_module(manifest, &reply)).unwrap();
+    s.execute("plugin.install", &json!({"path": module.display().to_string(), "allowDowngrade": true})).unwrap();
+    let r = s.execute("library.import", &json!({"paths": [dir.display().to_string()]})).unwrap();
+    assert_eq!(r["imported"].as_array().map(Vec::len), Some(0), "{r}");
+    assert_eq!(r["skippedByPlugin"], 3, "{r}");
+
+    // a plug-in's own output (pluginHooks: false) is not asked: the same module active, still imports
+    let r = s.execute("library.import", &json!({"paths": [dir.join("second.png").display().to_string()], "pluginHooks": false})).unwrap();
+    assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+
+    // a bad replacement (the reply names a missing file) is logged and the original imports
+    let reply = r#"{"replace":"/nowhere/no.png"}"#.to_string();
+    std::fs::write(&module, reply_module(manifest, &reply)).unwrap();
+    s.execute("plugin.install", &json!({"path": module.display().to_string(), "allowDowngrade": true})).unwrap();
+    let r = s.execute("library.import", &json!({"paths": [dir.join("third.png").display().to_string()]})).unwrap();
+    assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+    s.execute("plugin.uninstall", &json!({"id": "t.before"})).unwrap();
+    crate::cmd::plugins::TEST_IMPORT_HOOKS.with(|c| c.set(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -14,12 +14,13 @@ sidebar:
 | JPEG, PNG, TIFF (8/16-bit, float on export) | yes | yes |
 | WebP | yes | yes |
 | JPEG XL | yes | yes (lossy or lossless, native builds) |
-| AVIF | yes (native builds) | yes (8/10-bit, HDR) |
+| AVIF | yes (native builds) | yes (8/10-bit, PQ / HLG HDR, gain map HDR) |
 | HEIC / HEIF | yes in release builds, and on Android | no |
 | PSD / PSB | merged composite | PSD; also Edit In round trips (TIFF) |
 | GIF, BMP | yes | no |
+| OpenEXR | no | yes (scene-linear half / float, linear Rec. 2020 or ACEScg) |
 | DNG | yes (all kinds) | yes (incl. lossy, rendered DNG) |
-| HDR gain-map JPEG, PQ AVIF / JXL, float TIFF | yes | yes (no HLG) |
+| HDR gain-map JPEG, PQ AVIF / JXL, float TIFF | yes | yes (gain map AVIF and JPEG XL with HDR mode Gain map) |
 | Original plus XMP sidecar | n/a | yes |
 | Print and contact-sheet PDF | n/a | yes |
 
@@ -31,6 +32,6 @@ sidebar:
 - **1,446** camera models are on the reference list; about **41%** are verified on a real file, about **50%** are expected to work but unchecked, about **6%** open from the embedded preview only, about **3%** are not supported.
 - **Formats decoded from sensor data**: DNG, CR2, CR3 (lossless and C-RAW), CRW, ARW (incl. the newest compressed), NEF (lossless, lossy, High Efficiency on verified bodies), RAF (Bayer and X-Trans, compressed), RW2, ORF (incl. compressed), PEF, SRW, MRW, ERF, MEF, 3FR / FFF, DCS.
 - **Preview only** (embedded JPEG): Phase One IIQ, Sigma X3F, some CR3 variants, NEF lossy-after-split, a few older bodies. The grid marks them; reload re-checks them after an update.
-- **Colour**: each raw starts from a fit to its own camera JPEG, a bundled profile (11 so far), spectral matrices or the public dcraw matrices (about 550 older models) and LibRaw matrices for some newer ones. Measured camera calibration is still partial; see [What is not built yet](../not-built/).
+- **Colour**: each raw starts from a fit to its own camera JPEG, a bundled profile (11 so far), spectral matrices or the public dcraw matrices (about 550 older models) and LibRaw matrices for about 400 newer ones. Measured camera calibration is still partial; see [What is not built yet](../not-built/).
 - **Lenses**: corrections from the file (DNG opcodes, Panasonic and Leica, several Sony and Nikon) and a user-supplied lensfun-format database. No bundled lens database yet.
 - **Your own profiles**: import `.dcp` camera profiles you own; `<cli> camdb show MAKE MODEL` prints the entry a camera uses.

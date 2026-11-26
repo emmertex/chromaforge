@@ -105,6 +105,13 @@ pub(crate) fn short_name(id: &str) -> Option<&'static str> {
         "vignette.feather" => "Feather",
         "vignette.roundness" => "Roundness",
         "vignette.highlights" => "Highlights",
+        "glow.amount" => "Amount",
+        "glow.threshold" => "Threshold",
+        "glow.spread" => "Radius",
+        "glow.gain" => "Gain",
+        "glow.gamma" => "Gamma",
+        "glow.ratio" => "H/V",
+        "glow.recovery" => "Recovery",
         "grain.size" => "Size",
         "grain.sizeVariation" => "Variation",
         "grain.roughness" => "Roughness",
@@ -341,6 +348,19 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     section(app, ui, &d, "levels", "Levels", |app, ui, d| {
         super::levels::levels(app, ui, id, d);
     });
+    // the Tone Equalizer works on the scene-linear image, before Exposure is applied and before Levels
+    section(app, ui, &d, "toneEq", "Tone Equalizer", |app, ui, d| {
+        sub_title(ui, crate::i18n::tr("Exposure by Luminance"));
+        for c in lcc_develop::controls::in_section(lcc_develop::Section::ToneEq).take(lcc_develop::tone_eq::BANDS) {
+            control(app, ui, d, c.id, true);
+        }
+        ui.add_space(6.0);
+        sub_title(ui, crate::i18n::tr("Mask"));
+        for c in ["toneEq.detail", "toneEq.size", "toneEq.edges", "toneEq.smoothing"] {
+            control(app, ui, d, c, true);
+        }
+        ui.add_space(8.0);
+    });
     section(app, ui, &d, "curve", "Tone Curve", |app, ui, d| {
         curve_editor(app, ui, id, d, CurveTarget::Photo);
         ui.add_space(8.0);
@@ -434,6 +454,28 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         // not decoded yet: keep the count's line laid out so the panels under it do not jump (#1272)
                         ui.label(egui::RichText::new(" ").size(11.0));
                     }
+                    // how sensor-clipped highlights are rebuilt (`sensor.highlightMode`): ours or one of darktable's
+                    let modes = ["Rebuild", "Inpaint Opposed", "Guided Laplacian"];
+                    let current = usize::from(d.sensor.highlight_mode());
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr("Highlights"));
+                        let name = |i: usize| crate::i18n::tr(modes.get(i).copied().unwrap_or("Rebuild"));
+                        let r = crate::widgets::combo_box("sensor.highlightMode").selected_text(name(current)).show_ui(ui, |ui| {
+                            let mut chosen = None;
+                            for i in 0..modes.len() {
+                                if ui.selectable_label(i == current, name(i)).clicked() && i != current {
+                                    chosen = Some(i);
+                                }
+                            }
+                            chosen
+                        });
+                        crate::widgets::register(ui.ctx(), "combo:sensor.highlightMode", r.response.rect);
+                        let tip = "How clipped highlights are rebuilt: Rebuild uses the colour of reliable detail nearby; Inpaint Opposed and Guided Laplacian are darktable's methods";
+                        r.response.on_hover_text(crate::i18n::tr(tip));
+                        if let Some(i) = r.inner.flatten() {
+                            let _ = app.run("develop.set", json!({"control": "sensor.highlightMode", "value": i as f64}));
+                        }
+                    });
                 },
             );
         }
@@ -542,6 +584,8 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Lens Blur, after the lens corrections as in Lightroom Classic
+    section(app, ui, &d, "lensBlur", "Lens Blur", lens_blur_body);
     // Lightroom Classic's Transform panel (the fork's: upstream keeps it in the Crop tool), after the lens corrections
     section(app, ui, &d, "geometry", "Transform", |app, ui, _| super::right::transform_body(app, ui, id));
     section(app, ui, &d, "effects", "Effects", |app, ui, d| {
@@ -569,6 +613,27 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         for c in ["vignette.amount", "vignette.midpoint", "vignette.feather", "vignette.roundness", "vignette.highlights"] {
             let enabled = c == "vignette.amount" || d.vignette.amount != 0.0;
+            control(app, ui, d, c, enabled);
+        }
+        sub_title(ui, crate::i18n::tr("Glow"));
+        if shown_here(app, ui, "option:glowComposite") {
+            use lcc_develop::GlowComposite as G;
+            let modes = [(G::Screen, "glow composite|Screen", "screen"), (G::Add, "glow composite|Add", "add")];
+            let items: Vec<(&str, &str)> = modes.iter().map(|(_, l, k)| (*l, *k)).collect();
+            let active = modes.iter().position(|(v, _, _)| *v == d.glow.mode);
+            let mut chosen = None;
+            egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
+                ui,
+                |ui| {
+                    chosen = crate::widgets::segmented(ui, "glowComposite", &items, active, 2);
+                },
+            );
+            if let Some((mode, ..)) = chosen.and_then(|i| modes.get(i)) {
+                let _ = app.run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
+            }
+        }
+        for c in ["glow.amount", "glow.threshold", "glow.spread", "glow.gain", "glow.gamma", "glow.ratio", "glow.recovery"] {
+            let enabled = c == "glow.amount" || d.glow.amount != 0.0;
             control(app, ui, d, c, enabled);
         }
         sub_title(ui, crate::i18n::tr("Grain"));
@@ -639,7 +704,7 @@ fn tool_profile_row(app: &mut LccApp, ui: &mut egui::Ui) {
                 if let Some(pid) = pick
                     && let Err(e) = app.run("view.toolProfile", json!({"id": pid}))
                 {
-                    app.toast(ui.ctx(), e);
+                    app.toast_error(ui.ctx(), e);
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -890,6 +955,58 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
 }
 
+/// The Lens Blur section: Apply, the focus picker, Blur Amount, Boost, the bokeh shape, the focal range and Brush Refinement.
+fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let lb = &d.lens_blur;
+    let dim = Tokens::get(ui.ctx()).text_dim;
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
+        let mut on = lb.enabled;
+        if super::settings::check(ui, "lensBlur.enabled", &mut on, "Apply")
+            && let Err(e) = app.run("lensBlur.set", json!({"enabled": on}))
+        {
+            app.toast_error(ui.ctx(), e);
+        }
+        let note = if lcc_pipeline::depth_model::has_depth_model() {
+            "Depth: estimated by the depth model."
+        } else {
+            "Depth: estimated from the subject. Download the depth model (AI Models) for a real depth map."
+        };
+        ui.label(egui::RichText::new(crate::i18n::tr(note)).size(11.0).color(dim));
+        ui.add_space(4.0);
+        let picking = app.ui.tool == "lensFocus";
+        if crate::widgets::text_button(ui, "lensBlurFocus", "Focus Picker", picking)
+            .on_hover_text(crate::i18n::tr("Click the photo to keep that distance sharp; drag to average an area"))
+            .clicked()
+        {
+            app.ui.tool = if picking { String::new() } else { "lensFocus".into() };
+        }
+        if lb.focus.is_some() {
+            ui.add_space(2.0);
+            if crate::widgets::text_button(ui, "lensBlurClearFocus", "Clear Focus", false).clicked() {
+                let _ = app.run("lensBlur.set", json!({"focus": null}));
+            }
+        }
+    });
+    control(app, ui, d, "lensBlur.amount", lb.enabled);
+    control(app, ui, d, "lensBlur.boost", lb.enabled);
+    sub_title(ui, crate::i18n::tr("Bokeh"));
+    let shapes = lcc_develop::BokehShape::ALL;
+    let items: Vec<(&str, &str)> = shapes.iter().map(|b| (b.label(), b.name())).collect();
+    let mut chosen = None;
+    egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(ui, |ui| {
+        chosen = crate::widgets::segmented(ui, "lensBlurBokeh", &items, shapes.iter().position(|b| *b == lb.bokeh), shapes.len());
+    });
+    if let Some(b) = chosen.and_then(|i| shapes.get(i)) {
+        let _ = app.run("lensBlur.set", json!({"bokeh": b.name()}));
+    }
+    sub_title(ui, crate::i18n::tr("Focal Range"));
+    control(app, ui, d, "lensBlur.focalDistance", lb.enabled && lb.focus.is_none());
+    control(app, ui, d, "lensBlur.focalRange", lb.enabled);
+    control(app, ui, d, "lensBlur.focusSize", lb.enabled && lb.focus.is_some());
+    super::lens_blur::brush_refinement(app, ui, lb);
+    ui.add_space(8.0);
+}
+
 pub(crate) fn section(
     app: &mut LccApp,
     ui: &mut egui::Ui,
@@ -936,7 +1053,7 @@ pub(crate) fn section_with(
         // ⌥-click opens just this section, as in Lightroom Classic
         let solo = ui.input(|i| i.modifiers.alt);
         if let Err(e) = app.run(&format!("section.{id}"), json!({"solo": solo})) {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
     crate::widgets::context_menu(&resp, |ui| {
@@ -945,7 +1062,7 @@ pub(crate) fn section_with(
         register(ui.ctx(), "sectionMenu:solo", item.rect);
         if item.clicked() {
             if let Err(e) = app.run("view.soloSections", json!({"on": solo})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             ui.close();
         }
@@ -1500,7 +1617,7 @@ fn soft_proofing(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 && let Some(path) = app.services.pick_display_profile.as_mut().and_then(|pick| pick().into_iter().next())
                 && let Err(e) = app.run("view.softProof", json!({"profile": path}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
         if app.ui.proof_profile.is_some() {
@@ -2575,6 +2692,10 @@ fn point_color(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     for k in ["hueShift", "satShift", "lumShift", "variance"] {
         control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
     }
+    sub_title(ui, crate::i18n::tr("Uniformity"));
+    for k in ["hueUniformity", "satUniformity", "lumUniformity"] {
+        control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
+    }
     sub_title(ui, crate::i18n::tr("Range"));
     for k in ["range", "hueRange", "satRange", "lumRange"] {
         control(app, ui, d, &format!("pointColor.{sel}.{k}"), true);
@@ -2618,7 +2739,7 @@ fn wb_rows(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings, raw: bool) 
                             app.ui.tool.clear();
                         } else if let Err(e) = app.run("tool.wbPicker", json!({})) {
                             // the same as W: from Compare, Survey or the grid it opens the photo in Detail
-                            app.toast(ui.ctx(), e);
+                            app.toast_error(ui.ctx(), e);
                         }
                     }
                     if active {
@@ -2672,7 +2793,7 @@ fn hdr_button_tip(sdr_window: bool) -> String {
     if sdr_window { format!("{tip}\n\n{}", crate::i18n::tr(HDR_SDR_WINDOW_NOTE)) } else { tip.to_string() }
 }
 
-const HDR_SDR_WINDOW_NOTE: &str = "This display isn't showing HDR (it is SDR, or HDR is off in the system settings), so the window shows the SDR rendition. HDR exports keep the full range.";
+pub(crate) const HDR_SDR_WINDOW_NOTE: &str = "This display isn't showing HDR (it is SDR, or HDR is off in the system settings), so the window shows the SDR rendition. HDR exports keep the full range.";
 
 const SDR_SLIDERS_NOTE: &str = "These set how the photo looks on SDR displays and in SDR exports. Turn on Preview for SDR Display to see them.";
 
@@ -3645,9 +3766,8 @@ fn vignetting_calibration_section(app: &mut LccApp, ui: &mut egui::Ui, id: Photo
     }
     if let Some((c, p)) = run {
         app.ui.vignetting_calibration_info = None;
-        if let Err(e) = app.run(c, p) {
-            app.toast_error(ui.ctx(), e);
-        }
+        let result = app.run(c, p);
+        app.report(ui.ctx(), result);
     }
 }
 

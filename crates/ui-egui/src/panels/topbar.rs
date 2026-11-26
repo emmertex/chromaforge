@@ -147,7 +147,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                         crate::i18n::tr("AI Models…"),
                         "dialog.aiModels",
                         json!({}),
-                        8.0,
                     );
                 }
             }
@@ -205,7 +204,6 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                                 crate::i18n::tr("AI Models…"),
                                 "dialog.aiModels",
                                 json!({}),
-                                8.0,
                             );
                         }
                     }

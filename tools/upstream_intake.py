@@ -5,9 +5,16 @@ The procedure is docs/upstream-pr-intake.md. This script only reads: it asks `gh
 repository's pull requests, marks the files that touch fork-owned paths, and cross-references
 docs/upstream-pr-reviews/ledger.md. It never decides, writes to the repository or pushes.
 
+Two sources share the ledger: the `upstream` git remote (rows `#1234`) and craft-libs, the shared
+library repository upstream moves decoder, develop and metadata code into (rows `craft-libs#1234`).
+`--repo craft-libs` selects the second; its PRs are kept only when they touch a tracked path
+(TRACKED_PATHS: the crates the fork has its own counterpart of, or builds against).
+
 Usage:
-  tools/upstream_intake.py enumerate [--since YYYY-MM-DD] [--states open,closed,merged]
-                                     [--limit 300] [--max-files 20] [--out FILE] [--all]
+  tools/upstream_intake.py enumerate [--repo upstream|craft-libs] [--since YYYY-MM-DD]
+                                     [--states open,closed,merged] [--paths a/,b/] [--limit 300]
+                                     [--max-files 20] [--max-lookups 60] [--out FILE] [--all]
+  tools/upstream_intake.py drift [--repo upstream|craft-libs] [--all] [--out FILE]
   tools/upstream_intake.py check [--ledger FILE]
 
 `enumerate` needs `gh`, signed in to a token that can read the upstream repository. `check` is offline.
@@ -31,6 +38,41 @@ COLUMNS = ["item", "state", "title", "decision", "recheck", "reason", "upstream_
 STATES = {"open", "closed", "merged", "commit"}
 DECISIONS = {"ADOPT", "LEARN", "SKIP", "PENDING", "WATCH"}
 
+# Sources besides the `upstream` remote: ledger prefix -> GitHub repository.
+REPOS = {"craft-libs": "storytold/craft-libs"}
+
+# craft-libs paths a round reads. Counterparts: the fork has its own crate doing the same job, so a fix there is a
+# port candidate. Dependencies: crates the fork builds against (root Cargo.toml), where a fix arrives by a rev bump.
+TRACKED_PATHS = {
+    "craft-libs": [
+        # counterparts
+        "crates/raw/",
+        "crates/crw/",
+        "crates/develop/",
+        "crates/develop-model/",
+        "crates/metadata/",
+        "crates/crs/",
+        "crates/tiff/",
+        "crates/sniff/",
+        "crates/jpeg/",
+        "crates/png/",
+        "crates/webp/",
+        "crates/gif/",
+        "crates/heif/",
+        "crates/jxl/",
+        "crates/gainmap/",
+        "crates/image-codecs/",
+        "crates/raster-codecs/",
+        "crates/color/",
+        "crates/cms/",
+        "crates/color-transform/",
+        "crates/psd/",
+        # dependencies
+        "crates/ui/",
+        "crates/docpath/",
+    ]
+}
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -50,8 +92,12 @@ def gh(args):
     return done.stdout
 
 
-def upstream_repo():
-    """owner/repo of the `upstream` remote."""
+def upstream_repo(source="upstream"):
+    """owner/repo of a source: the `upstream` remote, or one of REPOS."""
+    if source in REPOS:
+        return REPOS[source]
+    if source != "upstream":
+        raise RuntimeError(f"unknown repository {source!r}; use upstream or one of {sorted(REPOS)}")
     try:
         url = subprocess.run(
             ["git", "-C", str(ROOT), "config", "--get", "remote.upstream.url"],
@@ -173,6 +219,22 @@ def pr_number(item):
     return int(match.group(1)) if match else None
 
 
+def item_source(item):
+    """Which source a ledger item belongs to: `craft-libs#12` or `craft-libs commit <sha>` -> craft-libs;
+    `#12` or `commit <sha>` -> upstream."""
+    match = re.match(r"\s*\[?([a-z][a-z0-9-]*)(?:#\d+| commit )", item)
+    return match.group(1) if match and match.group(1) in REPOS else "upstream"
+
+
+def item_label(source, number):
+    return f"#{number}" if source == "upstream" else f"{source}#{number}"
+
+
+def touches(path, prefixes):
+    """Whether a repository-relative path is one of `prefixes` or lies under one."""
+    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in prefixes)
+
+
 def check_ledger(rows):
     errors, warnings = [], []
     seen = {}
@@ -192,9 +254,10 @@ def check_ledger(rows):
         if row["state"] in ("merged", "commit") and len(row["upstream_ref"].strip("`")) < 7:
             errors.append(f"{label}: merged/commit row without a reviewed upstream SHA")
         if number is not None:
-            if number in seen:
-                errors.append(f"{label}: #{number} already on line {seen[number]}")
-            seen[number] = index
+            key = (item_source(row["item"]), number)
+            if key in seen:
+                errors.append(f"{label}: {item_label(*key)} already on line {seen[key]}")
+            seen[key] = index
         if row["decision"] == "ADOPT" and row["state"] == "open":
             warnings.append(f"{label}: ADOPT of an open PR; re-check its head before landing")
         match = re.match(r"(\d{4}-\d{2}-\d{2})", row["reviewed"])
@@ -218,14 +281,15 @@ def short(sha):
     return (sha or "")[:10]
 
 
-def heading(pr, repo):
+def heading(pr, repo, source="upstream"):
     number = pr["number"]
     title = pr["title"].replace("\n", " ")
-    return f"### [#{number}](https://github.com/{repo}/pull/{number}) {title}"
+    return f"### [{item_label(source, number)}](https://github.com/{repo}/pull/{number}) {title}"
 
 
-def describe(pr, repo, max_files, ledger_row, patterns, lookup_budget):
-    lines = [heading(pr, repo)]
+def describe(pr, repo, max_files, ledger_row, patterns, lookup_budget, source="upstream", files=None):
+    """One PR's report entry. `files`, when given, are the tracked files the path filter already read."""
+    lines = [heading(pr, repo, source)]
     draft = "draft" if pr.get("isDraft") else "ready"
     review = pr.get("reviewDecision") or "-"
     merged = f" · merged {pr['mergedAt'][:10]}" if pr.get("mergedAt") else ""
@@ -238,6 +302,10 @@ def describe(pr, repo, max_files, ledger_row, patterns, lookup_budget):
             f"- ledger: **{ledger_row['decision']}** · recheck {ledger_row['recheck']} · "
             f"reviewed {ledger_row['reviewed']} · fork {ledger_row['fork']}"
         )
+    if files is not None:
+        lines.append(f"- tracked files: {len(files)}")
+        lines.extend(f"  - `{name}`" for name in (files[:max_files] if max_files else files))
+        return lines
     files = []
     if max_files and lookup_budget[0] > 0:
         lookup_budget[0] -= 1
@@ -255,10 +323,12 @@ def describe(pr, repo, max_files, ledger_row, patterns, lookup_budget):
 def enumerate_cmd(args):
     if not shutil.which("gh"):
         return fail("gh is not installed")
+    source = args.repo
     try:
-        repo = upstream_repo()
+        repo = upstream_repo(source)
     except RuntimeError as exc:
         return fail(str(exc))
+    paths = [p.strip() for p in args.paths.split(",") if p.strip()] if args.paths else TRACKED_PATHS.get(source, [])
     since = args.since or (dt.date.today() - dt.timedelta(days=7)).isoformat()
     wanted = {state.strip() for state in args.states.split(",") if state.strip()}
     try:
@@ -313,41 +383,75 @@ def enumerate_cmd(args):
         return fail(str(exc))
     rows = {}
     try:
-        rows = {pr_number(row["item"]): row for row in parse_ledger(Path(args.ledger)) if pr_number(row["item"])}
+        rows = {
+            pr_number(row["item"]): row
+            for row in parse_ledger(Path(args.ledger))
+            if pr_number(row["item"]) and item_source(row["item"]) == source
+        }
     except RuntimeError as exc:
         print(f"upstream_intake: warning: {exc}", file=sys.stderr)
     candidates = [pr for pr in found if pr["state"].lower() in wanted]
     candidates.sort(key=lambda pr: pr["number"])
+    budget = [args.max_lookups]
+    # A path filter keeps a PR only when one of its files is under a tracked path. A PR whose files could not be
+    # read (lookup budget spent, API error) is kept and named as unfiltered, never dropped silently.
+    tracked, unfiltered, dropped = {}, [], 0
+    if paths:
+        kept = []
+        for pr in candidates:
+            names = None
+            if budget[0] > 0:
+                budget[0] -= 1
+                try:
+                    names = pr_files(repo, pr["number"], 0)
+                except RuntimeError:
+                    names = None
+            if names is None:
+                unfiltered.append(pr["number"])
+                kept.append(pr)
+                continue
+            hits = [name for name in names if touches(name, paths)]
+            if hits:
+                tracked[pr["number"]] = hits
+                kept.append(pr)
+            else:
+                dropped += 1
+        candidates = kept
     new = [pr for pr in candidates if pr["number"] not in rows]
     known = [pr for pr in candidates if pr["number"] in rows]
     patterns = owned_patterns()
-    budget = [args.max_lookups]
     lines = [
         f"# Upstream intake candidates — {dt.date.today().isoformat()}",
         "",
-        f"- upstream: `{repo}` at `{short(main_sha)}`",
+        f"- source: `{source}` · repository: `{repo}` at `{short(main_sha)}`",
         f"- since: {since} · states: {', '.join(sorted(wanted))} · ledger: {len(rows)} PR rows",
         f"- new: {len(new)} · already in the ledger: {len(known)}",
-        "",
     ]
+    if paths:
+        note = f"- path filter: {len(paths)} tracked paths · {dropped} PRs touch none of them"
+        if unfiltered:
+            note += f" · unfiltered (files not read, raise --max-lookups): {', '.join(map(str, unfiltered))}"
+        lines.append(note)
+    lines.append("")
     if new:
         lines.append("## New (no ledger row)")
         lines.append("")
         for pr in new:
-            lines.extend(describe(pr, repo, args.max_files, None, patterns, budget))
+            lines.extend(describe(pr, repo, args.max_files, None, patterns, budget, source, tracked.get(pr["number"])))
             lines.append("")
     if known and args.all:
         lines.append("## In the ledger")
         lines.append("")
         for pr in known:
-            lines.extend(describe(pr, repo, args.max_files, rows[pr["number"]], patterns, budget))
+            row = rows[pr["number"]]
+            lines.extend(describe(pr, repo, args.max_files, row, patterns, budget, source, tracked.get(pr["number"])))
             lines.append("")
     elif known:
         lines.append(f"## In the ledger ({len(known)} not shown; pass --all)")
         lines.append("")
         for pr in known:
             lines.append(
-                f"- [#{pr['number']}](https://github.com/{repo}/pull/{pr['number']}) "
+                f"- [{item_label(source, pr['number'])}](https://github.com/{repo}/pull/{pr['number']}) "
                 f"{rows[pr['number']]['decision']}"
             )
         lines.append("")
@@ -381,13 +485,18 @@ def drift_cmd(args):
     or out of draft. Read-only: it reports, it never decides (docs/upstream-pr-intake.md, Automation)."""
     if not shutil.which("gh"):
         return fail("gh is not installed")
+    source = args.repo
     try:
-        repo = upstream_repo()
+        repo = upstream_repo(source)
         rows = parse_ledger(Path(args.ledger))
     except RuntimeError as exc:
         return fail(str(exc))
     waiting = {"PENDING", "WATCH"} | ({"LEARN", "ADOPT"} if args.all else set())
-    watched = [r for r in rows if r["decision"] in waiting and pr_number(r["item"]) is not None]
+    watched = [
+        r
+        for r in rows
+        if r["decision"] in waiting and pr_number(r["item"]) is not None and item_source(r["item"]) == source
+    ]
     try:
         fields = "number,title,state,isDraft,headRefOid,reviewDecision,mergedAt,updatedAt"
         live = json.loads(gh(["pr", "list", "--repo", repo, "--state", "all", "--limit", str(args.limit), "--json", fields]))
@@ -418,7 +527,7 @@ def drift_cmd(args):
             groups["out of draft"].append((row, pr))
         else:
             quiet += 1
-    lines = [f"# Upstream drift: {len(watched)} waiting rows", "", f"- upstream: `{repo}` · unchanged: {quiet}", ""]
+    lines = [f"# Upstream drift: {len(watched)} waiting rows", "", f"- source: `{source}` ({repo}) · unchanged: {quiet}", ""]
     for name, items in groups.items():
         if not items:
             continue
@@ -426,8 +535,9 @@ def drift_cmd(args):
         for row, pr in items:
             head = short(pr.get("headRefOid") or "") if pr else "-"
             title = (pr or {}).get("title") or row["title"]
+            number = pr_number(row["item"])
             lines.append(
-                f"- [#{pr_number(row['item'])}](https://github.com/{repo}/pull/{pr_number(row['item'])}) {title} — "
+                f"- [{item_label(source, number)}](https://github.com/{repo}/pull/{number}) {title} — "
                 f"{row['decision']}, reviewed `{row['upstream_ref'].strip('`')}` → now `{head}`; recheck: {row['recheck']}"
             )
         lines.append("")
@@ -442,10 +552,15 @@ def drift_cmd(args):
 
 
 def main(argv):
+    # titles carry arrows and other non-ASCII text: a Windows console's code page must not abort a report
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(description="Upstream PR intake helper (docs/upstream-pr-intake.md)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     enum = sub.add_parser("enumerate", help="list candidate upstream PRs (all open, plus recently updated)")
+    enum.add_argument("--repo", default="upstream", help=f"upstream (the git remote) or one of {sorted(REPOS)}")
+    enum.add_argument("--paths", help="comma-separated path prefixes a PR must touch (default: the source's TRACKED_PATHS)")
     enum.add_argument("--since", help="inclusive update date (YYYY-MM-DD); default 7 days ago")
     enum.add_argument("--states", default="open,closed,merged", help="comma-separated states")
     enum.add_argument("--limit", type=int, default=300, help="PRs to ask gh for (default 300)")
@@ -459,6 +574,7 @@ def main(argv):
     checker.add_argument("--ledger", default=str(LEDGER))
 
     drift = sub.add_parser("drift", help="waiting rows whose upstream PR moved since review (head, state, approval)")
+    drift.add_argument("--repo", default="upstream", help=f"upstream (the git remote) or one of {sorted(REPOS)}")
     drift.add_argument("--ledger", default=str(LEDGER))
     drift.add_argument("--limit", type=int, default=6000, help="PRs to ask gh for (default 6000)")
     drift.add_argument("--all", action="store_true", help="also LEARN and ADOPT rows")

@@ -89,6 +89,7 @@ pub fn body(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
         fixed_keys(app, ui, t, mac, &needle);
+        speed_keys(app, ui, t, mac, &needle);
     });
 }
 
@@ -327,6 +328,37 @@ fn fixed_keys(app: &LccApp, ui: &mut egui::Ui, t: &Tokens, mac: bool, needle: &s
     });
 }
 
+/// Develop's speed-edit keys (`app.setSpeedKey`): hold the key and drag or scroll on the photo to
+/// move the slider. Listed here so the reference names every key that does something.
+fn speed_keys(app: &LccApp, ui: &mut egui::Ui, t: &Tokens, mac: bool, needle: &str) {
+    let rows: Vec<_> = crate::speed_edit::rows(&app.ui.settings.speed_keys)
+        .into_iter()
+        .filter(|(key, _, label)| {
+            needle.is_empty() || crate::i18n::tr(label).to_lowercase().contains(needle) || menu_text(key, mac).to_lowercase().contains(needle)
+        })
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.label(RichText::new(crate::i18n::tr("Speed-Edit Keys")).font(t.semibold(12.5)).color(t.text));
+    ui.label(
+        RichText::new(crate::i18n::tr(
+            "In Develop, hold a key and drag sideways or scroll on the photo to move its slider; a tap still runs its shortcut.",
+        ))
+        .size(11.0)
+        .color(t.text_dim),
+    );
+    egui::Grid::new("shortcuts-speed").striped(true).num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+        for (key, id, label) in rows {
+            let r = ui.label(RichText::new(crate::i18n::tr(label)).color(t.text_label));
+            register(ui.ctx(), format!("speedKey:{id}"), r.rect);
+            ui.label(RichText::new(crate::i18n::tr_format!("Hold {} and drag or scroll", menu_text(&key, mac))).color(t.text_dim));
+            ui.end_row();
+        }
+    });
+}
+
 /// Run `app.setShortcut` and say what changed (a key taken from another command, or why not).
 fn apply(app: &mut LccApp, ctx: &egui::Context, params: serde_json::Value) {
     match app.run("app.setShortcut", params) {
@@ -340,10 +372,10 @@ fn apply(app: &mut LccApp, ctx: &egui::Context, params: serde_json::Value) {
                 .map(|id| shortcuts::find_bindable(id).map_or(id, |b| crate::i18n::tr(b.label)).to_string())
                 .collect();
             if !lost.is_empty() {
-                app.toast_for(ctx, crate::i18n::tr_format!("Removed from {}", lost.join(", ")), 3.0);
+                app.toast(ctx, crate::i18n::tr_format!("Removed from {}", lost.join(", ")));
             }
         }
-        Err(e) => app.toast_for(ctx, e, 3.0),
+        Err(e) => app.toast_error(ctx, e),
     }
 }
 
@@ -373,6 +405,6 @@ fn capture(app: &mut LccApp, ctx: &egui::Context) {
     }
     match shortcuts::format(modifiers, key) {
         Some(sc) => apply(app, ctx, serde_json::json!({"id": id, "shortcut": sc})),
-        None => app.toast_for(ctx, crate::i18n::tr("That key can't be used as a shortcut"), 3.0),
+        None => app.toast(ctx, crate::i18n::tr("That key can't be used as a shortcut")),
     }
 }

@@ -74,7 +74,7 @@ fn screens() -> Vec<(String, Vec<(&'static str, serde_json::Value)>)> {
     }
     // context menus: a right click on a widget, after the commands that show it
     // named, since a mask's automatic name ("Radial Gradient") is stored in the edit, in English
-    let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2, "name": "Glow"});
+    let radial = json!({"kind": "radial", "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2, "name": "Lantern 7"});
     out.push((
         "Mask menu".into(),
         vec![("module.develop", json!({})), ("panel.masking", json!({})), ("mask.add", radial), (RIGHT_CLICK, json!({"widget": "mask:1"}))],
@@ -170,7 +170,13 @@ fn untranslated(h: &mut Headless, language: Locale) -> BTreeMap<String, Vec<Stri
 fn every_screen_paints_its_built_in_text_translated() {
     let mut lines = Vec::new();
     let mut h = demo();
-    for language in [Locale::De, Locale::Ja] {
+    // a single-language build offers only its own language and English (the others would fall back)
+    let checked: Vec<Locale> = [Locale::De, Locale::Ja].into_iter().filter(|language| language.in_build()).collect();
+    if checked.is_empty() {
+        lcc_testkit::skip!(Fonts, "this single-language build offers neither German nor Japanese to check");
+        return;
+    }
+    for language in checked {
         for (text, screens) in untranslated(&mut h, language) {
             lines.push(format!("{}: {text:?} on {}", language.code(), screens.join(", ")));
         }

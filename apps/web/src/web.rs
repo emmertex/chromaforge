@@ -32,9 +32,6 @@ fn accept_list() -> String {
 /// After a failed save, wait this long before trying again (ms).
 const SAVE_RETRY_MS: f64 = 2000.0;
 
-/// How long a notice stays on screen (s).
-const NOTICE_SECS: f64 = 8.0;
-
 /// How often view state, UI prefs and the thumbnail index are saved (ms).
 const SAVE_EVERY_MS: f64 = 1000.0;
 
@@ -179,6 +176,7 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         dialog_errors: None,
         pick_display_profile: None,
         screen_profile: None,
+        background_clicks: None,
         backup_library: Some(Box::new(move |session: &mut Session| {
             let Some(b) = backup_backend.clone() else { return Err("nothing is stored in this browser session (?store=memory)".into()) };
             if let Some(why) = crate::backup::unsaved_refusal(session.unsaved()) {
@@ -246,6 +244,7 @@ fn services(originals: Originals, backend: Option<Backend>, files: Files, frozen
         log_file: None,
         open_with: None,
         open_all_with: None,
+        open_preset: None,
         check_editor: None,
         storage_access: None,
         camera_roll: None,
@@ -769,7 +768,7 @@ impl eframe::App for WebApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         for text in safety::take_notices() {
             let now = ctx.input(|i| i.time);
-            self.app.ui.show_toast((text, now + NOTICE_SECS, None));
+            self.app.ui.show_toast(lcc_ui_egui::Toast::new(lcc_ui_egui::ToastKind::Error, text, now));
         }
         self.run_inbox();
         settle_requests();

@@ -1,0 +1,2 @@
+### One note per change
+- A rating, flag, colour label, undo or redo, a keyword added or removed, a preset applied to several photos, a geotag, and moving photos or folders are each said once, by the on-screen overlay (Settings ▸ Interface ▸ On-Screen Overlay). The extra toast that used to repeat them is gone in every mode, so with the overlay off or set to the control surface only these changes show nothing.
