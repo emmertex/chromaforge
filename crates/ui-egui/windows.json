@@ -22,6 +22,10 @@
       "reason": "a recording is made of the keys and clicks on the photos, so they must reach them while it is open"
     },
     { "name": "Import Warnings", "file": "src/import_report.rs", "function": "show", "kind": "modal", "id": ["import-warnings"] },
+    {
+      "name": "Edit Location", "file": "src/map/view.rs", "function": "location_editor", "kind": "exception", "id": ["map-location-editor"],
+      "reason": "the location's circle and its handles are dragged on the map while it is open, as Lightroom Classic's Edit Location allows"
+    },
     { "name": "Getting Started", "file": "src/onboarding.rs", "function": "show", "kind": "modal", "id": ["getting-started"] },
     { "name": "Edited Version Saved Again", "file": "src/panels/connections.rs", "function": "versions_ui", "kind": "modal", "id": ["immich-resave"] },
     { "name": "Dialogs (`app.ui.dialog`: Settings, New Collection, Edit Smart Collection…, …)", "file": "src/panels/dialogs.rs", "function": "show", "kind": "modal", "survey": "a Dialog" },
