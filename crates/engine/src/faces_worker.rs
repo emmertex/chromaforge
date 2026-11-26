@@ -161,8 +161,14 @@ pub(crate) struct Prepared {
     /// A raw's embedded preview, tried before the render job (much faster than decoding the raw).
     pub preview: Option<(String, PreviewLoader)>,
     pub todo: Vec<Rect>,
-    /// The photo has no face regions and has not been searched: look for faces too.
+    /// Look for faces too; for a maintenance rescan this is true even when the photo already has regions.
     pub detect: bool,
+    /// The detector is re-running even when the photo already has regions.
+    pub redetect: bool,
+    /// Remove old detector-generated regions before merging newly detected boxes.
+    pub replace_detections: bool,
+    /// Minimum detector confidence for new face regions.
+    pub min_score: f32,
     /// The face model, when the user has installed it: faces are aligned by its landmarks, and it finds the faces of
     /// photos that have none. Without it a scan only embeds the faces the photos already have, cut by their boxes.
     pub detector: Option<Arc<Finder>>,
@@ -178,6 +184,10 @@ pub(crate) struct Done {
     pub results: Vec<(Rect, Option<Vec<f32>>, Rect)>,
     /// Faces were to be looked for in this photo.
     pub detect_wanted: bool,
+    /// The detector was re-running even though the photo already had regions.
+    pub redetect: bool,
+    /// Remove old detector-generated regions before merging these detections.
+    pub replace_detections: bool,
     /// What the detector found (their embeddings are in `results`); `None` when the photo could not be searched.
     pub found: Option<Vec<Rect>>,
 }
@@ -201,7 +211,7 @@ fn face_rect(f: &Face) -> Option<Rect> {
 
 /// Do the work for one photo. Never panics: whatever goes wrong, its faces come back as `None`.
 pub(crate) fn process(p: Prepared, embedder: &Embedder) -> Done {
-    let Prepared { tag, epoch, id, content, job, preview, todo, detect, detector } = p;
+    let Prepared { tag, epoch, id, content, job, preview, todo, detect, redetect, replace_detections, min_score, detector } = p;
     let fallback = |todo: Vec<Rect>| todo.into_iter().map(|r| (r, None, r)).collect::<Vec<_>>();
     let rects = todo.clone();
     let run = catch_unwind(AssertUnwindSafe(|| {
@@ -248,7 +258,7 @@ pub(crate) fn process(p: Prepared, embedder: &Embedder) -> Done {
         let new_faces = if detect {
             detected.map(|found| {
                 let mut rects = Vec::new();
-                for f in found.iter().filter(|f| f.score >= REGION_SCORE) {
+                for f in found.iter().filter(|f| f.score >= min_score) {
                     let Some(rect) = face_rect(f) else { continue };
                     faces.push((rect, align_to_template(&img, &scaled(f), iw, ih), rect));
                     rects.push(rect);
@@ -266,7 +276,7 @@ pub(crate) fn process(p: Prepared, embedder: &Embedder) -> Done {
         (results, new_faces)
     }));
     let (results, found) = run.unwrap_or_else(|_| (fallback(rects), None));
-    Done { tag, epoch, id, content, results, detect_wanted: detect, found }
+    Done { tag, epoch, id, content, results, detect_wanted: detect, redetect, replace_detections, found }
 }
 
 type Job = (Arc<Embedder>, Prepared);

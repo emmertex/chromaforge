@@ -555,7 +555,7 @@ fn face_json(f: &Face) -> Value {
 }
 
 /// A detected face that lies on a region the photo already has (from XMP, drawn or named) is that region, not a new face.
-fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
+pub(crate) fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
     regions.iter().any(|r| {
         let (w, h) = (
             (r.rect.x1.min(f64::from(f.x1)) - r.rect.x0.max(f64::from(f.x0))).max(0.0),
@@ -567,10 +567,12 @@ fn overlaps_existing(f: &Face, regions: &[Region]) -> bool {
     })
 }
 
-/// A region Detect Faces may replace: one it found earlier and the user has not ignored (an ignored face is kept,
-/// and its box stops the same face being found again).
+/// A region Detect Faces may replace: one it found earlier that is still an unnamed Face region.
+/// Ignored faces, named faces and other region kinds stay in the catalog.
 pub(crate) fn is_detected(r: &Region) -> bool {
-    r.kind != RegionKind::IgnoredFace && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
+    r.kind == RegionKind::Face
+        && r.name.as_deref().is_none_or(|name| name.trim().is_empty())
+        && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))
 }
 
 /// What `faces.detect` was asked for.
@@ -779,7 +781,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "faces.detect",
             "Detect Faces",
-            ["Library"],
+            ["Library", "Faces"],
             None,
             "{ids?, wait?: bool (false: runs in the background, an activity row, and `faces.detectPump` takes the results), apply?: bool (default true), score?: 0.65, maxFaces?: 200, fine?: bool (true: also looks in tiles, for the small faces of group photos)} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the open MediaPipe face model (Apache-2.0; download it first: `ai.models.download {id: \"face\", acknowledged: true}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
             has_selection,
@@ -797,7 +799,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "faces.clearAndRescan",
             "Clear Faces and Rescan",
-            ["Library"],
+            ["Library", "Faces"],
             None,
             "{ids?}: the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
             always,
