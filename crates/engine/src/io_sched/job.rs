@@ -122,7 +122,7 @@ impl JobState {
 
     pub(crate) fn permit_sub(&self, bytes: usize) {
         let b = u64::try_from(bytes).unwrap_or(u64::MAX);
-        let _ = self.permit_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(b)));
+        let _ = self.permit_bytes.try_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(b)));
     }
 
     pub(crate) fn permit_bytes(&self) -> u64 {

@@ -450,7 +450,7 @@ impl<T: Send + 'static> Call<'_, T> {
     fn dispatch(&mut self, i: usize, now: u64) -> bool {
         let mut inline = false;
         if self.live <= self.busy {
-            let injected = self.ctx.spawn_budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)).is_err();
+            let injected = self.ctx.spawn_budget.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1)).is_err();
             let spawned = !injected && {
                 let (rx, tx, shared) = (self.tasks_rx.clone(), self.results_tx.clone(), self.ctx.shared.clone());
                 std::thread::Builder::new().name(format!("lc-io-{}", self.live)).spawn(move || worker(rx, tx, shared)).is_ok()
