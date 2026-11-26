@@ -244,8 +244,10 @@ fn a_hung_card_never_takes_the_other_cards_slot() {
         jobs.extend(tracked("/b", "/c", 6, &conc, None));
         let call = h.start(jobs, workers);
         wait_until(|| call.done.load(Ordering::SeqCst) == 6, "the other card's copies");
+        // (were the hung card held to the cap instead, it would take the last slot and the wait
+        // above would time out; how close it gets to cap − 1 depends on how fast /b's copies end)
         let ran = conc.st.lock().unwrap().max_cut.get("/a").copied().unwrap_or(0);
-        assert_eq!(ran, cap - 1, "workers {workers}: the hung card while the other had work");
+        assert!((1..cap).contains(&ran), "workers {workers}: the hung card ran {ran} while the other had work");
         gate.release();
         assert_eq!(ok_count(&call.join()), cap + 8);
     }
@@ -352,6 +354,43 @@ fn a_copys_bytes_set_its_destinations_stall_time() {
             assert_eq!(ok_count(&r), 3);
         }
     }
+}
+
+/// A copy's completion is progress on its destination too: with one copy hung there (after a
+/// byte, so the stall time is 30 s), copies that move no bytes finishing every 20 s keep the
+/// destination alive; once they stop, it stalls 30 s after the last one (not just below).
+#[test]
+fn a_copys_completion_is_progress_on_its_destination() {
+    let h = H::new();
+    let (hung, started) = (Latch::new(), Arc::new(AtomicUsize::new(0)));
+    let mut jobs = hung_copies("/a", "/b", 1, "h", &hung, &started);
+    let latches: Vec<Arc<Latch>> = (0..3).map(|_| Latch::new()).collect();
+    for (i, l) in latches.iter().enumerate() {
+        let (l, started) = (l.clone(), started.clone());
+        jobs.push(copy(&format!("/a/{i}"), "/b/out", move || {
+            started.fetch_add(1, Ordering::SeqCst);
+            l.wait();
+            Ok(1)
+        }));
+    }
+    let call = h.start(jobs, 4);
+    wait_until(|| started.load(Ordering::SeqCst) == 4, "all four copies");
+    call.settle(&h, 3);
+    for (i, l) in latches.iter().enumerate() {
+        h.advance(20 * SEC);
+        call.settle(&h, 3);
+        l.release();
+        wait_until(|| call.done.load(Ordering::SeqCst) == i + 1, "a byte-less copy to finish");
+        call.settle(&h, 3);
+    }
+    assert!(!call.finished(), "60 s, kept alive by completions on both volumes");
+    h.advance(STALL_WITH_BYTES - 1);
+    call.settle(&h, 3);
+    assert!(!call.finished(), "just under 30 s since the last completion");
+    h.advance(1);
+    let r = call.join();
+    assert!(vnr(r.outcomes.first()).is_some_and(|(_, abandoned)| abandoned), "{:?}", r.outcomes);
+    hung.release();
 }
 
 /// A fake card at 50 MB/s: each read steps the fake clock by the time it takes.
