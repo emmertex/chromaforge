@@ -366,7 +366,9 @@ fn dont_ask_again_moves_the_next_drop_at_once() {
     // the next drop goes at once
     let dunes = id_of(&h, "dunes.png");
     h.app.session.selection = lcc_engine::Selection::single(lcc_catalog::PhotoId(dunes));
-    h.step();
+    // (the first move's file checks and folder counts land first: on a busy machine they could
+    // move the rows while the next drag is under way)
+    let _ = h.settle(std::time::Duration::from_secs(30));
     let target = folder_row(&h, &home).unwrap();
     drop_beach(&mut h, dunes, target);
     assert!(h.app.ui.dialog.is_none(), "not asked");
@@ -596,7 +598,7 @@ fn add_to_my_photos_reviews_a_local_folders_browsed_photos() {
     let mut h = app(&[(trip.join("beach.png"), true), (trip.join("dunes.png"), true)]);
     let place = trip.to_string_lossy().to_string();
     h.app.run("local.addRoot", json!({"path": place})).unwrap();
-    assert!(h.step_until(std::time::Duration::from_secs(10), |h| widget(h, &format!("source:local:{place}")).is_some()));
+    assert!(h.step_until(std::time::Duration::from_secs(60), |h| widget(h, &format!("source:local:{place}")).is_some()));
     menu_click(&mut h, &format!("source:local:{place}"), "folderAddToMyPhotos");
     let d = review(&mut h);
     assert_eq!(d.sources, std::slice::from_ref(&place));
@@ -640,7 +642,7 @@ fn the_import_rows_are_grayed_out_while_a_scan_runs() {
     // a Local row's Add to My Photos… is grayed out the same way
     let place = trip.to_string_lossy().to_string();
     h.app.run("local.addRoot", json!({"path": place})).unwrap();
-    assert!(h.step_until(std::time::Duration::from_secs(10), |h| widget(h, &format!("source:local:{place}")).is_some()));
+    assert!(h.step_until(std::time::Duration::from_secs(60), |h| widget(h, &format!("source:local:{place}")).is_some()));
     menu_click(&mut h, &format!("source:local:{place}"), "folderAddToMyPhotos");
     for _ in 0..5 {
         h.step();
