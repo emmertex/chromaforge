@@ -1034,7 +1034,9 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
 
 /// Whether the on-screen overlay (`panels::surface_osd`) reports the changes keys make.
 pub(crate) fn overlay_reports_changes(app: &LccApp) -> bool {
-    app.surface.settings().osd.effective_mode() == lcc_surface::settings::OsdMode::Always
+    use lcc_surface::settings::OsdArea;
+    let osd = &app.surface.settings().osd;
+    osd.allows(OsdArea::Develop, false) || osd.allows(OsdArea::Elsewhere, false)
 }
 
 /// Whether a right-panel tool can be on screen: the single-photo view, not full screen.

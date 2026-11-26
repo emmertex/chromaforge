@@ -78,7 +78,7 @@ pub fn surface_content(app: &LccApp) -> Option<(Readout, f64)> {
             Readout { title, value: v.map(|v| spec.format(v)).unwrap_or_default(), bar: v.map(|v| spec.position(v)), icon, caption: String::new() }
         }
         // a command without a short label of its own names itself by id: show its registry label
-        Shown::Command { label, icon } => {
+        Shown::Command { label, icon, .. } => {
             let text = if !label.contains(' ') && label.contains('.') {
                 crate::surface::registry_label(app, label).unwrap_or_else(|| label.clone())
             } else {
@@ -201,6 +201,17 @@ pub fn describe(app: &LccApp, r: &ChangeReport) -> Readout {
     }
 }
 
+/// The part of the app a change report is about: a develop setting (a slider, a mask, a profile) or anything else.
+pub fn report_area(r: &ChangeReport) -> ls::settings::OsdArea {
+    if r.kind == ChangeKind::Develop || r.control.is_some() { ls::settings::OsdArea::Develop } else { ls::runtime::command_area(&r.command) }
+}
+
+/// Whether the overlay may show `r`: its mode and its area's option, asked of the settings' one rule. Change reports
+/// never come from a control surface (its own readout is `surface_content`).
+fn report_allowed(app: &LccApp, r: &ChangeReport) -> bool {
+    app.surface.settings().osd.allows(report_area(r), false)
+}
+
 /// Take the newest change report, when the mode shows them (each once).
 fn take_report(app: &mut LccApp) {
     let Some(r) = app.session.last_change.as_ref() else { return };
@@ -208,7 +219,7 @@ fn take_report(app: &mut LccApp) {
         return;
     }
     app.surface.osd_seq = r.seq;
-    if app.surface.settings().osd.effective_mode() != OsdMode::Always {
+    if !report_allowed(app, r) {
         return;
     }
     let report = r.clone();
@@ -227,8 +238,7 @@ pub fn current(app: &mut LccApp) -> Option<(Readout, f64)> {
 pub fn peek(app: &LccApp) -> Option<(Readout, f64)> {
     let now = app.surface.now();
     let surface = surface_content(app);
-    let mode = app.surface.settings().osd.effective_mode();
-    let action = app.surface.action.as_ref().filter(|_| mode == OsdMode::Always).map(|a| (describe(app, &a.report), a.at));
+    let action = app.surface.action.as_ref().filter(|a| report_allowed(app, &a.report)).map(|a| (describe(app, &a.report), a.at));
     let (r, at) = match (surface, action) {
         (Some(s), Some(a)) => {
             if a.1 > s.1 + 0.05 {
@@ -349,7 +359,7 @@ pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, in_cont
     let mut s = app.surface.settings().osd.clone();
     let before = s.clone();
     super::settings::heading_help(ui, t, "On-Screen Overlay", "changeOverlay");
-    let mut mode = s.effective_mode();
+    let mut mode = s.mode;
     row(ui, t, "Show changes", |ui| {
         if choices(ui, "osdMode", MODES, &mut mode) {
             s.set_mode(mode);
@@ -428,7 +438,9 @@ fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
         OsdPosition::TopEdge => "upHigh",
     };
     json!({
-        "mode": osd.effective_mode(),
+        "mode": osd.mode,
+        "inDevelop": osd.in_develop,
+        "elsewhere": osd.elsewhere,
         "size": osd.size,
         "opacity": osd.opacity,
         "displayMs": osd.display_ms,
@@ -444,7 +456,7 @@ pub fn state_json(app: &LccApp) -> Value {
     json!({"settings": settings_json(&app.surface.settings().osd), "shown": shown, "held": app.surface.osd_held})
 }
 
-/// `osd.*` commands: `osd.settings {mode?, size?, opacity?, displayMs?, position?, background?}`
+/// `osd.*` commands: `osd.settings {mode?, inDevelop?, elsewhere?, size?, opacity?, displayMs?, position?, background?}`
 /// (every overlay setting; replies with them all), `osd.mode {mode?}` (no mode: the next one,
 /// Off → Control surface only → Always, for a console key) and `osd.state` (what it shows now).
 pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
@@ -455,6 +467,17 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             if let Some(m) = p.get("mode") {
                 let m = m.as_str().and_then(parse_mode).ok_or("osd.settings: `mode` is off, surface or always")?;
                 osd.set_mode(m);
+            }
+            if p.get("inDevelop").is_some() || p.get("elsewhere").is_some() {
+                let flag = |key: &str, now: bool| match p.get(key) {
+                    None => Ok(now),
+                    Some(v) => v.as_bool().ok_or_else(|| format!("osd.settings: `{key}` is true or false")),
+                };
+                let (in_develop, elsewhere) = (flag("inDevelop", osd.in_develop)?, flag("elsewhere", osd.elsewhere)?);
+                if !in_develop && !elsewhere {
+                    return Err("osd.settings: `inDevelop` and `elsewhere` can't both be off; turn off Show changes with `mode`".into());
+                }
+                osd.set_areas(in_develop, elsewhere);
             }
             if let Some(v) = p.get("size") {
                 osd.size = v.as_f64().filter(|v| v.is_finite()).ok_or("osd.settings: `size` must be a number (0.5–2)")?.clamp(0.5, 2.0);
@@ -477,7 +500,7 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
         "osd.mode" => {
             let next = match p.get("mode") {
                 Some(m) => m.as_str().and_then(parse_mode).ok_or("osd.mode: `mode` is off, surface or always")?,
-                None => match osd.effective_mode() {
+                None => match osd.mode {
                     OsdMode::Off => OsdMode::Surface,
                     OsdMode::Surface => OsdMode::Always,
                     OsdMode::Always => OsdMode::Off,

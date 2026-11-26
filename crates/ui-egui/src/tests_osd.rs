@@ -115,10 +115,20 @@ fn changes_show_one_note_naming_the_change_its_value_and_the_photos() {
 fn settings_are_checked_and_the_overlay_draws_at_every_size_and_position() {
     let mut h = demo();
     let r = run(&mut h, "osd.settings", json!({"size": 1.5, "opacity": 0.5, "displayMs": 2500, "position": "upHigh", "background": "#102030"}));
-    assert_eq!(r, json!({"mode": "always", "size": 1.5, "opacity": 0.5, "displayMs": 2500, "position": "upHigh", "background": "#102030"}));
+    assert_eq!(
+        r,
+        json!({"mode": "always", "inDevelop": true, "elsewhere": true, "size": 1.5, "opacity": 0.5, "displayMs": 2500, "position": "upHigh", "background": "#102030"})
+    );
     let r = run(&mut h, "osd.settings", json!({"size": 1e9, "opacity": -3, "displayMs": 1e12}));
     assert_eq!((r["size"].as_f64(), r["opacity"].as_f64(), r["displayMs"].as_u64()), (Some(2.0), Some(0.1), Some(10_000)));
-    for bad in [json!({"mode": "loud"}), json!({"position": "left"}), json!({"background": "red"}), json!({"size": "big"})] {
+    for bad in [
+        json!({"mode": "loud"}),
+        json!({"position": "left"}),
+        json!({"background": "red"}),
+        json!({"size": "big"}),
+        json!({"inDevelop": "yes"}),
+        json!({"inDevelop": false, "elsewhere": false}),
+    ] {
         let r = h.request("engine.execute", json!({"command": "osd.settings", "params": bad}), T);
         assert_eq!(r["ok"], false, "{bad}: {r}");
     }
@@ -214,7 +224,43 @@ fn a_key_shows_one_note_not_a_toast_as_well_and_the_mode_decides_what_shows() {
     assert_eq!(r["mode"], "off");
     run(&mut h, "photo.rate", json!({"rating": 5, "ids": ids}));
     assert!(shown(&mut h).is_null(), "off");
-    assert!(!h.app.surface.settings().osd.enabled, "Off also switches the console's readout off");
+    assert_eq!(h.app.surface.settings().osd.mode, lcc_surface::settings::OsdMode::Off, "Off is the mode itself");
+}
+
+/// "In Develop" and "Elsewhere" each switch off one kind of change message, and the last one on can't be switched
+/// off; with Show changes Off, nothing shows whatever they say.
+#[test]
+fn each_overlay_area_option_hides_only_its_own_changes() {
+    let mut h = demo();
+    let ids = open(&mut h, 1);
+    let develop = |h: &mut Headless, v: f64| {
+        run(h, "develop.set", json!({"control": "light.exposure", "value": v}));
+        shown(h)
+    };
+    let rate = |h: &mut Headless, n: u8| {
+        run(h, "photo.rate", json!({"rating": n, "ids": ids}));
+        shown(h)
+    };
+    assert_eq!(develop(&mut h, 0.3)["title"], "Exposure", "both on by default");
+    assert_eq!(rate(&mut h, 2)["title"], "2 stars");
+
+    run(&mut h, "osd.settings", json!({"inDevelop": false}));
+    let s = develop(&mut h, 0.5);
+    assert!(s["title"] != "Exposure", "In Develop off hides a develop change: {s}");
+    assert_eq!(rate(&mut h, 4)["title"], "4 stars", "and leaves the rest");
+
+    run(&mut h, "osd.settings", json!({"inDevelop": true, "elsewhere": false}));
+    assert_eq!(develop(&mut h, 0.7)["title"], "Exposure");
+    let s = rate(&mut h, 1);
+    assert!(s["title"] != "1 star", "Elsewhere off hides a rating: {s}");
+
+    let r = h.request("engine.execute", json!({"command": "osd.settings", "params": {"inDevelop": false}}), T);
+    assert_eq!(r["ok"], false, "the last one on can't be turned off: {r}");
+    let st = run(&mut h, "osd.state", json!({}))["settings"].clone();
+    assert_eq!((st["inDevelop"].as_bool(), st["elsewhere"].as_bool()), (Some(true), Some(false)), "{st}");
+
+    run(&mut h, "osd.settings", json!({"mode": "off", "elsewhere": true}));
+    assert!(develop(&mut h, 0.9).is_null() && rate(&mut h, 5).is_null(), "Off shows nothing");
 }
 
 /// A script can see what the window is saying: `ui.inspect` lists the toasts still showing with the time each has
