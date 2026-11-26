@@ -295,16 +295,33 @@ pub fn write_new(path: &Path, data: &[u8]) -> io::Result<()> {
 /// `IMG_1.dng`, `IMG_1-2.dng`, …): the file is written once and then given the first name that
 /// is not taken. Returns that name; `AlreadyExists` when every candidate is taken.
 pub fn write_new_unique(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8]) -> io::Result<PathBuf> {
+    write_new_unique_progress(candidates, data, &|_| {})
+}
+
+/// Bytes per write (and at most per read back) of [`write_new_unique_progress`], so `progress`
+/// hears from a slow volume often.
+const PROGRESS_CHUNK: usize = 4 << 20;
+
+/// [`write_new_unique`], telling `progress` the bytes it writes and reads back as it goes (at most
+/// 4 MiB at a time), so a caller watching a slow volume sees it moving. The temp file's flush is
+/// not reported.
+pub fn write_new_unique_progress(candidates: &mut dyn Iterator<Item = PathBuf>, data: &[u8], progress: &dyn Fn(usize)) -> io::Result<PathBuf> {
     let mut candidates = candidates.peekable();
     let Some(first) = candidates.peek().cloned() else {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no file name to write"));
     };
-    let (tmp, _) = write_temp(&first, true, &mut |w| w.write_all(data))?;
+    let (tmp, _) = write_temp(&first, true, &mut |w| {
+        for chunk in data.chunks(PROGRESS_CHUNK) {
+            w.write_all(chunk)?;
+            progress(chunk.len());
+        }
+        Ok(())
+    })?;
     let r = (|| {
         // Kept (issue #134 point 4): these files replace raws (Convert / Copy as DNG) or become
         // library photos (merges). On a local disk the read usually comes from the cache, but on a
         // network volume it can go back to the server, and next to encoding a DNG it costs little.
-        if !same_content(&tmp, data)? {
+        if !same_content(&tmp, data, progress)? {
             return Err(io::Error::other("the written file reads back different (failing drive or connection?)"));
         }
         for path in candidates.by_ref().take(100_000) {
@@ -350,7 +367,7 @@ fn publish_new_by_rename(tmp: &Path, path: &Path, before_claim: &dyn Fn()) -> io
 }
 
 /// Does the file at `path` hold exactly `data`?
-fn same_content(path: &Path, data: &[u8]) -> io::Result<bool> {
+fn same_content(path: &Path, data: &[u8], progress: &dyn Fn(usize)) -> io::Result<bool> {
     use std::io::Read;
     let mut f = File::open(path)?;
     if f.metadata()?.len() != data.len() as u64 {
@@ -365,6 +382,7 @@ fn same_content(path: &Path, data: &[u8]) -> io::Result<bool> {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
+        progress(k);
         if data.get(at..at + k) != buf.get(..k) {
             return Ok(false);
         }
@@ -728,6 +746,24 @@ mod tests {
         assert_eq!(fs::read(&got).unwrap(), b"fresh");
         assert_eq!(names(&d), vec!["a-2.dng", "a.dng"], "the temp file is gone");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Progress hears every byte written and every byte read back, never more than 4 MiB at a
+    /// time (an empty file: nothing; a file of exactly 4 MiB, one write; 4 MiB + 1, two).
+    #[test]
+    fn new_files_report_their_progress() {
+        for len in [0usize, 1, PROGRESS_CHUNK - 1, PROGRESS_CHUNK, PROGRESS_CHUNK + 1, 2 * PROGRESS_CHUNK + 7] {
+            let d = temp(&format!("progress-{len}"));
+            let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let seen = std::sync::Mutex::new(Vec::new());
+            let got = write_new_unique_progress(&mut std::iter::once(d.join("a.dng")), &data, &|n| seen.lock().unwrap().push(n)).unwrap();
+            assert_eq!(fs::read(&got).unwrap(), data);
+            let seen = seen.into_inner().unwrap();
+            assert_eq!(seen.iter().sum::<usize>(), 2 * len, "{len}: written and read back");
+            assert!(seen.iter().all(|&n| n > 0 && n <= PROGRESS_CHUNK), "{len}: {seen:?}");
+            assert!(seen.len() >= 2 * len.div_ceil(PROGRESS_CHUNK), "{len}: {seen:?}");
+            let _ = fs::remove_dir_all(&d);
+        }
     }
 
     #[test]
