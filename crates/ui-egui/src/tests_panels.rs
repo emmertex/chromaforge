@@ -3265,3 +3265,18 @@ fn ignoring_a_persons_odd_faces_is_off_until_ticked() {
         assert_eq!(on(&mut h), want);
     }
 }
+
+#[test]
+fn folder_face_scan_menu_payload_prefills_the_maintenance_dialog() {
+    let mut app = LccApp::new(lcc_engine::Session::with_demo(), Services::default());
+    let result =
+        crate::menus::run_ui_command(&mut app, "dialog.faceMaintenance", &json!({"mode": "detect", "scope": "folder", "folder": "/pics/trip"}));
+    assert!(matches!(result, Some(Ok(_))));
+    let Some(crate::state::Dialog::FaceMaintenance { mode, scope, folders, include_subfolders, .. }) = &app.ui.dialog else {
+        panic!("folder menu did not open face maintenance: {:?}", app.ui.dialog);
+    };
+    assert_eq!(mode, "detect");
+    assert_eq!(scope, "folder");
+    assert_eq!(folders, "/pics/trip");
+    assert!(*include_subfolders);
+}

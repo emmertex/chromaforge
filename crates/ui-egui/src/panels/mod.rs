@@ -32,6 +32,7 @@ pub mod keyword_list;
 pub mod keywording;
 pub mod layout_overlay;
 pub mod left;
+pub mod lens_blur;
 pub mod levels;
 pub mod library_problem;
 pub mod manager_table;

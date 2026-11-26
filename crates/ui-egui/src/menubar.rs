@@ -137,6 +137,7 @@ pub const MENUS: &[&str] = &["File", "Edit", "Library", "Photo", "Metadata", "Vi
 /// Order inside submenus whose items come from the registry: (menu, submenu, ids and `---`).
 /// Items not listed follow in registry order, dialogs (labels ending in `…`) last.
 const SUB_LAYOUT: &[(&str, &str, &[&str])] = &[
+    ("Library", "Faces", &["faces.detect=Find Faces Again…", "faces.clearAndRescan", "---", "dialog.faceMaintenance"]),
     (
         "Photo",
         "Develop Settings",
@@ -1648,6 +1649,26 @@ mod tests {
         a.ui.module = crate::module::ModuleId::Library;
         a.ui.view = ViewMode::Compare;
         check(&a);
+    }
+
+    #[test]
+    fn face_actions_are_grouped_in_the_library_faces_submenu() {
+        let app = app();
+        let bar = menu_bar(&app);
+        let Some((_, library)) = bar.iter().find(|(title, _)| title == "Library") else { panic!("Library menu") };
+        let Some(MenuNode::Submenu { children, .. }) =
+            library.iter().find(|node| matches!(node, MenuNode::Submenu { label, .. } if label == "Faces"))
+        else {
+            panic!("Library ▸ Faces submenu")
+        };
+        let actions = ["faces.detect", "faces.clearAndRescan", "dialog.faceMaintenance"];
+        for id in actions {
+            assert!(find(children, id).is_some(), "{id} is in Library ▸ Faces");
+        }
+        assert!(
+            !library.iter().any(|node| matches!(node, MenuNode::Item { id, .. } if actions.contains(&id.as_str()))),
+            "face actions do not add separate top-level Library rows"
+        );
     }
 
     fn find<'a>(nodes: &'a [MenuNode], id: &str) -> Option<&'a MenuNode> {

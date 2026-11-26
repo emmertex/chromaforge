@@ -997,6 +997,9 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
             }
         }
     }
+    // (Lens Blur is a block of its own, under the sections: a fold and an eye of its own)
+    divider(ui);
+    super::lens_blur::mask_block(app, ui, &m);
     // Recolor after the mask's slider sections: its rows read the colour the sliders produced
     // (a flyout row here above the sections shifts their layout, which the drag gestures of the
     // controls on the photo don't follow)

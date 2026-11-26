@@ -12,7 +12,7 @@ have their own documents: [raw-parity.md](raw-parity.md), [file-format-parity.md
 
 | Number | Value | Kind |
 |---|---:|---|
-| **Feature breadth**, checklist | **91.2%** of 634 in-scope rows (P0 98.0%, P1 94.8%, P2 82.6%; recounted 2026-11-25 after the Glow row, same figure as ROADMAP.md) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
+| **Feature breadth**, checklist | **91.3%** of 635 in-scope rows (P0 98.0%, P1 95.1%, P2 82.7%; recounted 2026-11-26 after the Catalog sets row, same figure as ROADMAP.md) | **measured**: recount of [parity-checklist.md](parity-checklist.md) rows (✅ 1, 🟡 ½, 🚫 left out), the same rule `cargo xtask parity` uses |
 | **Feature breadth**, weighted by use | **~77%** | estimated: feature-area table below |
 | **Ready for real work** (full target) | **~62%** (range 57–67%) | estimated: weighted sum over the dimensions with written weights, see [below](#ready-for-real-work-mainstream-practitioner-and-essentials-user) |
 | **Mainstream practitioner** | **~52%** (range 47–57%) | estimated: weekly areas of a working photographer, depth 75.6% × 0.804 × colour 0.85 |

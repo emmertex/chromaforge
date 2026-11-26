@@ -3268,3 +3268,89 @@ fn invert_brush_resize_setting_reverses_trackpad_and_wheel_direction() {
     scroll_trackpad(&mut h, 50.0);
     assert!(h.app.ui.remove_size > r1, "inverted trackpad scroll down grows remove brush: {r1} -> {}", h.app.ui.remove_size);
 }
+
+/// Lens Blur Brush Refinement: Focus / Blur pick a brush that paints on the photo from the Edit
+/// panel (ported from upstream PR #2661's tests) (one `lensBlur.brushStroke` per drag, with the brush's settings); ⌥ erases; Reset clears.
+#[test]
+fn lens_blur_focus_and_blur_brushes_paint_on_the_photo() {
+    // (`panel.edit` toggles the panel, which a session opens on: set it instead)
+    let mut h = detail("panel.masking");
+    // tall enough for the Lens Blur section under the closed sections
+    assert_eq!(h.request("ui.resize", json!({"width": 1200, "height": 1400}), T)["ok"], true);
+    let r = h.request("ui.set", json!({"right": "edit", "openSections": ["lensBlur"], "histogram": false}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    // off: the brushes don't paint
+    click(&mut h, "button:lensBlurFocus");
+    assert_eq!(h.app.ui.tool, "", "no brush while the blur is off");
+    click(&mut h, "check:lensBlur.enabled");
+    assert!(develop(&h).lens_blur.enabled);
+    click(&mut h, "button:lensBlurFocus");
+    assert_eq!(h.app.ui.tool, "lensBlurFocus");
+    h.app.ui.lens_blur_brush_amount = 60.0;
+    pointer(
+        &mut h,
+        json!([{"kind": "down", "x": 0.3, "y": 0.5}, {"kind": "drag", "x": 0.4, "y": 0.5}, {"kind": "drag", "x": 0.5, "y": 0.5}, {"kind": "up", "x": 0.5, "y": 0.5}]),
+    );
+    let b = develop(&h).lens_blur;
+    assert_eq!(b.focus_strokes.len(), 1, "{b:?}");
+    assert!(b.focus_strokes[0].points.len() >= 2 && b.focus_strokes[0].density == 60.0 && b.blur_strokes.is_empty());
+    assert!(
+        b.focus_strokes[0].size > 0.0 && b.focus_strokes[0].size < 0.2 && b.focus_strokes[0].model == lcc_develop::BRUSH_MODEL_LRC,
+        "{:?}",
+        b.focus_strokes[0]
+    );
+    click(&mut h, "button:lensBlurBlur");
+    assert_eq!(h.app.ui.tool, "lensBlurBlur");
+    brush_at(&mut h, 0.6, 0.4);
+    let r = h.request("ui.pointer", json!({"events": [{"kind": "down", "x": 0.7, "y": 0.4}, {"kind": "up", "x": 0.7, "y": 0.4}], "alt": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    let b = develop(&h).lens_blur;
+    assert_eq!(b.blur_strokes.len(), 2);
+    assert!(!b.blur_strokes[0].erase && b.blur_strokes[1].erase, "⌥ erases");
+    click(&mut h, "button:lensBlurBrushReset");
+    let b = develop(&h).lens_blur;
+    assert!(b.focus_strokes.is_empty() && b.blur_strokes.is_empty());
+    // switching the blur off puts the brush down
+    click(&mut h, "check:lensBlur.enabled");
+    assert_eq!(h.app.ui.tool, "");
+    h.settle(SETTLE);
+}
+
+/// A mask's Lens Blur is a block of its own under the mask's sliders: which side it blurs, its
+/// sliders, an eye that switches it off (its controls then inert) and a header that folds it.
+#[test]
+fn a_masks_lens_blur_block_picks_the_side_and_switches_off() {
+    let mut h = detail("panel.masking");
+    assert_eq!(h.request("ui.resize", json!({"width": 1200, "height": 3200}), T)["ok"], true);
+    exec(&mut h, "mask.add", json!({"kind": "linear", "start": [0.5, 0.2], "end": [0.5, 0.7]}));
+    h.settle(SETTLE);
+    let adjust = |h: &Headless| develop(h).masks[0].adjust;
+    // the block's own sliders, not one more in the list
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "section:mask:lensBlur"));
+    assert!(h.app.widgets.iter().any(|(id, _)| id == "slider:lens_blur_boost"));
+    // blurring the outside starts with a visible amount
+    click(&mut h, "button:maskLensBlurSide-outside");
+    let a = adjust(&h);
+    assert!(a.lens_blur_outside && a.lens_blur == 50.0, "{a:?}");
+    let r = h.request("ui.clickWidget", json!({"id": "slider:lens_blur_boost", "fx": 0.6}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(adjust(&h).lens_blur_boost > 30.0, "{:?}", adjust(&h));
+    // the eye (shown over the header) switches it off and keeps the values
+    h.request("ui.hoverWidget", json!({"id": "section:mask:lensBlur"}), T);
+    h.settle(SETTLE);
+    click(&mut h, "sectionEye:mask:lensBlur");
+    let off = adjust(&h);
+    assert!(off.lens_blur_off && off.lens_blur == 50.0 && off.lens_blur_outside, "{off:?}");
+    // off: its controls don't respond
+    click(&mut h, "button:maskLensBlurSide-inside");
+    assert_eq!(adjust(&h), off);
+    // on again
+    click(&mut h, "sectionEye:mask:lensBlur");
+    assert!(!adjust(&h).lens_blur_off);
+    // the header folds it
+    click(&mut h, "section:mask:lensBlur");
+    assert!(h.app.ui.section_folded("mask:lensBlur"));
+    click(&mut h, "section:mask:lensBlur");
+    assert!(!h.app.ui.section_folded("mask:lensBlur"));
+    h.settle(SETTLE);
+}
