@@ -83,6 +83,16 @@ impl GreenSeries {
         Ok(())
     }
 
+    /// Replaces every sample of every frame by `f(frame, sample)` (in place).
+    pub fn map_frames(&mut self, f: impl Fn(usize, u16) -> u16 + Sync) {
+        use rayon::prelude::*;
+        self.frames.par_iter_mut().enumerate().for_each(|(k, fr)| {
+            for v in fr.iter_mut() {
+                *v = f(k, *v);
+            }
+        });
+    }
+
     /// Green sample of frame `k` at site `(x, y)`, `None` outside the area, on a non-green site or for a missing frame.
     #[inline]
     pub fn g(&self, k: usize, x: i64, y: i64) -> Option<f64> {

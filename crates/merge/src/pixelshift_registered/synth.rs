@@ -205,6 +205,14 @@ pub fn series(spec: &Spec) -> Result<GreenSeries, String> {
     Ok(s)
 }
 
+/// The full mosaics of the spec (RGGB-like layout for `gpar` 1, GRBG-like for 0) with the geometry of the active area.
+pub fn mosaics(spec: &Spec) -> Result<super::samples::Mosaics, String> {
+    let scene = Scene::new(spec.seed, spec.level, spec.contrast);
+    let frames: Vec<Vec<u16>> = (0..spec.frames).map(|k| mosaic(spec, &scene, k)).collect();
+    let table = if spec.gpar == 1 { [0, 1, 1, 2] } else { [1, 0, 2, 1] };
+    super::samples::Mosaics::from_parts(frames, spec.aw, spec.ah, 0, 0, spec.aw, spec.ah, table, BLACK, WHITE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

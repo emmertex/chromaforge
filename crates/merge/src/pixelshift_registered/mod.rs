@@ -12,10 +12,15 @@
 //! from any other raw converter or pixel-shift tool was read or used.
 
 pub mod coarse;
+pub mod fallback;
 pub mod fft;
+pub mod gain;
+pub mod gate;
 pub mod measure;
 pub mod model;
 pub mod positions;
+pub mod register;
+pub mod samples;
 pub mod series;
 pub mod tiles;
 

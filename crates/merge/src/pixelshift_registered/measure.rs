@@ -27,9 +27,9 @@ const STOP_UPDATE: f64 = 2e-4;
 /// A tile counts as converged when the largest update of its last round is at most this (sites).
 pub const CONVERGED: f64 = 0.05;
 /// Early stop: from the third round on, a tile whose update is above [`CONVERGED`] and above this value, or above
-/// [`EARLY_RATIO`] times the update before, is given up. The ratio was chosen on the development series: 0.7 gave up two tiles of the noisy ISO 3200 series that would have converged; 0.85 gives up none of them and saves a quarter of its measurement time.
-pub const EARLY_ABS: f64 = 0.2;
-pub const EARLY_RATIO: f64 = 0.85;
+/// [`EARLY_RATIO`] times the update before, is given up. Chosen on 10 development series with many failing tiles: a ratio of 0.7 to 0.95 or a limit of 0.2 gave up tiles that would have converged (up to 5 of 25, which changed one verdict from better to equal); a limit of 0.5 with a ratio that never applies gives up none of them and still saves about a sixth of the time of the series with many lost tiles.
+pub const EARLY_ABS: f64 = 0.5;
+pub const EARLY_RATIO: f64 = 100.0;
 
 /// Thresholds of the early stop.
 #[derive(Debug, Clone, Copy, PartialEq)]
