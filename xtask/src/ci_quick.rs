@@ -9,6 +9,8 @@
 //!   an API change), the whole workspace when a workspace-wide file changed;
 //! - the tests of the changed packages only (not their dependents), built with `-p`;
 //! - heif when `lcc-codecs` / `lcc-heif` changed;
+//! - clippy of `sdk/stamp` when a file under it changed, or a root lint, toolchain or cargo config file
+//!   its build reads (its own workspace, so no package above covers it; its fmt check runs with every `--quick`);
 //! - parity when the tracker docs, a command/control crate, or a file's path changed (renames and
 //!   deletions: the tracker cites paths);
 //! - the wasm check of the changed packages that must build for wasm32.
@@ -31,11 +33,21 @@ const WORKSPACE_WIDE_DIRS: &[&str] = &[".cargo/"];
 const PARITY_PACKAGES: &[&str] = &["lcc-engine", "lcc-develop", "lcc-ui-egui", "lcc-cli"];
 const PARITY_DOCS: &[&str] = &["docs/parity-checklist.md", "docs/gaps.md"];
 const HEIF_PACKAGES: &[&str] = &["lcc-codecs", "lcc-heif"];
+/// The `plugin-stamp` tool: excluded from the root workspace, so no changed package names it. Its clippy
+/// runs when a file under this directory changed; `EMBEDDED` maps its files to `lcc-plugins`, which depends on it.
+const STAMP_DIR: &str = "sdk/stamp/";
+/// Root files and directories the stamp build reads (cargo and clippy search upward from `sdk/stamp`):
+/// a change to one of them lints the stamp tool too. Its own `Cargo.toml` and `Cargo.lock` are in `sdk/stamp`,
+/// so the root's do not reach it.
+const STAMP_CONFIG: &[&str] = &["clippy.toml", "rust-toolchain", "rust-toolchain.toml"];
+const STAMP_CONFIG_DIRS: &[&str] = &[".cargo/"];
 /// Files outside a package's directory that it compiles in (`include_str!` / `include_bytes!`,
 /// a build script's `rerun-if-changed`): a change to one counts as a change to those packages.
 /// An entry ending in `/` covers the directory. `embedded_files_are_mapped` keeps this complete.
 const EMBEDDED: &[(&str, &[&str])] = &[
     ("assets/app-icon/", &["lcc-app"]),
+    // `plugin-stamp` is a path dependency of lcc-plugins: a change under it changes what that crate compiles
+    ("sdk/stamp/", &["lcc-plugins"]),
     ("assets/camera-profiles/", &["lcc-engine"]),
     ("assets/camera-tone/", &["lcc-engine"]),
     ("assets/fonts/", &["lcc-engine", "lcc-ui-egui", "lcc-pdf", "lcc-text"]),
@@ -71,6 +83,8 @@ pub struct Plan {
     pub workspace_wide: bool,
     pub heif: bool,
     pub parity: bool,
+    /// A file under `sdk/stamp/`, or a root config file its build reads, changed: its clippy runs (`ci --quick`).
+    pub stamp: bool,
     /// What the changes were measured against, for the log and the report.
     pub base: String,
     pub files: usize,
@@ -93,6 +107,9 @@ pub fn plan(changed: &[Changed], packages: &[(String, String)], base: String) ->
         }
         if PARITY_DOCS.contains(&path) || c.gone {
             p.parity = true;
+        }
+        if path.starts_with(STAMP_DIR) || STAMP_CONFIG.contains(&path) || STAMP_CONFIG_DIRS.iter().any(|d| path.starts_with(d)) {
+            p.stamp = true;
         }
         // the innermost package directory containing the file
         let owner = packages
@@ -238,6 +255,7 @@ mod tests {
             ("lcc-cli", "apps/lcc-cli"),
             ("xtask", "xtask"),
             ("lcc-raw-nested", "crates/raw/nested"),
+            ("lcc-plugins", "crates/plugins"),
         ]
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
@@ -276,6 +294,25 @@ mod tests {
             assert!(!p.rust() && !p.parity);
             let p = plan(&[ch("docs/gaps.md")], &pkgs(), "b".into());
             assert!(!p.rust() && p.parity);
+        }
+        // sdk/stamp is outside the workspace: its files set `stamp`, and lcc-plugins (its path dependent) tests
+        {
+            let p = plan(&[ch("sdk/stamp/src/lib.rs")], &pkgs(), "b".into());
+            assert!(p.stamp && p.rust() && !p.heif && !p.parity);
+            assert_eq!(p.packages.iter().map(String::as_str).collect::<Vec<_>>(), ["lcc-plugins"]);
+            let p = plan(&[ch("sdk/stamp-notes.md")], &pkgs(), "b".into());
+            assert!(!p.stamp, "a sibling path that only shares the name is not the tool");
+            let p = plan(&[ch("crates/raw/src/lib.rs")], &pkgs(), "b".into());
+            assert!(!p.stamp);
+            // the root's lint, toolchain and cargo config reach sdk/stamp's build; its root manifests do not
+            for path in ["clippy.toml", "rust-toolchain.toml", ".cargo/config.toml"] {
+                let p = plan(&[ch(path)], &pkgs(), "b".into());
+                assert!(p.stamp, "{path} is read by the stamp build");
+            }
+            for path in ["Cargo.toml", "Cargo.lock"] {
+                let p = plan(&[ch(path)], &pkgs(), "b".into());
+                assert!(!p.stamp && p.workspace_wide, "{path} is not read by the stamp build");
+            }
         }
         // workspace files heif and parity triggers
         {

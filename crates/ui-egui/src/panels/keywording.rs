@@ -126,18 +126,10 @@ fn chip(ui: &mut egui::Ui, path: &str, name: &str, partial: bool, cross: bool, r
     (resp, x)
 }
 
-/// Take the chip's keyword off the selected photos. Several photos losing it at once is said, with
-/// the way back (one photo's chip going is enough); a refusal is said too.
+/// Take the chip's keyword off the selected photos. The overlay says what changed and how many photos; a refusal
+/// is said by a toast.
 fn remove(app: &mut LccApp, ctx: &egui::Context, chip: &Chip) {
     match app.run("photo.setMeta", json!({"removeKeywords": [chip.path]})) {
-        Ok(_) if chip.have > 1 => {
-            let name = chip.path.replace('|', " › ");
-            app.toast_for(
-                ctx,
-                crate::i18n::tr_format!("Removed “{name}” from {n} photos. Edit ▸ Undo puts it back.", name = name, n = chip.have),
-                6.0,
-            );
-        }
         Ok(_) => {}
         Err(e) => app.toast_error(ctx, e),
     }

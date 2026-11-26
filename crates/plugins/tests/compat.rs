@@ -419,3 +419,26 @@ fn unknown_manifest_fields_are_named_and_the_install_goes_ahead() {
         p.log
     );
 }
+
+#[test]
+fn the_import_hook_and_library_remove_features_are_known() {
+    // this host has them (every name in HOST_FEATURES is known by construction; the hooks in
+    // `requires` are spelled as the manifest does)
+    let dir = folder("import-features");
+    let mut m = Manager::open(&dir).unwrap();
+    m.install_bytes(&plugin("t.imports", "1.0.0", &["beforeImport", "afterImport", "libraryRemove"], false), None, false).unwrap();
+    assert!(m.get("t.imports").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // a host without them refuses each by name
+    let dir = folder("import-features-missing");
+    let mut m = Manager::open_with_features(&dir, &["jobs"]).unwrap();
+    let e =
+        m.install_bytes_by_user(&plugin("t.imports", "1.0.0", &["beforeImport", "afterImport", "libraryRemove"], false), None, false).unwrap_err();
+    assert_eq!(
+        e,
+        Error::Unsupported(vec!["beforeImport".into(), "afterImport".into(), "libraryRemove".into()]),
+        "every missing feature, and only those"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

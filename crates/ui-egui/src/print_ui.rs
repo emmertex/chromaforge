@@ -420,7 +420,7 @@ fn persist_reported(app: &mut LccApp, ctx: Option<&egui::Context>) {
     if let Err(e) = persist(app) {
         log::warn!("print settings not saved: {e}");
         if let (Some(ctx), Some((_, SAVE_ATTEMPTS))) = (ctx, &app.print.save_failed) {
-            app.toast(ctx, crate::i18n::tr_format!("Print settings not saved: {e}", e = e));
+            app.toast_error(ctx, crate::i18n::tr_format!("Print settings not saved: {e}", e = e));
         }
     }
 }
@@ -1182,9 +1182,8 @@ impl Module for PrintModule {
 }
 
 fn cmd(app: &mut LccApp, ctx: &egui::Context, id: &str, p: Value) {
-    if let Err(e) = app.run(id, p) {
-        app.toast_error(ctx, e);
-    }
+    let result = app.run(id, p);
+    app.report(ctx, result);
 }
 
 fn toolbar(ui: &mut egui::Ui, app: &mut LccApp) {

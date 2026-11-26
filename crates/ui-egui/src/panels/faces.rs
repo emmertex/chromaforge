@@ -182,7 +182,7 @@ fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value)
     if r.changed() {
         match app.run("faces.matching", json!({"mirrorAverage": on})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, "Matches a little more often, but scanning takes twice as long. Changing it scans the faces again.");
@@ -198,7 +198,7 @@ fn mirror_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, list: &Value)
                 // a person's page asks again for the faces that look like them
                 app.caches.person_page = None;
             }
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(
@@ -262,7 +262,7 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
     if selected_dev != dev_before {
         match app.run("faces.gpu", json!({"device": selected_dev})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 
@@ -296,7 +296,7 @@ fn gpu_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, gpu: &Value) {
     if selected_prec != prec_before {
         match app.run("faces.gpu", json!({"precision": selected_prec})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
 
@@ -395,7 +395,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     if r.changed() {
         match app.run("faces.enable", json!({"enabled": on})) {
             Ok(_) => app.caches.faces_epoch += 1,
-            Err(e) => app.toast(ui.ctx(), e),
+            Err(e) => app.toast_error(ui.ctx(), e),
         }
     }
     hint(ui, t, "Suggests who is in a photo from the faces you have named. Everything stays on your computer.");
@@ -494,6 +494,32 @@ fn scan_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
     let faces = status.field("indexedFaces").as_u64().unwrap_or(app.caches.faces_indexed);
     if faces > 0 {
         hint(ui, t, &crate::i18n::tr_format!("{n} faces learned.", n = faces));
+    }
+    let maintenance = app.session.execute("faces.scanStatus", &json!({})).unwrap_or(Value::Null);
+    let state = maintenance.field("state").as_str().unwrap_or("idle");
+    if matches!(state, "scanning" | "cancelling") {
+        let (done, total) = (maintenance.field("done").as_u64().unwrap_or(0), maintenance.field("total").as_u64().unwrap_or(0));
+        ui.label(crate::i18n::tr(if state == "cancelling" { "Stopping…" } else { "Face scan" }));
+        crate::progress::Progress::new(crate::progress::fraction_of(done, total))
+            .label(format!("{done} / {total}"))
+            .widget("faces:maintenanceProgress")
+            .show(ui);
+        if state == "scanning"
+            && let Some(id) = maintenance.field("taskId").as_u64()
+        {
+            let r = ui.button(crate::i18n::tr("Cancel"));
+            register(ui.ctx(), "button:facesMaintenanceCancel", r.rect);
+            if r.clicked()
+                && let Err(e) = app.session.activity.cancel(id)
+            {
+                app.toast_error(ui.ctx(), e);
+            }
+        }
+    } else {
+        let failed = maintenance.field("failed").as_u64().unwrap_or(0);
+        if failed > 0 {
+            ui.label(RichText::new(format!("{}: {failed}", crate::i18n::tr("Failed photos"))).color(t.caution));
+        }
     }
 }
 

@@ -145,6 +145,9 @@ pub struct ImportOptions {
     /// Import Suspected Duplicates" unchecked). A file at a path the library already lists, or one
     /// in Recently Deleted, is still handled as a duplicate.
     pub import_duplicates: bool,
+    /// The plug-ins' `beforeImport` hook is asked about each file (the default). Off for a
+    /// plug-in's own output (`library.add`), so a hook never re-asks about it.
+    pub plugin_hooks: bool,
 }
 
 /// How copies are filed in the destination. The date is the capture time, else the time of the
@@ -247,6 +250,11 @@ pub struct Skipped {
     pub unsupported: usize,
 }
 
+/// `skip_serializing_if` for a count that is usually zero.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ImportReport {
     pub imported: Vec<u64>,
@@ -276,6 +284,10 @@ pub struct ImportReport {
     pub sidecars: usize,
     /// What the folder walk left out ([`Expansion`]), as `library.importPreview` reports it.
     pub skipped: Skipped,
+    /// Files a plug-in's `beforeImport` hook told the import to skip.
+    /// Files a plug-in's `beforeImport` hook told the import to skip.
+    #[serde(rename = "skippedByPlugin", skip_serializing_if = "is_zero")]
+    pub skipped_by_plugin: usize,
     /// Per-photo diagnostics from foreign XMP develop settings that could not be fully carried over.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ImportWarning>,
@@ -1214,7 +1226,22 @@ pub fn import(s: &mut Session, paths: &[String], mode: ImportMode) -> crate::Res
 /// run the first on a worker thread; here both run in turn.
 pub fn import_with(s: &mut Session, paths: &[String], opts: &ImportOptions) -> crate::Result<ImportReport> {
     let mut job = ImportJob::new(s, opts.clone())?;
-    let prepared = job.prepare(paths, &std::sync::atomic::AtomicBool::new(false));
+    // The beforeImport hook asks on this thread (the session's): a relayed call would wait for
+    // the very thread it is on. (The UI's import prepares on a worker instead, where the hook
+    // stored on the job — `ImportJob::before_import` — is used.) A plug-in's own output
+    // (`library.add`, `pluginHooks: false`) and a browsed folder are never asked.
+    let prepared = if opts.plugin_hooks && !opts.local {
+        let (files, walked) = job.expand_reported(paths);
+        let mut skipped = 0usize;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let files = crate::cmd::plugins::before_import_files(s, files, &cancel, &mut skipped);
+        let mut prepared = job.prepare_files(files, &cancel);
+        prepared.skipped = walked;
+        prepared.plugin_skipped += skipped;
+        prepared
+    } else {
+        job.prepare(paths, &std::sync::atomic::AtomicBool::new(false))
+    };
     // probes a scan left for files not imported now stay for a later import
     s.import_probes.extend(std::mem::take(&mut job.cache));
     commit_prepared(s, &job.opts, &job.now, prepared)
@@ -1251,6 +1278,9 @@ pub struct ImportJob {
     /// Files found so far (folders expanded) and handled so far, for progress.
     pub total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub done: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// A plug-in's `beforeImport` hook (the UI builds one on the session's thread; the
+    /// `library.import` command filters on the session's thread instead, leaving this `None`).
+    pub before_import: Option<std::sync::Arc<crate::cmd::plugins::BeforeImportHook>>,
     /// Of those, the files that have to be read first (not probed by a preceding scan) and the
     /// ones read so far: the step before they are handled.
     pub read_total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -1266,6 +1296,8 @@ pub struct Prepared {
     pub cut_short: bool,
     /// What [`ImportJob::prepare`]'s folder walk left out.
     pub skipped: Skipped,
+    /// Files a plug-in's `beforeImport` hook told the import to skip.
+    pub plugin_skipped: usize,
     items: Vec<PreparedItem>,
 }
 
@@ -1407,6 +1439,7 @@ impl ImportJob {
             now: (s.clock)(),
             total: Default::default(),
             done: Default::default(),
+            before_import: None,
             read_total: Default::default(),
             read_done: Default::default(),
         })
@@ -1427,6 +1460,13 @@ impl ImportJob {
     /// import would handle; counted in [`ImportJob::total`].
     pub fn expand(&self, paths: &[String]) -> Vec<String> {
         self.expand_report(paths).files
+    }
+
+    /// [`ImportJob::expand`], with what the folder walk left out (for a caller that prepares the
+    /// files itself, as the `library.import` command does to ask the `beforeImport` hook).
+    pub fn expand_reported(&self, paths: &[String]) -> (Vec<String>, Skipped) {
+        let found = self.expand_report(paths);
+        (found.files, Skipped { unreadable: found.unreadable, unsupported: found.unsupported })
     }
 
     /// [`ImportJob::expand`], with what the folder walk left out.
@@ -1479,13 +1519,21 @@ impl ImportJob {
     }
 
     /// [`ImportJob::prepare`] for files [`ImportJob::expand`] returned.
-    pub fn prepare_files(&mut self, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool) -> Prepared {
+    pub fn prepare_files(&mut self, mut files: Vec<String>, cancel: &std::sync::atomic::AtomicBool) -> Prepared {
         use std::sync::atomic::Ordering::Relaxed;
         // the library as it was, kept for the ownership of the shared stem sidecars below
         let library = self.look_up_library();
         let opts = self.opts.clone();
         let mode = self.mode;
-        let mut out = Prepared { scanned: files.len(), ..Default::default() };
+        // a plug-in's beforeImport hook: skipped files never reach the batch (they were counted
+        // as found, so they are counted as done), a replacement goes through every check below
+        let scanned = files.len();
+        let mut plugin_skipped = 0usize;
+        if let Some(hook) = &self.before_import {
+            files = hook.filter(files, cancel, &mut plugin_skipped);
+            self.done.fetch_add(plugin_skipped, Relaxed);
+        }
+        let mut out = Prepared { scanned, plugin_skipped, ..Default::default() };
         let mut todo = Vec::new();
         // browsed (Local) records whose files are copied or moved: the record follows its file
         let mut follow: HashMap<String, PhotoId> = HashMap::new();
@@ -1911,7 +1959,8 @@ fn trashed_file_is_gone(cat: &lcc_catalog::Catalog, id: PhotoId) -> bool {
 /// taken back.
 pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepared: Prepared) -> crate::Result<ImportReport> {
     let now = now.to_string();
-    let mut report = ImportReport { scanned: prepared.scanned, skipped: prepared.skipped, ..Default::default() };
+    let mut report =
+        ImportReport { scanned: prepared.scanned, skipped: prepared.skipped, skipped_by_plugin: prepared.plugin_skipped, ..Default::default() };
     let mut ops = Vec::new();
     // Move: placed at the destination, sources untouched until the records are committed
     let mut placed: Vec<crate::import_move::Placed> = Vec::new();
@@ -2463,6 +2512,7 @@ mod prepared_tests {
             scanned: 2,
             cut_short: false,
             skipped: Skipped::default(),
+            plugin_skipped: 0,
             items: vec![PreparedItem::Ready(Box::new(ready(&existing_path))), PreparedItem::Ready(Box::new(ready(&other_path)))],
         };
         prepared.revalidate_add(&s);

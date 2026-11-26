@@ -860,7 +860,7 @@ impl Drop for ReadOnly {
 
 #[cfg(unix)]
 fn toast_text(h: &Headless) -> String {
-    h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 #[cfg(unix)]

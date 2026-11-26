@@ -13,6 +13,8 @@ plug-ins are not supported.
 | Settings (the plug-in's page in the Plug-in Manager) | `settings: [{key, label, type, …, prepare?}]` | none, or `{"hook":"settings.prepare"}` when a field has `prepare: true`; the plug-in reads them with `settings.get` |
 | Export post-processing | `hooks.export: true` | `{"hook":"export","files":[{path, photo}]}`; the exported files are lent to the call for reading and writing |
 | Metadata and keyword suggestions | `hooks.metadata: true` | `{"hook":"metadata","photos":[photo.inspect JSON]}` → `{"suggestions":[{photo, fields?, keywords?}]}` |
+| Import preparation (each file, before it is read) | `hooks.beforeImport: true` | `{"hook":"beforeImport","path","size","source"}`; the reply may replace the file or skip it (see [Import hooks](#import-hooks)) |
+| Imported batches | `hooks.afterImport: true` | `{"hook":"afterImport","photos":[photo.inspect JSON],"source"}` (see [Import hooks](#import-hooks)) |
 | A publish service (kind `plugin:<id>` in `publish.addService`) | `publish: {id, name}` | `{"hook":"publish.upload","service","item":{path, photo, title, caption, keywords, remoteId?}}` → `{remoteId, url?}`; `{"hook":"publish.delete","service","remoteId"}` |
 | Export destinations ("Then send to" in the Export dialog) | `exportDestinations: [{id, name, dialog}]` | `{"hook":"export.destination","destination","args","files":[{path, photo}]}` after the files are written and the export hooks ran; the files are lent to the call; a `message` in the reply is shown |
 | Programs it starts (an installed tool, such as a raw converter) | `permissions.programs: [{id, name, macBundleIds?, windowsExe?, linuxExe?}]` | `{"hook":"program.end","run","program","status","code","tmpDir"}` when a run ends (see [Programs](#programs)) |
@@ -145,7 +147,8 @@ asks the user:
   the user allows: ask early (make the call that needs the permission first).
 - **With nobody to ask** (the command line, `mcp` without `--connect`, an agent's `plugin.run`, a
   [job](#jobs-long-commands-with-progress) on a worker, and every hook: export hooks and
-  destinations, publish services, metadata providers, `program.end`, settings' prepare steps,
+  destinations, publish services, metadata providers, `program.end`, the import hooks
+  (`beforeImport`, `afterImport`), settings' prepare steps,
   even after an export the user started) the call fails with "needs `X`, not granted to this
   plug-in; allow it in the Plug-in Manager (File ▸ Plug-ins ▸ Plug-in Manager…)", and nothing is
   recorded as asked.
@@ -172,6 +175,7 @@ reason. A plug-in with such a root would be able to rewrite its own grant or ano
 | `catalog: true` | `catalog.query`, `photo.inspect`, `catalog.stats`, `keyword.list` (read-only) |
 | `metadataWrite: true` | `metadata.setStandard {ids, title?, caption?, keywords?, addKeywords?, …}` |
 | `libraryAdd: true` | `library.add {path, from, stack?, album?}`: adds a file a tool made from a photo to the library, from that photo's folder only (see [Adding files to the library](#adding-files-to-the-library)). Requires `libraryAdd`. |
+| `libraryRemove: true` | `library.remove {ids}`: moves photos to Recently Deleted; the files on disk are never touched (see [Import hooks](#import-hooks)). Requires `libraryRemove`. |
 | `pixels: true` | `photo.pixels {photo, longEdge?}`: a downsized copy of a photo, the whole uncropped frame (see [Pixels and crop](#pixels-and-crop)). Requires `pixels`. |
 | `virtualCopy: true` | `photo.virtualCopy {photo, name?}`: makes a virtual copy of a photo, stacked with it (see [Pixels and crop](#pixels-and-crop)). Requires `virtualCopy`. |
 | `crop: true` | `develop.setCrop {photo, rect, angle?}`: sets a photo's crop, one History step, editable afterwards like any crop (see [Pixels and crop](#pixels-and-crop)). Requires `crop`. |
@@ -246,7 +250,8 @@ Plug-in Manager show which program it is, not how the plug-in will use it.
   Only a plug-in command (`plugin.run`, a menu item) starts programs: export hooks, export
   destinations, metadata providers and `program.end` can list programs but get an error from
   `program.start` ("start the program from a command"), and so do a command's and the settings'
-  prepare steps ("a prepare step can only read"). Publish services have neither (no
+  prepare steps ("a prepare step can only read"), and `beforeImport` on an unattended import
+  (on one the user started, the hook may start programs, [Import hooks](#import-hooks)). Publish services have neither (no
   catalog, no programs). A command's lookups (at most 3 seconds per lookup) and the check that the
   program didn't fail at once (300 ms) run on the thread that runs the command, in the app the UI
   thread, so a start can hold the window that long.
@@ -373,7 +378,7 @@ manifest error.
 - **Reading, not writing:** a job may read the catalog (`catalog.query`, `photo.inspect`, …), and
   read and write its own namespace (`ns.set`) and settings, files and the network as granted. It
   may not change the catalog:
-  `metadata.setStandard`, `library.add`, `develop.setCrop` and `photo.virtualCopy` fail with "writes to the catalog aren't available in a
+  `metadata.setStandard`, `library.add`, `library.remove`, `develop.setCrop` and `photo.virtualCopy` fail with "writes to the catalog aren't available in a
   job yet", and `program.start` fails too. The catalog reads are answered by the window between
   frames; a session with no window (headless CLI or MCP) refuses them, so run a job there with
   **`plugin.run {…, wait: true}`**: it runs to its end on the caller's thread and returns the
@@ -383,6 +388,56 @@ manifest error.
   clicked meanwhile: leave `wait` out there and follow the row (`activity.list`).
 
 The `job-tools` example works through the selected photos ten per call, reporting each one.
+
+## Import hooks
+
+Two hooks let a plug-in join an import, and a host call takes photos back out of it. The
+permissions and features: `beforeImport` and `afterImport` in `hooks` (host features of the same
+names), and the `libraryRemove` permission (host feature `libraryRemove`) for `library.remove`
+([Compatibility](#compatibility-requires-and-version)).
+
+- **`beforeImport`** (`hooks.beforeImport: true`): asked about each file while an import prepares
+  it, before the file is read or checked. The first enabled plug-in that declares the hook is
+  asked, in install order. The request carries `path`, `size` (bytes, as the file system reports
+  them) and `source` (as `command.prepare` names it, [Adding files to the
+  library](#adding-files-to-the-library)). The reply is exactly one of:
+  - `{}`: import the file as it is;
+  - `{"replace": "/abs/path"}`: import that file instead. The host checks it is absolute, a
+    readable file of a supported kind, and not the file itself; an invalid answer is logged and
+    the original imports;
+  - `{"skip": true}`: the file is left out of the import; `library.import` reports the count in
+    `skippedByPlugin`.
+
+  The file itself is lent to the call for reading, as an export hook's files are. A trap, a
+  time-out or any error imports the file as it is: an import is never failed by its hook.
+  `program.start` works in this hook **when the import was started by the user** (a menu item, a
+  drop, the command line); on an unattended import (a watched folder, Auto Import, the camera
+  roll, a plug-in's own `library.add`) it fails saying so, and the permission ask follows the
+  usual rules ([Permissions](#permissions)): with nobody to ask on a worker, the call fails with
+  "needs `programs`, not granted to this plug-in…". A plug-in's own output never sees the hook
+  (`library.add` imports with `pluginHooks: false`), so a plug-in that transcodes and replaces
+  cannot be asked about its own result.
+
+  **Where it runs:** the app's import prepares files on a worker, so the hook's catalog requests
+  are relayed to the session's thread and answered there, as a `program.end` hook's are; in a
+  session nobody answers for (a headless CLI or MCP run) they are refused at once, and every
+  file imports as it is.
+
+- **`afterImport`** (`hooks.afterImport: true`): called after each committed batch of an import
+  (the app's imports commit in batches, so a large import may call it several times), on the
+  session's thread, with `photos` (each photo as `photo.inspect` JSON, as the metadata hook's)
+  and `source`. Catalog writes work (`metadataWrite`); `program.start` does not. Its result is
+  reported in the import's output as `pluginResults: [{plugin, ok | error}]`; a failing plug-in
+  never fails the import.
+
+- **`library.remove {ids}`** (`libraryRemove`; `host::library_remove(ids)`) → `{removed,
+  skipped}`: moves the photos to Recently Deleted, as the app's own delete does: one undo step
+  ("Remove from Plug-in"), the files on disk are never touched, and the user's selection stays
+  as it was. Ids already in Recently Deleted (or only browsed there) are skipped; an id the
+  library doesn't know fails the call before anything changes. It writes to the catalog, so it
+  is refused in a prepare step and in a job, like `library.add`.
+
+The `import-tools` example (below) does all of this.
 
 ## Pixels and crop
 
@@ -440,7 +495,7 @@ hook that's never called, a host call that fails as an unknown method).
 
 - **The host's list** is `lcc_plugins::HOST_FEATURES`, and `plugin.list` returns it as
   `host: {abi, features}`. Everything the host had when `requires` arrived is the baseline and
-  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)), `updates` (`updateUrl`, [Updates](#updates)), `quickActions` (`quickAction` on a command, [Quick actions](#quick-actions)), and `publishServices` (`comments` on `publish`, the `publish.comments` hook, and the `account` and `collection` every publish request carries, [Publish services](#publish-services)). Every manifest field, permission group or host call added
+  has no name. Names so far: `programs` ([Programs](#programs)), `settings` ([below](#settings-remembered-values-and-prepare-steps)), `libraryAdd` ([Adding files to the library](#adding-files-to-the-library)), `jobs` ([Jobs](#jobs-long-commands-with-progress)), `pixels`, `crop` and `virtualCopy` ([Pixels and crop](#pixels-and-crop)), `pictures` (`icon` and `header`) and `about` (`homepage`, `repository`, `changelog`, `license`; both in [What a plug-in can add](#what-a-plug-in-can-add)), `updates` (`updateUrl`, [Updates](#updates)), `quickActions` (`quickAction` on a command, [Quick actions](#quick-actions)), `publishServices` (`comments` on `publish`, the `publish.comments` hook, and the `account` and `collection` every publish request carries, [Publish services](#publish-services)), `libraryRemove` (the `library.remove` host call, [Import hooks](#import-hooks)), `beforeImport` (the hook; on an attended import its `program.start` works) and `afterImport` (the hook after each imported batch; both [Import hooks](#import-hooks)). Every manifest field, permission group or host call added
   from then on gets a name there in the change that adds it, and its documentation here says
   which name to require.
 - **Names** are `[A-Za-z0-9._-]{1,64}`, at most 64, none repeated; anything else is a manifest
@@ -533,7 +588,7 @@ section is always true, and only then.
 
 ## Writing one in Rust
 
-The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Seven examples, each a complete plug-in:
+The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Nine examples, each a complete plug-in:
 
 | Example | Shows |
 |---|---|
@@ -542,6 +597,7 @@ The guest SDK is `sdk/plugin` (`lcc-plugin-sdk`). Seven examples, each a complet
 | `sdk/examples/export-tools` | **export hooks**: a post-process hook that reads each exported file (binary, `host::read_bytes`) and records its CRC-32; an **export destination** "WebDAV Upload" that `PUT`s the files to a server (`host::http_bytes`, basic auth, a dry-run switch) |
 | `sdk/examples/publish-folder` | a **publish service** "Local Gallery": copies each rendered photo into a gallery folder (one writable `fs` root), keeps an `index.json`, replaces on re-publish and deletes on removal |
 | `sdk/examples/program-tools` | **programs and adding files** (`requires: ["programs", "libraryAdd"]`): *Send to Converter* writes the selected photos' ids and originals, and the album it was started from, into the run's folder and starts a granted program on that list (`host::program_start`); its **`program.end`** hook reads the program's `result.txt` and adds each result to the library, stacked on its photo and in that album (`host::library_add`), or logs the exit code when the program failed |
+| `sdk/examples/import-tools` | **the import hooks** (`requires: ["beforeImport", "afterImport", "libraryRemove", "settings"]`): *beforeImport* replaces a file with a twin of another extension (the host checks the twin) or skips it, by the rule its settings set; *afterImport* tags each imported photo with its import date in the plug-in's namespace; *Remove from Library…* moves the selection to Recently Deleted with `library.remove` |
 | `sdk/examples/keyword-picker` | **settings, remembered values and a prepare step** (`requires: ["settings"]`): *Apply Keyword…* adds (or, with a switch that is never remembered, removes) one keyword on the selected photos, picked from the keywords in use. Its prepare step offers the keywords used on at least *n* photos (a setting), most used first or A to Z (another), runs at once when only one qualifies and explains when none does |
 | `sdk/examples/job-tools` | **a job** (`requires: ["jobs"]`): *Check Photos* works through the selected photos ten per call on a worker, reads each from the catalog, counts it done or failed (`job::item_done`, `job::item_failed`), shows the photo it is on (`job::detail`) and its progress, goes on with `job::continue_with(next)`, and stops cleanly when the row's ✕ is clicked (`job::cancelled`) |
 | `sdk/examples/custom-fields` | **custom metadata fields** Client / Job / Usage (editable in the Metadata panel) and Delivered (read-only), a *Set Job Fields…* command for the selection, an export hook that marks exported photos delivered, and a metadata provider that suggests the client as a keyword |
@@ -628,7 +684,7 @@ The manifest fields:
 | `permissions` | what the plug-in asks for (see [Permissions](#permissions)); ask for as little as possible |
 | `commands` | `[{id, label, menu?, dialog?, prepare?, job?, quickAction?}]`, File ▸ Plug-ins ▸ `name` ▸ `menu` ▸ `label`; dialog fields may say `remember: false`; `quickAction: true` adds a quick settings bar button ([Quick actions](#quick-actions)) |
 | `settings` | `[{key, label, type, …, prepare?}]`, at most 32; needs `requires: ["settings"]` |
-| `hooks` | `{export?: true, metadata?: true}` |
+| `hooks` | `{export?: true, metadata?: true, beforeImport?: true, afterImport?: true}` |
 | `publish` | `{id, name, comments?}`: one publish service; `comments: true` needs `requires: ["publishServices"]` ([Publish services](#publish-services)) |
 | `exportDestinations` | `[{id, name, dialog?}]`, at most 16 |
 | `metadataFields` | `[{key, label, type, …, readOnly?}]`, at most 32; `type` and its options as for dialog fields |
@@ -643,6 +699,8 @@ The manifest fields:
 | `export` | `req.files()` → `(path, photo)` of the written files | anything |
 | `export.destination` | `req.destination()`, `req.arg(key)`, `req.files()` | anything; `message` is shown |
 | `metadata` | `photos`: `photo.inspect` JSON | `{suggestions: [{photo, fields?, keywords?}]}` |
+| `beforeImport` | `req.path()`, `req.size()`, `req.source()` | exactly one of `{}` (import as is), `{"replace": "/abs/path"}`, `{"skip": true}`; a failure imports the file as is |
+| `afterImport` | `req.imported()` → photos (`photo.inspect` JSON), `req.source()` | anything; `message` is shown |
 | `publish.upload` | `item: {path, photo, title, caption, keywords, remoteId?}` | `{remoteId, url?}`; the same `remoteId` comes back on a re-publish and on removal |
 | `publish.delete` | `remoteId` | anything |
 | `publish.comments` | `remoteId` (only with `comments: true`) | `{comments: [{author, text, date?}]}` |
@@ -656,6 +714,7 @@ The manifest fields:
 | `host::query(params)` | `catalog.query` (also `photo.inspect`, `catalog.stats`, `keyword.list` via `call`) | `catalog` |
 | `host::call("metadata.setStandard", {ids, title?, caption?, keywords?, addKeywords?, …})` | writes standard fields | `metadataWrite` |
 | `host::library_add(path, from, stack, album)` | `library.add {path, from, stack?, album?}` → `{photo, added, reloaded}` | `libraryAdd` |
+| `host::library_remove(ids)` | `library.remove {ids}` → `{removed, skipped}` | `libraryRemove` |
 | `host::photo_pixels(photo, long_edge)` → `Pixels {width, height, rgb}` | `photo.pixels {photo, longEdge?}` | `pixels` |
 | `host::set_crop(photo, rect, angle)` | `develop.setCrop {photo, rect, angle?}` → `{rect, angle}` | `crop` |
 | `host::virtual_copy(photo, name)` → the copy's id | `photo.virtualCopy {photo, name?}` → `{photo}` | `virtualCopy` |
@@ -841,7 +900,10 @@ first stamped, signed version is a hand install. Pixel filters get none.
 **When the app checks:** only when the user turns a plug-in's check on (*Check for updates* on its
 page; off by default), and then only **when the Plug-in Manager opens**, at most once a day per
 plug-in. A result from within the day is shown as it was. Nothing contacts a feed while the
-Plug-in Manager is closed; *Check Now* (or `plugin.checkUpdates {id}`) checks at once. This is
+Plug-in Manager is closed; *Check Now* (or `plugin.checkUpdates {id}`) checks at once. Every check that
+runs adds one line to the plug-in's log, also one that finds nothing (`update check: up to date (version
+1.2.3)`), and the plug-in's page shows when the last one ran ("Last checked 12 minutes ago", as the app's own
+update window does); `plugin.list` → `updates.checkedAgo` gives the same time in seconds. This is
 separate from the app's own update check.
 
 ### The feed
@@ -1043,8 +1105,8 @@ manifest is always read from `pc_manifest`.
 when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256), a
 `settingsRevision` that changes when one of its settings does, `previousVersion` (the version
 `plugin.rollback` goes back to, or `null`), `signer` (the pinned signer's fingerprint, or
-`null`) and `updates` (`{check, available, reason, checkedAt?, error?, offer?}`: whether the user
-turned its check on, whether it can have one and why not, and the last check's time, error and
+`null`) and `updates` (`{check, available, reason, checkedAt?, checkedAgo?, error?, offer?}`: whether the user
+turned its check on, whether it can have one and why not, and the last check's time (and the seconds since it), error and
 offer: `{version, url, sha256, requires, permissions, changelog?, notes?}` from the feed, with `adds`, the declared
 groups the installed version doesn't have, and `missing`, the host features this app lacks), each `failed` row has `file`, `error`, `kind` (`plugin` or
 `filter`) and, when the module named one, `id`, and `skipped` counts the modules past the most the
@@ -1065,7 +1127,7 @@ plug-in's own icon when its manifest carries one), its name, version and a mark:
 right:
 
 - **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), *Check for updates*
-  and *Check Now* (a plug-in that can have update checks, [Updates](#updates)) with the update
+  and *Check Now* (a plug-in that can have update checks, [Updates](#updates)) with when the last check ran and the update
   found: its version, note, changelog link and the permission groups its feed says it adds, and
   **Update**, which asks first when the file wants groups the feed didn't declare; and tabs: Settings (when it declares settings), Permissions (each
   one it may ask for: allowed, denied on a date, not asked yet or refused, with Allow / Revoke), About (description, what it adds, its commands

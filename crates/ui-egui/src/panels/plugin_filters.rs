@@ -256,7 +256,7 @@ fn body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
             Action::End => app.run("develop.endInteraction", json!({})),
         };
         if let Err(e) = r {
-            app.toast(ui.ctx(), e);
+            app.toast_error(ui.ctx(), e);
         }
     }
 }

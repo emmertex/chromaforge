@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::headless::Headless;
 use crate::state::{RightPanel, ViewMode};
+use crate::toast::{self, ToastKind};
 use crate::{LccApp, Services};
 
 const T: Duration = Duration::from_secs(20);
@@ -195,11 +196,11 @@ fn a_key_shows_one_note_not_a_toast_as_well_and_the_mode_decides_what_shows() {
     press(&mut h, "z", true);
     assert!(shown(&mut h)["title"].as_str().is_some_and(|t| t.starts_with("Undo")));
     assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
-    // with the overlay for the control surface only, the toast is the one note
+    // with the overlay for the control surface only, a key shows nothing
     run(&mut h, "osd.settings", json!({"mode": "surface"}));
     press(&mut h, "p", false);
     assert!(shown(&mut h).is_null());
-    assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Flagged as Pick"));
+    assert!(h.app.ui.toast().is_none(), "and no toast either: {:?}", h.app.ui.toasts);
 
     // the mode decides what shows: osd.mode steps Control surface only → Always, and Off shows nothing
     let ids = [h.app.session.active().map_or(0, |p| p.0)];
@@ -214,4 +215,425 @@ fn a_key_shows_one_note_not_a_toast_as_well_and_the_mode_decides_what_shows() {
     run(&mut h, "photo.rate", json!({"rating": 5, "ids": ids}));
     assert!(shown(&mut h).is_null(), "off");
     assert!(!h.app.surface.settings().osd.enabled, "Off also switches the console's readout off");
+}
+
+/// A script can see what the window is saying: `ui.inspect` lists the toasts still showing with the time each has
+/// left, the toast with a button, and the overlay's readout, so a test or an agent can time and compare them.
+#[test]
+fn inspect_lists_the_toasts_the_button_toast_and_the_overlay() {
+    let mut h = demo();
+    let inspect = |h: &mut Headless| h.request("ui.inspect", json!({}), T)["result"].clone();
+    let i = inspect(&mut h);
+    assert_eq!(i["toasts"], json!([]), "nothing showing yet: {}", i["toasts"]);
+    assert!(i["toastAction"].is_null() && i["osd"]["shown"].is_null(), "{} {}", i["toastAction"], i["osd"]);
+
+    let ctx = h.view.ctx.clone();
+    h.app.toast_error(&ctx, "Saved");
+    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}));
+    let i = inspect(&mut h);
+    assert_eq!(i["toasts"][0]["text"], "Saved", "{}", i["toasts"]);
+    let left = i["toasts"][0]["secsLeft"].as_f64().unwrap_or(0.0);
+    assert!(left > 0.0 && left <= toast::stay_seconds(ToastKind::Error, "Saved"), "the time left counts down from the policy's time: {left}");
+    assert_eq!(i["toasts"][0]["kind"], "error", "the kind is in the reply: {}", i["toasts"]);
+    assert_eq!(i["toastAction"]["button"], "Undo", "{}", i["toastAction"]);
+    assert_eq!(i["toastAction"]["command"], "edit.undo");
+
+    open(&mut h, 1);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    run(&mut h, "develop.set", json!({"control": "light.exposure", "value": 0.33}));
+    h.step();
+    let i = inspect(&mut h);
+    assert_eq!(i["osd"]["shown"]["title"], "Exposure", "the overlay's readout is in the inspect reply: {}", i["osd"]);
+    assert_eq!(i["osd"]["settings"]["mode"], "always");
+}
+
+/// `ui.toast` fires each kind of message so it can be looked at and timed: a plain one for the time given, an error
+/// for the longer error time, and one with a button that runs its command once; bad input is refused.
+#[test]
+fn ui_toast_fires_a_message_an_error_and_a_message_with_a_button() {
+    let mut h = demo();
+    let toast = |h: &mut Headless, params: Value| h.request("ui.toast", params, T);
+    let inspect = |h: &mut Headless| h.request("ui.inspect", json!({}), T)["result"].clone();
+
+    assert_eq!(toast(&mut h, json!({"text": "Saved"}))["ok"], true);
+    assert_eq!(toast(&mut h, json!({"text": "Export failed", "kind": "error"}))["ok"], true);
+    let i = inspect(&mut h);
+    let left = |text: &str| i["toasts"].as_array().and_then(|t| t.iter().find(|t| t["text"] == text)).and_then(|t| t["secsLeft"].as_f64());
+    assert!(left("Saved").is_some_and(|s| s > 0.0 && s <= 1.4), "a plain message stays the default 1.4 s: {}", i["toasts"]);
+    assert!(left("Export failed").is_some_and(|s| s > 1.4 && s <= 6.0), "an error stays 6 s: {}", i["toasts"]);
+
+    assert_eq!(toast(&mut h, json!({"text": "Held", "seconds": 30}))["ok"], true);
+    assert!(
+        inspect(&mut h)["toasts"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["text"] == "Held" && t["secsLeft"].as_f64().is_some_and(|s| s > 20.0))),
+        "seconds sets the time"
+    );
+
+    assert_eq!(toast(&mut h, json!({"text": "Preset updated", "kind": "action", "command": "edit.undo"}))["ok"], true);
+    let i = inspect(&mut h);
+    assert_eq!(i["toastAction"]["text"], "Preset updated", "{}", i["toastAction"]);
+    assert_eq!(i["toastAction"]["button"], "Undo");
+    assert_eq!(i["toastAction"]["command"], "edit.undo");
+
+    assert_eq!(toast(&mut h, json!({"text": "Long", "kind": "action", "command": "edit.undo", "button": "B".repeat(500)}))["ok"], true);
+    assert_eq!(inspect(&mut h)["toastAction"]["button"].as_str().map(|b| b.chars().count()), Some(40), "a button label is cut to 40 characters");
+
+    for bad in [
+        json!({}),
+        json!({"text": ""}),
+        json!({"text": "x", "kind": "toast"}),
+        json!({"text": "x", "seconds": 0}),
+        json!({"text": "x", "seconds": 1e9}),
+        json!({"text": "x", "seconds": "3"}),
+        json!({"text": "x", "kind": "action"}),
+        json!({"text": "x", "kind": 5}),
+    ] {
+        assert_eq!(toast(&mut h, bad.clone())["ok"], false, "{bad} is refused");
+    }
+}
+
+/// Most people have never met a control surface, so Settings ▸ Interface says what "Control surface only" is for and
+/// where one is set up; the Controls page shows the same overlay settings and leaves the pointer out.
+#[test]
+fn show_changes_points_to_the_controls_page_from_settings_but_not_on_it() {
+    let pointer = |h: &Headless| h.painted_text().iter().any(|t| t.contains("Set one up in Settings ▸ Controls"));
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo(), Services { png: None, ..Default::default() }), [1400.0, 2400.0], 1.0);
+    h.settle(T);
+    run(&mut h, "app.settings", json!({"page": "interface"}));
+    h.settle(T);
+    // the overlay settings are at the bottom of a long page: scroll the dialog down to them
+    h.request("ui.move", json!({"x": 700.0, "y": 1000.0}), T);
+    h.request("ui.scroll", json!({"dx": 0.0, "dy": -4000.0}), T);
+    h.settle(T);
+    assert!(h.painted_text().iter().any(|t| t == "On-Screen Overlay"), "the overlay settings are on the page: {:?}", h.painted_text());
+    assert!(pointer(&h), "Interface says where a control surface is set up");
+
+    run(&mut h, "app.settings", json!({"page": "controls"}));
+    h.app.surface.editor.section = "readout".into();
+    h.settle(T);
+    assert!(h.painted_text().iter().any(|t| t == "On-Screen Overlay"), "the Controls page has the overlay settings too: {:?}", h.painted_text());
+    assert!(!pointer(&h), "but doesn't point to itself");
+    assert!(
+        h.painted_text().iter().any(|t| t == "Flash a message for each change: what changed, and how many photos were affected."),
+        "it keeps the note: {:?}",
+        h.painted_text()
+    );
+}
+
+/// A change the overlay reports is never a toast as well, in any mode: the overlay says it when it is on for the
+/// window and nothing does otherwise. Each command runs on its own through `LccApp::run`, the way the window runs
+/// it, with nothing else showing. (Toasts a panel adds after its own call are covered where a test drives that panel.)
+#[test]
+fn a_change_the_overlay_reports_is_never_also_a_toast() {
+    let mut h = demo();
+    let ids = open(&mut h, 3);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    let preset = run(&mut h, "preset.create", json!({"name": "Survey", "group": "User Presets"}))["id"].clone();
+    let single = json!({"ids": [ids[0]]});
+    let several = json!({"ids": ids});
+    let cases: Vec<(&str, Value)> = vec![
+        ("photo.rate", json!({"rating": 4, "ids": [ids[0]]})),
+        ("photo.rate", json!({"rating": 2, "ids": ids})),
+        ("photo.increaseRating", single.clone()),
+        ("photo.decreaseRating", single.clone()),
+        ("photo.label", json!({"label": "red", "ids": [ids[0]]})),
+        ("photo.label", json!({"label": "blue", "ids": ids})),
+        ("photo.clearLabel", several.clone()),
+        ("photo.pick", single.clone()),
+        ("photo.reject", several.clone()),
+        ("photo.setMeta", json!({"keywords": ["survey"], "ids": [ids[0]]})),
+        ("photo.setMeta", json!({"removeKeywords": ["survey"], "ids": [ids[0]]})),
+        ("preset.apply", json!({"id": preset, "amount": 100, "ids": ids})),
+        (
+            "map.reverseGeocode",
+            json!({"provider": "given", "places": [{"id": ids[0], "city": "Lisbon", "country": "Portugal", "countryCode": "PT"}]}),
+        ),
+        ("map.geotag", json!({"ids": [ids[0]], "lat": 48.1, "lon": 11.5})),
+        ("photo.unflag", single.clone()),
+        ("photo.cycleFlag", single.clone()),
+    ];
+    for (command, params) in &cases {
+        h.app.ui.toasts.clear();
+        h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command} {params}: {e}"));
+        let s = shown(&mut h);
+        assert!(s.is_object(), "{command} {params}: the overlay should report it");
+        assert!(h.app.ui.toast().is_none(), "{command} {params}: the overlay says {s}, so no toast: {:?}", h.app.ui.toasts);
+    }
+    // and in the other modes no toast takes its place: the overlay's mode is the only say
+    for mode in ["surface", "off"] {
+        run(&mut h, "osd.settings", json!({"mode": mode}));
+        for (command, params) in &cases {
+            h.app.ui.toasts.clear();
+            h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command} {params}: {e}"));
+            assert!(h.app.ui.toast().is_none(), "{mode} {command} {params}: {:?}", h.app.ui.toasts);
+        }
+    }
+}
+
+/// A scratch folder that goes away with the test, however it ends.
+struct Scratch(std::path::PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
+    let d = std::env::temp_dir().join(format!("lc-ui-osd-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    Scratch(d)
+}
+
+fn gradient_jpeg(path: &std::path::Path, shade: u8) {
+    let (w, h) = (256usize, 192usize);
+    let img = lcc_raster::Rgba8 {
+        width: w,
+        height: h,
+        data: (0..w * h).map(|i| [((i % w) * 255 / w) as u8, ((i / w) * 255 / h) as u8, shade, 255]).collect(),
+    };
+    let bytes = lcc_codecs::encode_jpeg(&lcc_codecs::EncodeImage::rgba8(&img), 90, Default::default(), &Default::default()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Moving photos or folders on disk, and pointing a folder at its new place, are reported by the overlay, which is
+/// why the panels that run them (`panels/left.rs`, `grid.rs`) toast only a move that changed nothing. This checks
+/// the reporting; the panels' own toasts are not driven here.
+#[test]
+fn the_overlay_reports_moves_and_relinks_on_disk() {
+    let src = scratch("files");
+    for (d, shade) in [("a", 40u8), ("b", 140), ("c", 220)] {
+        std::fs::create_dir_all(src.0.join(d)).unwrap();
+        gradient_jpeg(&src.0.join(d).join("x.jpg"), shade);
+        gradient_jpeg(&src.0.join(d).join("y.jpg"), shade.wrapping_add(7));
+    }
+    let services = Services { png: None, ..Default::default() };
+    let mut h = Headless::new(LccApp::new(lcc_engine::Session::with_demo().with_fs(), services), [1300.0, 900.0], 1.0);
+    let r = h.request(
+        "engine.execute",
+        json!({"command": "library.import", "params": {"paths": [src.0.to_string_lossy()], "mode": "add", "importDuplicates": true}}),
+        T,
+    );
+    let all: Vec<u64> =
+        r["result"]["imported"].as_array().map(|a| a.iter().filter_map(|v| v.as_u64().or_else(|| v["id"].as_u64())).collect()).unwrap_or_default();
+    assert_eq!(all.len(), 6, "{r}");
+    h.settle(T);
+    run(&mut h, "osd.settings", json!({"mode": "always"}));
+    let dest = src.0.join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let moved = std::env::temp_dir().join(format!("lc-ui-osd-moved-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&moved);
+    std::fs::rename(src.0.join("c"), &moved).unwrap();
+    let _gone = Scratch(moved.clone());
+    let steps = [
+        ("photo.moveToFolder", json!({"folder": dest.to_string_lossy(), "ids": &all[..2]})),
+        ("folder.move", json!({"path": src.0.join("b").to_string_lossy(), "into": dest.to_string_lossy()})),
+        ("folder.relocate", json!({"path": src.0.join("c").to_string_lossy(), "to": moved.to_string_lossy()})),
+    ];
+    for (command, params) in steps {
+        h.app.ui.toasts.clear();
+        h.app.run(command, params.clone()).unwrap_or_else(|e| panic!("{command}: {e}"));
+        let s = shown(&mut h);
+        assert!(s.is_object(), "{command}: the overlay should report it");
+        assert!(h.app.ui.toast().is_none(), "{command}: the overlay says {s}, so no toast: {:?}", h.app.ui.toasts);
+    }
+}
+
+/// A failure is said with `toast_error` or `LccApp::report`, never a plain `toast`: given the
+/// error itself (a binding named `e`, `err` or `error`, bare or inside a format, on one line or several), it would
+/// vanish in 1.4 s instead of staying the error time. The scan reads the UI source, so a new call site can't slip
+/// back. (A failure kept in a variable of another name is not seen; `report` and a behaviour test cover that.)
+#[test]
+fn a_failure_is_never_a_plain_toast() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut files = Vec::new();
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    let mut found = Vec::new();
+    for path in files {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("tests") || name == "headless.rs" || name == "tests.rs" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        // a unit-test module at the end of a file is not product code
+        let product = text.split("#[cfg(test)]\nmod ").next().unwrap_or("");
+        let lines: Vec<&str> = product.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let call = ".toast(";
+            let Some(at) = line.find(call) else { continue };
+            // the call's arguments, read on over up to 6 lines to its closing parenthesis
+            let mut text = line[at + call.len()..].to_string();
+            for next in lines.iter().skip(n + 1).take(6) {
+                text.push(' ');
+                text.push_str(next);
+            }
+            let mut depth = 1;
+            let end = text
+                .char_indices()
+                .find(|(_, c)| {
+                    depth += i32::from(*c == '(') - i32::from(*c == ')');
+                    depth == 0
+                })
+                .map_or(text.len(), |(i, _)| i);
+            let args = &text[..end];
+            if args.split(|c: char| !is_word(c)).any(|w| matches!(w, "e" | "err" | "error")) {
+                found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "a failure given to a plain toast (use `toast_error` or `report`):\n{}", found.join("\n"));
+}
+
+/// `report` says a failure for the error time and a success not at all, and hands back the value.
+#[test]
+fn report_says_a_failure_for_the_error_time_and_a_success_not_at_all() {
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    assert_eq!(h.app.report(&ctx, Ok::<_, String>(7)), Some(7));
+    assert!(h.app.ui.toasts.is_empty(), "{:?}", h.app.ui.toasts);
+    assert_eq!(h.app.report(&ctx, Err::<u8, _>("Couldn't do it")), None);
+    let r = h.request("ui.inspect", json!({}), T)["result"]["toasts"].clone();
+    let left = r[0]["secsLeft"].as_f64().unwrap_or(0.0);
+    assert_eq!(r[0]["text"], "Couldn't do it", "{r}");
+    assert!(left > 5.0, "a failure stays the error time, not the 1.4 s of a notice: {left}");
+}
+
+/// How long a message stays is decided in one place by its kind and its length: a failure outlasts a note, a message
+/// with a button outlasts both, and a long text gets time to be read, up to a limit.
+#[test]
+fn a_message_stays_for_the_time_its_kind_and_length_give_it() {
+    use crate::toast::stay_seconds;
+    let short = "Saved";
+    let (note, button, error) =
+        (stay_seconds(ToastKind::Message, short), stay_seconds(ToastKind::Action, short), stay_seconds(ToastKind::Error, short));
+    assert!(note > 0.0 && note < error && error < button, "a note {note} s, a failure {error} s, a button {button} s");
+    let long = "word ".repeat(60);
+    for kind in [ToastKind::Message, ToastKind::Action, ToastKind::Error] {
+        let (brief, read) = (stay_seconds(kind, short), stay_seconds(kind, &long));
+        assert!(read > brief, "{kind:?}: a long text stays longer than a short one ({read} s against {brief} s)");
+        assert!(stay_seconds(kind, &"x".repeat(100_000)) <= 20.0, "{kind:?}: nothing stays for ever");
+    }
+    // the call that raises a message gets the policy's time, whoever the caller is
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    h.app.toast(&ctx, short);
+    h.app.toast_error(&ctx, long.clone());
+    let now = ctx.input(|i| i.time);
+    let until = |h: &Headless, text: &str| h.app.ui.toasts.iter().find(|t| t.text == text).map(|t| t.until - now);
+    let near = |got: Option<f64>, want: f64| got.is_some_and(|g| (g - want).abs() < 1e-6);
+    assert!(near(until(&h, short), note), "{:?}", h.app.ui.toasts);
+    assert!(near(until(&h, &long), stay_seconds(ToastKind::Error, &long)), "{:?}", h.app.ui.toasts);
+}
+
+/// Every message is drawn from one look: the kinds share the box (corner, padding, least height, text size), and an
+/// error is told apart by its colour alone.
+#[test]
+fn every_message_has_one_look_and_an_error_a_different_colour() {
+    use crate::toast::look;
+    let h = demo();
+    let t = crate::theme::Tokens::get(&h.view.ctx);
+    let (message, action, error) = (look(&t, ToastKind::Message, 1.0), look(&t, ToastKind::Action, 1.0), look(&t, ToastKind::Error, 1.0));
+    for other in [action, error] {
+        assert_eq!(
+            (message.radius, message.pad_x, message.pad_y, message.min_height, message.font),
+            (other.radius, other.pad_x, other.pad_y, other.min_height, other.font)
+        );
+    }
+    assert_eq!(message.fill, action.fill, "a message and a message with a button are one box");
+    assert_ne!(message.fill, error.fill, "an error is told apart");
+    assert_ne!(message.stroke, error.stroke, "an error has its own edge");
+    assert_eq!(look(&t, ToastKind::Error, 0.0).fill.a(), 0, "a faded message is clear");
+    // and the box is the text's size plus the padding, never under the least height
+    let size = message.size(egui::vec2(100.0, 10.0));
+    assert_eq!((size.x, size.y), (100.0 + 2.0 * message.pad_x, message.min_height));
+}
+
+/// The boxes on screen come from `toast::look`, whichever way they are drawn: a message is the least height for one
+/// line, and the box with a button is its button's height plus the same padding, centred like the others.
+#[test]
+fn the_drawn_boxes_of_a_message_and_a_message_with_a_button_follow_the_one_look() {
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    h.app.toast(&ctx, "Saved");
+    h.app.toast_error(&ctx, "Failed");
+    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}));
+    h.step();
+    let rect = |h: &mut Headless, id: &str| {
+        let w = h.request("ui.widgets", json!({"filter": id}), T)["result"].clone();
+        let r = w.as_array().and_then(|w| w.iter().find(|w| w["id"] == id)).map(|w| w["rect"].clone()).unwrap_or_default();
+        let v: Vec<f32> = r.as_array().into_iter().flatten().filter_map(|n| n.as_f64()).map(|n| n as f32).collect();
+        (v.len() == 4).then(|| egui::Rect::from_min_size(egui::pos2(v[0], v[1]), egui::vec2(v[2], v[3])))
+    };
+    let t = crate::theme::Tokens::get(&ctx);
+    let look = crate::toast::look(&t, ToastKind::Message, 1.0);
+    let (message, error, action, button) =
+        (rect(&mut h, "toast:message"), rect(&mut h, "toast:error"), rect(&mut h, "toast:action"), rect(&mut h, "button:toastAction"));
+    let (Some(message), Some(error), Some(action), Some(button)) = (message, error, action, button) else {
+        panic!("every box is drawn and listed: {:?} {:?} {:?} {:?}", message, error, action, button);
+    };
+    assert!((message.height() - look.min_height).abs() < 0.6, "a one-line message is the least height: {message:?}");
+    assert!((error.height() - message.height()).abs() < 0.6, "an error box is the message's size: {error:?}");
+    let want = (button.height() + 2.0 * look.pad_y).max(look.min_height);
+    assert!((action.height() - want).abs() < 1.5, "the button's box is its row plus the look's padding: {action:?} {button:?}");
+    let centre = h.app.canvas_rect.expect("a canvas").center().x;
+    for r in [message, error, action] {
+        assert!((r.center().x - centre).abs() < 1.5, "centred on the canvas: {r:?} {centre}");
+    }
+}
+
+/// A sticky message is raised and cleared by key through `ui.toast`, shows a dismiss button, has no end, and stays
+/// through a long idle time.
+#[test]
+fn a_sticky_message_stays_until_dismissed_or_cleared() {
+    let mut h = demo();
+    let toast = |h: &mut Headless, params: Value| h.request("ui.toast", params, T);
+    let sticky = |h: &mut Headless| -> Vec<Value> {
+        let i = h.request("ui.inspect", json!({}), T)["result"]["toasts"].clone();
+        i.as_array().into_iter().flatten().filter(|t| t["kind"] == "sticky").cloned().collect()
+    };
+
+    assert_eq!(toast(&mut h, json!({"text": "Not saved", "kind": "sticky", "key": "save-failed"}))["ok"], true);
+    assert_eq!(toast(&mut h, json!({"text": "Not saved (2)", "kind": "sticky", "key": "save-failed"}))["ok"], true);
+    h.step();
+    let now = sticky(&mut h);
+    assert_eq!(now.len(), 1, "the same key stays one message: {now:?}");
+    assert_eq!((now[0]["key"].as_str(), now[0]["text"].as_str()), (Some("save-failed"), Some("Not saved (2)")));
+    assert!(now[0].get("secsLeft").is_none(), "no end time: {now:?}");
+    assert!(widget(&h, "button:toastDismiss:save-failed").is_some(), "a dismiss button");
+
+    // far longer than any message stays (the longest is 20 s; a frame is 1/60 s)
+    for _ in 0..1500 {
+        h.step();
+    }
+    assert_eq!(sticky(&mut h).len(), 1, "a sticky message stays through a long idle time");
+
+    // the code that raised it clears the key
+    assert_eq!(toast(&mut h, json!({"clear": true, "key": "save-failed"}))["ok"], true);
+    h.step();
+    assert!(sticky(&mut h).is_empty());
+
+    // the person dismisses it with its button
+    assert_eq!(toast(&mut h, json!({"text": "Waiting", "kind": "sticky", "key": "sidecars-waiting"}))["ok"], true);
+    h.step();
+    h.step();
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:toastDismiss:sidecars-waiting"}), T)["ok"], true);
+    h.step();
+    h.step();
+    assert!(sticky(&mut h).is_empty(), "the button removes it");
+
+    for bad in [json!({"text": "x", "kind": "sticky"}), json!({"clear": true}), json!({"text": "x", "kind": "sticky", "key": ""})] {
+        assert_eq!(toast(&mut h, bad.clone())["ok"], false, "{bad} is refused");
+    }
 }

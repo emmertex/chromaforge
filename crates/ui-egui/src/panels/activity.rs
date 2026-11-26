@@ -550,7 +550,7 @@ fn announce_finished(app: &mut LccApp, ctx: &egui::Context) {
     if let Some(s) = new.iter().find(|s| s.failed > 0).or(new.last()) {
         let text = summary_text(s);
         if s.failed > 0 {
-            app.toast_for(ctx, text, 15.0);
+            app.toast_error(ctx, text);
         } else {
             app.toast(ctx, text);
         }

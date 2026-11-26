@@ -484,7 +484,7 @@ pub fn tabs(app: &mut LccApp, ui: &mut egui::Ui) {
         if resp.clicked() && !on {
             let id = if *tab == Tab::Import { "view.importTab" } else { "view.libraryTab" };
             if let Err(e) = app.run(id, json!({})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         }
     }
@@ -626,7 +626,7 @@ fn source_row(app: &mut LccApp, ui: &mut egui::Ui, wid: &str, label: &str, path:
 fn browse(app: &mut LccApp, ctx: &egui::Context, path: &str) {
     ctx.data_mut(|d| d.insert_temp(pane_id(), Pane::Photos));
     if let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": path}))) {
-        app.toast(ctx, e);
+        app.toast_error(ctx, e);
     }
 }
 
@@ -738,7 +738,7 @@ fn sources(app: &mut LccApp, ui: &mut egui::Ui) {
             if crate::button::Button::new(crate::i18n::tr("Import Individual Files…")).widget("importFiles").show(ui).clicked()
                 && let Err(e) = app.run("file.addPhotos", json!({}))
             {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
         });
         ui.add_space(16.0);
@@ -818,7 +818,7 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
         {
             match app.run("import.develop", json!({})) {
                 Ok(_) => {}
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         if crate::button::Button::new(&import_label).primary().enabled(n > 0).widget("importGo").show(ui).on_hover_text(&import_tip).clicked() {
@@ -827,7 +827,7 @@ fn bar(app: &mut LccApp, ui: &mut egui::Ui, wide: bool, pane: &mut Pane) {
                     let n = v.field("importing").as_u64().unwrap_or(0);
                     app.toast(ui.ctx(), crate::i18n::tr_format!("Importing {n} photos…", n = n));
                 }
-                Err(e) => app.toast(ui.ctx(), e),
+                Err(e) => app.toast_error(ui.ctx(), e),
             }
         }
         if layout.show {
@@ -992,7 +992,7 @@ fn show_segments(app: &mut LccApp, ui: &mut egui::Ui) {
     if (i == 1) != b.not_imported
         && let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": b.path, "subfolders": b.subfolders, "show": show})))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
 }
 
@@ -1007,7 +1007,7 @@ fn subfolders_check(app: &mut LccApp, ui: &mut egui::Ui) {
     if c.changed()
         && let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": b.path, "subfolders": sub})))
     {
-        app.toast(ui.ctx(), e);
+        app.toast_error(ui.ctx(), e);
     }
 }
 
@@ -1145,7 +1145,7 @@ fn preset_row(app: &mut LccApp, ui: &mut egui::Ui, s: &mut ImportSettings) {
                         s.preset_name = name.trim().to_string();
                         name.clear();
                     }
-                    Err(e) => app.toast(ui.ctx(), e),
+                    Err(e) => app.toast_error(ui.ctx(), e),
                 }
             }
         });

@@ -690,7 +690,7 @@ pub fn settings_tab(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
                 if !key.trim().is_empty() {
                     match app.run("genfill.setKey", json!({"provider": id, "key": key})) {
                         Ok(_) => app.toast(ui.ctx(), crate::i18n::tr("API key saved")),
-                        Err(e) => app.toast(ui.ctx(), e),
+                        Err(e) => app.toast_error(ui.ctx(), e),
                     }
                 }
                 // the typed key is not kept in the UI

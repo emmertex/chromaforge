@@ -479,6 +479,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.whatsNew", "What's New", None, "Help"),
     ("dialog.cull", "Assisted Culling…", None, "Library"),
     ("dialog.qualityScan", "Image Quality Scanner…", None, "Library"),
+    ("dialog.faceMaintenance", "Face Maintenance…", None, "Library>Faces"),
     ("app.help", "{app} Help", Some("F1"), "Help"),
     ("app.feedback", "Send Feedback…", None, "Help"),
     ("app.website", "{app} Website", None, "Help"),
@@ -2708,6 +2709,61 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             });
             Ok(Value::Null)
         }
+        "dialog.faceMaintenance" => {
+            let mut dialog = Dialog::face_maintenance(&app.session);
+            if let Dialog::FaceMaintenance { mode, scope, folders, album_ids, album_choice, include_subfolders, min_score, behavior, .. } =
+                &mut dialog
+            {
+                if let Some(value) = p.get("mode").and_then(Value::as_str) {
+                    *mode = match value.trim().to_ascii_lowercase().as_str() {
+                        "recognize" | "recognition" => "recognize",
+                        "new" | "newitems" | "new-only" => "new",
+                        "rebuild" | "all" => "rebuild",
+                        "rebuildnamed" | "named" | "confirmed" => "rebuildNamed",
+                        "rescan" | "redetect" | "re-detect" => "rescan",
+                        "reset" => "reset",
+                        _ => "detect",
+                    }
+                    .to_string();
+                }
+                if let Some(value) = p.get("scope").and_then(Value::as_str)
+                    && matches!(value, "all" | "visible" | "selected" | "folder" | "album")
+                {
+                    *scope = value.to_string();
+                }
+                if let Some(value) = p.get("folder").and_then(Value::as_str) {
+                    *folders = value.to_string();
+                    *scope = "folder".to_string();
+                }
+                if let Some(values) = p.get("folders").and_then(Value::as_array) {
+                    *folders = values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n");
+                    *scope = "folder".to_string();
+                }
+                if let Some(value) = p.get("album").and_then(Value::as_u64) {
+                    *album_ids = vec![value];
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(values) = p.get("albums").and_then(Value::as_array) {
+                    *album_ids = values.iter().filter_map(Value::as_u64).collect();
+                    *album_choice = None;
+                    *scope = "album".to_string();
+                }
+                if let Some(value) = p.get("includeSubfolders").and_then(Value::as_bool) {
+                    *include_subfolders = value;
+                }
+                if let Some(value) = p.get("minScore").and_then(Value::as_f64).filter(|score| score.is_finite()) {
+                    *min_score = (value as f32).clamp(0.6, 1.0);
+                }
+                if let Some(value) = p.get("behavior").and_then(Value::as_str)
+                    && matches!(value, "merge" | "replace")
+                {
+                    *behavior = value.to_string();
+                }
+            }
+            app.ui.dialog = Some(dialog);
+            Ok(Value::Null)
+        }
         "dialog.cull" => {
             let (burst_gap, similarity) = app.ui.cull_burst.unwrap_or((10.0, 0.93));
             app.ui.dialog = Some(Dialog::Cull {
@@ -2968,7 +3024,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                         app.ui.last_find_missing_result = Some(Ok(v));
                     }
                     Err(e) => {
-                        app.toast(ctx, e.clone());
+                        app.toast_error(ctx, e.clone());
                         app.ui.last_find_missing_result = Some(Err(e));
                     }
                 }
@@ -3392,7 +3448,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
                     }
                     app.toast(&ctx, msg);
                 }
-                Err(e) => app.toast(&ctx, e.clone()),
+                Err(e) => app.toast_error(&ctx, e.clone()),
             }
             return Some(r);
         }
@@ -3414,7 +3470,7 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             };
             let r = app.session.execute("keyword.export", &json!({"path": path})).map_err(|e| e.to_string());
             if let Err(e) = &r {
-                app.toast(&ctx, e.clone());
+                app.toast_error(&ctx, e.clone());
             }
             if let Ok(v) = &r {
                 let n = v["keywords"].as_u64().unwrap_or(0);
@@ -3877,7 +3933,7 @@ pub fn delete_in_album(app: &mut LccApp, ctx: &egui::Context) -> bool {
             let what = crate::i18n::tr_format!("{n} photo{}", if n == 1 { "" } else { "s" }, n = n);
             app.toast(ctx, crate::i18n::tr_format!("Removed {what} from {name}", what = what, name = name));
         }
-        Err(e) => app.toast(ctx, e),
+        Err(e) => app.toast_error(ctx, e),
     }
     true
 }
@@ -4007,7 +4063,7 @@ fn show_in_folders(app: &mut LccApp, id: Option<lcc_catalog::PhotoId>) -> Result
 /// is reported in the result's `failed` (and a toast), not as an error.
 pub(crate) fn edit_in(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
     // every way in (menu, shortcut, context menu, the control channel) says why nothing opened
-    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
+    edit_in_inner(app, ctx, p, photocraft).inspect_err(|e| app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)))
 }
 
 fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: bool) -> Result<Value, String> {
@@ -4058,7 +4114,7 @@ fn edit_in_inner(app: &mut LccApp, ctx: &egui::Context, p: &Value, photocraft: b
     if let Some(e) = failed {
         // the copies are in the library already (one undo step): an error would invite a retry
         // that makes another set, so the result says what failed and the toast says why
-        app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
+        app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e));
         return Ok(r);
     }
     match copies.as_slice() {
@@ -4082,12 +4138,12 @@ const MAX_ORIGINALS: usize = 50;
 fn open_original_in(app: &mut LccApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     let r = open_originals(app, p);
     if let Err(e) = &r {
-        app.toast(ctx, e.clone());
+        app.toast_error(ctx, e.clone());
     }
     let r = r?;
     let opened = r.field("opened").as_array().map_or(0, Vec::len);
     match (r.field("failed").as_str(), r.field("opened")[0].field("path").as_str()) {
-        (Some(e), _) => app.toast(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
+        (Some(e), _) => app.toast_error(ctx, crate::i18n::tr_format!("Couldn't open the editor: {e}", e = e)),
         (None, Some(path)) if opened == 1 => {
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             app.toast(ctx, crate::i18n::tr_format!("{name} opened in the other editor", name = name));

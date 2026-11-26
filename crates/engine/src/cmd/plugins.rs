@@ -7,7 +7,7 @@
 //! A plug-in reaches the catalog only through [`SessionHost`]: read-only queries, and
 //! `photo.setMeta` for standard fields, each behind its permission (checked by `lcc-plugins`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lcc_plugins::{Begun, HostApi, Manager, Permissions};
@@ -21,6 +21,12 @@ use super::{CommandSpec, always, bad, bool_or, cmd, str_param};
 use crate::{Result, Session};
 
 static MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+
+/// Under test, held while a test installs plug-ins or imports with them active, so a hook one
+/// test installs never answers another test's `library.import` (the manager is process-wide, as
+/// in the app, where plug-ins are shared by every open library).
+#[cfg(test)]
+pub(crate) static TEST_PLUGINS: Mutex<()> = Mutex::new(());
 
 /// Where plug-ins are installed: `<PREFIX>_PLUGINS`, else `<settings>/plugins`.
 pub fn plugins_dir() -> Option<PathBuf> {
@@ -158,6 +164,10 @@ impl HostApi for SessionHost<'_> {
         super::plugin_library::add(self.0, params)
     }
 
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        super::plugin_library::remove(self.0, params)
+    }
+
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
         super::plugin_develop::pixels(self.0, photo, long_edge)
     }
@@ -194,6 +204,16 @@ fn grant_param(p: &Value, cmd: &str) -> Result<Option<Permissions>> {
     }
 }
 
+/// A plug-in's `updates` object for `plugin.list` and the update commands: [`updates_info`'s](lcc_plugins::Installed::updates_info)
+/// with `checkedAgo`, the seconds since its last check (negative if the clock went back).
+fn updates_json(p: &lcc_plugins::Installed, features: &[String]) -> Value {
+    let mut v = p.updates_info(features);
+    if let Some(at) = v["checkedAt"].as_i64() {
+        v["checkedAgo"] = json!(chrono::Utc::now().timestamp().saturating_sub(at));
+    }
+    v
+}
+
 fn list(_: &mut Session, _: &Value) -> Result<Value> {
     with_manager(|m| {
         let mut plugins: Vec<Value> = m
@@ -201,7 +221,7 @@ fn list(_: &mut Session, _: &Value) -> Result<Value> {
             .map(|p| {
                 let mut v = p.info();
                 v["previousVersion"] = json!(m.previous_version(&p.plugin.manifest().id));
-                v["updates"] = p.updates_info(m.features());
+                v["updates"] = updates_json(p, m.features());
                 v
             })
             .collect();
@@ -425,7 +445,7 @@ fn set_update_check(_: &mut Session, p: &Value) -> Result<Value> {
     with_manager(|m| {
         m.set_update_check(id, on).map_err(|e| plugin_err(C, e))?;
         let i = m.get(id).ok_or_else(|| bad(C, format!("no plug-in {id:?} is installed")))?;
-        Ok(json!({"id": id, "updates": i.updates_info(m.features())}))
+        Ok(json!({"id": id, "updates": updates_json(i, m.features())}))
     })
 }
 
@@ -459,7 +479,7 @@ pub fn check_updates(id: Option<&str>, due: bool) -> lcc_plugins::Result<Value> 
         m.record_check(c, now, fetched)?;
         if let Some(i) = m.get(&c.id) {
             let man = i.plugin.manifest();
-            plugins.push(json!({"id": man.id, "name": man.name, "version": man.version, "updates": i.updates_info(m.features())}));
+            plugins.push(json!({"id": man.id, "name": man.name, "version": man.version, "updates": updates_json(i, m.features())}));
         }
     }
     Ok(json!({"checked": checks.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), "plugins": plugins}))
@@ -927,7 +947,7 @@ fn suggest(s: &mut Session, p: &Value) -> Result<Value> {
         photos.push(v);
     }
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     with_library(&lib, |m| Ok(Value::Array(m.suggest_metadata(&photos, &mut host))))
 }
 
@@ -935,7 +955,7 @@ fn post_export(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "plugin.postExport";
     let files = p.get("files").and_then(Value::as_array).ok_or_else(|| bad(C, "missing `files: [{path, photo?}]`"))?;
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     let r = with_library(&lib, |m| Ok(Value::Array(m.post_export(files, &mut host))));
     sync_fields(s);
     r
@@ -1096,7 +1116,7 @@ impl Drop for PluginService {
 /// the same calls on a worker ([`export_hooks`], [`ExportHooks::run`]).
 pub fn after_export(s: &mut Session, files: &[Value], destination: Option<&Value>) -> Option<Vec<Value>> {
     let hooks = export_hooks(&s.plugin_library, files, destination)?;
-    let r = hooks.run(&mut HookSession(SessionHost(s)), &|| false, &mut |_, _| {});
+    let r = hooks.run(&mut HookSession::plain(SessionHost(s)), &|| false, &mut |_, _| {});
     // hooks may have written their own fields (a "delivered" mark)
     sync_fields(s);
     Some(r)
@@ -1169,6 +1189,252 @@ impl ExportHooks {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: import hooks run only on a thread that asks for them, so a test's hook plug-in
+    /// (the manager is process-wide) never reaches other tests' imports.
+    pub(crate) static TEST_IMPORT_HOOKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether import hooks run here (always, outside tests).
+fn import_hooks_on() -> bool {
+    #[cfg(test)]
+    {
+        TEST_IMPORT_HOOKS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+/// What a plug-in's `beforeImport` hook decided for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BeforeImportDecision {
+    /// Import the file as it is.
+    AsIs,
+    /// Import that file instead (checked: absolute, readable, a supported format).
+    Replace(String),
+    /// Leave the file out of the import.
+    Skip,
+}
+
+/// The reply a before-import call gives, checked: `{}` (as is), `{"replace": path}` (a valid
+/// path only) or `{"skip": true}`. Anything else is an error the caller logs, importing as is.
+fn before_import_reply(v: &Value, asked: &str) -> std::result::Result<BeforeImportDecision, String> {
+    if v.get("skip").and_then(Value::as_bool) == Some(true) {
+        return Ok(BeforeImportDecision::Skip);
+    }
+    match v.get("replace") {
+        None | Some(Value::Null) => Ok(BeforeImportDecision::AsIs),
+        Some(Value::String(p)) => {
+            if Path::new(p) == Path::new(asked) {
+                return Ok(BeforeImportDecision::AsIs);
+            }
+            if !Path::new(p).is_absolute() {
+                return Err(format!("{p}: not an absolute path"));
+            }
+            let real = std::fs::canonicalize(p).map_err(|e| format!("{p} can't be found ({e})"))?;
+            if !real.is_file() {
+                return Err(format!("{p}: not a file"));
+            }
+            if !crate::import::is_supported(&real) {
+                return Err(format!("{p}: the library doesn't import this format"));
+            }
+            Ok(BeforeImportDecision::Replace(real.to_string_lossy().into_owned()))
+        }
+        Some(_) => Err("`replace` must be a path".into()),
+    }
+}
+
+/// Plans one before-import call under the manager's lock for the library a session with
+/// `library` open shows ([`Session::plugin_library`]) and runs it on `host`, handing it back:
+/// `Ok(the plug-in's decision)`; `Err` (logged by the caller, the file imports as is) when no
+/// plug-in could be asked, the call failed, or the reply was bad.
+pub(crate) fn before_import_decision(
+    library: &str,
+    host: &mut dyn HostApi,
+    path: &str,
+    size: u64,
+    source: &Value,
+) -> std::result::Result<BeforeImportDecision, String> {
+    let mut call = {
+        let mut g = manager_for(library);
+        let Some(m) = g.as_mut() else { return Err("no plug-in manager".into()) };
+        match m.before_import_call(path, size, source) {
+            None => return Err("no plug-in has the beforeImport hook".into()),
+            Some(r) => r.map_err(|e| e.to_string())?,
+        }
+    };
+    let outcome = call.run(host);
+    let mut g = manager_for(library);
+    let m = g.get_or_insert_with(Manager::in_memory);
+    let reply = m.end(call, Some(outcome)).map_err(|e| e.to_string())?;
+    before_import_reply(&reply, path)
+}
+
+/// A before-import hook built for one import: the first enabled plug-in with the `beforeImport`
+/// hook ([`Manager::before_import_call`]) is asked about each file as it is prepared, its
+/// catalog requests relayed to the session's thread ([`super::plugin_programs::answer_requests`];
+/// a session nobody answers for refuses them at once, so the files import as is). Built on the
+/// session's thread with [`before_import_hook`]; [`BeforeImportHook::ask`] runs on the thread
+/// that prepares the files. `attended`: the import was started by the user, so the hook may
+/// start granted programs ([`Relayed::StartProgram`]).
+pub struct BeforeImportHook {
+    library: String,
+    source: Value,
+    host: std::sync::Mutex<RelayHost>,
+}
+
+impl BeforeImportHook {
+    /// The decision for `path` (`size`: its bytes, as metadata reports them). An error means the
+    /// caller logs it and imports the file as is; so does a bad reply.
+    pub fn ask(&self, path: &str, size: u64) -> std::result::Result<BeforeImportDecision, String> {
+        let mut host = self.host.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        before_import_decision(&self.library, &mut *host, path, size, &self.source)
+    }
+
+    /// Filters a batch of files through the hook on the preparing thread: `skip`ped files are
+    /// counted in `skipped`, a failed ask keeps the file. Cancel checked per file.
+    pub fn filter(&self, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool, skipped: &mut usize) -> Vec<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut out = Vec::with_capacity(files.len());
+        for f in files {
+            if cancel.load(Relaxed) {
+                out.push(f);
+                continue;
+            }
+            let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+            match self.ask(&f, size) {
+                Ok(BeforeImportDecision::AsIs) => out.push(f),
+                Err(e) => {
+                    log::warn!("beforeImport {f}: {e}");
+                    out.push(f);
+                }
+                Ok(BeforeImportDecision::Replace(p)) => out.push(p),
+                Ok(BeforeImportDecision::Skip) => *skipped += 1,
+            }
+        }
+        out
+    }
+}
+
+/// The Library source the session shows, as a plug-in request gets it (`source`): what
+/// [`before_import_hook`] and [`after_import`] send.
+pub fn import_source(s: &Session) -> Value {
+    super::plugin_library::source(s)
+}
+
+/// The before-import hook for an import from the session `s` shows ([`Session::plugin_library`]),
+/// asking with `source` as its `source`; `None` when no enabled plug-in has the hook. `attended`:
+/// the import was started by the user, so the hook may start granted programs. The UI builds it
+/// on the session's thread and its worker calls [`BeforeImportHook::ask`]; the `library.import`
+/// command filters on the session's thread with [`before_import_files`] instead.
+pub fn before_import_hook(s: &Session, source: Value, attended: bool) -> Option<std::sync::Arc<BeforeImportHook>> {
+    if !import_hooks_on() {
+        return None;
+    }
+    let library = s.plugin_library.clone();
+    let has_hook = {
+        let mut g = manager_for(&library);
+        g.as_mut().is_some_and(|m| m.any_hook(|mf| mf.hooks.before_import))
+    };
+    if !has_hook {
+        return None;
+    }
+    let host = {
+        // the process-wide relay pair (a `program.end` hook's and a job's): its requests are
+        // answered every frame; a session nobody answers for refuses them at once
+        let relay = RelayHost::new(super::plugin_programs::relay_sender(), s.desktop.clone());
+        if attended { relay.allowing_program_start() } else { relay }
+    };
+    Some(std::sync::Arc::new(BeforeImportHook { library, source, host: std::sync::Mutex::new(host) }))
+}
+
+/// Asks the before-import hook about each file of a batch on the session's thread (the
+/// `library.import` command path, where a relayed call would wait for the very thread it is on):
+/// `skip`ped files are counted in `skipped`, a failed ask keeps the file. Cancel checked per file.
+pub(crate) fn before_import_files(s: &mut Session, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool, skipped: &mut usize) -> Vec<String> {
+    if !import_hooks_on() {
+        return files;
+    }
+    use std::sync::atomic::Ordering::Relaxed;
+    let library = s.plugin_library.clone();
+    let source = super::plugin_library::source(s);
+    let mut host = HookSession(SessionHost(s), true);
+    let mut out = Vec::with_capacity(files.len());
+    for f in files {
+        if cancel.load(Relaxed) {
+            out.push(f);
+            continue;
+        }
+        let size = std::fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+        match before_import_decision(&library, &mut host, &f, size, &source) {
+            Ok(BeforeImportDecision::AsIs) => out.push(f),
+            Err(e) => {
+                log::warn!("beforeImport {f}: {e}");
+                out.push(f);
+            }
+            Ok(BeforeImportDecision::Replace(p)) => out.push(p),
+            Ok(BeforeImportDecision::Skip) => *skipped += 1,
+        }
+    }
+    out
+}
+
+/// After an import's batch was committed (`library.import`, the session's thread): each enabled
+/// plug-in with the `afterImport` hook gets the imported photos ([`Manager::after_import_calls`],
+/// each as `photo.inspect` JSON, as the metadata hook's `photos`) and the import's `source`. One
+/// `{plugin, ok | error}` per plug-in (empty: none). A failing plug-in never fails the import.
+pub fn after_import(s: &mut Session, ids: &[u64]) -> Vec<Value> {
+    if ids.is_empty() || !import_hooks_on() {
+        return Vec::new();
+    }
+    let library = s.plugin_library.clone();
+    let planned = {
+        let mut photos = Vec::new();
+        for id in ids.iter().take(1000) {
+            let mut v = match s.execute("photo.inspect", &json!({"id": id})) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v.get("id").is_none() {
+                v["id"] = json!(id.to_string());
+            }
+            photos.push(v);
+        }
+        if photos.is_empty() {
+            return Vec::new();
+        }
+        let source = super::plugin_library::source(s);
+        let mut g = manager_for(&library);
+        match g.as_mut() {
+            Some(m) => m.after_import_calls(&photos, &source),
+            None => return Vec::new(),
+        }
+    };
+    if planned.is_empty() {
+        return Vec::new();
+    }
+    let mut host = HookSession::plain(SessionHost(s));
+    let mut out = Vec::with_capacity(planned.len());
+    for (id, call) in planned {
+        let r = call.map_err(|e| e.to_string()).and_then(|mut call| {
+            let outcome = call.run(&mut host);
+            let mut g = manager_for(&library);
+            let m = g.get_or_insert_with(Manager::in_memory);
+            m.end(call, Some(outcome)).map_err(|e| e.to_string())
+        });
+        out.push(match r {
+            Ok(v) => json!({"plugin": id, "ok": v}),
+            Err(e) => json!({"plugin": id, "error": e}),
+        });
+    }
+    // hooks may have written their own fields (a "seen" mark)
+    sync_fields(s);
+    out
+}
+
 /// A catalog request a plug-in made from a worker thread ([`relay_host`]), answered on the thread that owns
 /// the session with [`HostRequest::answer`].
 pub struct HostRequest {
@@ -1192,6 +1458,8 @@ pub(super) enum Relayed {
     SetMetadata,
     /// `library.add`.
     LibraryAdd,
+    /// `library.remove`.
+    LibraryRemove,
     /// `photo.pixels`: `{photo, longEdge}`, already checked. The session's thread only finds the
     /// source and leaves it here; the caller decodes it on its own thread.
     Pixels(std::sync::Arc<std::sync::Mutex<Option<super::plugin_develop::PixelsSource>>>),
@@ -1199,6 +1467,10 @@ pub(super) enum Relayed {
     SetCrop,
     /// `photo.virtualCopy`: `{photo, name}`, already checked.
     VirtualCopy,
+    /// `program.start` from a `beforeImport` hook on an attended import: the session's thread
+    /// starts it ([`super::plugin_programs::start`]) and answers at once (the run is watched on
+    /// its own thread; `program.end` comes there later).
+    StartProgram(std::sync::Arc<std::sync::Mutex<Option<lcc_plugins::StartRequest>>>),
 }
 
 /// [`Relayed::Pixels`]'s parameters, and back.
@@ -1257,9 +1529,17 @@ impl HostRequest {
             Relayed::Catalog(m) => host.catalog(m, &self.params),
             Relayed::SetMetadata => host.set_metadata(&self.params),
             Relayed::LibraryAdd => host.library_add(&self.params),
+            Relayed::LibraryRemove => host.library_remove(&self.params),
             Relayed::Pixels(slot) => relayed_pixels(host.0, &self.params, slot),
             Relayed::SetCrop => relayed_crop(&mut host, &self.params),
             Relayed::VirtualCopy => relayed_copy(&mut host, &self.params),
+            Relayed::StartProgram(run) => {
+                let taken = run.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                match taken {
+                    Some(run) => host.start_program(run).map(|_| Value::Null),
+                    None => Err("program.start: already answered".into()),
+                }
+            }
         };
         let _ = self.reply.send(r);
     }
@@ -1271,11 +1551,18 @@ pub(super) const HOOK_NO_START: &str = "program.start is not available in hooks 
 /// What plug-ins running on a worker see of the catalog: each request goes to the session's thread
 /// (see [`relay_host`]) and waits for its answer. Programs are looked up through the session's
 /// desktop; none is started ([`HOOK_NO_START`]).
-pub struct RelayHost(std::sync::mpsc::Sender<HostRequest>, std::sync::Arc<dyn crate::desktop::Desktop>);
+pub struct RelayHost(std::sync::mpsc::Sender<HostRequest>, std::sync::Arc<dyn crate::desktop::Desktop>, bool);
 
 impl RelayHost {
     pub(super) fn new(tx: std::sync::mpsc::Sender<HostRequest>, desktop: std::sync::Arc<dyn crate::desktop::Desktop>) -> RelayHost {
-        RelayHost(tx, desktop)
+        RelayHost(tx, desktop, false)
+    }
+
+    /// [`RelayHost`] where `program.start` is relayed to the session's thread (only a
+    /// `beforeImport` hook of an attended import gets one; see [`HOOK_NO_START`]).
+    pub(super) fn allowing_program_start(mut self) -> RelayHost {
+        self.2 = true;
+        self
     }
 
     fn ask(&self, method: Relayed, params: &Value) -> std::result::Result<Value, String> {
@@ -1333,6 +1620,10 @@ impl HostApi for RelayHost {
         self.ask(Relayed::LibraryAdd, params)
     }
 
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        self.ask(Relayed::LibraryRemove, params)
+    }
+
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
         self.pixels_within(photo, long_edge, None)
     }
@@ -1349,8 +1640,11 @@ impl HostApi for RelayHost {
         self.1.find_program(program)
     }
 
-    fn start_program(&mut self, _: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
-        Err(HOOK_NO_START.into())
+    fn start_program(&mut self, run: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
+        if !self.2 {
+            return Err(HOOK_NO_START.into());
+        }
+        self.ask(Relayed::StartProgram(std::sync::Arc::new(std::sync::Mutex::new(Some(run)))), &Value::Null).map(|_| ())
     }
 }
 
@@ -1358,12 +1652,19 @@ impl HostApi for RelayHost {
 /// session's thread to answer.
 pub fn relay_host(s: &Session) -> (RelayHost, std::sync::mpsc::Receiver<HostRequest>) {
     let (tx, rx) = std::sync::mpsc::channel();
-    (RelayHost(tx, s.desktop.clone()), rx)
+    (RelayHost::new(tx, s.desktop.clone()), rx)
 }
 
 /// [`SessionHost`] for hooks and export destinations: the same catalog and lookups, no starts
-/// ([`HOOK_NO_START`]), wherever the hook runs.
-struct HookSession<'a>(SessionHost<'a>);
+/// ([`HOOK_NO_START`]) — except from a `beforeImport` hook of an attended import (`starts: true`),
+/// where a run is what the hook is for.
+struct HookSession<'a>(SessionHost<'a>, bool);
+
+impl HookSession<'_> {
+    fn plain(inner: SessionHost<'_>) -> HookSession<'_> {
+        HookSession(inner, false)
+    }
+}
 
 impl HostApi for HookSession<'_> {
     fn catalog(&mut self, method: &str, params: &Value) -> std::result::Result<Value, String> {
@@ -1376,6 +1677,10 @@ impl HostApi for HookSession<'_> {
 
     fn library_add(&mut self, params: &Value) -> std::result::Result<Value, String> {
         self.0.library_add(params)
+    }
+
+    fn library_remove(&mut self, params: &Value) -> std::result::Result<Value, String> {
+        self.0.library_remove(params)
     }
 
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> std::result::Result<Value, String> {
@@ -1394,8 +1699,11 @@ impl HostApi for HookSession<'_> {
         self.0.find_program(program)
     }
 
-    fn start_program(&mut self, _: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
-        Err(HOOK_NO_START.into())
+    fn start_program(&mut self, run: lcc_plugins::StartRequest) -> std::result::Result<(), String> {
+        if !self.1 {
+            return Err(HOOK_NO_START.into());
+        }
+        self.0.start_program(run)
     }
 }
 
@@ -1422,7 +1730,7 @@ fn export_to(s: &mut Session, p: &Value) -> Result<Value> {
     let files = p.get("files").and_then(Value::as_array).ok_or_else(|| bad(C, "missing `files: [{path, photo?}]`"))?;
     let args = p.get("args").cloned().unwrap_or(Value::Null);
     let lib = s.plugin_library.clone();
-    let mut host = HookSession(SessionHost(s));
+    let mut host = HookSession::plain(SessionHost(s));
     let r = with_library(&lib, |m| m.export_to(id, dest, &args, files, &mut host).map_err(|e| plugin_err(C, e)));
     sync_fields(s);
     r
@@ -1599,13 +1907,13 @@ pub(crate) fn sync_fields_with(s: &mut Session, write_sidecars: bool) -> usize {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, requests: [{group, value?: host, folder or program id, write?: (fs), state: allowed|denied|never|refused, deniedOn?: YYYY-MM-DD, reason?: why a folder can't be granted}], commands, hooks, publish, about: {homepage?, repository?, changelog?, license?, issues?: the GitHub repository's issues page}, moduleHash: sha256 of the module, settingsRevision: changes when a setting does, signer: the fingerprint of the author key pinned for it | null (unsigned), previousVersion: the version plugin.rollback goes back to | null}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}], skipped: modules in the folder past the most it loads (256 plug-ins counting every module, 1,000 pixel filters), not looked at}", always, list),
+        cmd!(query "plugin.list", "Plug-ins", [], None, "{} → {dir, host: {abi, features}, plugins: [{id, name, version, requires, enabled, requested, granted, requests: [{group, value?: host, folder or program id, write?: (fs), state: allowed|denied|never|refused, deniedOn?: YYYY-MM-DD, reason?: why a folder can't be granted}], commands, hooks, publish, about: {homepage?, repository?, changelog?, license?, issues?: the GitHub repository's issues page}, moduleHash: sha256 of the module, settingsRevision: changes when a setting does, signer: the fingerprint of the author key pinned for it | null (unsigned), previousVersion: the version plugin.rollback goes back to | null, updates: {check, available, reason, checkedAt?, checkedAgo?, error?, offer?} as plugin.checkUpdates says}], failed: [{file, error, id?: to remove it with plugin.uninstall, missing?: features this version lacks}], skipped: modules in the folder past the most it loads (256 plug-ins counting every module, 1,000 pixel filters), not looked at}", always, list),
         cmd!(query "plugin.inspectFile", "Inspect Plug-in File", [], None, "{path, verify?: false}: reads a .wasm without installing it. A plug-in stamped with its manifest (a photo-plugin.manifest section) is read from the section without running it: source: \"section\", verified: false (the file's claim; install checks it against lcc_manifest). One without a section, or any plug-in with verify: true, is loaded in the sandbox and read through lcc_manifest (a section that differs is an error naming the fields): source: \"export\", verified: true → {manifest, source, verified, installed: {version, granted, same: the installed version and code are this file's (installing it changes nothing), loaded?: false (it needs features this version lacks)} | null, missing: [features this version lacks], versionError: why `version` isn't semver | null, downgrade: older than the installed version (pixel filters too), conflict: why a module of the other kind (plug-in or pixel filter) with this id stops it | null, unknownFields: manifest fields this version doesn't know, by path (they're ignored; installing still goes ahead), dropped: manifest values this version can't use, each with why (`homepage: not an https:// link`; left out, installing still goes ahead)}; manifest.about: {homepage?, repository?, changelog?, license?, issues?}; plugin.install refuses each of these (a downgrade only without allowDowngrade); signature: \"none\" | \"valid\" | \"invalid\" (the author signature, a photo-plugin.signature section; read without running the module; invalid: install refuses it, signatureError says why), signer: the valid signature's key fingerprint | null, signerKey: that key in base64 (what acceptSigner says yes to exactly) | null, pinned: {signer: the fingerprint pinned for the installed plug-in | null (installed unsigned), readable: false when plugins.json's pin can't be read} | null (not installed), matchesPin: installing this file needs no acceptSigner/acceptUnsigned (true when the installed plug-in is unsigned) | null (not installed). A file over the install size limit is refused as install refuses it. The install dialog inspects with verify: true and lists the permissions it may ask for", always, inspect_file),
         cmd!(query "plugin.install", "Install Plug-in", [], None, "{path: .wasm, grant?: {catalog, metadataWrite, network: [hosts], fs: [{path, write}], programs: [entries as plugin.list gives them]}, allowDowngrade?: bool = false, acceptSigner?: the file's signerKey or its fingerprint, acceptUnsigned?: bool = false}: installs or updates. Nothing is granted: a fresh install has no permissions, and the plug-in asks the user for each as it needs it; an update keeps what the user allowed (cut back to what the new version asks for) and what they denied. `grant` may repeat or leave out what the installed version has, never add to it (an error, nothing installed): only the user allows. A module whose code differs from the installed one keeps none of its programs (its log says so). Refused: features in `requires` this version lacks, a `version` that isn't semver, an older version than the installed one unless allowDowngrade (pixel filters too), an id an installed module of the other kind (plug-in or pixel filter) has; an invalid author signature (a photo-plugin.signature section that doesn't hold up). The first signed install pins its signer (plugin.list `signer`); a later file signed by another key, unsigned, or over a pin plugins.json can't read is refused, naming both signers, unless acceptSigner gives that file's signerKey or fingerprint (pins it) or acceptUnsigned: true for an unsigned file (no pin) → plugin", always, install),
         cmd!(query "plugin.uninstall", "Remove Plug-in", [], None, "{id} | {file}, keepData?: bool = false: removes the module and its data (with keepData its data and settings stay, for a later install of the same id; a pixel filter keeps none); also a plug-in listed under plugin.list → failed (by its id there). With `file` (a plugin.list → failed row's): only that module file when another module has its id (the first by file name loads), else the plug-in as by its id", always, uninstall),
         cmd!(query "plugin.rollback", "Go Back to Previous Plug-in Version", [], None, "{id, acceptSigner?, acceptUnsigned?}: goes back to the version the plug-in's last update replaced (plugin.list → previousVersion), with its settings as they were before that update; one level deep. That file must still be signed as it was when it was replaced (the signer recorded beside it): another key, unsigned or an invalid signature is refused naming both, unless acceptSigner (its signerKey or fingerprint) or acceptUnsigned says yes, as for plugin.install. Its grant is kept, cut back to what that version asks for, without programs (only the user keeps those, from the plug-in's page). An error when no version is kept; nothing changes when the old module can't be written → the plug-in, as plugin.list lists it", always, rollback),
         cmd!(query "plugin.setUpdateCheck", "Check Plug-in for Updates", [], None, "{id, on: bool}: turns a plug-in's update check on or off (off by default). Only a plug-in whose manifest names an update feed (updateUrl) and whose file is stamped and signed by its pinned author key can have one (plugin.list → updates.available, or updates.reason why not); pixel filters get none. With it on, opening the Plug-in Manager checks the feed when the last check is a day old (plugin.checkUpdates {due: true}); nothing checks while the Plug-in Manager is closed → {id, updates}", always, set_update_check),
-        cmd!(query "plugin.checkUpdates", "Check Plug-ins for Updates", [], None, "{id?, due?: bool = false}: fetches update feeds (https only, at most 1 MB): plug-in `id` now, whatever its setting and the age of its last check (an error when it can't have one), else every plug-in whose update check is on; with due: true only those whose last check is a day old or more. Each result is kept (plugins.json) and shown as plugin.list → updates: {check: the user turned it on, available: it can have one, reason: why not | null, checkedAt: seconds since 1970, error: why the check failed | null, offer: {version (above the installed one), url, sha256, requires, permissions: groups the feed declares, changelog, notes: plain text, at most 280 characters, adds: declared groups the installed version doesn't have, missing: host features this version lacks (not installable)} | null}. A feed entry is matched by its `id`; one whose version isn't above the installed one, can't be read, or shares its id with another offers nothing (the plug-in's log says why). It waits for the network (each fetch ends within 5 minutes); the Plug-in Manager runs it on a worker → {checked: [ids], plugins: [{id, name, version, updates}]}", always, check_updates_cmd),
+        cmd!(query "plugin.checkUpdates", "Check Plug-ins for Updates", [], None, "{id?, due?: bool = false}: fetches update feeds (https only, at most 1 MB): plug-in `id` now, whatever its setting and the age of its last check (an error when it can't have one), else every plug-in whose update check is on; with due: true only those whose last check is a day old or more. Each result is kept (plugins.json) and shown as plugin.list → updates: {check: the user turned it on, available: it can have one, reason: why not | null, checkedAt: seconds since 1970, checkedAgo: seconds since then (absent before the first check; negative if the clock went back), error: why the check failed | null, offer: {version (above the installed one), url, sha256, requires, permissions: groups the feed declares, changelog, notes: plain text, at most 280 characters, adds: declared groups the installed version doesn't have, missing: host features this version lacks (not installable)} | null}. A feed entry is matched by its `id`; one whose version isn't above the installed one, can't be read, or shares its id with another offers nothing (the plug-in's log says why). It waits for the network (each fetch ends within 5 minutes); the Plug-in Manager runs it on a worker → {checked: [ids], plugins: [{id, name, version, updates}]}", always, check_updates_cmd),
         cmd!(query "plugin.update", "Update Plug-in", [], None, "{id, acceptUndeclared?: bool = false}: downloads the version the last check found (plugin.list → updates.offer) and installs it as plugin.install does (its grant kept, cut back to what it asks for; new permissions not granted; the version replaced kept for plugin.rollback). Refused, installing nothing: no update found, one needing host features this version lacks, a file over the install size limit, whose SHA-256 isn't the feed's, that isn't stamped, is another plug-in or version than offered, or isn't signed by the pinned author key. A file whose manifest asks for permission groups the feed didn't declare installs nothing and gives {updated: false, reason, undeclared: [groups], requests: [{group, value?}]: what it asks for that the installed version doesn't}, until called again with acceptUndeclared: true. It waits for the download (at most 5 minutes); the Plug-in Manager runs it on a worker → {updated: true, plugin}", always, update),
         cmd!(query "plugin.enable", "Enable Plug-in", [], None, "{id, enabled?: bool = true}", always, enable),
         cmd!(query "plugin.grant", "Set Plug-in Permissions", [], None, "{id, grant}: replaces the grant with one that may repeat or leave out what is granted (revoking what it leaves out), never add to it: a permission, host, folder (or its write), program or wider program entry the plug-in doesn't have is an error and changes nothing. Only the user allows, when the plug-in asks or in the Plug-in Manager → granted", always, set_grant),
@@ -1729,6 +2037,7 @@ pub(crate) mod tests {
     /// calls; the catalog reaches them through the relay; cancelling skips the calls not yet made.
     #[test]
     fn export_hooks_run_on_a_worker_and_relay_catalog_requests() {
+        let _test_plugins = super::TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _turn = turn();
         manager().get_or_insert_with(Manager::in_memory).install_bytes(&hook_module("test.relay"), None, false).unwrap();
         let files = [json!({"path": "/tmp/x.jpg"})];
@@ -2305,6 +2614,7 @@ pub(crate) mod tests {
     /// once the program has exited.
     #[test]
     fn a_plugin_program_run_is_watched_and_cleaned_up() {
+        let _test_plugins = super::TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _turn = turn();
         let mut s = Session::with_demo();
         let desktop = std::sync::Arc::new(crate::desktop::Recorder::default());
@@ -2456,7 +2766,7 @@ pub(crate) mod tests {
         check(&mut super::super::plugin_programs::hook_host(relay), "program.end");
         let (mut relay, _requests) = relay_host(&s);
         check(&mut relay, "a worker's export hooks");
-        check(&mut HookSession(SessionHost(&mut s)), "hooks on the session's thread");
+        check(&mut HookSession::plain(SessionHost(&mut s)), "hooks on the session's thread");
         assert!(desktop.requests().is_empty(), "nothing started");
         let _ = std::fs::remove_dir_all(&root);
     }

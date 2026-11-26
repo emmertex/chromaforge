@@ -768,7 +768,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             && matches!(id, "app.export" | "app.exportPrevious")
         {
             // an export that can't start (e.g. no folder) says why instead of doing nothing
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
         }
     }
     classic::keep_focus_on_panel_toggle(ctx, &fire);
@@ -796,7 +796,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
                         app.ui.toggle_section(lcc_develop::PLUGIN_FILTERS_SECTION);
                     }
                 }
-                Err(e) => app.toast(ctx, e),
+                Err(e) => app.toast_error(ctx, e),
             }
         } else if let Some(rest) = f.strip_prefix("rate:") {
             let (n, adv) = rest.split_once(':').unwrap_or(("0", "0"));
@@ -863,7 +863,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             let d = if matches!(f.as_str(), "library.next" | "library.down") { 1 } else { -1 };
             let _ = if app.ui.view == crate::state::ViewMode::Compare { compare::compare_step(app, d) } else { compare::survey_step(app, d) };
         } else if matches!(f.as_str(), "photo.cycleFlag" | "photo.increaseFlag" | "photo.decreaseFlag") {
-            // `, ⌘↑, ⌘↓: step the flag; the toast is the command's own (`cull_toast`, shown by `run`)
+            // `, ⌘↑, ⌘↓: step the flag; the overlay reports it
             cull(app, &f, json!({}), false);
         } else if matches!(f.as_str(), "photo.pick" | "photo.unflag") || (f == "photo.reject" && tool_panel(app) != crate::state::RightPanel::Crop) {
             // P and U flag with Crop open too; X there swaps the crop aspect (#1866)
@@ -1026,24 +1026,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context) {
             if let Err(e) = app.run(&f, json!({}))
                 && matches!(f.as_str(), "app.export" | "app.exportPrevious")
             {
-                app.toast(ctx, e);
-            }
-            match f.as_str() {
-                "edit.undo" => change_toast(app, ctx, crate::i18n::tr("Undo")),
-                "edit.redo" => change_toast(app, ctx, crate::i18n::tr("Redo")),
-                _ => {}
+                app.toast_error(ctx, e);
             }
         }
     }
-}
-
-/// The toast a flag, undo or redo key gives: skipped while the on-screen overlay already reports
-/// every change (Settings ▸ Interface ▸ Overlay: Always), so one press shows one note, not two.
-fn change_toast(app: &mut LccApp, ctx: &egui::Context, text: impl Into<String>) {
-    if overlay_reports_changes(app) {
-        return;
-    }
-    app.toast(ctx, text);
 }
 
 /// Whether the on-screen overlay (`panels::surface_osd`) reports the changes keys make.
@@ -1106,7 +1092,7 @@ fn canvas_nudge(app: &mut LccApp, ctx: &egui::Context) {
             app.run("spot.update", json!({"move": [dx, dy]}))
         };
         if let Err(e) = r {
-            app.toast(ctx, e);
+            app.toast_error(ctx, e);
         }
     }
 }
@@ -1508,36 +1494,29 @@ mod tests {
     }
 
     #[test]
-    fn color_label_actions_show_feedback_only_after_success() {
+    fn color_label_actions_change_the_label_and_leave_the_saying_to_the_overlay() {
         use lcc_catalog::PhotoId;
         let mut h = library();
+        let label = |h: &crate::headless::Headless| h.app.session.catalog.photo(PhotoId(1)).unwrap().label;
         for shift in [false, true] {
-            for (k, name) in [("6", "Red"), ("7", "Yellow"), ("8", "Green"), ("9", "Blue")] {
+            for (k, name) in [("6", "red"), ("7", "yellow"), ("8", "green"), ("9", "blue")] {
                 h.app.session.execute("library.select", &json!({"ids": [1]})).unwrap();
                 h.app.ui.toasts.clear();
                 key(&mut h, k, shift);
-                assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some(format!("{name} Label").as_str()));
-                assert_eq!(h.app.ui.toast().and_then(|t| t.2), h.app.session.catalog.photo(PhotoId(1)).unwrap().label);
+                assert_eq!(label(&h).map(|l| format!("{l:?}").to_lowercase()).as_deref(), Some(name));
+                assert!(h.app.ui.toast().is_none(), "no toast: the overlay names the label: {:?}", h.app.ui.toasts);
                 assert_eq!(h.app.session.active(), Some(PhotoId(if shift { 2 } else { 1 })));
             }
         }
         // Menus and the Info-panel swatches dispatch the same command, including purple/clear.
+        let active = h.app.session.active().unwrap();
+        let label_of = |h: &crate::headless::Headless| h.app.session.catalog.photo(active).unwrap().label;
         h.app.run("photo.label", json!({"label": "purple"})).unwrap();
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Purple Label"));
+        assert_eq!(label_of(&h), Some(lcc_catalog::ColorLabel::Purple));
         h.app.run("photo.label", json!({"label": "none"})).unwrap();
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
-        assert!(h.app.ui.toast().is_some_and(|t| t.2.is_none()), "clear uses neutral feedback");
-        h.app.session.execute("label.setNames", &json!({"names": {"red": "Needs review"}})).unwrap();
-        key(&mut h, "6", false);
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Needs review Label"));
-        // Native menu callbacks run before logic() catches up to the current frame's clock.
-        let now = h.view.ctx.input(|i| i.time);
-        h.app.last_time = now - 10.0;
-        h.app.run("photo.label", json!({"label": "blue"})).unwrap();
-        assert!(h.app.ui.toast().is_some_and(|t| t.1 > now), "menu feedback must survive an idle gap");
-        h.app.ui.toasts.clear();
+        assert_eq!(label_of(&h), None);
+        assert!(h.app.ui.toast().is_none(), "{:?}", h.app.ui.toasts);
         assert!(h.app.run("photo.label", json!({"label": "invalid"})).is_err());
-        assert!(h.app.ui.toast().is_none(), "failed actions must not announce success");
     }
 
     #[test]
@@ -1550,23 +1529,18 @@ mod tests {
         // Press 6 to assign Red
         key(&mut h, "6", false);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, Some(ColorLabel::Red));
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Red Label"));
 
         // Press 6 again to toggle off (issue #412)
         key(&mut h, "6", false);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
-        assert!(h.app.ui.toast().is_some_and(|t| t.2.is_none()));
 
         // Press 7 to assign Yellow
         key(&mut h, "7", false);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, Some(ColorLabel::Yellow));
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Yellow Label"));
 
         // Press 7 again to toggle off
         key(&mut h, "7", false);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
 
         // Shift+8 (Green) assigns Green and advances to photo 2
         key(&mut h, "8", true);
@@ -1577,7 +1551,6 @@ mod tests {
         h.app.session.execute("library.select", &json!({"ids": [1]})).unwrap();
         key(&mut h, "8", true);
         assert_eq!(h.app.session.catalog.photo(PhotoId(1)).unwrap().label, None);
-        assert_eq!(h.app.ui.toast().map(|t| t.0.as_str()), Some("Color label cleared"));
         assert_eq!(h.app.session.active(), Some(PhotoId(2)));
     }
 
@@ -1606,29 +1579,23 @@ mod tests {
         assert_eq!(rating(&h), 3, "the new key does");
     }
 
-    /// Every rating and flag change confirms with a toast, with the count when several photos change, and a
-    /// refused change says nothing.
+    /// A rating, flag or label change, by key or command, shows no toast in any overlay mode: the overlay says it
+    /// (or, when I have turned it off, nothing does). A refused change says nothing either.
     #[test]
-    fn rating_and_flag_changes_confirm_with_the_count() {
+    fn rating_flag_and_label_changes_never_toast() {
         let mut h = library();
-        let toast = |h: &crate::headless::Headless| h.app.ui.toast().map(|t| t.0.clone());
-        h.app.session.execute("library.select", &json!({"ids": [1]})).unwrap();
-        key(&mut h, "3", false);
-        assert_eq!(toast(&h).as_deref(), Some("Rated ★★★"));
-        h.app.session.execute("library.select", &json!({"ids": [1, 2, 3]})).unwrap();
-        key(&mut h, "2", false);
-        assert_eq!(toast(&h).as_deref(), Some("Rated ★★ · 3 photos"));
-        h.app.run("photo.decreaseRating", json!({})).unwrap();
-        assert_eq!(toast(&h).as_deref(), Some("Rated ★ · 3 photos"));
-        // (flag changes are reported by the on-screen overlay instead while it is on for the window)
-        h.app.run("osd.settings", json!({"mode": "surface"})).unwrap();
-        key(&mut h, "P", false);
-        assert_eq!(toast(&h).as_deref(), Some("Flagged as Pick · 3 photos"));
-        key(&mut h, "6", false);
-        assert_eq!(toast(&h).as_deref(), Some("Red Label · 3 photos"));
-        h.app.ui.toasts.clear();
-        assert!(h.app.run("photo.rate", json!({"rating": 9})).is_err());
-        assert_eq!(toast(&h), None, "a refused rating shows no toast");
+        for mode in ["always", "surface", "off"] {
+            h.app.run("osd.settings", json!({"mode": mode})).unwrap();
+            h.app.ui.toasts.clear();
+            h.app.session.execute("library.select", &json!({"ids": [1, 2, 3]})).unwrap();
+            for k in ["3", "2", "P", "6"] {
+                key(&mut h, k, false);
+            }
+            h.app.run("photo.decreaseRating", json!({})).unwrap();
+            assert!(h.app.ui.toast().is_none(), "{mode}: {:?}", h.app.ui.toasts);
+            assert!(h.app.run("photo.rate", json!({"rating": 9})).is_err());
+            assert!(h.app.ui.toast().is_none(), "{mode}: a refused rating shows no toast");
+        }
     }
 
     #[test]

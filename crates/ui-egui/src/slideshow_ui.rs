@@ -1302,9 +1302,8 @@ fn right_column(app: &mut LccApp, ui: &mut egui::Ui) {
     if ch && s != before {
         match serde_json::to_value(&s) {
             Ok(v) => {
-                if let Err(e) = app.run("slideshow.set", v) {
-                    app.toast_error(ui.ctx(), e);
-                }
+                let result = app.run("slideshow.set", v);
+                app.report(ui.ctx(), result);
             }
             Err(e) => log::warn!("slideshow settings: {e}"),
         }

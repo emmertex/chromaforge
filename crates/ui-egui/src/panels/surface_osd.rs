@@ -220,6 +220,11 @@ fn take_report(app: &mut LccApp) {
 /// change (the surface's wins a tie: a dial's readout names the value it turns, with its bar).
 pub fn current(app: &mut LccApp) -> Option<(Readout, f64)> {
     take_report(app);
+    peek(app)
+}
+
+/// [`current`] without taking the last change report first, for readers that only look (`ui.inspect`).
+pub fn peek(app: &LccApp) -> Option<(Readout, f64)> {
     let now = app.surface.now();
     let surface = surface_content(app);
     let mode = app.surface.settings().osd.effective_mode();
@@ -338,8 +343,8 @@ pub const POSITIONS: &[(OsdPosition, &str)] =
     &[(OsdPosition::Bottom, "Down"), (OsdPosition::BottomEdge, "Down Low"), (OsdPosition::Top, "Up"), (OsdPosition::TopEdge, "Up High")];
 
 /// Settings, Interface, Overlay (also in Settings, Controls): one set of settings for every
-/// overlay.
-pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
+/// overlay. `in_controls` is the Controls page showing it: there the pointer to that page is left out.
+pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens, in_controls: bool) {
     crate::surface::ensure_loaded(app);
     let mut s = app.surface.settings().osd.clone();
     let before = s.clone();
@@ -350,7 +355,19 @@ pub fn settings_section(app: &mut LccApp, ui: &mut egui::Ui, t: &Tokens) {
             s.set_mode(mode);
         }
     });
-    hint(ui, t, "A short note in the window for every change: a slider's value, a rating, a profile applied, and how many photos it changed.");
+    // most people have never met a control surface: Settings says what that choice is for and where one is set up
+    // (the Controls page shows these settings too, and there the pointer would point at itself)
+    if in_controls {
+        hint(ui, t, "Flash a message for each change: what changed, and how many photos were affected.");
+    } else {
+        let note = crate::i18n::tr_format!(
+            "Flash a message for each change: what changed, and how many photos were affected. “{mode}” is for a hardware controller. Set one up in {settings} ▸ {controls}.",
+            mode = tr("Control surface only"),
+            settings = tr("Settings"),
+            controls = tr("Controls")
+        );
+        hint(ui, t, &note);
+    }
     row(ui, t, "Size", |ui| {
         let r = ui.add(egui::Slider::new(&mut s.size, 0.5..=2.0).fixed_decimals(2).suffix("×"));
         crate::widgets::register(ui.ctx(), "slider:osd.size", r.rect);
@@ -420,6 +437,13 @@ fn settings_json(osd: &ls::settings::OsdSettings) -> Value {
     })
 }
 
+/// What the pill is doing now, for `osd.state` and `ui.inspect`: its settings, the readout it holds with its age, and
+/// `held` (kept off the photo while an on-photo tool is in use, note 15).
+pub fn state_json(app: &LccApp) -> Value {
+    let shown = peek(app).map(|(r, age)| json!({"title": r.title, "value": r.value, "caption": r.caption, "icon": r.icon, "ageS": age}));
+    json!({"settings": settings_json(&app.surface.settings().osd), "shown": shown, "held": app.surface.osd_held})
+}
+
 /// `osd.*` commands: `osd.settings {mode?, size?, opacity?, displayMs?, position?, background?}`
 /// (every overlay setting; replies with them all), `osd.mode {mode?}` (no mode: the next one,
 /// Off → Control surface only → Always, for a console key) and `osd.state` (what it shows now).
@@ -462,9 +486,8 @@ pub fn command(app: &mut LccApp, id: &str, p: &Value) -> Result<Value, String> {
             osd.set_mode(next);
         }
         "osd.state" => {
-            let shown = current(app).map(|(r, age)| json!({"title": r.title, "value": r.value, "caption": r.caption, "icon": r.icon, "ageS": age}));
-            // `held`: kept off the photo while an on-photo tool is in use (note 15)
-            return Ok(json!({"settings": settings_json(&osd), "shown": shown, "held": app.surface.osd_held}));
+            take_report(app);
+            return Ok(state_json(app));
         }
         other => return Err(format!("unknown command `{other}`")),
     }

@@ -132,7 +132,7 @@ fn click(h: &mut Headless, id: &str) {
 }
 
 fn toast(h: &Headless) -> String {
-    h.app.ui.toast().map(|(t, _, _)| t.clone()).unwrap_or_default()
+    h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default()
 }
 
 /// The steps of the library's own changes: a click that picks the photo up is a step of its own (a selection).
@@ -169,11 +169,11 @@ fn photos_dropped_on_a_folder_move_there_on_disk() {
     assert!(trip.join("beach.png").is_file(), "not before Move");
     h.step();
     click(&mut h, "button:dialogOk");
-    // Then the file moved, the photo follows it, and the toast says Undo moves it back
+    // Then the file moved, the photo follows it, and the overlay (not a toast) says so
     assert!(home.join("beach.png").is_file() && !trip.join("beach.png").exists(), "moved on disk");
     let photo = h.app.session.catalog.photo(lcc_catalog::PhotoId(beach)).unwrap();
     assert!(matches!(&photo.source, lcc_catalog::Source::File { path } if Path::new(path) == home.join("beach.png")));
-    assert!(toast(&h).starts_with("Moved 1 photo to “home”. Edit → Undo moves them back."), "{}", toast(&h));
+    assert_eq!(toast(&h), "", "the overlay says the move, no toast repeats it");
     assert!(h.app.ui.dragging_photos.is_none(), "the drag ended");
     // and one Undo moves it back
     h.app.run("edit.undo", json!({})).unwrap();
