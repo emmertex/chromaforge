@@ -1363,10 +1363,12 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if let Some(f) = task.first.filter(|_| !task.moved_on) {
         // a view the new photos aren't in (an album, Picks, a Local folder) would leave the active
         // photo off screen: show All Photos, as Lightroom shows the import's own collection (#1446)
-        if !app.session.visible().contains(&lcc_catalog::PhotoId(f)) {
-            let _ = app.run("library.source", json!({"kind": "all"}));
-        }
-        let _ = app.run("library.select", json!({"ids": [f]}));
+        app.without_view_steps(|app| {
+            if !app.session.visible().contains(&lcc_catalog::PhotoId(f)) {
+                let _ = app.run("library.source", json!({"kind": "all"}));
+            }
+            let _ = app.run("library.select", json!({"ids": [f]}));
+        });
     }
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     // nothing new, only files the library already has: show where they are (Recently Deleted is
@@ -1431,10 +1433,16 @@ fn show_existing(app: &mut LccApp, ctx: &egui::Context, existing: &[u64]) -> boo
     ids.sort_unstable();
     ids.dedup();
     ids.retain(|&id| app.session.catalog.photo(lcc_catalog::PhotoId(id)).is_some());
-    if ids.is_empty() || app.run("library.source", json!({"kind": kind})).is_err() {
+    let shown = app.without_view_steps(|app| {
+        if ids.is_empty() || app.run("library.source", json!({"kind": kind})).is_err() {
+            return false;
+        }
+        let _ = app.run("library.select", json!({"ids": ids}));
+        true
+    });
+    if !shown {
         return false;
     }
-    let _ = app.run("library.select", json!({"ids": ids}));
     app.ui.left_panel = true;
     let n = ids.len();
     let plural = if n == 1 { "" } else { "s" };

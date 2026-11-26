@@ -135,6 +135,11 @@ fn toast(h: &Headless) -> String {
     h.app.ui.toast().map(|(t, _, _)| t.clone()).unwrap_or_default()
 }
 
+/// The steps of the library's own changes: a click that picks the photo up is a step of its own (a selection).
+fn catalog_steps(h: &Headless) -> usize {
+    h.app.session.undo.iter().filter(|e| !e.is_navigation()).count()
+}
+
 #[test]
 fn photos_dropped_on_a_folder_move_there_on_disk() {
     let (root, trip, home) = folders("move");
@@ -254,10 +259,10 @@ fn photos_already_in_the_folder_stay_put() {
     });
     h.step();
     assert_eq!(hint(&h).as_deref(), Some("Already in “home”"));
-    let undo = h.app.session.undo.len();
+    let undo = catalog_steps(&h);
     release(&mut h, target.center());
     assert!(home.join("garden.png").is_file());
-    assert_eq!(h.app.session.undo.len(), undo, "nothing done");
+    assert_eq!(catalog_steps(&h), undo, "nothing done");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -338,13 +343,13 @@ fn cancelling_the_question_moves_nothing() {
         click(&mut h, &format!("libraryFolderToggle:{}", tree_path(&root)));
         folder_row(&h, &home).unwrap()
     };
-    let undo = h.app.session.undo.len();
+    let undo = catalog_steps(&h);
     drop_beach(&mut h, beach, target);
     assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::MovePhotos { .. })));
     click(&mut h, "button:dialogCancel");
     assert!(h.app.ui.dialog.is_none());
     assert!(trip.join("beach.png").is_file() && !home.join("beach.png").exists(), "nothing moved");
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(catalog_steps(&h), undo);
     let _ = std::fs::remove_dir_all(&root);
 }
 

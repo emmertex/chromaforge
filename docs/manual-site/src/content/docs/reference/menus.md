@@ -13,7 +13,7 @@ import { Aside } from '@astrojs/starlight/components';
 | Menu | Holds |
 |---|---|
 | **File** | Import (photos, folder, device, more imports), Tethered Capture, Libraries, Export, Export with Previous / Preset, More Exports, Email Photo, Print, Plug-ins (Plug-in Manager, Plug-in Marketplace, plug-in commands), Quit |
-| **Edit** | Undo, Redo, Select All / None / Only Active Photo, Select by, Watermarks, Identity Plate Setup, Library Settings, Settings, Keymap, Language |
+| **Edit** | Undo, Redo (they also take back navigation: another folder or collection, a filter, the selection, a module switch), Select All / None / Only Active Photo, Select by, Watermarks, Identity Plate Setup, Library Settings, Settings, Keymap, Language |
 | **Library** | New Collection / Set / Smart Collection, Find, Advanced Search, Find Similar Photos, Filters, Assisted Culling, Image Quality Scanner, Review Comments, Painter, faces, Rename, Find Missing Photos, Find Duplicates, Validate DNG Files, Previews, Immich |
 | **Photo** | Add to Collection, Set Flag / Rating / Color Label, Auto Advance, Rotate & Flip, Virtual Copy, Stack, Photo Merge, Enhance, Edit In, Auto Settings, Reset Edits, Develop Settings, File, Reset Export Status, Delete |
 | **Metadata** | Metadata Preset, copy / paste / sync / save / read metadata, Update DNG Preview & Metadata, Edit Capture Time, All Metadata, XMP auto-write, focus points, keyword shortcut, GPS and place names |

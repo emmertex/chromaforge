@@ -2342,7 +2342,7 @@ mod tests {
         assert_eq!(hover.photo, id);
         let after = photo(&h);
         assert_eq!((after.develop.clone(), after.history.len()), (before.develop.clone(), before.history.len()), "hover leaves the photo alone");
-        assert_eq!(h.app.session.undo.len(), 0);
+        assert!(h.app.session.undo.iter().all(|e| e.is_navigation()), "hovering makes no step of the photo's");
         // moving away ends the preview
         h.request("ui.move", json!({"x": 5, "y": 500}), t);
         h.step();
@@ -2426,7 +2426,9 @@ mod tests {
             h.settle(SETTLE);
             h.step();
             assert_eq!(marked(&h).as_deref(), want, "on photo {photo:?}");
-            assert_eq!(has(&h, "slider:presetAmount"), want.is_some(), "the Amount slider follows the mark");
+            // the move to another photo is a step now, on top of the preset's: the Amount slider replaces the newest
+            // step, so it stays away (it would undo the move) while the preset is still marked
+            assert!(!has(&h, "slider:presetAmount"), "the Amount slider waits for the preset's own step to be the newest");
         }
         h.request("engine.execute", json!({"command": "develop.set", "params": {"control": "light.exposure", "value": 0.5}}), t);
         h.settle(SETTLE);
@@ -2486,7 +2488,7 @@ mod tests {
         let after = photo(&h);
         assert_eq!(after.develop, before.develop);
         assert_eq!(after.history.len(), before.history.len(), "no history entry while hovering");
-        assert!(h.app.session.undo.is_empty());
+        assert!(h.app.session.undo.iter().all(|e| e.is_navigation()), "hovering makes no step of the photo's");
         // hovering down across group headers within the presets list retains the preview (no flicker)
         h.request("ui.hoverWidget", json!({"id": "presetGroup:Creative"}), t);
         h.step();

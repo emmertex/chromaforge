@@ -112,7 +112,10 @@ pub fn showing(app: &LccApp) -> bool {
 /// clear one with. The filter comes back when the Library tab does ([`leave`]).
 pub(crate) fn enter(app: &mut LccApp) {
     app.ui.import_develop = false;
-    if !app.session.filters_off() && app.session.filter != lcc_catalog::Filter::default() && app.run("library.toggleFilters", json!({})).is_ok() {
+    if !app.session.filters_off()
+        && app.session.filter != lcc_catalog::Filter::default()
+        && app.without_view_steps(|app| app.run("library.toggleFilters", json!({}))).is_ok()
+    {
         app.ui.import_shelved_filter = true;
     }
 }
@@ -121,7 +124,7 @@ pub(crate) fn enter(app: &mut LccApp) {
 /// touched the filter state (cleared, or toggled back on by hand), which wins.
 pub(crate) fn leave(app: &mut LccApp) {
     if app.ui.import_shelved_filter && app.session.filters_off() {
-        let _ = app.run("library.toggleFilters", json!({}));
+        let _ = app.without_view_steps(|app| app.run("library.toggleFilters", json!({})));
     }
     app.ui.import_shelved_filter = false;
 }
@@ -318,7 +321,7 @@ pub fn open_without_import(app: &mut LccApp, to: crate::module::ModuleId) -> Res
         app.session.refresh_view();
         app.ui.import_was_browsing = false;
         let ids: Vec<u64> = selected.iter().map(|id| id.0).collect();
-        app.run("library.select", json!({"ids": ids, "active": active.0}))?;
+        app.without_view_steps(|app| app.run("library.select", json!({"ids": ids, "active": active.0})))?;
         crate::module::switch(app, to)?;
         return Ok(json!({"tab": "library", "module": to.key(), "photo": app.session.active(), "inLibrary": true}));
     }
@@ -622,7 +625,7 @@ fn source_row(app: &mut LccApp, ui: &mut egui::Ui, wid: &str, label: &str, path:
 
 fn browse(app: &mut LccApp, ctx: &egui::Context, path: &str) {
     ctx.data_mut(|d| d.insert_temp(pane_id(), Pane::Photos));
-    if let Err(e) = app.run("library.browse", json!({"path": path})) {
+    if let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": path}))) {
         app.toast(ctx, e);
     }
 }
@@ -987,7 +990,7 @@ fn show_segments(app: &mut LccApp, ui: &mut egui::Ui) {
     };
     let show = if i == 0 { "all" } else { "notImported" };
     if (i == 1) != b.not_imported
-        && let Err(e) = app.run("library.browse", json!({"path": b.path, "subfolders": b.subfolders, "show": show}))
+        && let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": b.path, "subfolders": b.subfolders, "show": show})))
     {
         app.toast(ui.ctx(), e);
     }
@@ -1002,7 +1005,7 @@ fn subfolders_check(app: &mut LccApp, ui: &mut egui::Ui) {
     let c = ui.checkbox(&mut sub, crate::i18n::tr("Include subfolders"));
     register(ui.ctx(), "check:includeSubfolders", c.rect);
     if c.changed()
-        && let Err(e) = app.run("library.browse", json!({"path": b.path, "subfolders": sub}))
+        && let Err(e) = app.without_view_steps(|app| app.run("library.browse", json!({"path": b.path, "subfolders": sub})))
     {
         app.toast(ui.ctx(), e);
     }
