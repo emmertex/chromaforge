@@ -525,6 +525,7 @@ fn before_import_hook_replaces_and_skips_on_library_import() {
     use crate::cmd::plugins::{TEST_PLUGINS, use_in_memory_manager};
     let _guard = TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let _turn = crate::cmd::plugins::tests::turn();
+    crate::cmd::plugins::TEST_IMPORT_HOOKS.with(|c| c.set(true));
     let dir = temp_dir("before-import");
     write_png(&dir.join("first.png"), 1, 16, 16);
     write_png(&dir.join("second.png"), 2, 16, 16);
@@ -566,5 +567,7 @@ fn before_import_hook_replaces_and_skips_on_library_import() {
     s.execute("plugin.install", &json!({"path": module.display().to_string(), "allowDowngrade": true})).unwrap();
     let r = s.execute("library.import", &json!({"paths": [dir.join("third.png").display().to_string()]})).unwrap();
     assert_eq!(r["imported"].as_array().map(Vec::len), Some(1), "{r}");
+    s.execute("plugin.uninstall", &json!({"id": "t.before"})).unwrap();
+    crate::cmd::plugins::TEST_IMPORT_HOOKS.with(|c| c.set(false));
     let _ = std::fs::remove_dir_all(&dir);
 }

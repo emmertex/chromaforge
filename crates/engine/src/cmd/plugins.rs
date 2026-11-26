@@ -1189,6 +1189,25 @@ impl ExportHooks {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: import hooks run only on a thread that asks for them, so a test's hook plug-in
+    /// (the manager is process-wide) never reaches other tests' imports.
+    pub(crate) static TEST_IMPORT_HOOKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether import hooks run here (always, outside tests).
+fn import_hooks_on() -> bool {
+    #[cfg(test)]
+    {
+        TEST_IMPORT_HOOKS.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 /// What a plug-in's `beforeImport` hook decided for one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BeforeImportDecision {
@@ -1312,6 +1331,9 @@ pub fn import_source(s: &Session) -> Value {
 /// on the session's thread and its worker calls [`BeforeImportHook::ask`]; the `library.import`
 /// command filters on the session's thread with [`before_import_files`] instead.
 pub fn before_import_hook(s: &Session, source: Value, attended: bool) -> Option<std::sync::Arc<BeforeImportHook>> {
+    if !import_hooks_on() {
+        return None;
+    }
     let library = s.plugin_library.clone();
     let has_hook = {
         let mut g = manager_for(&library);
@@ -1333,6 +1355,9 @@ pub fn before_import_hook(s: &Session, source: Value, attended: bool) -> Option<
 /// `library.import` command path, where a relayed call would wait for the very thread it is on):
 /// `skip`ped files are counted in `skipped`, a failed ask keeps the file. Cancel checked per file.
 pub(crate) fn before_import_files(s: &mut Session, files: Vec<String>, cancel: &std::sync::atomic::AtomicBool, skipped: &mut usize) -> Vec<String> {
+    if !import_hooks_on() {
+        return files;
+    }
     use std::sync::atomic::Ordering::Relaxed;
     let library = s.plugin_library.clone();
     let source = super::plugin_library::source(s);
@@ -1362,7 +1387,7 @@ pub(crate) fn before_import_files(s: &mut Session, files: Vec<String>, cancel: &
 /// each as `photo.inspect` JSON, as the metadata hook's `photos`) and the import's `source`. One
 /// `{plugin, ok | error}` per plug-in (empty: none). A failing plug-in never fails the import.
 pub fn after_import(s: &mut Session, ids: &[u64]) -> Vec<Value> {
-    if ids.is_empty() {
+    if ids.is_empty() || !import_hooks_on() {
         return Vec::new();
     }
     let library = s.plugin_library.clone();
