@@ -2625,7 +2625,16 @@ pub struct LensBlur {
 
 impl Default for LensBlur {
     fn default() -> Self {
-        Self { enabled: false, amount: 50.0, focal_distance: 0.0, focal_range: 20.0, focus: None, focus_size: 0.0, bokeh: BokehShape::Circle, boost: 0.0 }
+        Self {
+            enabled: false,
+            amount: 50.0,
+            focal_distance: 0.0,
+            focal_range: 20.0,
+            focus: None,
+            focus_size: 0.0,
+            bokeh: BokehShape::Circle,
+            boost: 0.0,
+        }
     }
 }
 
