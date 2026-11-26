@@ -26,7 +26,8 @@ Every change goes on a branch, opens a PR and is set to auto-merge
 `cargo xtask ci --fast` runs fmt, brand, docs, notes (release-note entries, `docs/whats-new/README.md`), i18n (the fork
 catalogs sorted, [`localization.md`](localization.md)), windows (every `egui::Window` in `crates/ui-egui/src` is listed in
 `crates/ui-egui/windows.json` as a modal or an exception with its reason; it reads the source only), clippy
-`-D warnings` (incl. the HEIF feature), parity refs, layers, assets, deny, the wasm check and the Android check (`cargo xtask android check`, see
+`-D warnings` (incl. the HEIF feature), the `stamp` step (the `plugin-stamp` tool in `sdk/stamp`, its own workspace: `cargo fmt --check` and
+`cargo clippy --all-targets --locked -- -D warnings` run inside `sdk/stamp`), parity refs, layers, assets, deny, the wasm check and the Android check (`cargo xtask android check`, see
 [`android.md`](android.md)); it skips
 the workspace and HEIF test runs. The SIL step runs `cargo xtask sil` (docs/testing-sil.md) once that command
 exists and is skipped until then; it includes the sync merge properties (`lcc-sync` proptests: commutative,
@@ -37,7 +38,7 @@ reads go through `json_ext::JsonExt::field`). `apps/android` builds only for And
 (`crates/engine/tests/it/roundtrip.rs`) runs with `cargo test -p lcc-engine` (the full run's workspace tests),
 not in the SIL step. Locally, `cargo xtask ci` stays the full run. Before pushing, run `cargo xtask ci --quick`: fmt, brand, docs,
 layers and assets, clippy on the changed crates and every crate depending on them, the changed crates' tests (built
-with `-p`), and heif / parity / wasm when the changes touch them. Don't repeat `ci --fast` locally: the PR's CI runs
+with `-p`), and heif / parity / wasm when the changes touch them. `stamp` runs its `fmt --check` every time and its clippy only when a file under `sdk/stamp/` changed, or a root `clippy.toml`, `rust-toolchain`, `rust-toolchain.toml` or `.cargo/` file it reads (its own `Cargo.toml` and `Cargo.lock` sit in `sdk/stamp`, so the root's do not trigger it). Don't repeat `ci --fast` locally: the PR's CI runs
 it, and the Windows runner is also the maintainers' development machine. Open a PR once the work is ready; every
 push to an open PR starts a run, and a branch push starts none.
 
