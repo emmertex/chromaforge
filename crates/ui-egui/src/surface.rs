@@ -568,7 +568,7 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         load(app);
     }
     if let Some(text) = app.surface.info.take() {
-        app.toast_for(ctx, text, 8.0);
+        app.toast(ctx, text);
     }
     // Touch to find ends with the page that started it: the console acts on photos again
     let controls_open = matches!(&app.ui.dialog, Some(crate::state::Dialog::Settings { tab }) if tab == "controls");
@@ -875,7 +875,7 @@ fn pair(app: &mut LccApp, req: &ControlRequest) -> Outcome {
     match app.surface.pairing.ask(client, name, now) {
         Ok(r) => {
             let text = crate::i18n::tr_format!("{name} asks to control {app}: see Settings, Controls", name = r.name.clone());
-            app.toast_for(&app.tasks.repaint.clone().unwrap_or_default(), text, 8.0);
+            app.toast(&app.tasks.repaint.clone().unwrap_or_default(), text);
             ok(json!({"status": "pending", "request": r.request, "code": r.code}))
         }
         Err(e) => err(e),

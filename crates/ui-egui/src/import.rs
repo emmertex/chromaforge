@@ -1336,10 +1336,9 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.auto {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
-            app.toast_for(
+            app.toast_error(
                 ctx,
                 format!("{} {line} · {}", crate::i18n::tr("Auto Import:"), crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")),
-                8.0,
             );
         } else if task.imported > 0 {
             let msg = if task.camera_roll {
@@ -1354,7 +1353,7 @@ fn finish(app: &mut LccApp, ctx: &egui::Context, task: ImportTask) {
     if task.browse {
         if !task.warnings.is_empty() {
             let line = crate::import_report::record(app, task.imported + task.restored, &task.warnings, false);
-            app.toast_for(ctx, format!("{line} · {}", crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")), 8.0);
+            app.toast_error(ctx, format!("{line} · {}", crate::i18n::tr("File ▸ More Imports ▸ Import Warnings…")));
         } else if task.failed > 0 {
             app.toast(ctx, crate::i18n::tr_format!("{} photo{} not readable", task.failed, if task.failed == 1 { "" } else { "s" }));
         }
@@ -1447,7 +1446,7 @@ fn show_existing(app: &mut LccApp, ctx: &egui::Context, existing: &[u64]) -> boo
             plural
         )
     };
-    app.toast_for(ctx, msg, 6.0);
+    app.toast(ctx, msg);
     true
 }
 

@@ -447,7 +447,7 @@ fn the_object_tool_selects_the_mask_whose_pin_is_clicked() {
     exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
     h.app.ui.tool = "object".into();
     h.settle(SETTLE);
-    let toast = h.app.ui.toast().map(|t| t.0.clone());
+    let toast = h.app.ui.toast().map(|t| t.text.clone());
     let before = develop(&h).masks;
     // the Object mask's pin: it is selected, its clicks and the selected mask's stay as they were
     pointer(&mut h, json!([{"kind": "down", "x": 0.6, "y": 0.5}, {"kind": "up", "x": 0.6, "y": 0.5}]));
@@ -455,7 +455,7 @@ fn the_object_tool_selects_the_mask_whose_pin_is_clicked() {
     assert_eq!(h.app.session.active_mask, Some(1), "the pinned mask is selected");
     assert_eq!(develop(&h).masks, before, "no Object click was added to any mask");
     assert!(h.app.ui.dialog.is_none(), "no Object click was tried");
-    assert_eq!(h.app.ui.toast().map(|t| t.0.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
+    assert_eq!(h.app.ui.toast().map(|t| t.text.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
     assert_eq!(h.app.ui.tool, "object", "the tool stays on to refine the Object mask");
     // the Radial mask's pin: selected, and the Object tool goes off (nothing for it to refine)
     pointer(&mut h, json!([{"kind": "down", "x": 0.2, "y": 0.8}, {"kind": "up", "x": 0.2, "y": 0.8}]));
@@ -484,7 +484,7 @@ fn the_object_tool_adds_no_click_on_the_selected_masks_own_pin() {
     exec(&mut h, "view.toolOverlay", json!({"mode": "always"}));
     h.app.ui.tool = "object".into();
     h.settle(SETTLE);
-    let toast = h.app.ui.toast().map(|t| t.0.clone());
+    let toast = h.app.ui.toast().map(|t| t.text.clone());
     let before = develop(&h).masks;
     // a little off the pin's centre, as a hand clicks it
     pointer(&mut h, json!([{"kind": "down", "x": 0.601, "y": 0.501}, {"kind": "up", "x": 0.601, "y": 0.501}]));
@@ -492,7 +492,7 @@ fn the_object_tool_adds_no_click_on_the_selected_masks_own_pin() {
     assert_eq!(develop(&h).masks, before, "no Object click was added");
     assert_eq!(h.app.session.active_mask, Some(1), "the mask stays selected");
     assert!(h.app.ui.dialog.is_none(), "no Object click was tried");
-    assert_eq!(h.app.ui.toast().map(|t| t.0.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
+    assert_eq!(h.app.ui.toast().map(|t| t.text.clone()).filter(|t| Some(t) != toast.as_ref()), None, "no error");
     assert_eq!(h.app.ui.tool, "object", "the tool stays on");
 }
 
@@ -1394,7 +1394,7 @@ fn edit_in_reports_an_editor_that_wont_open_without_failing() {
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["result"]["failed"], "the editor quit", "{r}");
     assert_eq!(h.app.session.catalog.len(), n + 1, "the copy stays in the library");
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(toast.contains("the editor quit"), "{toast}");
     let _ = std::fs::remove_dir_all(&dir);
     h.settle(SETTLE);
@@ -1433,7 +1433,7 @@ fn edit_in_photocraft_opens_a_psd_copy() {
     assert_eq!(r["ok"], false, "{r}");
     assert_eq!((h.app.session.catalog.len(), opened.lock().unwrap().len()), (n, 0), "no copy without PhotoCraft");
     // and it says so, however it was asked for (menu, shortcut, context menu)
-    let toast = h.app.ui.toast().map(|t| t.0.clone()).unwrap_or_default();
+    let toast = h.app.ui.toast().map(|t| t.text.clone()).unwrap_or_default();
     assert!(!toast.is_empty(), "the missing editor is reported");
     h.app.ui.toasts.clear();
     let r = h.app.run("photo.editInPhotoCraft", json!({}));

@@ -227,7 +227,7 @@ fn creating_a_keyword_that_exists_keeps_the_dialog() {
     ask(&mut h, "ui.text", json!({"text": "mountains"}));
     ask(&mut h, "ui.key", json!({"key": "Enter"}));
     assert!(matches!(h.app.ui.dialog, Some(crate::state::Dialog::KeywordTag { .. })), "still open");
-    assert!(h.app.ui.toast().is_some_and(|t| t.0.contains("already")), "{:?}", h.app.ui.toasts);
+    assert!(h.app.ui.toast().is_some_and(|t| t.text.contains("already")), "{:?}", h.app.ui.toasts);
 }
 
 /// A keyword's context menu: create a keyword inside it, edit it, make it where new keywords go

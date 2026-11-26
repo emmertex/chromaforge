@@ -89,7 +89,7 @@ fn a_job_shows_its_progress_and_its_cross_stops_it() {
     until(&mut h, "the row gone", |h| !h.app.session.activity.list().iter().any(|t| t.id == id));
     let log = h.app.session.execute("plugin.log", &json!({"id": "test.uijob"})).unwrap();
     assert!(log.as_array().unwrap().iter().any(|l| l == "command cancelled"), "{log}");
-    assert!(h.app.ui.toast().is_none_or(|t| !t.0.contains("failed")), "a stop isn't a failure: {:?}", h.app.ui.toast().map(|t| &t.0));
+    assert!(h.app.ui.toast().is_none_or(|t| !t.text.contains("failed")), "a stop isn't a failure: {:?}", h.app.ui.toast().map(|t| &t.text));
     lcc_engine::cmd::plugins::manager().as_mut().unwrap().uninstall("test.uijob").unwrap();
 }
 
@@ -97,13 +97,13 @@ fn a_job_shows_its_progress_and_its_cross_stops_it() {
 fn a_job_ends_with_its_message_or_its_error() {
     let mut h = demo_with(&job_module("test.uidone", &[], r#"{"ok":{"message":"Sent 3 photos"}}"#));
     let id = start(&mut h, "test.uidone");
-    until(&mut h, "the message", |h| h.app.ui.toasts.iter().any(|t| t.0 == "Sent 3 photos"));
+    until(&mut h, "the message", |h| h.app.ui.toasts.iter().any(|t| t.text == "Sent 3 photos"));
     assert!(!h.app.session.activity.list().iter().any(|t| t.id == id), "its row is gone");
     lcc_engine::cmd::plugins::manager().as_mut().unwrap().uninstall("test.uidone").unwrap();
 
     let mut h = demo_with(&job_module("test.uifail", &[], r#"{"error":"the server said no"}"#));
     start(&mut h, "test.uifail");
-    until(&mut h, "the error", |h| h.app.ui.toasts.iter().any(|t| t.0.contains("Go Far") && t.0.contains("the server said no")));
+    until(&mut h, "the error", |h| h.app.ui.toasts.iter().any(|t| t.text.contains("Go Far") && t.text.contains("the server said no")));
     lcc_engine::cmd::plugins::manager().as_mut().unwrap().uninstall("test.uifail").unwrap();
 }
 

@@ -379,5 +379,5 @@ fn notice(app: &mut LccApp, ctx: &egui::Context, found: &[(String, usize)]) {
         ),
         _ => crate::i18n::tr_format!("{n} new photos in {folders} folders: see the badges in Folders", n = total, folders = found.len()),
     };
-    app.toast_for(ctx, text, 8.0);
+    app.toast(ctx, text);
 }

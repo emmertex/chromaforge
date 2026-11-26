@@ -121,8 +121,8 @@ fn rect_json(r: egui::Rect) -> Value {
 /// The messages at the bottom centre that are still showing, oldest first, with the seconds each has left.
 fn toasts_json(app: &LccApp, ctx: &egui::Context) -> Value {
     let now = ctx.input(|i| i.time);
-    let shown = app.ui.toasts.iter().filter(|t| t.1 >= now);
-    shown.map(|(text, until)| json!({"text": text, "secsLeft": until - now})).collect()
+    let shown = app.ui.toasts.iter().filter(|t| t.until >= now);
+    shown.map(|t| json!({"text": t.text, "kind": t.kind.id(), "secsLeft": t.until - now})).collect()
 }
 
 /// The message with a button (Undo…), if one is showing.
@@ -470,6 +470,7 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         "ui.toast" => {
             let Some(text) = s("text").filter(|t| !t.is_empty()) else { return err("ui.toast: `text` is required") };
             let text: String = text.chars().take(500).collect();
+            // an explicit time is for a script that times messages; the app's own messages take the policy's
             let secs = match p.get("seconds") {
                 None | Some(Value::Null) => None,
                 Some(v) => match v.as_f64().filter(|n| n.is_finite() && (0.1..=600.0).contains(n)) {
@@ -482,19 +483,26 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                 Some(Value::String(k)) => k.as_str(),
                 Some(_) => return err("ui.toast: `kind` is message, error or action"),
             };
+            let now = ctx.input(|i| i.time);
             match kind {
-                "message" => app.toast_for(ctx, text, secs.unwrap_or(crate::TOAST_SECONDS)),
-                "error" => match secs {
-                    None => app.toast_error(ctx, text),
-                    Some(secs) => app.toast_for(ctx, text, secs),
-                },
+                "message" | "error" => {
+                    let kind = if kind == "error" { crate::ToastKind::Error } else { crate::ToastKind::Message };
+                    let mut toast = crate::Toast::new(kind, text, now);
+                    if let Some(secs) = secs {
+                        toast.until = now + secs;
+                    }
+                    app.ui.show_toast(toast);
+                }
                 "action" => {
                     let Some(command) = s("command").filter(|c| !c.is_empty()) else {
                         return err("ui.toast: an `action` toast needs the `command` its button runs");
                     };
                     let button: String = s("button").unwrap_or("Undo").chars().take(40).collect();
                     let params = p.get("params").cloned().unwrap_or_else(|| json!({}));
-                    app.toast_with_action(ctx, text, button, command, params, secs.unwrap_or(10.0));
+                    app.toast_with_action(ctx, text, button, command, params);
+                    if let (Some(secs), Some(a)) = (secs, app.ui.toast_action.as_mut()) {
+                        a.until = now + secs;
+                    }
                 }
                 _ => return err("ui.toast: `kind` is message, error or action"),
             }

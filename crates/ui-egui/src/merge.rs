@@ -225,7 +225,7 @@ pub fn reported(app: &mut LccApp, r: Result<Value, String>) -> Result<Value, Str
 /// A message on the window (the time of the frame it is said in is not known inside a command).
 fn say(app: &mut LccApp, text: String) {
     let now = app.tasks.repaint.as_ref().map(|ctx| ctx.input(|i| i.time)).unwrap_or(app.last_time);
-    app.ui.show_toast((text, now + 6.0));
+    app.ui.show_toast(crate::Toast::new(crate::ToastKind::Error, text, now));
 }
 
 /// Photo ▸ Photo Merge ▸ Delete Merge Sources: the other frames of the merged pixel-shift photo go to Recently Deleted,

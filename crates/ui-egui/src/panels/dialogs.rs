@@ -2752,7 +2752,7 @@ pub fn confirm_dialog(app: &mut LccApp, dlg: &Dialog) -> Result<serde_json::Valu
                 && let Some(ctx) = app.tasks.repaint.clone()
             {
                 let text = crate::i18n::tr_format!("Updated “{name}”", name = name);
-                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}), 10.0);
+                app.toast_with_action(&ctx, text, crate::i18n::tr("Undo"), "preset.undoUpdate", json!({}));
             }
             r
         }

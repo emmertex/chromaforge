@@ -294,7 +294,7 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
     let mut workspace = app.ui.docking.clone().unwrap_or_else(|| from_ui(app));
     if let Err(error) = validate(&workspace).and_then(|()| sync(&mut workspace, app)) {
-        app.ui.show_toast((format!("Panel layout could not be restored: {error}"), ui.input(|input| input.time) + 8.0));
+        app.toast_error(ui.ctx(), format!("Panel layout could not be restored: {error}"));
         workspace = from_ui(app);
         let _ = sync(&mut workspace, app);
     }
@@ -409,7 +409,7 @@ pub fn show(app: &mut crate::LccApp, ui: &mut egui::Ui) {
             .map_err(|error| error.to_string())
             .and_then(|action| command_impl(app, false, &json!({"action": action}), true))
         {
-            app.ui.show_toast((format!("Panel move was not applied: {error}"), ui.input(|input| input.time) + 8.0));
+            app.toast_error(ui.ctx(), format!("Panel move was not applied: {error}"));
         }
     }
 }

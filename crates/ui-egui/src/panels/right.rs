@@ -1628,7 +1628,7 @@ enum HistoryRow {
 /// Upright that found nothing to correct says why, as a note over the photo.
 pub(crate) fn upright_note(app: &mut LccApp, ctx: &egui::Context, result: Option<&serde_json::Value>) {
     if let Some(note) = result.and_then(|r| r.get("note")).and_then(serde_json::Value::as_str) {
-        app.toast_for(ctx, note.to_string(), 8.0);
+        app.toast(ctx, note.to_string());
     }
 }
 

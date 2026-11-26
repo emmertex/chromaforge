@@ -332,7 +332,7 @@ mod tests {
         let (mut h, _) = app_with_picker();
         let ctx = h.view.ctx.clone();
         answer_after_restart(&mut h.app, &ctx, PickKind::Files, Err("disk full".into()));
-        assert!(h.app.ui.take_toast().is_some_and(|t| t.0.contains("disk full")), "a failure is shown");
+        assert!(h.app.ui.take_toast().is_some_and(|t| t.text.contains("disk full")), "a failure is shown");
         answer_after_restart(&mut h.app, &ctx, PickKind::Folder, Ok(vec!["/nowhere".into()]));
         assert!(h.app.ui.take_toast().is_some(), "a folder's command is gone: the user is told");
         answer_after_restart(&mut h.app, &ctx, PickKind::Files, Ok(vec![]));

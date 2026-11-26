@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::headless::Headless;
 use crate::state::{RightPanel, ViewMode};
+use crate::toast::{self, ToastKind};
 use crate::{LccApp, Services};
 
 const T: Duration = Duration::from_secs(20);
@@ -227,12 +228,13 @@ fn inspect_lists_the_toasts_the_button_toast_and_the_overlay() {
     assert!(i["toastAction"].is_null() && i["osd"]["shown"].is_null(), "{} {}", i["toastAction"], i["osd"]);
 
     let ctx = h.view.ctx.clone();
-    h.app.toast_for(&ctx, "Saved", 6.0);
-    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}), 10.0);
+    h.app.toast_error(&ctx, "Saved");
+    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}));
     let i = inspect(&mut h);
     assert_eq!(i["toasts"][0]["text"], "Saved", "{}", i["toasts"]);
     let left = i["toasts"][0]["secsLeft"].as_f64().unwrap_or(0.0);
-    assert!(left > 0.0 && left <= 6.0, "the time left counts down from the 6 s it was given: {left}");
+    assert!(left > 0.0 && left <= toast::stay_seconds(ToastKind::Error, "Saved"), "the time left counts down from the policy's time: {left}");
+    assert_eq!(i["toasts"][0]["kind"], "error", "the kind is in the reply: {}", i["toasts"]);
     assert_eq!(i["toastAction"]["button"], "Undo", "{}", i["toastAction"]);
     assert_eq!(i["toastAction"]["command"], "edit.undo");
 
@@ -439,7 +441,7 @@ fn the_overlay_reports_moves_and_relinks_on_disk() {
     }
 }
 
-/// A failure is said with `toast_error` or `LccApp::report`, never a plain `toast` or a short `toast_for`: given the
+/// A failure is said with `toast_error` or `LccApp::report`, never a plain `toast`: given the
 /// error itself (a binding named `e`, `err` or `error`, bare or inside a format, on one line or several), it would
 /// vanish in 1.4 s instead of staying the error time. The scan reads the UI source, so a new call site can't slip
 /// back. (A failure kept in a variable of another name is not seen; `report` and a behaviour test cover that.)
@@ -469,7 +471,8 @@ fn a_failure_is_never_a_plain_toast() {
         let product = text.split("#[cfg(test)]\nmod ").next().unwrap_or("");
         let lines: Vec<&str> = product.lines().collect();
         for (n, line) in lines.iter().enumerate() {
-            let Some((at, call)) = [".toast(", ".toast_for("].iter().filter_map(|c| line.find(c).map(|at| (at, *c))).min() else { continue };
+            let call = ".toast(";
+            let Some(at) = line.find(call) else { continue };
             // the call's arguments, read on over up to 6 lines to its closing parenthesis
             let mut text = line[at + call.len()..].to_string();
             for next in lines.iter().skip(n + 1).take(6) {
@@ -485,9 +488,7 @@ fn a_failure_is_never_a_plain_toast() {
                 })
                 .map_or(text.len(), |(i, _)| i);
             let args = &text[..end];
-            // a failure kept longer than the error time is fine; a `toast_for` is judged by its last argument
-            let short = call == ".toast(" || args.rsplit(',').next().and_then(|s| s.trim().parse::<f64>().ok()).is_some_and(|secs| secs < 6.0);
-            if short && args.split(|c: char| !is_word(c)).any(|w| matches!(w, "e" | "err" | "error")) {
+            if args.split(|c: char| !is_word(c)).any(|w| matches!(w, "e" | "err" | "error")) {
                 found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
             }
         }
@@ -507,4 +508,87 @@ fn report_says_a_failure_for_the_error_time_and_a_success_not_at_all() {
     let left = r[0]["secsLeft"].as_f64().unwrap_or(0.0);
     assert_eq!(r[0]["text"], "Couldn't do it", "{r}");
     assert!(left > 5.0, "a failure stays the error time, not the 1.4 s of a notice: {left}");
+}
+
+/// How long a message stays is decided in one place by its kind and its length: a failure outlasts a note, a message
+/// with a button outlasts both, and a long text gets time to be read, up to a limit.
+#[test]
+fn a_message_stays_for_the_time_its_kind_and_length_give_it() {
+    use crate::toast::stay_seconds;
+    let short = "Saved";
+    let (note, button, error) =
+        (stay_seconds(ToastKind::Message, short), stay_seconds(ToastKind::Action, short), stay_seconds(ToastKind::Error, short));
+    assert!(note > 0.0 && note < error && error < button, "a note {note} s, a failure {error} s, a button {button} s");
+    let long = "word ".repeat(60);
+    for kind in [ToastKind::Message, ToastKind::Action, ToastKind::Error] {
+        let (brief, read) = (stay_seconds(kind, short), stay_seconds(kind, &long));
+        assert!(read > brief, "{kind:?}: a long text stays longer than a short one ({read} s against {brief} s)");
+        assert!(stay_seconds(kind, &"x".repeat(100_000)) <= 20.0, "{kind:?}: nothing stays for ever");
+    }
+    // the call that raises a message gets the policy's time, whoever the caller is
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    h.app.toast(&ctx, short);
+    h.app.toast_error(&ctx, long.clone());
+    let now = ctx.input(|i| i.time);
+    let until = |h: &Headless, text: &str| h.app.ui.toasts.iter().find(|t| t.text == text).map(|t| t.until - now);
+    let near = |got: Option<f64>, want: f64| got.is_some_and(|g| (g - want).abs() < 1e-6);
+    assert!(near(until(&h, short), note), "{:?}", h.app.ui.toasts);
+    assert!(near(until(&h, &long), stay_seconds(ToastKind::Error, &long)), "{:?}", h.app.ui.toasts);
+}
+
+/// Every message is drawn from one look: the kinds share the box (corner, padding, least height, text size), and an
+/// error is told apart by its colour alone.
+#[test]
+fn every_message_has_one_look_and_an_error_a_different_colour() {
+    use crate::toast::look;
+    let h = demo();
+    let t = crate::theme::Tokens::get(&h.view.ctx);
+    let (message, action, error) = (look(&t, ToastKind::Message, 1.0), look(&t, ToastKind::Action, 1.0), look(&t, ToastKind::Error, 1.0));
+    for other in [action, error] {
+        assert_eq!(
+            (message.radius, message.pad_x, message.pad_y, message.min_height, message.font),
+            (other.radius, other.pad_x, other.pad_y, other.min_height, other.font)
+        );
+    }
+    assert_eq!(message.fill, action.fill, "a message and a message with a button are one box");
+    assert_ne!(message.fill, error.fill, "an error is told apart");
+    assert_ne!(message.stroke, error.stroke, "an error has its own edge");
+    assert_eq!(look(&t, ToastKind::Error, 0.0).fill.a(), 0, "a faded message is clear");
+    // and the box is the text's size plus the padding, never under the least height
+    let size = message.size(egui::vec2(100.0, 10.0));
+    assert_eq!((size.x, size.y), (100.0 + 2.0 * message.pad_x, message.min_height));
+}
+
+/// The boxes on screen come from `toast::look`, whichever way they are drawn: a message is the least height for one
+/// line, and the box with a button is its button's height plus the same padding, centred like the others.
+#[test]
+fn the_drawn_boxes_of_a_message_and_a_message_with_a_button_follow_the_one_look() {
+    let mut h = demo();
+    let ctx = h.view.ctx.clone();
+    h.app.toast(&ctx, "Saved");
+    h.app.toast_error(&ctx, "Failed");
+    h.app.toast_with_action(&ctx, "Preset updated", "Undo", "edit.undo", json!({}));
+    h.step();
+    let rect = |h: &mut Headless, id: &str| {
+        let w = h.request("ui.widgets", json!({"filter": id}), T)["result"].clone();
+        let r = w.as_array().and_then(|w| w.iter().find(|w| w["id"] == id)).map(|w| w["rect"].clone()).unwrap_or_default();
+        let v: Vec<f32> = r.as_array().into_iter().flatten().filter_map(|n| n.as_f64()).map(|n| n as f32).collect();
+        (v.len() == 4).then(|| egui::Rect::from_min_size(egui::pos2(v[0], v[1]), egui::vec2(v[2], v[3])))
+    };
+    let t = crate::theme::Tokens::get(&ctx);
+    let look = crate::toast::look(&t, ToastKind::Message, 1.0);
+    let (message, error, action, button) =
+        (rect(&mut h, "toast:message"), rect(&mut h, "toast:error"), rect(&mut h, "toast:action"), rect(&mut h, "button:toastAction"));
+    let (Some(message), Some(error), Some(action), Some(button)) = (message, error, action, button) else {
+        panic!("every box is drawn and listed: {:?} {:?} {:?} {:?}", message, error, action, button);
+    };
+    assert!((message.height() - look.min_height).abs() < 0.6, "a one-line message is the least height: {message:?}");
+    assert!((error.height() - message.height()).abs() < 0.6, "an error box is the message's size: {error:?}");
+    let want = (button.height() + 2.0 * look.pad_y).max(look.min_height);
+    assert!((action.height() - want).abs() < 1.5, "the button's box is its row plus the look's padding: {action:?} {button:?}");
+    let centre = h.app.canvas_rect.expect("a canvas").center().x;
+    for r in [message, error, action] {
+        assert!((r.center().x - centre).abs() < 1.5, "centred on the canvas: {r:?} {centre}");
+    }
 }
