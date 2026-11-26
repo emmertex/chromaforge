@@ -781,7 +781,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "faces.detect",
             "Detect Faces",
-            ["Library"],
+            ["Library", "Faces"],
             None,
             "{ids?, wait?: bool (false: runs in the background, an activity row, and `faces.detectPump` takes the results), apply?: bool (default true), score?: 0.65, maxFaces?: 200, fine?: bool (true: also looks in tiles, for the small faces of group photos)} → {photos: [{id, faces: [{rect, score, landmarks}]}]}. Finds faces with the open MediaPipe face model (Apache-2.0; download it first: `ai.models.download {id: \"face\", acknowledged: true}`) and, unless `apply` is false, adds them as unnamed face regions (one undo step), replacing earlier detections but never regions from XMP or ones you named; the sidecar is not touched",
             has_selection,
@@ -799,7 +799,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "faces.clearAndRescan",
             "Clear Faces and Rescan",
-            ["Library"],
+            ["Library", "Faces"],
             None,
             "{ids?}: the selected photos (else all in view): forget what the scan learned about their faces and detect them again in the background (faces you named, drew or ignored are kept) → {done: false, photos}",
             always,

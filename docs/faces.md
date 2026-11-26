@@ -67,7 +67,7 @@ Faces. `activity.pause {id}` runs the same commands.
 
 ## Face maintenance
 
-**Library ▸ Face Maintenance…** starts a scoped background pass; right-click a catalog folder and choose **Scan Folder for
+**Library ▸ Faces ▸ Face Maintenance…** starts a scoped background pass; right-click a catalog folder and choose **Scan Folder for
 Faces…** to prefill that folder. The dialog accepts the visible photos, the selection, one or more filesystem folders, or
 one or more collections. Folder scope includes subfolders by default and can be limited to direct children; that toggle
 applies only to filesystem folders. Collection sets always include nested collections, and selecting multiple regular or

@@ -479,7 +479,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     ("app.whatsNew", "What's New", None, "Help"),
     ("dialog.cull", "Assisted Culling…", None, "Library"),
     ("dialog.qualityScan", "Image Quality Scanner…", None, "Library"),
-    ("dialog.faceMaintenance", "Face Maintenance…", None, "Library"),
+    ("dialog.faceMaintenance", "Face Maintenance…", None, "Library>Faces"),
     ("app.help", "{app} Help", Some("F1"), "Help"),
     ("app.feedback", "Send Feedback…", None, "Help"),
     ("app.website", "{app} Website", None, "Help"),
