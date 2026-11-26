@@ -3005,6 +3005,8 @@ mod tests_quality_scan;
 #[cfg(test)]
 mod tests_recheck;
 #[cfg(test)]
+mod tests_reload_sha1;
+#[cfg(test)]
 mod tests_retouch;
 #[cfg(test)]
 mod tests_segment;

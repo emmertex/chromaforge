@@ -4,7 +4,8 @@
 //! are then read here, in the background and in batches, filling in only what needs the file: the
 //! content hash, file size and dimensions, empty camera fields, embedded lens corrections and the
 //! as-shot white balance — exactly what Reload from Disk would give the photo
-//! ([`crate::cmd::convert::reload_ops`]). Ratings, keywords, develop settings and history stay as
+//! ([`crate::cmd::convert::reload_ops`]) — and the SHA-1 the same read computes, so the background
+//! SHA-1 back-fill need not read the file again. Ratings, keywords, develop settings and history stay as
 //! the catalog gave them.
 //!
 //! The marker is the absence of a content hash, so the work resumes by itself: a photo whose file
@@ -116,7 +117,7 @@ pub struct ReadOriginals {
 /// journaled but isn't an undo step. A photo that changed since it was listed (relinked, read by
 /// another run, removed) is skipped.
 pub fn apply(s: &mut Session, results: Vec<(Unread, std::result::Result<ProbeInfo, String>)>) -> Result<ReadOriginals> {
-    let mut ops = Vec::new();
+    let (mut ops, mut hashed) = (Vec::new(), Vec::new());
     let mut out = ReadOriginals::default();
     let mut hashes: std::collections::HashMap<String, PhotoId> = s
         .catalog
@@ -141,11 +142,13 @@ pub fn apply(s: &mut Session, results: Vec<(Unread, std::result::Result<ProbeInf
                 }
             }
         }
-        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, &mut ops, &mut out.updated);
+        let family = crate::cmd::convert::Sha1To::Family;
+        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, family, &mut ops, &mut out.updated, &mut hashed);
     }
     if !ops.is_empty() {
         s.apply_system(Op::Batch { ops })?;
     }
+    crate::cmd::convert::queue_link_check(s, &hashed);
     for id in &out.updated {
         s.media.forget(*id);
     }
@@ -199,7 +202,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Read Originals Not Yet Read",
         [],
         None,
-        "{limit?: int}: read the originals of photos added without reading their file (a Lightroom catalog import adds its photos from the catalog first; the app then reads their originals in the background), at most `limit` of them (default 1024; call again while `remaining` > 0), and fill in what needs the file as Reload from Disk would: content hash, file size, dimensions, empty camera fields, embedded lens corrections, as-shot white balance; not an undo step, ratings, keywords, develop settings and history are kept; files that can't be read (an offline drive) are left for next time; a read file whose content matches another library photo is kept and reported in `duplicates` → {checked, updated: [ids], unreadable, duplicates: [{id, sameAs}], remaining}",
+        "{limit?: int}: read the originals of photos added without reading their file (a Lightroom catalog import adds its photos from the catalog first; the app then reads their originals in the background), at most `limit` of them (default 1024; call again while `remaining` > 0), and fill in what needs the file as Reload from Disk would: content hash, SHA-1, file size, dimensions, empty camera fields, embedded lens corrections, as-shot white balance; not an undo step, ratings, keywords, develop settings and history are kept; files that can't be read (an offline drive) are left for next time; a read file whose content matches another library photo is kept and reported in `duplicates` → {checked, updated: [ids], unreadable, duplicates: [{id, sameAs}], remaining}",
         always,
         read_originals
     )]

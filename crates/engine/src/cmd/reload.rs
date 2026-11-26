@@ -97,7 +97,7 @@ pub fn probe(
 /// or relinked since it was listed, or already given a newer reload's result, is skipped. Returns
 /// the photos that changed.
 pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result<ProbeInfo, String>>) -> Result<Vec<PhotoId>> {
-    let mut ops = Vec::new();
+    let (mut ops, mut hashed) = (Vec::new(), Vec::new());
     let mut reloaded = Vec::new();
     for (item, info) in items.into_iter().zip(results) {
         let Ok(info) = info else { continue };
@@ -114,7 +114,8 @@ pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result
         for id in &family {
             s.reload_tickets.applied.insert(*id, item.ticket);
         }
-        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, &mut ops, &mut reloaded);
+        let sha1_to = crate::cmd::convert::Sha1To::Family;
+        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, sha1_to, &mut ops, &mut reloaded, &mut hashed);
         for id in item.metadata_targets.into_iter().filter(|id| *id != item.id && family.contains(id)) {
             let Some(ph) = s.catalog.photo(id) else { continue };
             let meta = super::convert::fill_missing_meta(id, ph, &info);
@@ -132,6 +133,7 @@ pub fn apply(s: &mut Session, items: Vec<Item>, results: Vec<std::result::Result
     if !ops.is_empty() {
         s.commit("Reload Changed Files", Op::Batch { ops })?;
     }
+    crate::cmd::convert::queue_link_check(s, &hashed);
     Ok(reloaded)
 }
 

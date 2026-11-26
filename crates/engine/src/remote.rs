@@ -377,8 +377,7 @@ pub(crate) fn sha1_pending(s: &crate::Session, limit: usize) -> Vec<(PhotoId, St
     first
         .chain(s.catalog.photos())
         .filter(|p| seen.insert(p.id))
-        .filter(|p| p.sha1.is_none() && p.copy_of.is_none() && !p.local && !s.remote.sha1_failed.contains(&p.id))
-        .filter(|p| p.preview_only.as_deref() != Some(LINK_ONLY))
+        .filter(|p| crate::cmd::convert::takes_sha1(p) && !s.remote.sha1_failed.contains(&p.id))
         .filter_map(|p| match &p.source {
             Source::File { path } => Some((p.id, path.clone())),
             Source::Demo { .. } => None,

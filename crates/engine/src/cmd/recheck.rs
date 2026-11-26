@@ -117,7 +117,7 @@ impl Rechecked {
 /// so it is tried again next time; a photo that changed since it was listed (relinked, reloaded,
 /// removed) is skipped.
 pub fn apply(s: &mut Session, results: Vec<(Stale, std::result::Result<ProbeInfo, String>)>) -> Result<Rechecked> {
-    let mut ops = Vec::new();
+    let (mut ops, mut hashed) = (Vec::new(), Vec::new());
     let mut out = Rechecked::default();
     for (item, info) in results {
         let Ok(info) = info else { continue };
@@ -125,7 +125,8 @@ pub fn apply(s: &mut Session, results: Vec<(Stale, std::result::Result<ProbeInfo
             continue;
         }
         let first = out.updated.len();
-        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, &mut ops, &mut out.updated);
+        let family = crate::cmd::convert::Sha1To::Family;
+        crate::cmd::convert::reload_ops(&s.catalog, item.id, &info, family, &mut ops, &mut out.updated, &mut hashed);
         if info.preview_only.is_none() {
             out.cleared.extend_from_slice(&out.updated[first..]);
         }
@@ -133,6 +134,7 @@ pub fn apply(s: &mut Session, results: Vec<(Stale, std::result::Result<ProbeInfo
     if !ops.is_empty() {
         s.apply_system(Op::Batch { ops })?;
     }
+    crate::cmd::convert::queue_link_check(s, &hashed);
     for id in &out.updated {
         s.media.forget(*id);
     }
@@ -164,7 +166,7 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 /// An Immich link-only photo: it has no file of its own to probe, and its flag is not a decoder's decision.
-fn link_only(p: &lcc_catalog::Photo) -> bool {
+pub(crate) fn link_only(p: &lcc_catalog::Photo) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     return p.preview_only.as_deref() == Some(crate::remote::LINK_ONLY);
     #[cfg(target_arch = "wasm32")]
