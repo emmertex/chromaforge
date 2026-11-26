@@ -1,6 +1,6 @@
 ---
 title: Effects
-description: Texture, clarity, dehaze, vignette and grain.
+description: Texture, clarity, dehaze, vignette, glow and grain.
 sidebar:
   order: 9
 ---
@@ -13,10 +13,11 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **Texture**, **Clarity**, **Dehaze**: in Basic and in the Effects dock card.
 - **Vignette**: **Vignette** amount, **Midpoint**, **Roundness**, **Feather**, **Highlights**; style **Highlight**, **Color**, **Paint**. Post-crop: it follows the crop.
+- **Glow**: the bright parts of the picture, spread as a halo over it (beyond Lightroom, after DaVinci Resolve's Glow effect). **Glow** is the strength; **Threshold** picks how bright a part must be to glow; **Radius** sets the halo's width (relative to the frame, so a preview matches an export); **H/V Ratio** stretches the halo one way (50 is even); **Gain** and **Gamma** shape the glow's brightness and falloff; the composite is **Screen** (gentler, the default) or **Add** (hotter); **Recovery** brings the bright regions' own detail back through the glow.
 - **Grain**: amount, **Size**, **Size Variation**, **Roughness**, **Clumping**, **Color**, **Response**, **Seed**. From process V7, irregular particles that do not change with the picture's size. See [Process versions](../process-versions/).
 - Dehaze from V3 keeps shadows from going black.
 - The eye on a section header turns its adjustments off for comparison.
 
 <Aside type="note" title="Modern layout">
-  **Effects** in the dock: Texture, Clarity, Dehaze, Vignette, Grain.
+  **Effects** in the dock: Texture, Clarity, Dehaze, Vignette, Glow, Grain.
 </Aside>

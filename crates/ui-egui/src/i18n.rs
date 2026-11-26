@@ -293,6 +293,9 @@ pub(crate) const CONTEXTUAL: &[(&str, &str)] = &[
     ("time-lapse", "Frame"),
     ("color wheels", "Log"),
     ("plug-in tab", "Log"),
+    // Glow's composite modes: not the Add button, nor the slideshow's Screen aspect
+    ("glow composite", "Screen"),
+    ("glow composite", "Add"),
 ];
 
 /// `"<context>|<English>"` split into its context and English message, when it is one of

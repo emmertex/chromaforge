@@ -1603,11 +1603,13 @@ fn try_render_inner(
         let device_proof = req.proof.is_some_and(|p| lcc_pipeline::proof_profile(p.profile).is_some());
         // pixel-filter plug-ins run in the CPU pipeline
         // and film dust removal from a scanner's infrared pass (the step, and its views)
+        // and Glow, whose halo the CPU finish draws as a post-pass (no kernel yet)
         if !allowed()
             || gate::cpu_only()
             || !handles(req.depth, device_proof, req.overlay)
             || lcc_pipeline::plugin_filters::any_active(s)
             || lcc_pipeline::film_dust::needs_cpu(info, s, req.overlay)
+            || lcc_pipeline::glow::needs_cpu(s)
         {
             return Err(Fallback::NotTried);
         }

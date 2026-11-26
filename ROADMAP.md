@@ -13,7 +13,7 @@ continuous agent-driven development with 4–6 parallel agents and are revised a
 **switch** from Lightroom. Update it when a gap below closes. The full measured assessment is
 [`docs/target-app-parity.md`](docs/target-app-parity.md); the ranked work list is [`docs/gaps.md`](docs/gaps.md).*
 
-**In one line:** the checklist says **90.5%** of 630 rows (P0 98.0%, P1 94.8%, P2 80.7%; Classic extras 91% of P1,
+**In one line:** the checklist says **91.2%** of 634 rows (P0 98.0%, P1 94.8%, P2 82.6%; Classic extras 91% of P1,
 Immich 11/11), but measured by whether a working photographer could replace Lightroom without noticing, we are at
 roughly **60–65%** and at **alpha**. Every Classic module now exists; the remaining gap is mostly **quality of
 results and camera coverage** (colour calibration, CR3 variants, render fidelity, lens profiles, AI masks), not
@@ -107,7 +107,7 @@ photo's own pixels, so 1:1–8:1 is sharp in every view, with mask overlays and 
 |---|---|---|---|---|
 | M0 | Skeleton + visual shell | workspace, xtask CI + layering, geom/color/raster, develop model, pipeline v0, catalog v0, engine commands, Lightroom-look UI (grid, loupe, filmstrip, Edit panel), control channel, MCP, web build | 3–5 | ✅ |
 | M1 | Library core | import (JPEG/PNG/TIFF/WebP), EXIF/XMP, persistent catalog (op log + snapshots), albums, ratings/flags/labels, filter/search/sort, thumbnail cache, 100k-photo grid | 6–10 | ✅ (100k-photo grid scale test pending) |
-| M2 | Pipeline v1 (quality) | WB temp/tint, profiles, local tone mapping (highlights/shadows), curves, HSL, point colour, colour grading, texture/clarity/dehaze, vignette, grain, B&W, auto tone/WB, histogram, before/after | 10–15 | ✅ (look tuning vs our references ongoing) |
+| M2 | Pipeline v1 (quality) | WB temp/tint, profiles, local tone mapping (highlights/shadows), curves, HSL, point colour, colour grading, texture/clarity/dehaze, vignette, glow, grain, B&W, auto tone/WB, histogram, before/after | 10–15 | ✅ (look tuning vs our references ongoing) |
 | M3 | RAW I | TIFF/DNG (LJ92, deflate, tiles, opcodes), demosaic (AHD/PPG/bilinear), highlight recovery, DNG colour model, CR2, NEF, ARW, embedded previews | 10–15 | 🚧 (DNG, CR2, ARW, NEF uncompressed + Huffman lossless/lossy, embedded previews ✅; NEF lossy-after-split ⬜) |
 | M4 | Crop, geometry, optics | crop tool + overlays, straighten, Upright (auto/level/vertical/full/guided), manual transforms, CA, defringe, manual lens corrections | 6–10 | ✅ |
 | M5 | Performance | source pyramids, wgpu compute pipeline (CPU oracle), draft/full renders, prefetch, budgets (16 ms slider updates on 24 MP) | 10–15 | ✅ (stage cache, source pyramid, wgpu pipeline, prefetch, memory budget, colour NR at half resolution, GPU histogram) |

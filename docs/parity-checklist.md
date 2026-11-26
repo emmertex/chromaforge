@@ -31,7 +31,7 @@ cited here still exists. Formerly docs/parity.md.
 | C. Views & navigation (VIEW) | 18 | 2 | 0 | 0 | 9/9 (100%) | 5/5 (100%) |
 | D. Search & filter (FILT) | 13 | 1 | 0 | 0 | 4/4 (100%) | 4/4 (100%) |
 | E. Metadata (META) | 5 | 1 | 0 | 0 | 2/2 (100%) | 2/2 (100%) |
-| F. Edit panel — global adjustments (EDIT) | 45 | 7 | 0 | 0 | 28/28 (100%) | 13/15 (87%) |
+| F. Edit panel — global adjustments (EDIT) | 46 | 7 | 0 | 0 | 28/28 (100%) | 14/16 (88%) |
 | G. Profiles (PROF) | 8 | 7 | 1 | 0 | 3/4 (75%) | 3/4 (75%) |
 | H. Crop & rotate (CROP) | 10 | 1 | 0 | 1 | 8/8 (100%) | 2/3 (67%) |
 | I. Remove / healing (REM) | 10 | 2 | 2 | 1 | 4/4 (100%) | 2/3 (67%) |
@@ -55,9 +55,9 @@ cited here still exists. Formerly docs/parity.md.
 | Lightroom Classic extras | 106 | 22 | 0 | 0 | — | 36/40 (90%) |
 | BEYOND. Beyond the reference app | 9 | 0 | 0 | 0 | — | — |
 | IMM. Immich integration | 11 | 0 | 0 | 0 | — | 7/7 (100%) |
-| **Total** | 535 | 86 | 13 | 25 | 195/203 (96%) | 172/191 (90%) |
+| **Total** | 535 | 86 | 13 | 25 | 195/203 (96%) | 173/192 (90%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **91.2%** of 634 in-scope rows — P0 98.0% of 203 · P1 94.8% of 191 · P2 82.7% of 234.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **91.2%** of 634 in-scope rows — P0 98.0% of 203 · P1 94.8% of 192 · P2 82.6% of 233.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -287,6 +287,7 @@ under the UI command that wraps it (a no-op error); the UI command now wins.
 | LR-EDIT-EFFECTS-CLARITY | Clarity | P0 | ✅ | `ctl:effects.clarity` | |
 | LR-EDIT-EFFECTS-DEHAZE | Dehaze | P0 | ✅ | `ctl:effects.dehaze` | From process V3 haze comes from a patch-minimum dark channel, the response eases in and no pixel is pushed to black (#1237); V1/V2 keep the old, too-strong response. Not yet measured against Lightroom |
 | LR-EDIT-EFFECTS-VIGNETTE | Post-crop vignette | P0 | ✅ | `ctl:vignette.*`, `crates/pipeline/src/finish.rs`, `crates/ui-egui/src/panels/edit.rs` | style picker (Highlight / Color / Paint) in the Effects section |
+| LR-EDIT-EFFECTS-GLOW | Glow | P1 | ✅ | `ctl:glow.*`, `crates/pipeline/src/glow.rs`, `crates/pipeline/src/tests_glow.rs` | beyond Lightroom: the parameters follow DaVinci Resolve's Glow (Threshold, Radius, H/V Ratio, Gain, Gamma, Screen/Add composite, Bright Region Recovery, Opacity as the Glow amount); Lightroom's own new Glow sliders not yet matched; a CPU post-pass on the finished picture (the GPU declines glow renders), halos resolution independent through a downsampled proxy, zoomed windows grown by the halo's reach |
 | LR-EDIT-EFFECTS-GRAIN | Grain | P1 | ✅ | `ctl:grain.*`, `crates/pipeline/src/grain.rs`, `crates/pipeline/tests/it/grain_process.rs` | process V7: clumps of irregular particles (filtered Boolean model, resolution independent) with Size Variation, Clumping, Color, Response and Seed, strength and correlation width calibrated against seven Lightroom Classic exports of a grey chart (aggregate numbers, [grain](grain.md); OneSlips); V1–V6 keep the value-noise grain; GPU kernel matches the CPU (max 1 LSB); within the loupe and export budgets at default settings, over them at Size 100 (loupe) and Color 50 (24 MP export) ([grain](grain.md)) |
 | LR-EDIT-DETAIL-SHARPEN | Sharpening | P0 | ✅ | `ctl:detail.sharpenAmount`, `ctl:detail.sharpenRadius`, `ctl:detail.sharpenDetail`, `ctl:detail.sharpenMasking` | Radius and Detail act from process V4 (unsharp mask at pixel scale; before, they did nothing); Alt/Option-drag on each slider shows its black-and-white view (mask, blurred photo, edges, applied sharpening), also from an edit that does not sharpen |
 | LR-EDIT-DETAIL-NR | Luminance noise reduction | P0 | ✅ | `ctl:detail.nrLuminance`, `ctl:detail.nrDetail`, `ctl:detail.nrContrast` | radii in the original's pixels, so grid, loupe and smaller exports look like the full-size render scaled down (`local::nr_params`, `Plan::detail_scale`, #960) |
