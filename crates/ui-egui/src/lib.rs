@@ -1915,25 +1915,27 @@ impl LccApp {
     fn save_status(&mut self, ctx: &egui::Context) {
         let unsaved = self.session.unsaved().map(|(n, e)| (n, e.to_string()));
         match (unsaved, self.ui.unsaved_seen) {
-            (Some((n, e)), false) => {
+            (Some((n, e)), seen) => {
                 self.ui.unsaved_seen = true;
-                let t = ctx.input(|i| i.time);
-                self.ui.show_toast(Toast::new(
-                    ToastKind::Error,
+                // stays while the changes are not written: raised again it follows the count and the reason
+                self.ui.show_toast(Toast::sticky(
+                    "save-failed",
                     crate::i18n::tr_format!(
                         "{n} change{} saved in memory but not written to disk: {e}. {app} will retry",
                         if n == 1 { "" } else { "s" },
                         n = n,
                         e = e
                     ),
-                    t,
                 ));
+                if seen {
+                    ctx.request_repaint_after(std::time::Duration::from_secs(2)); // retry
+                }
             }
             (None, true) => {
                 self.ui.unsaved_seen = false;
+                self.ui.clear_toast("save-failed");
                 self.toast(ctx, crate::i18n::tr("Catalog saved"));
             }
-            (Some(_), true) => ctx.request_repaint_after(std::time::Duration::from_secs(2)), // retry
             (None, false) => {}
         }
     }
@@ -2648,15 +2650,17 @@ impl LccApp {
                 ctx.request_repaint_after(std::time::Duration::from_secs(10));
             }
             let waiting = self.session.unsaved_sidecars();
-            if waiting > 0 && self.ui.sidecars_waiting == 0 {
-                self.toast_error(
-                    ctx,
+            if waiting > 0 && waiting != self.ui.sidecars_waiting {
+                // stays until they are written; raised again with another count it follows it
+                self.ui.show_toast(Toast::sticky(
+                    "sidecars-waiting",
                     crate::i18n::tr_format!(
                         "The XMP sidecars of {n} photos couldn't be written (is their folder offline?). {app} keeps trying.",
                         n = waiting
                     ),
-                );
+                ));
             } else if waiting == 0 && self.ui.sidecars_waiting > 0 {
+                self.ui.clear_toast("sidecars-waiting");
                 self.toast(ctx, crate::i18n::tr("Wrote the XMP sidecars that were waiting"));
             }
             self.ui.sidecars_waiting = waiting;

@@ -15,6 +15,9 @@ pub enum ToastKind {
     Action,
     /// A failure or a warning the user has to read.
     Error,
+    /// A condition that is still true ("changes not written to disk"): it stays until the person dismisses it or
+    /// the code that raised it clears it (see [`Toast::sticky`]).
+    Sticky,
 }
 
 impl ToastKind {
@@ -24,6 +27,7 @@ impl ToastKind {
             Self::Message => "message",
             Self::Action => "action",
             Self::Error => "error",
+            Self::Sticky => "sticky",
         }
     }
 
@@ -33,6 +37,7 @@ impl ToastKind {
             Self::Message => 1.4,
             Self::Error => 6.0,
             Self::Action => 10.0,
+            Self::Sticky => f64::INFINITY,
         }
     }
 }
@@ -44,8 +49,11 @@ const READING_SECONDS_PER_CHAR: f64 = 0.08;
 const LONGEST_SECONDS: f64 = 20.0;
 
 /// How long a message of `kind` with `text` stays: the kind's time, and more for a long text so it can be read.
-/// The one place a message's time is decided; a setting can replace it here.
+/// The one place a message's time is decided; a setting can replace it here. A sticky message never ends.
 pub fn stay_seconds(kind: ToastKind, text: &str) -> f64 {
+    if kind == ToastKind::Sticky {
+        return f64::INFINITY;
+    }
     let extra = text.chars().count().saturating_sub(READING_FREE_CHARS) as f64 * READING_SECONDS_PER_CHAR;
     (kind.base_seconds() + extra).min(LONGEST_SECONDS)
 }
@@ -56,6 +64,8 @@ pub struct Toast {
     pub text: String,
     pub until: f64,
     pub kind: ToastKind,
+    /// The condition a sticky message reports (`save-failed`, `pairing:<client>`); `None` for the other kinds.
+    pub key: Option<String>,
 }
 
 impl Toast {
@@ -63,9 +73,24 @@ impl Toast {
     pub fn new(kind: ToastKind, text: impl Into<String>, now: f64) -> Self {
         let text = text.into();
         let until = now + stay_seconds(kind, &text);
-        Self { text, until, kind }
+        Self { text, until, kind, key: None }
+    }
+
+    /// A message that stays until dismissed or until the code that raised it clears `key`.
+    pub fn sticky(key: impl Into<String>, text: impl Into<String>) -> Self {
+        Self { text: text.into(), until: f64::INFINITY, kind: ToastKind::Sticky, key: Some(key.into()) }
     }
 }
+
+/// How many sticky messages show beside `transients` messages that are not sticky out of `stickies`: the stack has
+/// [`crate::state::MAX_TOASTS`] slots, a sticky message uses one that is free, and one always shows, so a sticky
+/// message never pushes a transient one out and is never hidden by them.
+pub fn sticky_slots(transients: usize, stickies: usize) -> usize {
+    crate::state::MAX_TOASTS.saturating_sub(transients).max(1).min(stickies)
+}
+
+/// The width of the dismiss button of a sticky message.
+pub const DISMISS_WIDTH: f32 = 22.0;
 
 /// How a message is drawn. Every message, whatever its kind, is measured and painted from this.
 #[derive(Clone, Copy, Debug)]
@@ -84,7 +109,7 @@ pub struct Look {
 /// error has a red edge and a reddish box.
 pub fn look(t: &Tokens, kind: ToastKind, fade: f32) -> Look {
     let (fill, stroke) = match kind {
-        ToastKind::Error => (Color32::from_rgba_unmultiplied(60, 14, 14, 215), Stroke::new(1.0, t.reject.gamma_multiply(fade))),
+        ToastKind::Error | ToastKind::Sticky => (Color32::from_rgba_unmultiplied(60, 14, 14, 215), Stroke::new(1.0, t.reject.gamma_multiply(fade))),
         ToastKind::Message | ToastKind::Action => (Color32::from_black_alpha(200), Stroke::NONE),
     };
     Look {

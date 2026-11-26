@@ -731,3 +731,37 @@ fn an_old_file_merging_its_mask_pages_says_so_in_a_toast_not_the_problem_window(
     }
     assert!(saved(), "saved in the new form");
 }
+
+/// A pairing request is a message that stays until it is answered (here approved) or expires, then goes.
+#[test]
+fn a_pairing_request_message_stays_until_answered() {
+    let mut h = demo();
+    let (sink1, _events) = sink();
+    let r = request_on(&mut h, 7, &sink1, "surface.pair", json!({"client": "test", "name": "Test Plugin"}));
+    assert_eq!(r["result"]["status"], "pending", "{r}");
+    let asking = |h: &Headless| h.app.ui.toasts.iter().find(|t| t.key.as_deref() == Some("pairing:test")).cloned();
+    assert!(asking(&h).is_some_and(|t| t.text.contains("Test Plugin") && t.kind == crate::ToastKind::Sticky), "{:?}", h.app.ui.toasts);
+    for _ in 0..1500 {
+        h.step();
+    }
+    assert!(asking(&h).is_some(), "it waits for an answer");
+
+    h.app.ui.dialog = Some(Dialog::Settings { tab: "controls".into() });
+    h.settle(T);
+    assert_eq!(h.request("ui.clickWidget", json!({"id": "button:surfaceApprove-test"}), T)["ok"], true);
+    h.settle(T);
+    h.step();
+    assert!(asking(&h).is_none(), "answered: {:?}", h.app.ui.toasts);
+
+    // one the person dismissed stays away while the request waits, and its next request shows again once answered
+    let r = request_on(&mut h, 7, &sink1, "surface.pair", json!({"client": "later", "name": "Later Plugin"}));
+    assert_eq!(r["result"]["status"], "pending", "{r}");
+    h.app.ui.dismiss_toast("pairing:later");
+    h.step();
+    assert!(h.app.ui.toasts.iter().all(|t| t.key.as_deref() != Some("pairing:later")));
+    h.app.surface.pairing.expire(u64::MAX);
+    h.step();
+    let r = request_on(&mut h, 7, &sink1, "surface.pair", json!({"client": "later", "name": "Later Plugin"}));
+    assert_eq!(r["result"]["status"], "pending", "{r}");
+    assert!(h.app.ui.toasts.iter().any(|t| t.key.as_deref() == Some("pairing:later")), "{:?}", h.app.ui.toasts);
+}

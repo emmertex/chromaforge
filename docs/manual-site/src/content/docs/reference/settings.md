@@ -158,6 +158,9 @@ sidebar:
   photos were affected. *Control surface only* is for a hardware controller (such as the Logitech MX Creative Console);
   set one up under **Settings ▸ Controls**. The overlay also has **Size**, **Opacity**, **Shown for**, **Position** and
   **Background**, and these settings are on the Controls page too.
+- **Messages that stay**: a message about something that is still true stays until you close it with its ✕ or the
+  problem is gone: changes that could not be written to disk, XMP sidecars waiting for an offline folder, and a
+  control surface asking to pair. Once you close one, it stays away until the problem has ended and come back.
 
 ## Slideshow
 - Templates, **Playback** (slide and fade durations, the fade, random order, repeat, preparing slides in advance;

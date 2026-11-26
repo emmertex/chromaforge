@@ -121,8 +121,14 @@ fn rect_json(r: egui::Rect) -> Value {
 /// The messages at the bottom centre that are still showing, oldest first, with the seconds each has left.
 fn toasts_json(app: &LccApp, ctx: &egui::Context) -> Value {
     let now = ctx.input(|i| i.time);
-    let shown = app.ui.toasts.iter().filter(|t| t.until >= now);
-    shown.map(|t| json!({"text": t.text, "kind": t.kind.id(), "secsLeft": t.until - now})).collect()
+    let shown = app.ui.toasts_shown().into_iter().filter(|t| t.until >= now);
+    // a sticky message has no end: no `secsLeft`, and the key of the condition it reports
+    shown
+        .map(|t| match &t.key {
+            Some(key) => json!({"text": t.text, "kind": t.kind.id(), "key": key}),
+            None => json!({"text": t.text, "kind": t.kind.id(), "secsLeft": t.until - now}),
+        })
+        .collect()
 }
 
 /// The message with a button (Undo…), if one is showing.
@@ -468,6 +474,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
         // fire a message of each kind the window can show, to look at it or time it (`ui.inspect` → `toasts`,
         // `toastAction`): a plain message, an error, or a message with a button
         "ui.toast" => {
+            if p.get("clear").and_then(Value::as_bool) == Some(true) {
+                let Some(key) = s("key").filter(|k| !k.is_empty()) else { return err("ui.toast: `clear` needs the `key` of a sticky message") };
+                app.ui.clear_toast(key);
+                return ok(Value::Null);
+            }
             let Some(text) = s("text").filter(|t| !t.is_empty()) else { return err("ui.toast: `text` is required") };
             let text: String = text.chars().take(500).collect();
             // an explicit time is for a script that times messages; the app's own messages take the policy's
@@ -481,8 +492,10 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
             let kind = match p.get("kind") {
                 None | Some(Value::Null) => "message",
                 Some(Value::String(k)) => k.as_str(),
-                Some(_) => return err("ui.toast: `kind` is message, error or action"),
+                Some(_) => return err("ui.toast: `kind` is message, error, action or sticky"),
             };
+            // a sticky message is raised and cleared by the key of its condition
+            let key = s("key").filter(|k| !k.is_empty()).map(|k| k.chars().take(80).collect::<String>());
             let now = ctx.input(|i| i.time);
             match kind {
                 "message" | "error" => {
@@ -504,7 +517,11 @@ pub fn handle(app: &mut LccApp, ctx: &egui::Context, req: &ControlRequest) -> Ou
                         a.until = now + secs;
                     }
                 }
-                _ => return err("ui.toast: `kind` is message, error or action"),
+                "sticky" => {
+                    let Some(key) = key else { return err("ui.toast: a `sticky` message needs the `key` of its condition") };
+                    app.ui.show_toast(crate::Toast::sticky(key, text));
+                }
+                _ => return err("ui.toast: `kind` is message, error, action or sticky"),
             }
             ok(Value::Null)
         }
