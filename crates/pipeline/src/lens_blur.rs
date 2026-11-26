@@ -15,17 +15,28 @@
 //! bright discs (bokeh) while the rest of the blur keeps its level. Radii are relative to the photo's long edge: previews match exports.
 //! Both renderers run this CPU code on the scene-linear image after noise reduction.
 //!
+//! Brush Refinement paints over the depth by hand: Focus brush strokes stay sharp, Blur brush
+//! strokes get the whole blur, whatever the distance says.
+//!
+//! A mask can blur too (Lens Blur among its local adjustments), with or without the global blur:
+//! there the mask's strength is the circle of confusion, so what it fully selects gets the whole
+//! blur, its feathered edge less, and what it leaves out stays sharp (or the other way round,
+//! blurring what it leaves out). It uses the same gather and the global bokeh shape.
+//!
 //! Sources: own design (layered gather of a depth-of-field blur, as commonly described for
 //! real-time renderers). Boost (the highlight gain before the spread, and its constants) is
-//! translated from upstream PR #2661's `lens_blur.rs` (MIT).
+//! translated from upstream PR #2661's `lens_blur.rs` (MIT); Brush Refinement and the per-mask
+//! blur are ported from the same PR (how strokes and a mask's strength become the circle of
+//! confusion), onto this module's gather.
 
 use std::sync::Arc;
 
-use lcc_develop::{BokehShape, LensBlur};
+use lcc_develop::{BokehShape, BrushStroke, DevelopSettings, LensBlur, Mask, MaskShape};
 use lcc_raster::{Plane, Rgb32f};
 
 use crate::Plan;
 use crate::geometry::Frame;
+use crate::masks::{self, Mattes};
 
 /// The largest blur radius at Blur Amount 100, as a fraction of the photo's long edge.
 pub const MAX_RADIUS: f64 = 0.03;
@@ -79,19 +90,56 @@ pub fn subject_depth(subject: &Plane) -> Plane {
     p
 }
 
-/// What makes the blurred image (for the render caches' keys).
-pub fn key(lb: &LensBlur, depth: Option<&Depth>) -> Option<String> {
-    let d = depth?;
-    lb.active().then(|| format!("{lb:?}{:?}{}x{}", d.source, d.grid.width, d.grid.height))
+/// The masks that blur what they select, or what they leave out (the Lens Blur block among a
+/// mask's local adjustments): shown, with components, the block on and some blur.
+fn blurring_masks(s: &DevelopSettings) -> impl Iterator<Item = &Mask> {
+    s.masks
+        .iter()
+        .filter(|m| m.visible && !m.components.is_empty() && !m.adjust.lens_blur_off && m.adjust.lens_blur.is_finite() && m.adjust.lens_blur > 0.0)
 }
 
-/// How far (px) the blur reads around a pixel in a render of `px_per_long` px per long edge.
-pub fn reach(lb: &LensBlur, px_per_long: f64) -> f64 {
-    if lb.active() { max_radius(lb, px_per_long).ceil() + 1.0 } else { 0.0 }
+/// Whether a mask of `s` blurs (so [`apply`] has work without the global Lens Blur).
+pub fn masks_blur(s: &DevelopSettings) -> bool {
+    blurring_masks(s).next().is_some()
+}
+
+/// Whether [`apply`] changes anything for `s`: the global Lens Blur (with its distance grid
+/// `depth`) or a mask's.
+pub fn renders(s: &DevelopSettings, depth: Option<&Depth>) -> bool {
+    (depth.is_some() && s.lens_blur.active()) || masks_blur(s)
+}
+
+/// What makes the blurred image (for the render caches' keys): the global blur with its distance
+/// grid, and the masks that blur.
+pub fn key(s: &DevelopSettings, depth: Option<&Depth>) -> Option<String> {
+    let lb = &s.lens_blur;
+    let mut k = match depth {
+        Some(d) if lb.active() => format!("{lb:?}{:?}{}x{}", d.source, d.grid.width, d.grid.height),
+        _ => String::new(),
+    };
+    for m in blurring_masks(s) {
+        // (the bokeh shape is the global one's; a mask's luminance / colour ranges select on the
+        // exposed image)
+        k.push_str(&format!("|{m:?}{:?}{}", lb.bokeh, s.light.exposure.to_bits()));
+    }
+    (!k.is_empty()).then_some(k)
+}
+
+/// How far (px) the blur reads around a pixel in a render of `px_per_long` px per long edge: the
+/// global blur's reach or a mask's, whichever is farther.
+pub fn reach(s: &DevelopSettings, px_per_long: f64) -> f64 {
+    let lb = &s.lens_blur;
+    let global = if lb.active() { max_radius(lb, px_per_long).ceil() + 1.0 } else { 0.0 };
+    blurring_masks(s).map(|m| amount_radius(m.adjust.lens_blur, px_per_long).ceil() + 1.0).fold(global, f64::max)
 }
 
 fn max_radius(lb: &LensBlur, px_per_long: f64) -> f64 {
-    let a = if lb.amount.is_finite() { lb.amount.clamp(0.0, 100.0) } else { 0.0 };
+    amount_radius(lb.amount, px_per_long)
+}
+
+/// The largest blur radius (px) for a Blur Amount (`0..100`).
+fn amount_radius(amount: f64, px_per_long: f64) -> f64 {
+    let a = if amount.is_finite() { amount.clamp(0.0, 100.0) } else { 0.0 };
     let p = if px_per_long.is_finite() { px_per_long.max(0.0) } else { 0.0 };
     a / 100.0 * MAX_RADIUS * p
 }
@@ -183,18 +231,26 @@ fn taps(shape: BokehShape, r: f64) -> Vec<(isize, isize)> {
     out
 }
 
-/// Lens Blur on `img` (the scene-linear render of `plan`), in place.
+/// Lens Blur on `img` (the scene-linear render of `plan`), in place: the global blur, then what
+/// each mask with a Lens Blur adjustment selects (in mask order).
 pub fn apply(img: &mut Rgb32f, plan: &Plan<'_>) {
-    let lb = plan.settings.lens_blur;
-    let Some(depth) = plan.lens_blur.as_deref() else { return };
-    if !lb.active() {
-        return;
+    let s = &*plan.settings;
+    let mattes = plan.mattes.as_deref();
+    if let Some(depth) = plan.lens_blur.as_deref()
+        && s.lens_blur.active()
+    {
+        blur_refined(img, &s.lens_blur, depth, &plan.frame, plan.px_per_long, mattes);
     }
-    blur(img, &lb, depth, &plan.frame, plan.px_per_long);
+    blur_masks(img, s, &plan.frame, plan.px_per_long, mattes);
 }
 
-/// [`apply`] with its inputs spelt out: `frame` is the render's frame (`img` is its output).
+/// The global blur without Brush Refinement's auto-mask mattes ([`blur_refined`] with none).
 pub fn blur(img: &mut Rgb32f, lb: &LensBlur, depth: &Depth, frame: &Frame, px_per_long: f64) {
+    blur_refined(img, lb, depth, frame, px_per_long, None);
+}
+
+/// The global blur with its inputs spelt out: `frame` is the render's frame (`img` is its output).
+pub fn blur_refined(img: &mut Rgb32f, lb: &LensBlur, depth: &Depth, frame: &Frame, px_per_long: f64, mattes: Option<&Mattes>) {
     let (w, h) = (img.width, img.height);
     let rmax = max_radius(lb, px_per_long);
     if !lb.active() || w == 0 || h == 0 || img.data.len() != w * h || rmax < 0.5 || depth.grid.width == 0 || depth.grid.height == 0 {
@@ -204,21 +260,84 @@ pub fn blur(img: &mut Rgb32f, lb: &LensBlur, depth: &Depth, frame: &Frame, px_pe
     let range = if lb.focal_range.is_finite() { (lb.focal_range.clamp(0.0, 100.0) / 100.0) as f32 } else { 0.0 };
     let mut c = crate::auto_mask::sample(&depth.grid, frame, w, h);
     c.map_in_place(|d| coc(d, focus, range));
-    if c.data.iter().all(|v| *v <= 0.0) {
+    refine(&mut c, lb, img, frame, mattes);
+    let boost = if lb.boost.is_finite() { (lb.boost.clamp(0.0, 100.0) / 100.0) as f32 } else { 0.0 };
+    gather(img, &c, rmax, lb.bokeh, boost);
+}
+
+/// Brush Refinement on the circle of confusion `c` (0 sharp, 1 the full blur): the Focus brush
+/// takes blur away, the Blur brush adds it (and has the last word).
+fn refine(c: &mut Plane, lb: &LensBlur, img: &Rgb32f, frame: &Frame, mattes: Option<&Mattes>) {
+    if lb.focus_strokes.is_empty() && lb.blur_strokes.is_empty() {
         return;
     }
-    let boost = if lb.boost.is_finite() { (lb.boost.clamp(0.0, 100.0) / 100.0) as f32 } else { 0.0 };
-    let layers: Vec<Layer> = (1..=LAYERS).map(|k| Layer::new(img, &c, rmax * k as f64 / LAYERS as f64, k, lb.bokeh, boost)).collect();
+    let (w, h) = (img.width, img.height);
+    let log_l = img.map(crate::local::log_lum);
+    let brush = |strokes: &[BrushStroke]| {
+        (!strokes.is_empty())
+            .then(|| masks::shape_alpha(&MaskShape::Brush { strokes: strokes.to_vec() }, frame, w, h, img, &log_l, 0.0, mattes))
+            .filter(|a| a.data.len() == c.data.len())
+    };
+    let unit = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let (focus, blurred) = (brush(&lb.focus_strokes), brush(&lb.blur_strokes));
+    if let Some(f) = focus {
+        c.data.iter_mut().zip(&f.data).for_each(|(v, f)| *v *= 1.0 - unit(*f));
+    }
+    if let Some(b) = blurred {
+        c.data.iter_mut().zip(&b.data).for_each(|(v, b)| *v = v.max(unit(*b)));
+    }
+}
+
+/// The blur of each mask with a Lens Blur adjustment: the mask's strength (its Amount included)
+/// is how far out of focus a pixel is; blurring the outside, how far the mask stays below its
+/// Amount.
+pub fn blur_masks(img: &mut Rgb32f, s: &DevelopSettings, frame: &Frame, px_per_long: f64, mattes: Option<&Mattes>) {
+    let (w, h) = (img.width, img.height);
+    if w == 0 || h == 0 || img.data.len() != w.saturating_mul(h) {
+        return;
+    }
+    let ev = if s.light.exposure.is_finite() { s.light.exposure as f32 } else { 0.0 };
+    for m in blurring_masks(s) {
+        let a = &m.adjust;
+        let rmax = amount_radius(a.lens_blur, px_per_long);
+        if rmax < 0.5 {
+            continue;
+        }
+        let log_l = img.map(crate::local::log_lum);
+        let mut c = masks::evaluate_one(m, frame, w, h, img, &log_l, ev, mattes);
+        if c.data.len() != img.data.len() {
+            continue;
+        }
+        let top = if a.amount.is_finite() { (a.amount / 100.0).clamp(0.0, 1.0) as f32 } else { 0.0 };
+        let outside = a.lens_blur_outside;
+        c.map_in_place(|v| {
+            let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+            if outside { (top - v).max(0.0) } else { v }
+        });
+        let boost = if a.lens_blur_boost.is_finite() { (a.lens_blur_boost.clamp(0.0, 100.0) / 100.0) as f32 } else { 0.0 };
+        gather(img, &c, rmax, s.lens_blur.bokeh, boost);
+    }
+}
+
+/// Blur `img` by the circle of confusion `c` (0 sharp .. 1 a kernel of `rmax` px, one value per
+/// pixel) with `shape`'s aperture, highlights brightened by `boost` (`0..1`) before the spread.
+fn gather(img: &mut Rgb32f, c: &Plane, rmax: f64, shape: BokehShape, boost: f32) {
+    let w = img.width;
+    if w == 0 || c.data.len() != img.data.len() || !rmax.is_finite() || rmax < 0.5 || c.data.iter().all(|v| *v <= 0.0) {
+        return;
+    }
+    let layers: Vec<Layer> = (1..=LAYERS).map(|k| Layer::new(img, c, rmax * k as f64 / LAYERS as f64, k, shape, boost)).collect();
     let src = &*img;
     let mut out = src.data.clone();
     crate::for_rows(&mut out, w, |y, row| {
         for (x, px) in row.iter_mut().enumerate() {
             let t = c.data.get(y * w + x).copied().unwrap_or(0.0) * LAYERS as f32;
-            if t <= 0.0 {
+            // (a NaN circle of confusion is no blur)
+            if t.is_nan() || t <= 0.0 {
                 continue;
             }
             let lo = (t.floor() as usize).min(LAYERS);
-            let f = t - lo as f32;
+            let f = (t - lo as f32).clamp(0.0, 1.0);
             let at = |k: usize| if k == 0 { *px } else { layers.get(k - 1).map_or(*px, |l| l.at(x, y)) };
             let (a, b) = (at(lo), at((lo + 1).min(LAYERS)));
             *px = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
@@ -437,6 +556,99 @@ mod tests {
         assert_eq!(boost_gain([f32::NAN; 3], 1.0), 1.0);
         assert_eq!(boost_gain([0.3; 3], 1.0), 1.0);
         assert_eq!(boost_gain([5.0; 3], f32::NAN), 1.0);
+    }
+
+    fn stroke(x: f64, y: f64) -> BrushStroke {
+        BrushStroke { points: vec![Point::new(x, y)], size: 0.12, feather: 0.0, flow: 100.0, density: 100.0, ..BrushStroke::default() }
+    }
+
+    /// Brush Refinement: a Focus stroke keeps a far dot sharp, a Blur stroke blurs a near one.
+    #[test]
+    fn the_brushes_overrule_the_depth() {
+        let (w, h) = (64, 32);
+        let mut img0 = Rgb32f::new(w, h);
+        for (x, y) in [(16, 16), (48, 16)] {
+            img0.data[y * w + x] = [10.0; 3];
+        }
+        // left half near (sharp), right half far (blurred)
+        let grid = Plane::from_fn(w, h, |x, _| if x < w / 2 { 0.0 } else { 1.0 });
+        let depth = Depth { grid: Arc::new(grid), source: DepthSource::Model };
+        let base = LensBlur { enabled: true, amount: 100.0, focal_distance: 0.0, focal_range: 10.0, ..LensBlur::default() };
+        let run = |lb: &LensBlur| {
+            let mut img = img0.clone();
+            blur(&mut img, lb, &depth, &frame(w, h), 100.0);
+            img
+        };
+        let at = |i: &Rgb32f, x: usize| i.data[16 * w + x][0];
+        let plain = run(&base);
+        assert!(at(&plain, 48) < 5.0 && (at(&plain, 16) - 10.0).abs() < 1e-4);
+        let focused = run(&LensBlur { focus_strokes: vec![stroke(0.75, 0.5)], ..base.clone() });
+        assert!(at(&focused, 48) > at(&plain, 48) * 1.5, "the Focus brush keeps it sharper: {} vs {}", at(&focused, 48), at(&plain, 48));
+        let blurred = run(&LensBlur { blur_strokes: vec![stroke(0.25, 0.5)], ..base.clone() });
+        assert!(at(&blurred, 16) < 5.0, "the Blur brush blurs the near dot: {}", at(&blurred, 16));
+        // the Blur brush has the last word over the Focus brush
+        let both = run(&LensBlur { focus_strokes: vec![stroke(0.25, 0.5)], blur_strokes: vec![stroke(0.25, 0.5)], ..base.clone() });
+        assert!(at(&both, 16) < 5.0);
+        // hostile strokes: finite, no panic
+        let bad = BrushStroke {
+            points: vec![Point::new(f64::NAN, 0.5), Point::new(1e300, -1e300)],
+            size: f64::INFINITY,
+            feather: f64::NAN,
+            flow: -5.0,
+            density: f64::NAN,
+            ..BrushStroke::default()
+        };
+        let img = run(&LensBlur { focus_strokes: vec![bad.clone()], blur_strokes: vec![bad, BrushStroke::default()], ..base });
+        assert!(img.data.iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
+
+    fn radial_mask(lens_blur: f64) -> Mask {
+        let shape = MaskShape::Radial { center: Point::new(0.25, 0.5), rx: 0.15, ry: 0.3, angle: 0.0, feather: 0.0, invert: false };
+        Mask {
+            id: 1,
+            components: vec![lcc_develop::MaskComponent { anchor: None, name: None, op: lcc_develop::MaskOp::Add, invert: false, shape }],
+            adjust: lcc_develop::LocalAdjustments { lens_blur, ..Default::default() },
+            ..Default::default()
+        }
+    }
+
+    /// A mask's Lens Blur blurs what it selects, or what it leaves out, without the global blur.
+    #[test]
+    fn a_mask_blurs_its_selection_or_the_outside() {
+        let (w, h) = (64, 32);
+        let mut img0 = Rgb32f::new(w, h);
+        for (x, y) in [(16, 16), (48, 16)] {
+            img0.data[y * w + x] = [10.0; 3];
+        }
+        let run = |m: Mask| {
+            let s = DevelopSettings { masks: vec![m], ..Default::default() };
+            let mut img = img0.clone();
+            blur_masks(&mut img, &s, &frame(w, h), 100.0, None);
+            (img, s)
+        };
+        let at = |i: &Rgb32f, x: usize| i.data[16 * w + x][0];
+        let (inside, s) = run(radial_mask(100.0));
+        assert!(at(&inside, 16) < 5.0 && (at(&inside, 48) - 10.0).abs() < 1e-4, "{} {}", at(&inside, 16), at(&inside, 48));
+        assert!(masks_blur(&s) && renders(&s, None) && key(&s, None).is_some() && reach(&s, 100.0) >= 3.0);
+        let mut m = radial_mask(100.0);
+        m.adjust.lens_blur_outside = true;
+        let (outside, _) = run(m);
+        assert!(at(&outside, 48) < 5.0 && (at(&outside, 16) - 10.0).abs() < 1e-4, "{} {}", at(&outside, 16), at(&outside, 48));
+        // switched off, hidden, zero or hostile: nothing, or finite
+        let mut off = radial_mask(100.0);
+        off.adjust.lens_blur_off = true;
+        let mut hidden = radial_mask(100.0);
+        hidden.visible = false;
+        for m in [off, hidden, radial_mask(0.0), radial_mask(f64::NAN), radial_mask(-40.0)] {
+            let (img, s) = run(m);
+            assert_eq!(img.data, img0.data);
+            assert!(!masks_blur(&s) && key(&s, None).is_none() && reach(&s, 100.0) == 0.0);
+        }
+        let mut wild = radial_mask(1e300);
+        wild.adjust.lens_blur_boost = f64::NAN;
+        wild.adjust.amount = f64::INFINITY;
+        let (img, _) = run(wild);
+        assert!(img.data.iter().all(|p| p.iter().all(|v| v.is_finite())));
     }
 
     #[test]

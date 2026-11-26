@@ -6,8 +6,11 @@ use lcc_develop::{BokehShape, LensBlur};
 use lcc_geom::Point;
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_active, str_param};
+use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_active, str_param};
 use crate::{PhotoId, Result, Session};
+
+/// Strokes one Lens Blur refinement brush keeps (a document can't grow without bound).
+const MAX_BRUSH_STROKES: usize = 2000;
 
 fn active(s: &Session, c: &str) -> Result<PhotoId> {
     s.active().ok_or_else(|| bad(c, "no active photo"))
@@ -28,6 +31,8 @@ fn status_of(lb: &LensBlur) -> Value {
         "focus": lb.focus.map(|p| json!({"x": p.x, "y": p.y})),
         "focusSize": lb.focus_size,
         "bokeh": lb.bokeh.name(),
+        "focusStrokes": lb.focus_strokes.len(),
+        "blurStrokes": lb.blur_strokes.len(),
         "depth": depth_source(),
     })
 }
@@ -102,8 +107,104 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
+/// `lensBlur.brushStroke`: one stroke of the Focus or the Blur refinement brush.
+fn brush_stroke(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "lensBlur.brushStroke";
+    let focus = match str_param(p, "mode") {
+        Some("focus") => true,
+        Some("blur") => false,
+        _ => return Err(bad(C, "`mode` must be \"focus\" or \"blur\"")),
+    };
+    let points: Vec<Point> = p
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad(C, "missing points"))?
+        .iter()
+        .filter_map(|q| Some(Point::new(q.get(0)?.as_f64()?, q.get(1)?.as_f64()?)))
+        .filter(|q| q.x.is_finite() && q.y.is_finite())
+        .collect();
+    if points.is_empty() {
+        return Err(bad(C, "a stroke needs at least one point"));
+    }
+    let d = lcc_develop::BrushStroke::default();
+    let num = |key: &str, def: f64, lo: f64, hi: f64| {
+        let v = f64_or(p, key, def);
+        if v.is_finite() { v.clamp(lo, hi) } else { def }
+    };
+    let stroke = lcc_develop::BrushStroke {
+        pressure: super::masks::pressure_list(p.get("pressure"), points.len())?,
+        points,
+        size: num("size", d.size, 0.001, 0.5),
+        feather: num("feather", d.feather, 0.0, 100.0),
+        flow: num("flow", d.flow, 1.0, 100.0),
+        density: num("amount", d.density, 1.0, 100.0),
+        erase: bool_or(p, "erase", false),
+        auto_mask: bool_or(p, "autoMask", false),
+        // the Masking brush's model: new strokes paint with it unless `model: 0` asks for the
+        // legacy one; the Auto Mask range is fixed with the stroke
+        auto_range: num("autoRange", d.auto_range, -lcc_develop::AUTO_RANGE_MAX, lcc_develop::AUTO_RANGE_MAX),
+        model: if p.get("model").and_then(Value::as_u64) == Some(0) { lcc_develop::BRUSH_MODEL_LEGACY } else { lcc_develop::BRUSH_MODEL_LRC },
+    };
+    let id = active(s, C)?;
+    let mut d = (*s.develop_of(id).ok_or_else(|| bad(C, "no such photo"))?).clone();
+    let lb = &mut d.lens_blur;
+    let strokes = if focus { &mut lb.focus_strokes } else { &mut lb.blur_strokes };
+    if strokes.len() >= MAX_BRUSH_STROKES {
+        return Err(bad(C, format!("at most {MAX_BRUSH_STROKES} strokes per brush: reset the brush first")));
+    }
+    strokes.push(stroke);
+    let out = status_of(lb);
+    s.set_develop(id, d, if focus { "Lens Blur Focus Brush" } else { "Lens Blur Blur Brush" })?;
+    Ok(out)
+}
+
+/// `lensBlur.brushReset`: remove one refinement brush's strokes, or both.
+fn brush_reset(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = "lensBlur.brushReset";
+    let (focus, blur) = match str_param(p, "mode") {
+        None => (true, true),
+        Some("focus") => (true, false),
+        Some("blur") => (false, true),
+        Some(_) => return Err(bad(C, "`mode` must be \"focus\" or \"blur\"")),
+    };
+    let id = active(s, C)?;
+    let mut d = (*s.develop_of(id).ok_or_else(|| bad(C, "no such photo"))?).clone();
+    let lb = &mut d.lens_blur;
+    let before = (lb.focus_strokes.len(), lb.blur_strokes.len());
+    if focus {
+        lb.focus_strokes.clear();
+    }
+    if blur {
+        lb.blur_strokes.clear();
+    }
+    let out = status_of(lb);
+    // (nothing painted: no undo step)
+    if before != (lb.focus_strokes.len(), lb.blur_strokes.len()) {
+        s.set_develop(id, d, "Reset Lens Blur Brush")?;
+    }
+    Ok(out)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        cmd!(
+            "lensBlur.brushStroke",
+            "Lens Blur Brush Stroke",
+            [],
+            None,
+            "{mode: \"focus\"|\"blur\", points: [[x,y],…] normalized, size?: the solid core's radius, fraction of the long edge (0.03), feather?: 0..100, flow?: 1..100, amount?: 1..100 (how far the stroke refines), erase?: bool, autoMask?: bool, autoRange?, pressure?: [0..1 per point], model?: 0 for the legacy brush}: Brush Refinement, one stroke (one undo step). Focus strokes stay sharp whatever the depth says; Blur strokes get the whole blur and overrule Focus strokes → lensBlur.status",
+            has_active,
+            brush_stroke
+        ),
+        cmd!(
+            "lensBlur.brushReset",
+            "Reset Lens Blur Brush",
+            [],
+            None,
+            "{mode?: \"focus\"|\"blur\"}: removes that refinement brush's strokes (both brushes without `mode`) → lensBlur.status",
+            has_active,
+            brush_reset
+        ),
         cmd!(
             "lensBlur.set",
             "Set Lens Blur",
@@ -118,7 +219,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Lens Blur Status",
             [],
             None,
-            "{}: the active photo's Lens Blur → {enabled, amount, boost, focalDistance, focalRange, focus, focusSize, bokeh, depth: model|subject}",
+            "{}: the active photo's Lens Blur → {enabled, amount, boost, focalDistance, focalRange, focus, focusSize, bokeh, focusStrokes, blurStrokes (how many strokes each refinement brush holds), depth: model|subject}",
             has_active,
             |s, _| {
                 let c = "lensBlur.status";

@@ -1800,6 +1800,9 @@ pub struct UiState {
     /// Brush Auto Mask range, −100 (tight) … 0 (Lightroom's limits) … 100 (wide): kept with each stroke painted
     /// ([`lcc_develop::BrushStroke::auto_range`]), so changing it leaves the strokes already painted.
     pub brush_auto_range: f32,
+    /// Lens Blur Brush Refinement: how far a stroke refines the focus, 1..100 (size, feather,
+    /// flow, Auto Mask and pressure are the Masking brush's).
+    pub lens_blur_brush_amount: f32,
     /// Brush Pen Pressure: a pen's pressure scales each dab's size and flow (a mouse paints at full pressure).
     pub brush_pressure: bool,
     /// Remove tool brush: size (fraction of the long edge), feather and opacity (0..100).
@@ -2879,6 +2882,7 @@ impl Default for UiState {
             mask_reset_new: false,
             mask_reset_seen: None,
             brush_auto_range: 0.0,
+            lens_blur_brush_amount: 100.0,
             brush_pressure: true,
             remove_size: 0.02,
             remove_feather: 50.0,

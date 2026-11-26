@@ -162,7 +162,7 @@ pub enum Gesture {
 /// Screen ↔ normalized-image mapping for the displayed frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CanvasMap {
-    rect: Rect,
+    pub(super) rect: Rect,
     to_norm: Affine,
     from_norm: Affine,
     k: f32,
@@ -498,7 +498,7 @@ pub(crate) fn navigate_gesture(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui:
     if delta == egui::Vec2::ZERO && trackpad_delta != egui::Vec2::ZERO {
         delta = trackpad_delta;
     }
-    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove;
+    let is_brush = app.ui.tool == "brush" || app.ui.right == RightPanel::Remove || super::lens_blur::is_brush(&app.ui.tool);
     let space_held = ui.input(|i| i.key_down(egui::Key::Space)) || app.space_hand.is_some();
     let cmd_or_ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
 
@@ -1925,6 +1925,7 @@ pub fn show(app: &mut LccApp, ui: &mut egui::Ui) {
                 crate::panels::genfill::canvas(app, ui, &ui.painter_at(app.canvas_rect.unwrap_or(map.rect)), &|q| map.screen(q), &d);
             }
             RightPanel::RedEye => eye_overlay(app, ui, &resp, &map, &d),
+            RightPanel::Edit if super::lens_blur::is_brush(&app.ui.tool) => super::lens_blur::brush_overlay(app, ui, &resp, &map),
             _ => {
                 // side by side / stacked: Before shows the same frame, so a click in its view (white
                 // balance, colour samples, targeted adjustment) means the same point of the photo.

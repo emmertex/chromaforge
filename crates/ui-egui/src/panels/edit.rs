@@ -955,9 +955,9 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.painter().text(pos2(r.left() + 12.0, r.center().y + 2.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(11.75), t.text_label);
 }
 
-/// The Lens Blur section: Apply, the focus picker, Blur Amount, Boost, the bokeh shape and the focal range.
+/// The Lens Blur section: Apply, the focus picker, Blur Amount, Boost, the bokeh shape, the focal range and Brush Refinement.
 fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
-    let lb = d.lens_blur;
+    let lb = &d.lens_blur;
     let dim = Tokens::get(ui.ctx()).text_dim;
     egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 4, bottom: 4 }, 3, 3)).show(ui, |ui| {
         let mut on = lb.enabled;
@@ -1003,6 +1003,7 @@ fn lens_blur_body(app: &mut LccApp, ui: &mut egui::Ui, d: &DevelopSettings) {
     control(app, ui, d, "lensBlur.focalDistance", lb.enabled && lb.focus.is_none());
     control(app, ui, d, "lensBlur.focalRange", lb.enabled);
     control(app, ui, d, "lensBlur.focusSize", lb.enabled && lb.focus.is_some());
+    super::lens_blur::brush_refinement(app, ui, lb);
     ui.add_space(8.0);
 }
 

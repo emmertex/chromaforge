@@ -1,6 +1,6 @@
 ---
 title: Lens blur
-description: A shallow depth of field after the fact, from the photo's estimated depth, with a focus picker and bokeh shapes.
+description: A shallow depth of field after the fact, from the photo's estimated depth, with a focus picker, bokeh shapes, refinement brushes and a per-mask blur.
 sidebar:
   order: 6
 ---
@@ -20,6 +20,30 @@ import { Aside } from '@astrojs/starlight/components';
 
 <NeedsImage what="The same blurred background highlights with Circle, 6 Blades and Ring bokeh" />
 
+## Brush Refinement
+
+Paint over the depth where it gets something wrong, for example a strand of hair that blurred with the background.
+
+- **Focus**: what you paint stays sharp, whatever its distance.
+- **Blur**: what you paint gets the full blur. It wins where both brushes painted.
+- Click a brush to arm it, then paint on the photo. Click it again to put it away. Hold Alt to erase that brush's strokes.
+- **Amount** sets how far a stroke goes. **Size**, **Feather**, **Flow** and **Auto Mask** are shared with the Masking brush.
+- **Reset** removes the strokes of both brushes. Each stroke is one undo step.
+- The brushes work only while Lens Blur is switched on.
+
+<NeedsImage what="The Brush Refinement rows of the Lens Blur section (Focus, Blur, Reset, Auto Mask, Amount, Size, Feather, Flow) with a green Focus stroke being painted over hair" />
+
+## Lens Blur in a mask
+
+Every mask has a **Lens Blur** block under its adjustment sections. It blurs by the mask, not by depth, and works with or without the Lens Blur section.
+
+- **Blur Amount**: the blur where the mask selects fully. The mask's feathered edge gets less.
+- **Selection / Outside**: blur what the mask selects, or what it leaves out.
+- **Boost**: brighter bokeh highlights in this mask's blur.
+- The eye on the block's header switches it off and keeps its values. The bokeh shape is the one chosen in the Lens Blur section.
+
+<NeedsImage what="A mask's Lens Blur block in the Masking panel (eye, Selection / Outside, Blur Amount, Boost) with a radial mask whose outside is blurred" />
+
 ## Where the depth comes from
 
 - **With the depth model** (Depth Anything V2 Small, Apache-2.0; AI Models ▸ **Depth**, the same download as Depth Range masks): a real per-pixel depth map. It runs once per photo and is cached.
@@ -33,13 +57,14 @@ import { Aside } from '@astrojs/starlight/components';
 ## By command
 
 - `lensBlur.set {amount, boost, focalDistance, focalRange, focus: {x, y} | null, focusSize, bokeh, enabled}`. Every change is one undo step.
-- `lensBlur.status`: the current settings and the depth source (`model` or `subject`).
+- `lensBlur.status`: the current settings, how many strokes each brush holds, and the depth source (`model` or `subject`).
+- `lensBlur.brushStroke {mode: "focus" | "blur", points, size, feather, flow, amount, erase, autoMask}` paints one stroke. `lensBlur.brushReset {mode?}` removes one brush's strokes, or both.
+- A mask's block: `mask.adjust {values: {lens_blur, lens_blur_boost, lens_blur_outside, lens_blur_off}}`.
 - The sliders are develop controls: `lensBlur.amount`, `lensBlur.boost`, `lensBlur.focalDistance`, `lensBlur.focalRange`, `lensBlur.focusSize`.
 - `section.lensBlur` opens the section (Window ▸ Edit Sections ▸ Lens Blur).
 
 ## Limits
 
-- No depth brush to refine the map (Lightroom's Refine with Focus / Blur brushes): planned.
 - Edges where a sharp subject meets a strongly blurred background can show a thin halo.
 - Not compared with Lightroom on real photos yet.
 - The setting is not written to or read from Lightroom XMP.
