@@ -1208,7 +1208,16 @@ pub fn tick(app: &mut LccApp, ctx: &egui::Context) {
         let started = lcc_engine::cmd::library::import_params(&app.session, &p)
             .and_then(|req| Ok((lcc_engine::import::ImportJob::new(&mut app.session, req.opts)?, req.album, req.album_name)))
             .map_err(|e| e.to_string())
-            .and_then(|(job, album, name)| ImportRun::start(job, std::mem::take(&mut task.queue), album, name, ctx));
+            .and_then(|(mut job, album, name)| {
+                // the beforeImport hook is asked on the worker that prepares the files (the
+                // session's thread answers its catalog requests in the poll): an Auto Import, a
+                // camera roll or a browse is unattended, so its hook may not start programs
+                if job.opts.plugin_hooks && !task.auto && !task.camera_roll && !task.browse {
+                    let source = lcc_engine::cmd::plugins::import_source(&app.session);
+                    job.before_import = lcc_engine::cmd::plugins::before_import_hook(&app.session, source, true);
+                }
+                ImportRun::start(job, std::mem::take(&mut task.queue), album, name, ctx)
+            });
         if task.auto {
             task.keep_selection = Some(app.session.selection.clone());
         }

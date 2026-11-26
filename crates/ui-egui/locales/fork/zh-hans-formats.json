@@ -87,6 +87,7 @@
   "Frame {n} of the series is selected more than once": "该系列的第 {n} 帧被重复选择",
   "Frames moved to Recently Deleted: {n}": "已移到“最近删除”的帧：{n}",
   "Frames moved to Recently Deleted: {n}; already gone: {missing}": "已移到“最近删除”的帧：{n}；本已不在：{missing}",
+  "Geotagged {n} photo(s)": "已为 {n} 张照片添加地理标记",
   "Go Back to Version {version}": "返回版本 {version}",
   "Goes into the group “{group}” that exists already.": "将放入已存在的分组“{group}”。",
   "Healed {n} blemishes": "已修复 {n} 处瑕疵",

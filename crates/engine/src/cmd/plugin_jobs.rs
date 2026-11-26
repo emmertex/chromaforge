@@ -132,6 +132,9 @@ impl HostApi for JobHost {
     fn library_add(&mut self, _: &Value) -> Result<Value, String> {
         Err(format!("library.add: {NO_WRITES}"))
     }
+    fn library_remove(&mut self, _: &Value) -> Result<Value, String> {
+        Err(format!("library.remove: {NO_WRITES}"))
+    }
     fn photo_pixels(&mut self, photo: &str, long_edge: u32) -> Result<Value, String> {
         self.reachable()?;
         self.0.pixels_within(photo, long_edge, Some(ANSWER_WAIT))
@@ -297,6 +300,7 @@ mod tests {
 
     #[test]
     fn a_job_runs_on_a_worker_with_a_row_that_stops_it() {
+        let _test_plugins = crate::cmd::plugins::TEST_PLUGINS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let _turn = turn();
         // reports progress, then asks to go on: it runs until it is stopped
         install(&job_module(

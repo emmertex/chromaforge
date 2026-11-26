@@ -87,6 +87,7 @@
   "Frame {n} of the series is selected more than once": "Кадр {n} серии выбран более одного раза",
   "Frames moved to Recently Deleted: {n}": "Кадров перемещено в «Недавно удалённые»: {n}",
   "Frames moved to Recently Deleted: {n}; already gone: {missing}": "Кадров перемещено в «Недавно удалённые»: {n}; уже отсутствовало: {missing}",
+  "Geotagged {n} photo(s)": "Геотеги добавлены к фото: {n}",
   "Go Back to Version {version}": "Вернуться к версии {version}",
   "Goes into the group “{group}” that exists already.": "Попадёт в уже существующую группу «{group}».",
   "Healed {n} blemishes": "Исправлено дефектов кожи: {n}",

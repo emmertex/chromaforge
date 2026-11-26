@@ -4656,7 +4656,7 @@ fn mask_overlay(app: &mut LccApp, ui: &mut egui::Ui, resp: &egui::Response, map:
         {
             let n = map.norm(q);
             if let Err(e) = app.run("mask.recolorPick", json!({"x": n.x, "y": n.y, "target": target})) {
-                app.toast(ui.ctx(), e);
+                app.toast_error(ui.ctx(), e);
             }
             app.ui.tool.clear();
         }
