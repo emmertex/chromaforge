@@ -328,9 +328,13 @@ pub(crate) fn next_change(seconds: i64) -> u64 {
 /// The "Last checked … ago" line (nothing before the first check). The window repaints when the words
 /// would change, so the line stays true without any input.
 fn last_checked(ui: &mut egui::Ui, t: &Tokens, status: &Value) {
-    let Some(seconds) = status.field("lastCheckedAgo").as_i64() else {
-        return;
-    };
+    if let Some(seconds) = status.field("lastCheckedAgo").as_i64() {
+        last_checked_line(ui, t, seconds);
+    }
+}
+
+/// The "Last checked … ago" line for a check that finished `seconds` ago, repainting when its words change.
+pub(crate) fn last_checked_line(ui: &mut egui::Ui, t: &Tokens, seconds: i64) {
     ui.label(egui::RichText::new(ago_text(seconds)).font(t.font(11.5)).color(t.text_dim));
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(next_change(seconds)));
 }

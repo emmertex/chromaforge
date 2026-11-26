@@ -841,7 +841,10 @@ first stamped, signed version is a hand install. Pixel filters get none.
 **When the app checks:** only when the user turns a plug-in's check on (*Check for updates* on its
 page; off by default), and then only **when the Plug-in Manager opens**, at most once a day per
 plug-in. A result from within the day is shown as it was. Nothing contacts a feed while the
-Plug-in Manager is closed; *Check Now* (or `plugin.checkUpdates {id}`) checks at once. This is
+Plug-in Manager is closed; *Check Now* (or `plugin.checkUpdates {id}`) checks at once. Every check that
+runs adds one line to the plug-in's log, also one that finds nothing (`update check: up to date (version
+1.2.3)`), and the plug-in's page shows when the last one ran ("Last checked 12 minutes ago", as the app's own
+update window does); `plugin.list` → `updates.checkedAgo` gives the same time in seconds. This is
 separate from the app's own update check.
 
 ### The feed
@@ -1043,8 +1046,8 @@ manifest is always read from `pc_manifest`.
 when plug-ins are kept in memory), each plug-in has its module's `moduleHash` (sha256), a
 `settingsRevision` that changes when one of its settings does, `previousVersion` (the version
 `plugin.rollback` goes back to, or `null`), `signer` (the pinned signer's fingerprint, or
-`null`) and `updates` (`{check, available, reason, checkedAt?, error?, offer?}`: whether the user
-turned its check on, whether it can have one and why not, and the last check's time, error and
+`null`) and `updates` (`{check, available, reason, checkedAt?, checkedAgo?, error?, offer?}`: whether the user
+turned its check on, whether it can have one and why not, and the last check's time (and the seconds since it), error and
 offer: `{version, url, sha256, requires, permissions, changelog?, notes?}` from the feed, with `adds`, the declared
 groups the installed version doesn't have, and `missing`, the host features this app lacks), each `failed` row has `file`, `error`, `kind` (`plugin` or
 `filter`) and, when the module named one, `id`, and `skipped` counts the modules past the most the
@@ -1065,7 +1068,7 @@ plug-in's own icon when its manifest carries one), its name, version and a mark:
 right:
 
 - **A plug-in:** Enabled, Remove, *Go Back to Version X* (after an update), *Check for updates*
-  and *Check Now* (a plug-in that can have update checks, [Updates](#updates)) with the update
+  and *Check Now* (a plug-in that can have update checks, [Updates](#updates)) with when the last check ran and the update
   found: its version, note, changelog link and the permission groups its feed says it adds, and
   **Update**, which asks first when the file wants groups the feed didn't declare; and tabs: Settings (when it declares settings), Permissions (each
   one it may ask for: allowed, denied on a date, not asked yet or refused, with Allow / Revoke), About (description, what it adds, its commands
