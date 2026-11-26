@@ -120,7 +120,7 @@ commands:
                   build the browser app (apps/web) into <target>/web-site/;
                   --serve serves it on http://127.0.0.1:<port> (default 8080)
   ci [--fast] [--hardware] [--summary-md] [--quick [--base REF]]
-                  fmt --check, brand check, docs --check, notes --check, i18n --check, clippy -D warnings, heif, test, GPU probe, parity refs,
+                  fmt --check, brand check, docs --check, notes --check, i18n --check, clippy -D warnings, heif, stamp (sdk/stamp's fmt and clippy), test, GPU probe, parity refs,
                   layers, assets, deny, wasm (stops at first failure). Tests run under cargo test (cargo nextest
                   with the quarantine on CI or with XTASK_NEXTEST=1), without examples, then doctests with cargo
                   test --doc; after them it prints the translation gaps report (never a failure). Writes
@@ -129,7 +129,8 @@ commands:
                   --hardware also runs the GPU tests on every backend with a hardware adapter; --summary-md prints
                   the Markdown summary.
                   --quick: only what the changes since the merge base with origin/main (or REF) can
-                  break: clippy, the changed packages' tests, and heif / parity / wasm when they apply.
+                  break: clippy, the changed packages' tests, and heif / parity / wasm / stamp when they apply
+                  (stamp's fmt always, its clippy only when sdk/stamp or a root config file it reads changed).
                   One ci runs at a time per machine; others wait (<PREFIX>_CI_SLOTS=N for N at once,
                   <PREFIX>_CI_LOCK=off to skip the lock)
   affected-tests [--base REF]
@@ -798,6 +799,8 @@ fn run_ci(opts: &CiOptions, args: &[&str]) -> Result<(), String> {
     };
 
     type Step<'a> = (&'static str, Box<dyn Fn() -> Result<(), String> + 'a>);
+    // the `stamp` step's clippy: a full run always, `--quick` only when `sdk/stamp` or a config it reads changed
+    let stamp_lint = plan.as_ref().is_none_or(|p| p.stamp);
     // `--quick`: which steps apply (all of them in a full run) and the packages to test
     let wants = |step: &str| match &plan {
         None => true,
@@ -854,6 +857,23 @@ fn run_ci(opts: &CiOptions, args: &[&str]) -> Result<(), String> {
                 test(tests(&with_test_targets(&["-p", "lcc-codecs", "-p", "lcc-heif", "--features", "lcc-codecs/heif"])), "heif")?;
                 // the engine's HEIC import test, with the decoder (the workspace run checks the error)
                 test(tests(&["-p", "lcc-engine", "--lib", "--features", "lcc-codecs/heif", "heic"]), "heif")
+            }),
+        ),
+        (
+            "stamp",
+            Box::new(|| {
+                // `sdk/stamp` is its own workspace (excluded from the root one), so the steps above never see
+                // it. fmt runs on every `--quick`; clippy only when a file under it changed (or in a full run)
+                let dir = root.join("sdk/stamp");
+                let mut fmt = cargo();
+                fmt.current_dir(&dir).args(["fmt", "--", "--check"]);
+                run(fmt, "cargo fmt -- --check (in sdk/stamp)")?;
+                if !stamp_lint {
+                    return Ok(());
+                }
+                let mut c = cargo();
+                c.current_dir(&dir).args(["clippy", "--all-targets", "--locked", "--", "-D", "warnings"]);
+                run(c, "cargo clippy --all-targets --locked -- -D warnings (in sdk/stamp)")
             }),
         ),
         (

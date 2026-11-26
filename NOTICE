@@ -11,6 +11,12 @@ License or the Apache License, Version 2.0. It also includes code from PhotoCraf
 Copyright (c) the PhotoCraft contributors. Code inherited from these projects is used here
 under the MIT License; the upstream copyright notices are kept in LICENSE and in this file.
 
+Fixes in crates/raw, crates/meta and crates/tiff marked "adapted from craft-libs #<n>" are hand ports
+of changes to craft-libs (https://github.com/storytold/craft-libs), the shared libraries LightCraft
+moved its decoders and metadata code into, Copyright (c) the ArtCraft Team and the craft-libs
+contributors, licensed under the MIT License or the Apache License, Version 2.0, and used here under
+the MIT License (LICENSE). Each port's commit names the craft-libs pull request and its author.
+
 The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and are not part of
 this project. The upstream LightCraft app icon in assets/app-icon/ is covered by its own
 licence file (assets/app-icon/LICENSE.txt).

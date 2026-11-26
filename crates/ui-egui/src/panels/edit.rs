@@ -105,6 +105,13 @@ pub(crate) fn short_name(id: &str) -> Option<&'static str> {
         "vignette.feather" => "Feather",
         "vignette.roundness" => "Roundness",
         "vignette.highlights" => "Highlights",
+        "glow.amount" => "Amount",
+        "glow.threshold" => "Threshold",
+        "glow.spread" => "Radius",
+        "glow.gain" => "Gain",
+        "glow.gamma" => "Gamma",
+        "glow.ratio" => "H/V",
+        "glow.recovery" => "Recovery",
         "grain.size" => "Size",
         "grain.sizeVariation" => "Variation",
         "grain.roughness" => "Roughness",
@@ -606,6 +613,27 @@ pub fn show_controls(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         for c in ["vignette.amount", "vignette.midpoint", "vignette.feather", "vignette.roundness", "vignette.highlights"] {
             let enabled = c == "vignette.amount" || d.vignette.amount != 0.0;
+            control(app, ui, d, c, enabled);
+        }
+        sub_title(ui, crate::i18n::tr("Glow"));
+        if shown_here(app, ui, "option:glowComposite") {
+            use lcc_develop::GlowComposite as G;
+            let modes = [(G::Screen, "glow composite|Screen", "screen"), (G::Add, "glow composite|Add", "add")];
+            let items: Vec<(&str, &str)> = modes.iter().map(|(_, l, k)| (*l, *k)).collect();
+            let active = modes.iter().position(|(v, _, _)| *v == d.glow.mode);
+            let mut chosen = None;
+            egui::Frame::NONE.inner_margin(crate::widgets::row_margin(ui, egui::Margin { left: 12, right: 16, top: 2, bottom: 4 }, 2, 3)).show(
+                ui,
+                |ui| {
+                    chosen = crate::widgets::segmented(ui, "glowComposite", &items, active, 2);
+                },
+            );
+            if let Some((mode, ..)) = chosen.and_then(|i| modes.get(i)) {
+                let _ = app.run("develop.merge", serde_json::json!({"settings": {"glow": {"mode": serde_json::to_value(mode).unwrap_or_default()}}}));
+            }
+        }
+        for c in ["glow.amount", "glow.threshold", "glow.spread", "glow.gain", "glow.gamma", "glow.ratio", "glow.recovery"] {
+            let enabled = c == "glow.amount" || d.glow.amount != 0.0;
             control(app, ui, d, c, enabled);
         }
         sub_title(ui, crate::i18n::tr("Grain"));

@@ -719,7 +719,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Reset Section",
             [],
             None,
-            "{section: light|curve|color|mixer|grading|effects|vignette|grain|detail|optics|geometry}",
+            "{section: light|curve|color|mixer|grading|effects|vignette|glow|grain|detail|optics|geometry}",
             has_active,
             |s, p| {
                 let sec = section_param(p, "develop.resetSection")?;

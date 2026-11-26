@@ -366,6 +366,8 @@ mod tests_mask_menus;
 #[cfg(test)]
 mod tests_mask_range_pick;
 #[cfg(test)]
+mod tests_mask_recolor;
+#[cfg(test)]
 mod tests_mask_sections;
 #[cfg(test)]
 mod tests_mask_tree;

@@ -2302,7 +2302,15 @@ pub fn run_ui_command(app: &mut LccApp, id: &str, p: &Value) -> Option<Result<Va
             Ok(Value::Null)
         }
         "dialog.autoStack" => {
-            app.ui.dialog = Some(Dialog::AutoStack { gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32 });
+            app.ui.dialog = Some(Dialog::AutoStack {
+                gap: p.get("gap").and_then(Value::as_f64).unwrap_or(60.0) as f32,
+                top: match p.get("top").and_then(Value::as_str) {
+                    None => lcc_catalog::StackTop::First,
+                    Some("raw") => lcc_catalog::StackTop::Raw,
+                    Some("jpeg") => lcc_catalog::StackTop::Jpeg,
+                    Some(other) => return Some(Err(format!("dialog.autoStack: top: unknown choice {other:?}"))),
+                },
+            });
             Ok(Value::Null)
         }
         "dialog.allMetadata" => {
