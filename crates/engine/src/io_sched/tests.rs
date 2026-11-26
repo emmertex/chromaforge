@@ -310,10 +310,11 @@ fn one_volume_runs_todays_threads_in_input_order() {
     t.dedup();
     assert_eq!(t.len(), 4, "today's thread count");
     assert!(!t.contains(&std::thread::current().id()));
-    // started in input order (up to the race between workers taking jobs, as today)
-    for (rank, &i) in order.lock().unwrap().iter().enumerate() {
-        assert!((rank as i64 - i as i64).abs() < 4, "job {i} started {rank}th");
-    }
+    // the first four in input order start first (they hold every slot until all four are in;
+    // which worker takes which is a race, as today); exact order with one worker below
+    let mut first: Vec<u32> = order.lock().unwrap().iter().take(4).copied().collect();
+    first.sort();
+    assert_eq!(first, [0, 1, 2, 3]);
     let (r, _) = h.run((0..10u32).map(|i| job(&format!("/a/s{i}"), move || Ok(i))).collect(), 1);
     let got: Vec<u32> = r.outcomes.into_iter().map(|o| if let JobOutcome::Done(Ok(i)) = o { i } else { 99 }).collect();
     assert_eq!(got, (0..10).collect::<Vec<_>>(), "results in input order");
