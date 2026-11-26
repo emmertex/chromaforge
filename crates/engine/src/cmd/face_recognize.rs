@@ -2788,6 +2788,7 @@ mod imp {
             let ignored = Region { kind: RegionKind::IgnoredFace, ..region(0.82, None) };
             let mut pet = Region { kind: RegionKind::Pet, ..region(0.9, None) };
             pet.description = Some(format!("{MARK}{LABEL}"));
+            let old_automatic = automatic.rect;
             set_regions(&mut s, photo, vec![automatic, named.clone(), manual.clone(), ignored.clone(), pet.clone()]);
             let fresh = region(0.2, None).rect;
             let mut done = finished(&s, photo, Some(vec![fresh]), vec![]);
@@ -2796,7 +2797,10 @@ mod imp {
             ingest(&mut s, done);
             let regions = &s.catalog.photo(photo).unwrap().meta.regions;
             assert_eq!(regions.len(), 5);
-            assert!(regions.iter().any(|r| r.rect == fresh && r.name.is_none()), "the new detection is kept");
+            assert!(
+                regions.iter().any(|r| r.rect == fresh && r.name.is_none() && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
+                "the new automatic detection is kept"
+            );
             assert!(regions.iter().any(|r| r.rect == named.rect && r.name.as_deref() == Some("Ann")), "named faces are kept");
             assert!(
                 regions.iter().any(|r| r.rect == named.rect && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
@@ -2810,7 +2814,8 @@ mod imp {
                 "non-face regions are not treated as automatic detections"
             );
             assert!(
-                !regions.iter().any(|r| r.kind == RegionKind::Face
+                !regions.iter().any(|r| r.rect == old_automatic
+                    && r.kind == RegionKind::Face
                     && r.name.as_deref().is_none_or(|name| name.trim().is_empty())
                     && r.description.as_deref().is_some_and(|d| d.starts_with(MARK))),
                 "old unnamed automatic detections are replaced"

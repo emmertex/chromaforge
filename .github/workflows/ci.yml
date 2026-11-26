@@ -113,49 +113,13 @@ jobs:
       - name: cargo xtask ci (--fast unless a release / manual run)
         shell: bash
         run: |
-          set +e
-          if [ -n "$FULL_CI" ]; then
-            cargo xtask ci 2>&1 | tee "$RUNNER_TEMP/ci.log"
-          else
-            cargo xtask ci --fast 2>&1 | tee "$RUNNER_TEMP/ci.log"
-          fi
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            count=0
-            while IFS= read -r line; do
-              line=${line//'%'/'%25'}
-              line=${line//$'\r'/'%0D'}
-              printf '::error::cargo xtask ci: %s\n' "$line"
-              count=$((count + 1))
-              [ "$count" -ge 30 ] && break
-            done < <(tail -n 30 "$RUNNER_TEMP/ci.log")
-          fi
-          exit "$status"
+          if [ -n "$FULL_CI" ]; then cargo xtask ci; else cargo xtask ci --fast; fi
       # PRs: the unit and integration tests of the crates the PR changes and of every workspace crate
       # depending on them (all of them when Cargo.lock or another workspace-wide file changed)
       - name: Changed-crate tests
         if: github.event_name == 'pull_request' && env.FULL_CI != '1'
         shell: bash
-        run: |
-          set +e
-          CARGO_TERM_COLOR=never cargo xtask affected-tests --base HEAD^1 2>&1 | tee "$RUNNER_TEMP/affected-tests.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            {
-              echo '### Changed-crate test failure (last 120 log lines)'
-              echo '```text'
-              tail -n 120 "$RUNNER_TEMP/affected-tests.log"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            grep -E '^(failures:|test result: FAILED|error: test failed|---- .* stdout ----|thread .* panicked at|assertion .* failed|  left:|  right:|error\[|error:)' "$RUNNER_TEMP/affected-tests.log" | tail -n 40 | while IFS= read -r line; do
-              line=${line//'%'/'%25'}
-              line=${line//$'\r'/'%0D'}
-              printf '::error::affected-tests: %s\n' "$line"
-            done
-          fi
-          exit "$status"
+        run: cargo xtask affected-tests --base HEAD^1
       # Software-in-the-loop suite (docs/testing-sil.md); skipped until `cargo xtask sil` exists.
       - name: SIL suite
         shell: bash
@@ -238,26 +202,7 @@ jobs:
       - name: clippy (changed packages)
         if: github.event_name == 'pull_request' && env.FULL_CI != '1'
         shell: bash
-        run: |
-          set +e
-          CARGO_TERM_COLOR=never cargo xtask affected-clippy --base HEAD^1 2>&1 | tee "$RUNNER_TEMP/affected-clippy.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            count=0
-            while IFS= read -r line; do
-              case "$line" in
-                error*|warning:*|warning\[*|*" --> "*|*" = help: "*|*" = note: "*|*"Caused by:"*)
-                  line=${line//'%'/'%25'}
-                  line=${line//$'\r'/'%0D'}
-                  printf '::error::Clippy diagnostic: %s\n' "$line"
-                  count=$((count + 1))
-                  [ "$count" -ge 40 ] && break
-                  ;;
-              esac
-            done < <(awk '{ line[NR]=$0 } END { for (i=NR; i>0; i--) print line[i] }' "$RUNNER_TEMP/affected-clippy.log")
-          fi
-          exit "$status"
+        run: cargo xtask affected-clippy --base HEAD^1
       - name: clippy
         if: github.event_name != 'pull_request' || env.FULL_CI == '1'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
